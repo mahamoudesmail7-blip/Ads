@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>إعدادات النظام — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>⚙️ إعدادات النظام</h1>
+          <div class="subtitle">الحدود التي يعتمد عليها النظام في تصنيف أداء المنتجات وسلوكه — قابلة للتعديل بالكامل</div>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:640px; margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">🔌 مصدر بيانات الأوردرات</div>
+        <p class="muted" style="font-size:13px; margin:0;">
+          المصدر الحالي: <b id="providerName">—</b>. المحرك التحليلي لا يعرف من أين جاءت البيانات — فقط يقرأها من قاعدة البيانات،
+          لذلك يمكن لاحقًا ربط <b>EasyOrders</b> كمصدر بديل (سحب تلقائي للأوردرات) دون أي تعديل في حسابات الأداء أو التوصيات.
+          هذا الربط غير مفعّل حاليًا.
+        </p>
+      </div>
+
+      <div class="card" style="max-width:640px; margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">📐 حدود تصنيف الأداء</div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>نسبة اعتبار الأداء "جيدًا" (%) — أعلى من أو يساوي</label>
+            <input type="number" id="sUp" step="0.5" class="ltr" />
+          </div>
+          <div class="field">
+            <label>نسبة اعتبار الأداء "يحتاج متابعة" (%) — أقل من أو يساوي</label>
+            <input type="number" id="sDown" step="0.5" class="ltr" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>نسبة اعتبار الأداء "حرجًا" (%) — أقل من أو يساوي</label>
+            <input type="number" id="sCritical" step="0.5" class="ltr" />
+          </div>
+          <div class="field">
+            <label>عدد أيام الانخفاض المتتالي لاعتبار الحالة حرجة</label>
+            <input type="number" id="sConsecutive" step="1" min="1" class="ltr" />
+          </div>
+        </div>
+
+        <hr style="border-color: var(--border); margin: 18px 0;" />
+
+        <div class="field-row">
+          <div class="field">
+            <label>نسبة التراجع لاعتبار المنتج "مرشحًا للإيقاف" (%)</label>
+            <input type="number" id="sExitThreshold" step="0.5" class="ltr" />
+          </div>
+          <div class="field">
+            <label>عدد الأيام المتتالية المطلوبة لتأكيد الإيقاف</label>
+            <input type="number" id="sExitDays" step="1" min="1" class="ltr" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>نسبة الزيادة لاعتبار المنتج "فرصة للتوسع" (%)</label>
+            <input type="number" id="sScaleThreshold" step="0.5" class="ltr" />
+          </div>
+          <div class="field">
+            <label>عدد الأيام المتتالية المطلوبة لتأكيد فرصة التوسع</label>
+            <input type="number" id="sScaleDays" step="1" min="1" class="ltr" />
+          </div>
+        </div>
+
+        <hr style="border-color: var(--border); margin: 18px 0;" />
+
+        <div class="field-row">
+          <div class="field">
+            <label>الفترة المرجعية للمقارنة (أيام) — الأساس المستخدم في الحالة والتوصيات</label>
+            <select id="sBaselinePeriod">
+              <option value="7">7 أيام</option>
+              <option value="14">14 يوم</option>
+              <option value="30">30 يوم</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>أقل عدد أيام لاعتبار المنتج "غير جديد"</label>
+            <input type="number" id="sMinData" step="1" min="1" class="ltr" />
+          </div>
+        </div>
+
+        <hr style="border-color: var(--border); margin: 18px 0;" />
+        <div class="section-title" style="font-size:13px; margin-top:0;">📦 حدود المخزون</div>
+        <div class="field-row">
+          <div class="field">
+            <label>⚠️ مخزون منخفض — عدد الأيام المتبقية</label>
+            <input type="number" id="sLowStockDays" step="1" min="1" class="ltr" />
+          </div>
+          <div class="field">
+            <label>🚨 يحتاج تدخل عاجل — عدد الأيام المتبقية</label>
+            <input type="number" id="sCriticalStockDays" step="1" min="1" class="ltr" />
+          </div>
+        </div>
+
+        <div class="section-title" style="font-size:13px;">💰 تكاليف افتراضية</div>
+        <div class="field-row">
+          <div class="field">
+            <label>تكلفة الشحن الافتراضية</label>
+            <input type="number" id="sDefaultShipping" step="0.01" min="0" class="ltr" />
+          </div>
+          <div class="field">
+            <label>تكلفة التغليف الافتراضية</label>
+            <input type="number" id="sDefaultPackaging" step="0.01" min="0" class="ltr" />
+          </div>
+        </div>
+
+        <div class="toolbar" style="margin-top:8px;">
+          <button class="btn" id="btnSaveSettings">حفظ الإعدادات</button>
+          <button class="btn secondary" id="btnResetSettings">استعادة الإعدادات الافتراضية</button>
+        </div>
+        <div id="settingsStatus" class="faint" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="card" style="max-width:640px; margin-bottom:22px; border-color:var(--accent-dim);">
+        <div class="section-title" style="margin-top:0">🚀 نقل البيانات للسيرفر الجديد</div>
+        <p class="muted" style="font-size:13px; margin-top:0;">
+          مرة واحدة بس: بينقل كل بياناتك الحقيقية (المنتجات، الأوردرات، المهام، سجل المخزون...) من متصفحك لقاعدة البيانات
+          الجديدة على السيرفر، عشان تبقى متاحة من أي جهاز. لازم تكون مسجل دخول كـ Admin أولاً. اعمل نسخة احتياطية الأول
+          قبل النقل.
+        </p>
+        <p class="muted" style="font-size:12.5px; margin-top:0; color:var(--yellow);">
+          ⚠️ مهم: افتح الصفحة دي من نفس الرابط اللي كنت شغال بيه قبل كده (اللي فيه بياناتك الحقيقية)، مش أي رابط تاني —
+          البيانات محفوظة في متصفحك على الرابط ده بالذات، ومش بتتشارك بين روابط مختلفة.
+        </p>
+        <div class="toolbar">
+          <button class="btn secondary" id="btnPreviewLocal">👁️ معاينة البيانات المحلية (بدون نقل)</button>
+          <button class="btn secondary" id="btnDownloadBackup">📥 تنزيل نسخة احتياطية (JSON)</button>
+          <button class="btn" id="btnMigrateNow">🚀 انقل البيانات دلوقتي (لو نفس الرابط)</button>
+        </div>
+        <div id="migrateStatus" class="faint" style="margin-top:8px; white-space:pre-wrap;"></div>
+
+        <hr style="border-color: var(--border); margin: 16px 0;" />
+        <div class="faint" style="font-size:12.5px; margin-bottom:8px;">
+          لو بياناتك على رابط قديم مختلف عن رابط النظام الحالي: نزّل النسخة الاحتياطية من هنا فوق وهي مفتوحة على
+          الرابط القديم، بعدين افتح النظام الحالي وسجّل دخول، وارفع الملف من هنا:
+        </div>
+        <div class="toolbar">
+          <input type="file" id="fileImportBackup" accept=".json" style="display:none" />
+          <button class="btn secondary" id="btnImportBackup">📤 ارفع نسخة احتياطية وانقلها</button>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:640px;">
+        <div class="section-title" style="margin-top:0">🎯 بيانات اختبار: سيناريو خطة العمل اليومية</div>
+        <p class="muted" style="font-size:13px; margin-top:0;">
+          بيانات <b>اختبار فقط</b> — بدون أي ربط بمصدر أوردرات حقيقي. نفس الزر المستخدم في لوحة "نظرة سريعة".
+          تنشئ 10 منتجات (A-J) بأسماء ثابتة وبيانات 7 أيام محددة يدويًا (وليست عشوائية) تغطي كل قرارات محرّك القرار:
+          🔥 زوّد الميزانية، 🟡 قلل الميزانية، 🚨 راجع فورًا، ⛔ مرشح لإيقاف الحملة، 🟢 استمر كما أنت، و🆕 بيانات غير كافية.
+          الضغط على زر تحميل البيانات التجريبية أكثر من مرة <b>آمن تمامًا</b> — لا يُنشئ أي تكرار، لأن كل منتج له رمز
+          ثابت فريد، وكل سجل أوردر مرتبط بمنتج وتاريخ فريدين. هذه البيانات معزولة تمامًا عن أي بيانات حقيقية
+          تُضيفها يدويًا، ويمكن حذفها وحدها بأمان من الزر الأحمر.
+        </p>
+        <div class="toolbar">
+          <button class="btn" id="btnSeedDownturn">🧪 تحميل بيانات تجريبية</button>
+          <button class="btn danger" id="btnClearDemo">🗑️ حذف البيانات التجريبية</button>
+        </div>
+        <div id="downturnStatus" class="faint" style="margin-top:8px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/settings.js"></script>
+</body>
+</html>

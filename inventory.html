@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>إدارة المخزون — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>🏭 إدارة المخزون</h1>
+          <div class="subtitle" id="dateLabel">—</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn secondary small" id="btnToday">اليوم</button>
+          <button class="btn secondary small" id="btnYesterday">أمس</button>
+          <input type="date" id="asOfDatePicker" class="ltr" style="width:auto" />
+          <button class="btn" id="btnUploadFile">📥 رفع ملف المخزون (Excel/CSV)</button>
+          <input type="file" id="fileInput" accept=".csv" style="display:none" />
+          <button class="btn secondary small" id="btnImportRealStock">📋 استيراد المخزون الحقيقي الحالي</button>
+        </div>
+      </div>
+      <div id="importNote" class="faint" style="font-size:12px; margin:-14px 0 14px;">
+        ملاحظة: الرفع يقبل ملفات CSV (احفظ ملف الإكسل بصيغة CSV من "Save As" ثم ارفعه هنا).
+      </div>
+
+      <!-- 1. الأرقام الأساسية — إجابة فورية على "ايه اللي حصل في المخزون النهارده؟" -->
+      <div class="stat-grid" id="simpleHeadline" style="margin-bottom:22px;"></div>
+
+      <!-- 2. خرج النهارده -->
+      <div class="card" id="outgoingCard" style="margin-bottom:22px;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0;" id="outgoingTitle">📦 خرج النهارده</div>
+          <button class="btn secondary small" id="btnViewAllOutgoing">عرض الكل</button>
+        </div>
+        <div id="outgoingBody"></div>
+      </div>
+
+      <!-- 3. مخرجش النهارده -->
+      <div class="card" id="noMovementCard" style="margin-bottom:22px;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0;">🚫 مخرجش النهارده</div>
+          <button class="btn secondary small" id="btnViewAllNoMovement">عرض الكل</button>
+        </div>
+        <div id="noMovementBody"></div>
+      </div>
+
+      <!-- 5. كان بيخرج كتير وبقى قليل -->
+      <div class="card" id="decliningCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">📉 كان بيخرج كتير وبقى قليل</div>
+        <div id="decliningBody"></div>
+      </div>
+
+      <!-- 6. الأوردرات -->
+      <div class="card" id="ordersCard" style="margin-bottom:22px; display:none;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0;">🛒 الأوردرات</div>
+          <button class="btn secondary small" id="btnViewAllOrders">عرض الكل</button>
+        </div>
+        <div id="ordersBody"></div>
+      </div>
+
+      <!-- 4. ملخص اليوم -->
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">📊 ملخص اليوم</div>
+        <div id="warehouseSummaryBody" style="display:flex; gap:22px; flex-wrap:wrap; font-size:13.5px;"></div>
+      </div>
+
+      <!-- 7. المخزون: كل المنتجات الموجودة في السيستم -->
+      <div class="page-header" style="border:none; padding:0; margin-bottom:14px;">
+        <div class="section-title" style="margin-top:0; font-size:16px;">📦 المخزون — كل منتجات السيستم</div>
+        <button class="btn secondary small" id="btnToggleComparison">عرض/إخفاء ↕</button>
+      </div>
+      <div id="fullComparisonCard" style="margin-bottom:22px; display:none;">
+        <input type="text" id="searchProduct" placeholder="🔎 دور على منتج بالاسم..." style="max-width:280px; margin-bottom:10px;" />
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>المنتج</th><th>أمس</th><th>اليوم</th><th>الصادر</th><th>الحالة</th></tr></thead>
+            <tbody id="fullComparisonBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- تفاصيل وأدوات إضافية (مطويّة افتراضيًا — "بسيط على السطح، قوي تحت") -->
+      <div class="page-header" style="border:none; padding:0; margin-bottom:14px;">
+        <button class="btn secondary small" id="btnToggleMore">🔧 تفاصيل وأدوات إضافية ↕</button>
+      </div>
+      <div id="moreDetailsSection" style="display:none;">
+        <div class="toolbar" style="margin-bottom:14px;">
+          <button class="btn secondary small" id="btnLoadTestScenario">🧪 تحميل بيانات تجربة (12 منتج)</button>
+          <button class="btn secondary small" id="btnLoadAdvancedScenario">🧪 تحميل السيناريو المتقدم (8 حالات + منتج غير متطابق)</button>
+        </div>
+        <div id="inventoryAlerts" style="margin-bottom:22px;"></div>
+        <div id="reconciliationBanner" style="margin-bottom:22px;"></div>
+
+        <div class="card" id="unmatchedCard" style="margin-bottom:22px; display:none; border-color:var(--yellow);">
+          <div class="section-title" style="margin-top:0;">❓ منتجات غير متطابقة</div>
+          <div id="unmatchedBody"></div>
+        </div>
+
+        <div class="page-header" style="border:none; padding:0; margin-bottom:14px;">
+          <div class="section-title" style="margin-top:0; font-size:16px;">📜 سجل حركة المخزون</div>
+          <button class="btn secondary small" id="btnDailyReport">📋 تقرير المخزون اليومي</button>
+        </div>
+        <div id="movementLogBody" style="margin-bottom:22px;"></div>
+
+        <div class="card" id="dailyReportCard" style="margin-bottom:22px; display:none;">
+          <div class="page-header" style="margin-bottom:10px; border:none; padding:0;">
+            <div class="section-title" style="margin-top:0;">📋 تقرير المخزون اليومي</div>
+            <button class="btn secondary small" id="btnCloseDailyReport">إغلاق</button>
+          </div>
+          <div id="dailyReportBody" style="white-space:pre-wrap; line-height:1.9; font-size:13.5px; font-family: 'Courier New', monospace;"></div>
+        </div>
+      </div>
+
+      <a class="btn secondary" href="products.html" style="display:block; text-align:center;">📦 عرض كل المنتجات ↗</a>
+    </div>
+  </div>
+
+  <!-- Import preview modal -->
+  <div id="previewModalOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:150; align-items:center; justify-content:center;">
+    <div class="card" style="width:720px; max-width:94vw; max-height:88vh; overflow-y:auto;">
+      <div class="section-title" style="margin-top:0;">📥 معاينة استيراد المخزون</div>
+      <div id="previewSummary" style="margin-bottom:14px; font-size:13.5px;"></div>
+
+      <div class="section-title" style="font-size:14px;">🗺️ ربط الأعمدة</div>
+      <div class="field-row" style="margin-bottom:10px;">
+        <div class="field">
+          <label>اسم المنتج *</label>
+          <select id="mapProductName"></select>
+        </div>
+        <div class="field">
+          <label>الكمية *</label>
+          <select id="mapQuantity"></select>
+        </div>
+      </div>
+      <div class="field-row" style="margin-bottom:10px;">
+        <div class="field">
+          <label>SKU (اختياري)</label>
+          <select id="mapSku"><option value="">— غير متاح —</option></select>
+        </div>
+        <div class="field">
+          <label>المخزن (اختياري)</label>
+          <select id="mapWarehouse"><option value="">— غير متاح —</option></select>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-bottom:16px;">
+        <button class="btn secondary small" id="btnReprocessMapping">🔄 إعادة معالجة بالربط الجديد</button>
+      </div>
+
+      <div id="previewIssues"></div>
+      <div class="table-wrap" style="max-height:260px; overflow-y:auto;">
+        <table class="data">
+          <thead><tr><th>المنتج (بالملف)</th><th>الكمية</th><th>مطابقة مع</th><th>طريقة المطابقة</th><th>الحركة</th></tr></thead>
+          <tbody id="previewTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="toolbar" style="justify-content:flex-end; margin-top:14px;">
+        <button class="btn secondary" id="btnCancelPreview">إلغاء</button>
+        <button class="btn" id="btnConfirmImport">✅ تأكيد الاستيراد</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/inventory-page.js"></script>
+</body>
+</html>

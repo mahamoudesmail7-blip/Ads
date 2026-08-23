@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>الشغل اللي هيتعمل — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>🛠️ الشغل اللي هيتعمل النهارده</h1>
+          <div class="subtitle" id="dateLabel">—</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn secondary small" id="btnToday">اليوم</button>
+          <button class="btn secondary small" id="btnYesterday">أمس</button>
+          <input type="date" id="asOfDatePicker" class="ltr" style="width:auto" />
+        </div>
+      </div>
+
+      <div class="stat-grid" id="summaryTiles"></div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">👥 الفريق</div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>الموظف</th><th>المهام</th><th>✅ تم</th><th>❌ لم يتم</th><th>⏳ متبقي</th><th>الهدف</th></tr></thead>
+            <tbody id="teamTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="topWorkCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">🔥 أهم الشغل النهارده</div>
+        <div id="topWorkBody"></div>
+      </div>
+
+      <div class="card" id="carriedOverCard" style="margin-bottom:22px; display:none; border-color:var(--yellow);">
+        <div class="section-title" style="margin-top:0;">⚠️ المهام المرحلة من أمس</div>
+        <div id="carriedOverBody"></div>
+      </div>
+
+      <div class="page-header" style="border:none; padding:0; margin-bottom:14px;">
+        <div class="section-title" style="margin-top:0; font-size:18px;">🛠️ شغل النهارده</div>
+        <div class="toolbar">
+          <button class="btn secondary small" id="btnTeamReport">📋 تقرير الشغل اللي هيتعمل</button>
+          <button class="btn secondary small" id="btnHistory">📜 سجل الشغل</button>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="chip-group" id="employeeTabs"></div>
+      </div>
+
+      <div id="employeeSummary" style="margin: 10px 0;"></div>
+
+      <div id="workListBody" style="margin-top:10px;"></div>
+
+      <!-- 📋 مهام من المدير (task_records — تلقائية ويدوية) -->
+      <div class="page-header" style="border:none; padding:0; margin: 26px 0 14px;">
+        <div class="section-title" style="margin-top:0; font-size:18px;">📋 مهام من المدير</div>
+      </div>
+      <div id="managerTasksBody"></div>
+
+      <!-- ✅ الشغل المكتمل -->
+      <div class="page-header" style="border:none; padding:0; margin: 26px 0 14px;">
+        <div class="section-title" style="margin-top:0; font-size:18px;">✅ الشغل المكتمل</div>
+      </div>
+      <div id="completedWorkBody"></div>
+
+      <!-- 📅 نشاط الفريق اليوم -->
+      <div class="card" id="teamActivityCard" style="margin: 22px 0;">
+        <div class="section-title" style="margin-top:0;">📅 نشاط الفريق اليوم</div>
+        <div id="teamActivityBody"></div>
+      </div>
+
+      <div class="card" id="teamReportCard" style="margin-bottom:22px; display:none;">
+        <div class="page-header" style="margin-bottom:10px; border:none; padding:0;">
+          <div class="section-title" style="margin-top:0;">📋 تقرير الشغل اللي هيتعمل</div>
+          <button class="btn secondary small" id="btnCloseTeamReport">إغلاق</button>
+        </div>
+        <div id="teamReportBody" style="white-space:pre-wrap; line-height:1.9; font-size:13.5px; font-family: 'Courier New', monospace;"></div>
+      </div>
+
+      <div class="card" id="historyCard" style="margin-bottom:22px; display:none;">
+        <div class="page-header" style="margin-bottom:10px; border:none; padding:0;">
+          <div class="section-title" style="margin-top:0;">📜 سجل الشغل (آخر 7 أيام)</div>
+          <button class="btn secondary small" id="btnCloseHistory">إغلاق</button>
+        </div>
+        <div id="historyBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/work.js"></script>
+</body>
+</html>

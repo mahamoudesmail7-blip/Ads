@@ -1,0 +1,331 @@
+// Prisma schema — mirrors js/db.js's 15 IndexedDB stores field-for-field
+// (same field names, same shapes) plus one new `User` table for auth, so the
+// REST API can return objects the existing frontend already knows how to
+// render without any renaming on the client side.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Role is a plain String (not a DB enum) on purpose — it works unchanged on
+// both SQLite and Postgres, validated at the application layer instead
+// (zod, in routes/auth.js). The 3 fields stored as String that hold JSON
+// text (Settings.data, DailyReport.summary, InventoryImportBatch.unmatched)
+// are the same story: works identically on both providers, so left as-is
+// rather than switched to Postgres's native Json type.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// status: PENDING (new signup, awaiting Owner approval) | ACTIVE | REJECTED | DISABLED.
+// permissions: JSON-encoded object of granular flags (e.g. {"products.create":true})
+// — same "JSON stored as String" convention as Settings.data/DailyReport.summary
+// elsewhere in this schema. Defaults to "{}" (no permissions) on purpose: a newly
+// approved user gets nothing until the Owner explicitly grants it.
+// is_owner: protects the one founding account — never settable via any API,
+// checked everywhere a role/status/permission change targets a user.
+model User {
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
+  password_hash String
+  name          String
+  role          String   @default("EMPLOYEE")
+  status        String   @default("PENDING")
+  date_of_birth String?
+  permissions   String   @default("{}")
+  is_owner      Boolean  @default(false)
+  created_at    DateTime @default(now())
+
+  assigned_tasks TaskRecord[] @relation("TaskAssignee")
+  created_tasks  TaskRecord[] @relation("TaskCreator")
+  activity_log   TaskActivityLog[]
+
+  @@map("users")
+}
+
+model Product {
+  id                    Int      @id @default(autoincrement())
+  product_name          String
+  sku                   String?
+  product_code          String?  @unique
+  category              String?
+  selling_price         Float    @default(0)
+  product_cost          Float    @default(0)
+  active                Boolean  @default(true)
+  is_demo               Boolean  @default(false)
+  shipping_cost         Float?
+  packaging_cost        Float?
+  other_cost            Float?
+  advertising_cost      Float?
+  expected_return_cost  Float?
+  commission            Float?
+  current_stock         Float?
+  minimum_stock         Float?
+  supplier              String?
+  restock_quantity      Float?
+  last_restock_date     String?
+  created_at            DateTime @default(now())
+
+  orders             DailyOrder[]
+  notes              ProductNote[]
+  action_logs        ActionLog[]
+  task_records       TaskRecord[]
+  inventory_snapshots InventorySnapshot[]
+  inventory_movement InventoryMovementLog[]
+
+  @@index([active])
+  @@index([product_name])
+  @@index([sku])
+  @@map("products")
+}
+
+model DailyOrder {
+  id              Int      @id @default(autoincrement())
+  product_id      Int
+  product         Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  date            String
+  orders_count    Int
+  delivered_count Int?
+  returned_count  Int?
+  notes           String?
+  is_demo         Boolean  @default(false)
+  source          String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([product_id, date])
+  @@index([date])
+  @@map("daily_orders")
+}
+
+model Settings {
+  id    String @id @default("default")
+  data  String
+
+  @@map("settings")
+}
+
+model ProductNote {
+  id         Int      @id @default(autoincrement())
+  product_id Int
+  product    Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  text       String
+  created_at DateTime @default(now())
+
+  @@index([product_id])
+  @@map("product_notes")
+}
+
+model ActionLog {
+  id                   Int      @id @default(autoincrement())
+  product_id           Int
+  product              Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  date                 String
+  status               String
+  task_type            String?
+  priority             String?
+  action_label         String?
+  reason_text          String?
+  not_completed_reason String?
+  not_completed_note   String?
+  completed_at         DateTime?
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  @@unique([product_id, date])
+  @@index([date])
+  @@map("action_log")
+}
+
+model DailyReport {
+  id           Int      @id @default(autoincrement())
+  date         String
+  type         String
+  summary      String
+  report_text  String
+  generated_at DateTime @default(now())
+
+  @@unique([date, type])
+  @@index([date])
+  @@map("daily_reports")
+}
+
+model TeamMember {
+  id                 Int      @id @default(autoincrement())
+  name               String   @unique
+  active             Boolean  @default(true)
+  daily_task_target  Int      @default(10)
+  created_at         DateTime @default(now())
+
+  assignments TaskAssignment[]
+
+  @@map("team_members")
+}
+
+model TaskAssignment {
+  id          Int        @id @default(autoincrement())
+  product_id  Int
+  date        String
+  employee_id Int
+  employee    TeamMember @relation(fields: [employee_id], references: [id])
+  assigned_at DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  @@unique([product_id, date])
+  @@index([date])
+  @@index([employee_id])
+  @@map("task_assignments")
+}
+
+// Field names here match js/task-store.js's actual read/write shape exactly
+// (product_name, details, source, assignment_source, assigned_by,
+// manager_note, related_campaign, today/yesterday/diff snapshot, cancelled_by
+// / cancel_reason, not_completed_reason / not_completed_note) — that module
+// is unchanged by this migration, so the API must speak its existing shape.
+// created_by_id/employee accountability (real User FKs) are NEW fields added
+// on top, satisfying "record who assigned/completed/cancelled it" without
+// breaking any existing field task-store.js/manager.js already reads.
+model TaskRecord {
+  id                   Int       @id @default(autoincrement())
+  date                 String
+  product_id           Int?
+  product              Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_name         String?
+  employee_id          Int?
+  employee             User?     @relation("TaskAssignee", fields: [employee_id], references: [id], onDelete: SetNull)
+  created_by_id        Int?
+  created_by           User?     @relation("TaskCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  status               String    @default("PENDING")
+  task_type            String?
+  priority             String?
+  title                String?
+  details              String?
+  manager_note         String?
+  related_campaign     String?
+  source               String?
+  assignment_source    String?
+  assigned_by          String?
+  assigned_at          DateTime?
+  today                Float?
+  yesterday            Float?
+  diff                 Float?
+  due_date             String?
+  execution_date       String?
+  completed_at         DateTime?
+  not_completed_reason String?
+  not_completed_note   String?
+  cancelled_at         DateTime?
+  cancelled_by         String?
+  cancel_reason        String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  activity TaskActivityLog[]
+
+  @@index([date])
+  @@index([employee_id])
+  @@index([product_id])
+  @@index([status])
+  @@map("task_records")
+}
+
+model TaskActivityLog {
+  id            Int         @id @default(autoincrement())
+  date          String
+  task_id       Int?
+  task          TaskRecord? @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  action_type   String?
+  employee_to   Int?
+  employee_from Int?
+  details_text  String?
+  actor_id      Int?
+  actor         User?       @relation(fields: [actor_id], references: [id], onDelete: SetNull)
+  created_at    DateTime    @default(now())
+
+  @@index([date])
+  @@index([task_id])
+  @@map("task_activity_log")
+}
+
+model InventorySnapshot {
+  id             Int      @id @default(autoincrement())
+  product_id     Int
+  product        Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_name   String
+  date           String
+  opening_stock  Float?
+  closing_stock  Float
+  units_out      Float    @default(0)
+  stock_change   Float?
+  movement_type  String
+  source         String?
+  batch_id       Int?
+  notes          String?
+  updated_by     String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  @@unique([product_id, date])
+  @@index([date])
+  @@map("inventory_snapshots")
+}
+
+model InventoryMovementLog {
+  id            Int      @id @default(autoincrement())
+  product_id    Int
+  product       Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_name  String
+  date          String
+  previous_qty  Float?
+  new_qty       Float?
+  diff          Float?
+  movement_type String
+  notes         String?
+  updated_by    String?
+  batch_id      Int?
+  created_at    DateTime @default(now())
+
+  @@index([date])
+  @@index([product_id])
+  @@map("inventory_movement_log")
+}
+
+model InventoryColumnMapping {
+  id           String   @id @default("default")
+  productName  String?
+  quantity     String?
+  sku          String?
+  warehouse    String?
+  updated_at   DateTime @updatedAt
+
+  @@map("inventory_column_mapping")
+}
+
+model InventoryNameMapping {
+  id                 Int      @id @default(autoincrement())
+  excel_name_key     String   @unique
+  excel_name_original String
+  product_id         Int
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  @@map("inventory_name_mapping")
+}
+
+model InventoryImportBatch {
+  id              Int      @id @default(autoincrement())
+  date            String
+  filename        String?
+  uploaded_by     String?
+  total_rows      Int?
+  matched_count   Int?
+  unmatched_count Int?
+  duplicate_count Int?
+  invalid_count   Int?
+  unmatched       String?
+  uploaded_at     DateTime @default(now())
+
+  @@index([date])
+  @@map("inventory_import_batches")
+}

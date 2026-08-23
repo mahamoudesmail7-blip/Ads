@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>إدارة المستخدمين — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>👥 إدارة المستخدمين</h1>
+          <div class="subtitle">طلبات الانضمام الجديدة، وصلاحيات كل مستخدم — متاحة للـ Owner بس</div>
+        </div>
+      </div>
+
+      <div class="card" id="pendingCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🆕 طلبات الانضمام الجديدة</div>
+        <div id="pendingBody"></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title" style="margin-top:0;">👥 كل المستخدمين</div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead><tr><th>الاسم</th><th>الإيميل</th><th>الدور</th><th>الحالة</th><th>تاريخ التسجيل</th><th>إجراءات</th></tr></thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Permissions editor modal -->
+  <div id="permsModalOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:150; align-items:center; justify-content:center;">
+    <div class="card" style="width:520px; max-width:94vw; max-height:88vh; overflow-y:auto;">
+      <div class="section-title" style="margin-top:0;">🔐 صلاحيات <span id="permsUserName"></span></div>
+
+      <div class="field" style="margin-bottom:14px;">
+        <label>الدور</label>
+        <select id="permsRole">
+          <option value="EMPLOYEE">موظف</option>
+          <option value="MANAGER">مدير</option>
+          <option value="ADMIN">مدير النظام</option>
+        </select>
+      </div>
+
+      <div id="permsGroups"></div>
+
+      <div class="toolbar" style="justify-content:flex-end; margin-top:16px;">
+        <button class="btn secondary" id="btnCancelPerms">إلغاء</button>
+        <button class="btn" id="btnSavePerms">حفظ الصلاحيات</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/users-page.js"></script>
+</body>
+</html>

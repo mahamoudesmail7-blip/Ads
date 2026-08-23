@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8" />
+<title>Order Monitor — Test Suite</title>
+<link rel="stylesheet" href="css/style.css" />
+<style>
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background:#0f172a; color:#e2e8f0; padding:24px; }
+  h1 { font-size: 20px; }
+  #summary { font-size: 16px; margin: 12px 0 20px; padding: 12px 16px; border-radius: 8px; }
+  #summary.pass { background:#14532d; color:#bbf7d0; }
+  #summary.fail { background:#7f1d1d; color:#fecaca; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align:left; padding:6px 10px; border-bottom:1px solid #1e293b; }
+  tr.pass td:first-child { color:#4ade80; }
+  tr.fail td:first-child { color:#f87171; }
+  .error { color:#fca5a5; font-family: monospace; font-size:12px; }
+</style>
+</head>
+<body>
+  <h1>Order Monitor — Business Logic Test Suite</h1>
+  <div id="summary">Running tests…</div>
+  <table>
+    <thead><tr><th style="width:60px">Status</th><th>Test</th><th>Details</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <script type="module">
+    import { results } from './tests/test-runner.js';
+    import './tests/test-analytics.js';
+    import './tests/test-csv.js';
+    import './tests/test-profit.js';
+    import './tests/test-inventory.js';
+    import './tests/test-recommendation-engine.js';
+    import './tests/test-daily-monitor.js';
+    import './tests/test-decision-engine.js';
+    import './tests/test-product-import.js';
+    import './tests/test-product-mapping.js';
+    import './tests/test-task-engine.js';
+    import './tests/test-demo-tasks.js';
+    import './tests/test-team-engine.js';
+    import './tests/test-product-score.js';
+    import './tests/test-manager-engine.js';
+    import './tests/test-inventory-tracker.js';
+
+    const rowsEl = document.getElementById('rows');
+    const summaryEl = document.getElementById('summary');
+
+    let passCount = 0;
+    for (const r of results) {
+      if (r.pass) passCount++;
+      const tr = document.createElement('tr');
+      tr.className = r.pass ? 'pass' : 'fail';
+      tr.innerHTML = `<td>${r.pass ? '✅ PASS' : '❌ FAIL'}</td><td>${r.name}</td><td class="error">${r.error || ''}</td>`;
+      rowsEl.appendChild(tr);
+    }
+
+    const total = results.length;
+    summaryEl.textContent = `${passCount} / ${total} tests passed`;
+    summaryEl.className = passCount === total ? 'pass' : 'fail';
+    // Expose for automated inspection (e.g. browser devtools / test runners).
+    window.__TEST_RESULTS__ = { total, passCount, results };
+  </script>
+</body>
+</html>

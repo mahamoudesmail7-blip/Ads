@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>مقارنة المنتجات — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>مقارنة المنتجات</h1>
+          <div class="subtitle">اختر منتجين أو أكثر لمقارنة أدائهم جنبًا إلى جنب</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">اختر المنتجات</div>
+        <div class="chip-group" id="productChips"></div>
+      </div>
+
+      <div id="compareWrap"></div>
+      <div id="emptyState" class="empty-state">اختر منتجًا واحدًا على الأقل لعرض المقارنة.</div>
+    </div>
+  </div>
+
+  <script type="module" src="js/compare.js"></script>
+</body>
+</html>

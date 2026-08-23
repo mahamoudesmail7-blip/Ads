@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.local
+backend/node_modules/
+backend/.env
+backend/dist/
+backend/generated/
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+backend/prisma/migrations_sqlite_backup/
+*.log

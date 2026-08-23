@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>المنتجات — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>📦 المنتجات</h1>
+          <div class="subtitle" id="countsLine">—</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="btnAdd">+ إضافة منتج</button>
+          <button class="btn secondary" id="btnImportCsv">📥 استيراد Excel</button>
+          <input type="file" id="fileImportCsv" accept=".csv" style="display:none" />
+        </div>
+      </div>
+
+      <div class="card" id="realCatalogCard" style="margin-bottom:18px;">
+        <div class="section-title" style="margin-top:0; font-size:14px;">📥 استيراد قائمة المنتجات الحقيقية (127 منتج)</div>
+        <p class="faint" style="font-size:12.5px; margin:-4px 0 10px;">
+          يستورد القائمة الكاملة التي أرسلتها مرة واحدة. آمن للتكرار — تحديث بدل تكرار لأي منتج موجود بالفعل.
+        </p>
+        <button class="btn" id="btnImportReal">📥 استيراد القائمة الحقيقية الآن</button>
+        <div id="realImportStatus" style="margin-top:10px; font-size:13px; line-height:1.8;"></div>
+      </div>
+
+      <div id="importSummaryCard" class="card" style="margin-bottom:18px; display:none;">
+        <div class="section-title" style="margin-top:0; font-size:14px;">ملخص الاستيراد</div>
+        <div id="importSummaryBody" style="font-size:13.5px; line-height:1.9;"></div>
+      </div>
+
+      <div class="toolbar">
+        <input type="text" id="searchProduct" placeholder="🔍 ابحث بالاسم أو الرمز… (مثال: مساج، كاميرا)" style="max-width:320px" />
+        <div class="chip-group" id="categoryChips"></div>
+      </div>
+      <div class="toolbar" style="margin-top:8px;">
+        <span class="faint" style="font-size:12.5px;">الترتيب:</span>
+        <div class="chip-group" id="sortChips"></div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>المنتج</th>
+              <th>SKU</th>
+              <th>كود المنتج</th>
+              <th>الفئة</th>
+              <th>🏆 التقييم</th>
+              <th>المخزون</th>
+              <th>الحالة</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div id="emptyState" class="empty-state" style="display:none">لا توجد منتجات بعد. اضغط "إضافة منتج" للبدء، أو استورد قائمتك الحقيقية من الأعلى.</div>
+    </div>
+  </div>
+
+  <!-- Add/Edit modal -->
+  <div id="modalOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:100; align-items:center; justify-content:center;">
+    <div class="card" style="width:560px; max-width:94vw; max-height:88vh; overflow-y:auto;">
+      <div class="section-title" style="margin-top:0" id="modalTitle">إضافة منتج</div>
+      <div class="field">
+        <label>اسم المنتج *</label>
+        <input type="text" id="fName" />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>SKU</label>
+          <input type="text" id="fSku" class="ltr" />
+        </div>
+        <div class="field">
+          <label>كود المنتج</label>
+          <input type="text" id="fCode" class="ltr" placeholder="PRD-XXX (يُنشأ تلقائيًا)" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>الفئة</label>
+          <select id="fCategory">
+            <option value="">— بدون تصنيف —</option>
+            <option value="Beauty">Beauty</option>
+            <option value="Health">Health</option>
+            <option value="Home">Home</option>
+            <option value="Electronics">Electronics</option>
+            <option value="Kids">Kids</option>
+            <option value="Fitness">Fitness</option>
+            <option value="Accessories">Accessories</option>
+            <option value="Kitchen">Kitchen</option>
+            <option value="Smart Devices">Smart Devices</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>الحالة</label>
+          <select id="fActive">
+            <option value="true">نشط</option>
+            <option value="false">غير نشط</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>سعر البيع</label>
+          <input type="number" id="fPrice" min="0" step="0.01" class="ltr" />
+        </div>
+        <div class="field">
+          <label>تكلفة المنتج</label>
+          <input type="number" id="fCost" min="0" step="0.01" class="ltr" />
+        </div>
+      </div>
+
+      <div class="section-title" style="font-size:13px;">💰 التكاليف (اختياري)</div>
+      <p class="faint" style="font-size:12px; margin:-6px 0 12px;">اتركها فارغة إن لم تتوفر — لن يتم افتراض صفر، وستظهر "غير متوفر" بدل رقم وهمي.</p>
+      <div class="field-row">
+        <div class="field">
+          <label>الشحن</label>
+          <input type="number" id="fShipping" min="0" step="0.01" class="ltr" />
+        </div>
+        <div class="field">
+          <label>التغليف</label>
+          <input type="number" id="fPackaging" min="0" step="0.01" class="ltr" />
+        </div>
+        <div class="field">
+          <label>تكاليف أخرى</label>
+          <input type="number" id="fOtherCost" min="0" step="0.01" class="ltr" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>تكلفة المرتجعات المتوقعة</label>
+          <input type="number" id="fReturnCost" min="0" step="0.01" class="ltr" />
+        </div>
+        <div class="field">
+          <label>العمولة</label>
+          <input type="number" id="fCommission" min="0" step="0.01" class="ltr" />
+        </div>
+        <div class="field">
+          <label>تكلفة الأوردر الحالية</label>
+          <input type="number" id="fAdvertising" min="0" step="0.01" class="ltr" />
+        </div>
+      </div>
+
+      <div class="section-title" style="font-size:13px;">📦 المخزون (اختياري)</div>
+      <p class="faint" style="font-size:12px; margin:-6px 0 12px;">اتركها فارغة إلى أن تُدخل الكمية الحقيقية — ستظهر "غير محدد"، ولن يتم افتراض صفر أو أي رقم.</p>
+      <div class="field-row">
+        <div class="field">
+          <label>الكمية الحالية</label>
+          <input type="number" id="fStock" min="0" step="1" class="ltr" />
+        </div>
+        <div class="field">
+          <label>الحد الأدنى للمخزون</label>
+          <input type="number" id="fMinStock" min="0" step="1" class="ltr" />
+        </div>
+        <div class="field">
+          <label>كمية إعادة الطلب</label>
+          <input type="number" id="fRestockQty" min="0" step="1" class="ltr" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>المورّد</label>
+          <input type="text" id="fSupplier" />
+        </div>
+        <div class="field">
+          <label>تاريخ آخر إعادة طلب</label>
+          <input type="date" id="fLastRestock" class="ltr" />
+        </div>
+      </div>
+
+      <div class="toolbar" style="justify-content:flex-end; margin-top:6px;">
+        <button class="btn secondary" id="btnCancel">إلغاء</button>
+        <button class="btn" id="btnSave">حفظ</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/products.js"></script>
+</body>
+</html>

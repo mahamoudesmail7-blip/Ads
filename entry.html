@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>إدخال الأوردرات — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>إدخال الأوردرات اليومية</h1>
+          <div class="subtitle">أدخل عدد الأوردرات يدويًا، أو ارفع ملف Excel دفعة واحدة</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px; max-width:560px;">
+        <div class="section-title" style="margin-top:0">📝 إدخال يدوي</div>
+        <div class="field-row">
+          <div class="field">
+            <label>التاريخ *</label>
+            <input type="date" id="fDate" class="ltr" />
+          </div>
+          <div class="field">
+            <label>المنتج *</label>
+            <select id="fProduct"></select>
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>عدد الأوردرات *</label>
+            <input type="number" id="fOrders" min="0" step="1" class="ltr" />
+          </div>
+          <div class="field">
+            <label>تم التسليم (اختياري)</label>
+            <input type="number" id="fDelivered" min="0" step="1" class="ltr" />
+          </div>
+          <div class="field">
+            <label>مرتجع (اختياري)</label>
+            <input type="number" id="fReturned" min="0" step="1" class="ltr" />
+          </div>
+        </div>
+        <div class="field">
+          <label>ملاحظات</label>
+          <input type="text" id="fNotes" />
+        </div>
+        <button class="btn" id="btnSave">حفظ</button>
+        <span id="saveStatus" class="faint" style="margin-inline-start:10px;"></span>
+      </div>
+
+      <div class="card" style="margin-bottom:22px; max-width:640px;">
+        <div class="section-title" style="margin-top:0">📥 رفع ملف الأوردرات</div>
+        <p class="muted" style="font-size:13px; margin-top:0;">
+          الأعمدة المطلوبة في الملف: <span class="mono" style="display:inline-block">التاريخ | المنتج | الأوردرات</span>.
+          أسماء المنتجات يجب أن تطابق منتجًا موجودًا بالفعل في صفحة المنتجات.
+          الصفوف المكررة لنفس المنتج ونفس التاريخ لن يتم تكرارها — سيتم تحديث القيمة بدلًا من ذلك.
+        </p>
+        <input type="file" id="fCsv" accept=".csv,text/csv" />
+        <div id="importResult" style="margin-top:14px;"></div>
+      </div>
+
+      <div class="section-title">📅 آخر الإدخالات</div>
+      <div class="toolbar">
+        <select id="fFilterProduct" style="max-width:240px"></select>
+      </div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr><th>التاريخ</th><th>المنتج</th><th>الأوردرات</th><th>تم التسليم</th><th>مرتجع</th><th>ملاحظات</th><th></th></tr>
+          </thead>
+          <tbody id="recentBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/entry.js"></script>
+</body>
+</html>

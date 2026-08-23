@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>نظرة سريعة — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>👀 النظرة السريعة</h1>
+          <div class="subtitle" id="dateLabel">—</div>
+        </div>
+        <div class="toolbar">
+          <button class="btn secondary small" id="btnToday">اليوم</button>
+          <button class="btn secondary small" id="btnYesterday">أمس</button>
+          <input type="date" id="asOfDatePicker" class="ltr" style="width:auto" />
+          <a class="btn small" href="manager.html?openAdd=1">➕ إضافة Task</a>
+          <button class="btn secondary small" id="btnSimulateNextDay" title="ينتقل ليوم تالٍ لتجربة كيف يتغير كل شيء">🧪 محاكاة يوم جديد</button>
+          <button class="btn secondary small" id="btnLoadDemoDay" title="يحمّل سيناريو تجربة محدد ليوم 18 أغسطس">🧪 تجربة يوم جديد</button>
+          <button class="btn secondary small" id="btnGenerateDemo">🧪 إنشاء بيانات اختبار</button>
+          <button class="btn secondary small" id="btnResetDemo">🔄 إعادة التجربة</button>
+        </div>
+      </div>
+      <div id="demoStatus" class="faint" style="font-size:12px; margin:-14px 0 14px;"></div>
+
+      <div id="emptyDashboardBanner" class="card" style="display:none; margin-bottom:22px; text-align:center; padding:36px 20px;">
+        <div style="font-size:16px; font-weight:700; margin-bottom:8px;">لا توجد منتجات بعد</div>
+        <div class="muted" style="font-size:13.5px; margin-bottom:18px;">
+          أضف منتجاتك من <a href="products.html">صفحة المنتجات</a> (يمكنك استيراد قائمتك الحقيقية كاملة من هناك بضغطة واحدة)،
+          ثم سجّل أوردراتها اليومية من <a href="entry.html">صفحة إدخال الأوردرات</a> أو اضغط "🧪 إنشاء بيانات اختبار" أعلاه لتجربة النظام فورًا.
+        </div>
+        <a class="btn" href="products.html" style="font-size:15px; padding:12px 28px;">📦 اذهب إلى المنتجات</a>
+      </div>
+
+      <!-- أهم أرقام اليوم -->
+      <div class="card" id="quickStatsCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0; font-size:14px;">أهم أرقام اليوم</div>
+        <div id="quickStatsBody" style="display:flex; gap:22px; flex-wrap:wrap; font-size:13.5px;"></div>
+      </div>
+
+      <!-- 🏭 المخزون -->
+      <div class="card" id="inventoryKpiCard" style="margin-bottom:22px;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0;">🏭 المخزون</div>
+          <a class="btn secondary small" href="inventory.html">فتح صفحة المخزون ↗</a>
+        </div>
+        <div id="inventoryKpiBody" style="display:flex; gap:22px; flex-wrap:wrap; font-size:13.5px;"></div>
+      </div>
+
+      <!-- 📊 مقارنة أداء المنتجات: أمس مقابل اليوم -->
+      <div class="card" id="comparisonCard" style="margin-bottom:22px;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0;">📊 مقارنة أداء المنتجات — أمس مقابل اليوم</div>
+          <button class="btn secondary small" id="btnLoadPerfTest" title="يحمّل 5 منتجات تجريبية بأرقام محددة لاختبار قسم المقارنة والتنبيهات">🧪 تحميل بيانات اختبار الأداء</button>
+        </div>
+        <div id="comparisonAlerts"></div>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>المنتج</th>
+                <th>أمس</th>
+                <th>اليوم</th>
+                <th>الفرق</th>
+                <th>% التغيير</th>
+                <th>الحالة</th>
+                <th>التوصية</th>
+              </tr>
+            </thead>
+            <tbody id="comparisonTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 🟢 ظبطت النهارده -->
+      <div class="card" id="improvedCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🟢 المنتجات اللي ظبطت النهارده</div>
+        <div id="improvedBody"></div>
+      </div>
+
+      <!-- 🔴 ريحت النهارده -->
+      <div class="card" id="declinedCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🔴 المنتجات اللي ريحت النهارده</div>
+        <div id="declinedBody"></div>
+      </div>
+
+      <!-- 🏆 TOP 4 -->
+      <div class="card" id="top4Card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🏆 أفضل 4 منتجات النهارده</div>
+        <div id="top4Body"></div>
+      </div>
+
+      <!-- 🚨 بدون أوردر -->
+      <div class="card" id="zeroOrderCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🚨 منتجات بدون أوردر</div>
+        <div id="zeroOrderBody"></div>
+      </div>
+
+      <!-- 🚨 محتاجة تدخل -->
+      <div class="card" id="interventionCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🚨 منتجات محتاجة تدخل</div>
+        <div id="interventionBody"></div>
+      </div>
+
+      <!-- 🎯 Action Plan -->
+      <div class="card" id="actionPlanCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🎯 خطة العمل (Action Plan)</div>
+        <div id="actionPlanBody"></div>
+      </div>
+
+      <!-- 🛠️ الشغل اللي هيتعمل -->
+      <div class="card" id="workTeaserCard" style="margin-bottom:22px;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0;">🛠️ الشغل اللي هيتعمل</div>
+          <a class="btn secondary small" href="work.html">فتح صفحة الشغل ↗</a>
+        </div>
+        <div id="workTeaserBody"></div>
+      </div>
+
+      <!-- 📋 تقرير اليوم -->
+      <div class="page-header" style="border:none; padding:0; margin-bottom:14px;">
+        <div class="section-title" style="margin-top:0; font-size:16px;">📋 تقرير اليوم</div>
+        <button class="btn secondary small" id="btnDailyReport">إنشاء / عرض تقرير اليوم</button>
+      </div>
+      <div class="card" id="dailyReportCard" style="margin-bottom:22px; display:none;">
+        <div id="dailyReportBody" style="white-space:pre-wrap; line-height:1.9; font-size:13.5px; font-family: 'Courier New', monospace;"></div>
+      </div>
+
+      <a class="btn secondary" href="products.html?sort=score" style="display:block; text-align:center;">📦 عرض كل المنتجات ↗</a>
+    </div>
+  </div>
+
+  <script type="module" src="js/dashboard.js"></script>
+</body>
+</html>

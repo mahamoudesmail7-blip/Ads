@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>تفاصيل المنتج — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1 id="productName">—</h1>
+          <div class="subtitle" id="productMeta">—</div>
+        </div>
+        <div class="toolbar">
+          <span id="newBadge" style="display:none" class="badge gray">🆕 منتج جديد</span>
+          <span id="recPillWrap"></span>
+        </div>
+      </div>
+
+      <div id="newProductNotice" class="card" style="display:none; margin-bottom:20px; border-color:var(--accent-dim)">
+        لا توجد بيانات كافية لتحليل الأداء بشكل موثوق. أضف المزيد من الأيام لبدء التحليل الكامل.
+      </div>
+
+      <div id="combinedOverviewCard" class="card" style="display:none; margin-bottom:20px;">
+        <div class="section-title" style="margin-top:0;">📦🛒 نظرة عامة — المخزون والأوردرات</div>
+        <div id="combinedOverviewBody"></div>
+      </div>
+
+      <div class="section-title" style="margin-top:0">📈 الأداء</div>
+      <div class="stat-grid" id="statTiles"></div>
+
+      <div class="section-title">💰 الأرباح</div>
+      <div class="stat-grid" id="financialTiles"></div>
+
+      <div class="section-title">📦 المخزون</div>
+      <div class="stat-grid" id="inventoryTiles"></div>
+
+      <div class="card" style="margin-bottom:22px">
+        <div class="section-title" style="margin-top:0">📈 عدد الأوردرات يوميًا (آخر 30 يوم)</div>
+        <div id="chartContainer"></div>
+      </div>
+
+      <div class="field-row" style="align-items:flex-start; gap:22px; margin-bottom:22px;">
+        <div class="card" style="flex:1; min-width:280px;">
+          <div class="section-title" style="margin-top:0">💵 الإيرادات يوميًا</div>
+          <div id="revenueChartContainer"></div>
+        </div>
+        <div class="card" style="flex:1; min-width:280px;">
+          <div class="section-title" style="margin-top:0">📈 الربح يوميًا</div>
+          <div id="profitChartContainer"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">📦 المخزون عبر الزمن</div>
+        <div id="stockChartContainer"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">📜 سجل حركة المخزون اليومي</div>
+        <div id="inventoryHistoryBody"></div>
+      </div>
+
+      <div class="field-row" style="align-items:flex-start; gap:22px; margin-bottom:22px;">
+        <div class="card" style="flex:1; min-width:280px;">
+          <div class="section-title" style="margin-top:0">🧭 التوصية الحالية</div>
+          <div id="recBlock"></div>
+        </div>
+        <div class="card" style="flex:1; min-width:280px;">
+          <div class="section-title" style="margin-top:0">💯 تقييم حالة المنتج</div>
+          <div id="healthBlock"></div>
+        </div>
+      </div>
+
+      <div class="card" id="decisionCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">🎯 القرار المقترح اليوم</div>
+        <div id="decisionBody"></div>
+      </div>
+
+      <div class="card" id="causesCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0">❓ ليه الأداء اتغيّر؟</div>
+        <div id="causesBody"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">📜 سجل القرارات</div>
+        <div id="decisionHistoryBody"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">📝 ملاحظات</div>
+        <div class="field-row" style="align-items:flex-end;">
+          <div class="field" style="flex:1; margin-bottom:0;">
+            <input type="text" id="fNoteText" placeholder="مثال: السعر تغيّر يوم 15، بدأ إعلان جديد، نفاد جزئي في المخزون…" />
+          </div>
+          <button class="btn" id="btnAddNote" style="margin-inline-start:10px;">إضافة</button>
+        </div>
+        <div id="notesList" style="margin-top:14px;"></div>
+      </div>
+
+      <div class="section-title">📅 سجل الأوردرات</div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>التاريخ</th><th>الأوردرات</th><th>تم التسليم</th><th>مرتجع</th><th>ملاحظات</th></tr></thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/product-details.js"></script>
+</body>
+</html>

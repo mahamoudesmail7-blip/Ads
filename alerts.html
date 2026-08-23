@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>التنبيهات — نظام مراقبة المنتجات</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>التنبيهات</h1>
+          <div class="subtitle" id="dateLabel">—</div>
+        </div>
+      </div>
+
+      <div class="section-title" style="margin-top:0">🚨 المشاكل المهمة — الأكثر خطورة أولًا</div>
+      <div id="attentionList"></div>
+
+      <div class="section-title">📦 تنبيهات المخزون</div>
+      <div id="stockList"></div>
+
+      <div class="section-title">🔥 أداء ممتاز</div>
+      <div id="positiveList"></div>
+
+      <div class="section-title">🚨 انخفاض مستمر</div>
+      <div id="declineList"></div>
+
+      <div class="section-title">⚠️ تنبيهات تحتاج متابعة</div>
+      <div id="negativeList"></div>
+    </div>
+  </div>
+
+  <script type="module" src="js/alerts.js"></script>
+</body>
+</html>
