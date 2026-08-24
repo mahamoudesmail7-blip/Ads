@@ -188,6 +188,21 @@ a:hover { text-decoration: underline; }
 .sidebar nav a:hover { background: var(--sidebar-hover-bg); color: #fff; text-decoration: none; }
 .sidebar nav a.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
 .sidebar nav a svg { flex-shrink: 0; width: 18px; height: 18px; }
+.sidebar nav a span { flex: 1; }
+.nav-badge {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
 /* Sidebar footer — user identity + logout. Fixed dark-navy sidebar colors
    only (not the theme-dependent --red/--red-bg), same reasoning as every

@@ -40,6 +40,8 @@ model User {
   assigned_tasks TaskRecord[] @relation("TaskAssignee")
   created_tasks  TaskRecord[] @relation("TaskCreator")
   activity_log   TaskActivityLog[]
+  lost_order_notes   LostOrderNote[]
+  lost_order_actions LostOrderHistory[]
 
   @@map("users")
 }
@@ -112,6 +114,7 @@ model DailyOrder {
 model EasyOrdersOrder {
   id            Int      @id @default(autoincrement())
   order_id      String
+  short_id      Int? // EasyOrders' human-friendly order number (e.g. #2167) — the real reference number a customer/employee would actually recognize, not the internal UUID
   cart_item_id  String
   product_id    Int?
   product       Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
@@ -122,6 +125,18 @@ model EasyOrdersOrder {
   raw_status    String?
   quantity      Int      @default(1)
   matched       Boolean  @default(true)
+  // Customer/order-level fields — the webhook payload always includes these
+  // (order.full_name/phone/government/address/cost/shipping_cost) but nothing
+  // read them until the Lost Orders feature needed to show a real customer
+  // contact for a replacement order. Redundantly stored per cart-item row
+  // (same values across every row of one order_id) rather than restructuring
+  // the table — simplest fix for a real gap, not a new integration.
+  customer_name    String?
+  customer_phone   String?
+  customer_address String?
+  customer_government String?
+  order_cost       Float?
+  shipping_cost    Float?
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt
 
@@ -130,6 +145,57 @@ model EasyOrdersOrder {
   @@index([product_id])
   @@index([order_id])
   @@map("easyorders_orders")
+}
+
+// Internal-only processing state for a real EasyOrders order whose status
+// landed on RETURNED (raw_status "returning_from_delivery" — EasyOrders has
+// no native "lost" status; this is our own business classification layered
+// on top of their real data, per explicit user direction). One row per
+// EasyOrders order_id, created automatically the moment that status is
+// first observed (webhook or reconciliation) — see services/lostOrders.js.
+model LostOrder {
+  id                    Int      @id @default(autoincrement())
+  order_id              String   @unique
+  processing_status     String   @default("NEW") // NEW | PROCESSING | CONTACTED | CUSTOMER_APPROVED | CUSTOMER_REJECTED | REPLACEMENT_CREATED | CLOSED
+  replacement_order_id  String? // set once a real replacement order exists in EasyOrders (feature currently blocked — see conversation)
+  detected_at           DateTime @default(now())
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  notes   LostOrderNote[]
+  history LostOrderHistory[]
+
+  @@map("lost_orders")
+}
+
+model LostOrderNote {
+  id            Int       @id @default(autoincrement())
+  lost_order_id Int
+  lostOrder     LostOrder @relation(fields: [lost_order_id], references: [id], onDelete: Cascade)
+  text          String
+  author_id     Int?
+  author        User?     @relation(fields: [author_id], references: [id], onDelete: SetNull)
+  created_at    DateTime  @default(now())
+
+  @@index([lost_order_id])
+  @@map("lost_order_notes")
+}
+
+// Every real action taken on a lost order — who, what, when. Never
+// backfilled with invented past events; only written at the moment an
+// action actually happens.
+model LostOrderHistory {
+  id            Int       @id @default(autoincrement())
+  lost_order_id Int
+  lostOrder     LostOrder @relation(fields: [lost_order_id], references: [id], onDelete: Cascade)
+  action        String // DETECTED | STATUS_CHANGED | NOTE_ADDED
+  detail        String?
+  actor_id      Int?
+  actor         User?     @relation(fields: [actor_id], references: [id], onDelete: SetNull)
+  created_at    DateTime  @default(now())
+
+  @@index([lost_order_id])
+  @@map("lost_order_history")
 }
 
 model Settings {

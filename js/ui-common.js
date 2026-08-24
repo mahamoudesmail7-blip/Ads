@@ -32,6 +32,7 @@ const ICON_PATHS = {
   users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   test: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
   easyorders: '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>',
+  lostorders: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M9 9l6 6M15 9l-6 6"/>',
 };
 
 function navIcon(name) {
@@ -47,6 +48,7 @@ export const NAV_ITEMS = [
   { key: 'products', href: 'products.html', label: 'المنتجات', icon: navIcon('products') },
   { key: 'entry', href: 'entry.html', label: 'إدخال الأوردرات', icon: navIcon('entry') },
   { key: 'easyorders', href: 'easy-orders.html', label: 'Easy Orders', icon: navIcon('easyorders') },
+  { key: 'lostorders', href: 'lost-orders.html', label: 'الأوردرات المفقودة', icon: navIcon('lostorders'), badgeId: 'navLostOrdersBadge' },
   { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },
   { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: navIcon('compare') },
   { key: 'ranking', href: 'ranking.html', label: 'ترتيب الربحية', icon: navIcon('ranking') },
@@ -109,7 +111,7 @@ export async function renderSidebar(activeKey) {
   el.innerHTML = `
     <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
     <nav>${visibleItems.map(
-      (i) => `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} ${i.label}</a>`
+      (i) => `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} <span>${i.label}</span>${i.badgeId ? `<span class="nav-badge" id="${i.badgeId}" style="display:none;"></span>` : ''}</a>`
     ).join('')}</nav>
     <div class="sidebar-user">
       <div class="sidebar-user-name">${escapeHtml(user.name)}</div>
@@ -125,6 +127,19 @@ export async function renderSidebar(activeKey) {
   mountThemeToggle();
 
   document.getElementById('sidebarLogout')?.addEventListener('click', logout);
+
+  if (visibleItems.some((i) => i.badgeId === 'navLostOrdersBadge')) {
+    try {
+      const { count } = await api.get('/api/lost-orders/new-count');
+      const badge = document.getElementById('navLostOrdersBadge');
+      if (badge && count > 0) {
+        badge.textContent = count;
+        badge.style.display = '';
+      }
+    } catch {
+      // Non-critical — the sidebar itself already rendered successfully; a failed badge count just stays hidden.
+    }
+  }
 }
 
 /**

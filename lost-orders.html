@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>الأوردرات المفقودة — نظام مراقبة المنتجات</title>
+<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>📮 الأوردرات المفقودة</h1>
+          <div class="subtitle">أوردرات EasyOrders الحقيقية اللي رجعت من التوصيل — إدارة كاملة من غير ما تفتح EasyOrders</div>
+        </div>
+      </div>
+
+      <div class="stat-grid" id="loStatTiles"></div>
+
+      <div class="toolbar" style="margin-top:8px;">
+        <input type="text" id="loSearch" placeholder="🔎 ابحث برقم الأوردر، اسم العميل، أو رقم الهاتف..." style="max-width:280px" />
+        <div class="chip-group" id="loStatusChips"></div>
+      </div>
+      <div class="toolbar" style="margin-top:8px;">
+        <label class="faint" style="font-size:12.5px;">من: <input type="date" id="loDateFrom" class="ltr" style="width:auto" /></label>
+        <label class="faint" style="font-size:12.5px;">إلى: <input type="date" id="loDateTo" class="ltr" style="width:auto" /></label>
+        <button class="btn secondary small" id="loClearDates">مسح التاريخ</button>
+      </div>
+
+      <div class="table-wrap" style="margin-top:14px;">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>رقم الأوردر</th>
+              <th>العميل</th>
+              <th>الهاتف</th>
+              <th>المنتج</th>
+              <th>المحافظة</th>
+              <th>تاريخ الأوردر</th>
+              <th>تاريخ الفقدان</th>
+              <th>الحالة</th>
+              <th>إجراء</th>
+            </tr>
+          </thead>
+          <tbody id="loTableBody"></tbody>
+        </table>
+      </div>
+      <div id="loEmpty" class="empty-state" style="display:none;">لا توجد أوردرات مفقودة حاليًا 🎉</div>
+    </div>
+  </div>
+
+  <!-- Details drawer -->
+  <div class="drawer-overlay" id="loDrawerOverlay">
+    <div class="drawer-panel" id="loDrawerPanel"></div>
+  </div>
+
+  <!-- Replacement order review modal -->
+  <div id="loReplacementOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:250; align-items:center; justify-content:center; padding:20px;">
+    <div class="card" style="width:480px; max-width:100%; max-height:88vh; overflow-y:auto;">
+      <div class="section-title" style="margin-top:0;">📦 مراجعة بيانات الأوردر البديل</div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>اسم العميل</label>
+        <input type="text" id="repName" />
+      </div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>رقم الهاتف</label>
+        <input type="text" id="repPhone" class="ltr" />
+      </div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>المحافظة</label>
+        <input type="text" id="repGovernment" />
+      </div>
+      <div class="field" style="margin-bottom:10px;">
+        <label>العنوان بالكامل</label>
+        <input type="text" id="repAddress" />
+      </div>
+      <div class="field" style="margin-bottom:14px;">
+        <label>المنتج والكمية</label>
+        <div id="repProducts" class="faint" style="font-size:13px;"></div>
+      </div>
+      <div id="loReplacementStatus" class="faint" style="margin-bottom:10px; display:none;"></div>
+      <div class="toolbar" style="justify-content:flex-end;">
+        <button class="btn secondary" id="btnCancelReplacement">إلغاء</button>
+        <button class="btn" id="btnConfirmReplacement">🚀 إنشاء أوردر فعلي</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/lost-orders.js"></script>
+</body>
+</html>

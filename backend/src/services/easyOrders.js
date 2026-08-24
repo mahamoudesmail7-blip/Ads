@@ -4,6 +4,7 @@
 // drift into applying a status differently. Moved here verbatim from
 // webhooks.js; its behavior is unchanged, only its location.
 import { prisma } from '../prisma.js';
+import { ensureLostOrderTracking } from './lostOrders.js';
 
 export const EASYORDERS_API_BASE = 'https://api.easy-orders.net/api/v1/external-apps';
 
@@ -56,13 +57,23 @@ export async function ingestOrder(order) {
   const status = normalizeStatus(order.status);
   const touched = new Set();
 
+  const customerFields = {
+    short_id: typeof order.short_id === 'number' ? order.short_id : null,
+    customer_name: order.full_name || null,
+    customer_phone: order.phone || null,
+    customer_address: order.address || null,
+    customer_government: order.government || null,
+    order_cost: typeof order.cost === 'number' ? order.cost : null,
+    shipping_cost: typeof order.shipping_cost === 'number' ? order.shipping_cost : null,
+  };
+
   for (const item of order.cart_items || []) {
     const sku = item.product?.sku || null;
     const productNameRaw = item.product?.name || null;
     const product = await matchProduct(sku);
     await prisma.easyOrdersOrder.upsert({
       where: { order_id_cart_item_id: { order_id: order.id, cart_item_id: item.id } },
-      update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, matched: !!product, date },
+      update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, matched: !!product, date, ...customerFields },
       create: {
         order_id: order.id,
         cart_item_id: item.id,
@@ -74,6 +85,7 @@ export async function ingestOrder(order) {
         raw_status: order.status,
         quantity: item.quantity || 1,
         matched: !!product,
+        ...customerFields,
       },
     });
     if (product) touched.add(`${product.id}::${date}`);
@@ -83,6 +95,7 @@ export async function ingestOrder(order) {
     const [productId, d] = key.split('::');
     await recomputeDailyOrder(Number(productId), d);
   }
+  await ensureLostOrderTracking(order.id);
 }
 
 /** Fetches one order's current state directly via the API key — used when a status-update webhook references an order we've never seen, and by the reconciliation job below. */
@@ -110,5 +123,6 @@ export async function applyStatusToOrder(orderId, rawStatus) {
     const [productId, d] = key.split('::');
     await recomputeDailyOrder(Number(productId), d);
   }
+  if (changedRows > 0) await ensureLostOrderTracking(orderId);
   return { totalRows: rows.length, changedRows };
 }
