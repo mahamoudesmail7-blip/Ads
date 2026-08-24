@@ -4,7 +4,10 @@
 // everything regardless (never trust the client). On success, the account
 // is PENDING — this page shows that message in place, it never redirects
 // into the app or sets any session.
+import { mountThemeToggle } from './theme.js';
+
 function init() {
+  mountThemeToggle();
   document.getElementById('btnRegister').onclick = submit;
 }
 

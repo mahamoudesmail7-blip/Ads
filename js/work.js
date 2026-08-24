@@ -195,9 +195,7 @@ function renderSummary() {
     { label: 'متبقي', value: remaining, cls: remaining > 0 ? 'yellow' : '' },
     { label: '⚠️ متأخر', value: carriedOver.length, cls: carriedOver.length > 0 ? 'red' : '' },
   ];
-  document.getElementById('summaryTiles').innerHTML = tiles
-    .map((t) => `<div class="stat-tile"><div class="label">${t.label}</div><div class="value ${t.cls || ''}">${t.value}</div></div>`)
-    .join('');
+  document.getElementById('summaryTiles').innerHTML = tiles.map((t) => UI.statTile(t.label, t.value, { colorClass: t.cls })).join('');
 }
 
 function renderTeamTable() {
@@ -296,12 +294,14 @@ function renderEmployeeSummary() {
     <div class="card" style="margin-bottom:14px;">
       <div style="font-size:15px; font-weight:700; margin-bottom:8px;">شغل ${UI.escapeHtml(emp.name)} النهارده</div>
       <div class="stat-grid" style="margin-bottom:0;">
-        <div class="stat-tile"><div class="label">Tasks</div><div class="value">${mine.length}</div></div>
-        <div class="stat-tile"><div class="label">✅ تم</div><div class="value green">${completed}</div></div>
-        <div class="stat-tile"><div class="label">❌ لم يتم</div><div class="value red">${notCompleted}</div></div>
-        <div class="stat-tile"><div class="label">⏳ متبقي</div><div class="value yellow">${remaining}</div></div>
-        <div class="stat-tile"><div class="label">⚠️ مرحل</div><div class="value ${myCarried > 0 ? 'red' : ''}">${myCarried}</div></div>
-        <div class="stat-tile"><div class="label">نسبة الإنجاز</div><div class="value">${rate}%</div></div>
+        ${[
+          UI.statTile('Tasks', mine.length),
+          UI.statTile('✅ تم', completed, { colorClass: 'green' }),
+          UI.statTile('❌ لم يتم', notCompleted, { colorClass: 'red' }),
+          UI.statTile('⏳ متبقي', remaining, { colorClass: 'yellow' }),
+          UI.statTile('⚠️ مرحل', myCarried, { colorClass: myCarried > 0 ? 'red' : '' }),
+          UI.statTile('نسبة الإنجاز', `${rate}%`),
+        ].join('')}
       </div>
     </div>`;
 }

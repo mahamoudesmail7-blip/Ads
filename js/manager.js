@@ -266,9 +266,7 @@ function renderSummary() {
     ['🗑️ ملغاة', cancelled],
     ['👤 منقولة', moved],
   ];
-  document.getElementById('summaryTiles').innerHTML = tiles
-    .map(([label, value]) => `<div class="stat-tile"><div class="label">${label}</div><div class="value">${value}</div></div>`)
-    .join('');
+  document.getElementById('summaryTiles').innerHTML = tiles.map(([label, value]) => UI.statTile(label, value)).join('');
 }
 
 function renderEmployeeCards() {

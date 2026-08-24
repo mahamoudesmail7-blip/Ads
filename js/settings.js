@@ -17,6 +17,11 @@ import { seedDecisionDemo } from './seed.js';
 import { activeOrdersProvider } from './orders-provider.js';
 import { exportAllDataForMigration, downloadAsFile } from './indexeddb-export.js';
 import { api } from './api-client.js';
+import { getEffectiveTheme, setTheme } from './theme.js';
+
+const ROLE_LABELS_AR = { ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' };
+const STATUS_LABELS_AR = { ACTIVE: 'نشط', PENDING: 'قيد المراجعة', REJECTED: 'مرفوض', DISABLED: 'معطّل' };
+const STATUS_BADGE_COLOR = { ACTIVE: 'green', PENDING: 'yellow', REJECTED: 'red', DISABLED: 'gray' };
 
 const FIELD_MAP = {
   sUp: 'upThreshold',
@@ -47,6 +52,12 @@ async function init() {
   } catch (err) {
     document.getElementById('settingsStatus').textContent = `⚠️ مقدرش أوصل للسيرفر (${err.message}) — لسه تقدر تستخدم أدوات نقل البيانات تحت.`;
   }
+  try {
+    await loadAccountInfo();
+  } catch {
+    // Same no-backend-reachable case as above — the account card just stays at its placeholder dashes.
+  }
+  syncThemeButtons();
 
   document.getElementById('btnSaveSettings').onclick = saveSettings;
   document.getElementById('btnResetSettings').onclick = resetSettings;
@@ -57,6 +68,26 @@ async function init() {
   document.getElementById('btnPreviewLocal').onclick = runPreviewLocal;
   document.getElementById('btnImportBackup').onclick = () => document.getElementById('fileImportBackup').click();
   document.getElementById('fileImportBackup').onchange = runImportBackupFile;
+  document.getElementById('btnAccountLogout').onclick = UI.logout;
+  document.getElementById('btnThemeLight').onclick = () => { setTheme('light'); syncThemeButtons(); };
+  document.getElementById('btnThemeDark').onclick = () => { setTheme('dark'); syncThemeButtons(); };
+}
+
+async function loadAccountInfo() {
+  const user = await api.get('/api/auth/me');
+  document.getElementById('acctAvatar').textContent = user.name.trim().slice(0, 1).toUpperCase() || '؟';
+  document.getElementById('acctName').textContent = user.name;
+  document.getElementById('acctEmail').textContent = user.email;
+  document.getElementById('acctRole').textContent = (user.is_owner ? '👑 Owner — ' : '') + (ROLE_LABELS_AR[user.role] || user.role);
+  const statusEl = document.getElementById('acctStatus');
+  statusEl.textContent = STATUS_LABELS_AR[user.status] || user.status;
+  statusEl.className = `badge ${STATUS_BADGE_COLOR[user.status] || 'gray'}`;
+}
+
+function syncThemeButtons() {
+  const isDark = getEffectiveTheme() === 'dark';
+  document.getElementById('btnThemeLight').classList.toggle('active-choice', !isDark);
+  document.getElementById('btnThemeDark').classList.toggle('active-choice', isDark);
 }
 
 const RECORD_LABELS_AR = {

@@ -180,7 +180,7 @@ function renderSimpleHeadline(summary, reconciliation, declining) {
     ['📊 إجمالي المخزون الحالي', summary.totalUnitsAvailable],
   ];
   document.getElementById('simpleHeadline').innerHTML = tiles
-    .map(([label, value]) => `<div class="stat-tile"><div class="label">${label}</div><div class="value">${value}</div></div>`)
+    .map(([label, value]) => UI.statTile(label, value))
     .join('');
 }
 

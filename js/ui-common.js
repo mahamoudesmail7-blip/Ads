@@ -12,20 +12,45 @@
 // Every one of those codes/sentences is translated to Arabic ONLY here, at
 // the point of rendering. No business-logic file is touched by this file.
 
+// Minimal stroke-based line icons (Feather/Lucide-style), embedded inline —
+// no external icon font/CDN, matching this project's zero-dependency rule.
+// Purely decorative replacements for the old emoji icons; NAV_ITEMS' key/
+// href/label are untouched, so nothing that reads them (role filtering,
+// active-state matching, routing) is affected.
+const ICON_PATHS = {
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/>',
+  tasks: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+  work: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+  manager: '<path d="M2 20h20"/><path d="M4 20l1.5-11L9 14l3-9 3 9 3.5-5L20 20"/>',
+  inventory: '<path d="M21 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v2"/><path d="M3 8l1.4 11.2A2 2 0 0 0 6.38 21h11.24a2 2 0 0 0 1.98-1.8L21 8"/><path d="M9 12h6"/>',
+  products: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
+  entry: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/>',
+  alerts: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  compare: '<path d="M8 3L4 7l4 4"/><path d="M4 7h16"/><path d="M16 21l4-4-4-4"/><path d="M20 17H4"/>',
+  ranking: '<path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-3.4-3.4L4.5 15.6"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.7.36 1.51.55 1.51 1.51z"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  test: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+};
+
+function navIcon(name) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name] || ''}</svg>`;
+}
+
 export const NAV_ITEMS = [
-  { key: 'dashboard', href: 'index.html', label: 'نظرة سريعة', icon: '📊' },
-  { key: 'tasks', href: 'tasks.html', label: 'تاسكات اليوم', icon: '🎯' },
-  { key: 'work', href: 'work.html', label: 'الشغل اللي هيتعمل', icon: '🛠️' },
-  { key: 'manager', href: 'manager.html', label: 'تحكم المدير', icon: '👑' },
-  { key: 'inventory', href: 'inventory.html', label: 'إدارة المخزون', icon: '🏭' },
-  { key: 'products', href: 'products.html', label: 'المنتجات', icon: '📦' },
-  { key: 'entry', href: 'entry.html', label: 'إدخال الأوردرات', icon: '📝' },
-  { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: '🔔' },
-  { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: '⚖️' },
-  { key: 'ranking', href: 'ranking.html', label: 'ترتيب الربحية', icon: '🏆' },
-  { key: 'settings', href: 'settings.html', label: 'إعدادات النظام', icon: '⚙️' },
-  { key: 'users', href: 'users.html', label: 'إدارة المستخدمين', icon: '👥' },
-  { key: 'test', href: 'test.html', label: 'اختبارات النظام', icon: '✅' },
+  { key: 'dashboard', href: 'index.html', label: 'نظرة سريعة', icon: navIcon('dashboard') },
+  { key: 'tasks', href: 'tasks.html', label: 'تاسكات اليوم', icon: navIcon('tasks') },
+  { key: 'work', href: 'work.html', label: 'الشغل اللي هيتعمل', icon: navIcon('work') },
+  { key: 'manager', href: 'manager.html', label: 'تحكم المدير', icon: navIcon('manager') },
+  { key: 'inventory', href: 'inventory.html', label: 'إدارة المخزون', icon: navIcon('inventory') },
+  { key: 'products', href: 'products.html', label: 'المنتجات', icon: navIcon('products') },
+  { key: 'entry', href: 'entry.html', label: 'إدخال الأوردرات', icon: navIcon('entry') },
+  { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },
+  { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: navIcon('compare') },
+  { key: 'ranking', href: 'ranking.html', label: 'ترتيب الربحية', icon: navIcon('ranking') },
+  { key: 'settings', href: 'settings.html', label: 'إعدادات النظام', icon: navIcon('settings') },
+  { key: 'users', href: 'users.html', label: 'إدارة المستخدمين', icon: navIcon('users') },
+  { key: 'test', href: 'test.html', label: 'اختبارات النظام', icon: navIcon('test') },
 ];
 
 // Nav items hidden per role — 'manager'/'work' need MANAGER or ADMIN,
@@ -68,6 +93,8 @@ export async function renderSidebar(activeKey) {
       <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
       <nav>${NAV_ITEMS.map((i) => `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} ${i.label}</a>`).join('')}</nav>
     `;
+    const { mountThemeToggle } = await import('./theme.js');
+    mountThemeToggle();
     return;
   }
 
@@ -82,18 +109,101 @@ export async function renderSidebar(activeKey) {
     <nav>${visibleItems.map(
       (i) => `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} ${i.label}</a>`
     ).join('')}</nav>
-    <div class="sidebar-user" style="margin-top:auto; padding:14px 16px; border-top:1px solid var(--border); font-size:12.5px;">
-      <div>${escapeHtml(user.name)}</div>
-      <div class="faint">${ROLE_LABELS_AR[user.role] || user.role}</div>
-      <a href="#" id="sidebarLogout" style="display:inline-block; margin-top:6px;">🚪 تسجيل خروج</a>
+    <div class="sidebar-user">
+      <div class="sidebar-user-name">${escapeHtml(user.name)}</div>
+      <div class="sidebar-user-role">${ROLE_LABELS_AR[user.role] || user.role}</div>
+      <button type="button" id="sidebarLogout" class="sidebar-logout-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        تسجيل الخروج
+      </button>
     </div>
   `;
 
-  document.getElementById('sidebarLogout')?.addEventListener('click', async (e) => {
-    e.preventDefault();
-    await api.post('/api/auth/logout');
-    location.href = 'login.html';
+  const { mountThemeToggle } = await import('./theme.js');
+  mountThemeToggle();
+
+  document.getElementById('sidebarLogout')?.addEventListener('click', logout);
+}
+
+/**
+ * Small themed yes/no dialog (dynamically mounted — no per-page HTML
+ * needed, unlike the existing inline task/permissions modals). Resolves
+ * `true` on confirm, `false` on cancel/Escape/backdrop click.
+ */
+export function confirmModal({ title = '', message = '', confirmLabel = 'تأكيد', cancelLabel = 'إلغاء', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-modal-overlay';
+    overlay.innerHTML = `
+      <div class="card confirm-modal-card">
+        ${title ? `<div class="section-title" style="margin-top:0;">${escapeHtml(title)}</div>` : ''}
+        <p class="muted" style="margin:0 0 18px;">${escapeHtml(message)}</p>
+        <div class="toolbar" style="justify-content:flex-end;">
+          <button type="button" class="btn secondary" data-action="cancel">${escapeHtml(cancelLabel)}</button>
+          <button type="button" class="btn ${danger ? 'danger' : ''}" data-action="confirm">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const close = (result) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    };
+    function onKey(e) {
+      if (e.key === 'Escape') close(false);
+    }
+    overlay.querySelector('[data-action="cancel"]').onclick = () => close(false);
+    overlay.querySelector('[data-action="confirm"]').onclick = () => close(true);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener('keydown', onKey);
   });
+}
+
+/**
+ * The one place logout actually happens — called from the sidebar button
+ * AND the Settings → الحساب section, so both stay in sync automatically.
+ * Confirms first (spec: "Confirmation Dialog قبل الخروج"), then hits the
+ * real /api/auth/logout endpoint (clears the httpOnly session cookie
+ * server-side) before redirecting — never just a client-side redirect.
+ */
+export async function logout() {
+  const ok = await confirmModal({
+    title: '🚪 تسجيل الخروج',
+    message: 'هل أنت متأكد أنك تريد تسجيل الخروج؟',
+    confirmLabel: 'تسجيل الخروج',
+    cancelLabel: 'إلغاء',
+    danger: true,
+  });
+  if (!ok) return;
+  const { api } = await import('./api-client.js');
+  await api.post('/api/auth/logout');
+  location.href = 'login.html';
+}
+
+// ---------------------------------------------------------------------------
+// Stat tiles — one shared renderer for the `.stat-tile` cards used across
+// manager.js/work.js/inventory-page.js/product-details.js/tasks.js. Most of
+// those labels already carry a hand-chosen leading emoji (e.g. "⏳ متبقي") —
+// this pulls that same emoji into the new `.stat-tile-icon` box instead of
+// inventing a new icon-lookup table, so the icon is still 100% real,
+// already-existing information, just repositioned. Labels with no leading
+// emoji simply render without an icon box (never a fabricated one).
+// ---------------------------------------------------------------------------
+
+const LEADING_EMOJI_RE = /^(\p{Extended_Pictographic}️?)\s*/u;
+
+/** @param {string} label @param {string|number} value @param {{colorClass?:string, fontSize?:string}} [opts] */
+export function statTile(label, value, opts = {}) {
+  const match = label.match(LEADING_EMOJI_RE);
+  const icon = match ? match[1] : null;
+  const text = match ? label.slice(match[0].length) : label;
+  const valueStyle = opts.fontSize ? ` style="font-size:${opts.fontSize}"` : '';
+  return `<div class="stat-tile">
+    ${icon ? `<div class="stat-tile-icon">${icon}</div>` : ''}
+    <div class="label">${text}</div>
+    <div class="value${opts.colorClass ? ' ' + opts.colorClass : ''}"${valueStyle}>${value}</div>
+  </div>`;
 }
 
 // ---------------------------------------------------------------------------

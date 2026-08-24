@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>تحكم المدير — نظام مراقبة المنتجات</title>
+<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -16,14 +17,15 @@
           <div class="subtitle" id="dateLabel">—</div>
         </div>
         <div class="toolbar">
+          <button class="btn" id="btnAddTask">➕ إضافة Task</button>
+          <button class="btn secondary small" id="btnMaterialize">🔄 تحديث المهام التلقائية</button>
+          <input type="date" id="asOfDatePicker" class="ltr" style="width:auto" />
           <button class="btn secondary small" id="btnToday">اليوم</button>
           <button class="btn secondary small" id="btnYesterday">أمس</button>
-          <input type="date" id="asOfDatePicker" class="ltr" style="width:auto" />
-          <button class="btn secondary small" id="btnMaterialize">🔄 تحديث المهام التلقائية</button>
-          <button class="btn" id="btnAddTask">➕ إضافة Task</button>
           <button class="btn secondary small" id="btnManagerReport">📋 تقرير تحكم المدير</button>
           <button class="btn secondary small" id="btnActivityLog">📜 سجل تحكم المدير</button>
         </div>
+        <input type="text" id="searchTask" placeholder="🔎 ابحث عن مهمة، منتج، موظف، تفاصيل..." style="max-width:260px" />
       </div>
 
       <div class="stat-grid" id="summaryTiles"></div>

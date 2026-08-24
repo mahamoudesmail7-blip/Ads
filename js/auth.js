@@ -4,14 +4,28 @@
 // page (register.html) — every new signup is PENDING until the Owner
 // approves it, so login.html no longer has a "first user becomes Admin"
 // bootstrap path (that already happened once, for real, and won't recur).
+import { mountThemeToggle } from './theme.js';
+
 const params = new URLSearchParams(location.search);
 const next = params.get('next') || 'index.html';
 
-function init() {
+async function init() {
+  mountThemeToggle();
   document.getElementById('btnLogin').onclick = submit;
   document.getElementById('fPassword').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submit();
   });
+
+  // A raw fetch, not api-client's wrapper — its global 401 handler is built
+  // to redirect AWAY from login.html on failure, not to be called FROM it;
+  // here a 401 is the expected/normal case (nobody logged in yet) and must
+  // just fall through to showing the form, not trigger any redirect.
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'include' });
+    if (res.ok) location.href = next;
+  } catch {
+    // Backend unreachable — let the user try the form; submit() will surface the real error.
+  }
 }
 
 async function submit() {

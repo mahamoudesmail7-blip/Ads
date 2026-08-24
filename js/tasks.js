@@ -188,9 +188,7 @@ function renderSummary() {
     { label: '⚠️ متأخر من أمس', value: carriedOver.length, cls: carriedOver.length > 0 ? 'red' : '' },
     { label: '🔴 عاجل', value: urgent, cls: urgent > 0 ? 'red' : '' },
   ];
-  document.getElementById('summaryTiles').innerHTML = tiles
-    .map((t) => `<div class="stat-tile"><div class="label">${t.label}</div><div class="value ${t.cls || ''}">${t.value}</div></div>`)
-    .join('');
+  document.getElementById('summaryTiles').innerHTML = tiles.map((t) => UI.statTile(t.label, t.value, { colorClass: t.cls })).join('');
 }
 
 // ---------------------------------------------------------------------------

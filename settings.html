@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>إعدادات النظام — نظام مراقبة المنتجات</title>
+<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -14,6 +15,34 @@
         <div>
           <h1>⚙️ إعدادات النظام</h1>
           <div class="subtitle">الحدود التي يعتمد عليها النظام في تصنيف أداء المنتجات وسلوكه — قابلة للتعديل بالكامل</div>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:640px; margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">👤 الحساب</div>
+        <div class="account-row">
+          <div class="account-avatar" id="acctAvatar">؟</div>
+          <div>
+            <div class="account-name" id="acctName">—</div>
+            <div class="account-email mono" id="acctEmail">—</div>
+            <div class="account-meta">
+              <span class="badge gray" id="acctRole">—</span>
+              <span class="badge green" id="acctStatus">—</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn danger" id="btnAccountLogout">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px; margin-inline-end:6px;"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          تسجيل الخروج
+        </button>
+      </div>
+
+      <div class="card" style="max-width:640px; margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0">🎨 المظهر</div>
+        <p class="muted" style="font-size:13px; margin-top:0;">اختيارك بيتحفظ في المتصفح ده ويفضل شغال بعد أي تحديث للصفحة.</p>
+        <div class="toolbar">
+          <button class="btn secondary" id="btnThemeLight">☀️ فاتح</button>
+          <button class="btn secondary" id="btnThemeDark">🌙 داكن</button>
         </div>
       </div>
 

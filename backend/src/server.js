@@ -67,6 +67,17 @@ app.use((req, res, next) => {
   if (/^\/(backend|\.git|\.env)/i.test(req.path)) return res.status(404).end();
   next();
 });
+// no-store (not just no-cache): during active development the browser was
+// observed serving a stale cached module/stylesheet even right after a
+// fresh navigation — same issue already hit once with server.ps1's static
+// serving. no-store forbids caching the response at all, which is the
+// right trade-off for a tool where "did my edit actually apply?" must
+// always be true.
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  next();
+});
 app.use(express.static(FRONTEND_ROOT, { extensions: ['html'], cacheControl: false }));
 
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

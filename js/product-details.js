@@ -77,9 +77,7 @@ async function init() {
     { label: 'الاتجاه الحالي', value: UI.trendLabel(a.trend) },
     { label: 'الحالة', value: UI.statusBadge(a.status) },
   ];
-  document.getElementById('statTiles').innerHTML = tiles
-    .map((t) => `<div class="stat-tile"><div class="label">${t.label}</div><div class="value" style="font-size:18px">${t.value}</div></div>`)
-    .join('');
+  document.getElementById('statTiles').innerHTML = tiles.map((t) => UI.statTile(t.label, t.value, { fontSize: '18px' })).join('');
 
   // --- Financial (V2) ---
   const financialTiles = [
@@ -95,7 +93,7 @@ async function init() {
     { label: 'تقييم المنتج', value: score ? `${score.score}/100 — ${UI.scoreLabelAr(score.label)}` : 'البيانات غير متوفرة' },
   ];
   document.getElementById('financialTiles').innerHTML = financialTiles
-    .map((t) => `<div class="stat-tile"><div class="label">${t.label}</div><div class="value" style="font-size:16px">${t.value}</div></div>`)
+    .map((t) => UI.statTile(t.label, t.value, { fontSize: '16px' }))
     .join('');
 
   // --- Inventory (V2) ---
@@ -112,7 +110,7 @@ async function init() {
       ]
     : [{ label: 'المخزون', value: 'غير متتبَّع لهذا المنتج' }];
   document.getElementById('inventoryTiles').innerHTML = inventoryTiles
-    .map((t) => `<div class="stat-tile"><div class="label">${t.label}</div><div class="value" style="font-size:16px">${t.value}</div></div>`)
+    .map((t) => UI.statTile(t.label, t.value, { fontSize: '16px' }))
     .join('');
 
   // --- Charts ---
