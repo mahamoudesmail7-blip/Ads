@@ -59,14 +59,25 @@ async function loadRealOrderData(orderId) {
   };
 }
 
+/** Merges the human correction layer (LostOrder.override_*) over the real EasyOrders values — override wins when set, since a human explicitly fixed it (e.g. a real order's address arrived incomplete). Both stay visible separately in the detail response so the original is never lost. */
+function effectiveCustomer(lostOrder, realData) {
+  return {
+    name: lostOrder.override_customer_name || realData?.customerName || null,
+    phone: lostOrder.override_customer_phone || realData?.customerPhone || null,
+    address: lostOrder.override_customer_address || realData?.customerAddress || null,
+    government: lostOrder.override_customer_government || realData?.customerGovernment || null,
+  };
+}
+
 function summarizeForList(lostOrder, realData) {
+  const eff = effectiveCustomer(lostOrder, realData);
   return {
     id: lostOrder.id,
     orderId: lostOrder.order_id,
     shortId: realData?.shortId ?? null,
-    customerName: realData?.customerName ?? null,
-    customerPhone: realData?.customerPhone ?? null,
-    customerGovernment: realData?.customerGovernment ?? null,
+    customerName: eff.name,
+    customerPhone: eff.phone,
+    customerGovernment: eff.government,
     productNames: realData?.items.map((i) => i.productName) ?? [],
     orderCreatedAt: realData?.orderCreatedAt ?? null,
     lostDetectedAt: lostOrder.detected_at,
@@ -196,6 +207,13 @@ router.get(
       manualReason: lostOrder.manual_reason,
       lostDetectedAt: lostOrder.detected_at,
       realOrder: realData,
+      customerOverride: {
+        name: lostOrder.override_customer_name,
+        phone: lostOrder.override_customer_phone,
+        address: lostOrder.override_customer_address,
+        government: lostOrder.override_customer_government,
+      },
+      effectiveCustomer: effectiveCustomer(lostOrder, realData),
       notes: lostOrder.notes.map((n) => ({ id: n.id, text: n.text, author: n.author?.name || null, createdAt: n.created_at })),
       history: lostOrder.history.map((h) => ({ id: h.id, action: h.action, detail: h.detail, actor: h.actor?.name || null, createdAt: h.created_at })),
     });
@@ -222,6 +240,35 @@ router.patch(
       },
     });
     res.json({ id: updated.id, processingStatus: updated.processing_status, processingStatusLabel: STATUS_LABELS_AR[updated.processing_status] });
+  })
+);
+
+// Local correction only — EasyOrders' API has no way to push an edited
+// address/phone/etc back to them (confirmed: no such endpoint exists). This
+// just overrides what WE display and what prefills the replacement-order
+// form; the original EasyOrdersOrder customer fields are left untouched.
+router.patch(
+  '/:id/customer',
+  asyncRoute(async (req, res) => {
+    const { name, phone, address, government } = req.body || {};
+    const lostOrder = await prisma.lostOrder.findUnique({ where: { id: Number(req.params.id) } });
+    if (!lostOrder) return res.status(404).json({ error: 'NOT_FOUND', message: 'الأوردر المفقود ده مش موجود.' });
+
+    const updated = await prisma.lostOrder.update({
+      where: { id: lostOrder.id },
+      data: {
+        override_customer_name: name?.trim() || null,
+        override_customer_phone: phone?.trim() || null,
+        override_customer_address: address?.trim() || null,
+        override_customer_government: government?.trim() || null,
+      },
+    });
+    await prisma.lostOrderHistory.create({
+      data: { lost_order_id: lostOrder.id, action: 'CUSTOMER_EDITED', detail: 'تم تعديل بيانات العميل يدويًا', actor_id: req.user.id },
+    });
+
+    const realData = await loadRealOrderData(updated.order_id);
+    res.json({ customerOverride: { name: updated.override_customer_name, phone: updated.override_customer_phone, address: updated.override_customer_address, government: updated.override_customer_government }, effectiveCustomer: effectiveCustomer(updated, realData) });
   })
 );
 

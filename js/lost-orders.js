@@ -206,13 +206,29 @@ function renderDrawer(data) {
       <button class="btn secondary small" id="btnCloseDrawer">✕</button>
     </div>
 
-    <div class="section-title" style="margin-top:0; font-size:13px;">👤 بيانات العميل الحقيقية</div>
-    <div style="font-size:13.5px; line-height:2;">
-      <div><b>الاسم:</b> ${UI.escapeHtml(r?.customerName || '—')}</div>
-      <div><b>الهاتف:</b> <span class="mono ltr">${UI.escapeHtml(r?.customerPhone || '—')}</span></div>
-      <div><b>المحافظة:</b> ${UI.escapeHtml(r?.customerGovernment || '—')}</div>
-      <div><b>العنوان:</b> ${UI.escapeHtml(r?.customerAddress || '—')}</div>
+    <div class="section-title" style="margin-top:0; font-size:13px;">👤 بيانات العميل ${data.customerOverride?.name || data.customerOverride?.phone || data.customerOverride?.address || data.customerOverride?.government ? '<span class="badge yellow">معدّلة يدويًا</span>' : ''}</div>
+    <div class="field" style="margin-bottom:6px;">
+      <label style="font-size:11.5px;">الاسم</label>
+      <input type="text" id="custName" value="${UI.escapeHtml(data.effectiveCustomer.name || '')}" />
     </div>
+    <div class="field" style="margin-bottom:6px;">
+      <label style="font-size:11.5px;">الهاتف</label>
+      <input type="text" id="custPhone" class="ltr" value="${UI.escapeHtml(data.effectiveCustomer.phone || '')}" />
+    </div>
+    <div class="field" style="margin-bottom:6px;">
+      <label style="font-size:11.5px;">المحافظة</label>
+      <input type="text" id="custGovernment" value="${UI.escapeHtml(data.effectiveCustomer.government || '')}" />
+    </div>
+    <div class="field" style="margin-bottom:6px;">
+      <label style="font-size:11.5px;">العنوان بالكامل</label>
+      <input type="text" id="custAddress" value="${UI.escapeHtml(data.effectiveCustomer.address || '')}" />
+    </div>
+    <button class="btn secondary small" id="btnSaveCustomer" style="margin-bottom:6px;">💾 حفظ بيانات العميل</button>
+    ${
+      r && (data.customerOverride?.name || data.customerOverride?.phone || data.customerOverride?.address || data.customerOverride?.government)
+        ? `<div class="faint" style="font-size:11.5px; margin-bottom:10px;">القيم الأصلية من EasyOrders: ${UI.escapeHtml(r.customerName || '—')} — ${UI.escapeHtml(r.customerPhone || '—')} — ${UI.escapeHtml(r.customerGovernment || '—')} — ${UI.escapeHtml(r.customerAddress || '—')}</div>`
+        : ''
+    }
 
     <div class="section-title" style="font-size:13px;">📦 المنتجات</div>
     <div style="font-size:13.5px; line-height:1.9; margin-bottom:10px;">
@@ -253,6 +269,16 @@ function renderDrawer(data) {
   `;
 
   document.getElementById('btnCloseDrawer').onclick = closeDrawer;
+  document.getElementById('btnSaveCustomer').onclick = async () => {
+    await api.patch(`/api/lost-orders/${data.id}/customer`, {
+      name: document.getElementById('custName').value,
+      phone: document.getElementById('custPhone').value,
+      government: document.getElementById('custGovernment').value,
+      address: document.getElementById('custAddress').value,
+    });
+    UI.toast('✅ اتحفظت بيانات العميل');
+    await refreshAfterChange(data.id);
+  };
   document.getElementById('drawerStatusSelect').onchange = async (e) => {
     await api.patch(`/api/lost-orders/${data.id}/status`, { status: e.target.value });
     UI.toast('تم تحديث الحالة');
@@ -280,10 +306,11 @@ let replacementLostOrderId = null;
 function openReplacementModal(data) {
   replacementLostOrderId = data.id;
   const r = data.realOrder;
-  document.getElementById('repName').value = r?.customerName || '';
-  document.getElementById('repPhone').value = r?.customerPhone || '';
-  document.getElementById('repGovernment').value = r?.customerGovernment || '';
-  document.getElementById('repAddress').value = r?.customerAddress || '';
+  const eff = data.effectiveCustomer; // prefer the corrected data (if edited) so the replacement order gets the complete/fixed address
+  document.getElementById('repName').value = eff.name || '';
+  document.getElementById('repPhone').value = eff.phone || '';
+  document.getElementById('repGovernment').value = eff.government || '';
+  document.getElementById('repAddress').value = eff.address || '';
   document.getElementById('repProducts').textContent = (r?.items || []).map((i) => `${i.productName} × ${i.quantity}`).join('، ') || '—';
   document.getElementById('loReplacementStatus').style.display = 'none';
   document.getElementById('loReplacementOverlay').style.display = 'flex';

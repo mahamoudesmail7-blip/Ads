@@ -160,6 +160,15 @@ model LostOrder {
   replacement_order_id  String? // set once a real replacement order exists in EasyOrders (feature currently blocked — see conversation)
   source                String   @default("AUTO") // AUTO (real status == returning_from_delivery) | MANUAL (a human flagged it — e.g. EasyOrders' own "تحت المراجعة" dashboard flag, which their public API never exposes)
   manual_reason         String? // required when source == MANUAL — why a human is flagging an order the API itself shows no problem with
+  // Human correction layer — EasyOrders has no API to push an edited
+  // address/phone back to them, so this is a LOCAL override only: the
+  // original EasyOrdersOrder customer fields stay untouched (real record of
+  // what EasyOrders actually sent), and these take precedence for display
+  // and for prefilling the replacement-order form when set.
+  override_customer_name       String?
+  override_customer_phone      String?
+  override_customer_address    String?
+  override_customer_government String?
   detected_at           DateTime @default(now())
   created_at            DateTime @default(now())
   updated_at            DateTime @updatedAt
@@ -190,7 +199,7 @@ model LostOrderHistory {
   id            Int       @id @default(autoincrement())
   lost_order_id Int
   lostOrder     LostOrder @relation(fields: [lost_order_id], references: [id], onDelete: Cascade)
-  action        String // DETECTED | STATUS_CHANGED | NOTE_ADDED
+  action        String // DETECTED | STATUS_CHANGED | NOTE_ADDED | CUSTOMER_EDITED
   detail        String?
   actor_id      Int?
   actor         User?     @relation(fields: [actor_id], references: [id], onDelete: SetNull)
