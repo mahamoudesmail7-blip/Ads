@@ -158,6 +158,8 @@ model LostOrder {
   order_id              String   @unique
   processing_status     String   @default("NEW") // NEW | PROCESSING | CONTACTED | CUSTOMER_APPROVED | CUSTOMER_REJECTED | REPLACEMENT_CREATED | CLOSED
   replacement_order_id  String? // set once a real replacement order exists in EasyOrders (feature currently blocked — see conversation)
+  source                String   @default("AUTO") // AUTO (real status == returning_from_delivery) | MANUAL (a human flagged it — e.g. EasyOrders' own "تحت المراجعة" dashboard flag, which their public API never exposes)
+  manual_reason         String? // required when source == MANUAL — why a human is flagging an order the API itself shows no problem with
   detected_at           DateTime @default(now())
   created_at            DateTime @default(now())
   updated_at            DateTime @updatedAt

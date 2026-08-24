@@ -107,6 +107,15 @@ export async function fetchOrderById(orderId) {
   return res.json();
 }
 
+/** Same as fetchOrderById but by the human-friendly short_id (e.g. 2169 / "#2169") — what a human actually has on hand, unlike the internal UUID. Used by the Lost Orders "add manually" flow. */
+export async function fetchOrderByShortId(shortId) {
+  const apiKey = process.env.EASYORDERS_API_KEY;
+  if (!apiKey) return null;
+  const res = await fetch(`${EASYORDERS_API_BASE}/orders/short/${shortId}`, { headers: { 'Api-Key': apiKey } });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 /** Applies a new status to every EasyOrdersOrder row tracked for one order_id, then recomputes every (product, date) touched. Shared by the webhook's order-status-update handler and the reconciliation job so both apply a status change identically. Returns both counts since the reconciliation job needs to know whether anything actually changed, not just how many rows exist. */
 export async function applyStatusToOrder(orderId, rawStatus) {
   const status = normalizeStatus(rawStatus);

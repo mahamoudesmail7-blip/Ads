@@ -17,8 +17,27 @@ export async function ensureLostOrderTracking(orderId) {
   const existing = await prisma.lostOrder.findUnique({ where: { order_id: orderId } });
   if (existing) return; // already tracked — never re-create or reset an existing processing state
 
-  const lostOrder = await prisma.lostOrder.create({ data: { order_id: orderId, processing_status: 'NEW' } });
+  const lostOrder = await prisma.lostOrder.create({ data: { order_id: orderId, processing_status: 'NEW', source: 'AUTO' } });
   await prisma.lostOrderHistory.create({
     data: { lost_order_id: lostOrder.id, action: 'DETECTED', detail: 'تم اكتشاف الأوردر كمفقود تلقائيًا (الحالة الحقيقية من EasyOrders: راجع من التوصيل)' },
   });
+}
+
+/**
+ * Manual counterpart to ensureLostOrderTracking, for a real problem
+ * EasyOrders' public API cannot signal at all — confirmed case: their
+ * dashboard's "تحت المراجعة" (Under Review) data-validation flag has no
+ * field anywhere in the API response (checked every key on a real order).
+ * A human noticing the real problem and providing a real reason is the
+ * only way this class of order can enter the same workflow.
+ */
+export async function createManualLostOrder(orderId, reason, actorId) {
+  const existing = await prisma.lostOrder.findUnique({ where: { order_id: orderId } });
+  if (existing) return existing;
+
+  const lostOrder = await prisma.lostOrder.create({ data: { order_id: orderId, processing_status: 'NEW', source: 'MANUAL', manual_reason: reason } });
+  await prisma.lostOrderHistory.create({
+    data: { lost_order_id: lostOrder.id, action: 'DETECTED', detail: `أُضيف يدويًا: ${reason}`, actor_id: actorId },
+  });
+  return lostOrder;
 }

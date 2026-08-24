@@ -55,12 +55,49 @@ async function init() {
   });
   document.getElementById('btnCancelReplacement').onclick = closeReplacementModal;
   document.getElementById('btnConfirmReplacement').onclick = confirmReplacement;
+  document.getElementById('btnManualAdd').onclick = openManualAddModal;
+  document.getElementById('btnCancelManualAdd').onclick = closeManualAddModal;
+  document.getElementById('btnConfirmManualAdd').onclick = confirmManualAdd;
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeDrawer();
       closeReplacementModal();
+      closeManualAddModal();
     }
   });
+  await load();
+}
+
+function openManualAddModal() {
+  document.getElementById('manualOrderNumber').value = '';
+  document.getElementById('manualReason').value = '';
+  document.getElementById('loManualAddStatus').style.display = 'none';
+  document.getElementById('loManualAddOverlay').style.display = 'flex';
+}
+
+function closeManualAddModal() {
+  document.getElementById('loManualAddOverlay').style.display = 'none';
+}
+
+async function confirmManualAdd() {
+  const orderNumber = document.getElementById('manualOrderNumber').value.trim();
+  const reason = document.getElementById('manualReason').value.trim();
+  const statusEl = document.getElementById('loManualAddStatus');
+  if (!orderNumber || !reason) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = 'لازم تحط رقم الأوردر والسبب.';
+    return;
+  }
+  statusEl.style.display = 'block';
+  statusEl.textContent = 'بيدوّر على الأوردر في EasyOrders...';
+  try {
+    await api.post('/api/lost-orders/manual-add', { orderNumber, reason });
+  } catch (err) {
+    statusEl.textContent = `⚠️ ${err.message}`;
+    return;
+  }
+  UI.toast('✅ اتضاف بنجاح');
+  closeManualAddModal();
   await load();
 }
 
@@ -164,6 +201,7 @@ function renderDrawer(data) {
       <div>
         <div class="drawer-title">${r?.shortId ? '#' + r.shortId : data.orderId.slice(0, 8) + '…'}</div>
         <div class="drawer-meta">تم اكتشافه كمفقود: ${new Date(data.lostDetectedAt).toLocaleString('ar-EG')}</div>
+        ${data.source === 'MANUAL' ? `<div class="drawer-meta" style="margin-top:4px;"><span class="badge gray">أُضيف يدويًا</span> ${UI.escapeHtml(data.manualReason || '')}</div>` : ''}
       </div>
       <button class="btn secondary small" id="btnCloseDrawer">✕</button>
     </div>

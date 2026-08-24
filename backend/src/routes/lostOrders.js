@@ -11,6 +11,8 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { prisma } from '../prisma.js';
+import { fetchOrderById, fetchOrderByShortId, ingestOrder } from '../services/easyOrders.js';
+import { createManualLostOrder } from '../services/lostOrders.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -71,6 +73,8 @@ function summarizeForList(lostOrder, realData) {
     processingStatus: lostOrder.processing_status,
     processingStatusLabel: STATUS_LABELS_AR[lostOrder.processing_status],
     replacementOrderId: lostOrder.replacement_order_id,
+    source: lostOrder.source,
+    manualReason: lostOrder.manual_reason,
   };
 }
 
@@ -140,6 +144,35 @@ router.get(
   })
 );
 
+// Manual add — for a real problem EasyOrders' public API cannot signal at
+// all (confirmed case: their dashboard-only "تحت المراجعة" data-validation
+// flag has no field anywhere in the API response). Still 100% real order
+// data — pulled live via their Get-Order-By-(Short-)ID API — only the
+// *reason* for flagging it is a human observation rather than a status the
+// API exposed.
+router.post(
+  '/manual-add',
+  asyncRoute(async (req, res) => {
+    const { orderNumber, reason } = req.body || {};
+    const trimmedReason = (reason || '').trim();
+    const trimmedNumber = (orderNumber || '').trim();
+    if (!trimmedNumber || !trimmedReason) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'رقم الأوردر والسبب مطلوبين.' });
+    }
+
+    const order = /^\d+$/.test(trimmedNumber) ? await fetchOrderByShortId(trimmedNumber) : await fetchOrderById(trimmedNumber);
+    if (!order) {
+      return res.status(404).json({ error: 'NOT_FOUND', message: 'مقدرش ألاقي الأوردر ده على EasyOrders — تأكد من الرقم.' });
+    }
+
+    const alreadyTracked = await prisma.easyOrdersOrder.findFirst({ where: { order_id: order.id } });
+    if (!alreadyTracked) await ingestOrder(order); // first time we've ever seen this order — pull it in with the same real ingest path the webhook uses
+
+    const lostOrder = await createManualLostOrder(order.id, trimmedReason, req.user.id);
+    res.status(201).json({ id: lostOrder.id, orderId: lostOrder.order_id, shortId: order.short_id });
+  })
+);
+
 router.get(
   '/:id',
   asyncRoute(async (req, res) => {
@@ -159,6 +192,8 @@ router.get(
       processingStatus: lostOrder.processing_status,
       processingStatusLabel: STATUS_LABELS_AR[lostOrder.processing_status],
       replacementOrderId: lostOrder.replacement_order_id,
+      source: lostOrder.source,
+      manualReason: lostOrder.manual_reason,
       lostDetectedAt: lostOrder.detected_at,
       realOrder: realData,
       notes: lostOrder.notes.map((n) => ({ id: n.id, text: n.text, author: n.author?.name || null, createdAt: n.created_at })),
