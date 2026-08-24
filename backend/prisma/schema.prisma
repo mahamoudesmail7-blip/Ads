@@ -73,6 +73,7 @@ model Product {
   task_records       TaskRecord[]
   inventory_snapshots InventorySnapshot[]
   inventory_movement InventoryMovementLog[]
+  easyorders_orders  EasyOrdersOrder[]
 
   @@index([active])
   @@index([product_name])
@@ -97,6 +98,37 @@ model DailyOrder {
   @@unique([product_id, date])
   @@index([date])
   @@map("daily_orders")
+}
+
+// One row per (EasyOrders order, cart item) — NOT the same shape as
+// DailyOrder (which only holds an aggregate count). This table is what lets
+// a later "order-status-update" webhook (which carries only an order_id, no
+// product info) find and correct the right DailyOrder row: look up every
+// EasyOrdersOrder row for that order_id, update their status, then
+// recompute the DailyOrder aggregate for each (product_id, date) touched.
+// @@unique on (order_id, cart_item_id) makes the webhook handler safe to
+// re-run on a retried/duplicate delivery — same design goal as
+// DailyOrder's own (product_id, date) uniqueness.
+model EasyOrdersOrder {
+  id            Int      @id @default(autoincrement())
+  order_id      String
+  cart_item_id  String
+  product_id    Int?
+  product       Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  sku           String?
+  date          String
+  status        String // normalized: PENDING | CONFIRMED | DELIVERED | RETURNED | CANCELLED
+  raw_status    String?
+  quantity      Int      @default(1)
+  matched       Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([order_id, cart_item_id])
+  @@index([date])
+  @@index([product_id])
+  @@index([order_id])
+  @@map("easyorders_orders")
 }
 
 model Settings {
