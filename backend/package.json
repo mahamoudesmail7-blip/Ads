@@ -26,10 +26,8 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "prisma": "^5.20.0",
     "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "prisma": "^5.20.0"
   },
   "allowScripts": {
     "@prisma/client@5.22.0": true,
