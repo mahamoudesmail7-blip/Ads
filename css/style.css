@@ -729,3 +729,38 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
      reliably clear of any page's header content, on every page. */
   .theme-toggle-fixed { top: auto; bottom: 16px; }
 }
+
+/* ---------------- Easy Orders section (new, additive only) ----------------
+   New class names, all prefixed .eo- to stay clearly scoped to this one
+   page — nothing here overrides or is read by any existing rule/page. */
+
+.eo-text-green { color: var(--green); }
+.eo-text-red { color: var(--red); }
+.eo-text-gray { color: var(--gray); }
+
+.eo-bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.eo-bar-row:last-child { margin-bottom: 0; }
+.eo-bar-label { width: 90px; flex-shrink: 0; font-size: 13px; color: var(--text-dim); }
+.eo-bar-track { flex: 1; height: 14px; background: var(--bg-elevated); border-radius: 999px; overflow: hidden; }
+.eo-bar-fill { height: 100%; border-radius: 999px; }
+.eo-bar-fill.accent { background: var(--accent); }
+.eo-bar-fill.gray { background: var(--gray); }
+.eo-bar-value { width: 44px; flex-shrink: 0; text-align: end; font-weight: 700; font-family: 'Cascadia Code', Consolas, monospace; }
+#eoCompareNote { margin-top: 14px; font-size: 14px; font-weight: 600; }
+
+.eo-top-row { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.eo-top-row:last-child { border-bottom: none; }
+.eo-top-rank { width: 32px; flex-shrink: 0; font-weight: 700; color: var(--accent); font-size: 15px; }
+.eo-top-info { flex: 1; min-width: 0; }
+.eo-top-name { font-weight: 600; font-size: 13.5px; margin-bottom: 3px; }
+.eo-top-meta { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+
+.eo-task-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.eo-task-row:last-child { border-bottom: none; }
+.eo-task-row input[type="checkbox"] { flex-shrink: 0; }
+.eo-task-text { flex: 1; }
+.eo-task-text.done { text-decoration: line-through; color: var(--text-faint); }
+
+@media (max-width: 900px) {
+  .eo-bar-label { width: 60px; font-size: 12px; }
+}
