@@ -116,6 +116,7 @@ model EasyOrdersOrder {
   product_id    Int?
   product       Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
   sku           String?
+  product_name_raw String? // EasyOrders' own product name, kept even when matched==false so the UI always has a real name to show — never a fabricated placeholder for an unmatched order.
   date          String
   status        String // normalized: PENDING | CONFIRMED | DELIVERED | RETURNED | CANCELLED
   raw_status    String?

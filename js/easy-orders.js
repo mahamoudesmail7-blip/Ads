@@ -1,48 +1,33 @@
-// easy-orders.js — page controller for the new, self-contained "Easy Orders"
-// section (spec: a minimal, 10-second-read overview for a media buyer —
-// NOT another full analytics dashboard). Deliberately isolated from every
-// other module: it does not import db.js, analytics.js, or task-store.js,
-// and does not write anything to the shared database. All data here is a
-// local, in-memory DEMO dataset (spec section 11) meant to be swapped for
-// the real EasyOrders-sourced data (already flowing into daily_orders via
-// backend/src/routes/webhooks.js) once this UI is approved — that wiring
-// is intentionally left for a later, separate step.
+// easy-orders.js — page controller for the "Easy Orders" section, reading
+// ONLY real data from backend/src/routes/easyorders.js (GET /api/easyorders/summary),
+// which itself reads only rows the real webhook (backend/src/routes/webhooks.js)
+// has written. Nothing in this file invents a number, a product name, or a
+// status — every value rendered here traces back to an actual EasyOrders
+// webhook delivery. Empty data renders as 0 / an empty-state message, never
+// a placeholder value.
+//
+// "Last 7 Days" was dropped from the earlier demo version of this page —
+// the real read endpoint only supports a single day + its prior day (which
+// is what hourly tracking and the real orders list both need); a real
+// multi-day range view is a reasonable follow-up but isn't built here.
 import * as UI from './ui-common.js';
+import { api } from './api-client.js';
 
-// Today's numbers per product. yesterday/dayBefore let the Yesterday/Last-7
-// range chips show genuinely different (if synthetic) numbers instead of
-// just relabeling the same view — still 100% local demo data, replace with
-// a real query once this section reads live data.
-const DEMO_PRODUCTS = [
-  { id: 1, name: 'جهاز قياس نبضات الجنين', today: 30, yesterday: 28, dayBefore: 26 },
-  { id: 2, name: 'جهاز تنظيف الأذن الذكي', today: 18, yesterday: 33, dayBefore: 30 },
-  { id: 3, name: 'فرشاة الأسنان الذكية', today: 12, yesterday: 10, dayBefore: 11 },
-  { id: 4, name: 'جهاز إزالة شعر الوجه', today: 5, yesterday: 18, dayBefore: 17 },
-  { id: 5, name: 'جهاز كشف الكاميرات', today: 0, yesterday: 6, dayBefore: 7 },
-  { id: 6, name: 'جهاز هايفور للتجاعيد', today: 22, yesterday: 20, dayBefore: 19 },
-  { id: 7, name: 'مصباح المنارة الذكي', today: 15, yesterday: 16, dayBefore: 14 },
-];
+const REFRESH_INTERVAL_MS = 15000; // webhook delivery is push-based server-side; this just keeps the open tab in sync without a manual reload.
 
-const DEMO_EMPLOYEES = ['سارة', 'أحمد', 'مريم'];
+let selectedDate = null; // null = today (server decides "today" so it can't drift from the client's clock)
+let refreshTimer = null;
+let loadGeneration = 0; // guards against a stale in-flight request (e.g. from the auto-refresh timer) overwriting a just-requested range switch
 
-const RANGES = {
-  today: { label: 'اليوم', prevLabel: 'أمس', products: DEMO_PRODUCTS.map((p) => ({ id: p.id, name: p.name, current: p.today, previous: p.yesterday })) },
-  yesterday: { label: 'أمس', prevLabel: 'أول أمس', products: DEMO_PRODUCTS.map((p) => ({ id: p.id, name: p.name, current: p.yesterday, previous: p.dayBefore })) },
-  last7: {
-    label: 'آخر 7 أيام',
-    prevLabel: 'الأسبوع اللي قبله',
-    products: DEMO_PRODUCTS.map((p) => ({ id: p.id, name: p.name, current: p.today * 6 + p.yesterday, previous: Math.round((p.today * 6 + p.yesterday) * 1.08) })),
-  },
-};
+function todayUTCDateStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+function shiftDateStr(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
 
-let currentRange = 'today';
-const doneTasks = new Set(); // page-local only — no backend task created/edited by this demo checklist
-
-/**
- * Simple, single-threshold classification per spec section 8 ("لا تستخدم
- * Thresholds معقدة"): 0 orders or a very sharp drop = CRITICAL, a
- * noticeable drop = ATTENTION, anything else = GOOD.
- */
 function classify(current, previous) {
   if (current === 0) return 'CRITICAL';
   if (!previous) return 'GOOD';
@@ -52,94 +37,125 @@ function classify(current, previous) {
   return 'GOOD';
 }
 
-function pctChange(current, previous) {
-  if (!previous) return current > 0 ? 100 : 0;
-  return Math.round(((current - previous) / previous) * 100);
-}
+const STATUS_LABELS_AR = { PENDING: 'قيد الانتظار', CONFIRMED: 'مؤكد', DELIVERED: 'تم التسليم', CANCELLED: 'ملغي', RETURNED: 'مرتجع' };
+const STATUS_BADGE_COLOR = { PENDING: 'yellow', CONFIRMED: 'green', DELIVERED: 'green', CANCELLED: 'red', RETURNED: 'red' };
 
-function init() {
+async function init() {
   UI.renderSidebar('easyorders');
-  document.getElementById('eoStatTiles').replaceChildren(); // placeholder cleared by render()
   renderRangeChips();
-  render();
+  await load();
+  refreshTimer = setInterval(load, REFRESH_INTERVAL_MS);
+  window.addEventListener('beforeunload', () => clearInterval(refreshTimer));
 }
 
 function renderRangeChips() {
   const el = document.getElementById('rangeChips');
-  el.innerHTML = Object.entries(RANGES)
-    .map(([key, r]) => `<button type="button" class="chip ${key === currentRange ? 'active' : ''}" data-range="${key}">${r.label}</button>`)
-    .join('');
-  el.querySelectorAll('[data-range]').forEach((btn) => {
+  el.innerHTML = `
+    <button type="button" class="chip ${!selectedDate ? 'active' : ''}" data-which="today">اليوم</button>
+    <button type="button" class="chip ${selectedDate === 'yesterday' ? 'active' : ''}" data-which="yesterday">أمس</button>
+  `;
+  el.querySelectorAll('[data-which]').forEach((btn) => {
     btn.onclick = () => {
-      currentRange = btn.dataset.range;
+      selectedDate = btn.dataset.which === 'yesterday' ? 'yesterday' : null;
       renderRangeChips();
-      render();
+      load();
     };
   });
 }
 
-function render() {
-  const range = RANGES[currentRange];
-  const products = range.products;
-  const totalCurrent = products.reduce((s, p) => s + p.current, 0);
-  const totalPrevious = products.reduce((s, p) => s + p.previous, 0);
-  const diff = totalCurrent - totalPrevious;
-  const pct = pctChange(totalCurrent, totalPrevious);
+async function load() {
+  const requestId = ++loadGeneration;
+  const params = selectedDate === 'yesterday' ? { date: shiftDateStr(todayUTCDateStr(), -1) } : {};
 
-  renderStatTiles(range, totalCurrent, totalPrevious, diff, pct);
-  renderCompareBars(range, totalCurrent, totalPrevious, diff);
-  renderProductsTable(products);
-  renderTopProducts(products, totalCurrent);
-  renderAlerts(products);
-  renderTasks(products);
+  let data;
+  try {
+    data = await api.get('/api/easyorders/summary', params);
+  } catch (err) {
+    if (requestId !== loadGeneration) return; // superseded by a newer request — don't clobber whatever it's about to render
+    document.getElementById('eoStatTiles').innerHTML = `<div class="empty-state">مقدرش أجيب بيانات EasyOrders (${UI.escapeHtml(err.message)})</div>`;
+    return;
+  }
+  if (requestId !== loadGeneration) return; // stale response (e.g. the auto-refresh timer fired mid-flight while the user switched ranges) — the newer load() already owns the screen
+  render(data);
 }
 
-function renderStatTiles(range, totalCurrent, totalPrevious, diff, pct) {
-  const diffArrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '';
-  const diffColor = diff > 0 ? 'green' : diff < 0 ? 'red' : '';
+function render(data) {
+  renderStatTiles(data);
+  renderStatusCounts(data);
+  renderCompareBars(data);
+  renderProductsTable(data.products);
+  renderTopProducts(data.products);
+  renderAlerts(data.products);
+  renderHourly(data.hourly);
+  renderOrders(data.orders, data.unmatchedToday);
+}
+
+function renderStatTiles({ totals }) {
+  const diffArrow = totals.diff > 0 ? '↑' : totals.diff < 0 ? '↓' : '';
+  const diffColor = totals.diff > 0 ? 'green' : totals.diff < 0 ? 'red' : '';
+  const rangeLabel = selectedDate === 'yesterday' ? 'أمس' : 'اليوم';
+  const prevLabel = selectedDate === 'yesterday' ? 'أول أمس' : 'أمس';
   document.getElementById('eoStatTiles').innerHTML = [
-    UI.statTile(`📦 أوردرات ${range.label}`, totalCurrent),
-    UI.statTile(`📅 أوردرات ${range.prevLabel}`, totalPrevious),
-    UI.statTile('⚖️ الفرق', `${diffArrow} ${Math.abs(diff)}`, { colorClass: diffColor }),
-    UI.statTile('📈 نسبة التغيير', `${pct > 0 ? '+' : ''}${pct}%`, { colorClass: diffColor }),
+    UI.statTile(`📦 أوردرات ${rangeLabel}`, totals.todayOrders),
+    UI.statTile(`📅 أوردرات ${prevLabel}`, totals.yesterdayOrders),
+    UI.statTile('⚖️ الفرق', `${diffArrow} ${Math.abs(totals.diff)}`, { colorClass: diffColor }),
+    UI.statTile('📈 نسبة التغيير', `${totals.pct > 0 ? '+' : ''}${totals.pct}%`, { colorClass: diffColor }),
   ].join('');
 }
 
-function renderCompareBars(range, totalCurrent, totalPrevious, diff) {
-  const max = Math.max(totalCurrent, totalPrevious, 1);
+function renderStatusCounts({ statusCounts }) {
+  const el = document.getElementById('eoStatusCounts');
+  el.innerHTML = Object.entries(statusCounts)
+    .map(([status, count]) => `<span class="badge ${STATUS_BADGE_COLOR[status]}">${STATUS_LABELS_AR[status]}: ${count}</span>`)
+    .join(' ');
+}
+
+function renderCompareBars({ totals }) {
+  const rangeLabel = selectedDate === 'yesterday' ? 'أمس' : 'اليوم';
+  const prevLabel = selectedDate === 'yesterday' ? 'أول أمس' : 'أمس';
+  const max = Math.max(totals.todayOrders, totals.yesterdayOrders, 1);
   document.getElementById('eoCompareBars').innerHTML = `
     <div class="eo-bar-row">
-      <div class="eo-bar-label">${range.label}</div>
-      <div class="eo-bar-track"><div class="eo-bar-fill accent" style="width:${(totalCurrent / max) * 100}%"></div></div>
-      <div class="eo-bar-value">${totalCurrent}</div>
+      <div class="eo-bar-label">${rangeLabel}</div>
+      <div class="eo-bar-track"><div class="eo-bar-fill accent" style="width:${(totals.todayOrders / max) * 100}%"></div></div>
+      <div class="eo-bar-value">${totals.todayOrders}</div>
     </div>
     <div class="eo-bar-row">
-      <div class="eo-bar-label">${range.prevLabel}</div>
-      <div class="eo-bar-track"><div class="eo-bar-fill gray" style="width:${(totalPrevious / max) * 100}%"></div></div>
-      <div class="eo-bar-value">${totalPrevious}</div>
+      <div class="eo-bar-label">${prevLabel}</div>
+      <div class="eo-bar-track"><div class="eo-bar-fill gray" style="width:${(totals.yesterdayOrders / max) * 100}%"></div></div>
+      <div class="eo-bar-value">${totals.yesterdayOrders}</div>
     </div>
   `;
   const note = document.getElementById('eoCompareNote');
-  if (diff > 0) {
-    note.innerHTML = `<span class="eo-text-green">🎉 ${range.label} أفضل من ${range.prevLabel} بـ ${diff} أوردر</span>`;
-  } else if (diff < 0) {
-    note.innerHTML = `<span class="eo-text-red">⚠️ ${range.label} أقل من ${range.prevLabel} بـ ${Math.abs(diff)} أوردر</span>`;
+  if (totals.todayOrders === 0 && totals.yesterdayOrders === 0) {
+    note.innerHTML = `<span class="muted">⚪ مفيش أوردرات مسجلة للفترة دي لسه</span>`;
+  } else if (totals.diff > 0) {
+    note.innerHTML = `<span class="eo-text-green">🎉 ${rangeLabel} أفضل من ${prevLabel} بـ ${totals.diff} أوردر</span>`;
+  } else if (totals.diff < 0) {
+    note.innerHTML = `<span class="eo-text-red">⚠️ ${rangeLabel} أقل من ${prevLabel} بـ ${Math.abs(totals.diff)} أوردر</span>`;
   } else {
-    note.innerHTML = `<span class="muted">⚪ ${range.label} زي ${range.prevLabel} بالظبط</span>`;
+    note.innerHTML = `<span class="muted">⚪ ${rangeLabel} زي ${prevLabel} بالظبط</span>`;
   }
 }
 
 function renderProductsTable(products) {
-  document.getElementById('eoProductsBody').innerHTML = products
+  const body = document.getElementById('eoProductsBody');
+  if (products.length === 0) {
+    document.getElementById('eoProductsEmpty').style.display = 'block';
+    body.innerHTML = '';
+    return;
+  }
+  document.getElementById('eoProductsEmpty').style.display = 'none';
+  body.innerHTML = products
     .map((p) => {
-      const diff = p.current - p.previous;
+      const diff = p.today - p.yesterday;
       const cls = diff > 0 ? 'eo-text-green' : diff < 0 ? 'eo-text-red' : 'eo-text-gray';
       const sign = diff > 0 ? '+' : '';
       return `
         <tr>
-          <td>${UI.escapeHtml(p.name)}</td>
-          <td class="mono">${p.current}</td>
-          <td class="mono">${p.previous}</td>
+          <td>${UI.escapeHtml(p.name)}${!p.matched ? ' <span class="badge gray">غير مربوط بمنتج</span>' : ''}</td>
+          <td class="mono">${p.today}</td>
+          <td class="mono">${p.yesterday}</td>
           <td class="mono ${cls}">${sign}${diff}</td>
         </tr>
       `;
@@ -147,17 +163,24 @@ function renderProductsTable(products) {
     .join('');
 }
 
-function renderTopProducts(products, totalCurrent) {
-  const top = [...products].sort((a, b) => b.current - a.current).slice(0, 4);
-  document.getElementById('eoTopProducts').innerHTML = top
+function renderTopProducts(products) {
+  const el = document.getElementById('eoTopProducts');
+  const withOrders = products.filter((p) => p.today > 0);
+  if (withOrders.length === 0) {
+    el.innerHTML = `<div class="empty-state">مفيش أوردرات النهارده لسه</div>`;
+    return;
+  }
+  const total = withOrders.reduce((s, p) => s + p.today, 0);
+  const top = withOrders.slice(0, 4); // products already sorted by today desc from the API
+  el.innerHTML = top
     .map((p, i) => {
-      const share = totalCurrent > 0 ? Math.round((p.current / totalCurrent) * 100) : 0;
+      const share = total > 0 ? Math.round((p.today / total) * 100) : 0;
       return `
         <div class="eo-top-row">
           <div class="eo-top-rank">#${i + 1}</div>
           <div class="eo-top-info">
             <div class="eo-top-name">${UI.escapeHtml(p.name)}</div>
-            <div class="eo-top-meta">${p.current} أوردر — ${share}% من الإجمالي</div>
+            <div class="eo-top-meta">${p.today} أوردر — ${share}% من الإجمالي</div>
             <div class="health-bar-track" style="width:100%;"><div class="health-bar-fill" style="width:${share}%; background:var(--accent);"></div></div>
           </div>
         </div>
@@ -168,10 +191,10 @@ function renderTopProducts(products, totalCurrent) {
 
 function renderAlerts(products) {
   const flagged = products
-    .map((p) => ({ p, status: classify(p.current, p.previous) }))
+    .map((p) => ({ p, status: classify(p.today, p.yesterday) }))
     .filter((r) => r.status !== 'GOOD')
-    .sort((a, b) => a.p.current - b.p.current) // worst (fewest orders) first
-    .slice(0, 3); // spec: "لا تعرض Alerts كثيرة" — top few only
+    .sort((a, b) => a.p.today - b.p.today)
+    .slice(0, 3);
 
   const el = document.getElementById('eoAlerts');
   if (flagged.length === 0) {
@@ -180,7 +203,7 @@ function renderAlerts(products) {
   }
   el.innerHTML = flagged
     .map(({ p, status }) => {
-      if (status === 'CRITICAL' && p.current === 0) {
+      if (p.today === 0) {
         return `
           <div class="alert-card negative">
             <div class="alert-title">🔴 بدون أوردرات — ${UI.escapeHtml(p.name)}</div>
@@ -194,7 +217,7 @@ function renderAlerts(products) {
       return `
         <div class="alert-card ${cls}">
           <div class="alert-title">${icon} — ${UI.escapeHtml(p.name)}</div>
-          <div class="alert-meta"><span>انخفض من ${p.previous} إلى ${p.current} أوردر</span></div>
+          <div class="alert-meta"><span>انخفض من ${p.yesterday} إلى ${p.today} أوردر</span></div>
           <div class="alert-rec"><b>الإجراء المقترح:</b> راجع الحملات الخاصة بالمنتج</div>
         </div>
       `;
@@ -202,40 +225,55 @@ function renderAlerts(products) {
     .join('');
 }
 
-function renderTasks(products) {
-  const flagged = products.filter((p) => classify(p.current, p.previous) !== 'GOOD').slice(0, 3);
-  const tasks = flagged.map((p, i) => ({
-    id: p.id,
-    text: p.current === 0 ? `حلل سبب توقف ${p.name}` : `راجع انخفاض ${p.name}`,
-    employee: DEMO_EMPLOYEES[i % DEMO_EMPLOYEES.length],
-    priority: classify(p.current, p.previous) === 'CRITICAL' ? 'عاجل' : 'مهم',
-  }));
-
-  const el = document.getElementById('eoTasks');
-  if (tasks.length === 0) {
-    el.innerHTML = `<div class="empty-state">مفيش مهام مطلوبة دلوقتي 🎉</div>`;
+function renderHourly(hourly) {
+  const wrap = document.getElementById('eoHourlyWrap');
+  const empty = document.getElementById('eoHourlyEmpty');
+  if (hourly.length === 0) {
+    wrap.style.display = 'none';
+    empty.style.display = 'block';
     return;
   }
-  el.innerHTML = tasks
+  wrap.style.display = '';
+  empty.style.display = 'none';
+  document.getElementById('eoHourlyBody').innerHTML = hourly
     .map(
-      (t) => `
-      <label class="eo-task-row">
-        <input type="checkbox" data-task="${t.id}" ${doneTasks.has(t.id) ? 'checked' : ''} />
-        <span class="eo-task-text ${doneTasks.has(t.id) ? 'done' : ''}">${UI.escapeHtml(t.text)}</span>
-        <span class="badge gray">${t.employee}</span>
-        <span class="badge ${t.priority === 'عاجل' ? 'red' : 'yellow'}">${t.priority}</span>
-      </label>
+      (h) => `
+      <tr>
+        <td class="mono">${h.hourLabel}</td>
+        <td class="mono">${h.incoming}</td>
+        <td class="mono">${h.CONFIRMED}</td>
+        <td class="mono">${h.CANCELLED}</td>
+        <td class="mono">${h.PENDING}</td>
+      </tr>
     `
     )
     .join('');
-  el.querySelectorAll('[data-task]').forEach((cb) => {
-    cb.onchange = () => {
-      const id = Number(cb.dataset.task);
-      if (cb.checked) doneTasks.add(id);
-      else doneTasks.delete(id);
-      renderTasks(RANGES[currentRange].products); // re-render to sync the strikethrough state
-    };
-  });
+}
+
+function renderOrders(orders, unmatchedToday) {
+  const wrap = document.getElementById('eoOrdersWrap');
+  const empty = document.getElementById('eoOrdersEmpty');
+  if (orders.length === 0) {
+    wrap.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  wrap.style.display = '';
+  empty.style.display = 'none';
+  document.getElementById('eoOrdersBody').innerHTML = orders
+    .map(
+      (o) => `
+      <tr>
+        <td class="mono" style="font-size:11.5px;">${o.orderId.slice(0, 8)}…</td>
+        <td>${UI.escapeHtml(o.productNames.join('، '))}</td>
+        <td class="mono">${o.quantity}</td>
+        <td><span class="badge ${STATUS_BADGE_COLOR[o.status]}">${STATUS_LABELS_AR[o.status]}</span></td>
+        <td class="mono" style="font-size:12px;">${new Date(o.createdAt).toLocaleString('ar-EG')}</td>
+      </tr>
+    `
+    )
+    .join('');
+  document.getElementById('eoUnmatchedNote').textContent = unmatchedToday > 0 ? `⚠️ ${unmatchedToday} أوردر وصل بمنتج غير مربوط بكود SKU — راجع صفحة المنتجات.` : '';
 }
 
 init();

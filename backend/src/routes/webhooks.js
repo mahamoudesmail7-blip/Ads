@@ -75,15 +75,17 @@ async function ingestOrder(order) {
 
   for (const item of order.cart_items || []) {
     const sku = item.product?.sku || null;
+    const productNameRaw = item.product?.name || null;
     const product = await matchProduct(sku);
     await prisma.easyOrdersOrder.upsert({
       where: { order_id_cart_item_id: { order_id: order.id, cart_item_id: item.id } },
-      update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, matched: !!product, date },
+      update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, matched: !!product, date },
       create: {
         order_id: order.id,
         cart_item_id: item.id,
         product_id: product?.id ?? null,
         sku,
+        product_name_raw: productNameRaw,
         date,
         status,
         raw_status: order.status,

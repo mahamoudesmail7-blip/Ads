@@ -25,6 +25,7 @@ import inventoryRoutes from './routes/inventory.js';
 import adminRoutes from './routes/admin.js';
 import usersRoutes from './routes/users.js';
 import webhookRoutes from './routes/webhooks.js';
+import easyOrdersRoutes from './routes/easyorders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = path.resolve(__dirname, '..', '..'); // order-monitor/ (one level above backend/)
@@ -60,6 +61,7 @@ app.use('/api/inventory', inventoryRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes); // public — authenticated via the `secret` header EasyOrders sends, not a user session
+app.use('/api/easyorders', easyOrdersRoutes);
 
 // Serve the existing static frontend (order-monitor/) from this same
 // service, so there's a single public URL. `backend/`, `.env`, and `.git`
