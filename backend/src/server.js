@@ -26,6 +26,7 @@ import adminRoutes from './routes/admin.js';
 import usersRoutes from './routes/users.js';
 import webhookRoutes from './routes/webhooks.js';
 import easyOrdersRoutes from './routes/easyorders.js';
+import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = path.resolve(__dirname, '..', '..'); // order-monitor/ (one level above backend/)
@@ -90,3 +91,5 @@ app.use(errorHandler);
 app.listen(PORT, () => {
   logger.info(`Order Monitor backend listening on http://localhost:${PORT}`, { frontendRoot: FRONTEND_ROOT });
 });
+
+startEasyOrdersReconciliation();
