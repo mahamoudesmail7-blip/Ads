@@ -59,7 +59,7 @@ async function init() {
     if (e.target.id === 'aiLinkProductOverlay') closeLinkModal();
   });
 
-  await Promise.all([loadDecisions(), loadUploads(), loadDataQuality(), loadTruePerformance()]);
+  await Promise.all([loadDecisions(), loadUploads(), loadTruePerformance()]);
 }
 
 function isoDaysAgo(n) {
@@ -190,7 +190,7 @@ async function confirmAndProcess() {
 
     document.getElementById('aiMappingCard').style.display = 'none';
     currentUpload = null;
-    await Promise.all([loadDecisions(), loadUploads(), loadDataQuality(), loadTruePerformance()]);
+    await Promise.all([loadDecisions(), loadUploads(), loadTruePerformance()]);
   } catch (err) {
     statusEl.textContent = `⚠️ ${err.message}`;
   }
@@ -224,48 +224,10 @@ async function loadUploads() {
 }
 
 // ---------------------------------------------------------------------------
-// Data Quality Center + manual product linking (unchanged from Phase 1)
+// Manual product linking (Data Quality Center removed — this modal is now
+// reached only from an entity's drawer, e.g. an unmapped campaign's
+// "🔗 ربط بمنتج" button)
 // ---------------------------------------------------------------------------
-
-async function loadDataQuality() {
-  const dq = await api.get('/api/ai-intelligence/data-quality');
-  const el = document.getElementById('aiDataQuality');
-  const parts = [`<div style="font-size:13.5px; margin-bottom:14px;">📊 إجمالي صفوف الإعلانات المعالجة: <b>${dq.totalMetricRows}</b></div>`];
-
-  parts.push('<div class="section-title" style="font-size:13.5px; margin-top:0;">🩺 جودة بيانات الإعلانات (Ads Data Quality)</div>');
-  if (dq.adsDataQuality.importIssues.length === 0) {
-    parts.push('<div class="faint" style="font-size:12.5px; margin-bottom:16px;">✅ مفيش تحذيرات عند رفع أي ملف.</div>');
-  } else {
-    parts.push(
-      `<div style="margin-bottom:16px;">${dq.adsDataQuality.importIssues
-        .map((i) => `<div style="font-size:12.5px;">📥 ${UI.escapeHtml(i.filename)} — ${i.warningCount} تحذير عند الرفع</div>`)
-        .join('')}</div>`
-    );
-  }
-
-  parts.push('<div class="section-title" style="font-size:13.5px;">🔗 ربط البيزنس (Business Data Mapping) — اختياري</div>');
-  parts.push(`<div class="faint" style="font-size:12.5px; margin-bottom:10px;">${UI.escapeHtml(dq.businessMapping.note)}</div>`);
-
-  if (dq.businessMapping.unmatchedCampaignCount === 0) {
-    parts.push('<div class="faint" style="font-size:12.5px;">✅ كل الحملات مربوطة بمنتجات.</div>');
-  } else {
-    parts.push(
-      `<div class="table-wrap"><table class="data"><thead><tr><th>اسم الحملة</th><th>عدد الصفوف</th><th>إجمالي الصرف</th><th></th></tr></thead><tbody>${dq.businessMapping.unmatchedCampaigns
-        .map(
-          (c) => `<tr>
-            <td>${UI.escapeHtml(c.campaignName || '—')}</td>
-            <td class="mono">${c.rowCount}</td>
-            <td class="mono">${c.totalSpend.toFixed(2)}</td>
-            <td><button class="btn secondary small" data-link="${UI.escapeHtml(c.campaignName || '')}">ربط بمنتج</button></td>
-          </tr>`
-        )
-        .join('')}</tbody></table></div>`
-    );
-  }
-
-  el.innerHTML = parts.join('');
-  el.querySelectorAll('[data-link]').forEach((btn) => (btn.onclick = () => openLinkModal(btn.dataset.link)));
-}
 
 async function loadProductsForLink() {
   if (productsCache) return productsCache;
@@ -299,7 +261,7 @@ async function confirmLinkProduct() {
     const result = await api.post('/api/ai-intelligence/campaigns/link-product', { campaignName: linkTargetCampaign, productId });
     UI.toast(`✅ اتربط ${result.updatedRows} صف بمنتج "${result.productName}"`);
     closeLinkModal();
-    await Promise.all([loadDataQuality(), loadTruePerformance(), loadDecisions()]);
+    await Promise.all([loadTruePerformance(), loadDecisions()]);
   } catch (err) {
     UI.toast(err.message, 'error');
   }
@@ -449,7 +411,7 @@ function renderNeedsMapping(nm) {
     return;
   }
   el.style.display = 'block';
-  el.innerHTML = `🔗 ${nm.count} حملة نشطة محتاجة ربط بمنتج — <a href="#aiDataQuality" style="color:var(--accent);">اربطها من مركز جودة البيانات تحت</a>.`;
+  el.innerHTML = `🔗 ${nm.count} حملة نشطة محتاجة ربط بمنتج — افتح تفاصيل أي حملة تحت وادوس "ربط بمنتج".`;
 }
 
 function priorityBadgeColor(p) {
