@@ -27,6 +27,7 @@ import usersRoutes from './routes/users.js';
 import webhookRoutes from './routes/webhooks.js';
 import easyOrdersRoutes from './routes/easyorders.js';
 import lostOrdersRoutes from './routes/lostOrders.js';
+import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,7 +46,7 @@ app.use(
   })
 );
 app.use(cookieParser());
-app.use(express.json({ limit: '5mb' })); // 5mb: the IndexedDB export/import payload (admin.js) can be large.
+app.use(express.json({ limit: '20mb' })); // 20mb: covers the IndexedDB export/import payload (admin.js) and base64-encoded Meta Ads export uploads (adsIntelligence.js).
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', { stream: { write: (msg) => logger.info(msg.trim()) } }));
 
 app.use('/health', healthRoutes);
@@ -65,6 +66,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes); // public — authenticated via the `secret` header EasyOrders sends, not a user session
 app.use('/api/easyorders', easyOrdersRoutes);
 app.use('/api/lost-orders', lostOrdersRoutes);
+app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 
 // Serve the existing static frontend (order-monitor/) from this same
 // service, so there's a single public URL. `backend/`, `.env`, and `.git`

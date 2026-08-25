@@ -42,6 +42,7 @@ model User {
   activity_log   TaskActivityLog[]
   lost_order_notes   LostOrderNote[]
   lost_order_actions LostOrderHistory[]
+  ads_uploads        AdsUpload[]
 
   @@map("users")
 }
@@ -76,6 +77,7 @@ model Product {
   inventory_snapshots InventorySnapshot[]
   inventory_movement InventoryMovementLog[]
   easyorders_orders  EasyOrdersOrder[]
+  ads_metrics        AdsDailyMetric[]
 
   @@index([active])
   @@index([product_name])
@@ -438,4 +440,91 @@ model InventoryImportBatch {
 
   @@index([date])
   @@map("inventory_import_batches")
+}
+
+// ============================================================================
+// AI Business Intelligence — Phase 1 (Ads Data Upload → Column Mapping →
+// Normalized Storage → True Business Performance). See conversation for the
+// full 43-section spec this is Phase 1 of; later phases (Decision Center,
+// Creative/Audience/Governorate/Moderator Intelligence, Forecasting, AI
+// Chat...) are explicitly deferred and add their own models when built.
+// ============================================================================
+
+// One row per uploaded Meta Ads Manager export. Raw data is kept verbatim in
+// AdsRawRow regardless of what happens after — "احتفظ دائمًا بالـ Raw
+// Uploaded Data بدون تعديل" (spec section 1, Step 3).
+model AdsUpload {
+  id             Int       @id @default(autoincrement())
+  filename       String
+  file_type      String // csv | xlsx
+  status         String    @default("UPLOADED") // UPLOADED | MAPPED | PROCESSED | FAILED
+  row_count      Int?
+  uploaded_by_id Int?
+  uploaded_by    User?     @relation(fields: [uploaded_by_id], references: [id], onDelete: SetNull)
+  column_mapping String? // JSON-as-String — confirmed source-column -> canonical-field map (same convention as Settings.data)
+  errors         String? // JSON-as-String — validation warnings/errors from Step 1, kept for audit even after processing
+  uploaded_at    DateTime  @default(now())
+  processed_at   DateTime?
+
+  rawRows AdsRawRow[]
+  metrics AdsDailyMetric[]
+
+  @@map("ads_uploads")
+}
+
+model AdsRawRow {
+  id         Int       @id @default(autoincrement())
+  upload_id  Int
+  upload     AdsUpload @relation(fields: [upload_id], references: [id], onDelete: Cascade)
+  row_index  Int
+  raw_data   String // JSON-as-String — the untouched original row exactly as uploaded
+  created_at DateTime  @default(now())
+
+  @@index([upload_id])
+  @@map("ads_raw_rows")
+}
+
+// Normalized, mapped ads performance data — one row per (date, campaign/adset/ad)
+// combination as present in the source file. matched_product_* is populated by
+// a confidence-gated Campaign Name -> Product match (never a low-confidence
+// auto-guess — see services/adsImport.js), the join key True Business
+// Performance needs to compare Meta's numbers against real order data.
+model AdsDailyMetric {
+  id                 Int       @id @default(autoincrement())
+  upload_id          Int
+  upload             AdsUpload @relation(fields: [upload_id], references: [id], onDelete: Cascade)
+  date               String
+  campaign_id        String?
+  campaign_name      String?
+  adset_id           String?
+  adset_name         String?
+  ad_id              String?
+  ad_name            String?
+  creative_id        String?
+  creative_name      String?
+  spend              Float?
+  impressions        Int?
+  reach              Int?
+  frequency          Float?
+  clicks             Int?
+  ctr                Float?
+  cpc                Float?
+  cpm                Float?
+  landing_page_views Int?
+  leads              Int?
+  add_to_cart        Int?
+  initiate_checkout  Int?
+  meta_purchases     Int?
+  meta_revenue       Float?
+  meta_roas          Float?
+  matched_product_id Int?
+  matched_product    Product?  @relation(fields: [matched_product_id], references: [id], onDelete: SetNull)
+  match_confidence   Float?
+  match_method       String? // exact_name | exact_sku | fuzzy | unmatched
+  created_at         DateTime  @default(now())
+
+  @@index([date])
+  @@index([campaign_name])
+  @@index([matched_product_id])
+  @@map("ads_daily_metrics")
 }

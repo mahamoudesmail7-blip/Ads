@@ -1,6 +1,7 @@
 {
   "name": "order-monitor",
   "private": true,
+  "type": "module",
   "scripts": {
     "postinstall": "cd backend && npm install",
     "start": "cd backend && npm start"

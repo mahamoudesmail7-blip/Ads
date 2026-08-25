@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Intelligence — نظام مراقبة المنتجات</title>
+<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>🧠 AI Intelligence</h1>
+          <div class="subtitle">المرحلة 1: رفع بيانات Meta Ads، ربط الأعمدة، وأداء البيزنس الحقيقي</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:22px; max-width:640px;">
+        <div class="section-title" style="margin-top:0;">📤 رفع بيانات Meta Ads</div>
+        <p class="muted" style="font-size:13px; margin-top:0;">ملف CSV أو XLSX مُصدَّر من Meta Ads Manager.</p>
+        <div class="toolbar">
+          <input type="file" id="aiFileInput" accept=".csv,.xlsx" style="display:none" />
+          <button class="btn" id="btnPickFile">اختر ملف</button>
+          <span class="faint" id="aiSelectedFileName"></span>
+        </div>
+        <div id="aiUploadStatus" class="faint" style="margin-top:8px; display:none;"></div>
+      </div>
+
+      <!-- Column mapping confirmation -->
+      <div class="card" id="aiMappingCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">🧩 تأكيد ربط الأعمدة</div>
+        <p class="muted" style="font-size:13px; margin-top:0;">النظام حاول يتعرف على الأعمدة تلقائيًا — راجع وعدّل لو محتاج قبل ما تكمل.</p>
+        <div class="table-wrap" style="margin-bottom:10px;">
+          <table class="data">
+            <thead><tr><th>الحقل</th><th>العمود من الملف</th></tr></thead>
+            <tbody id="aiMappingBody"></tbody>
+          </table>
+        </div>
+        <div id="aiValidationWarnings" style="margin-bottom:10px;"></div>
+        <div class="toolbar">
+          <button class="btn secondary" id="btnCancelMapping">إلغاء</button>
+          <button class="btn" id="btnConfirmProcess">✅ تأكيد ومعالجة البيانات</button>
+        </div>
+      </div>
+
+      <div class="section-title">📁 الرفعات السابقة</div>
+      <div class="table-wrap" style="margin-bottom:22px;">
+        <table class="data">
+          <thead><tr><th>الملف</th><th>الحالة</th><th>عدد الصفوف</th><th>رفعه</th><th>التاريخ</th></tr></thead>
+          <tbody id="aiUploadsBody"></tbody>
+        </table>
+      </div>
+      <div id="aiUploadsEmpty" class="empty-state" style="display:none; margin-bottom:22px;">مفيش رفعات لسه.</div>
+
+      <div class="section-title">🩺 مركز جودة البيانات</div>
+      <div class="card" id="aiDataQuality" style="margin-bottom:22px;"></div>
+
+      <div class="section-title">📊 الأداء الحقيقي للبيزنس (True Business Performance)</div>
+      <p class="muted" style="font-size:12.5px;">مقارنة أرقام Meta المُعلنة بالأوردرات والأرباح الحقيقية فعليًا.</p>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>المنتج</th>
+              <th>صرف Meta</th>
+              <th>مشتريات Meta</th>
+              <th>ROAS (Meta)</th>
+              <th>أوردرات حقيقية</th>
+              <th>تم التسليم</th>
+              <th>إيراد حقيقي</th>
+              <th>صافي الربح</th>
+              <th>True CPA</th>
+              <th>True ROAS</th>
+              <th>المصدر</th>
+            </tr>
+          </thead>
+          <tbody id="aiPerformanceBody"></tbody>
+        </table>
+      </div>
+      <div id="aiPerformanceEmpty" class="empty-state" style="display:none;">مفيش بيانات إعلانات مربوطة بمنتجات حقيقية لسه — ارفع ملف وأكّد الربط الأول.</div>
+    </div>
+  </div>
+
+  <script type="module" src="js/ai-intelligence.js"></script>
+</body>
+</html>
