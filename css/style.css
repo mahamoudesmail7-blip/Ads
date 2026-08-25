@@ -734,15 +734,104 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .toast.success { border-color: #1f5f42; color: var(--green); }
 .toast.error { border-color: #6b2020; color: var(--red); }
 
-@media (max-width: 900px) {
-  .app-shell { flex-direction: column; }
-  .sidebar { width: 100%; height: auto; position: static; border-left: none; border-bottom: 1px solid var(--border); }
-  .main { padding: 18px; }
-  /* On narrow screens the sidebar becomes a full-width top bar (rule above),
-     which the fixed top-left toggle would otherwise sit directly on top of,
-     overlapping the brand/logo text. Anchor to the bottom-left instead —
-     reliably clear of any page's header content, on every page. */
-  .theme-toggle-fixed { top: auto; bottom: 16px; }
+/* ---------------- Mobile chrome (header / drawer / bottom nav) ----------------
+   Every rule in this block is scoped to max-width:768px — desktop and
+   tablet widths above that are completely untouched by this section.
+   `.mobile-header`/`.mobile-bottom-nav` are `display:none` by default
+   (below, outside this query) so they're inert above the breakpoint even
+   though they're always present in the DOM (mounted once by
+   mountMobileChrome() in ui-common.js, same pattern as the theme toggle). */
+
+.mobile-header { display: none; }
+.mobile-bottom-nav { display: none; }
+
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  /* .app-shell is a flex row; a flex item's default min-width:auto refuses
+     to shrink below its content's natural (unwrapped) width. With the
+     sidebar gone, .main is the only flex item left, so without min-width:0
+     any wide-enough content (a toolbar row, a table) forces .main — and the
+     whole page — wider than the viewport instead of wrapping/scrolling
+     internally. Desktop never hit this because the sidebar always capped
+     the available row width well inside comfortable content widths. */
+  .main { padding: 18px; padding-top: 72px; padding-bottom: 84px; min-width: 0; }
+
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: fixed;
+    top: 0; inset-inline: 0;
+    height: 56px;
+    padding: 0 14px;
+    background: var(--sidebar-bg);
+    border-bottom: 1px solid var(--sidebar-border);
+    z-index: 150;
+  }
+  .mobile-header-title { color: #fff; font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mobile-hamburger-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px; flex-shrink: 0;
+    background: none; border: none; border-radius: 10px;
+    color: #fff; cursor: pointer;
+  }
+  .mobile-hamburger-btn:active { background: var(--sidebar-hover-bg); }
+  .mobile-hamburger-btn svg { width: 22px; height: 22px; }
+
+  /* The mobile drawer reuses .drawer-overlay/.drawer-panel verbatim (same
+     slide-in side, same transition) — only the inner content differs. This
+     modifier strips the desktop .sidebar's own fixed sizing/position so it
+     fits naturally inside the drawer panel's own padding. */
+  .sidebar.mobile-nav-inner {
+    display: flex; position: static; width: auto; height: auto; padding: 0; border: none; background: none;
+  }
+  .sidebar.mobile-nav-inner nav { overflow-y: visible; }
+
+  /* The drawer should read as "the sidebar itself, in a drawer" — match the
+     sidebar's own always-dark background/border/text tokens instead of the
+     generic detail-drawer styling used elsewhere (.drawer-panel's
+     var(--bg-elevated) is calibrated for light-theme detail panels, not
+     this always-dark nav surface). */
+  #mobileNavPanel { background: var(--sidebar-bg); border-inline-start-color: var(--sidebar-border); }
+  #mobileNavPanel .drawer-header { border-bottom: 1px solid var(--sidebar-border); padding-bottom: 14px; }
+  #mobileNavPanel .drawer-title { color: #fff; }
+  #mobileNavPanel .drawer-close { color: var(--sidebar-text-dim); }
+  #mobileNavPanel .drawer-close:hover { color: #fff; }
+
+  .mobile-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; inset-inline: 0;
+    height: 64px;
+    background: var(--sidebar-bg);
+    border-top: 1px solid var(--sidebar-border);
+    z-index: 150;
+  }
+  .mobile-bottom-nav-item {
+    flex: 1;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px;
+    color: var(--sidebar-text-dim);
+    font-size: 10.5px;
+    background: none; border: none; font-family: inherit; cursor: pointer;
+    min-width: 0;
+  }
+  .mobile-bottom-nav-item svg { width: 20px; height: 20px; }
+  .mobile-bottom-nav-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .mobile-bottom-nav-item.active { color: var(--sidebar-active-text); }
+
+  /* On narrow screens the sidebar is gone (rule above) and the fixed mobile
+     header/bottom-nav take its place — raise the toggle and toast above the
+     bottom nav instead of the old "stacked sidebar" bottom-16px offset. */
+  .theme-toggle-fixed { top: auto; bottom: 80px; }
+  .toast { bottom: 80px; }
+
+  table.data { min-width: 640px; width: max-content; }
+
+  /* Larger touch targets for the review/dismiss chips on entity cards
+     (AI Intelligence and the dashboard's own action cards use the same
+     .status-btn) — desktop keeps the compact 4px/10px padding untouched. */
+  .status-btn { padding: 8px 14px; font-size: 12px; }
 }
 
 /* ---------------- Easy Orders section (new, additive only) ----------------

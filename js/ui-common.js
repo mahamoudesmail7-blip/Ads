@@ -76,6 +76,109 @@ const OWNER_ONLY_NAV = new Set(['users']);
 const ROLE_LABELS_AR = { ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' };
 
 /**
+ * The brand + nav list + user footer markup — the ONE source of truth for
+ * both the desktop `#sidebar` and the mobile nav drawer (built inside
+ * `mountMobileChrome()` below), so the two can never drift out of sync.
+ * `idSuffix` keeps element ids unique between the two renders (e.g.
+ * `sidebarLogout` vs `sidebarLogout--drawer`) — badges use a
+ * `data-badge-key` attribute instead of an id so a single lookup can update
+ * both copies at once (see the `data-badge-key` query below).
+ */
+function navBodyHtml(items, activeKey, user, idSuffix = '') {
+  const navLinks = items
+    .map(
+      (i) =>
+        `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} <span>${i.label}</span>${i.badgeId ? `<span class="nav-badge" data-badge-key="${i.badgeId}" style="display:none;"></span>` : ''}</a>`
+    )
+    .join('');
+
+  if (!user) {
+    return `
+      <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
+      <nav>${navLinks}</nav>
+    `;
+  }
+
+  return `
+    <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
+    <nav>${navLinks}</nav>
+    <div class="sidebar-user">
+      <div class="sidebar-user-name">${escapeHtml(user.name)}</div>
+      <div class="sidebar-user-role">${ROLE_LABELS_AR[user.role] || user.role}</div>
+      <button type="button" id="sidebarLogout${idSuffix}" class="sidebar-logout-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        تسجيل الخروج
+      </button>
+    </div>
+  `;
+}
+
+const MORE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>';
+const HAMBURGER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>';
+
+// Bottom-nav short labels — only used in the condensed 5-slot mobile bar;
+// the drawer/desktop sidebar keep each item's full existing label.
+const BOTTOM_NAV_KEYS = ['dashboard', 'tasks', 'aiintel', 'alerts'];
+const BOTTOM_NAV_LABELS = { dashboard: 'الرئيسية', tasks: 'تاسكات', aiintel: 'AI', alerts: 'تنبيهات' };
+
+function openMobileDrawer() {
+  document.getElementById('mobileNavOverlay')?.classList.add('open');
+}
+function closeMobileDrawer() {
+  document.getElementById('mobileNavOverlay')?.classList.remove('open');
+}
+
+/**
+ * Mounts the mobile-only header, nav drawer, and bottom nav once per page
+ * load (idempotent — same pattern as theme.js's mountThemeToggle: checks
+ * for an existing element before creating). All three are inert on desktop
+ * (see css/style.css's `.mobile-header`/`.mobile-bottom-nav { display:none }`
+ * base rules) and only actually show up under the max-width:768px query.
+ */
+function mountMobileChrome(items, activeKey, user) {
+  if (!document.getElementById('mobileHeader')) {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `<div class="mobile-header" id="mobileHeader">
+        <div class="mobile-header-title">📈 نظام مراقبة المنتجات</div>
+        <button type="button" class="mobile-hamburger-btn" id="mobileHamburgerBtn" aria-label="القائمة">${HAMBURGER_ICON}</button>
+      </div>
+      <div class="drawer-overlay" id="mobileNavOverlay">
+        <div class="drawer-panel" id="mobileNavPanel">
+          <div class="drawer-header">
+            <div class="drawer-title">القائمة</div>
+            <button type="button" class="drawer-close" id="mobileNavCloseBtn">✕</button>
+          </div>
+          <div class="sidebar mobile-nav-inner" id="mobileNavBody"></div>
+        </div>
+      </div>
+      <nav class="mobile-bottom-nav" id="mobileBottomNav"></nav>`
+    );
+
+    document.getElementById('mobileHamburgerBtn').addEventListener('click', openMobileDrawer);
+    document.getElementById('mobileNavCloseBtn').addEventListener('click', closeMobileDrawer);
+    document.getElementById('mobileNavOverlay').addEventListener('click', (e) => {
+      if (e.target.id === 'mobileNavOverlay') closeMobileDrawer();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeMobileDrawer();
+    });
+  }
+
+  document.getElementById('mobileNavBody').innerHTML = navBodyHtml(items, activeKey, user, '--drawer');
+  document.getElementById('mobileNavPanel').querySelector('#sidebarLogout--drawer')?.addEventListener('click', logout);
+
+  const bottomItems = BOTTOM_NAV_KEYS.map((key) => items.find((i) => i.key === key)).filter(Boolean);
+  const isOnBottomItem = bottomItems.some((i) => i.key === activeKey);
+  document.getElementById('mobileBottomNav').innerHTML =
+    bottomItems
+      .map((i) => `<a href="${i.href}" class="mobile-bottom-nav-item ${i.key === activeKey ? 'active' : ''}">${i.icon}<span>${BOTTOM_NAV_LABELS[i.key]}</span></a>`)
+      .join('') +
+    `<button type="button" class="mobile-bottom-nav-item ${!isOnBottomItem ? 'active' : ''}" id="mobileMoreBtn">${MORE_ICON}<span>المزيد</span></button>`;
+  document.getElementById('mobileMoreBtn').addEventListener('click', openMobileDrawer);
+}
+
+/**
  * Renders the sidebar nav AND fetches the current logged-in user (async —
  * callers don't need to await it, the sidebar just fills in a moment
  * later). This is also what keeps every page protected: if nobody is
@@ -96,10 +199,8 @@ export async function renderSidebar(activeKey) {
     // opened just for its own local tools) — never let this become an
     // unhandled rejection that blocks the calling page's init(); just show
     // every nav item with no user footer instead of crashing.
-    el.innerHTML = `
-      <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
-      <nav>${NAV_ITEMS.map((i) => `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} ${i.label}</a>`).join('')}</nav>
-    `;
+    el.innerHTML = navBodyHtml(NAV_ITEMS, activeKey, null);
+    mountMobileChrome(NAV_ITEMS, activeKey, null);
     const { mountThemeToggle } = await import('./theme.js');
     mountThemeToggle();
     return;
@@ -111,20 +212,8 @@ export async function renderSidebar(activeKey) {
     return !allowedRoles || allowedRoles.includes(user.role);
   });
 
-  el.innerHTML = `
-    <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
-    <nav>${visibleItems.map(
-      (i) => `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} <span>${i.label}</span>${i.badgeId ? `<span class="nav-badge" id="${i.badgeId}" style="display:none;"></span>` : ''}</a>`
-    ).join('')}</nav>
-    <div class="sidebar-user">
-      <div class="sidebar-user-name">${escapeHtml(user.name)}</div>
-      <div class="sidebar-user-role">${ROLE_LABELS_AR[user.role] || user.role}</div>
-      <button type="button" id="sidebarLogout" class="sidebar-logout-btn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-        تسجيل الخروج
-      </button>
-    </div>
-  `;
+  el.innerHTML = navBodyHtml(visibleItems, activeKey, user);
+  mountMobileChrome(visibleItems, activeKey, user);
 
   const { mountThemeToggle } = await import('./theme.js');
   mountThemeToggle();
@@ -134,10 +223,12 @@ export async function renderSidebar(activeKey) {
   if (visibleItems.some((i) => i.badgeId === 'navLostOrdersBadge')) {
     try {
       const { count } = await api.get('/api/lost-orders/new-count');
-      const badge = document.getElementById('navLostOrdersBadge');
-      if (badge && count > 0) {
-        badge.textContent = count;
-        badge.style.display = '';
+      const badges = document.querySelectorAll('[data-badge-key="navLostOrdersBadge"]');
+      if (count > 0) {
+        badges.forEach((badge) => {
+          badge.textContent = count;
+          badge.style.display = '';
+        });
       }
     } catch {
       // Non-critical — the sidebar itself already rendered successfully; a failed badge count just stays hidden.
