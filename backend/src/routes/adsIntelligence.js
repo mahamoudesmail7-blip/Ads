@@ -151,6 +151,17 @@ router.post(
       };
     });
 
+    // Re-uploading a file replaces the data for the dates it covers rather
+    // than stacking a duplicate copy on top of whatever was already there —
+    // found in production twice in one day (the same real export uploaded
+    // 3x during debugging silently tripled every total on the dashboard).
+    // A re-import is a correction/refresh of those dates, never an addition.
+    const distinctDates = [...new Set(metricRows.map((r) => r.date))];
+    let replacedRows = 0;
+    if (distinctDates.length > 0) {
+      const deleted = await prisma.adsDailyMetric.deleteMany({ where: { date: { in: distinctDates } } });
+      replacedRows = deleted.count;
+    }
     if (metricRows.length > 0) await prisma.adsDailyMetric.createMany({ data: metricRows });
 
     await prisma.adsUpload.update({
@@ -160,6 +171,7 @@ router.post(
 
     res.json({
       metricsCreated: metricRows.length,
+      replacedRows, // rows deleted for the same dates before inserting — 0 the first time a date is imported, >0 on every re-upload
       skippedInvalidRows: parsed.length - validRows.length,
       unmatchedCampaigns: [...unmatchedCampaigns],
     });

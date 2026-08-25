@@ -185,7 +185,8 @@ async function confirmAndProcess() {
 
     statusEl.textContent = 'بيعالج ويربط بالمنتجات...';
     const processResult = await api.post(`/api/ai-intelligence/uploads/${currentUpload.uploadId}/process`, {});
-    statusEl.textContent = `✅ اتعالج ${processResult.metricsCreated} صف${processResult.unmatchedCampaigns.length ? ` — ${processResult.unmatchedCampaigns.length} حملة مش مربوطة بمنتج (تحليل الأداء شغال برضه)` : ''}.`;
+    const replacedNote = processResult.replacedRows > 0 ? ` — استبدل ${processResult.replacedRows} صف قديم لنفس التواريخ (مش هيتحسب مرتين).` : '';
+    statusEl.textContent = `✅ اتعالج ${processResult.metricsCreated} صف${replacedNote}${processResult.unmatchedCampaigns.length ? ` — ${processResult.unmatchedCampaigns.length} حملة مش مربوطة بمنتج (تحليل الأداء شغال برضه)` : ''}.`;
     UI.toast('✅ تم رفع ومعالجة البيانات');
 
     document.getElementById('aiMappingCard').style.display = 'none';
