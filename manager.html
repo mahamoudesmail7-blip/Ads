@@ -30,6 +30,25 @@
 
       <div class="stat-grid" id="summaryTiles"></div>
 
+      <!-- AI Intelligence <-> Manager Control bridge (additive; the team grid/task table below are unchanged) -->
+      <div class="stat-grid" id="aiBridgeSummaryTiles" style="margin-bottom:18px;"></div>
+
+      <div class="card" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🤖 قرارات AI تحتاج توزيع</div>
+        <div class="chip-group" id="aiBridgeTabs" style="margin-bottom:14px;"></div>
+        <div id="aiBridgeTabContent"></div>
+      </div>
+
+      <div class="card" id="aiBridgeReviewCard" style="margin-bottom:22px; display:none; border-color:var(--yellow);">
+        <div class="section-title" style="margin-top:0;">⏳ تحتاج مراجعة</div>
+        <div id="aiBridgeReviewBody"></div>
+      </div>
+
+      <div class="card" id="aiBridgeInProgressCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">📋 متابعة تنفيذ المهام</div>
+        <div id="aiBridgeInProgressBody"></div>
+      </div>
+
       <div class="card" style="margin-bottom:22px;">
         <div class="section-title" style="margin-top:0;">👥 الفريق</div>
         <div class="employee-card-grid" id="teamCardsGrid"></div>

@@ -11,6 +11,7 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { Products } from './db.js';
+import { taskActionHtml, wireTaskActions } from './ai-task-bridge.js';
 
 const SOURCE_LABELS_AR = { easyorders: 'EasyOrders', daily_orders: 'إدخال يدوي', none: 'مفيش بيانات حقيقية' };
 
@@ -343,6 +344,7 @@ async function loadDecisions() {
   renderActionPlan(data.actionPlan, data.window);
   renderNeedsMapping(data.needsMapping);
   for (const b of BUCKETS) renderBucket(b, data.buckets[b.key], data.actionPlan);
+  wireTaskActions(document.getElementById('aiDashboard'), findEntityAndPlanItem, loadDecisions);
 
   const inactiveBtn = document.getElementById('btnShowInactive');
   inactiveBtn.textContent = `عرض الحملات غير النشطة (${data.inactiveCount})`;
@@ -437,7 +439,20 @@ function entityCardHtml(e, actionItem, cardClass) {
         <button class="status-btn" data-review="REVIEWED" data-type="${e.entityType}" data-key="${UI.escapeHtml(e.entityKey)}">✓ تمت المراجعة</button>
         <button class="status-btn" data-review="DISMISSED" data-type="${e.entityType}" data-key="${UI.escapeHtml(e.entityKey)}">تجاهل</button>
       </div>
+      <div style="margin-top:8px;">${taskActionHtml(e)}</div>
     </div>`;
+}
+
+/** Resolves a "type:key" composite id (from a task-bridge button's data attribute) back to {entity, planItem} — searched across every bucket + the cached AI plan text, since that's the only place entities currently live client-side. */
+function findEntityAndPlanItem(compositeKey) {
+  if (!lastDecisions) return { entity: null, planItem: null };
+  const [type, ...rest] = compositeKey.split(':');
+  const key = rest.join(':');
+  const entity = Object.values(lastDecisions.buckets)
+    .flatMap((b) => b.items)
+    .find((e) => e.entityType === type && e.entityKey === key);
+  const planItem = (lastDecisions.actionPlan.items || []).find((it) => it.entityKey === key);
+  return { entity, planItem };
 }
 
 function renderBucket(bucketDef, bucketData, plan) {
@@ -604,6 +619,8 @@ function renderEntityDrawer(e) {
     ${campaignRows}
     ${adRows}
 
+    <div style="margin-bottom:8px;">${taskActionHtml(e)}</div>
+
     <div class="toolbar" style="margin-top:8px;">
       <button class="btn secondary small" id="aiDrawerReviewBtn">✓ تمت المراجعة</button>
       <button class="btn secondary small" id="aiDrawerDismissBtn">تجاهل</button>
@@ -611,6 +628,7 @@ function renderEntityDrawer(e) {
     </div>
   `;
 
+  wireTaskActions(panel, () => ({ entity: e, planItem: { reason: e.reason, recommendedAction: e.recommendedAction } }), () => openEntityDrawer(e.entityType, e.entityKey));
   document.getElementById('aiDrawerCloseBtn').onclick = closeEntityDrawer;
   document.getElementById('aiDrawerReviewBtn').onclick = async () => {
     await api.post('/api/ai-intelligence/decisions/review', { entityType: e.entityType, entityKey: e.entityKey, status: 'REVIEWED' });

@@ -828,6 +828,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
   table.data { min-width: 640px; width: max-content; }
 
+  /* Filter <select>s across the app (manager.html's priority/type/product
+     filters, etc.) use inline style="width:auto" so they size to their
+     longest option on desktop — with dozens of product names as options,
+     that forced real page-width overflow once the sidebar (which used to
+     cap the row width) was hidden on mobile. max-width doesn't fight
+     width:auto (auto still governs sizing up to this cap), so desktop is
+     unaffected and mobile just clips to the viewport with native truncation. */
+  .toolbar select, .toolbar input[type="text"] { max-width: 100%; }
+
   /* Larger touch targets for the review/dismiss chips on entity cards
      (AI Intelligence and the dashboard's own action cards use the same
      .status-btn) — desktop keeps the compact 4px/10px padding untouched. */

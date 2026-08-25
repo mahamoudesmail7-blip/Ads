@@ -331,6 +331,25 @@ model TaskRecord {
   cancelled_at         DateTime?
   cancelled_by         String?
   cancel_reason        String?
+  // AI Intelligence -> Manager Control bridge (additive, all nullable —
+  // every existing task simply has these as null forever). source_entity_*
+  // mirrors AdsDecisionReview's (entity_type, entity_key) idiom: the AI
+  // recommendation is a live-computed entity, never its own DB row, so the
+  // link is a synthetic key, not a real FK. ai_recommendation_snapshot is a
+  // JSON-as-String capture of the recommendation's numbers/reason/action at
+  // the moment the task was created (historical "before" record — the
+  // entity's live numbers can move on). review_status/employee_result are
+  // the manager-approval layer on top of the unchanged `status` field: a
+  // task an employee submits a result for still becomes status=COMPLETED
+  // exactly as before, but also gets review_status='PENDING_REVIEW' until a
+  // manager approves it — existing tasks/flows never set this, so they are
+  // untouched by its existence.
+  source_entity_type        String?
+  source_entity_key         String?
+  ai_recommendation_snapshot String?
+  review_status              String?
+  employee_result             String?
+  manager_review_note         String?
   created_at           DateTime  @default(now())
   updated_at           DateTime  @updatedAt
 
@@ -340,6 +359,7 @@ model TaskRecord {
   @@index([employee_id])
   @@index([product_id])
   @@index([status])
+  @@index([source_entity_type, source_entity_key])
   @@map("task_records")
 }
 

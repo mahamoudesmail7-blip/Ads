@@ -2,8 +2,10 @@
 import { Products, TeamMembers, TaskRecords, TaskActivityLog, TASK_STATUS, DailyReports } from './db.js';
 import * as A from './analytics.js';
 import * as UI from './ui-common.js';
+import { api } from './api-client.js';
 import { TASK_TYPE } from './task-engine.js';
 import { workloadLevel, sortTasks } from './manager-engine.js';
+import { taskActionHtml, wireTaskActions } from './ai-task-bridge.js';
 import {
   materializeAutoTasksForDate,
   addManagerTask,
@@ -36,6 +38,14 @@ let carriedOver = [];
 let activityToday = []; // task_activity_log for state.date — the source of truth for "moved" counts
 let editingTaskId = null;
 let movingTaskId = null;
+
+// AI Intelligence <-> Manager Control bridge state — independent of the
+// daily task-view `state.date` above (AI recommendations have their own
+// date-window concept, resolved server-side same as ai-intelligence.html).
+let aiBridgeData = null; // last GET /api/ai-intelligence/decisions response
+let aiBridgeTasks = []; // last TaskRecords.all() — reused for review/in-progress sections too
+let aiBridgeTab = 'scale';
+const aiBridgeExpanded = new Set();
 
 const PRIORITY_LABELS = { URGENT: '🔴 عاجل', IMPORTANT: '🟠 مهم', NORMAL: '🟡 عادي' };
 const STATUS_LABELS = {
@@ -131,6 +141,7 @@ async function init() {
   populateFilterSelects();
 
   await refresh();
+  await loadAiBridgeSection();
 
   if (UI.qs('openAdd') === '1') openTaskModal(null);
 }
@@ -664,6 +675,191 @@ async function renderReport() {
   const { text, summary } = buildReportText();
   await DailyReports.save(state.date, 'MANAGER_CONTROL', summary, text);
   document.getElementById('reportBody').textContent = text;
+}
+
+// ---------------------------------------------------------------------------
+// AI Intelligence <-> Manager Control bridge
+// ---------------------------------------------------------------------------
+
+function money(n) {
+  return n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
+
+const AI_BRIDGE_TABS = [
+  { key: 'scale', label: '🚀 Scale' },
+  { key: 'optimize', label: '🟡 تحسين' },
+  { key: 'stop', label: '🔴 تدخل فوري' },
+];
+
+async function loadAiBridgeSection() {
+  const [decisions, allTasks] = await Promise.all([
+    api.get('/api/ai-intelligence/decisions').catch(() => null),
+    TaskRecords.all().catch(() => []),
+  ]);
+  aiBridgeData = decisions;
+  aiBridgeTasks = allTasks;
+
+  renderAiBridgeSummary();
+  renderAiBridgeTabs();
+  renderAiBridgeReview();
+  renderAiBridgeInProgress();
+}
+
+function renderAiBridgeSummary() {
+  const el = document.getElementById('aiBridgeSummaryTiles');
+  const newDecisions = aiBridgeData?.hasData
+    ? AI_BRIDGE_TABS.reduce((sum, t) => sum + (aiBridgeData.buckets[t.key]?.items.filter((e) => !e.task || !e.task.blocksConversion).length || 0), 0)
+    : 0;
+  const inProgress = aiBridgeTasks.filter((t) => t.status === 'IN_PROGRESS').length;
+  const pendingReview = aiBridgeTasks.filter((t) => t.review_status === 'PENDING_REVIEW').length;
+  const today = A.todayStr();
+  const overdue = aiBridgeTasks.filter((t) => t.due_date && t.due_date < today && !['COMPLETED', 'CANCELLED'].includes(t.status)).length;
+
+  el.innerHTML = [
+    ['قرارات AI جديدة', newDecisions],
+    ['مهام جاري تنفيذها', inProgress],
+    ['تحتاج مراجعة', pendingReview],
+    ['متأخرة', overdue],
+  ]
+    .map(([label, value]) => `<div class="stat-tile"><div class="label">${label}</div><div class="value" style="font-size:22px;">${value}</div></div>`)
+    .join('');
+}
+
+function renderAiBridgeTabs() {
+  const tabsEl = document.getElementById('aiBridgeTabs');
+  if (!aiBridgeData?.hasData) {
+    tabsEl.innerHTML = '';
+    document.getElementById('aiBridgeTabContent').innerHTML = '<div class="empty-state" style="font-size:13px;">مفيش بيانات إعلانات كافية لعرض توصيات دلوقتي — ارفعها من صفحة AI Intelligence.</div>';
+    return;
+  }
+  tabsEl.innerHTML = AI_BRIDGE_TABS.map((t) => {
+    const count = aiBridgeData.buckets[t.key]?.totalCount || 0;
+    return `<span class="chip ${aiBridgeTab === t.key ? 'active' : ''}" data-tab="${t.key}">${t.label} (${count})</span>`;
+  }).join('');
+  tabsEl.querySelectorAll('.chip').forEach((chip) => {
+    chip.onclick = () => {
+      aiBridgeTab = chip.dataset.tab;
+      renderAiBridgeTabs();
+    };
+  });
+  renderAiBridgeTabContent();
+}
+
+function renderAiBridgeTabContent() {
+  const el = document.getElementById('aiBridgeTabContent');
+  const bucket = aiBridgeData.buckets[aiBridgeTab];
+  const items = bucket?.items || [];
+  const tabDef = AI_BRIDGE_TABS.find((t) => t.key === aiBridgeTab);
+  if (items.length === 0) {
+    el.innerHTML = `<div class="empty-state" style="font-size:13px;">مفيش عناصر في فئة "${tabDef.label}" دلوقتي.</div>`;
+    return;
+  }
+
+  const expanded = aiBridgeExpanded.has(aiBridgeTab);
+  const shown = expanded ? items : items.slice(0, 3);
+  const remaining = items.length - shown.length;
+  const planByKey = new Map((aiBridgeData.actionPlan?.items || []).map((it) => [it.entityKey, it]));
+
+  el.innerHTML =
+    shown.map((e) => aiBridgeCardHtml(e, planByKey.get(e.entityKey))).join('') +
+    (remaining > 0 ? `<button class="btn secondary small" id="aiBridgeExpandBtn" style="margin-top:4px;">عرض المزيد (${remaining})</button>` : '');
+
+  wireTaskActions(
+    el,
+    (compositeKey) => {
+      const [type, ...rest] = compositeKey.split(':');
+      const key = rest.join(':');
+      const entity = items.find((e) => e.entityType === type && e.entityKey === key);
+      return { entity, planItem: planByKey.get(key) };
+    },
+    loadAiBridgeSection
+  );
+
+  const expandBtn = document.getElementById('aiBridgeExpandBtn');
+  if (expandBtn) expandBtn.onclick = () => { aiBridgeExpanded.add(aiBridgeTab); renderAiBridgeTabContent(); };
+}
+
+function aiBridgeCardHtml(e, planItem) {
+  return `<div class="action-card" style="cursor:default;">
+    <div class="action-card-title">${e.entityType === 'product' ? '📦' : '📣'} ${UI.escapeHtml(e.entityName)}</div>
+    <div class="action-card-metrics">
+      <span class="mono">CPA: ${e.cpa !== null ? e.cpa.toFixed(1) : '—'} جنيه</span>
+      <span class="mono">صرف: ${money(e.spend)} جنيه</span>
+      <span class="mono">نتائج: ${e.results ?? '—'}</span>
+    </div>
+    ${planItem?.reason ? `<div class="action-card-reasons">${UI.escapeHtml(planItem.reason)}</div>` : ''}
+    <div style="margin-top:6px;">${taskActionHtml(e)}</div>
+  </div>`;
+}
+
+function renderAiBridgeReview() {
+  const card = document.getElementById('aiBridgeReviewCard');
+  const body = document.getElementById('aiBridgeReviewBody');
+  const items = aiBridgeTasks.filter((t) => t.review_status === 'PENDING_REVIEW');
+  if (items.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  body.innerHTML = items
+    .map(
+      (t) => `
+      <div class="action-card" style="cursor:default;">
+        <div class="action-card-title">${UI.escapeHtml(t.title || t.product_name || 'مهمة')}</div>
+        <div class="action-card-metrics">
+          ${t.employee ? `<span>👤 ${UI.escapeHtml(t.employee.name)}</span>` : ''}
+          ${t.priority ? `<span>${PRIORITY_LABELS[t.priority] || t.priority}</span>` : ''}
+        </div>
+        ${t.employee_result ? `<div class="action-card-reasons"><b>نتيجة الموظف:</b> ${UI.escapeHtml(t.employee_result)}</div>` : ''}
+        <div class="action-status-row">
+          <button class="status-btn" data-approve="${t.id}">✓ اعتماد</button>
+          <button class="status-btn" data-reopen="${t.id}">↩ إعادة فتح المهمة</button>
+        </div>
+      </div>`
+    )
+    .join('');
+
+  body.querySelectorAll('[data-approve]').forEach((btn) => {
+    btn.onclick = async () => {
+      await TaskRecords.update(Number(btn.dataset.approve), { review_status: 'APPROVED' });
+      UI.toast('✅ تم الاعتماد');
+      await loadAiBridgeSection();
+    };
+  });
+  body.querySelectorAll('[data-reopen]').forEach((btn) => {
+    btn.onclick = async () => {
+      await TaskRecords.update(Number(btn.dataset.reopen), { status: 'IN_PROGRESS', review_status: null });
+      UI.toast('تم إعادة فتح المهمة');
+      await loadAiBridgeSection();
+    };
+  });
+}
+
+function renderAiBridgeInProgress() {
+  const card = document.getElementById('aiBridgeInProgressCard');
+  const body = document.getElementById('aiBridgeInProgressBody');
+  const items = aiBridgeTasks
+    .filter((t) => t.status === 'IN_PROGRESS')
+    .sort((a, b) => (a.priority === 'URGENT' ? -1 : 1) - (b.priority === 'URGENT' ? -1 : 1));
+  if (items.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  body.innerHTML = items
+    .slice(0, 6)
+    .map(
+      (t) => `
+      <div class="action-card" style="cursor:default;">
+        <div class="action-card-title">${UI.escapeHtml(t.title || t.product_name || 'مهمة')}</div>
+        <div class="action-card-metrics">
+          ${t.employee ? `<span>👤 ${UI.escapeHtml(t.employee.name)}</span>` : '<span class="faint">مش متعين</span>'}
+          <span>${PRIORITY_LABELS[t.priority] || '—'}</span>
+          ${t.due_date ? `<span>⏰ ${UI.escapeHtml(t.due_date)}</span>` : ''}
+        </div>
+      </div>`
+    )
+    .join('');
 }
 
 init();

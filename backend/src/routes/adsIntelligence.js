@@ -509,6 +509,50 @@ async function resolveDecisionWindow(dateFrom, dateTo) {
   return { from: extent._max.date, to: extent._max.date, usedFallback: true };
 }
 
+// ---------------------------------------------------------------------------
+// AI Intelligence -> Manager Control bridge. A TaskRecord "links back" to the
+// live-computed entity it was created from via a synthetic
+// (source_entity_type, source_entity_key) pair — same idiom as
+// AdsDecisionReview above, since the recommendation itself is never its own
+// DB row. A linked task "blocks" converting the same entity into a new task
+// again unless it was cancelled, or completed AND manager-approved — that's
+// the only way a manager gets a fresh "تحويل إلى مهمة" for a genuine new cycle.
+// ---------------------------------------------------------------------------
+
+function taskBlocksConversion(task) {
+  if (!task) return false;
+  if (task.status === 'CANCELLED') return false;
+  if (task.status === 'COMPLETED' && task.review_status === 'APPROVED') return false;
+  return true;
+}
+
+/** @param {{entityType:string, entityKey:string}[]} pairs @returns {Promise<Map<string, object>>} keyed by "entityType:entityKey", most recent task per pair */
+async function loadLinkedTasks(pairs) {
+  if (pairs.length === 0) return new Map();
+  const rows = await prisma.taskRecord.findMany({
+    where: { OR: pairs.map(({ entityType, entityKey }) => ({ source_entity_type: entityType, source_entity_key: entityKey })) },
+    include: { employee: { select: { name: true } } },
+    orderBy: { created_at: 'desc' },
+  });
+  const map = new Map();
+  for (const t of rows) {
+    const k = `${t.source_entity_type}:${t.source_entity_key}`;
+    if (!map.has(k)) map.set(k, t); // rows are newest-first, so the first one seen per key is the most recent
+  }
+  return map;
+}
+
+function taskInfoFor(task) {
+  if (!task) return null;
+  return {
+    taskId: task.id,
+    status: task.status,
+    reviewStatus: task.review_status,
+    assignedToName: task.employee?.name || null,
+    blocksConversion: taskBlocksConversion(task),
+  };
+}
+
 router.get(
   '/decisions',
   asyncRoute(async (req, res) => {
@@ -552,9 +596,15 @@ router.get(
 
     const reviews = await prisma.adsDecisionReview.findMany({ where: { entity_key: { in: entities.map((e) => e.entityKey) } } });
     const reviewByKey = new Map(reviews.map((r) => [`${r.entity_type}:${r.entity_key}`, r.status]));
+    const taskByKey = await loadLinkedTasks(entities.map((e) => ({ entityType: e.entityType, entityKey: e.entityKey })));
     const stripHeavyFields = (e) => {
       const { campaigns, adBreakdown, ...rest } = e;
-      return { ...rest, hasCampaignBreakdown: !!campaigns, reviewStatus: reviewByKey.get(`${e.entityType}:${e.entityKey}`) || null };
+      return {
+        ...rest,
+        hasCampaignBreakdown: !!campaigns,
+        reviewStatus: reviewByKey.get(`${e.entityType}:${e.entityKey}`) || null,
+        task: taskInfoFor(taskByKey.get(`${e.entityType}:${e.entityKey}`)),
+      };
     };
 
     const visibleBuckets = {};
@@ -654,8 +704,88 @@ router.get(
     }
 
     const review = await prisma.adsDecisionReview.findUnique({ where: { entity_type_entity_key: { entity_type: type, entity_key: key } } }).catch(() => null);
+    const linkedTask = (await loadLinkedTasks([{ entityType: type, entityKey: key }])).get(`${type}:${key}`);
 
-    res.json({ ...entity, reason, recommendedAction, reviewStatus: review?.status || null, window });
+    res.json({ ...entity, reason, recommendedAction, reviewStatus: review?.status || null, task: taskInfoFor(linkedTask), window });
+  })
+);
+
+// Priority/task-type suggestions reuse the app's existing 3-tier priority
+// (js/task-engine.js TASK_PRIORITY) and existing task-type vocabulary
+// (TASK_TYPE) rather than inventing new ones — the manager can always
+// change either in the modal before creating the task.
+const PRIORITY_SUGGESTION = { STOP: 'URGENT', SCALE: 'IMPORTANT', OPTIMIZE: 'IMPORTANT', COLLECT_MORE_DATA: 'NORMAL' };
+const TASK_TYPE_SUGGESTION = { SCALE: 'SCALE', OPTIMIZE: 'REVIEW_PRODUCT', STOP: 'PAUSE_REVIEW', COLLECT_MORE_DATA: 'COLLECT_DATA' };
+
+router.post(
+  '/decisions/convert-to-task',
+  requireRole('ADMIN', 'MANAGER'),
+  asyncRoute(async (req, res) => {
+    const { entityType, entityKey, employeeId, priority, taskType, title, details, dueDate, executionDate, dateFrom, dateTo } = req.body || {};
+    if (!entityType || !entityKey || !title) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'entityType, entityKey, title مطلوبين.' });
+    }
+
+    // Re-run the real classification server-side rather than trusting whatever the client last saw — the snapshot must reflect genuinely current numbers.
+    const window = await resolveDecisionWindow(dateFrom, dateTo);
+    if (!window) return res.status(400).json({ error: 'NO_DATA', message: 'مفيش بيانات إعلانات مرفوعة لسه.' });
+    const allRows = await prisma.adsDailyMetric.findMany({ where: { date: { gte: window.from, lte: window.to } } });
+    const relevantRows = allRows.filter(isRelevantRow);
+    const products = await prisma.product.findMany({ select: { id: true, product_name: true } });
+    const thresholds = await loadThresholds();
+    const { entities } = classifyEntities(buildEntities(relevantRows, products), thresholds);
+    const entity = entities.find((e) => e.entityType === entityType && e.entityKey === entityKey);
+    if (!entity) return res.status(404).json({ error: 'NOT_FOUND', message: 'مفيش بيانات للعنصر ده في الفترة دي.' });
+
+    const existingTask = (await loadLinkedTasks([{ entityType, entityKey }])).get(`${entityType}:${entityKey}`);
+    if (taskBlocksConversion(existingTask)) {
+      return res.status(409).json({ error: 'TASK_EXISTS', message: 'فيه مهمة شغالة بالفعل على العنصر ده.', taskId: existingTask.id });
+    }
+
+    const cachedPlan = await prisma.adsActionPlan.findUnique({ where: { window_from_window_to: { window_from: window.from, window_to: window.to } } });
+    const planItem = cachedPlan ? JSON.parse(cachedPlan.plan_json).items.find((it) => it.entityKey === entityKey) : null;
+
+    const snapshot = {
+      classification: entity.classification,
+      priority: entity.priority,
+      confidence: entity.confidence,
+      metrics: { spend: entity.spend, results: entity.results, cpa: entity.cpa },
+      reason: planItem?.reason || null,
+      recommendedAction: planItem?.recommendedAction || null,
+      capturedAt: new Date().toISOString(),
+    };
+
+    const today = new Date().toISOString().slice(0, 10);
+    const created = await prisma.taskRecord.create({
+      data: {
+        date: executionDate || today,
+        execution_date: executionDate || today,
+        due_date: dueDate || null,
+        product_id: entityType === 'product' ? Number(entityKey) : null,
+        product_name: entity.entityName,
+        employee_id: employeeId ? Number(employeeId) : null,
+        created_by_id: req.user.id,
+        status: 'PENDING',
+        task_type: taskType || TASK_TYPE_SUGGESTION[entity.classification] || 'OTHER',
+        priority: priority || PRIORITY_SUGGESTION[entity.classification] || 'NORMAL',
+        title,
+        details: details || null,
+        related_campaign: entityType === 'campaign' ? entityKey : null,
+        source: 'ai_intelligence',
+        assignment_source: 'manager',
+        assigned_by: 'manager',
+        assigned_at: employeeId ? new Date() : null,
+        source_entity_type: entityType,
+        source_entity_key: entityKey,
+        ai_recommendation_snapshot: JSON.stringify(snapshot),
+      },
+    });
+
+    await prisma.taskActivityLog.create({
+      data: { date: created.date, task_id: created.id, action_type: 'ADD', details_text: `اتعمل من توصية AI Intelligence (${entity.classification})`, actor_id: req.user.id },
+    });
+
+    res.status(201).json(created);
   })
 );
 

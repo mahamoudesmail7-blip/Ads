@@ -23,17 +23,37 @@ router.use(requireAuth);
 
 const TERMINAL = new Set(['COMPLETED', 'CANCELLED']);
 const EMPLOYEE_ALLOWED_STATUSES = new Set(['COMPLETED', 'NOT_COMPLETED', 'CANCELLED']);
-// Fields task-store.js's employee-facing mutations (completeTask/failTask/cancelTaskByEmployee) actually send.
+// Fields task-store.js's employee-facing mutations (completeTask/failTask/cancelTaskByEmployee) actually send,
+// plus employee_result — the new "submit result" flow (work.html's "📤 رفع النتيجة" button).
 const EMPLOYEE_ALLOWED_FIELDS = new Set([
-  'status', 'completed_at', 'not_completed_reason', 'not_completed_note', 'cancelled_at', 'cancelled_by', 'cancel_reason',
+  'status', 'completed_at', 'not_completed_reason', 'not_completed_note', 'cancelled_at', 'cancelled_by', 'cancel_reason', 'employee_result',
 ]);
+
+// Real, active login accounts a manager can assign a task to — deliberately
+// separate from GET /api/team (which lists the older TeamMember rows the
+// legacy tasks.html/work.html auto-assignment system uses). TaskRecord.
+// employee_id is a real FK to User.id, so this is the only list that's
+// actually valid to populate an assignment dropdown from.
+router.get('/assignable-employees', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
+  const rows = await prisma.user.findMany({
+    where: { status: 'ACTIVE', role: { in: ['EMPLOYEE', 'MANAGER', 'ADMIN'] } },
+    select: { id: true, name: true, role: true },
+    orderBy: { name: 'asc' },
+  });
+  res.json(rows);
+}));
+
+// employee: {name} is included alongside the existing raw employee_id — purely
+// additive, existing callers that only read employee_id are unaffected; the
+// Manager Control AI-bridge review section is the first to read the name.
+const WITH_EMPLOYEE = { include: { employee: { select: { name: true } } } };
 
 router.get('/', asyncRoute(async (req, res) => {
   const { date, productId, id } = req.query;
-  if (id) return res.json(await prisma.taskRecord.findUnique({ where: { id: Number(id) } }));
-  if (productId && date) return res.json(await prisma.taskRecord.findMany({ where: { product_id: Number(productId), date } }));
-  if (date) return res.json(await prisma.taskRecord.findMany({ where: { date } }));
-  res.json(await prisma.taskRecord.findMany());
+  if (id) return res.json(await prisma.taskRecord.findUnique({ where: { id: Number(id) }, ...WITH_EMPLOYEE }));
+  if (productId && date) return res.json(await prisma.taskRecord.findMany({ where: { product_id: Number(productId), date }, ...WITH_EMPLOYEE }));
+  if (date) return res.json(await prisma.taskRecord.findMany({ where: { date }, ...WITH_EMPLOYEE }));
+  res.json(await prisma.taskRecord.findMany(WITH_EMPLOYEE));
 }));
 
 router.get('/pending-before/:date', asyncRoute(async (req, res) => {
@@ -66,6 +86,9 @@ router.post('/', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) =>
       diff: b.diff ?? null,
       due_date: b.due_date ?? null,
       execution_date: b.execution_date ?? null,
+      source_entity_type: b.source_entity_type ?? null,
+      source_entity_key: b.source_entity_key ?? null,
+      ai_recommendation_snapshot: b.ai_recommendation_snapshot ?? null,
     },
   });
   res.status(201).json(created);
@@ -93,12 +116,26 @@ router.patch('/:id', asyncRoute(async (req, res) => {
     if (req.body.status === 'CANCELLED' && (!req.body.cancel_reason || !String(req.body.cancel_reason).trim())) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'لازم تكتب سبب الإلغاء.' });
     }
+    if (req.body.employee_result !== undefined) {
+      if (req.body.status !== 'COMPLETED') {
+        return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'رفع النتيجة لازم يكون مع إنهاء المهمة.' });
+      }
+      if (!String(req.body.employee_result).trim()) {
+        return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'لازم تكتب ملخص النتيجة.' });
+      }
+    }
   }
 
   const data = { ...req.body };
   if (data.completed_at) data.completed_at = new Date(data.completed_at);
   if (data.cancelled_at) data.cancelled_at = new Date(data.cancelled_at);
   if (data.assigned_at) data.assigned_at = new Date(data.assigned_at);
+  // Submitting a result never changes what `status` itself means (COMPLETED
+  // still just means "the work is done") — it adds an independent approval
+  // layer on top, so every task created/completed before this feature (or
+  // completed without going through "submit result") keeps review_status
+  // null forever and is completely unaffected.
+  if (data.employee_result !== undefined) data.review_status = 'PENDING_REVIEW';
 
   const updated = await prisma.taskRecord.update({ where: { id: existing.id }, data });
   res.json(updated);

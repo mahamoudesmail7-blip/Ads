@@ -5,6 +5,7 @@
 import { Products, DailyOrders, Settings, ActionLog, ACTION_STATUS, DailyReports, TeamMembers, TaskAssignments, TaskRecords, TaskActivityLog, TASK_STATUS } from './db.js';
 import * as A from './analytics.js';
 import * as UI from './ui-common.js';
+import { api } from './api-client.js';
 import { buildProductBundle } from './product-bundle.js';
 import { classifyDailyStatus } from './daily-monitor.js';
 import { analyzeProductDecision } from './decision-engine.js';
@@ -23,6 +24,7 @@ let workItems = []; // actionable items today: {product, a, dailyStatus, decisio
 let carriedOver = []; // {product, task, originalDate, employeeId}
 let managerTasks = []; // task_records for asOfDate (both 🤖 automatic and 👑 manager-added) — the "employee dashboard" view for the 👑 تحكم المدير task system
 let teamActivity = []; // task_activity_log for asOfDate — 📅 نشاط الفريق اليوم
+let currentUser = null; // real logged-in User (id/role) — an EMPLOYEE viewer sees only their own manager-assigned tasks below; ADMIN/MANAGER keep the full team view unchanged
 
 const PRIORITY_LABELS = { URGENT: '🔴 عاجل', IMPORTANT: '🟠 مهم', NORMAL: '🟡 عادي' };
 const ACTIVITY_LABELS = {
@@ -40,7 +42,12 @@ const ACTIVITY_LABELS = {
 
 async function init() {
   UI.renderSidebar('work');
-  await TeamMembers.seedDefaultTeam();
+  currentUser = await api.get('/api/auth/me').catch(() => null);
+  // Seeding the default team is an ADMIN/MANAGER-only write server-side
+  // (POST /api/team/seed-default) — an EMPLOYEE viewer loading this page to
+  // see their own tasks has nothing to seed and must never crash the whole
+  // page on a 403 just because a manager hasn't opened it first today.
+  if (currentUser?.role !== 'EMPLOYEE') await TeamMembers.seedDefaultTeam();
 
   const picker = document.getElementById('asOfDatePicker');
   picker.value = state.asOfDate;
@@ -113,7 +120,14 @@ async function refresh() {
     employees,
     existingAssignMap
   );
-  await TaskAssignments.bulkAssignNew(state.asOfDate, fullAssignMap, [...existingAssignMap.keys()]);
+  // Persisting new auto-assignments is an ADMIN/MANAGER-only write server-side
+  // (POST /api/assignments/bulk) — an EMPLOYEE viewer still gets the computed
+  // (client-side, no network write) assignment map for rendering below, just
+  // without trying to save it; whatever a manager already persisted today
+  // still reads back normally via the GET above.
+  if (currentUser?.role !== 'EMPLOYEE') {
+    await TaskAssignments.bulkAssignNew(state.asOfDate, fullAssignMap, [...existingAssignMap.keys()]);
+  }
 
   const todayLog = await ActionLog.forDate(state.asOfDate);
   const todayLogMap = new Map(todayLog.map((r) => [r.product_id, r]));
@@ -139,7 +153,10 @@ async function refresh() {
   // 📋 مهام من المدير (👑 تحكم المدير's task_records) — the same materialize
   // + fetch pattern manager.html uses, so this page always reflects the
   // exact same tasks a manager sees/assigns, including manual additions.
-  await materializeAutoTasksForDate(state.asOfDate);
+  // Materializing (POST /api/tasks under the hood) is ADMIN/MANAGER-only —
+  // an EMPLOYEE viewer just reads whatever already exists rather than
+  // triggering a write, same reasoning as the assignment block above.
+  if (currentUser?.role !== 'EMPLOYEE') await materializeAutoTasksForDate(state.asOfDate);
   managerTasks = await TaskRecords.forDate(state.asOfDate);
   teamActivity = await TaskActivityLog.forDate(state.asOfDate);
 
@@ -395,7 +412,7 @@ function promptRequired(message) {
 
 function managerTaskCardHtml(t) {
   const type = TASK_TYPE[t.task_type];
-  const emp = employees.find((e) => e.id === t.employee_id);
+  const empName = t.employee?.name || employees.find((e) => e.id === t.employee_id)?.name;
   return `
   <div class="action-card" data-task-id="${t.id}">
     <div class="action-card-title">${t.source === 'manager' ? '👑' : '🤖'} ${type ? type.icon + ' ' + type.label : t.task_type} — ${UI.escapeHtml(t.title)}</div>
@@ -403,13 +420,14 @@ function managerTaskCardHtml(t) {
       ${t.product_name ? `<span>📦 ${UI.escapeHtml(t.product_name)}</span>` : ''}
       ${t.related_campaign ? `<span>📣 ${UI.escapeHtml(t.related_campaign)}</span>` : ''}
       <span>${PRIORITY_LABELS[t.priority] || t.priority}</span>
-      <span>👤 ${emp ? UI.escapeHtml(emp.name) : '—'}</span>
+      <span>👤 ${empName ? UI.escapeHtml(empName) : '—'}</span>
       <span class="faint">بواسطة: ${t.assigned_by === 'manager' ? '👑 المدير' : '🤖 تلقائي'}</span>
     </div>
-    ${t.details ? `<div class="action-card-reasons">${UI.escapeHtml(t.details)}</div>` : ''}
+    ${t.details ? `<div class="action-card-reasons" style="white-space:pre-wrap;">${UI.escapeHtml(t.details)}</div>` : ''}
     ${t.manager_note ? `<div class="action-card-reasons">📝 ملاحظة المدير: ${UI.escapeHtml(t.manager_note)}</div>` : ''}
     <div class="action-status-row" data-manager-task-actions="${t.id}">
       <span class="status-btn" data-complete>✓ إنهاء المهمة</span>
+      <span class="status-btn" data-submit-result>📤 رفع النتيجة</span>
       <span class="status-btn" data-cancel>🔴 إلغاء</span>
     </div>
   </div>`;
@@ -417,12 +435,17 @@ function managerTaskCardHtml(t) {
 
 function renderManagerTasks() {
   const body = document.getElementById('managerTasksBody');
-  const visible = (state.employeeFilter === 'ALL' ? managerTasks : managerTasks.filter((t) => String(t.employee_id) === state.employeeFilter)).filter((t) =>
+  // An EMPLOYEE viewer only cares about their own assigned tasks ("مهامي" —
+  // spec §7); ADMIN/MANAGER keep seeing the full team's tasks exactly as
+  // before this feature.
+  const forViewer =
+    currentUser?.role === 'EMPLOYEE' ? managerTasks.filter((t) => t.employee_id === currentUser.id) : managerTasks;
+  const visible = (state.employeeFilter === 'ALL' ? forViewer : forViewer.filter((t) => String(t.employee_id) === state.employeeFilter)).filter((t) =>
     OPEN_STATUSES.has(t.status)
   );
 
   if (visible.length === 0) {
-    body.innerHTML = '<div class="empty-state">لا توجد مهام من المدير حاليًا.</div>';
+    body.innerHTML = `<div class="empty-state">${currentUser?.role === 'EMPLOYEE' ? 'مفيش مهام متعينة لك حاليًا.' : 'لا توجد مهام من المدير حاليًا.'}</div>`;
     return;
   }
 
@@ -436,6 +459,17 @@ function renderManagerTasks() {
       await completeTask(id);
       UI.toast('✅ تم إنهاء المهمة');
       await refresh();
+    };
+    row.querySelector('[data-submit-result]').onclick = async () => {
+      const result = promptRequired('ملخص النتيجة — إيه اللي اتعمل؟ (مطلوب):');
+      if (result === null) return;
+      try {
+        await api.patch(`/api/tasks/${id}`, { status: 'COMPLETED', completed_at: new Date().toISOString(), employee_result: result });
+        UI.toast('✅ اتبعتت النتيجة — المهمة دلوقتي تحتاج مراجعة المدير');
+        await refresh();
+      } catch (err) {
+        UI.toast(err.message, 'error');
+      }
     };
     row.querySelector('[data-cancel]').onclick = async () => {
       const reason = promptRequired('سبب إلغاء المهمة (مطلوب):');
