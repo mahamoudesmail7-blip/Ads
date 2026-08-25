@@ -517,6 +517,17 @@ model AdsDailyMetric {
   meta_purchases     Int?
   meta_revenue       Float?
   meta_roas          Float?
+  // Meta's own objective-agnostic outcome metric — always present in a
+  // standard export regardless of what the campaign optimizes for, unlike
+  // meta_purchases (only meaningful for purchase-objective campaigns).
+  // result_indicator carries what "Results" actually counted for that row
+  // (e.g. "actions:offsite_conversion.fb_pixel_purchase") so it's never a
+  // black box. campaign_delivery ("active"/"paused") lets analysis exclude
+  // paused campaigns from "why is this still spending" alerts.
+  results            Int?
+  cost_per_result    Float?
+  result_indicator   String?
+  campaign_delivery  String?
   matched_product_id Int?
   matched_product    Product?  @relation(fields: [matched_product_id], references: [id], onDelete: SetNull)
   match_confidence   Float?

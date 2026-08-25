@@ -10,6 +10,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { prisma } from '../prisma.js';
 import { parseFile, guessColumnMapping, validateRows, matchCampaignToProduct, CANONICAL_FIELDS } from '../services/adsImport.js';
+import { aggregateMetrics, aggregateByCampaign, hasDateVariety, detectProblems, buildDecisions, buildExecutiveSummary, MIN_SPEND_FOR_VERDICT } from '../services/campaignAnalysis.js';
 import { netProfit, revenue } from '../../../js/profit.js';
 
 const router = Router();
@@ -137,6 +138,10 @@ router.post(
         meta_purchases: r.meta_purchases,
         meta_revenue: r.meta_revenue,
         meta_roas: r.meta_roas,
+        results: r.results,
+        cost_per_result: r.cost_per_result,
+        result_indicator: r.result_indicator,
+        campaign_delivery: r.campaign_delivery,
         matched_product_id: match.productId,
         match_confidence: match.confidence,
         match_method: match.method,
@@ -205,12 +210,42 @@ router.get(
       })
       .filter((u) => u.warningCount > 0);
 
+    // Two genuinely different problem categories, per explicit user direction:
+    // unmatched campaigns are a business-mapping gap (optional, for product
+    // profitability only) — never framed as something blocking ads analysis,
+    // which reads AdsDailyMetric directly and needs no product link at all.
     res.json({
       totalMetricRows: totalMetrics,
-      unmatchedCampaignCount: unmatchedCampaigns.length,
-      unmatchedCampaigns,
-      importIssues,
+      adsDataQuality: {
+        importIssues, // per-upload row-level warnings (missing dates/spend/etc.) from the validation step
+      },
+      businessMapping: {
+        note: 'تحليل أداء الحملات شغال بالكامل من غير الحاجة للربط ده. الربط بيضيف بس تحليل الربحية الحقيقية للمنتج.',
+        unmatchedCampaignCount: unmatchedCampaigns.length,
+        unmatchedCampaigns,
+      },
     });
+  })
+);
+
+// Manual product linking — the optional Business Mapping layer, deliberately
+// separate from ads analysis. A human picks the product explicitly (or
+// accepts a suggested match); never auto-links on a low-confidence guess.
+router.post(
+  '/campaigns/link-product',
+  asyncRoute(async (req, res) => {
+    const { campaignName, productId } = req.body || {};
+    if (!campaignName || !productId) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اسم الحملة والمنتج مطلوبين.' });
+    }
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) } });
+    if (!product) return res.status(404).json({ error: 'NOT_FOUND', message: 'المنتج ده مش موجود.' });
+
+    const updated = await prisma.adsDailyMetric.updateMany({
+      where: { campaign_name: campaignName },
+      data: { matched_product_id: product.id, match_method: 'manual', match_confidence: 1 },
+    });
+    res.json({ updatedRows: updated.count, productId: product.id, productName: product.product_name });
   })
 );
 
@@ -300,6 +335,125 @@ router.get(
 
     results.sort((a, b) => b.meta.spend - a.meta.spend);
     res.json({ dateFrom: dateFrom || null, dateTo: dateTo || null, products: results });
+  })
+);
+
+// ============================================================================
+// Campaign performance analysis — Critical Fixes 1-6. Deliberately reads
+// ONLY AdsDailyMetric (no product/order join anywhere below) so campaign
+// analysis works fully regardless of whether campaign->product matching
+// succeeded — matching is an optional extra layer (/true-performance above),
+// never a prerequisite. See services/campaignAnalysis.js for the actual math.
+// ============================================================================
+
+function addDays(dateStr, days) {
+  const d = new Date(`${dateStr}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Resolves the current + previous comparison window from query params, falling back to "all data available" when no explicit range is given. Previous period is the same length immediately preceding the current one — returns null previous bounds when there's nothing before the earliest data (so the caller can show an honest "no history yet" state instead of comparing against nothing). */
+async function resolveDateWindows(dateFrom, dateTo) {
+  const extent = await prisma.adsDailyMetric.aggregate({ _min: { date: true }, _max: { date: true } });
+  const dataMin = extent._min.date;
+  const dataMax = extent._max.date;
+  if (!dataMin) return { current: null, previous: null };
+
+  const currentFrom = dateFrom || dataMin;
+  const currentTo = dateTo || dataMax;
+  const spanDays = Math.round((new Date(currentTo) - new Date(currentFrom)) / 86400000) + 1;
+  const previousTo = addDays(currentFrom, -1);
+  const previousFrom = addDays(previousTo, -(spanDays - 1));
+  const previousHasData = previousTo >= dataMin;
+
+  return {
+    current: { from: currentFrom, to: currentTo },
+    previous: previousHasData ? { from: previousFrom, to: previousTo } : null,
+  };
+}
+
+async function loadMetricsInRange(window) {
+  if (!window) return [];
+  return prisma.adsDailyMetric.findMany({ where: { date: { gte: window.from, lte: window.to } } });
+}
+
+router.get(
+  '/analysis',
+  asyncRoute(async (req, res) => {
+    const { dateFrom, dateTo } = req.query;
+    const { current, previous } = await resolveDateWindows(dateFrom, dateTo);
+    if (!current) {
+      return res.json({ hasData: false, message: 'مفيش بيانات إعلانات مرفوعة لسه — ارفع ملف الأول.' });
+    }
+
+    const [currentRows, previousRows] = await Promise.all([loadMetricsInRange(current), loadMetricsInRange(previous)]);
+
+    const overview = aggregateMetrics(currentRows);
+    const previousOverview = previous ? aggregateMetrics(previousRows) : null;
+    const campaigns = aggregateByCampaign(currentRows);
+    const previousCampaigns = previous ? aggregateByCampaign(previousRows) : [];
+    const accountAvg = { cpa: overview.cpa, spend: overview.spend / Math.max(campaigns.length, 1) };
+
+    const problems = detectProblems(campaigns, accountAvg, { previousCampaigns });
+    const decisions = buildDecisions(campaigns, accountAvg, problems);
+    const summary = buildExecutiveSummary({ overview, previousOverview, problems, decisions });
+
+    campaigns.sort((a, b) => (a.cpa === null) - (b.cpa === null) || a.cpa - b.cpa); // best (lowest real) CPA first, unjudgeable (null) ones last
+
+    res.json({
+      hasData: true,
+      window: current,
+      previousWindow: previous,
+      hasHistory: !!previous,
+      hasDateVariety: hasDateVariety(currentRows),
+      minSpendForVerdict: MIN_SPEND_FOR_VERDICT,
+      overview,
+      previousOverview,
+      campaigns,
+      problems,
+      decisions,
+      summary,
+    });
+  })
+);
+
+router.get(
+  '/campaign-detail',
+  asyncRoute(async (req, res) => {
+    const { name, dateFrom, dateTo } = req.query;
+    if (!name) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اسم الحملة مطلوب.' });
+
+    const { current } = await resolveDateWindows(dateFrom, dateTo);
+    const allRows = current ? await loadMetricsInRange(current) : [];
+    const campaignRows = allRows.filter((r) => (r.campaign_name || '(بدون اسم)') === name);
+    if (campaignRows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: 'مفيش بيانات لحملة بالاسم ده في الفترة دي.' });
+
+    const summaryMetrics = aggregateMetrics(campaignRows);
+    const accountAvg = aggregateMetrics(allRows);
+
+    // Daily breakdown for a real trend line — only meaningful once the data spans more than one date.
+    const byDate = new Map();
+    for (const r of campaignRows) {
+      if (!byDate.has(r.date)) byDate.set(r.date, []);
+      byDate.get(r.date).push(r);
+    }
+    const dailySeries = [...byDate.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([date, rows]) => ({ date, ...aggregateMetrics(rows) }));
+
+    // Related ad-level rows, if the export included ad_name — spec: "Related Ads" section, only shown when the data actually supports it.
+    const adRows = campaignRows.filter((r) => r.ad_name);
+    const relatedAds = adRows.length > 0 ? aggregateByCampaign(adRows.map((r) => ({ ...r, campaign_name: r.ad_name }))) : [];
+
+    res.json({
+      campaignName: name,
+      delivery: campaignRows.find((r) => r.campaign_delivery)?.campaign_delivery || null,
+      hasDateVariety: dailySeries.length > 1,
+      summary: summaryMetrics,
+      accountAvg,
+      dailySeries,
+      relatedAds,
+    });
   })
 );
 

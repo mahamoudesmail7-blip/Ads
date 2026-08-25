@@ -19,7 +19,8 @@ import { mapProductByName } from '../../../js/product-mapping.js';
 const COLUMN_KEYWORDS = {
   date: ['reporting starts', 'day', 'date'],
   campaign_name: ['campaign name'],
-  campaign_id: ['campaign id', 'campaign delivery id'],
+  campaign_id: ['campaign id'],
+  campaign_delivery: ['campaign delivery'],
   adset_name: ['ad set name', 'adset name'],
   adset_id: ['ad set id', 'adset id'],
   ad_name: ['ad name'],
@@ -41,12 +42,20 @@ const COLUMN_KEYWORDS = {
   meta_purchases: ['website purchases', 'purchases'],
   meta_revenue: ['purchases conversion value', 'website purchases conversion value', 'purchase value', 'conversion value'],
   meta_roas: ['purchase roas', 'roas', 'return on ad spend'],
+  // Meta's own objective-agnostic "Results" / "Cost per results" — always
+  // present in a standard export regardless of campaign objective, unlike
+  // meta_purchases which only means something for purchase-objective
+  // campaigns. result_indicator says what "Results" actually counted.
+  results: ['results'],
+  cost_per_result: ['cost per results', 'cost per result'],
+  result_indicator: ['result indicator'],
 };
 
 const CANONICAL_FIELDS = Object.keys(COLUMN_KEYWORDS);
 const NUMERIC_FIELDS = new Set([
   'spend', 'impressions', 'reach', 'frequency', 'clicks', 'ctr', 'cpc', 'cpm',
   'landing_page_views', 'leads', 'add_to_cart', 'initiate_checkout', 'meta_purchases', 'meta_revenue', 'meta_roas',
+  'results', 'cost_per_result',
 ]);
 
 export { CANONICAL_FIELDS };
