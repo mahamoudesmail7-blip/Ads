@@ -43,6 +43,7 @@ model User {
   lost_order_notes   LostOrderNote[]
   lost_order_actions LostOrderHistory[]
   ads_uploads        AdsUpload[]
+  ads_decision_reviews AdsDecisionReview[]
 
   @@map("users")
 }
@@ -538,4 +539,42 @@ model AdsDailyMetric {
   @@index([campaign_name])
   @@index([matched_product_id])
   @@map("ads_daily_metrics")
+}
+
+// User "Mark as Reviewed" / "Dismiss" on a decision-engine recommendation
+// (AI Intelligence Phase 2, spec §21) — the app only ever records that a
+// human looked at a recommendation; it never touches Meta budgets/campaigns
+// itself. entity_key is a product id (as a string) or a campaign name,
+// matching decisionEngine.js's entityKey.
+model AdsDecisionReview {
+  id            Int       @id @default(autoincrement())
+  entity_type   String // product | campaign
+  entity_key    String
+  status        String // REVIEWED | DISMISSED
+  reviewed_by_id Int?
+  reviewed_by   User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
+  reviewed_at   DateTime  @default(now())
+
+  @@unique([entity_type, entity_key])
+  @@map("ads_decision_reviews")
+}
+
+// Cached AI Action Plan (AI Intelligence Phase 2, spec §9) — the Claude
+// Marketing Performance Decision Agent is given the already-computed,
+// classified, prioritized entity list from decisionEngine.js (never raw
+// CSV rows) and asked only to write the natural-language reason/action text
+// plus a short cross-category summary. input_hash lets a page load reuse
+// the cached plan instead of calling the API again when nothing changed;
+// the "🔄 تحديث الخطة" button forces a fresh call.
+model AdsActionPlan {
+  id          Int      @id @default(autoincrement())
+  window_from String
+  window_to   String
+  input_hash  String
+  plan_json   String // JSON-as-String — {summary, items: [{entityType, entityKey, reason, recommendedAction}, ...]}
+  source      String   @default("AI") // AI | FALLBACK — FALLBACK means the Claude call failed and deterministic templates were used instead
+  generated_at DateTime @default(now())
+
+  @@unique([window_from, window_to])
+  @@map("ads_action_plans")
 }

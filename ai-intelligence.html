@@ -14,7 +14,7 @@
       <div class="page-header">
         <div>
           <h1>🧠 AI Intelligence</h1>
-          <div class="subtitle">المرحلة 1: رفع بيانات Meta Ads، ربط الأعمدة، وأداء البيزنس الحقيقي</div>
+          <div class="subtitle">نظام القرار اليومي — إيه اللي أعمله النهاردة؟</div>
         </div>
       </div>
 
@@ -46,45 +46,42 @@
         </div>
       </div>
 
-      <!-- Date range control -->
+      <!-- Filters -->
       <div class="toolbar" style="margin-bottom:14px;">
-        <label class="faint" style="font-size:12.5px;">من: <input type="date" id="aiDateFrom" class="ltr" style="width:auto" /></label>
-        <label class="faint" style="font-size:12.5px;">إلى: <input type="date" id="aiDateTo" class="ltr" style="width:auto" /></label>
+        <button class="btn secondary small" id="filterToday">اليوم</button>
+        <button class="btn secondary small" id="filterYesterday">أمس</button>
+        <button class="btn secondary small" id="filterLast7">آخر 7 أيام</button>
+        <span class="faint">|</span>
+        <input type="date" id="aiDateFrom" class="ltr" style="width:auto" />
+        <input type="date" id="aiDateTo" class="ltr" style="width:auto" />
         <button class="btn secondary small" id="btnApplyDateRange">تطبيق</button>
-        <button class="btn secondary small" id="btnClearDateRange">كل الفترة</button>
       </div>
 
+      <div id="aiFallbackNote" class="faint" style="font-size:12.5px; display:none; margin-bottom:14px;"></div>
       <div id="aiNoDataState" class="empty-state" style="display:none; margin-bottom:22px;">مفيش بيانات إعلانات مرفوعة لسه — ارفع ملف من فوق الأول.</div>
+      <div id="aiNoActiveState" class="empty-state" style="display:none; margin-bottom:22px;"></div>
 
-      <div id="aiAnalysisWrap" style="display:none;">
-        <!-- AI Executive Summary -->
-        <div class="card" id="aiExecSummary" style="margin-bottom:22px; border-color:var(--accent-dim);"></div>
+      <div id="aiDashboard" style="display:none;">
+        <div class="stat-grid" id="aiSummaryTiles" style="margin-bottom:20px;"></div>
 
-        <div class="stat-grid" id="aiOverviewTiles" style="margin-bottom:22px;"></div>
+        <div class="card" id="aiActionPlanCard" style="margin-bottom:22px; border-color:var(--accent-dim);"></div>
 
-        <div class="section-title">🎯 مركز القرار (AI Decision Center)</div>
-        <div id="aiDecisionCenter" style="margin-bottom:22px;"></div>
+        <div id="aiNeedsMappingLine" class="faint" style="font-size:12.5px; margin-bottom:20px; display:none;"></div>
 
-        <div class="section-title">⚠️ مشاكل مكتشفة</div>
-        <div id="aiProblems" style="margin-bottom:22px;"></div>
+        <div id="aiBucketScale" class="ai-bucket" style="margin-bottom:22px;"></div>
+        <div id="aiBucketOptimize" class="ai-bucket" style="margin-bottom:22px;"></div>
+        <div id="aiBucketStop" class="ai-bucket" style="margin-bottom:22px;"></div>
+        <div id="aiBucketCollect" class="ai-bucket" style="margin-bottom:22px;"></div>
+        <div id="aiBucketOpportunities" class="ai-bucket" style="margin-bottom:22px;"></div>
 
-        <div class="section-title">📈 ترتيب الحملات</div>
-        <p class="muted" style="font-size:12.5px;">الأفضل (أقل CPA حقيقي) فوق — دوس على أي حملة لتفاصيلها. الحملات اللي صرفها أقل من الحد الأدنى للحكم (150 جنيه) معلّمة كده.</p>
-        <div class="table-wrap" style="margin-bottom:22px;">
-          <table class="data">
-            <thead>
-              <tr>
-                <th>الحملة</th>
-                <th>الحالة</th>
-                <th>الصرف</th>
-                <th>النتائج</th>
-                <th>CPA</th>
-                <th>CTR</th>
-                <th>ROAS</th>
-              </tr>
-            </thead>
-            <tbody id="aiCampaignsBody"></tbody>
-          </table>
+        <button class="btn secondary small" id="btnShowInactive" style="margin-bottom:8px;"></button>
+        <div id="aiInactiveWrap" style="display:none;">
+          <div class="table-wrap" style="margin-top:10px; margin-bottom:22px;">
+            <table class="data">
+              <thead><tr><th>الحملة</th><th>الحالة</th><th>الصرف</th><th>النتائج</th><th>CPA</th></tr></thead>
+              <tbody id="aiInactiveBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
 

@@ -1,74 +1,37 @@
-// ai-intelligence.js — page controller for ai-intelligence.html (AI Business
-// Intelligence). Upload -> column mapping -> real Campaign Performance
-// Analysis Engine (Executive Summary, Performance Overview, Problem
-// Detection, AI Decision Center, Campaign Ranking + Detail) -> Data Quality
-// Center (Ads Data Quality vs optional Business Mapping) -> optional True
-// Business Performance (product-linked profitability layer).
-//
-// Every number rendered here comes from backend/src/routes/adsIntelligence.js
-// and backend/src/services/campaignAnalysis.js, which read only real
-// uploaded AdsDailyMetric rows (and, for the optional True Performance
-// layer, real EasyOrdersOrder/DailyOrder/Product data) — nothing invented.
-// Campaign Performance Analysis never depends on Product Mapping; Product
-// Mapping is a separate, optional layer added only for profitability.
+// ai-intelligence.js — page controller for ai-intelligence.html: a Daily
+// Decision Dashboard, not an analytics dashboard. Upload -> column mapping
+// -> real product-first Decision Engine (backend/src/services/
+// productAnalysis.js + decisionEngine.js) -> a real Claude "Marketing
+// Performance Decision Agent" (backend/src/services/aiActionPlan.js) writes
+// the reason/action text on top of already-final numbers -> Top-3-by-
+// default sections with "عرض المزيد" -> a generalized entity-detail drawer
+// (product or standalone campaign) for drill-down. Data Quality Center and
+// True Business Performance (optional, product-linked profitability layer)
+// are unchanged from Phase 1.
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { Products } from './db.js';
 
-const FIELD_LABELS_AR = {
-  date: 'التاريخ',
-  campaign_name: 'اسم الحملة',
-  campaign_id: 'كود الحملة',
-  campaign_delivery: 'حالة الحملة',
-  adset_name: 'اسم المجموعة الإعلانية',
-  adset_id: 'كود المجموعة الإعلانية',
-  ad_name: 'اسم الإعلان',
-  ad_id: 'كود الإعلان',
-  creative_name: 'اسم الكرييتف',
-  creative_id: 'كود الكرييتف',
-  spend: 'الصرف',
-  impressions: 'مرات الظهور',
-  reach: 'الوصول',
-  frequency: 'التكرار',
-  clicks: 'النقرات',
-  ctr: 'CTR',
-  cpc: 'CPC',
-  cpm: 'CPM',
-  landing_page_views: 'مشاهدات صفحة الهبوط',
-  leads: 'الليدز',
-  add_to_cart: 'إضافة للسلة',
-  initiate_checkout: 'بدء الدفع',
-  meta_purchases: 'مشتريات (Meta)',
-  meta_revenue: 'إيراد (Meta)',
-  meta_roas: 'ROAS (Meta)',
-  results: 'النتائج (Results)',
-  cost_per_result: 'التكلفة لكل نتيجة',
-  result_indicator: 'مؤشر النتيجة',
-};
-
 const SOURCE_LABELS_AR = { easyorders: 'EasyOrders', daily_orders: 'إدخال يدوي', none: 'مفيش بيانات حقيقية' };
 
-const PROBLEM_TYPE_ICON = {
-  HIGH_SPEND_ZERO_RESULTS: '🚨',
-  HIGH_SPEND_LOW_RESULTS: '📉',
-  CPA_SPIKE: '⚠️',
-  CTR_DROP: '👀',
-};
-
-const DECISION_BUCKETS = [
-  { key: 'stop', title: '🔴 STOP / قلل الصرف', cardClass: 'EXIT' },
-  { key: 'fix', title: '🔧 يحتاج مراجعة وإصلاح', cardClass: 'FIX' },
-  { key: 'test', title: '🧪 اجمع بيانات أكتر / اختبر', cardClass: 'INSUFFICIENT_DATA' },
-  { key: 'scale', title: '🚀 قابل للتوسع', cardClass: 'SCALE' },
-  { key: 'opportunities', title: '💎 فرص مخفية', cardClass: 'RESTOCK' },
+const BUCKETS = [
+  { key: 'scale', containerId: 'aiBucketScale', title: '🚀 جاهز للتوسع', cardClass: 'SCALE', emptyText: 'مفيش منتج أو حملة وصلت لمستوى التوسع لسه في الفترة دي.' },
+  { key: 'optimize', containerId: 'aiBucketOptimize', title: '🟡 يحتاج تحسين', cardClass: 'FIX', emptyText: 'مفيش حاجة محتاجة تحسين دلوقتي.' },
+  { key: 'stop', containerId: 'aiBucketStop', title: '🔴 يحتاج تدخل فوري', cardClass: 'EXIT', emptyText: 'مفيش مشاكل حرجة دلوقتي.' },
+  { key: 'collectMoreData', containerId: 'aiBucketCollect', title: '🧪 يحتاج بيانات أكتر', cardClass: 'INSUFFICIENT_DATA', emptyText: 'كل الحملات النشطة معاها بيانات كافية لقرار.' },
+  { key: 'opportunities', containerId: 'aiBucketOpportunities', title: '💎 فرص مخفية', cardClass: 'RESTOCK', emptyText: 'مفيش فرص توسع واضحة بصرف منخفض دلوقتي.' },
 ];
+
+const PRIORITY_LABEL_AR = { HIGH: 'أولوية عالية', MEDIUM: 'أولوية متوسطة', LOW: 'أولوية منخفضة' };
+const CONFIDENCE_LABEL_AR = { HIGH: 'عالية', MEDIUM: 'متوسطة', LOW: 'منخفضة' };
 
 let currentUpload = null; // {uploadId, headers, guessedMapping}
 let currentDateFrom = null;
 let currentDateTo = null;
-let lastAnalysis = null; // last /analysis response, kept so the campaign-detail drawer can reuse its problems
+let lastDecisions = null; // last /decisions response (for the drawer's reason/action lookup)
 let productsCache = null;
 let linkTargetCampaign = null;
+let expandedBuckets = new Set();
 
 async function init() {
   UI.renderSidebar('aiintel');
@@ -77,21 +40,18 @@ async function init() {
   document.getElementById('btnCancelMapping').onclick = cancelMapping;
   document.getElementById('btnConfirmProcess').onclick = confirmAndProcess;
 
+  document.getElementById('filterToday').onclick = () => applyPresetRange(0, 0);
+  document.getElementById('filterYesterday').onclick = () => applyPresetRange(1, 1);
+  document.getElementById('filterLast7').onclick = () => applyPresetRange(6, 0);
   document.getElementById('btnApplyDateRange').onclick = () => {
     currentDateFrom = document.getElementById('aiDateFrom').value || null;
     currentDateTo = document.getElementById('aiDateTo').value || null;
-    loadAnalysis();
+    loadDecisions();
   };
-  document.getElementById('btnClearDateRange').onclick = () => {
-    currentDateFrom = null;
-    currentDateTo = null;
-    document.getElementById('aiDateFrom').value = '';
-    document.getElementById('aiDateTo').value = '';
-    loadAnalysis();
-  };
+  document.getElementById('btnShowInactive').onclick = toggleInactive;
 
   document.getElementById('aiCampaignDrawerOverlay').addEventListener('click', (e) => {
-    if (e.target.id === 'aiCampaignDrawerOverlay') closeCampaignDrawer();
+    if (e.target.id === 'aiCampaignDrawerOverlay') closeEntityDrawer();
   });
   document.getElementById('btnCancelLink').onclick = closeLinkModal;
   document.getElementById('btnConfirmLink').onclick = confirmLinkProduct;
@@ -99,13 +59,31 @@ async function init() {
     if (e.target.id === 'aiLinkProductOverlay') closeLinkModal();
   });
 
-  await Promise.all([loadAnalysis(), loadUploads(), loadDataQuality(), loadTruePerformance()]);
+  await Promise.all([loadDecisions(), loadUploads(), loadDataQuality(), loadTruePerformance()]);
 }
+
+function isoDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function applyPresetRange(fromDaysAgo, toDaysAgo) {
+  currentDateFrom = isoDaysAgo(fromDaysAgo);
+  currentDateTo = isoDaysAgo(toDaysAgo);
+  document.getElementById('aiDateFrom').value = currentDateFrom;
+  document.getElementById('aiDateTo').value = currentDateTo;
+  loadDecisions();
+}
+
+// ---------------------------------------------------------------------------
+// Upload + column mapping (unchanged from Phase 1)
+// ---------------------------------------------------------------------------
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(',')[1]); // strip the "data:...;base64," prefix
+    reader.onload = () => resolve(reader.result.split(',')[1]);
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -137,6 +115,15 @@ async function handleFileSelected(e) {
 }
 
 function renderMappingStep(result) {
+  const FIELD_LABELS_AR = {
+    date: 'التاريخ', campaign_name: 'اسم الحملة', campaign_id: 'كود الحملة', campaign_delivery: 'حالة الحملة',
+    adset_name: 'اسم المجموعة الإعلانية', adset_id: 'كود المجموعة الإعلانية', ad_name: 'اسم الإعلان', ad_id: 'كود الإعلان',
+    creative_name: 'اسم الكرييتف', creative_id: 'كود الكرييتف', spend: 'الصرف', impressions: 'مرات الظهور', reach: 'الوصول',
+    frequency: 'التكرار', clicks: 'النقرات', ctr: 'CTR', cpc: 'CPC', cpm: 'CPM', landing_page_views: 'مشاهدات صفحة الهبوط',
+    leads: 'الليدز', add_to_cart: 'إضافة للسلة', initiate_checkout: 'بدء الدفع', meta_purchases: 'مشتريات (Meta)',
+    meta_revenue: 'إيراد (Meta)', meta_roas: 'ROAS (Meta)', results: 'النتائج (Results)', cost_per_result: 'التكلفة لكل نتيجة',
+    result_indicator: 'مؤشر النتيجة',
+  };
   const body = document.getElementById('aiMappingBody');
   body.innerHTML = result.canonicalFields
     .map((field) => {
@@ -203,7 +190,7 @@ async function confirmAndProcess() {
 
     document.getElementById('aiMappingCard').style.display = 'none';
     currentUpload = null;
-    await Promise.all([loadAnalysis(), loadUploads(), loadDataQuality(), loadTruePerformance()]);
+    await Promise.all([loadDecisions(), loadUploads(), loadDataQuality(), loadTruePerformance()]);
   } catch (err) {
     statusEl.textContent = `⚠️ ${err.message}`;
   }
@@ -237,9 +224,7 @@ async function loadUploads() {
 }
 
 // ---------------------------------------------------------------------------
-// Data Quality Center — restructured: Ads Data Quality (import-time row
-// warnings) vs Business Mapping (optional campaign->product linking). The
-// second never implies the first is broken or that analysis is blocked.
+// Data Quality Center + manual product linking (unchanged from Phase 1)
 // ---------------------------------------------------------------------------
 
 async function loadDataQuality() {
@@ -314,7 +299,7 @@ async function confirmLinkProduct() {
     const result = await api.post('/api/ai-intelligence/campaigns/link-product', { campaignName: linkTargetCampaign, productId });
     UI.toast(`✅ اتربط ${result.updatedRows} صف بمنتج "${result.productName}"`);
     closeLinkModal();
-    await Promise.all([loadDataQuality(), loadTruePerformance(), loadAnalysis()]);
+    await Promise.all([loadDataQuality(), loadTruePerformance(), loadDecisions()]);
   } catch (err) {
     UI.toast(err.message, 'error');
   }
@@ -353,290 +338,331 @@ async function loadTruePerformance() {
 }
 
 // ---------------------------------------------------------------------------
-// Campaign Performance Analysis Engine — the real analysis, independent from
-// Product Mapping. Reads only /api/ai-intelligence/analysis.
+// Daily Decision Dashboard
 // ---------------------------------------------------------------------------
 
-async function loadAnalysis() {
+function money(n, decimals = 0) {
+  return n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: decimals });
+}
+
+async function loadDecisions() {
+  const params = {};
+  if (currentDateFrom) params.dateFrom = currentDateFrom;
+  if (currentDateTo) params.dateTo = currentDateTo;
+  const data = await api.get('/api/ai-intelligence/decisions', params);
+  lastDecisions = data.hasData ? data : null;
+
+  document.getElementById('aiNoDataState').style.display = data.hasData ? 'none' : 'block';
+  document.getElementById('aiNoActiveState').style.display = 'none';
+  document.getElementById('aiFallbackNote').style.display = 'none';
+  if (!data.hasData) {
+    document.getElementById('aiDashboard').style.display = 'none';
+    return;
+  }
+
+  if (data.usedFallback) {
+    const note = document.getElementById('aiFallbackNote');
+    note.style.display = 'block';
+    note.textContent = `مفيش بيانات لليوم — معروض آخر بيانات مرفوعة بتاريخ ${data.window.from}.`;
+  }
+
+  const hasActivity = data.activeSummary.activeProducts > 0 || data.activeSummary.activeCampaigns > 0;
+  if (!hasActivity) {
+    document.getElementById('aiDashboard').style.display = 'none';
+    const empty = document.getElementById('aiNoActiveState');
+    empty.style.display = 'block';
+    empty.textContent = 'مفيش حملات نشطة فيها صرف أو حالة Active خلال الفترة المختارة.';
+    return;
+  }
+
+  document.getElementById('aiDashboard').style.display = 'block';
+  renderSummaryTiles(data.activeSummary);
+  renderActionPlan(data.actionPlan, data.window);
+  renderNeedsMapping(data.needsMapping);
+  for (const b of BUCKETS) renderBucket(b, data.buckets[b.key], data.actionPlan);
+
+  const inactiveBtn = document.getElementById('btnShowInactive');
+  inactiveBtn.textContent = `عرض الحملات غير النشطة (${data.inactiveCount})`;
+  inactiveBtn.style.display = data.inactiveCount > 0 ? 'inline-flex' : 'none';
+  document.getElementById('aiInactiveWrap').style.display = 'none';
+}
+
+function renderSummaryTiles(s) {
+  const tiles = [
+    { label: '📦 منتجات نشطة', value: s.activeProducts },
+    { label: '📣 حملات نشطة', value: s.activeCampaigns },
+    { label: '💰 إجمالي الصرف', value: money(s.spend) + ' جنيه' },
+    { label: '🎯 إجمالي النتائج', value: s.results !== null ? money(s.results) : '—' },
+    { label: '📌 متوسط CPA', value: s.cpa !== null ? money(s.cpa, 1) + ' جنيه' : '—' },
+  ];
+  document.getElementById('aiSummaryTiles').innerHTML = tiles
+    .map((t) => `<div class="stat-tile"><div class="label">${t.label}</div><div class="value" style="font-size:22px;">${t.value}</div></div>`)
+    .join('');
+}
+
+function renderActionPlan(plan, window) {
+  const el = document.getElementById('aiActionPlanCard');
+  const items = plan.items || [];
+  const byKey = new Map(items.map((it) => [it.entityKey, it]));
+  const ranked = (lastDecisions ? Object.values(lastDecisions.buckets).flatMap((b) => b.items) : [])
+    .filter((e) => e.classification !== 'COLLECT_MORE_DATA')
+    .sort((a, b) => b.priorityScore - a.priorityScore)
+    .slice(0, 5);
+
+  const CLASS_ICON = { SCALE: '🚀', OPTIMIZE: '🟡', STOP: '🔴' };
+  const listHtml = ranked
+    .map((e, i) => {
+      const text = byKey.get(e.entityKey);
+      return `<div style="padding:8px 0; border-bottom:1px solid var(--border);">
+        <div style="font-size:13.5px;"><b>${i + 1}. ${CLASS_ICON[e.classification] || ''} ${UI.escapeHtml(e.entityName)}</b> <span class="faint">(CPA: ${e.cpa !== null ? e.cpa.toFixed(1) : '—'} جنيه)</span></div>
+        ${text ? `<div style="font-size:13px; margin-top:2px;">${UI.escapeHtml(text.recommendedAction)}</div>` : ''}
+      </div>`;
+    })
+    .join('');
+
+  el.innerHTML = `
+    <div class="section-title" style="margin-top:0;">🤖 خطة عمل اليوم</div>
+    <div style="font-size:13.5px; margin-bottom:10px;">${UI.escapeHtml(plan.summary)}</div>
+    ${listHtml || '<div class="faint" style="font-size:12.5px;">مفيش أولويات واضحة النهاردة.</div>'}
+    <div class="toolbar" style="margin-top:12px; margin-bottom:0;">
+      <button class="btn secondary small" id="btnRefreshPlan">🔄 تحديث الخطة</button>
+      ${plan.source === 'FALLBACK' ? '<span class="faint" style="font-size:11.5px;">النصوص دي مؤقتة (قوالب ثابتة) — التصنيف والأرقام صحيحة 100%.</span>' : ''}
+    </div>
+  `;
+  document.getElementById('btnRefreshPlan').onclick = async () => {
+    const btn = document.getElementById('btnRefreshPlan');
+    btn.disabled = true;
+    btn.textContent = 'بيحدّث...';
+    try {
+      await api.post('/api/ai-intelligence/decisions/generate-plan', { dateFrom: window.from, dateTo: window.to });
+      await loadDecisions();
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
+
+function renderNeedsMapping(nm) {
+  const el = document.getElementById('aiNeedsMappingLine');
+  if (nm.count === 0) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  el.innerHTML = `🔗 ${nm.count} حملة نشطة محتاجة ربط بمنتج — <a href="#aiDataQuality" style="color:var(--accent);">اربطها من مركز جودة البيانات تحت</a>.`;
+}
+
+function priorityBadgeColor(p) {
+  return p === 'HIGH' ? 'red' : p === 'MEDIUM' ? 'yellow' : 'gray';
+}
+
+function entityCardHtml(e, actionItem, cardClass) {
+  const reason = actionItem?.reason || '';
+  const action = actionItem?.recommendedAction || '';
+  return `
+    <div class="action-card ${cardClass}" style="cursor:pointer;" data-open-type="${e.entityType}" data-open-key="${UI.escapeHtml(e.entityKey)}">
+      <div class="action-card-title">${e.entityType === 'product' ? '📦' : '📣'} ${UI.escapeHtml(e.entityName)} <span class="badge ${priorityBadgeColor(e.priority)}" style="margin-inline-start:6px;">${PRIORITY_LABEL_AR[e.priority]}</span></div>
+      <div class="action-card-metrics">
+        <span class="mono">CPA: ${e.cpa !== null ? e.cpa.toFixed(1) : '—'} جنيه</span>
+        <span class="mono">صرف: ${money(e.spend)} جنيه</span>
+        <span class="mono">نتائج: ${e.results ?? '—'}</span>
+      </div>
+      ${reason ? `<div class="action-card-reasons">${UI.escapeHtml(reason)}</div>` : ''}
+      ${action ? `<div class="action-card-reasons" style="font-weight:600;">${UI.escapeHtml(action)}</div>` : ''}
+      <div class="action-card-confidence">الثقة: ${CONFIDENCE_LABEL_AR[e.confidence]}</div>
+      <div class="action-status-row">
+        <button class="status-btn" data-review="REVIEWED" data-type="${e.entityType}" data-key="${UI.escapeHtml(e.entityKey)}">✓ تمت المراجعة</button>
+        <button class="status-btn" data-review="DISMISSED" data-type="${e.entityType}" data-key="${UI.escapeHtml(e.entityKey)}">تجاهل</button>
+      </div>
+    </div>`;
+}
+
+function renderBucket(bucketDef, bucketData, plan) {
+  const el = document.getElementById(bucketDef.containerId);
+  const items = bucketData.items || [];
+  const byKey = new Map((plan.items || []).map((it) => [it.entityKey, it]));
+
+  if (items.length === 0) {
+    el.innerHTML = `<div class="section-title">${bucketDef.title}</div><div class="empty-state" style="font-size:13px;">${bucketDef.emptyText}</div>`;
+    return;
+  }
+
+  const expanded = expandedBuckets.has(bucketDef.key);
+  const shown = expanded ? items : items.slice(0, 3);
+  const remaining = items.length - shown.length;
+
+  el.innerHTML = `
+    <div class="section-title">${bucketDef.title} <span class="faint" style="font-weight:400; font-size:12px;">(${items.length})</span></div>
+    <div class="ai-bucket-cards">${shown.map((e) => entityCardHtml(e, byKey.get(e.entityKey), bucketDef.cardClass)).join('')}</div>
+    ${remaining > 0 ? `<button class="btn secondary small" data-expand="${bucketDef.key}" style="margin-top:8px;">عرض المزيد (${remaining})</button>` : ''}
+  `;
+
+  el.querySelectorAll('[data-open-type]').forEach((card) => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.status-btn')) return; // review/dismiss buttons handle their own click
+      openEntityDrawer(card.dataset.openType, card.dataset.openKey);
+    });
+  });
+  el.querySelectorAll('[data-review]').forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      await api.post('/api/ai-intelligence/decisions/review', { entityType: btn.dataset.type, entityKey: btn.dataset.key, status: btn.dataset.review });
+      UI.toast(btn.dataset.review === 'DISMISSED' ? 'تم التجاهل' : 'تم وضع علامة تمت المراجعة');
+      await loadDecisions();
+    };
+  });
+  const expandBtn = el.querySelector('[data-expand]');
+  if (expandBtn) {
+    expandBtn.onclick = () => {
+      expandedBuckets.add(bucketDef.key);
+      renderBucket(bucketDef, bucketData, plan);
+    };
+  }
+}
+
+async function toggleInactive() {
+  const wrap = document.getElementById('aiInactiveWrap');
+  if (wrap.style.display === 'block') {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'block';
+  const body = document.getElementById('aiInactiveBody');
+  body.innerHTML = '<tr><td colspan="5" class="empty-state">جارِ التحميل…</td></tr>';
   const params = {};
   if (currentDateFrom) params.dateFrom = currentDateFrom;
   if (currentDateTo) params.dateTo = currentDateTo;
   const data = await api.get('/api/ai-intelligence/analysis', params);
-  lastAnalysis = data.hasData ? data : null;
-
-  document.getElementById('aiNoDataState').style.display = data.hasData ? 'none' : 'block';
-  document.getElementById('aiAnalysisWrap').style.display = data.hasData ? 'block' : 'none';
-  if (!data.hasData) return;
-
-  renderExecSummary(data);
-  renderOverviewTiles(data);
-  renderDecisionCenter(data.decisions);
-  renderProblems(data.problems);
-  renderCampaignsTable(data);
-}
-
-function moneyOrDash(n, decimals = 0) {
-  return n === null || n === undefined ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: decimals });
-}
-
-function renderExecSummary(data) {
-  const { summary } = data;
-  const el = document.getElementById('aiExecSummary');
-  const problemHtml = summary.biggestProblem
-    ? `<b>${UI.escapeHtml(summary.biggestProblem.campaignName)}</b> — ${UI.escapeHtml(summary.biggestProblem.message)}`
-    : '✅ مفيش مشاكل حرجة ظاهرة دلوقتي.';
-  const opportunityHtml = summary.biggestOpportunity
-    ? `<b>${UI.escapeHtml(summary.biggestOpportunity.campaignName)}</b> — ${UI.escapeHtml(summary.biggestOpportunity.reason)}`
-    : 'مفيش فرصة واضحة لسه — محتاج بيانات أكتر أو فترة أطول.';
-
-  el.innerHTML = `
-    <div class="section-title" style="margin-top:0;">🤖 ملخص الذكاء الاصطناعي</div>
-    <div style="font-size:13.5px; margin-bottom:12px;">${UI.escapeHtml(summary.summary)}</div>
-    <div style="font-size:13px; margin-bottom:8px;"><b>🔴 أكبر مشكلة:</b> ${problemHtml}</div>
-    <div style="font-size:13px;"><b>💎 أكبر فرصة:</b> ${opportunityHtml}</div>
-    ${!data.hasDateVariety ? '<div class="faint" style="font-size:12px; margin-top:10px;">ملاحظة: البيانات الحالية ليوم واحد بس — مفيش اتجاه (Trend) ممكن يتحلل لحد ما تترفع بيانات لفترة أطول.</div>' : ''}
-  `;
-}
-
-function renderOverviewTiles(data) {
-  const { overview: o, previousOverview: p, hasHistory } = data;
-  const el = document.getElementById('aiOverviewTiles');
-
-  const changeSub = (curr, prev, invert = false) => {
-    if (!hasHistory || curr === null || prev === null || !prev) return '';
-    const pct = ((curr - prev) / prev) * 100;
-    const good = invert ? pct <= 0 : pct >= 0;
-    return `<div class="sub">${good ? '🟢' : '🔴'} ${UI.fmtPct(pct)} مقارنة بالفترة السابقة</div>`;
-  };
-
-  const tiles = [
-    { label: '💰 إجمالي الصرف', value: moneyOrDash(o.spend) + ' جنيه', sub: changeSub(o.spend, p?.spend, true) },
-    { label: `🎯 إجمالي النتائج${o.resultsSource === 'meta_purchases' ? ' (مشتريات)' : ''}`, value: o.results !== null ? moneyOrDash(o.results) : '—', sub: changeSub(o.results, p?.results, false) },
-    { label: '📌 متوسط CPA', value: o.cpa !== null ? moneyOrDash(o.cpa, 2) + ' جنيه' : '—', sub: changeSub(o.cpa, p?.cpa, true) },
-    { label: '👁️ مرات الظهور', value: o.impressions !== null ? moneyOrDash(o.impressions) : '—', sub: changeSub(o.impressions, p?.impressions, false) },
-    { label: '🖱️ النقرات', value: o.clicks !== null ? moneyOrDash(o.clicks) : '—', sub: changeSub(o.clicks, p?.clicks, false) },
-    { label: '📈 CTR', value: o.ctr !== null ? o.ctr.toFixed(2) + '%' : '—', sub: changeSub(o.ctr, p?.ctr, false) },
-    { label: '💵 CPC', value: o.cpc !== null ? moneyOrDash(o.cpc, 2) + ' جنيه' : '—', sub: changeSub(o.cpc, p?.cpc, true) },
-    { label: '📺 CPM', value: o.cpm !== null ? moneyOrDash(o.cpm, 2) + ' جنيه' : '—', sub: changeSub(o.cpm, p?.cpm, true) },
-    { label: `🔁 ROAS${o.revenueEstimated ? ' (تقديري)' : ''}`, value: o.roas !== null ? o.roas.toFixed(2) + 'x' : 'مفيش بيانات إيراد كفاية', sub: changeSub(o.roas, p?.roas, false) },
-  ];
-
-  el.innerHTML = tiles
-    .map(
-      (t) => `<div class="stat-tile">
-        <div class="label">${t.label}</div>
-        <div class="value" style="font-size:20px;">${t.value}</div>
-        ${t.sub || ''}
-      </div>`
-    )
-    .join('');
-}
-
-function decisionCardHtml(bucketKey, item) {
-  const m = item.metrics;
-  return `
-    <div class="action-card ${DECISION_BUCKETS.find((b) => b.key === bucketKey).cardClass}" data-open="${UI.escapeHtml(item.campaignName)}" style="cursor:pointer;">
-      <div class="action-card-title">${UI.escapeHtml(item.campaignName)}</div>
-      <div class="action-card-metrics">
-        <span class="mono">صرف: ${moneyOrDash(m.spend)} جنيه</span>
-        <span class="mono">نتائج: ${m.results ?? '—'}</span>
-        <span class="mono">CPA: ${m.cpa !== null ? m.cpa.toFixed(1) : '—'}</span>
-      </div>
-      <div class="action-card-reasons">${UI.escapeHtml(item.reason)}</div>
-      <div class="action-card-confidence">الثقة: ${item.confidence === 'HIGH' ? 'عالية' : item.confidence === 'MEDIUM' ? 'متوسطة' : 'منخفضة'}</div>
-    </div>`;
-}
-
-function renderDecisionCenter(decisions) {
-  const el = document.getElementById('aiDecisionCenter');
-  const groups = DECISION_BUCKETS.map((b) => {
-    const items = decisions[b.key] || [];
-    if (items.length === 0) return '';
-    return `
-      <div class="action-group">
-        <div class="action-group-title">${b.title} <span class="faint" style="font-weight:400; font-size:12px;">(${items.length})</span></div>
-        ${items.map((it) => decisionCardHtml(b.key, it)).join('')}
-      </div>`;
-  }).join('');
-
-  el.innerHTML = groups || '<div class="empty-state">مفيش قرارات كافية النهاردة — محتاج بيانات أكتر.</div>';
-  el.querySelectorAll('[data-open]').forEach((card) => (card.onclick = () => openCampaignDrawer(card.dataset.open)));
-}
-
-function problemDetailLine(p) {
-  const d = p.detail || {};
-  if (p.type === 'HIGH_SPEND_ZERO_RESULTS') return `<span>الصرف: ${moneyOrDash(d.spend)} جنيه</span>`;
-  if (p.type === 'HIGH_SPEND_LOW_RESULTS') return `<span>نتائج فعلية: ${d.actualResults} من متوقع ${d.expectedResults}</span><span>CPA: ${d.actualCPA.toFixed(1)} مقابل متوسط ${d.accountAvgCPA.toFixed(1)}</span>`;
-  if (p.type === 'CPA_SPIKE') return `<span>CPA: ${d.previousCPA.toFixed(1)} ← ${d.currentCPA.toFixed(1)} (${UI.fmtPct(d.changePct)})</span>`;
-  if (p.type === 'CTR_DROP') return `<span>CTR: ${d.previousCTR.toFixed(2)}% ← ${d.currentCTR.toFixed(2)}% (${UI.fmtPct(d.changePct)})</span>`;
-  return '';
-}
-
-function renderProblems(problems) {
-  const el = document.getElementById('aiProblems');
-  if (!problems || problems.length === 0) {
-    el.innerHTML = '<div class="empty-state">✅ مفيش مشاكل مكتشفة في الفترة دي.</div>';
+  if (!data.hasData) {
+    body.innerHTML = '<tr><td colspan="5" class="empty-state">مفيش بيانات.</td></tr>';
     return;
   }
-  const rank = { CRITICAL: 0, WARNING: 1, INFO: 2 };
-  const sorted = [...problems].sort((a, b) => rank[a.severity] - rank[b.severity] || (b.detail?.spend || 0) - (a.detail?.spend || 0));
-  const cls = { CRITICAL: 'negative', WARNING: 'warning', INFO: '' };
-
-  el.innerHTML = sorted
-    .map(
-      (p) => `
-    <div class="alert-card ${cls[p.severity]}" data-open="${UI.escapeHtml(p.campaignName)}" style="cursor:pointer;">
-      <div class="alert-title">${PROBLEM_TYPE_ICON[p.type] || '⚠️'} ${UI.escapeHtml(p.campaignName)}</div>
-      <div class="alert-meta">${problemDetailLine(p)}</div>
-      <div class="alert-rec">${UI.escapeHtml(p.message)} — ${UI.escapeHtml(p.recommendedAction)}</div>
-    </div>`
-    )
-    .join('');
-  el.querySelectorAll('[data-open]').forEach((card) => (card.onclick = () => openCampaignDrawer(card.dataset.open)));
-}
-
-function renderCampaignsTable(data) {
-  const { campaigns, minSpendForVerdict } = data;
-  const body = document.getElementById('aiCampaignsBody');
-  if (campaigns.length === 0) {
-    body.innerHTML = `<tr><td colspan="7" class="empty-state">مفيش حملات في الفترة دي.</td></tr>`;
+  const inactive = data.campaigns.filter((c) => !((c.spend || 0) > 0 || c.delivery === 'active'));
+  if (inactive.length === 0) {
+    body.innerHTML = '<tr><td colspan="5" class="empty-state">مفيش حملات غير نشطة في الفترة دي.</td></tr>';
     return;
   }
-  body.innerHTML = campaigns
-    .map((c) => {
-      let statusBadge;
-      if (c.spend < minSpendForVerdict) statusBadge = '<span class="badge gray">بيانات غير كافية</span>';
-      else if ((c.results || 0) === 0) statusBadge = '<span class="badge red">صفر نتائج</span>';
-      else statusBadge = '<span class="badge green">سليمة</span>';
-
-      return `
-      <tr data-open="${UI.escapeHtml(c.campaignName)}" style="cursor:pointer;">
+  body.innerHTML = inactive
+    .map(
+      (c) => `<tr>
         <td>${UI.escapeHtml(c.campaignName)}</td>
-        <td>${statusBadge}</td>
-        <td class="mono">${moneyOrDash(c.spend)}</td>
+        <td><span class="badge gray">${c.delivery ? UI.escapeHtml(c.delivery) : 'غير نشطة'}</span></td>
+        <td class="mono">${money(c.spend)}</td>
         <td class="mono">${c.results ?? '—'}</td>
         <td class="mono">${c.cpa !== null ? c.cpa.toFixed(1) : '—'}</td>
-        <td class="mono">${c.ctr !== null ? c.ctr.toFixed(2) + '%' : '—'}</td>
-        <td class="mono">${c.roas !== null ? c.roas.toFixed(2) + 'x' : '—'}</td>
-      </tr>`;
-    })
+      </tr>`
+    )
     .join('');
-  body.querySelectorAll('[data-open]').forEach((row) => (row.onclick = () => openCampaignDrawer(row.dataset.open)));
 }
 
 // ---------------------------------------------------------------------------
-// Campaign Detail drawer
+// Entity detail drawer (product or standalone campaign)
 // ---------------------------------------------------------------------------
-
-function sparklineSvg(series, field, color) {
-  const values = series.map((d) => d[field]).filter((v) => v !== null && v !== undefined);
-  if (values.length < 2) return '';
-  const w = 560, h = 90, pad = 6;
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = max - min || 1;
-  const step = (w - pad * 2) / (series.length - 1);
-  const points = series
-    .map((d, i) => {
-      const v = d[field];
-      const x = pad + i * step;
-      const y = v === null || v === undefined ? null : h - pad - ((v - min) / range) * (h - pad * 2);
-      return y === null ? null : `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .filter(Boolean)
-    .join(' ');
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%; height:${h}px;"><polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" /></svg>`;
-}
-
-async function openCampaignDrawer(name) {
-  const overlay = document.getElementById('aiCampaignDrawerOverlay');
-  const panel = document.getElementById('aiCampaignDrawerPanel');
-  panel.innerHTML = '<div class="empty-state">جارِ التحميل…</div>';
-  overlay.classList.add('open');
-
-  const params = { name };
-  if (currentDateFrom) params.dateFrom = currentDateFrom;
-  if (currentDateTo) params.dateTo = currentDateTo;
-
-  try {
-    const data = await api.get('/api/ai-intelligence/campaign-detail', params);
-    renderCampaignDrawer(data);
-  } catch (err) {
-    panel.innerHTML = `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
-  }
-}
-
-function closeCampaignDrawer() {
-  document.getElementById('aiCampaignDrawerOverlay').classList.remove('open');
-}
 
 function metricRow(label, value) {
   return `<div style="display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid var(--border);"><span class="faint">${label}</span><span class="mono">${value}</span></div>`;
 }
 
-function renderCampaignDrawer(data) {
-  const { campaignName, delivery, summary: s, accountAvg: a, dailySeries, relatedAds, hasDateVariety } = data;
+async function openEntityDrawer(type, key) {
+  const overlay = document.getElementById('aiCampaignDrawerOverlay');
   const panel = document.getElementById('aiCampaignDrawerPanel');
-  const campaignProblems = (lastAnalysis?.problems || []).filter((p) => p.campaignName === campaignName);
+  panel.innerHTML = '<div class="empty-state">جارِ التحميل…</div>';
+  overlay.classList.add('open');
 
-  const chart = hasDateVariety ? sparklineSvg(dailySeries, 'spend', '#60a5fa') : '';
+  const params = { type, key };
+  if (currentDateFrom) params.dateFrom = currentDateFrom;
+  if (currentDateTo) params.dateTo = currentDateTo;
+
+  try {
+    const entity = await api.get('/api/ai-intelligence/decisions/entity', params);
+    renderEntityDrawer(entity);
+  } catch (err) {
+    panel.innerHTML = `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
+  }
+}
+
+function closeEntityDrawer() {
+  document.getElementById('aiCampaignDrawerOverlay').classList.remove('open');
+}
+
+const CLASSIFICATION_LABEL_AR = { SCALE: '🚀 توسع', OPTIMIZE: '🟡 تحسين', STOP: '🔴 إيقاف/تقليل', COLLECT_MORE_DATA: '🧪 يحتاج بيانات أكتر' };
+
+function renderEntityDrawer(e) {
+  const panel = document.getElementById('aiCampaignDrawerPanel');
+
+  const campaignRows = e.campaigns
+    ? `<div class="section-title" style="font-size:13.5px;">ليه؟ — أداء الحملات جوه المنتج</div>
+      <div class="table-wrap" style="margin-bottom:14px;"><table class="data"><thead><tr><th>الحملة</th><th>الصرف</th><th>النتائج</th><th>CPA</th></tr></thead><tbody>
+      ${e.campaigns
+        .map(
+          (c) => `<tr>
+            <td>${UI.escapeHtml(c.campaignName)}</td>
+            <td class="mono">${money(c.spend)}</td>
+            <td class="mono">${c.results ?? '—'}</td>
+            <td class="mono">${c.cpa !== null ? c.cpa.toFixed(1) : '—'}</td>
+          </tr>`
+        )
+        .join('')}
+      </tbody></table></div>`
+    : '';
+
+  const adRows = e.adBreakdown
+    ? `<div class="section-title" style="font-size:13.5px;">🖼️ الإعلانات المرتبطة</div>
+      <div class="table-wrap" style="margin-bottom:14px;"><table class="data"><thead><tr><th>الإعلان</th><th>الصرف</th><th>النتائج</th><th>CPA</th></tr></thead><tbody>
+      ${e.adBreakdown.map((ad) => `<tr><td>${UI.escapeHtml(ad.campaignName)}</td><td class="mono">${money(ad.spend)}</td><td class="mono">${ad.results ?? '—'}</td><td class="mono">${ad.cpa !== null ? ad.cpa.toFixed(1) : '—'}</td></tr>`).join('')}
+      </tbody></table></div>`
+    : `<div class="faint" style="font-size:12.5px; margin-bottom:14px;">مفيش بيانات على مستوى الإعلان — الملف المرفوع حملات فقط (Campaign-level) من غير أعمدة Ad Set / Ad.</div>`;
+
+  const drillDown = e.drillDown
+    ? `<div class="section-title" style="font-size:13.5px;">🎯 التوصية بالتفصيل</div>
+      <div style="font-size:13px; margin-bottom:6px;"><b>حافظ على:</b> ${e.drillDown.protect.map((c) => UI.escapeHtml(c.campaignName)).join('، ')}</div>
+      <div style="font-size:13px; margin-bottom:14px;"><b>قلل/أوقف:</b> ${e.drillDown.reduce.map((c) => UI.escapeHtml(c.campaignName)).join('، ')}</div>`
+    : '';
 
   panel.innerHTML = `
     <div class="drawer-header">
       <div>
-        <div class="drawer-title">${UI.escapeHtml(campaignName)}</div>
-        ${delivery ? `<div class="drawer-meta">${UI.escapeHtml(delivery)}</div>` : ''}
+        <div class="drawer-title">${e.entityType === 'product' ? '📦' : '📣'} ${UI.escapeHtml(e.entityName)}</div>
+        <div class="drawer-meta">${CLASSIFICATION_LABEL_AR[e.classification]} · ${PRIORITY_LABEL_AR[e.priority]} · ثقة ${CONFIDENCE_LABEL_AR[e.confidence]}</div>
       </div>
       <button class="drawer-close" id="aiDrawerCloseBtn">✕</button>
     </div>
 
-    <div class="section-title" style="font-size:13.5px;">📋 الملخص</div>
-    ${metricRow('الصرف', moneyOrDash(s.spend) + ' جنيه')}
-    ${metricRow('النتائج' + (s.resultsSource === 'meta_purchases' ? ' (مشتريات)' : ''), s.results ?? '—')}
-    ${metricRow('CPA', s.cpa !== null ? s.cpa.toFixed(2) + ' جنيه' : '—')}
-    ${metricRow('CTR', s.ctr !== null ? s.ctr.toFixed(2) + '%' : '—')}
-    ${metricRow('CPC', s.cpc !== null ? s.cpc.toFixed(2) + ' جنيه' : '—')}
-    ${metricRow('CPM', s.cpm !== null ? s.cpm.toFixed(2) + ' جنيه' : '—')}
-    ${metricRow('ROAS' + (s.revenueEstimated ? ' (تقديري)' : ''), s.roas !== null ? s.roas.toFixed(2) + 'x' : 'مفيش بيانات إيراد')}
+    ${e.reason ? `<div style="font-size:13.5px; margin-bottom:8px;">${UI.escapeHtml(e.reason)}</div>` : ''}
+    ${e.recommendedAction ? `<div style="font-size:13.5px; font-weight:600; margin-bottom:14px;">${UI.escapeHtml(e.recommendedAction)}</div>` : ''}
 
-    <div class="section-title" style="font-size:13.5px;">📈 الأداء عبر الوقت</div>
-    ${chart ? `<div style="margin-bottom:14px;">${chart}</div>` : `<div class="faint" style="font-size:12.5px; margin-bottom:14px;">لا يمكن عرض اتجاه لأن البيانات في الفترة دي ليوم واحد بس.</div>`}
+    ${metricRow('الصرف', money(e.spend) + ' جنيه')}
+    ${metricRow('النتائج', e.results ?? '—')}
+    ${metricRow('CPA', e.cpa !== null ? e.cpa.toFixed(2) + ' جنيه' : '—')}
+    ${metricRow('ROAS' + (e.revenueEstimated ? ' (تقديري)' : ''), e.roas !== null ? e.roas.toFixed(2) + 'x' : 'مفيش بيانات إيراد')}
 
-    <div class="section-title" style="font-size:13.5px;">⚖️ مقارنة بمتوسط الحساب</div>
-    ${metricRow('CPA — الحملة مقابل المتوسط', `${s.cpa !== null ? s.cpa.toFixed(1) : '—'} / ${a.cpa !== null ? a.cpa.toFixed(1) : '—'}`)}
-    ${metricRow('CTR — الحملة مقابل المتوسط', `${s.ctr !== null ? s.ctr.toFixed(2) + '%' : '—'} / ${a.ctr !== null ? a.ctr.toFixed(2) + '%' : '—'}`)}
+    <div style="margin:14px 0;"></div>
+    ${drillDown}
+    ${campaignRows}
+    ${adRows}
 
-    ${
-      campaignProblems.length > 0
-        ? `<div class="section-title" style="font-size:13.5px;">⚠️ مشاكل مكتشفة</div>` +
-          campaignProblems
-            .map(
-              (p) => `<div class="alert-card ${p.severity === 'CRITICAL' ? 'negative' : p.severity === 'WARNING' ? 'warning' : ''}">
-                <div class="alert-title">${PROBLEM_TYPE_ICON[p.type] || '⚠️'} ${UI.escapeHtml(p.message)}</div>
-                <div class="alert-rec">${UI.escapeHtml(p.recommendedAction)}</div>
-              </div>`
-            )
-            .join('')
-        : ''
-    }
-
-    ${
-      relatedAds.length > 0
-        ? `<div class="section-title" style="font-size:13.5px;">🖼️ الإعلانات المرتبطة</div>
-        <div class="table-wrap" style="margin-bottom:14px;"><table class="data"><thead><tr><th>الإعلان</th><th>الصرف</th><th>النتائج</th><th>CPA</th></tr></thead><tbody>
-        ${relatedAds
-          .map((ad) => `<tr><td>${UI.escapeHtml(ad.campaignName)}</td><td class="mono">${moneyOrDash(ad.spend)}</td><td class="mono">${ad.results ?? '—'}</td><td class="mono">${ad.cpa !== null ? ad.cpa.toFixed(1) : '—'}</td></tr>`)
-          .join('')}
-        </tbody></table></div>`
-        : ''
-    }
-
-    <div style="margin-top:14px;">
-      <button class="btn secondary small" id="aiDrawerLinkBtn">🔗 ربط بمنتج</button>
+    <div class="toolbar" style="margin-top:8px;">
+      <button class="btn secondary small" id="aiDrawerReviewBtn">✓ تمت المراجعة</button>
+      <button class="btn secondary small" id="aiDrawerDismissBtn">تجاهل</button>
+      ${e.entityType === 'campaign' ? `<button class="btn secondary small" id="aiDrawerLinkBtn">🔗 ربط بمنتج</button>` : ''}
     </div>
   `;
 
-  document.getElementById('aiDrawerCloseBtn').onclick = closeCampaignDrawer;
-  document.getElementById('aiDrawerLinkBtn').onclick = () => openLinkModal(campaignName);
+  document.getElementById('aiDrawerCloseBtn').onclick = closeEntityDrawer;
+  document.getElementById('aiDrawerReviewBtn').onclick = async () => {
+    await api.post('/api/ai-intelligence/decisions/review', { entityType: e.entityType, entityKey: e.entityKey, status: 'REVIEWED' });
+    UI.toast('تم وضع علامة تمت المراجعة');
+    closeEntityDrawer();
+    loadDecisions();
+  };
+  document.getElementById('aiDrawerDismissBtn').onclick = async () => {
+    await api.post('/api/ai-intelligence/decisions/review', { entityType: e.entityType, entityKey: e.entityKey, status: 'DISMISSED' });
+    UI.toast('تم التجاهل');
+    closeEntityDrawer();
+    loadDecisions();
+  };
+  const linkBtn = document.getElementById('aiDrawerLinkBtn');
+  if (linkBtn) linkBtn.onclick = () => openLinkModal(e.entityName);
 }
 
 init();

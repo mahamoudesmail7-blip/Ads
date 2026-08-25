@@ -144,6 +144,28 @@
           </div>
         </div>
 
+        <div class="section-title" style="font-size:13px;">🤖 AI Intelligence — حدود القرار</div>
+        <div class="field-row">
+          <div class="field">
+            <label>حد التوسع (Scale) — أقل من (جنيه)</label>
+            <input type="number" id="sAiScaleCpa" step="1" min="0" class="ltr" />
+          </div>
+          <div class="field">
+            <label>حد التحسين (Optimize) — لغاية (جنيه)</label>
+            <input type="number" id="sAiOptimizeCpa" step="1" min="0" class="ltr" />
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>أقل صرف كافي لاتخاذ قرار (جنيه)</label>
+            <input type="number" id="sAiMinSpend" step="1" min="0" class="ltr" />
+          </div>
+          <div class="field">
+            <label>أقل عدد نتائج كافي لاتخاذ قرار</label>
+            <input type="number" id="sAiMinOrders" step="1" min="0" class="ltr" />
+          </div>
+        </div>
+
         <div class="toolbar" style="margin-top:8px;">
           <button class="btn" id="btnSaveSettings">حفظ الإعدادات</button>
           <button class="btn secondary" id="btnResetSettings">استعادة الإعدادات الافتراضية</button>

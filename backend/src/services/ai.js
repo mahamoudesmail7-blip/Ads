@@ -5,7 +5,7 @@
 // Raw fetch rather than the SDK: this is the only place in the whole
 // backend that would need it, so a dependency isn't worth adding yet.
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const DEFAULT_MODEL = 'claude-sonnet-4-5';
+const DEFAULT_MODEL = 'claude-sonnet-5';
 
 /**
  * @param {{system?: string, messages: {role: 'user'|'assistant', content: string}[], maxTokens?: number}} params

@@ -11,6 +11,9 @@ import { asyncRoute } from '../middleware/errorHandler.js';
 import { prisma } from '../prisma.js';
 import { parseFile, guessColumnMapping, validateRows, matchCampaignToProduct, CANONICAL_FIELDS } from '../services/adsImport.js';
 import { aggregateMetrics, aggregateByCampaign, hasDateVariety, detectProblems, buildDecisions, buildExecutiveSummary, MIN_SPEND_FOR_VERDICT } from '../services/campaignAnalysis.js';
+import { isRelevantRow, buildEntities } from '../services/productAnalysis.js';
+import { classifyEntities, DEFAULT_THRESHOLDS } from '../services/decisionEngine.js';
+import { generateActionPlan, computeInputHash } from '../services/aiActionPlan.js';
 import { netProfit, revenue } from '../../../js/profit.js';
 
 const router = Router();
@@ -454,6 +457,209 @@ router.get(
       dailySeries,
       relatedAds,
     });
+  })
+);
+
+// ============================================================================
+// Daily Decision System — AI Intelligence Phase 2. Product-first, Top-3-by-
+// default decision dashboard: buildEntities() groups active-filtered rows
+// into products (mapped campaigns) and standalone campaigns (unmapped —
+// never blocked on missing product mapping), classifyEntities() applies the
+// configurable EGP-CPA rules, generateActionPlan() asks the real Claude
+// "Marketing Performance Decision Agent" to write the reason/action text on
+// top of those already-final numbers (never invents a classification).
+// ============================================================================
+
+async function loadThresholds() {
+  const row = await prisma.settings.findUnique({ where: { id: 'default' } });
+  const saved = row ? JSON.parse(row.data) : {};
+  return {
+    aiScaleCpaThreshold: saved.aiScaleCpaThreshold ?? DEFAULT_THRESHOLDS.aiScaleCpaThreshold,
+    aiOptimizeCpaThreshold: saved.aiOptimizeCpaThreshold ?? DEFAULT_THRESHOLDS.aiOptimizeCpaThreshold,
+    aiMinSpendForDecision: saved.aiMinSpendForDecision ?? DEFAULT_THRESHOLDS.aiMinSpendForDecision,
+    aiMinOrdersForDecision: saved.aiMinOrdersForDecision ?? DEFAULT_THRESHOLDS.aiMinOrdersForDecision,
+  };
+}
+
+/** Explicit dateFrom/dateTo win (presets computed client-side); otherwise defaults to real "today", falling back to the latest available upload date when today has no data (spec §22) — usedFallback tells the UI which happened. */
+async function resolveDecisionWindow(dateFrom, dateTo) {
+  if (dateFrom || dateTo) {
+    const from = dateFrom || dateTo;
+    const to = dateTo || dateFrom;
+    return { from, to, usedFallback: false };
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const todayCount = await prisma.adsDailyMetric.count({ where: { date: today } });
+  if (todayCount > 0) return { from: today, to: today, usedFallback: false };
+
+  const extent = await prisma.adsDailyMetric.aggregate({ _max: { date: true } });
+  if (!extent._max.date) return null;
+  return { from: extent._max.date, to: extent._max.date, usedFallback: true };
+}
+
+router.get(
+  '/decisions',
+  asyncRoute(async (req, res) => {
+    const { dateFrom, dateTo } = req.query;
+    const window = await resolveDecisionWindow(dateFrom, dateTo);
+    if (!window) {
+      return res.json({ hasData: false, message: 'مفيش بيانات إعلانات مرفوعة لسه — ارفع ملف الأول.' });
+    }
+
+    const allRows = await prisma.adsDailyMetric.findMany({ where: { date: { gte: window.from, lte: window.to } } });
+    const relevantRows = allRows.filter(isRelevantRow);
+    const inactiveCount = allRows.length - relevantRows.length;
+
+    const emptyBuckets = { scale: { items: [], totalCount: 0 }, optimize: { items: [], totalCount: 0 }, stop: { items: [], totalCount: 0 }, collectMoreData: { items: [], totalCount: 0 }, opportunities: { items: [], totalCount: 0 } };
+
+    if (relevantRows.length === 0) {
+      return res.json({
+        hasData: true,
+        window,
+        activeSummary: { activeProducts: 0, activeCampaigns: 0, spend: 0, results: 0, cpa: null },
+        buckets: emptyBuckets,
+        needsMapping: { count: 0, sample: [] },
+        actionPlan: { summary: 'مفيش حملات نشطة فيها صرف أو حالة Active في الفترة دي.', items: [], source: 'FALLBACK' },
+        inactiveCount,
+      });
+    }
+
+    const products = await prisma.product.findMany({ select: { id: true, product_name: true } });
+    const thresholds = await loadThresholds();
+    const rawEntities = buildEntities(relevantRows, products);
+    const { entities, buckets } = classifyEntities(rawEntities, thresholds);
+
+    const overview = aggregateMetrics(relevantRows);
+    const activeSummary = {
+      activeProducts: entities.filter((e) => e.entityType === 'product').length,
+      activeCampaigns: relevantRows.reduce((set, r) => set.add(r.campaign_name), new Set()).size,
+      spend: overview.spend,
+      results: overview.results,
+      cpa: overview.cpa,
+    };
+
+    const reviews = await prisma.adsDecisionReview.findMany({ where: { entity_key: { in: entities.map((e) => e.entityKey) } } });
+    const reviewByKey = new Map(reviews.map((r) => [`${r.entity_type}:${r.entity_key}`, r.status]));
+    const stripHeavyFields = (e) => {
+      const { campaigns, adBreakdown, ...rest } = e;
+      return { ...rest, hasCampaignBreakdown: !!campaigns, reviewStatus: reviewByKey.get(`${e.entityType}:${e.entityKey}`) || null };
+    };
+
+    const visibleBuckets = {};
+    for (const [key, arr] of Object.entries(buckets)) {
+      const visible = arr.filter((e) => reviewByKey.get(`${e.entityType}:${e.entityKey}`) !== 'DISMISSED').map(stripHeavyFields);
+      visibleBuckets[key] = { items: visible, totalCount: visible.length };
+    }
+
+    const unmatchedGroups = await prisma.adsDailyMetric.groupBy({
+      by: ['campaign_name'],
+      where: { date: { gte: window.from, lte: window.to }, matched_product_id: null },
+      _sum: { spend: true },
+      _count: true,
+    });
+    const relevantNames = new Set(relevantRows.filter((r) => !r.matched_product_id).map((r) => r.campaign_name));
+    const needsMapping = unmatchedGroups
+      .filter((g) => relevantNames.has(g.campaign_name))
+      .map((g) => ({ campaignName: g.campaign_name, spend: g._sum.spend || 0, rowCount: g._count }))
+      .sort((a, b) => b.spend - a.spend);
+
+    // AI Action Plan — cached per window, regenerated only if the classified entity set actually changed or the user forces it via /decisions/generate-plan.
+    const inputHash = computeInputHash(entities, thresholds);
+    const cached = await prisma.adsActionPlan.findUnique({ where: { window_from_window_to: { window_from: window.from, window_to: window.to } } });
+    let actionPlan;
+    if (cached && cached.input_hash === inputHash) {
+      actionPlan = { summary: JSON.parse(cached.plan_json).summary, items: JSON.parse(cached.plan_json).items, source: cached.source };
+    } else {
+      const plan = await generateActionPlan(entities, thresholds);
+      await prisma.adsActionPlan.upsert({
+        where: { window_from_window_to: { window_from: window.from, window_to: window.to } },
+        create: { window_from: window.from, window_to: window.to, input_hash: plan.inputHash, plan_json: JSON.stringify({ summary: plan.summary, items: plan.items }), source: plan.source },
+        update: { input_hash: plan.inputHash, plan_json: JSON.stringify({ summary: plan.summary, items: plan.items }), source: plan.source, generated_at: new Date() },
+      });
+      actionPlan = plan;
+    }
+
+    res.json({
+      hasData: true,
+      window,
+      usedFallback: window.usedFallback,
+      activeSummary,
+      buckets: visibleBuckets,
+      needsMapping: { count: needsMapping.length, sample: needsMapping.slice(0, 5) },
+      actionPlan,
+      inactiveCount,
+    });
+  })
+);
+
+router.post(
+  '/decisions/generate-plan',
+  asyncRoute(async (req, res) => {
+    const { dateFrom, dateTo } = req.body || {};
+    const window = await resolveDecisionWindow(dateFrom, dateTo);
+    if (!window) return res.status(400).json({ error: 'NO_DATA', message: 'مفيش بيانات إعلانات مرفوعة لسه.' });
+
+    const allRows = await prisma.adsDailyMetric.findMany({ where: { date: { gte: window.from, lte: window.to } } });
+    const relevantRows = allRows.filter(isRelevantRow);
+    const products = await prisma.product.findMany({ select: { id: true, product_name: true } });
+    const thresholds = await loadThresholds();
+    const { entities } = classifyEntities(buildEntities(relevantRows, products), thresholds);
+
+    const plan = await generateActionPlan(entities, thresholds);
+    await prisma.adsActionPlan.upsert({
+      where: { window_from_window_to: { window_from: window.from, window_to: window.to } },
+      create: { window_from: window.from, window_to: window.to, input_hash: plan.inputHash, plan_json: JSON.stringify({ summary: plan.summary, items: plan.items }), source: plan.source },
+      update: { input_hash: plan.inputHash, plan_json: JSON.stringify({ summary: plan.summary, items: plan.items }), source: plan.source, generated_at: new Date() },
+    });
+
+    res.json(plan);
+  })
+);
+
+router.get(
+  '/decisions/entity',
+  asyncRoute(async (req, res) => {
+    const { type, key, dateFrom, dateTo } = req.query;
+    if (!type || !key) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'النوع والمفتاح مطلوبين.' });
+
+    const window = await resolveDecisionWindow(dateFrom, dateTo);
+    if (!window) return res.status(404).json({ error: 'NOT_FOUND', message: 'مفيش بيانات.' });
+
+    const allRows = await prisma.adsDailyMetric.findMany({ where: { date: { gte: window.from, lte: window.to } } });
+    const relevantRows = allRows.filter(isRelevantRow);
+    const products = await prisma.product.findMany({ select: { id: true, product_name: true } });
+    const thresholds = await loadThresholds();
+    const { entities } = classifyEntities(buildEntities(relevantRows, products), thresholds);
+
+    const entity = entities.find((e) => e.entityType === type && e.entityKey === key);
+    if (!entity) return res.status(404).json({ error: 'NOT_FOUND', message: 'مفيش بيانات للعنصر ده في الفترة دي.' });
+
+    const cachedPlan = await prisma.adsActionPlan.findUnique({ where: { window_from_window_to: { window_from: window.from, window_to: window.to } } });
+    let reason = null, recommendedAction = null;
+    if (cachedPlan) {
+      const item = JSON.parse(cachedPlan.plan_json).items.find((it) => it.entityKey === key);
+      if (item) ({ reason, recommendedAction } = item);
+    }
+
+    const review = await prisma.adsDecisionReview.findUnique({ where: { entity_type_entity_key: { entity_type: type, entity_key: key } } }).catch(() => null);
+
+    res.json({ ...entity, reason, recommendedAction, reviewStatus: review?.status || null, window });
+  })
+);
+
+router.post(
+  '/decisions/review',
+  asyncRoute(async (req, res) => {
+    const { entityType, entityKey, status } = req.body || {};
+    if (!entityType || !entityKey || !['REVIEWED', 'DISMISSED'].includes(status)) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'entityType, entityKey, status (REVIEWED|DISMISSED) مطلوبين.' });
+    }
+    const review = await prisma.adsDecisionReview.upsert({
+      where: { entity_type_entity_key: { entity_type: entityType, entity_key: entityKey } },
+      create: { entity_type: entityType, entity_key: entityKey, status, reviewed_by_id: req.user?.id || null },
+      update: { status, reviewed_by_id: req.user?.id || null, reviewed_at: new Date() },
+    });
+    res.json(review);
   })
 );
 

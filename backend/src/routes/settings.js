@@ -28,6 +28,11 @@ export const DEFAULT_SETTINGS = {
   defaultShippingCost: 0,
   defaultPackagingCost: 0,
   lastDemoGeneratedDate: null,
+  // AI Intelligence — decision engine thresholds (EGP), spec section 26.
+  aiScaleCpaThreshold: 100,
+  aiOptimizeCpaThreshold: 130,
+  aiMinSpendForDecision: 150,
+  aiMinOrdersForDecision: 2,
 };
 
 router.get('/', asyncRoute(async (req, res) => {

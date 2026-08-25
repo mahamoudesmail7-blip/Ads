@@ -38,6 +38,10 @@ const FIELD_MAP = {
   sCriticalStockDays: 'criticalStockDays',
   sDefaultShipping: 'defaultShippingCost',
   sDefaultPackaging: 'defaultPackagingCost',
+  sAiScaleCpa: 'aiScaleCpaThreshold',
+  sAiOptimizeCpa: 'aiOptimizeCpaThreshold',
+  sAiMinSpend: 'aiMinSpendForDecision',
+  sAiMinOrders: 'aiMinOrdersForDecision',
 };
 
 async function init() {
