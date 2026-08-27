@@ -13,7 +13,11 @@ const CONFIG_ID = process.env.META_CONFIG_ID || '2166183033951878';
 const AUTH_DIALOG_VERSION = 'v21.0';
 
 function requiredEnv(name) {
-  const v = process.env[name];
+  // .trim() defensively: a trailing newline/space from copy-pasting a
+  // credential into Railway's Variables UI is invisible to the eye but
+  // changes the string Facebook receives — a very common real-world cause
+  // of "Error validating client secret" even when the value looks correct.
+  const v = process.env[name]?.trim();
   if (!v) throw new Error(`${name} مش متظبط في الـ .env — لازم تضيفه الأول.`);
   return v;
 }
