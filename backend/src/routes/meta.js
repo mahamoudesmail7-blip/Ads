@@ -40,13 +40,20 @@ function addDays(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
-/** Starts the real OAuth dance — a redirect, not a fetch, since the browser must actually land on facebook.com for the user to log in themselves. */
+/** Starts the real OAuth dance — a redirect, not a fetch, since the browser must actually land on facebook.com for the user to log in themselves. buildAuthUrl() throws a clear error if META_APP_ID isn't configured yet — caught here and turned into an honest redirect-with-reason instead of a raw 500, same as every other failure mode in this flow. */
 router.get(
   '/connect',
   asyncRoute(async (req, res) => {
+    const frontendBase = process.env.FRONTEND_URL || '';
     const state = metaAuth.generateState();
+    let authUrl;
+    try {
+      authUrl = metaAuth.buildAuthUrl(state); // throws if META_APP_ID isn't configured yet
+    } catch (err) {
+      return res.redirect(`${frontendBase}/ai-intelligence.html?${new URLSearchParams({ meta: 'error', reason: err.message }).toString()}`);
+    }
     res.cookie(STATE_COOKIE, state, { httpOnly: true, secure: IS_PROD, sameSite: 'lax', maxAge: 10 * 60 * 1000 });
-    res.redirect(metaAuth.buildAuthUrl(state));
+    res.redirect(authUrl);
   })
 );
 
