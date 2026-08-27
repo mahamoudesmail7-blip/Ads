@@ -725,6 +725,9 @@ router.post(
     if (!entityType || !entityKey || !title) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'entityType, entityKey, title مطلوبين.' });
     }
+    if (!employeeId) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'يرجى اختيار الموظف المسؤول عن تنفيذ المهمة' });
+    }
 
     // Re-run the real classification server-side rather than trusting whatever the client last saw — the snapshot must reflect genuinely current numbers.
     const window = await resolveDecisionWindow(dateFrom, dateTo);
@@ -763,7 +766,7 @@ router.post(
         due_date: dueDate || null,
         product_id: entityType === 'product' ? Number(entityKey) : null,
         product_name: entity.entityName,
-        employee_id: employeeId ? Number(employeeId) : null,
+        employee_id: Number(employeeId),
         created_by_id: req.user.id,
         status: 'PENDING',
         task_type: taskType || TASK_TYPE_SUGGESTION[entity.classification] || 'OTHER',

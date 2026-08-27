@@ -9,10 +9,11 @@ import { api } from './api-client.js';
 import { buildProductBundle } from './product-bundle.js';
 import { classifyDailyStatus } from './daily-monitor.js';
 import { analyzeProductDecision } from './decision-engine.js';
-import { buildTask, TASK_TYPE } from './task-engine.js';
+import { buildTask, TASK_TYPE, NOT_COMPLETED_REASONS } from './task-engine.js';
 import { assignTasksRoundRobin, workloadByEmployee } from './team-engine.js';
 import { openProductDrawer } from './product-drawer.js';
-import { materializeAutoTasksForDate, completeTask, cancelTaskByEmployee } from './task-store.js';
+import { materializeAutoTasksForDate, completeTask, cancelTaskByEmployee, failTask } from './task-store.js';
+import { assignmentStatusLabel } from './ai-task-bridge.js';
 
 const state = { asOfDate: A.todayStr(), employeeFilter: 'ALL' };
 
@@ -413,6 +414,7 @@ function promptRequired(message) {
 function managerTaskCardHtml(t) {
   const type = TASK_TYPE[t.task_type];
   const empName = t.employee?.name || employees.find((e) => e.id === t.employee_id)?.name;
+  const started = t.status !== TASK_STATUS.PENDING;
   return `
   <div class="action-card" data-task-id="${t.id}">
     <div class="action-card-title">${t.source === 'manager' ? '👑' : '🤖'} ${type ? type.icon + ' ' + type.label : t.task_type} — ${UI.escapeHtml(t.title)}</div>
@@ -423,11 +425,14 @@ function managerTaskCardHtml(t) {
       <span>👤 ${empName ? UI.escapeHtml(empName) : '—'}</span>
       <span class="faint">بواسطة: ${t.assigned_by === 'manager' ? '👑 المدير' : '🤖 تلقائي'}</span>
     </div>
+    <div style="font-size:12.5px; margin:4px 0;">${assignmentStatusLabel({ status: t.status, reviewStatus: t.review_status })}</div>
     ${t.details ? `<div class="action-card-reasons" style="white-space:pre-wrap;">${UI.escapeHtml(t.details)}</div>` : ''}
     ${t.manager_note ? `<div class="action-card-reasons">📝 ملاحظة المدير: ${UI.escapeHtml(t.manager_note)}</div>` : ''}
     <div class="action-status-row" data-manager-task-actions="${t.id}">
-      <span class="status-btn" data-complete>✓ إنهاء المهمة</span>
-      <span class="status-btn" data-submit-result>📤 رفع النتيجة</span>
+      ${!started ? '<span class="status-btn" data-start>▶ بدء العمل</span>' : ''}
+      ${started ? '<span class="status-btn" data-complete>✓ إنهاء المهمة</span>' : ''}
+      ${started ? '<span class="status-btn" data-submit-result>📤 رفع النتيجة</span>' : ''}
+      <span class="status-btn" data-problem>🔴 فيها مشكلة</span>
       <span class="status-btn" data-cancel>🔴 إلغاء</span>
     </div>
   </div>`;
@@ -455,12 +460,21 @@ function renderManagerTasks() {
 
   body.querySelectorAll('[data-manager-task-actions]').forEach((row) => {
     const id = Number(row.dataset.managerTaskActions);
-    row.querySelector('[data-complete]').onclick = async () => {
+    row.querySelector('[data-start]')?.addEventListener('click', async () => {
+      try {
+        await api.patch(`/api/tasks/${id}`, { status: 'IN_PROGRESS' });
+        UI.toast('▶ بدأت المهمة');
+        await refresh();
+      } catch (err) {
+        UI.toast(err.message, 'error');
+      }
+    });
+    row.querySelector('[data-complete]')?.addEventListener('click', async () => {
       await completeTask(id);
       UI.toast('✅ تم إنهاء المهمة');
       await refresh();
-    };
-    row.querySelector('[data-submit-result]').onclick = async () => {
+    });
+    row.querySelector('[data-submit-result]')?.addEventListener('click', async () => {
       const result = promptRequired('ملخص النتيجة — إيه اللي اتعمل؟ (مطلوب):');
       if (result === null) return;
       try {
@@ -470,8 +484,19 @@ function renderManagerTasks() {
       } catch (err) {
         UI.toast(err.message, 'error');
       }
-    };
-    row.querySelector('[data-cancel]').onclick = async () => {
+    });
+    row.querySelector('[data-problem]')?.addEventListener('click', async () => {
+      const reason = promptRequired(`إيه المشكلة؟ (مطلوب — أمثلة: ${NOT_COMPLETED_REASONS.join('، ')}):`);
+      if (reason === null) return;
+      try {
+        await failTask(id, reason, null);
+        UI.toast('🔴 اتسجلت المشكلة — المدير هيشوفها');
+        await refresh();
+      } catch (err) {
+        UI.toast(err.message, 'error');
+      }
+    });
+    row.querySelector('[data-cancel]')?.addEventListener('click', async () => {
       const reason = promptRequired('سبب إلغاء المهمة (مطلوب):');
       if (reason === null) return; // cancelled the prompt — no change
       try {
@@ -481,7 +506,7 @@ function renderManagerTasks() {
       } catch (err) {
         UI.toast(err.message, 'error');
       }
-    };
+    });
   });
 }
 

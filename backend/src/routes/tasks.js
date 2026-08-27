@@ -22,7 +22,10 @@ const router = Router();
 router.use(requireAuth);
 
 const TERMINAL = new Set(['COMPLETED', 'CANCELLED']);
-const EMPLOYEE_ALLOWED_STATUSES = new Set(['COMPLETED', 'NOT_COMPLETED', 'CANCELLED']);
+// IN_PROGRESS added for the "▶ بدء العمل" button (work.html) — an employee
+// starting their own PENDING task is a safe, non-destructive transition,
+// same trust level as completing/failing/cancelling it.
+const EMPLOYEE_ALLOWED_STATUSES = new Set(['IN_PROGRESS', 'COMPLETED', 'NOT_COMPLETED', 'CANCELLED']);
 // Fields task-store.js's employee-facing mutations (completeTask/failTask/cancelTaskByEmployee) actually send,
 // plus employee_result — the new "submit result" flow (work.html's "📤 رفع النتيجة" button).
 const EMPLOYEE_ALLOWED_FIELDS = new Set([
@@ -34,13 +37,36 @@ const EMPLOYEE_ALLOWED_FIELDS = new Set([
 // legacy tasks.html/work.html auto-assignment system uses). TaskRecord.
 // employee_id is a real FK to User.id, so this is the only list that's
 // actually valid to populate an assignment dropdown from.
+//
+// Optional ?taskType= adds a real, data-driven suggestion (never a fabricated
+// "job title" — this system has no such field, only ADMIN/MANAGER/EMPLOYEE):
+// prefer whoever has already handled this exact task_type before, tie-broken
+// by whoever currently has the fewest open tasks; with no task-type history
+// at all, it's purely "who's least busy." Exactly one row is flagged
+// `suggested: true` — the manager still picks, this is a hint, not an
+// assignment.
 router.get('/assignable-employees', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
-  const rows = await prisma.user.findMany({
+  const { taskType } = req.query;
+  const users = await prisma.user.findMany({
     where: { status: 'ACTIVE', role: { in: ['EMPLOYEE', 'MANAGER', 'ADMIN'] } },
     select: { id: true, name: true, role: true },
     orderBy: { name: 'asc' },
   });
-  res.json(rows);
+  const userIds = users.map((u) => u.id);
+
+  const [openTasks, typeHistory] = await Promise.all([
+    userIds.length ? prisma.taskRecord.findMany({ where: { employee_id: { in: userIds }, status: { notIn: ['COMPLETED', 'CANCELLED'] } }, select: { employee_id: true } }) : [],
+    taskType && userIds.length ? prisma.taskRecord.findMany({ where: { employee_id: { in: userIds }, task_type: taskType }, select: { employee_id: true } }) : [],
+  ]);
+  const loadByEmployee = new Map();
+  for (const t of openTasks) loadByEmployee.set(t.employee_id, (loadByEmployee.get(t.employee_id) || 0) + 1);
+  const experienced = new Set(typeHistory.map((t) => t.employee_id));
+
+  const withMeta = users.map((u) => ({ id: u.id, name: u.name, role: u.role, activeTaskCount: loadByEmployee.get(u.id) || 0, hasExperience: experienced.has(u.id) }));
+  withMeta.sort((a, b) => (a.hasExperience !== b.hasExperience ? (a.hasExperience ? -1 : 1) : a.activeTaskCount - b.activeTaskCount));
+  if (withMeta.length > 0) withMeta[0].suggested = true;
+
+  res.json(withMeta);
 }));
 
 // employee: {name} is included alongside the existing raw employee_id — purely
