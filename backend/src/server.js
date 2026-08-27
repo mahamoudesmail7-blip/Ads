@@ -28,6 +28,7 @@ import webhookRoutes from './routes/webhooks.js';
 import easyOrdersRoutes from './routes/easyorders.js';
 import lostOrdersRoutes from './routes/lostOrders.js';
 import adsIntelligenceRoutes from './routes/adsIntelligence.js';
+import metaRoutes from './routes/meta.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,6 +68,7 @@ app.use('/api/webhooks', webhookRoutes); // public — authenticated via the `se
 app.use('/api/easyorders', easyOrdersRoutes);
 app.use('/api/lost-orders', lostOrdersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
+app.use('/api/meta', metaRoutes);
 
 // Serve the existing static frontend (order-monitor/) from this same
 // service, so there's a single public URL. `backend/`, `.env`, and `.git`

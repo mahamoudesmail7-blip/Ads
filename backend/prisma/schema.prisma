@@ -44,6 +44,7 @@ model User {
   lost_order_actions LostOrderHistory[]
   ads_uploads        AdsUpload[]
   ads_decision_reviews AdsDecisionReview[]
+  meta_connections     MetaConnection[]
 
   @@map("users")
 }
@@ -597,4 +598,32 @@ model AdsActionPlan {
 
   @@unique([window_from, window_to])
   @@map("ads_action_plans")
+}
+
+// Real Meta Ads OAuth connection (Facebook Login for Business) — a
+// single-tenant singleton, same idiom as `Settings` (id:"default"). The
+// access token is NEVER stored in plaintext (see services/metaCrypto.js)
+// and is never sent to the frontend by any route — only `status` and the
+// selected-account metadata are. Historical AdsDailyMetric rows synced
+// while connected are never deleted on disconnect.
+model MetaConnection {
+  id                        String    @id @default("default")
+  status                    String    @default("DISCONNECTED") // CONNECTED | DISCONNECTED
+  connected_by_id           Int?
+  connected_by              User?     @relation(fields: [connected_by_id], references: [id], onDelete: SetNull)
+  access_token_enc          String? // AES-256-GCM ciphertext, base64 — see metaCrypto.js
+  token_expires_at          DateTime?
+  meta_user_id              String?
+  meta_user_name            String?
+  selected_business_id      String?
+  selected_business_name    String?
+  selected_ad_account_id    String?
+  selected_ad_account_name  String?
+  last_synced_at            DateTime?
+  connected_at              DateTime?
+  disconnected_at           DateTime?
+  created_at                DateTime  @default(now())
+  updated_at                DateTime  @updatedAt
+
+  @@map("meta_connections")
 }

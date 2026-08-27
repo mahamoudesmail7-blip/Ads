@@ -18,8 +18,29 @@
         </div>
       </div>
 
+      <div class="card" id="metaConnectCard" style="margin-bottom:22px; max-width:640px;">
+        <div class="section-title" style="margin-top:0;">🔗 حساب Meta Ads</div>
+        <div id="metaDisconnectedView">
+          <p class="muted" style="font-size:13px; margin-top:0;">اربط حساب Meta Ads عشان النظام يسحب بيانات الحملات مباشرة من الـ API بدل الرفع اليدوي.</p>
+          <button class="btn" id="btnMetaConnect">ربط حساب Meta Ads</button>
+        </div>
+        <div id="metaConnectedView" style="display:none;">
+          <div style="font-size:13.5px; margin-bottom:6px;">متصل بحساب: <b id="metaUserName">—</b></div>
+          <div class="faint" style="font-size:12px; margin-bottom:10px;">
+            Ad Account: <b id="metaAdAccountName">مفيش Ad Account مختار</b><br />
+            تنتهي صلاحية الاتصال: <span id="metaTokenExpiry">—</span> · آخر مزامنة: <span id="metaLastSync">لسه ماحصلتش</span>
+          </div>
+          <div class="toolbar">
+            <button class="btn secondary small" id="btnMetaPickAccount">اختيار / تغيير Ad Account</button>
+            <button class="btn small" id="btnMetaSync">🔄 مزامنة بيانات Meta Ads</button>
+            <button class="btn danger small" id="btnMetaDisconnect">قطع الاتصال</button>
+          </div>
+          <div id="metaSyncStatus" class="faint" style="margin-top:8px; display:none;"></div>
+        </div>
+      </div>
+
       <div class="card" style="margin-bottom:22px; max-width:640px;">
-        <div class="section-title" style="margin-top:0;">📤 رفع بيانات Meta Ads</div>
+        <div class="section-title" style="margin-top:0;">📤 رفع بيانات Meta Ads (يدوي)</div>
         <p class="muted" style="font-size:13px; margin-top:0;">ملف CSV أو XLSX مُصدَّر من Meta Ads Manager.</p>
         <div class="toolbar">
           <input type="file" id="aiFileInput" accept=".csv,.xlsx" style="display:none" />
@@ -141,6 +162,18 @@
     </div>
   </div>
 
+  <!-- Meta Ad Account picker -->
+  <div id="metaAdAccountOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:260; align-items:center; justify-content:center; padding:20px;">
+    <div class="card" style="width:480px; max-width:100%; max-height:85vh; overflow-y:auto;">
+      <div class="section-title" style="margin-top:0;">اختر Ad Account</div>
+      <div id="metaAdAccountList" class="faint" style="font-size:13px;">جارِ التحميل…</div>
+      <div class="toolbar" style="justify-content:flex-end; margin-top:10px;">
+        <button class="btn secondary" id="btnMetaAccountCancel">إلغاء</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="js/ai-intelligence.js"></script>
+  <script type="module" src="js/meta-integration.js"></script>
 </body>
 </html>
