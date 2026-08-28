@@ -29,6 +29,7 @@ import easyOrdersRoutes from './routes/easyorders.js';
 import lostOrdersRoutes from './routes/lostOrders.js';
 import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
+import aiAssistantRoutes from './routes/aiAssistant.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +70,7 @@ app.use('/api/easyorders', easyOrdersRoutes);
 app.use('/api/lost-orders', lostOrdersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
+app.use('/api/ai-assistant', aiAssistantRoutes);
 
 // Serve the existing static frontend (order-monitor/) from this same
 // service, so there's a single public URL. `backend/`, `.env`, and `.git`

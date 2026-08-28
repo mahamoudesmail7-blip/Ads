@@ -18,6 +18,26 @@
         </div>
       </div>
 
+      <div class="card" id="aiCommandCenter" style="margin-bottom:22px;">
+        <div id="aiGreeting" style="font-size:17px; font-weight:700; margin-bottom:4px;">أهلاً 👋</div>
+        <div class="faint" style="font-size:13px; margin-bottom:14px;">أنا محلل البزنس بتاعك. إيه اللي تحب تعرفه؟</div>
+        <div class="toolbar" id="aiQuickActions" style="margin-bottom:14px;"></div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="aiChatInput" placeholder="اكتب طلبك هنا... مثلاً: حلل آخر 7 أيام وقولي أعمل إيه" style="flex:1;" />
+          <button class="btn" id="aiChatSend">إرسال</button>
+        </div>
+        <div id="aiChatLoading" class="faint" style="margin-top:10px; display:none; font-size:13px;">🤖 بيفكر...</div>
+        <div id="aiChatResponse" style="margin-top:14px; display:none;"></div>
+      </div>
+
+      <div class="card" id="aiDailyBriefingCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">📋 ملخص اليوم بالذكاء الاصطناعي</div>
+        <div class="stat-grid" id="aiHealthTiles" style="margin-bottom:16px;"></div>
+        <div id="aiBriefingOpportunities" style="margin-bottom:10px;"></div>
+        <div id="aiBriefingProblems"></div>
+        <div id="aiBriefingEmpty" class="empty-state" style="display:none;">مفيش فرص أو مشاكل واضحة دلوقتي — البيانات المتاحة قليلة أو كل حاجة مستقرة.</div>
+      </div>
+
       <div class="card" id="metaConnectCard" style="margin-bottom:22px; max-width:640px;">
         <div class="section-title" style="margin-top:0;">🔗 حساب Meta Ads</div>
         <div id="metaDisconnectedView">
@@ -175,5 +195,6 @@
 
   <script type="module" src="js/ai-intelligence.js"></script>
   <script type="module" src="js/meta-integration.js"></script>
+  <script type="module" src="js/ai-command-center.js"></script>
 </body>
 </html>

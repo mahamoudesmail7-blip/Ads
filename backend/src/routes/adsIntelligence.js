@@ -14,7 +14,7 @@ import { aggregateMetrics, aggregateByCampaign, hasDateVariety, detectProblems, 
 import { isRelevantRow, buildEntities } from '../services/productAnalysis.js';
 import { classifyEntities, DEFAULT_THRESHOLDS } from '../services/decisionEngine.js';
 import { generateActionPlan, computeInputHash } from '../services/aiActionPlan.js';
-import { netProfit, revenue } from '../../../js/profit.js';
+import { computeTruePerformance } from '../services/truePerformance.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -268,88 +268,7 @@ router.get(
   '/true-performance',
   asyncRoute(async (req, res) => {
     const { dateFrom, dateTo } = req.query;
-    const dateFilter = {};
-    if (dateFrom) dateFilter.gte = dateFrom;
-    if (dateTo) dateFilter.lte = dateTo;
-
-    const adsWhere = { matched_product_id: { not: null } };
-    if (dateFrom || dateTo) adsWhere.date = dateFilter;
-
-    const adsGroups = await prisma.adsDailyMetric.groupBy({
-      by: ['matched_product_id'],
-      where: adsWhere,
-      _sum: { spend: true, meta_purchases: true, meta_revenue: true, impressions: true, clicks: true },
-    });
-
-    const results = [];
-    for (const g of adsGroups) {
-      const productId = g.matched_product_id;
-      const product = await prisma.product.findUnique({ where: { id: productId } });
-      if (!product) continue;
-
-      const spend = g._sum.spend || 0;
-      const metaPurchases = g._sum.meta_purchases || 0;
-      const metaRevenue = g._sum.meta_revenue || 0;
-      const metaRoas = spend > 0 ? metaRevenue / spend : null;
-
-      const eoWhere = { product_id: productId };
-      if (dateFrom || dateTo) eoWhere.date = dateFilter;
-      const eoRows = await prisma.easyOrdersOrder.findMany({ where: eoWhere });
-
-      let source, actualOrders, confirmedOrders, deliveredOrders, cancelledOrders, returnedOrders, actualRevenue;
-      if (eoRows.length > 0) {
-        source = 'easyorders';
-        const byOrder = new Map();
-        for (const r of eoRows) if (!byOrder.has(r.order_id)) byOrder.set(r.order_id, r.status);
-        const statuses = [...byOrder.values()];
-        actualOrders = statuses.length;
-        confirmedOrders = statuses.filter((s) => s === 'CONFIRMED').length;
-        deliveredOrders = statuses.filter((s) => s === 'DELIVERED').length;
-        cancelledOrders = statuses.filter((s) => s === 'CANCELLED').length;
-        returnedOrders = statuses.filter((s) => s === 'RETURNED').length;
-        actualRevenue = revenue(product, deliveredOrders || actualOrders);
-      } else {
-        const doWhere = { product_id: productId };
-        if (dateFrom || dateTo) doWhere.date = dateFilter;
-        const dailyRows = await prisma.dailyOrder.findMany({ where: doWhere });
-        source = dailyRows.length > 0 ? 'daily_orders' : 'none';
-        actualOrders = dailyRows.reduce((s, r) => s + (r.orders_count || 0), 0);
-        confirmedOrders = null; // DailyOrder doesn't distinguish confirmed from placed
-        deliveredOrders = dailyRows.reduce((s, r) => s + (r.delivered_count || 0), 0);
-        cancelledOrders = null;
-        returnedOrders = dailyRows.reduce((s, r) => s + (r.returned_count || 0), 0);
-        actualRevenue = revenue(product, deliveredOrders || actualOrders);
-      }
-
-      const trueCPA = actualOrders > 0 ? spend / actualOrders : null;
-      const netProfitValue = netProfit(product, deliveredOrders || actualOrders, trueCPA ?? undefined);
-      const trueRoas = spend > 0 && actualRevenue !== null ? actualRevenue / spend : null;
-      const deliveredRoas = spend > 0 && deliveredOrders ? (deliveredOrders * product.selling_price) / spend : null;
-      const costPerDeliveredOrder = deliveredOrders > 0 ? spend / deliveredOrders : null;
-
-      results.push({
-        productId,
-        productName: product.product_name,
-        meta: { spend, purchases: metaPurchases, revenue: metaRevenue, roas: metaRoas, impressions: g._sum.impressions || 0, clicks: g._sum.clicks || 0 },
-        real: {
-          source, // "easyorders" | "daily_orders" | "none" — which real data source this came from, shown for transparency
-          actualOrders,
-          confirmedOrders,
-          deliveredOrders,
-          cancelledOrders,
-          returnedOrders,
-          actualRevenue,
-          netProfit: netProfitValue,
-          trueCPA,
-          trueRoas,
-          deliveredRoas,
-          costPerDeliveredOrder,
-        },
-      });
-    }
-
-    results.sort((a, b) => b.meta.spend - a.meta.spend);
-    res.json({ dateFrom: dateFrom || null, dateTo: dateTo || null, products: results });
+    res.json(await computeTruePerformance({ dateFrom, dateTo }));
   })
 );
 
@@ -368,7 +287,7 @@ function addDays(dateStr, days) {
 }
 
 /** Resolves the current + previous comparison window from query params, falling back to "all data available" when no explicit range is given. Previous period is the same length immediately preceding the current one — returns null previous bounds when there's nothing before the earliest data (so the caller can show an honest "no history yet" state instead of comparing against nothing). */
-async function resolveDateWindows(dateFrom, dateTo) {
+export async function resolveDateWindows(dateFrom, dateTo) {
   const extent = await prisma.adsDailyMetric.aggregate({ _min: { date: true }, _max: { date: true } });
   const dataMin = extent._min.date;
   const dataMax = extent._max.date;
@@ -387,7 +306,7 @@ async function resolveDateWindows(dateFrom, dateTo) {
   };
 }
 
-async function loadMetricsInRange(window) {
+export async function loadMetricsInRange(window) {
   if (!window) return [];
   return prisma.adsDailyMetric.findMany({ where: { date: { gte: window.from, lte: window.to } } });
 }
@@ -482,7 +401,7 @@ router.get(
 // top of those already-final numbers (never invents a classification).
 // ============================================================================
 
-async function loadThresholds() {
+export async function loadThresholds() {
   const row = await prisma.settings.findUnique({ where: { id: 'default' } });
   const saved = row ? JSON.parse(row.data) : {};
   return {
@@ -494,7 +413,7 @@ async function loadThresholds() {
 }
 
 /** Explicit dateFrom/dateTo win (presets computed client-side); otherwise defaults to real "today", falling back to the latest available upload date when today has no data (spec §22) — usedFallback tells the UI which happened. */
-async function resolveDecisionWindow(dateFrom, dateTo) {
+export async function resolveDecisionWindow(dateFrom, dateTo) {
   if (dateFrom || dateTo) {
     const from = dateFrom || dateTo;
     const to = dateTo || dateFrom;

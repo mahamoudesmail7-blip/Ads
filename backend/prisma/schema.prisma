@@ -45,6 +45,7 @@ model User {
   ads_uploads        AdsUpload[]
   ads_decision_reviews AdsDecisionReview[]
   meta_connections     MetaConnection[]
+  ai_audit_log_entries AiAuditLog[]
 
   @@map("users")
 }
@@ -626,4 +627,30 @@ model MetaConnection {
   updated_at                DateTime  @updatedAt
 
   @@map("meta_connections")
+}
+
+// AI E-Commerce Operating System — every real tool call the AI agent makes
+// (backend/src/services/aiTools.js) is logged here, and every assistant
+// turn (backend/src/routes/aiAssistant.js) is logged as its own entry with
+// tool_calls listing the JSON-encoded tool names/results actually used to
+// answer it. This is the real Audit Log the spec requires — never a UI
+// mockup. Phase 1 ships read-only tools only (action="READ"); write-tool
+// entries (action="EXECUTE") are additive groundwork for later phases and
+// unused until those tools exist.
+model AiAuditLog {
+  id           Int      @id @default(autoincrement())
+  actor_id     Int? // the logged-in user who triggered this (chat message or quick action) — null for a system-triggered call, none exist yet
+  actor        User?    @relation(fields: [actor_id], references: [id], onDelete: SetNull)
+  kind         String // "TOOL_CALL" | "ASSISTANT_TURN"
+  action       String // "READ" | "EXECUTE" — every Phase 1 tool is READ
+  tool_name    String? // set for kind=TOOL_CALL
+  input_json   String? // JSON-encoded tool input / user message
+  output_json  String? // JSON-encoded tool result (never the raw LLM prose for TOOL_CALL rows)
+  success      Boolean  @default(true)
+  error        String?
+  created_at   DateTime @default(now())
+
+  @@index([created_at])
+  @@index([kind])
+  @@map("ai_audit_log")
 }
