@@ -62,6 +62,8 @@ router.post(
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اكتب سؤال أو طلب الأول.' });
     }
 
+    logger.info('AI_REQUEST_STARTED', { actorId: req.user.id, messageLength: message.trim().length });
+
     let result;
     try {
       result = await runAgentTurn({
@@ -77,9 +79,12 @@ router.post(
         },
       });
     } catch (err) {
+      logger.error('AI_REQUEST_FAILED', { actorId: req.user.id, message: err.message });
       await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message }, success: false, error: err.message });
       return res.status(400).json({ error: 'AI_ERROR', message: err.message });
     }
+
+    logger.info('AI_RESPONSE_COMPLETED', { actorId: req.user.id, toolCallCount: result.toolCalls.length, replyLength: result.text.length });
 
     await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message }, output: { toolCalls: result.toolCalls.map((c) => c.name), textLength: result.text.length } });
 
