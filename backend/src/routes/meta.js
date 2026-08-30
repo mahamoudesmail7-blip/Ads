@@ -22,10 +22,20 @@ function metaRoute(fn) {
     try {
       await fn(req, res, next);
     } catch (err) {
-      logger.error('Meta Ads route error', { message: err.message, path: req.path });
-      res.status(400).json({ error: 'META_ERROR', message: err.message });
+      logger.error('Meta Ads route error', { message: err.message, path: req.path, graphType: err.graphType, graphCode: err.graphCode, graphSubcode: err.graphSubcode, fbtraceId: err.fbtraceId });
+      res.status(400).json({ error: 'META_ERROR', message: withGraphDiagnostics(err.message, err) });
     }
   };
+}
+
+/** Meta's type/code/error_subcode/fbtrace_id are Meta's own public diagnostic identifiers (never a secret — this is literally what Meta's own docs tell you to hand to their support), appended to the user-facing message only when present, so a real failure shows enough to diagnose without needing separate log access. */
+function withGraphDiagnostics(message, err) {
+  const parts = [];
+  if (err.graphType) parts.push(`type=${err.graphType}`);
+  if (err.graphCode !== undefined && err.graphCode !== null) parts.push(`code=${err.graphCode}`);
+  if (err.graphSubcode !== undefined && err.graphSubcode !== null) parts.push(`subcode=${err.graphSubcode}`);
+  if (err.fbtraceId) parts.push(`fbtrace_id=${err.fbtraceId}`);
+  return parts.length ? `${message} [${parts.join(', ')}]` : message;
 }
 
 const router = Router();
@@ -44,6 +54,10 @@ function addDays(dateStr, days) {
 router.get(
   '/connect',
   asyncRoute(async (req, res) => {
+    // Safe (no secret values) snapshot logged on every real connect attempt
+    // — presence/length/quote-shape only, per explicit request, to confirm
+    // or rule out a malformed env var from the actual Railway runtime.
+    logger.info('Meta OAuth /connect — env snapshot', metaAuth.debugEnvSnapshot());
     const frontendBase = process.env.FRONTEND_URL || '';
     const state = metaAuth.generateState();
     let authUrl;
@@ -73,11 +87,13 @@ router.get(
       return redirectTo({ meta: 'error', reason: 'طلب اتصال غير صالح — حاول تاني.' });
     }
 
+    logger.info('Meta OAuth /callback — env snapshot before token exchange', metaAuth.debugEnvSnapshot());
     try {
       await metaAuth.completeOAuth({ code, connectedById: req.user.id });
       return redirectTo({ meta: 'connected' });
     } catch (err) {
-      return redirectTo({ meta: 'error', reason: err.message });
+      logger.error('Meta OAuth /callback failed', { message: err.message, graphType: err.graphType, graphCode: err.graphCode, graphSubcode: err.graphSubcode, fbtraceId: err.fbtraceId });
+      return redirectTo({ meta: 'error', reason: withGraphDiagnostics(err.message, err) });
     }
   })
 );

@@ -12,18 +12,57 @@ import { exchangeCodeForToken, exchangeForLongLivedToken, getMe } from './metaGr
 const CONFIG_ID = process.env.META_CONFIG_ID || '2166183033951878';
 const AUTH_DIALOG_VERSION = 'v21.0';
 
+// .env.example documents every Meta var wrapped in double quotes
+// (META_APP_ID="", META_CONFIG_ID="2166183033951878", ...) — correct .env
+// file syntax, but Railway's Variables UI is a plain text field with no
+// quote-stripping of its own. Pasting a credential the same way it's shown
+// in .env.example (quotes included) makes process.env.X literally start
+// and end with a `"` character — invisible in a quick glance at the
+// Railway UI, but a different string than Facebook expects. Combined with
+// a trailing newline/space (also invisible), this is the single most
+// likely real-world cause of "Error validating client secret" when the
+// underlying App ID/Secret pair is actually correct. Both are stripped
+// defensively here, for every Meta env var, not just the ones already
+// suspected.
+function cleanEnvValue(raw) {
+  if (raw === undefined || raw === null) return raw;
+  let v = raw.trim();
+  if (v.length >= 2 && ((v[0] === '"' && v[v.length - 1] === '"') || (v[0] === "'" && v[v.length - 1] === "'"))) {
+    v = v.slice(1, -1).trim();
+  }
+  return v;
+}
+
 function requiredEnv(name) {
-  // .trim() defensively: a trailing newline/space from copy-pasting a
-  // credential into Railway's Variables UI is invisible to the eye but
-  // changes the string Facebook receives — a very common real-world cause
-  // of "Error validating client secret" even when the value looks correct.
-  const v = process.env[name]?.trim();
+  const v = cleanEnvValue(process.env[name]);
   if (!v) throw new Error(`${name} مش متظبط في الـ .env — لازم تضيفه الأول.`);
   return v;
 }
 
 export function getRedirectUri() {
-  return process.env.META_REDIRECT_URI || `${requiredEnv('BACKEND_URL')}/api/meta/callback`;
+  const explicit = cleanEnvValue(process.env.META_REDIRECT_URI);
+  return explicit || `${requiredEnv('BACKEND_URL')}/api/meta/callback`;
+}
+
+/** Safe (no secret values, only presence/shape) snapshot of the Meta env vars actually in effect right now — logged at the moment a real connection is attempted, per explicit request, so a live Railway log line during the next real attempt can confirm or rule out a bad/misformatted value without ever exposing it. */
+export function debugEnvSnapshot() {
+  const rawAppId = process.env.META_APP_ID;
+  const rawAppSecret = process.env.META_APP_SECRET;
+  const rawRedirect = process.env.META_REDIRECT_URI;
+  return {
+    hasAppId: Boolean(rawAppId),
+    hasAppSecret: Boolean(rawAppSecret),
+    appIdLength: rawAppId?.length ?? null,
+    appSecretLength: rawAppSecret?.length ?? null,
+    appIdLooksQuoted: Boolean(rawAppId && rawAppId.trim().length >= 2 && (rawAppId.trim()[0] === '"' || rawAppId.trim()[0] === "'")),
+    appSecretLooksQuoted: Boolean(rawAppSecret && rawAppSecret.trim().length >= 2 && (rawAppSecret.trim()[0] === '"' || rawAppSecret.trim()[0] === "'")),
+    appIdHasWhitespace: Boolean(rawAppId && rawAppId !== rawAppId.trim()),
+    appSecretHasWhitespace: Boolean(rawAppSecret && rawAppSecret !== rawAppSecret.trim()),
+    redirectUriConfigured: Boolean(rawRedirect),
+    redirectUriInEffect: getRedirectUri(),
+    configId: CONFIG_ID,
+    nodeEnv: process.env.NODE_ENV,
+  };
 }
 
 /** The real Facebook OAuth dialog URL for this app's Facebook Login for Business configuration — a genuine navigation target, not an API call. */

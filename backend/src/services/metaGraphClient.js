@@ -3,8 +3,39 @@
 // extra HTTP client library" convention — see services/ai.js). Every
 // function here makes a real network call; nothing in this file ever
 // fabricates a response.
+import { logger } from '../logger.js';
+
 const GRAPH_VERSION = 'v21.0';
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+
+/**
+ * Meta's error body is {error: {message, type, code, error_subcode,
+ * fbtrace_id}} — type/code/error_subcode/fbtrace_id are Meta's own public
+ * diagnostic identifiers (documented at developers.facebook.com/docs/
+ * graph-api/guides/error-handling), never secrets, and are exactly what
+ * Meta's own support asks for when reporting an OAuth issue. Logged
+ * server-side in full, and attached to the thrown Error so the route can
+ * surface the safe subset to the user — without ever touching
+ * client_id/client_secret/code/token, which never appear in this object.
+ */
+function throwGraphOAuthError(data, res, context) {
+  const e = data?.error || {};
+  logger.error(`Meta OAuth ${context} failed`, {
+    status: res.status,
+    errorType: e.type ?? null,
+    errorCode: e.code ?? null,
+    errorSubcode: e.error_subcode ?? null,
+    message: e.message ?? null,
+    fbtraceId: e.fbtrace_id ?? null,
+  });
+  const err = new Error(e.message || `Graph API error ${res.status}`);
+  err.graphStatus = res.status;
+  err.graphType = e.type ?? null;
+  err.graphCode = e.code ?? null;
+  err.graphSubcode = e.error_subcode ?? null;
+  err.fbtraceId = e.fbtrace_id ?? null;
+  throw err;
+}
 
 async function graphFetch(path, params, token) {
   const url = new URL(`${GRAPH_BASE}${path}`);
@@ -16,11 +47,7 @@ async function graphFetch(path, params, token) {
   const res = await fetch(url.toString());
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.error) {
-    const msg = data?.error?.message || `Graph API error ${res.status}`;
-    const err = new Error(msg);
-    err.graphCode = data?.error?.code;
-    err.graphType = data?.error?.type;
-    throw err;
+    throwGraphOAuthError(data, res, `${path} call`);
   }
   return data;
 }
@@ -34,7 +61,7 @@ export async function exchangeCodeForToken({ code, appId, appSecret, redirectUri
   url.searchParams.set('code', code);
   const res = await fetch(url.toString());
   const data = await res.json().catch(() => null);
-  if (!res.ok || data?.error) throw new Error(data?.error?.message || `Graph API error ${res.status}`);
+  if (!res.ok || data?.error) throwGraphOAuthError(data, res, 'code->token exchange');
   return data; // {access_token, token_type, expires_in}
 }
 
@@ -47,7 +74,7 @@ export async function exchangeForLongLivedToken({ shortLivedToken, appId, appSec
   url.searchParams.set('fb_exchange_token', shortLivedToken);
   const res = await fetch(url.toString());
   const data = await res.json().catch(() => null);
-  if (!res.ok || data?.error) throw new Error(data?.error?.message || `Graph API error ${res.status}`);
+  if (!res.ok || data?.error) throwGraphOAuthError(data, res, 'long-lived token exchange');
   return data; // {access_token, token_type, expires_in}
 }
 
