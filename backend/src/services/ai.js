@@ -11,11 +11,24 @@ import { logger } from '../logger.js';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-sonnet-5';
 
+// A real-world paste into a platform's Variables UI (Railway included) can
+// accidentally grab more than intended — e.g. the next line's
+// "NAME=value" got selected along with the key and pasted as one string,
+// producing "sk-ant-...\nANTHROPIC_WORKSPACE_ID=\"...\"" as a single env
+// var value. That's not valid header content (fetch's Headers throws on
+// any \n), so it's cleaned the same defensive way the Meta env vars
+// already are: take only the first line, trimmed. A correctly-pasted key
+// is single-line already, so this is a no-op for the normal case.
+function cleanEnvValue(raw) {
+  if (!raw) return raw;
+  return raw.split('\n')[0].trim();
+}
+
 // Never log process.env.ANTHROPIC_API_KEY itself — only whether it's
 // present. This is the one place that reads it, so this is also the one
 // honest source of truth for "is Claude actually configured right now".
 function apiKeyOrThrow() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = cleanEnvValue(process.env.ANTHROPIC_API_KEY);
   logger.info(apiKey ? 'ANTHROPIC_API_KEY: CONFIGURED' : 'ANTHROPIC_API_KEY: MISSING');
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY مش متظبط — ضيفه في .env عشان تستخدم أي ميزة AI.');
   return apiKey;
@@ -28,7 +41,7 @@ async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
   // header naming which workspace the request acts in — not a secret, a
   // plain resource id (wrkspc_...), same as an App ID. Optional: only added
   // when set, so a legacy key without a workspace still works unchanged.
-  const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID?.trim();
+  const workspaceId = cleanEnvValue(process.env.ANTHROPIC_WORKSPACE_ID);
   let res;
   try {
     res = await fetch(ANTHROPIC_API_URL, {
