@@ -23,11 +23,22 @@ function apiKeyOrThrow() {
 
 async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
   logger.info('ANTHROPIC_REQUEST_STARTED', { model: DEFAULT_MODEL, toolCount: tools?.length || 0, messageCount: messages.length });
+  // "Identity-linked" API keys (created under a specific Workspace in the
+  // Anthropic Console, rather than a legacy org-wide key) require this
+  // header naming which workspace the request acts in — not a secret, a
+  // plain resource id (wrkspc_...), same as an App ID. Optional: only added
+  // when set, so a legacy key without a workspace still works unchanged.
+  const workspaceId = process.env.ANTHROPIC_WORKSPACE_ID?.trim();
   let res;
   try {
     res = await fetch(ANTHROPIC_API_URL, {
       method: 'POST',
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        ...(workspaceId ? { 'anthropic-workspace-id': workspaceId } : {}),
+      },
       body: JSON.stringify({ model: DEFAULT_MODEL, max_tokens: maxTokens, system, messages, ...(tools ? { tools } : {}) }),
     });
   } catch (err) {
