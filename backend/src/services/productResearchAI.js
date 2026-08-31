@@ -156,12 +156,27 @@ export async function rankResultsBatch(profile, results) {
   const maxToRank = Number(process.env.MAX_AI_RANKING_RESULTS) || 60;
   const batch = results.slice(0, maxToRank);
 
-  const system = `إنت بتصنف نتائج بحث حقيقية (مش انت اللي بحثت) عشان تحدد أي واحدة فعلاً بتخص نفس المنتج ده:
-${profile.main_product_name} — ${profile.product_category}
-${profile.product_description}
+  // Full product identity, not just the main name — an Arabic-titled post
+  // matching an alternative/Arabic name variant, or a listing whose visual
+  // description matches visual_identifiers, is a real match Claude would
+  // otherwise miss if only main_product_name/category/description were given.
+  const nameVariants = [...(profile.alternative_names || []), ...(profile.possible_names_ar || []), ...(profile.possible_names_en || []), ...(profile.generic_names || [])]
+    .filter((n) => n && n !== profile.main_product_name);
+  const keywords = [...(profile.keywords_ar || []), ...(profile.keywords_en || [])];
 
-لكل نتيجة، صنّفها: EXACT_MATCH | VERY_SIMILAR | SIMILAR | RELATED | IRRELEVANT
-مع match_score (0-100) و confidence_score (0-100) و reason (سطر واحد بالعربي، لازم يعتمد على البيانات المعطاة بس، متخترعش حاجة).
+  const system = `إنت بتصنف نتائج بحث حقيقية (مش انت اللي بحثت) عشان تحدد أي واحدة فعلاً بتخص نفس المنتج ده. اعتبر أي اسم من الأسماء البديلة أو الكلمات المفتاحية دي بنفس وزن الاسم الرئيسي — النتيجة ممكن تستخدم أي واحد منهم:
+
+الاسم الرئيسي: ${profile.main_product_name}
+الفئة: ${profile.product_category || 'غير محدد'}
+الوصف: ${profile.product_description || 'غير متاح'}
+${nameVariants.length ? `أسماء بديلة (عربي/إنجليزي): ${nameVariants.join('، ')}` : ''}
+${keywords.length ? `كلمات مفتاحية: ${keywords.join('، ')}` : ''}
+${profile.visual_identifiers?.length ? `صفات بصرية (من تحليل صورة المنتج): ${profile.visual_identifiers.join('، ')}` : ''}
+${profile.negative_keywords?.length ? `كلمات لازم تستبعد النتيجة لو ظهرت (منتج مختلف بنفس الاسم تقريبًا): ${profile.negative_keywords.join('، ')}` : ''}
+
+لكل نتيجة، صنّفها بناءً على العنوان والوصف والحساب المعطى بس — قارنها بكل الأسماء/الكلمات فوق مش بس الاسم الرئيسي:
+EXACT_MATCH | VERY_SIMILAR | SIMILAR | RELATED | IRRELEVANT
+مع match_score (0-100) و confidence_score (0-100) و reason (سطر واحد بالعربي، لازم يعتمد على البيانات المعطاة بس ويقول أي اسم/كلمة طابقت، متخترعش حاجة مش موجودة في النص).
 
 رجّع JSON array فقط بالشكل ده، بنفس عدد وترتيب النتائج المُدخلة:
 [{"id": 0, "classification": "", "match_score": 0, "confidence_score": 0, "reason": ""}]`;
