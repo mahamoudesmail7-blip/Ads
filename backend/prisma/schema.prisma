@@ -46,6 +46,8 @@ model User {
   ads_decision_reviews AdsDecisionReview[]
   meta_connections     MetaConnection[]
   ai_audit_log_entries AiAuditLog[]
+  product_research_searches     ProductResearchSearch[]
+  product_research_competitors  ProductResearchCompetitor[]
 
   @@map("users")
 }
@@ -81,6 +83,8 @@ model Product {
   inventory_movement InventoryMovementLog[]
   easyorders_orders  EasyOrdersOrder[]
   ads_metrics        AdsDailyMetric[]
+  product_research_searches    ProductResearchSearch[]
+  product_research_competitors ProductResearchCompetitor[]
 
   @@index([active])
   @@index([product_name])
@@ -653,4 +657,135 @@ model AiAuditLog {
   @@index([created_at])
   @@index([kind])
   @@map("ai_audit_log")
+}
+
+// ============================================================================
+// Product Research Intelligence — multi-platform product/competitor discovery.
+// Pipeline: user input -> Claude product analysis -> query generation ->
+// search providers (services/searchProviders/*) -> normalization -> Claude
+// ranking -> dedup -> saved here. All additive, all new tables.
+// ============================================================================
+
+model ProductResearchSearch {
+  id              Int       @id @default(autoincrement())
+  user_id         Int
+  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  product_id      Int? // optional link to an existing Product
+  product         Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_name    String
+  product_image   String? // stored filename under uploads/product-research/, never the raw client filename
+  country         String    @default("EG")
+  language        String    @default("AR_EN")
+  platforms_json  String // JSON array, e.g. ["instagram","tiktok","facebook","youtube"]
+  results_per_platform Int  @default(25)
+  status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED
+  platform_status_json String? // {"instagram":"COMPLETE","tiktok":"FAILED",...} — per-platform status for partial-failure UI
+  ai_profile_json String? // Claude's structured product profile (Step 2 schema)
+  input_json      String? // the raw user-entered names/keywords, preserved verbatim — Claude output is merged onto this, never overwrites it
+  error           String?
+  started_at      DateTime?
+  completed_at    DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  queries         ProductResearchQuery[]
+  results         ProductResearchResult[]
+  competitors     ProductResearchCompetitor[]
+  insight         ProductResearchInsight?
+
+  @@index([user_id])
+  @@index([product_id])
+  @@index([status])
+  @@map("product_research_searches")
+}
+
+model ProductResearchQuery {
+  id           Int      @id @default(autoincrement())
+  search_id    Int
+  search       ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  platform     String
+  query        String
+  query_type   String // EXACT_NAME|ALTERNATIVE_NAME|ARABIC_NAME|ENGLISH_NAME|FEATURE|BENEFIT|PROBLEM|GENERIC|VISUAL_DESCRIPTION
+  provider     String // which SearchProvider actually ran this
+  result_count Int      @default(0)
+  status       String   @default("PENDING") // PENDING|RUNNING|COMPLETE|FAILED
+  error        String?
+  created_at   DateTime @default(now())
+
+  @@index([search_id])
+  @@map("product_research_queries")
+}
+
+model ProductResearchResult {
+  id                Int       @id @default(autoincrement())
+  search_id         Int
+  search            ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  platform          String
+  content_type      String    @default("Unknown") // Profile|Page|Post|Reel|Video|Short|Channel|Creator|Unknown
+  canonical_url     String
+  original_url      String
+  title             String?
+  snippet           String?
+  account_name      String?
+  account_url       String?
+  thumbnail         String?
+  published_at      DateTime?
+  metrics_json      String? // {"views":123,"likes":45,...} — only keys actually returned by the provider, never fabricated
+  provider          String
+  classification    String? // EXACT_MATCH|VERY_SIMILAR|SIMILAR|RELATED|IRRELEVANT — null until AI ranking runs
+  match_score       Int?
+  confidence_score  Int?
+  ai_reason         String?
+  ignored           Boolean   @default(false)
+  raw_metadata_json String? // the provider's raw response fields, kept for debugging/re-ranking, never shown raw in the UI
+  discovered_by_queries_json String? // which query ids/text found this result
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  competitor        ProductResearchCompetitor?
+
+  @@unique([search_id, canonical_url])
+  @@index([search_id])
+  @@index([platform])
+  @@index([match_score])
+  @@map("product_research_results")
+}
+
+model ProductResearchCompetitor {
+  id             Int       @id @default(autoincrement())
+  product_id     Int?
+  product        Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  search_id      Int?
+  search         ProductResearchSearch? @relation(fields: [search_id], references: [id], onDelete: SetNull)
+  result_id      Int?      @unique
+  result         ProductResearchResult? @relation(fields: [result_id], references: [id], onDelete: SetNull)
+  platform       String
+  account_name   String?
+  account_url    String
+  country        String?
+  follower_count Int? // null (never fabricated) when the provider doesn't return it — UI shows "غير متاح"
+  notes          String?
+  saved_by_id    Int?
+  saved_by       User?     @relation(fields: [saved_by_id], references: [id], onDelete: SetNull)
+  first_seen     DateTime  @default(now())
+  last_seen      DateTime  @default(now())
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  @@index([product_id])
+  @@index([search_id])
+  @@map("product_research_competitors")
+}
+
+// One row per completed search — the Market Insights section (Step 14).
+// Kept separate from ProductResearchSearch so it can be regenerated
+// independently without touching the search row itself.
+model ProductResearchInsight {
+  id            Int      @id @default(autoincrement())
+  search_id     Int      @unique
+  search        ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  insights_json String // {observedData:{...}, aiInterpretation:{...}} — kept explicitly separate per Step 14's requirement
+  generated_at  DateTime @default(now())
+
+  @@map("product_research_ai_insights")
 }

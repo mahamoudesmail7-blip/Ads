@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>بحث المنتجات — نظام مراقبة المنتجات</title>
+<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <div id="sidebar" class="sidebar"></div>
+    <div class="main">
+      <div class="page-header">
+        <div>
+          <h1>🔍 بحث المنتجات</h1>
+          <div class="subtitle">اكتشاف منافسين ومحتوى تسويقي عبر إنستجرام، فيسبوك، تيك توك، ويوتيوب</div>
+        </div>
+      </div>
+
+      <!-- Provider Status -->
+      <div class="card" id="prProviderStatusCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">⚙️ حالة مصادر البحث</div>
+        <div class="toolbar" id="prProviderStatusList"></div>
+      </div>
+
+      <!-- SECTION 1+2: Product Input + Search Controls -->
+      <div class="card" id="prInputCard" style="margin-bottom:22px;">
+        <div class="section-title" style="margin-top:0;">🧾 معلومات المنتج</div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>اسم المنتج الرئيسي *</label>
+          <input type="text" id="prProductName" placeholder="مثال: جهاز مساج فروة الرأس الكهربائي" />
+        </div>
+
+        <div class="field" style="margin-bottom:12px;">
+          <label>أسماء محتملة</label>
+          <div class="pr-chips" id="prChipsAlt" data-field="alt"></div>
+          <div class="toolbar" style="gap:8px;">
+            <input type="text" id="prInputAlt" placeholder="اكتب اسم واضغط Enter" style="flex:1;" />
+            <button type="button" class="btn secondary small" data-add-chip="alt">+ إضافة</button>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>أسماء عربي</label>
+          <div class="pr-chips" id="prChipsAr" data-field="ar"></div>
+          <div class="toolbar" style="gap:8px;">
+            <input type="text" id="prInputAr" placeholder="اكتب اسم واضغط Enter" style="flex:1;" />
+            <button type="button" class="btn secondary small" data-add-chip="ar">+ إضافة</button>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>أسماء إنجليزي</label>
+          <div class="pr-chips" id="prChipsEn" data-field="en"></div>
+          <div class="toolbar" style="gap:8px;">
+            <input type="text" id="prInputEn" placeholder="اكتب اسم واضغط Enter" style="flex:1;" />
+            <button type="button" class="btn secondary small" data-add-chip="en">+ إضافة</button>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>كلمات مفتاحية إضافية</label>
+          <div class="pr-chips" id="prChipsKw" data-field="kw"></div>
+          <div class="toolbar" style="gap:8px;">
+            <input type="text" id="prInputKw" placeholder="اكتب كلمة واضغط Enter" style="flex:1;" />
+            <button type="button" class="btn secondary small" data-add-chip="kw">+ إضافة</button>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label>وصف المنتج (اختياري)</label>
+          <textarea id="prDescription" rows="2" placeholder="وصف مختصر للمنتج..."></textarea>
+        </div>
+        <div class="field" style="margin-bottom:16px;">
+          <label>صورة المنتج (اختياري)</label>
+          <div class="toolbar">
+            <input type="file" id="prImageInput" accept="image/jpeg,image/png,image/webp" style="display:none" />
+            <button class="btn secondary small" id="prBtnPickImage">اختر صورة</button>
+            <span class="faint" id="prImageName"></span>
+          </div>
+          <img id="prImagePreview" style="display:none; max-width:120px; max-height:120px; border-radius:8px; margin-top:8px;" />
+        </div>
+
+        <div class="section-title">⚙️ إعدادات البحث</div>
+        <div class="toolbar" style="margin-bottom:12px;" id="prPlatformToggles">
+          <label class="pr-checkbox"><input type="checkbox" value="instagram" checked /> Instagram</label>
+          <label class="pr-checkbox"><input type="checkbox" value="facebook" checked /> Facebook</label>
+          <label class="pr-checkbox"><input type="checkbox" value="tiktok" checked /> TikTok</label>
+          <label class="pr-checkbox"><input type="checkbox" value="youtube" checked /> YouTube</label>
+        </div>
+        <div class="toolbar" style="margin-bottom:16px;">
+          <div class="field" style="margin-bottom:0;">
+            <label>الدولة</label>
+            <select id="prCountry">
+              <option value="EG" selected>مصر</option>
+              <option value="SA">السعودية</option>
+              <option value="AE">الإمارات</option>
+              <option value="KW">الكويت</option>
+              <option value="WW">Worldwide</option>
+            </select>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>اللغة</label>
+            <select id="prLanguage">
+              <option value="AR">عربي</option>
+              <option value="EN">إنجليزي</option>
+              <option value="AR_EN" selected>عربي + إنجليزي</option>
+            </select>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label>عدد النتائج لكل منصة</label>
+            <select id="prResultsPerPlatform">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn" id="prBtnStartSearch">🔍 ابدأ البحث</button>
+      </div>
+
+      <!-- SECTION 3: Progress -->
+      <div class="card" id="prProgressCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">⏳ حالة البحث</div>
+        <div id="prProgressText" style="font-size:14px; margin-bottom:10px;"></div>
+        <div class="toolbar" id="prPlatformStatusList"></div>
+        <div id="prProgressError" class="empty-state" style="display:none; margin-top:10px;"></div>
+      </div>
+
+      <!-- SECTION 4: Summary KPIs -->
+      <div class="stat-grid" id="prSummaryTiles" style="margin-bottom:22px; display:none;"></div>
+
+      <!-- SECTION 5+6: Platform Tabs + Results -->
+      <div class="card" id="prResultsCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">📋 النتائج</div>
+        <div class="toolbar" style="margin-bottom:14px;">
+          <button class="btn secondary small pr-tab active" data-tab="all">الكل</button>
+          <button class="btn secondary small pr-tab" data-tab="instagram">Instagram</button>
+          <button class="btn secondary small pr-tab" data-tab="tiktok">TikTok</button>
+          <button class="btn secondary small pr-tab" data-tab="facebook">Facebook</button>
+          <button class="btn secondary small pr-tab" data-tab="youtube">YouTube</button>
+          <span class="faint">|</span>
+          <select id="prClassificationFilter">
+            <option value="">كل التصنيفات</option>
+            <option value="EXACT_MATCH">تطابق تام</option>
+            <option value="VERY_SIMILAR">مشابه جدًا</option>
+            <option value="SIMILAR">مشابه</option>
+            <option value="RELATED">ذو صلة</option>
+          </select>
+        </div>
+        <div id="prResultsList"></div>
+        <div id="prResultsEmpty" class="empty-state" style="display:none;">مفيش نتائج لسه.</div>
+        <div class="toolbar" style="margin-top:14px; justify-content:center;" id="prResultsPagination"></div>
+      </div>
+
+      <!-- SECTION 7: Competitors -->
+      <div class="card" id="prCompetitorsCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">🏆 المنافسين المحفوظين</div>
+        <div id="prCompetitorsList"></div>
+        <div id="prCompetitorsEmpty" class="empty-state" style="display:none;">مفيش منافسين محفوظين لسه.</div>
+      </div>
+
+      <!-- SECTION 9: AI Market Insights -->
+      <div class="card" id="prInsightsCard" style="margin-bottom:22px; display:none;">
+        <div class="section-title" style="margin-top:0;">💡 رؤى السوق (AI)</div>
+        <div id="prInsightsContent"></div>
+      </div>
+
+      <!-- SECTION 10: History -->
+      <div class="section-title">🕓 سجل البحث</div>
+      <div class="table-wrap" style="margin-bottom:22px;">
+        <table class="data">
+          <thead><tr><th>المنتج</th><th>الحالة</th><th>المنصات</th><th>النتائج</th><th>منافسين</th><th>التاريخ</th><th></th></tr></thead>
+          <tbody id="prHistoryBody"></tbody>
+        </table>
+      </div>
+      <div id="prHistoryEmpty" class="empty-state" style="display:none; margin-bottom:22px;">مفيش عمليات بحث سابقة.</div>
+    </div>
+  </div>
+
+  <!-- SECTION 8: Content Analysis drawer -->
+  <div class="drawer-overlay" id="prContentDrawerOverlay">
+    <div class="drawer-panel" id="prContentDrawerPanel"></div>
+  </div>
+
+  <script type="module" src="js/product-research.js"></script>
+</body>
+</html>
