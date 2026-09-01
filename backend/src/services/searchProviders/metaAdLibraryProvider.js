@@ -149,7 +149,7 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
       }
       // No ISO mapping for this country selector value (e.g. "Worldwide") -- fall through to SerpApi below rather than guessing a country.
     } catch (err) {
-      logger.error('META_AD_LIBRARY_GRAPH_API_FAILED', { message: err.message, graphCode: err.graphCode, graphSubcode: err.graphSubcode });
+      logger.error('META_AD_LIBRARY_GRAPH_API_FAILED', { provider: 'meta_ad_library_api', query, message: err.message, graphCode: err.graphCode, graphSubcode: err.graphSubcode });
       lastError = { provider: 'meta_ad_library_api', message: err.message };
       health.recordError('meta_ad_library_api', health.classifyErrorType(err));
       // Real, documented Meta limitation for non-EU commercial search -- fall through to the SerpApi path instead of failing the whole platform.
@@ -273,7 +273,7 @@ export async function runStagedSearch({ profile, country, activeOnly, mode, rawL
       lastError = null;
       health.recordSuccess('apify_meta_ad_library');
     } catch (err) {
-      logger.error('APIFY_META_AD_LIBRARY_STAGE_FAILED', { tier: tier.name, message: err.message });
+      logger.error('APIFY_META_AD_LIBRARY_STAGE_FAILED', { provider: 'apify_meta_ad_library', tier: tier.name, mode, message: err.message });
       tiers.push({ tier: tier.name, queries: tier.queries, rawCount: 0, provider: 'apify_meta_ad_library', error: err.message });
       lastError = { provider: 'apify_meta_ad_library', message: err.message };
       health.recordError('apify_meta_ad_library', health.classifyErrorType(err));
