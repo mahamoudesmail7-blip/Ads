@@ -162,43 +162,54 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
 
 /**
  * Maps one real Apify dataset item to normalizeResult()'s expected raw
- * shape. Field names confirmed from a real manual test (adArchiveID,
- * pageName, pageID, adStatus, publisherPlatforms, startDate, endDate,
- * adLibraryURL, adSnapshotURL, CTA text/domain) are read directly; a few
- * less-certain fields (exact ad-text/CTA-type key spelling) are checked
- * against a couple of plausible variants defensively rather than assumed
- * — any field genuinely absent stays null, never guessed (per explicit
+ * shape. Field names confirmed by directly inspecting real saved dataset
+ * items (raw_metadata_json) from a live Test A run against the production
+ * DB — NOT from the Apify Store's display labels, which use different
+ * casing/nesting than the actor's actual JSON output. Real shape: snake_case
+ * top-level keys (ad_archive_id, page_id, page_name, is_active,
+ * publisher_platform (singular key, array value), start_date/end_date as
+ * Unix SECONDS, ad_library_url as the real per-ad link) plus a nested
+ * `snapshot` object holding the actual creative (snapshot.body.text,
+ * snapshot.cta_text, snapshot.cta_type, snapshot.link_url,
+ * snapshot.link_description, snapshot.images[].original_image_url). Any
+ * field genuinely absent stays null, never guessed (per explicit
  * instruction: adText/creative bodies can legitimately be null).
  */
 function mapApifyItem(item) {
-  const adText = item.adText ?? item.ad_text ?? item.snapshot?.body?.text ?? (Array.isArray(item.adCreativeBodies) ? item.adCreativeBodies[0] : item.adCreativeBodies) ?? null;
-  const ctaText = item.ctaText ?? item.cta_text ?? item.snapshot?.cta_text ?? null;
-  const ctaType = item.ctaType ?? item.cta_type ?? null;
-  const ctaDomain = item.ctaDomain ?? item.cta_domain ?? item.linkDomain ?? item.snapshot?.link_url ?? null;
-  const isActive = item.adStatus === true || item.adStatus === 'ACTIVE' || item.isActive === true;
+  // Real field names confirmed by inspecting actual scraped output (the
+  // Apify Store's display names — "Ad Archive ID", "Is Active" etc. — are
+  // NOT the real JSON keys; the actor's real output is snake_case with a
+  // nested `snapshot` object holding the actual creative). An earlier
+  // version guessed camelCase keys from the display names and from an
+  // incomplete manual description, which silently produced null/1970-date
+  // results — caught via a real live test, fixed here against the actual
+  // raw JSON.
+  const snap = item.snapshot || {};
+  const adText = snap.body?.text ?? null;
+  const toDate = (unixSeconds) => (typeof unixSeconds === 'number' ? new Date(unixSeconds * 1000).toISOString() : null); // real field is Unix SECONDS, not ms
 
   return {
-    url: item.adSnapshotURL || item.ad_snapshot_url || item.adLibraryURL || item.ad_library_url || null,
-    title: item.pageName || item.page_name || null,
+    url: item.ad_library_url || null, // the real per-ad snapshot link (item.url is the generic search-results page, not per-ad)
+    title: snap.title || item.page_name || null,
     snippet: adText,
-    accountName: item.pageName || item.page_name || null,
-    accountUrl: item.pageID || item.page_id ? `https://www.facebook.com/${item.pageID || item.page_id}` : null,
-    thumbnail: item.snapshot?.images?.[0]?.original_image_url || item.imageUrl || null,
-    publishedAt: item.startDate || item.start_date || item.adCreationTime || null,
+    accountName: item.page_name || null,
+    accountUrl: item.page_id ? `https://www.facebook.com/${item.page_id}` : (snap.page_profile_uri || null),
+    thumbnail: snap.images?.[0]?.original_image_url || snap.videos?.[0]?.video_preview_image_url || null,
+    publishedAt: toDate(item.start_date),
     metrics: {
-      adId: item.adArchiveID || item.ad_archive_id || item.id || null,
-      endDate: item.endDate || item.end_date || null,
-      activeStatus: isActive ? 'ACTIVE' : (item.adStatus !== undefined && item.adStatus !== null ? 'INACTIVE' : null),
-      platformsShownOn: item.publisherPlatforms || item.publisher_platforms || [],
-      cta: ctaText,
-      ctaType,
-      mediaType: item.mediaType || item.media_type || null,
-      description: item.adText ? null : (item.linkDescription || item.link_description || null),
-      country: item.country || null,
-      ctaDomain,
+      adId: item.ad_archive_id || null,
+      endDate: toDate(item.end_date),
+      activeStatus: item.is_active === true ? 'ACTIVE' : (item.is_active === false ? 'INACTIVE' : null),
+      platformsShownOn: Array.isArray(item.publisher_platform) ? item.publisher_platform : [],
+      cta: snap.cta_text || null,
+      ctaType: snap.cta_type || null,
+      mediaType: snap.display_format || (snap.videos?.length ? 'video' : snap.images?.length ? 'image' : null),
+      description: snap.link_description || null,
+      country: null,
+      ctaDomain: snap.link_url || null,
       currency: item.currency || null,
-      estimatedAudienceSize: item.estimatedAudienceSize || item.reachEstimate || null,
-      impressions: item.impressions || item.impressionsWithIndex || null,
+      estimatedAudienceSize: item.reach_estimate || null,
+      impressions: null,
     },
     raw: item,
   };

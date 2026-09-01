@@ -34,6 +34,20 @@ export function validateAndCanonicalize(rawUrl, platform) {
   return url;
 }
 
+// Bounds raw_metadata_json's size without ever producing invalid JSON. A
+// plain `.slice(0, N)` on the stringified JSON (the previous approach) cuts
+// mid-string/mid-token for any provider payload over the cap — confirmed
+// live: ~5% of real Apify Ad Library items (the ones with long nested video
+// CDN URLs) landed in the DB as unparseable truncated JSON. This field is
+// diagnostic-only (never rendered raw to users), so a truncated-but-valid
+// marker object is the safe behavior instead.
+const RAW_METADATA_MAX_CHARS = 20000;
+function safeTruncatedJson(obj, maxChars = RAW_METADATA_MAX_CHARS) {
+  const full = JSON.stringify(obj || {});
+  if (full.length <= maxChars) return full;
+  return JSON.stringify({ _truncated: true, _originalLength: full.length, preview: full.slice(0, maxChars) });
+}
+
 function detectContentType(platform, url) {
   const path = url.pathname.toLowerCase();
   if (platform === 'instagram') {
@@ -85,7 +99,7 @@ export function normalizeResult(raw, context) {
     published_at: raw.publishedAt ? new Date(raw.publishedAt) : null,
     metrics_json: raw.metrics && Object.keys(raw.metrics).length ? JSON.stringify(raw.metrics) : null,
     provider: context.provider,
-    raw_metadata_json: JSON.stringify(raw.raw || {}).slice(0, 8000),
+    raw_metadata_json: safeTruncatedJson(raw.raw || {}),
     discovered_by_queries_json: JSON.stringify([{ query: context.query, queryType: context.queryType }]),
   };
 }
