@@ -52,8 +52,7 @@ export async function runProviderSearch({ platform, query, resultsLimit, country
   if (!PLATFORMS.includes(platform)) throw new Error(`منصة غير مدعومة: ${platform}`);
 
   if (platform === 'META_AD_LIBRARY') {
-    const items = await metaAdLibraryProvider.search({ query, resultsLimit, country });
-    return { items, providerName: (await metaAdLibraryProvider.getStatus()).provider || 'meta_ad_library' };
+    return metaAdLibraryProvider.search({ query, resultsLimit, country });
   }
 
   if (platform === 'youtube' && youtubeSearchProvider.isConfigured()) {

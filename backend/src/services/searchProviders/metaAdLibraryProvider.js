@@ -25,6 +25,23 @@ const COUNTRY_MAP = { EG: 'EG', SA: 'SA', AE: 'AE', KW: 'KW' }; // Meta's ad_rea
 
 let lastError = null; // module-level, session-lifetime only — same "no new infra" cache pattern as productResearchOrchestrator.js's search cache.
 
+// Real, empirically-confirmed finding from live testing: for Egypt (and
+// presumably most non-EU/DSA countries), Meta's /ads_archive endpoint does
+// NOT reliably filter by search_terms for regular commercial ads — it can
+// return a generic sample of ads reaching that country regardless of the
+// query, which would otherwise look like real-but-irrelevant results. This
+// is a plain relevance filter on already-real data (never invents
+// anything) that discards a Graph API ad whose own text has zero
+// overlap with the query, and signals "try the fallback" only when NONE
+// of the batch survives that check — i.e. when Meta clearly ignored the
+// search term entirely, not when it's just one loosely-related hit.
+function hasQueryOverlap(adText, query) {
+  const words = query.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+  if (words.length === 0) return true; // nothing meaningful to check against — don't over-filter
+  const haystack = adText.toLowerCase();
+  return words.some((w) => haystack.includes(w));
+}
+
 async function metaConnectionUsable() {
   try {
     const connection = await metaAuth.getConnection();
@@ -48,8 +65,14 @@ export async function isConfigured() {
 }
 
 /**
+ * Returns {items, providerName} — providerName reflects the path that
+ * ACTUALLY served this specific call, never guessed from general
+ * configuration state (an earlier version inferred it from getStatus(),
+ * which meant a call that fell through to SerpApi could get mislabeled as
+ * having come from the real Graph API — caught via a real live test where
+ * the returned ad content didn't match what the label implied, fixed here).
  * @param {{query: string, resultsLimit?: number, country?: string}} params
- * @returns {Promise<object[]>} raw-ish items (same shape the other providers return, normalized by productResearchNormalize.js)
+ * @returns {Promise<{items: object[], providerName: string}>}
  */
 export async function search({ query, resultsLimit = 10, country = 'EG' }) {
   if (await metaConnectionUsable()) {
@@ -58,27 +81,35 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
       const isoCountry = COUNTRY_MAP[country];
       if (isoCountry) {
         const ads = await searchAdLibrary(token, { searchTerms: query, countries: [isoCountry], limit: resultsLimit });
-        lastError = null;
-        return ads.map((ad) => ({
-          url: ad.ad_snapshot_url,
-          title: ad.ad_creative_link_titles?.[0] || (ad.ad_creative_bodies?.[0] || '').slice(0, 80) || null,
-          snippet: ad.ad_creative_bodies?.[0] || ad.ad_creative_link_descriptions?.[0] || null,
-          accountName: ad.page_name || null,
-          accountUrl: ad.page_id ? `https://www.facebook.com/${ad.page_id}` : null,
-          thumbnail: null, // ads_archive doesn't return a direct image URL field — the snapshot page itself is the visual record, never fabricated here
-          publishedAt: ad.ad_delivery_start_time || ad.ad_creation_time || null,
-          metrics: {
-            adId: ad.id || null,
-            endDate: ad.ad_delivery_stop_time || null,
-            activeStatus: ad.ad_delivery_stop_time ? 'INACTIVE' : 'ACTIVE',
-            platformsShownOn: ad.publisher_platforms || [],
-            cta: ad.ad_creative_link_captions?.[0] || null,
-            mediaType: null, // not exposed by this field set without deeper per-ad lookup — left honestly null, never guessed
-            description: ad.ad_creative_link_descriptions?.[0] || null,
-            country: isoCountry,
-          },
-          raw: ad,
-        }));
+        const relevantAds = ads.filter((ad) => hasQueryOverlap([ad.ad_creative_bodies?.[0], ad.ad_creative_link_titles?.[0], ad.ad_creative_link_descriptions?.[0], ad.page_name].filter(Boolean).join(' '), query));
+        if (ads.length > 0 && relevantAds.length === 0) {
+          // Meta returned real ads but ignored the search term entirely (confirmed live for Egypt commercial ads) -- fall through to SerpApi instead of surfacing a generic, unrelated sample as if it were a real match.
+          logger.info('META_AD_LIBRARY_GRAPH_API_IRRELEVANT', { query, country: isoCountry, returnedCount: ads.length });
+          lastError = { provider: 'meta_ad_library_api', message: `فيسبوك رجّع ${ads.length} إعلان حقيقي بس مفيهمش أي واحد له علاقة بكلمة البحث — على الأغلب الـ API مش بيفلتر بالكلمة في الدولة دي.` };
+        } else {
+          lastError = null;
+          const items = relevantAds.map((ad) => ({
+            url: ad.ad_snapshot_url,
+            title: ad.ad_creative_link_titles?.[0] || (ad.ad_creative_bodies?.[0] || '').slice(0, 80) || null,
+            snippet: ad.ad_creative_bodies?.[0] || ad.ad_creative_link_descriptions?.[0] || null,
+            accountName: ad.page_name || null,
+            accountUrl: ad.page_id ? `https://www.facebook.com/${ad.page_id}` : null,
+            thumbnail: null, // ads_archive doesn't return a direct image URL field — the snapshot page itself is the visual record, never fabricated here
+            publishedAt: ad.ad_delivery_start_time || ad.ad_creation_time || null,
+            metrics: {
+              adId: ad.id || null,
+              endDate: ad.ad_delivery_stop_time || null,
+              activeStatus: ad.ad_delivery_stop_time ? 'INACTIVE' : 'ACTIVE',
+              platformsShownOn: ad.publisher_platforms || [],
+              cta: ad.ad_creative_link_captions?.[0] || null,
+              mediaType: null, // not exposed by this field set without deeper per-ad lookup — left honestly null, never guessed
+              description: ad.ad_creative_link_descriptions?.[0] || null,
+              country: isoCountry,
+            },
+            raw: ad,
+          }));
+          return { items, providerName: 'meta_ad_library_api' };
+        }
       }
       // No ISO mapping for this country selector value (e.g. "Worldwide") -- fall through to SerpApi below rather than guessing a country.
     } catch (err) {
@@ -94,7 +125,7 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
   try {
     const items = await serpApiProvider.searchAdLibrary({ query, resultsLimit });
     lastError = null;
-    return items;
+    return { items, providerName: 'serpapi_ad_library_search' };
   } catch (err) {
     lastError = { provider: 'serpapi_ad_library_search', message: err.message };
     throw err;

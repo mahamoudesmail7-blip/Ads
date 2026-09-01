@@ -44,6 +44,14 @@ async function runGoogleQuery(fullQuery, resultsLimit, logContext) {
     throw new Error(`مقدرش أوصل لـ SerpApi: ${err.message}`);
   }
   const data = await res.json().catch(() => null);
+  // SerpApi reports a genuine zero-results search as {error: "Google hasn't
+  // returned any results for this query."} on an otherwise-ok response —
+  // an honest empty outcome, not a real failure. Treated as such (found via
+  // a real search that surfaced this exact case) rather than throwing and
+  // making the query log show FAILED for what's actually just "no matches".
+  if (res.ok && typeof data?.error === 'string' && /haven'?t returned any results/i.test(data.error)) {
+    return [];
+  }
   if (!res.ok || data?.error) {
     const msg = data?.error || `SerpApi error ${res.status}`;
     logger.error('SERPAPI_PROVIDER_FAILED', { status: res.status, message: msg, ...logContext });
