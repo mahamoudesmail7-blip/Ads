@@ -45,7 +45,7 @@ router.post(
       return res.status(429).json({ error: 'RATE_LIMITED', message: 'وصلت للحد الأقصى من عمليات البحث (5 كل 10 دقايق) — استنى شوية وجرب تاني.' });
     }
 
-    const { productName, possibleNames, namesAr, namesEn, keywords, description, imageBase64, imageMediaType, country, language, platforms, resultsPerPlatform, productId } = req.body || {};
+    const { productName, possibleNames, namesAr, namesEn, keywords, description, imageBase64, imageMediaType, country, language, platforms, resultsPerPlatform, productId, adLibraryMode, adLibraryRawLimit, adLibraryActiveOnly } = req.body || {};
 
     if (!productName || typeof productName !== 'string' || !productName.trim()) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اسم المنتج مطلوب.' });
@@ -76,7 +76,14 @@ router.post(
       if (!product) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'المنتج المحدد مش موجود.' });
     }
 
-    const input = { possibleNames: possibleNames || [], namesAr: namesAr || [], namesEn: namesEn || [], keywords: keywords || [], description: description || '', imageBase64, imageMediaType };
+    // adLibraryRawLimit: honestly capped, never silently rounded down to a smaller default -- if it's not one of the real supported values it falls back to 100 (Quick's own default), not a smaller silent cap.
+    const validRawLimit = [100, 250, 500, 1000, 2000].includes(Number(adLibraryRawLimit)) ? Number(adLibraryRawLimit) : 100;
+    const input = {
+      possibleNames: possibleNames || [], namesAr: namesAr || [], namesEn: namesEn || [], keywords: keywords || [], description: description || '', imageBase64, imageMediaType,
+      adLibraryMode: adLibraryMode === 'deep' ? 'deep' : 'quick',
+      adLibraryRawLimit: validRawLimit,
+      adLibraryActiveOnly: Boolean(adLibraryActiveOnly),
+    };
 
     const search = await prisma.productResearchSearch.create({
       data: {
@@ -113,16 +120,33 @@ router.get(
     const platforms = JSON.parse(search.platforms_json || '[]');
     let adLibraryStats = null;
     if (platforms.includes('META_AD_LIBRARY')) {
-      const adRows = await prisma.productResearchResult.findMany({
-        where: { search_id: search.id, platform: 'META_AD_LIBRARY', ignored: false },
-        select: { account_name: true, classification: true, thumbnail: true, metrics_json: true },
-      });
+      const [adRows, adQueries] = await Promise.all([
+        prisma.productResearchResult.findMany({
+          where: { search_id: search.id, platform: 'META_AD_LIBRARY', ignored: false },
+          select: { account_name: true, classification: true, thumbnail: true, metrics_json: true },
+        }),
+        prisma.productResearchQuery.findMany({ where: { search_id: search.id, platform: 'META_AD_LIBRARY' } }),
+      ]);
+      const inputData = search.input_json ? JSON.parse(search.input_json) : {};
+      const rawAdsCollected = adQueries.reduce((sum, q) => sum + (q.result_count || 0), 0);
+      const requestedRawLimit = [100, 250, 500, 1000, 2000].includes(Number(inputData.adLibraryRawLimit)) ? Number(inputData.adLibraryRawLimit) : 100;
       adLibraryStats = {
         adsFound: adRows.length,
         activeAds: adRows.filter((r) => r.metrics_json?.includes('"activeStatus":"ACTIVE"')).length,
         advertisersFound: new Set(adRows.map((r) => r.account_name).filter(Boolean)).size,
         exactMatches: adRows.filter((r) => r.classification === 'EXACT_MATCH').length,
+        verySimilar: adRows.filter((r) => r.classification === 'VERY_SIMILAR').length,
+        similar: adRows.filter((r) => r.classification === 'SIMILAR').length,
+        irrelevant: adRows.filter((r) => r.classification === 'IRRELEVANT').length,
         creativesFound: adRows.filter((r) => Boolean(r.thumbnail)).length, // "creative" = a result with an actual visible media asset, never assumed for a text-only listing
+        // Step 3's requested reporting fields — all derived from real rows already in the existing schema, no new columns needed.
+        mode: inputData.adLibraryMode || null,
+        requestedRawLimit,
+        rawAdsCollected,
+        uniqueAdsAfterDedup: adRows.length,
+        queriesExecuted: adQueries.length,
+        providerRuns: adQueries.filter((q) => q.provider === 'apify_meta_ad_library').length,
+        providerLimitReached: rawAdsCollected >= requestedRawLimit,
       };
     }
 

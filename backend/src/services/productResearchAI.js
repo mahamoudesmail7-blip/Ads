@@ -144,6 +144,42 @@ export function generateSearchQueries(profile, platforms) {
 }
 
 /**
+ * Three-tier query set for Meta Ads Library staged discovery (services/
+ * searchProviders/metaAdLibraryProvider.js runStagedSearch): HIGH_PRECISION
+ * runs first (exact/alternative/named-variant terms — low false-positive
+ * risk), MEDIUM_PRECISION only if that wasn't enough (generic
+ * names/keywords), BROAD_DISCOVERY only as a last resort (single
+ * descriptive terms — most likely to surface unrelated ads too, which is
+ * exactly why it's the last tier tried, not the first). Never invents a
+ * term the product profile doesn't actually have.
+ * @param {object} profile
+ * @returns {{high: string[], medium: string[], broad: string[]}}
+ */
+export function generateAdLibraryTieredQueries(profile) {
+  const dedupe = (arr) => {
+    const seen = new Set();
+    const out = [];
+    for (const raw of arr) {
+      const q = (raw || '').trim();
+      if (!q || seen.has(q.toLowerCase())) continue;
+      seen.add(q.toLowerCase());
+      out.push(q);
+    }
+    return out;
+  };
+
+  const high = dedupe([profile.main_product_name, ...(profile.alternative_names || []), ...(profile.possible_names_ar || []), ...(profile.possible_names_en || [])]);
+  const highSet = new Set(high.map((q) => q.toLowerCase()));
+  const medium = dedupe([...(profile.generic_names || []), ...(profile.keywords_ar || []), ...(profile.keywords_en || [])]).filter((q) => !highSet.has(q.toLowerCase()));
+  const mediumSet = new Set(medium.map((q) => q.toLowerCase()));
+  const broad = dedupe([...(profile.benefits || []), ...(profile.features || []), ...(profile.problems_solved || [])])
+    .filter((q) => !highSet.has(q.toLowerCase()) && !mediumSet.has(q.toLowerCase()))
+    .slice(0, 4); // broad terms are the highest false-positive risk — keep this tier small even before any raw-limit cost cap applies
+
+  return { high, medium, broad };
+}
+
+/**
  * Step 8 — Claude AI Result Ranking, batched (one call ranks many results,
  * per Step 21's "don't call Claude once per result"). Only sends the
  * normalized metadata a result already has, never a huge raw payload.

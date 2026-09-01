@@ -11,6 +11,8 @@ import { logger } from '../logger.js';
 import { analyzeProduct, generateSearchQueries, rankResultsBatch } from './productResearchAI.js';
 import { runProviderSearch, isAnyProviderConfigured } from './searchProviders/index.js';
 import { normalizeResult, deduplicateResults } from './productResearchNormalize.js';
+import * as apifyProvider from './searchProviders/apifyMetaAdLibraryProvider.js';
+import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
 
@@ -39,16 +41,25 @@ export async function runSearchPipeline(searchId) {
 
   const platforms = JSON.parse(search.platforms_json || '[]').filter((p) => PLATFORMS.includes(p));
   const platformStatus = Object.fromEntries(platforms.map((p) => [p, 'PENDING']));
+  const input = JSON.parse(search.input_json || '{}');
+
+  // If Apify is configured, META_AD_LIBRARY is handled entirely by the
+  // staged-discovery path below (its own batched, tiered queries) instead
+  // of the generic one-query-per-name-variant loop every other platform
+  // uses — so it's excluded from the generic query set here. If Apify
+  // ISN'T configured, it stays in the generic set and falls back to the
+  // existing Meta Graph API / SerpApi cascade exactly as before.
+  const apifyHandlesAdLibrary = platforms.includes('META_AD_LIBRARY') && apifyProvider.isConfigured();
+  const genericPlatforms = apifyHandlesAdLibrary ? platforms.filter((p) => p !== 'META_AD_LIBRARY') : platforms;
 
   try {
     await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus) });
 
-    const input = JSON.parse(search.input_json || '{}');
     const { profile, source: aiSource } = await analyzeProduct({ ...input, productName: search.product_name });
     await updateSearch(searchId, { status: 'GENERATING_QUERIES', ai_profile_json: JSON.stringify({ ...profile, _analysisSource: aiSource }) });
 
-    const queries = generateSearchQueries(profile, platforms);
-    if (queries.length === 0) {
+    const queries = generateSearchQueries(profile, genericPlatforms);
+    if (queries.length === 0 && !apifyHandlesAdLibrary) {
       await updateSearch(searchId, { status: 'FAILED', error: 'مقدرش أنشئ أي استعلام بحث — راجع بيانات المنتج المدخلة.', completed_at: new Date() });
       return;
     }
@@ -60,10 +71,10 @@ export async function runSearchPipeline(searchId) {
 
     await updateSearch(searchId, { status: 'SEARCHING' });
 
-    const providerAnyConfigured = await isAnyProviderConfigured();
+    const providerAnyConfigured = (await isAnyProviderConfigured()) || apifyHandlesAdLibrary;
     const allNormalized = [];
 
-    for (const platform of platforms) {
+    for (const platform of genericPlatforms) {
       const platformQueries = savedQueries.filter((q) => q.platform === platform);
       let platformHadSuccess = false;
       let platformHadFailure = false;
@@ -99,6 +110,53 @@ export async function runSearchPipeline(searchId) {
       }
 
       platformStatus[platform] = platformHadSuccess ? (platformHadFailure ? 'PARTIAL' : 'COMPLETE') : (providerAnyConfigured ? 'FAILED' : 'NOT_CONFIGURED');
+      await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
+    }
+
+    // Meta Ads Library via Apify — staged discovery (Steps 2/3/5), isolated
+    // from every other platform's loop above exactly like Step 19 requires:
+    // an Apify failure here never touches Instagram/Facebook/TikTok/YouTube,
+    // which have already run by this point regardless of what happens next.
+    if (apifyHandlesAdLibrary) {
+      const mode = input.adLibraryMode === 'deep' ? 'deep' : 'quick';
+      const rawLimit = [100, 250, 500, 1000, 2000].includes(Number(input.adLibraryRawLimit)) ? Number(input.adLibraryRawLimit) : 100;
+      const activeOnly = Boolean(input.adLibraryActiveOnly);
+
+      try {
+        const staged = await runStagedSearch({ profile, country: search.country, activeOnly, mode, rawLimit });
+        let platformHadSuccess = false;
+        let platformHadFailure = false;
+
+        for (const tierResult of staged.tiers) {
+          await prisma.productResearchQuery.create({
+            data: {
+              search_id: searchId,
+              platform: 'META_AD_LIBRARY',
+              query: tierResult.queries.join('، '),
+              query_type: tierResult.tier,
+              provider: tierResult.provider,
+              status: tierResult.error ? 'FAILED' : 'COMPLETE',
+              result_count: tierResult.rawCount,
+              error: tierResult.error,
+            },
+          });
+          if (tierResult.error) platformHadFailure = true;
+          else platformHadSuccess = true;
+        }
+
+        for (const raw of staged.allRawItems) {
+          const normalized = normalizeResult(raw, { platform: 'META_AD_LIBRARY', provider: 'apify_meta_ad_library', query: raw._sourceQueries?.join('، ') || '', queryType: 'APIFY_STAGED' });
+          if (normalized) allNormalized.push(normalized);
+        }
+
+        platformStatus.META_AD_LIBRARY = platformHadSuccess ? (platformHadFailure ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
+      } catch (err) {
+        logger.error('APIFY_META_AD_LIBRARY_STAGED_SEARCH_FAILED', { searchId, message: err.message });
+        await prisma.productResearchQuery.create({
+          data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: '(staged discovery)', query_type: 'APIFY_STAGED', provider: 'apify_meta_ad_library', status: 'FAILED', error: err.message },
+        });
+        platformStatus.META_AD_LIBRARY = 'FAILED';
+      }
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
     }
 

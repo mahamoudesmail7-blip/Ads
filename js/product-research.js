@@ -87,11 +87,24 @@ function wireImageUpload() {
 }
 
 // --- Provider status ---
+const STATUS_BADGE = { CONNECTED: 'green', ERROR: 'red', NOT_CONFIGURED: '' };
+const STATUS_LABEL = { CONNECTED: '✅ متصل', ERROR: '⚠️ خطأ', NOT_CONFIGURED: '⚪ غير مربوط' };
+
 async function loadProviderStatus() {
   try {
     const { providers } = await api.get('/api/product-research/provider-status');
     document.getElementById('prProviderStatusList').innerHTML = providers
-      .map((p) => `<span class="badge ${p.status === 'CONNECTED' ? 'green' : ''}">${PLATFORM_LABEL[p.platform]}: ${p.status === 'CONNECTED' ? '✅ متصل' : '⚪ غير مربوط'}</span>`)
+      .map((p) => {
+        if (p.platform === 'META_AD_LIBRARY' && p.primary) {
+          // 3-tier priority, shown explicitly rather than collapsed to one badge — Apify (primary), then Meta Graph / SerpApi (fallbacks).
+          const primaryBadge = `<span class="badge ${STATUS_BADGE[p.primary.status] || ''}">Meta Ads Library — Apify (أساسي): ${STATUS_LABEL[p.primary.status] || p.primary.status}</span>`;
+          const fbBadges = (p.fallbacks || [])
+            .map((f) => `<span class="badge ${STATUS_BADGE[f.status] || ''}">احتياطي (${f.provider === 'meta_ad_library_api' ? 'Meta Graph' : 'SerpApi'}): ${STATUS_LABEL[f.status] || f.status}</span>`)
+            .join('');
+          return primaryBadge + fbBadges;
+        }
+        return `<span class="badge ${STATUS_BADGE[p.status] || ''}">${PLATFORM_LABEL[p.platform]}: ${STATUS_LABEL[p.status] || p.status}</span>`;
+      })
       .join('');
   } catch (err) {
     document.getElementById('prProviderStatusList').innerHTML = `<span class="faint">⚠️ ${escapeHtml(err.message)}</span>`;
@@ -119,6 +132,9 @@ async function startSearch() {
     language: document.getElementById('prLanguage').value,
     platforms,
     resultsPerPlatform: Number(document.getElementById('prResultsPerPlatform').value),
+    adLibraryMode: document.getElementById('prAdLibraryMode').value,
+    adLibraryRawLimit: Number(document.getElementById('prAdLibraryRawLimit').value),
+    adLibraryActiveOnly: document.getElementById('prAdLibraryActiveOnly').checked,
   };
 
   const btn = document.getElementById('prBtnStartSearch');
@@ -158,7 +174,12 @@ function startPolling(searchId) {
 }
 
 function renderProgress(data) {
-  document.getElementById('prProgressText').textContent = STATUS_LABEL_AR[data.status] || data.status;
+  let progressText = STATUS_LABEL_AR[data.status] || data.status;
+  if (data.status === 'SEARCHING' && data.adLibraryStats) {
+    const s = data.adLibraryStats;
+    progressText += ` — Meta Ads Library: استعلامات ${s.queriesExecuted}، إعلانات خام ${s.rawAdsCollected}، فريدة ${s.uniqueAdsAfterDedup}`;
+  }
+  document.getElementById('prProgressText').textContent = progressText;
   const statusList = document.getElementById('prPlatformStatusList');
   statusList.innerHTML = data.platforms
     .map((p) => {
@@ -237,13 +258,18 @@ async function renderSummaryTiles(searchId, totalVisible) {
     if (search.adLibraryStats) {
       const s = search.adLibraryStats;
       const adTiles = [
-        { label: 'إعلانات موجودة', value: s.adsFound },
+        { label: 'إعلانات جُمعت (خام)', value: s.rawAdsCollected },
+        { label: 'إعلانات فريدة', value: s.uniqueAdsAfterDedup },
         { label: 'إعلانات نشطة', value: s.activeAds },
         { label: 'معلنين مختلفين', value: s.advertisersFound },
         { label: 'تطابق تام', value: s.exactMatches },
+        { label: 'مشابه جدًا', value: s.verySimilar },
+        { label: 'مشابه', value: s.similar },
         { label: 'كرييتيف موجود', value: s.creativesFound },
+        { label: 'استعلامات نُفذت', value: s.queriesExecuted },
       ];
-      adTilesEl.innerHTML = adTiles.map((t) => `<div class="stat-tile"><div class="label">${escapeHtml(t.label)}</div><div class="value">${t.value}</div></div>`).join('');
+      adTilesEl.innerHTML = adTiles.map((t) => `<div class="stat-tile"><div class="label">${escapeHtml(t.label)}</div><div class="value">${t.value}</div></div>`).join('')
+        + (s.providerLimitReached ? `<div class="faint" style="grid-column:1/-1; font-size:12px; margin-top:4px;">⚠️ وصلنا للحد الأقصى المطلوب (${s.requestedRawLimit}) — يمكن فيه إعلانات تانية متاحة لو رفعت الحد.</div>` : '');
       adTilesEl.style.display = 'grid';
     } else {
       adTilesEl.style.display = 'none';
@@ -257,14 +283,18 @@ function resultCardHtml(r) {
   const isAd = r.platform === 'META_AD_LIBRARY';
   const cls = r.classification ? `<span class="badge ${CLASS_COLOR[r.classification] || ''}">${CLASS_LABEL[r.classification] || r.classification}${r.matchScore !== null ? ` — ${r.matchScore}%` : ''}</span>` : '<span class="faint">مش متقيّم لسه</span>';
   const m = r.metrics || {};
+  const daysRunning = isAd && r.publishedAt ? Math.max(0, Math.floor((Date.now() - new Date(r.publishedAt).getTime()) / 86400000)) : null;
   const adMeta = isAd
     ? [
         m.activeStatus ? `<span class="badge ${m.activeStatus === 'ACTIVE' ? 'green' : ''}">${m.activeStatus === 'ACTIVE' ? '🟢 نشط' : '⚪ متوقف'}</span>` : '',
         m.cta ? `<span>CTA: ${escapeHtml(m.cta)}</span>` : '',
+        m.ctaDomain ? `<span>🔗 ${escapeHtml(m.ctaDomain)}</span>` : '',
+        daysRunning !== null ? `<span>📅 شغال من ${daysRunning} يوم</span>` : '',
         m.endDate ? `<span>انتهى: ${new Date(m.endDate).toLocaleDateString('ar-EG')}</span>` : '',
         m.platformsShownOn?.length ? `<span>عرض على: ${m.platformsShownOn.join('، ')}</span>` : '',
       ].filter(Boolean).join('')
     : '';
+  const matchedQuery = r.discoveredByQueries?.[0]?.query;
   return `
     <div class="action-card" data-result-id="${r.id}">
       <div class="action-card-title">${r.thumbnail ? `<img src="${escapeHtml(r.thumbnail)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;vertical-align:middle;margin-left:8px;" />` : ''}${escapeHtml(r.title || r.accountName || 'بدون عنوان')}</div>
@@ -277,12 +307,14 @@ function resultCardHtml(r) {
         ${adMeta}
         ${cls}
       </div>
-      ${r.snippet ? `<div class="action-card-reasons">${escapeHtml(r.snippet.slice(0, 160))}</div>` : ''}
+      ${isAd ? `<div class="action-card-reasons">${r.snippet ? escapeHtml(r.snippet.slice(0, 160)) : '<span class="faint">نص الإعلان غير متاح من المصدر</span>'}</div>` : (r.snippet ? `<div class="action-card-reasons">${escapeHtml(r.snippet.slice(0, 160))}</div>` : '')}
+      ${matchedQuery ? `<div class="faint" style="font-size:11.5px;">🔍 اتلقى بكلمة: ${escapeHtml(matchedQuery)}</div>` : ''}
       ${r.aiReason ? `<div class="action-card-confidence">🤖 ${escapeHtml(r.aiReason)}</div>` : ''}
       <div class="toolbar" style="margin-top:8px;">
         <a class="btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${isAd ? 'فتح الإعلان' : 'فتح الرابط'}</a>
         <button class="btn secondary small" data-action="save-competitor" data-id="${r.id}">${r.isSavedCompetitor ? '✅ محفوظ كمنافس' : 'حفظ كمنافس'}</button>
         <button class="btn secondary small" data-action="analyze" data-id="${r.id}">${isAd ? 'تحليل الإعلان' : 'تحليل المحتوى'}</button>
+        ${isAd && r.accountUrl ? `<a class="btn secondary small" href="${escapeHtml(r.accountUrl)}" target="_blank" rel="noopener noreferrer">بحث عن المعلن</a>` : ''}
         <button class="btn secondary small" data-action="ignore" data-id="${r.id}">تجاهل</button>
       </div>
     </div>`;

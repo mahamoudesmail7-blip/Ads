@@ -1,15 +1,19 @@
-// metaAdLibraryProvider.js — Meta Ads Library discovery. Two real,
-// compliant paths, tried in order, never fabricated:
+// metaAdLibraryProvider.js — Meta Ads Library discovery. THREE real,
+// compliant paths, tried in priority order, never fabricated:
 //
-// 1. Official Meta Ad Library API (/ads_archive), using the SAME Meta
+// 1. Apify (curious_coder/facebook-ads-library-scraper) — the PRIMARY
+//    commercial-ad path, manually verified working for Egypt/Active/
+//    keyword search before this was built (see runStagedSearch() below
+//    and apifyMetaAdLibraryProvider.js's header comment for the real,
+//    verified actor input/output shape).
+// 2. Official Meta Ad Library API (/ads_archive), using the SAME Meta
 //    OAuth connection already built for Meta Ads sync (services/
 //    metaAuth.js) — reused as-is, no new credential. Real, but Meta's own
 //    documented limitation: unrestricted commercial-ad keyword search is
 //    only guaranteed in EU/DSA-covered regions; for other countries
-//    (Egypt included) this commonly comes back empty or error-restricted
-//    even with a fully valid ads_read token. That's Meta's own API
-//    behavior, not a bug.
-// 2. SerpApi fallback (site:facebook.com/ads/library — real, indexed,
+//    (Egypt included) this commonly comes back empty or error-restricted,
+//    or (empirically confirmed live) ignores search_terms entirely.
+// 3. SerpApi fallback (site:facebook.com/ads/library — real, indexed,
 //    public Ad Library URLs), reusing the SAME SERPAPI_API_KEY already
 //    configured for Instagram/Facebook/TikTok — no new credential either.
 //
@@ -20,6 +24,9 @@ import { logger } from '../../logger.js';
 import * as metaAuth from '../metaAuth.js';
 import { searchAdLibrary } from '../metaGraphClient.js';
 import * as serpApiProvider from './serpApiProvider.js';
+import * as apifyProvider from './apifyMetaAdLibraryProvider.js';
+import { generateAdLibraryTieredQueries } from '../productResearchAI.js';
+import { validateAndCanonicalize } from '../productResearchNormalize.js';
 
 const COUNTRY_MAP = { EG: 'EG', SA: 'SA', AE: 'AE', KW: 'KW' }; // Meta's ad_reached_countries expects real ISO country codes; Worldwide has no single equivalent, so it's handled by the caller passing undefined -> Graph path skipped, SerpApi has no country restriction anyway.
 
@@ -51,16 +58,37 @@ async function metaConnectionUsable() {
   }
 }
 
-/** @returns {Promise<{status: 'CONNECTED'|'NOT_CONFIGURED'|'ERROR', provider: string|null, detail: string|null}>} */
+/**
+ * Reports the full 3-tier priority chain honestly — never a hardcoded
+ * CONNECTED. `primary` is Apify (real, verified); `fallbacks` lists the
+ * other two paths' real status too, so the UI can show "Primary: Apify —
+ * CONNECTED / Fallback: Meta Graph — CONNECTED, SerpApi — CONNECTED"
+ * rather than collapsing everything into one line.
+ * @returns {Promise<{status: 'CONNECTED'|'NOT_CONFIGURED'|'ERROR', provider: string|null, detail: string|null, primary: object, fallbacks: object[]}>}
+ */
 export async function getStatus() {
+  const apifyStatus = await apifyProvider.getStatus();
   const metaOk = await metaConnectionUsable();
   const serpOk = serpApiProvider.isConfigured();
-  if (!metaOk && !serpOk) return { status: 'NOT_CONFIGURED', provider: null, detail: 'مفيش حساب Meta متصل ومفيش SERPAPI_API_KEY.' };
-  if (lastError) return { status: 'ERROR', provider: lastError.provider, detail: lastError.message };
-  return { status: 'CONNECTED', provider: metaOk ? 'meta_ad_library_api' : 'serpapi_ad_library_search', detail: null };
+
+  const fallbacks = [
+    { provider: 'meta_ad_library_api', status: metaOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
+    { provider: 'serpapi_ad_library_search', status: serpOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
+  ];
+
+  if (apifyStatus.status === 'CONNECTED') {
+    return { status: 'CONNECTED', provider: 'apify_meta_ad_library', detail: null, primary: apifyStatus, fallbacks };
+  }
+  if (!metaOk && !serpOk) {
+    // Apify not configured/erroring AND neither fallback exists either -- genuinely not usable.
+    return { status: apifyStatus.status === 'ERROR' ? 'ERROR' : 'NOT_CONFIGURED', provider: null, detail: apifyStatus.detail || 'مفيش أي مصدر لـ Meta Ads Library متاح.', primary: apifyStatus, fallbacks };
+  }
+  if (lastError) return { status: 'ERROR', provider: lastError.provider, detail: lastError.message, primary: apifyStatus, fallbacks };
+  return { status: 'CONNECTED', provider: metaOk ? 'meta_ad_library_api' : 'serpapi_ad_library_search', detail: null, primary: apifyStatus, fallbacks };
 }
 
 export async function isConfigured() {
+  if (apifyProvider.isConfigured()) return true;
   return (await metaConnectionUsable()) || serpApiProvider.isConfigured();
 }
 
@@ -130,4 +158,107 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
     lastError = { provider: 'serpapi_ad_library_search', message: err.message };
     throw err;
   }
+}
+
+/**
+ * Maps one real Apify dataset item to normalizeResult()'s expected raw
+ * shape. Field names confirmed from a real manual test (adArchiveID,
+ * pageName, pageID, adStatus, publisherPlatforms, startDate, endDate,
+ * adLibraryURL, adSnapshotURL, CTA text/domain) are read directly; a few
+ * less-certain fields (exact ad-text/CTA-type key spelling) are checked
+ * against a couple of plausible variants defensively rather than assumed
+ * — any field genuinely absent stays null, never guessed (per explicit
+ * instruction: adText/creative bodies can legitimately be null).
+ */
+function mapApifyItem(item) {
+  const adText = item.adText ?? item.ad_text ?? item.snapshot?.body?.text ?? (Array.isArray(item.adCreativeBodies) ? item.adCreativeBodies[0] : item.adCreativeBodies) ?? null;
+  const ctaText = item.ctaText ?? item.cta_text ?? item.snapshot?.cta_text ?? null;
+  const ctaType = item.ctaType ?? item.cta_type ?? null;
+  const ctaDomain = item.ctaDomain ?? item.cta_domain ?? item.linkDomain ?? item.snapshot?.link_url ?? null;
+  const isActive = item.adStatus === true || item.adStatus === 'ACTIVE' || item.isActive === true;
+
+  return {
+    url: item.adSnapshotURL || item.ad_snapshot_url || item.adLibraryURL || item.ad_library_url || null,
+    title: item.pageName || item.page_name || null,
+    snippet: adText,
+    accountName: item.pageName || item.page_name || null,
+    accountUrl: item.pageID || item.page_id ? `https://www.facebook.com/${item.pageID || item.page_id}` : null,
+    thumbnail: item.snapshot?.images?.[0]?.original_image_url || item.imageUrl || null,
+    publishedAt: item.startDate || item.start_date || item.adCreationTime || null,
+    metrics: {
+      adId: item.adArchiveID || item.ad_archive_id || item.id || null,
+      endDate: item.endDate || item.end_date || null,
+      activeStatus: isActive ? 'ACTIVE' : (item.adStatus !== undefined && item.adStatus !== null ? 'INACTIVE' : null),
+      platformsShownOn: item.publisherPlatforms || item.publisher_platforms || [],
+      cta: ctaText,
+      ctaType,
+      mediaType: item.mediaType || item.media_type || null,
+      description: item.adText ? null : (item.linkDescription || item.link_description || null),
+      country: item.country || null,
+      ctaDomain,
+      currency: item.currency || null,
+      estimatedAudienceSize: item.estimatedAudienceSize || item.reachEstimate || null,
+      impressions: item.impressions || item.impressionsWithIndex || null,
+    },
+    raw: item,
+  };
+}
+
+const DEFAULT_MAX_RAW_RESULTS = 500;
+
+/**
+ * Staged discovery (Steps 2/5 of the request): tries HIGH_PRECISION
+ * queries first via Apify (one batched run, all high-tier terms in a
+ * single `urls` array — one actor charge, not one per term); only runs
+ * MEDIUM_PRECISION if that didn't reach the raw limit yet; only then
+ * BROAD_DISCOVERY. Stops as soon as the (cost-capped) raw limit is met.
+ * Returns raw per-tier results — normalization/dedup/persistence stays
+ * the orchestrator's job, same as every other platform.
+ * @param {{profile: object, country: string, activeOnly: boolean, mode: 'quick'|'deep', rawLimit: number}} params
+ * @returns {Promise<{tiers: {tier: string, queries: string[], rawCount: number, provider: string, error: string|null}[], allRawItems: object[], providerLimitReached: boolean}>}
+ */
+export async function runStagedSearch({ profile, country, activeOnly, mode, rawLimit }) {
+  if (!apifyProvider.isConfigured()) return null; // signals the caller to fall back to the generic per-query loop (Graph API / SerpApi via search())
+
+  const hardCap = Number(process.env.APIFY_AD_LIBRARY_MAX_RAW_RESULTS_PER_SEARCH) || DEFAULT_MAX_RAW_RESULTS;
+  const effectiveLimit = Math.min(Number(rawLimit) || 100, hardCap);
+  const { high, medium, broad } = generateAdLibraryTieredQueries(profile);
+  const tiersToTry = [
+    { name: 'HIGH_PRECISION', queries: high },
+    { name: 'MEDIUM_PRECISION', queries: medium },
+    { name: 'BROAD_DISCOVERY', queries: broad },
+  ].filter((t) => t.queries.length > 0);
+
+  const tiers = [];
+  const allRawItems = [];
+  const seenCanonical = new Set(); // in-memory running uniqueness count to decide when to stop staging — real DB dedup still happens once in the orchestrator afterward
+
+  for (const tier of tiersToTry) {
+    const remaining = effectiveLimit - allRawItems.length;
+    if (remaining <= 0) break;
+
+    const runner = mode === 'deep' ? apifyProvider.runDeep : apifyProvider.runQuick;
+    try {
+      const rawItems = await runner({ queries: tier.queries, country, activeOnly, rawLimit: Math.min(remaining, effectiveLimit) });
+      const mapped = rawItems.map((raw) => ({ ...mapApifyItem(raw), _sourceQueries: tier.queries }));
+      tiers.push({ tier: tier.name, queries: tier.queries, rawCount: mapped.length, provider: 'apify_meta_ad_library', error: null });
+      allRawItems.push(...mapped);
+
+      for (const m of mapped) {
+        const canonical = m.url ? validateAndCanonicalize(m.url, 'META_AD_LIBRARY') : null;
+        if (canonical) seenCanonical.add(canonical.toString());
+      }
+      lastError = null;
+    } catch (err) {
+      logger.error('APIFY_META_AD_LIBRARY_STAGE_FAILED', { tier: tier.name, message: err.message });
+      tiers.push({ tier: tier.name, queries: tier.queries, rawCount: 0, provider: 'apify_meta_ad_library', error: err.message });
+      lastError = { provider: 'apify_meta_ad_library', message: err.message };
+      // One tier failing doesn't stop the next tier from being tried — real per-stage isolation, same principle as per-platform isolation elsewhere.
+    }
+
+    if (seenCanonical.size >= effectiveLimit) break; // enough unique ads already — Step 5's "don't keep spending money" rule
+  }
+
+  const providerLimitReached = allRawItems.length >= effectiveLimit;
+  return { tiers, allRawItems, providerLimitReached, effectiveLimit };
 }
