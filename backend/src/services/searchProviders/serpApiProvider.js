@@ -49,7 +49,7 @@ async function runGoogleQuery(fullQuery, resultsLimit, logContext) {
   // an honest empty outcome, not a real failure. Treated as such (found via
   // a real search that surfaced this exact case) rather than throwing and
   // making the query log show FAILED for what's actually just "no matches".
-  if (res.ok && typeof data?.error === 'string' && /haven'?t returned any results/i.test(data.error)) {
+  if (res.ok && typeof data?.error === 'string' && /returned any results for this query/i.test(data.error)) {
     return [];
   }
   if (!res.ok || data?.error) {
