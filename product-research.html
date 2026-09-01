@@ -84,6 +84,7 @@
           <label class="pr-checkbox"><input type="checkbox" value="facebook" checked /> Facebook</label>
           <label class="pr-checkbox"><input type="checkbox" value="tiktok" checked /> TikTok</label>
           <label class="pr-checkbox"><input type="checkbox" value="youtube" checked /> YouTube</label>
+          <label class="pr-checkbox"><input type="checkbox" value="META_AD_LIBRARY" checked /> Meta Ads Library</label>
         </div>
         <div class="toolbar" style="margin-bottom:16px;">
           <div class="field" style="margin-bottom:0;">
@@ -128,6 +129,9 @@
       <!-- SECTION 4: Summary KPIs -->
       <div class="stat-grid" id="prSummaryTiles" style="margin-bottom:22px; display:none;"></div>
 
+      <!-- Meta Ads Library-specific KPIs, shown only when this search included it -->
+      <div class="stat-grid" id="prAdLibraryTiles" style="margin-bottom:22px; display:none;"></div>
+
       <!-- SECTION 5+6: Platform Tabs + Results -->
       <div class="card" id="prResultsCard" style="margin-bottom:22px; display:none;">
         <div class="section-title" style="margin-top:0;">📋 النتائج</div>
@@ -137,6 +141,7 @@
           <button class="btn secondary small pr-tab" data-tab="tiktok">TikTok</button>
           <button class="btn secondary small pr-tab" data-tab="facebook">Facebook</button>
           <button class="btn secondary small pr-tab" data-tab="youtube">YouTube</button>
+          <button class="btn secondary small pr-tab" data-tab="META_AD_LIBRARY">Meta Ads Library</button>
           <span class="faint">|</span>
           <select id="prClassificationFilter">
             <option value="">كل التصنيفات</option>
@@ -144,6 +149,16 @@
             <option value="VERY_SIMILAR">مشابه جدًا</option>
             <option value="SIMILAR">مشابه</option>
             <option value="RELATED">ذو صلة</option>
+          </select>
+          <select id="prActiveFilter">
+            <option value="">كل الإعلانات</option>
+            <option value="active">الإعلانات النشطة بس</option>
+          </select>
+          <select id="prSortBy">
+            <option value="match">الأعلى تطابقًا</option>
+            <option value="newest">الأحدث</option>
+            <option value="oldest">الأقدم</option>
+            <option value="active">النشط أولًا</option>
           </select>
         </div>
         <div id="prResultsList"></div>

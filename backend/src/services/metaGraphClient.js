@@ -37,7 +37,7 @@ function throwGraphOAuthError(data, res, context) {
   throw err;
 }
 
-async function graphFetch(path, params, token) {
+export async function graphFetch(path, params, token) {
   const url = new URL(`${GRAPH_BASE}${path}`);
   for (const [k, v] of Object.entries(params || {})) {
     if (v !== undefined && v !== null) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
@@ -136,4 +136,35 @@ export async function getInsights(token, adAccountId, dateFrom, dateTo) {
   } while (next);
 
   return rows;
+}
+
+/**
+ * Real Meta Ad Library API (/ads_archive) — used by
+ * services/searchProviders/metaAdLibraryProvider.js. Requires an access
+ * token with ads_read (already requested by this app's existing Meta OAuth
+ * scopes). Meta's own documented, real limitation: full-text keyword
+ * search across ALL commercial advertisers is only unrestricted in regions
+ * covered by the EU's DSA transparency rules — for most other countries
+ * (Egypt included) a commercial-ads search commonly comes back empty or
+ * error-restricted even with a valid token. That's Meta's own API
+ * behavior, not a bug here — the caller (metaAdLibraryProvider.js) treats
+ * an empty/restricted response as "try the fallback provider", never as a
+ * reason to fabricate a result.
+ */
+export async function searchAdLibrary(token, { searchTerms, countries, limit = 25 }) {
+  const fields = [
+    'id', 'ad_creation_time', 'ad_creative_bodies', 'ad_creative_link_titles',
+    'ad_creative_link_descriptions', 'ad_creative_link_captions',
+    'ad_delivery_start_time', 'ad_delivery_stop_time', 'ad_snapshot_url',
+    'page_id', 'page_name', 'publisher_platforms',
+  ].join(',');
+  const data = await graphFetch('/ads_archive', {
+    search_terms: searchTerms,
+    ad_reached_countries: countries,
+    ad_active_status: 'ALL',
+    ad_type: 'ALL',
+    fields,
+    limit,
+  }, token);
+  return data.data || [];
 }

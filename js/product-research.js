@@ -6,7 +6,7 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 
-const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube' };
+const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', META_AD_LIBRARY: 'Meta Ads Library' };
 const CLASS_LABEL = { EXACT_MATCH: 'تطابق تام', VERY_SIMILAR: 'مشابه جدًا', SIMILAR: 'مشابه', RELATED: 'ذو صلة', IRRELEVANT: 'غير مرتبط' };
 const CLASS_COLOR = { EXACT_MATCH: 'green', VERY_SIMILAR: 'green', SIMILAR: 'yellow', RELATED: '', IRRELEVANT: 'red' };
 const STATUS_LABEL_AR = {
@@ -184,6 +184,10 @@ async function loadResultsSection(searchId, page = 1) {
   if (currentTab !== 'all') params.platform = currentTab;
   const classFilter = document.getElementById('prClassificationFilter').value;
   if (classFilter) params.classification = classFilter;
+  const activeFilter = document.getElementById('prActiveFilter').value;
+  if (activeFilter) params.active = activeFilter;
+  const sortBy = document.getElementById('prSortBy').value;
+  if (sortBy && sortBy !== 'match') params.sort = sortBy;
 
   let data;
   try {
@@ -228,13 +232,39 @@ async function renderSummaryTiles(searchId, totalVisible) {
     document.getElementById('prSummaryTiles').innerHTML = tiles
       .map((t) => `<div class="stat-tile"><div class="label">${escapeHtml(t.label)}</div><div class="value">${t.value}</div></div>`)
       .join('');
+
+    const adTilesEl = document.getElementById('prAdLibraryTiles');
+    if (search.adLibraryStats) {
+      const s = search.adLibraryStats;
+      const adTiles = [
+        { label: 'إعلانات موجودة', value: s.adsFound },
+        { label: 'إعلانات نشطة', value: s.activeAds },
+        { label: 'معلنين مختلفين', value: s.advertisersFound },
+        { label: 'تطابق تام', value: s.exactMatches },
+        { label: 'كرييتيف موجود', value: s.creativesFound },
+      ];
+      adTilesEl.innerHTML = adTiles.map((t) => `<div class="stat-tile"><div class="label">${escapeHtml(t.label)}</div><div class="value">${t.value}</div></div>`).join('');
+      adTilesEl.style.display = 'grid';
+    } else {
+      adTilesEl.style.display = 'none';
+    }
   } catch {
     /* summary is a nice-to-have — never block the results view on it */
   }
 }
 
 function resultCardHtml(r) {
+  const isAd = r.platform === 'META_AD_LIBRARY';
   const cls = r.classification ? `<span class="badge ${CLASS_COLOR[r.classification] || ''}">${CLASS_LABEL[r.classification] || r.classification}${r.matchScore !== null ? ` — ${r.matchScore}%` : ''}</span>` : '<span class="faint">مش متقيّم لسه</span>';
+  const m = r.metrics || {};
+  const adMeta = isAd
+    ? [
+        m.activeStatus ? `<span class="badge ${m.activeStatus === 'ACTIVE' ? 'green' : ''}">${m.activeStatus === 'ACTIVE' ? '🟢 نشط' : '⚪ متوقف'}</span>` : '',
+        m.cta ? `<span>CTA: ${escapeHtml(m.cta)}</span>` : '',
+        m.endDate ? `<span>انتهى: ${new Date(m.endDate).toLocaleDateString('ar-EG')}</span>` : '',
+        m.platformsShownOn?.length ? `<span>عرض على: ${m.platformsShownOn.join('، ')}</span>` : '',
+      ].filter(Boolean).join('')
+    : '';
   return `
     <div class="action-card" data-result-id="${r.id}">
       <div class="action-card-title">${r.thumbnail ? `<img src="${escapeHtml(r.thumbnail)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;vertical-align:middle;margin-left:8px;" />` : ''}${escapeHtml(r.title || r.accountName || 'بدون عنوان')}</div>
@@ -242,16 +272,17 @@ function resultCardHtml(r) {
         <span>${PLATFORM_LABEL[r.platform] || r.platform}</span>
         <span>${escapeHtml(r.contentType)}</span>
         ${r.accountName ? `<span>👤 ${escapeHtml(r.accountName)}</span>` : ''}
-        ${r.metrics?.views ? `<span>👁️ ${r.metrics.views.toLocaleString('ar-EG')}</span>` : ''}
-        ${r.metrics?.likes ? `<span>❤️ ${r.metrics.likes.toLocaleString('ar-EG')}</span>` : ''}
+        ${m.views ? `<span>👁️ ${m.views.toLocaleString('ar-EG')}</span>` : ''}
+        ${m.likes ? `<span>❤️ ${m.likes.toLocaleString('ar-EG')}</span>` : ''}
+        ${adMeta}
         ${cls}
       </div>
       ${r.snippet ? `<div class="action-card-reasons">${escapeHtml(r.snippet.slice(0, 160))}</div>` : ''}
       ${r.aiReason ? `<div class="action-card-confidence">🤖 ${escapeHtml(r.aiReason)}</div>` : ''}
       <div class="toolbar" style="margin-top:8px;">
-        <a class="btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">فتح الرابط</a>
+        <a class="btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${isAd ? 'فتح الإعلان' : 'فتح الرابط'}</a>
         <button class="btn secondary small" data-action="save-competitor" data-id="${r.id}">${r.isSavedCompetitor ? '✅ محفوظ كمنافس' : 'حفظ كمنافس'}</button>
-        <button class="btn secondary small" data-action="analyze" data-id="${r.id}">تحليل المحتوى</button>
+        <button class="btn secondary small" data-action="analyze" data-id="${r.id}">${isAd ? 'تحليل الإعلان' : 'تحليل المحتوى'}</button>
         <button class="btn secondary small" data-action="ignore" data-id="${r.id}">تجاهل</button>
       </div>
     </div>`;
@@ -442,6 +473,12 @@ async function init() {
     };
   });
   document.getElementById('prClassificationFilter').onchange = () => {
+    if (currentSearchId) loadResultsSection(currentSearchId, 1);
+  };
+  document.getElementById('prActiveFilter').onchange = () => {
+    if (currentSearchId) loadResultsSection(currentSearchId, 1);
+  };
+  document.getElementById('prSortBy').onchange = () => {
     if (currentSearchId) loadResultsSection(currentSearchId, 1);
   };
 

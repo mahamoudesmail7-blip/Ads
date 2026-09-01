@@ -12,7 +12,7 @@ import { analyzeProduct, generateSearchQueries, rankResultsBatch } from './produ
 import { runProviderSearch, isAnyProviderConfigured } from './searchProviders/index.js';
 import { normalizeResult, deduplicateResults } from './productResearchNormalize.js';
 
-const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube'];
+const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
 
 // Step 21 — lightweight in-memory cache (normalized query+platform+country -> results), no new infra.
 // Cleared on process restart; that's an acceptable trade-off for a first
@@ -60,7 +60,7 @@ export async function runSearchPipeline(searchId) {
 
     await updateSearch(searchId, { status: 'SEARCHING' });
 
-    const providerAnyConfigured = isAnyProviderConfigured();
+    const providerAnyConfigured = await isAnyProviderConfigured();
     const allNormalized = [];
 
     for (const platform of platforms) {
@@ -78,7 +78,7 @@ export async function runSearchPipeline(searchId) {
           if (fresh) {
             ({ items, providerName } = cached);
           } else {
-            const result = await runProviderSearch({ platform, query: q.query, resultsLimit: search.results_per_platform });
+            const result = await runProviderSearch({ platform, query: q.query, resultsLimit: search.results_per_platform, country: search.country });
             items = result.items;
             providerName = result.providerName;
             searchCache.set(key, { items, providerName, at: Date.now() });

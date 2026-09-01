@@ -27,17 +27,14 @@ export function isConfigured() {
  * @param {{query: string, platform: string, resultsLimit?: number}} params
  * @returns {Promise<object[]>} raw-ish items (same shape googleSearchProvider.js returns, normalized by the caller — see productResearchNormalize.js)
  */
-export async function search({ query, platform, resultsLimit = 10 }) {
+async function runGoogleQuery(fullQuery, resultsLimit, logContext) {
   const apiKey = process.env.SERPAPI_API_KEY?.trim();
   if (!apiKey) throw new Error('SerpApi Provider غير مربوط — SERPAPI_API_KEY مش متظبط.');
-
-  const siteFilter = SITE_FILTER[platform];
-  if (!siteFilter) throw new Error(`SerpApi provider هنا بيغطي بس instagram/facebook/tiktok — منصة غير مدعومة: ${platform}`);
 
   const url = new URL(ENDPOINT);
   url.searchParams.set('engine', 'google');
   url.searchParams.set('api_key', apiKey);
-  url.searchParams.set('q', `${siteFilter} ${query}`);
+  url.searchParams.set('q', fullQuery);
   url.searchParams.set('num', String(Math.min(20, resultsLimit)));
 
   let res;
@@ -49,15 +46,50 @@ export async function search({ query, platform, resultsLimit = 10 }) {
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.error) {
     const msg = data?.error || `SerpApi error ${res.status}`;
-    logger.error('SERPAPI_PROVIDER_FAILED', { status: res.status, message: msg, platform });
+    logger.error('SERPAPI_PROVIDER_FAILED', { status: res.status, message: msg, ...logContext });
     throw new Error(msg);
   }
+  return data.organic_results || [];
+}
 
-  return (data.organic_results || []).map((item) => ({
+/**
+ * @param {{query: string, platform: string, resultsLimit?: number}} params
+ * @returns {Promise<object[]>} raw-ish items (same shape googleSearchProvider.js returns, normalized by the caller — see productResearchNormalize.js)
+ */
+export async function search({ query, platform, resultsLimit = 10 }) {
+  const siteFilter = SITE_FILTER[platform];
+  if (!siteFilter) throw new Error(`SerpApi provider هنا بيغطي بس instagram/facebook/tiktok — منصة غير مدعومة: ${platform}`);
+
+  const items = await runGoogleQuery(`${siteFilter} ${query}`, resultsLimit, { platform });
+  return items.map((item) => ({
     url: item.link,
     title: item.title,
     snippet: item.snippet,
     thumbnail: item.thumbnail || null,
+    raw: item,
+  }));
+}
+
+/**
+ * Fallback path for Meta Ads Library when the official Graph API's
+ * commercial-ad search isn't available for the target country (see
+ * metaAdLibraryProvider.js's header comment) — real, indexed, public
+ * facebook.com/ads/library URLs via the same Google engine, never
+ * fabricated. Coverage is inherently thinner than the official API since
+ * Ad Library detail pages are JS-rendered and less exhaustively indexed —
+ * disclosed honestly, not hidden.
+ * @param {{query: string, resultsLimit?: number}} params
+ */
+export async function searchAdLibrary({ query, resultsLimit = 10 }) {
+  const items = await runGoogleQuery(`site:facebook.com/ads/library ${query}`, resultsLimit, { platform: 'META_AD_LIBRARY' });
+  return items.map((item) => ({
+    url: item.link,
+    title: item.title,
+    snippet: item.snippet,
+    thumbnail: item.thumbnail || null,
+    accountName: null,
+    publishedAt: null,
+    metrics: { adId: null, endDate: null, activeStatus: null, platformsShownOn: [], cta: null, mediaType: null, description: null, country: null },
     raw: item,
   }));
 }

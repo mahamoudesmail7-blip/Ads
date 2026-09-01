@@ -7,44 +7,54 @@
 // filtering rather than a dedicated per-platform engine) or Google Custom
 // Search as a fallback. YouTube prefers its own real Data API (richer
 // metrics) and falls back to Google Custom Search when only that is
-// configured — SerpApi is not wired in for YouTube (out of scope of what
-// was asked; easy to add here later the same way if needed). Adding
-// another real provider later means adding one file + registering it here
-// — this module is the only thing that needs to change (Step 34).
+// configured. META_AD_LIBRARY has its own two-path provider (real Meta
+// Graph API first, SerpApi Ad-Library search second) — see
+// metaAdLibraryProvider.js's header comment for why. Adding another real
+// provider later means adding one file + registering it here — this
+// module is the only thing that needs to change (Step 34).
 import * as googleSearchProvider from './googleSearchProvider.js';
 import * as youtubeSearchProvider from './youtubeSearchProvider.js';
 import * as serpApiProvider from './serpApiProvider.js';
+import * as metaAdLibraryProvider from './metaAdLibraryProvider.js';
 
-const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube'];
+const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
 const SERPAPI_PLATFORMS = new Set(['instagram', 'facebook', 'tiktok']);
 
-/** @returns {{platform: string, provider: string, status: 'CONNECTED'|'NOT_CONFIGURED'}[]} */
-export function getProviderStatus() {
+/** @returns {Promise<{platform: string, provider: string|null, status: 'CONNECTED'|'NOT_CONFIGURED'|'ERROR', detail?: string|null}[]>} */
+export async function getProviderStatus() {
   const serpApiOk = serpApiProvider.isConfigured();
   const googleOk = googleSearchProvider.isConfigured();
   const youtubeOk = youtubeSearchProvider.isConfigured();
   const igFbTiktokStatus = { provider: serpApiOk ? 'serpapi' : 'google_custom_search', status: serpApiOk || googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' };
+  const metaAdLib = await metaAdLibraryProvider.getStatus();
   return [
     { platform: 'instagram', ...igFbTiktokStatus },
     { platform: 'facebook', ...igFbTiktokStatus },
     { platform: 'tiktok', ...igFbTiktokStatus },
     { platform: 'youtube', provider: youtubeOk ? 'youtube_data_api' : 'google_custom_search', status: youtubeOk || googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
+    { platform: 'META_AD_LIBRARY', ...metaAdLib },
   ];
 }
 
-export function isAnyProviderConfigured() {
-  return serpApiProvider.isConfigured() || googleSearchProvider.isConfigured() || youtubeSearchProvider.isConfigured();
+export async function isAnyProviderConfigured() {
+  if (serpApiProvider.isConfigured() || googleSearchProvider.isConfigured() || youtubeSearchProvider.isConfigured()) return true;
+  return metaAdLibraryProvider.isConfigured();
 }
 
 /**
  * Runs one query against the right provider for the given platform.
  * Throws on failure (caller isolates per-platform/per-query failures —
  * Step 19) — never returns fabricated results.
- * @param {{platform: string, query: string, resultsLimit: number}} params
+ * @param {{platform: string, query: string, resultsLimit: number, country?: string}} params
  * @returns {Promise<{items: object[], providerName: string}>}
  */
-export async function runProviderSearch({ platform, query, resultsLimit }) {
+export async function runProviderSearch({ platform, query, resultsLimit, country }) {
   if (!PLATFORMS.includes(platform)) throw new Error(`منصة غير مدعومة: ${platform}`);
+
+  if (platform === 'META_AD_LIBRARY') {
+    const items = await metaAdLibraryProvider.search({ query, resultsLimit, country });
+    return { items, providerName: (await metaAdLibraryProvider.getStatus()).provider || 'meta_ad_library' };
+  }
 
   if (platform === 'youtube' && youtubeSearchProvider.isConfigured()) {
     const items = await youtubeSearchProvider.search({ query, resultsLimit });

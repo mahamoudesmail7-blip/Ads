@@ -14,7 +14,7 @@ import { analyzeContent } from '../services/productResearchAI.js';
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
 
-const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube'];
+const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
@@ -34,7 +34,7 @@ function checkRateLimit(userId, max = 5, windowMs = 10 * 60 * 1000) {
 router.get(
   '/provider-status',
   asyncRoute(async (req, res) => {
-    res.json({ providers: getProviderStatus() });
+    res.json({ providers: await getProviderStatus() });
   })
 );
 
@@ -109,18 +109,36 @@ router.get(
     if (!search) return res.status(404).json({ error: 'NOT_FOUND', message: 'البحث ده مش موجود.' });
 
     const resultCount = await prisma.productResearchResult.count({ where: { search_id: search.id } });
+
+    const platforms = JSON.parse(search.platforms_json || '[]');
+    let adLibraryStats = null;
+    if (platforms.includes('META_AD_LIBRARY')) {
+      const adRows = await prisma.productResearchResult.findMany({
+        where: { search_id: search.id, platform: 'META_AD_LIBRARY', ignored: false },
+        select: { account_name: true, classification: true, thumbnail: true, metrics_json: true },
+      });
+      adLibraryStats = {
+        adsFound: adRows.length,
+        activeAds: adRows.filter((r) => r.metrics_json?.includes('"activeStatus":"ACTIVE"')).length,
+        advertisersFound: new Set(adRows.map((r) => r.account_name).filter(Boolean)).size,
+        exactMatches: adRows.filter((r) => r.classification === 'EXACT_MATCH').length,
+        creativesFound: adRows.filter((r) => Boolean(r.thumbnail)).length, // "creative" = a result with an actual visible media asset, never assumed for a text-only listing
+      };
+    }
+
     res.json({
       id: search.id,
       productName: search.product_name,
       productImage: search.product_image,
       country: search.country,
       language: search.language,
-      platforms: JSON.parse(search.platforms_json || '[]'),
+      platforms,
       status: search.status,
       platformStatus: JSON.parse(search.platform_status_json || '{}'),
       aiProfile: search.ai_profile_json ? JSON.parse(search.ai_profile_json) : null,
       error: search.error,
       resultCount,
+      adLibraryStats,
       startedAt: search.started_at,
       completedAt: search.completed_at,
       createdAt: search.created_at,
@@ -132,7 +150,7 @@ router.get(
   '/search/:id/results',
   asyncRoute(async (req, res) => {
     const searchId = Number(req.params.id);
-    const { platform, classification, minMatch, page } = req.query;
+    const { platform, classification, minMatch, page, active, sort } = req.query;
     const pageSize = 25;
     const pageNum = Math.max(1, Number(page) || 1);
 
@@ -144,17 +162,35 @@ router.get(
       where.classification = { not: 'IRRELEVANT' }; // Step 9 default: hide IRRELEVANT
     }
     if (minMatch) where.match_score = { gte: Number(minMatch) };
+    // "Active ads only" — metrics_json is a flexible JSON-as-string column
+    // (no schema change for this), so this is a plain substring match
+    // rather than a real JSON query; correct because activeStatus is only
+    // ever written as this exact literal (see metaAdLibraryProvider.js) —
+    // never user-controlled text, so no injection/false-match risk.
+    if (active === 'active') where.metrics_json = { contains: '"activeStatus":"ACTIVE"' };
+
+    const orderBy = sort === 'newest' ? [{ published_at: 'desc' }] : sort === 'oldest' ? [{ published_at: 'asc' }] : [{ match_score: 'desc' }, { created_at: 'desc' }];
 
     const [total, rows] = await Promise.all([
       prisma.productResearchResult.count({ where }),
       prisma.productResearchResult.findMany({
         where,
-        orderBy: [{ match_score: 'desc' }, { created_at: 'desc' }],
+        orderBy,
         skip: (pageNum - 1) * pageSize,
         take: pageSize,
         include: { competitor: { select: { id: true } } },
       }),
     ]);
+    // "Active first" is a page-local re-sort (not a full-dataset ORDER BY)
+    // to avoid a raw-SQL JSON-path query for a single sort option — stated
+    // plainly rather than silently pretending it's a global sort.
+    if (sort === 'active') {
+      rows.sort((a, b) => {
+        const aActive = a.metrics_json?.includes('"activeStatus":"ACTIVE"') ? 0 : 1;
+        const bActive = b.metrics_json?.includes('"activeStatus":"ACTIVE"') ? 0 : 1;
+        return aActive - bActive;
+      });
+    }
 
     res.json({
       total,
@@ -168,6 +204,7 @@ router.get(
         title: r.title,
         snippet: r.snippet,
         accountName: r.account_name,
+        accountUrl: r.account_url,
         thumbnail: r.thumbnail,
         publishedAt: r.published_at,
         metrics: r.metrics_json ? JSON.parse(r.metrics_json) : {},

@@ -9,6 +9,7 @@ const ALLOWED_DOMAINS = {
   facebook: ['facebook.com', 'www.facebook.com', 'm.facebook.com', 'fb.watch'],
   tiktok: ['tiktok.com', 'www.tiktok.com', 'vm.tiktok.com'],
   youtube: ['youtube.com', 'www.youtube.com', 'youtu.be', 'm.youtube.com'],
+  META_AD_LIBRARY: ['facebook.com', 'www.facebook.com'], // real Ad Library snapshot/search URLs live under facebook.com/ads/library
 };
 
 // Tracking/query params stripped for canonicalization — never security-relevant, just noise that would otherwise make the same real post look like two different URLs.
@@ -58,6 +59,7 @@ function detectContentType(platform, url) {
     if (path.startsWith('/channel/') || path.startsWith('/@') || path.startsWith('/c/')) return 'Channel';
     return 'Unknown';
   }
+  if (platform === 'META_AD_LIBRARY') return 'Ad'; // every validated result on this platform is, by definition, a real ad
   return 'Unknown';
 }
 
@@ -78,7 +80,7 @@ export function normalizeResult(raw, context) {
     title: raw.title || null,
     snippet: raw.snippet || null,
     account_name: raw.accountName || null,
-    account_url: null,
+    account_url: raw.accountUrl || null,
     thumbnail: raw.thumbnail || null,
     published_at: raw.publishedAt ? new Date(raw.publishedAt) : null,
     metrics_json: raw.metrics && Object.keys(raw.metrics).length ? JSON.stringify(raw.metrics) : null,
