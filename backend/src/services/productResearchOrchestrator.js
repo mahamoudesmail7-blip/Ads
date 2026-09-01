@@ -178,6 +178,21 @@ export async function runSearchPipeline(searchId) {
           data: { classification: ranking.classification, match_score: ranking.match_score, confidence_score: ranking.confidence_score, ai_reason: ranking.reason },
         });
       }
+      // rankResultsBatch only ranks the first MAX_AI_RANKING_RESULTS results
+      // (cost control, Step 21 — never call Claude on thousands of results
+      // one-by-one or in one giant batch). Anything past that cap must still
+      // get an explicit UNCLASSIFIED marker instead of staying NULL forever
+      // — a real result the AI simply hasn't reached yet is not the same as
+      // a result that was actually judged RELATED, and leaving it NULL is
+      // exactly the state that used to make real results silently
+      // disappear from the results list (see /results route's fix).
+      const unrankedIds = saved.filter((r) => !rankings.has(r.id)).map((r) => r.id);
+      if (unrankedIds.length > 0) {
+        await prisma.productResearchResult.updateMany({
+          where: { id: { in: unrankedIds } },
+          data: { classification: 'UNCLASSIFIED', ai_reason: 'التحليل الذكي لسه ما وصلش للنتيجة دي (تجاوزت حد الدفعة) — النتيجة حقيقية ومعروضة زي ما هي.' },
+        });
+      }
 
       // Step 14 — Market Insights, computed from observed data (deterministic) + a short AI interpretation note stored separately and clearly labelled.
       const insights = buildObservedInsights(saved, platformStatus);

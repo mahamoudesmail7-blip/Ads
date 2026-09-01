@@ -7,9 +7,39 @@
 // final text answer or maxTurns is hit. No raw fetch/SDK dependency beyond
 // what askClaude already used.
 import { logger } from '../logger.js';
+import * as health from './providerHealth.js';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-sonnet-5';
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_RETRIES = 2; // bounded — never infinite (Step 15): up to 3 attempts total for a transient failure, then give up and let the caller's own honest fallback take over.
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Exponential backoff with jitter, bounded retry count, transient errors only (Step 8/15) — never retries invalid credentials, insufficient credits, or a validation 4xx. */
+async function withRetry(fn, { provider = 'anthropic' } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const startedAt = Date.now();
+    try {
+      const result = await fn();
+      health.recordSuccess(provider, Date.now() - startedAt);
+      return result;
+    } catch (err) {
+      lastErr = err;
+      const errorType = health.classifyErrorType(err);
+      health.recordError(provider, errorType, Date.now() - startedAt);
+      const canRetry = attempt < MAX_RETRIES && health.isRetryable(errorType);
+      logger.error('ANTHROPIC_CALL_FAILED', { errorType, httpStatus: err.httpStatus || null, attempt, willRetry: canRetry });
+      if (!canRetry) throw err;
+      const backoffMs = Math.min(8000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250); // jitter avoids a thundering-herd retry pattern under real concurrent load
+      await sleep(backoffMs);
+    }
+  }
+  throw lastErr;
+}
 
 // A real-world paste into a platform's Variables UI (Railway included) can
 // accidentally grab more than intended — e.g. the next line's
@@ -42,6 +72,8 @@ async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
   // plain resource id (wrkspc_...), same as an App ID. Optional: only added
   // when set, so a legacy key without a workspace still works unchanged.
   const workspaceId = cleanEnvValue(process.env.ANTHROPIC_WORKSPACE_ID);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS); // bounded timeout (Step 8) — a hung request is a transient/retryable failure, never an infinite wait.
   let res;
   try {
     res = await fetch(ANTHROPIC_API_URL, {
@@ -53,17 +85,24 @@ async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
         ...(workspaceId ? { 'anthropic-workspace-id': workspaceId } : {}),
       },
       body: JSON.stringify({ model: DEFAULT_MODEL, max_tokens: maxTokens, system, messages, ...(tools ? { tools } : {}) }),
+      signal: controller.signal,
     });
   } catch (err) {
     // Network-level failure (DNS, timeout, connection reset) — never seen the response at all.
-    logger.error('ANTHROPIC_REQUEST_FAILED', { message: err.message });
-    throw new Error(`مقدرش أوصل لـ Anthropic API: ${err.message}`);
+    logger.error('ANTHROPIC_REQUEST_FAILED', { message: err.name === 'AbortError' ? 'request timed out' : err.message });
+    const wrapped = new Error(err.name === 'AbortError' ? `مقدرش أوصل لـ Anthropic API: انتهت المهلة (${REQUEST_TIMEOUT_MS / 1000}s).` : `مقدرش أوصل لـ Anthropic API: ${err.message}`);
+    if (err.name === 'AbortError') wrapped.name = 'AbortError';
+    throw wrapped;
+  } finally {
+    clearTimeout(timeoutId);
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     // Anthropic's error body is JSON like {type, error:{type, message}} — surface the real code/message, never the key (it's never in this body).
     logger.error('ANTHROPIC_REQUEST_FAILED', { status: res.status, body: body.slice(0, 500) });
-    throw new Error(`Claude API error ${res.status}: ${body.slice(0, 300)}`);
+    const err = new Error(`Claude API error ${res.status}: ${body.slice(0, 300)}`);
+    err.httpStatus = res.status;
+    throw err;
   }
   logger.info('ANTHROPIC_RESPONSE_RECEIVED', { status: res.status });
   return res.json();
@@ -75,8 +114,14 @@ async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
  */
 export async function askClaude({ system, messages, maxTokens = 1024 }) {
   const apiKey = apiKeyOrThrow();
-  const data = await callMessagesApi({ apiKey, system, messages, maxTokens });
+  const data = await withRetry(() => callMessagesApi({ apiKey, system, messages, maxTokens }));
   return data.content?.[0]?.text ?? '';
+}
+
+/** Read-only snapshot of Anthropic's tracked health — never makes a network call itself (Step 13). */
+export function getAnthropicHealth() {
+  const apiKey = Boolean(cleanEnvValue(process.env.ANTHROPIC_API_KEY));
+  return health.classify('anthropic', apiKey);
 }
 
 /**
@@ -97,7 +142,7 @@ export async function runAgentTurn({ system, userMessage, tools, executeTool, ma
   const toolCalls = [];
 
   for (let turn = 0; turn < maxTurns; turn++) {
-    const data = await callMessagesApi({ apiKey, system, messages, tools, maxTokens });
+    const data = await withRetry(() => callMessagesApi({ apiKey, system, messages, tools, maxTokens }));
     const blocks = data.content || [];
     const toolUseBlocks = blocks.filter((b) => b.type === 'tool_use');
 

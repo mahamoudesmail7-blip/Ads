@@ -130,6 +130,12 @@ router.get(
       const inputData = search.input_json ? JSON.parse(search.input_json) : {};
       const rawAdsCollected = adQueries.reduce((sum, q) => sum + (q.result_count || 0), 0);
       const requestedRawLimit = [100, 250, 500, 1000, 2000].includes(Number(inputData.adLibraryRawLimit)) ? Number(inputData.adLibraryRawLimit) : 100;
+      // "Unclassified" covers both the new explicit 'UNCLASSIFIED' value AND
+      // legacy NULL rows (written before that value existed, or results
+      // beyond the AI ranking batch cap) — both mean the same real thing:
+      // AI never produced a real judgement for this real result.
+      const unclassifiedCount = adRows.filter((r) => !r.classification || r.classification === 'UNCLASSIFIED').length;
+      const analysisAvailable = adRows.some((r) => r.classification && r.classification !== 'UNCLASSIFIED');
       adLibraryStats = {
         adsFound: adRows.length,
         activeAds: adRows.filter((r) => r.metrics_json?.includes('"activeStatus":"ACTIVE"')).length,
@@ -137,7 +143,11 @@ router.get(
         exactMatches: adRows.filter((r) => r.classification === 'EXACT_MATCH').length,
         verySimilar: adRows.filter((r) => r.classification === 'VERY_SIMILAR').length,
         similar: adRows.filter((r) => r.classification === 'SIMILAR').length,
+        related: adRows.filter((r) => r.classification === 'RELATED').length,
         irrelevant: adRows.filter((r) => r.classification === 'IRRELEVANT').length,
+        unclassified: unclassifiedCount,
+        analysisAvailable,
+        analysisSource: analysisAvailable ? 'ai' : 'fallback',
         creativesFound: adRows.filter((r) => Boolean(r.thumbnail)).length, // "creative" = a result with an actual visible media asset, never assumed for a text-only listing
         // Step 3's requested reporting fields — all derived from real rows already in the existing schema, no new columns needed.
         mode: inputData.adLibraryMode || null,
@@ -174,17 +184,32 @@ router.get(
   '/search/:id/results',
   asyncRoute(async (req, res) => {
     const searchId = Number(req.params.id);
-    const { platform, classification, minMatch, page, active, sort } = req.query;
-    const pageSize = 25;
+    const { platform, classification, minMatch, page, active, sort, pageSize: pageSizeParam } = req.query;
+    // Real production bug, found via live testing: the old default filter
+    // was `classification: { not: 'IRRELEVANT' }`. In SQL, `<> 'IRRELEVANT'`
+    // does NOT match NULL rows (three-valued logic) — so the moment AI
+    // ranking never touched a result (Claude unavailable, or the result was
+    // simply beyond the ranking batch cap), its classification stayed NULL
+    // and this filter silently erased it from the list, even though the
+    // stats tiles (computed by separate, unfiltered queries) kept reporting
+    // the real total. Confirmed live against search #25: 259 real, stored
+    // Meta Ads Library results, 0 returned by this filter. Fixed below by
+    // never filtering at all by default ("ALL" truly means all, per the
+    // explicit requirement that AI availability must never hide real
+    // results) and by treating NULL as equivalent to UNCLASSIFIED so a
+    // reader who deliberately filters to UNCLASSIFIED also sees legacy rows
+    // written before that value existed.
+    const pageSize = [25, 50, 100].includes(Number(pageSizeParam)) ? Number(pageSizeParam) : 50;
     const pageNum = Math.max(1, Number(page) || 1);
 
     const where = { search_id: searchId, ignored: false };
     if (platform && PLATFORMS.includes(platform)) where.platform = platform;
-    if (classification && ['EXACT_MATCH', 'VERY_SIMILAR', 'SIMILAR', 'RELATED', 'IRRELEVANT'].includes(classification)) {
+    if (['EXACT_MATCH', 'VERY_SIMILAR', 'SIMILAR', 'RELATED', 'IRRELEVANT'].includes(classification)) {
       where.classification = classification;
-    } else {
-      where.classification = { not: 'IRRELEVANT' }; // Step 9 default: hide IRRELEVANT
+    } else if (classification === 'UNCLASSIFIED') {
+      where.OR = [{ classification: 'UNCLASSIFIED' }, { classification: null }];
     }
+    // classification is empty/"ALL"/unrecognized -> no filter at all, every real result shows.
     if (minMatch) where.match_score = { gte: Number(minMatch) };
     // "Active ads only" — metrics_json is a flexible JSON-as-string column
     // (no schema change for this), so this is a plain substring match
@@ -193,7 +218,12 @@ router.get(
     // never user-controlled text, so no injection/false-match risk.
     if (active === 'active') where.metrics_json = { contains: '"activeStatus":"ACTIVE"' };
 
-    const orderBy = sort === 'newest' ? [{ published_at: 'desc' }] : sort === 'oldest' ? [{ published_at: 'asc' }] : [{ match_score: 'desc' }, { created_at: 'desc' }];
+    // Default "match" sort: real-scored results first, UNCLASSIFIED/null
+    // ones after (explicit `nulls: 'last'` — Postgres's own default for
+    // DESC is nulls-first, which would otherwise bury every classified
+    // result behind hundreds of unclassified ones on page 1). Nothing is
+    // excluded either way — this only affects order, never visibility.
+    const orderBy = sort === 'newest' ? [{ published_at: 'desc' }] : sort === 'oldest' ? [{ published_at: 'asc' }] : [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }];
 
     const [total, rows] = await Promise.all([
       prisma.productResearchResult.count({ where }),
@@ -232,7 +262,10 @@ router.get(
         thumbnail: r.thumbnail,
         publishedAt: r.published_at,
         metrics: r.metrics_json ? JSON.parse(r.metrics_json) : {},
-        classification: r.classification,
+        provider: r.provider,
+        // Legacy rows saved before UNCLASSIFIED existed are still null here
+        // — normalized to the same honest label the frontend renders either way.
+        classification: r.classification || 'UNCLASSIFIED',
         matchScore: r.match_score,
         confidenceScore: r.confidence_score,
         aiReason: r.ai_reason,

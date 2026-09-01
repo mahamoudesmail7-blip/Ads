@@ -239,8 +239,12 @@ EXACT_MATCH | VERY_SIMILAR | SIMILAR | RELATED | IRRELEVANT
     }
   } catch (err) {
     logger.error('PRODUCT_RESEARCH_AI_RANKING_FAILED', { message: err.message });
-    // Honest fallback: mark as unranked rather than guessing a score.
-    for (const r of batch) map.set(r._localId, { classification: 'RELATED', match_score: null, confidence_score: null, reason: 'التصنيف بالـ AI فشل — النتيجة معروضة من غير تقييم.' });
+    // Honest fallback: UNCLASSIFIED (a distinct, first-class state), never a
+    // real classification like RELATED — this used to write 'RELATED' here,
+    // which quietly claimed an AI judgement that never actually happened.
+    // Real results always keep showing regardless (see productResearch.js's
+    // /results route — no filter default ever excludes them).
+    for (const r of batch) map.set(r._localId, { classification: 'UNCLASSIFIED', match_score: null, confidence_score: null, reason: 'التحليل الذكي غير متاح حالياً — النتيجة الحقيقية معروضة من غير تقييم.' });
   }
   return map;
 }

@@ -27,6 +27,7 @@ import * as serpApiProvider from './serpApiProvider.js';
 import * as apifyProvider from './apifyMetaAdLibraryProvider.js';
 import { generateAdLibraryTieredQueries } from '../productResearchAI.js';
 import { validateAndCanonicalize } from '../productResearchNormalize.js';
+import * as health from '../providerHealth.js';
 
 const COUNTRY_MAP = { EG: 'EG', SA: 'SA', AE: 'AE', KW: 'KW' }; // Meta's ad_reached_countries expects real ISO country codes; Worldwide has no single equivalent, so it's handled by the caller passing undefined -> Graph path skipped, SerpApi has no country restriction anyway.
 
@@ -71,9 +72,15 @@ export async function getStatus() {
   const metaOk = await metaConnectionUsable();
   const serpOk = serpApiProvider.isConfigured();
 
+  // Layers real recent-traffic health (Step 13/14 watchdog) onto the
+  // existing configured/not check — a fallback that's configured but whose
+  // last real attempt failed now reports DEGRADED instead of a blanket
+  // CONNECTED, and recovers on its own the moment one more real attempt
+  // succeeds (metaGraphClient/serpApiProvider record this from real usage
+  // in search() below — never a synthetic paid probe).
   const fallbacks = [
-    { provider: 'meta_ad_library_api', status: metaOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
-    { provider: 'serpapi_ad_library_search', status: serpOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
+    { provider: 'meta_ad_library_api', status: health.classify('meta_ad_library_api', metaOk).status },
+    { provider: 'serpapi_ad_library_search', status: health.classify('serpapi_ad_library_search', serpOk).status },
   ];
 
   if (apifyStatus.status === 'CONNECTED') {
@@ -116,6 +123,7 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
           lastError = { provider: 'meta_ad_library_api', message: `فيسبوك رجّع ${ads.length} إعلان حقيقي بس مفيهمش أي واحد له علاقة بكلمة البحث — على الأغلب الـ API مش بيفلتر بالكلمة في الدولة دي.` };
         } else {
           lastError = null;
+          health.recordSuccess('meta_ad_library_api');
           const items = relevantAds.map((ad) => ({
             url: ad.ad_snapshot_url,
             title: ad.ad_creative_link_titles?.[0] || (ad.ad_creative_bodies?.[0] || '').slice(0, 80) || null,
@@ -143,6 +151,7 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
     } catch (err) {
       logger.error('META_AD_LIBRARY_GRAPH_API_FAILED', { message: err.message, graphCode: err.graphCode, graphSubcode: err.graphSubcode });
       lastError = { provider: 'meta_ad_library_api', message: err.message };
+      health.recordError('meta_ad_library_api', health.classifyErrorType(err));
       // Real, documented Meta limitation for non-EU commercial search -- fall through to the SerpApi path instead of failing the whole platform.
     }
   }
@@ -153,9 +162,11 @@ export async function search({ query, resultsLimit = 10, country = 'EG' }) {
   try {
     const items = await serpApiProvider.searchAdLibrary({ query, resultsLimit });
     lastError = null;
+    health.recordSuccess('serpapi_ad_library_search');
     return { items, providerName: 'serpapi_ad_library_search' };
   } catch (err) {
     lastError = { provider: 'serpapi_ad_library_search', message: err.message };
+    health.recordError('serpapi_ad_library_search', health.classifyErrorType(err));
     throw err;
   }
 }
@@ -260,10 +271,12 @@ export async function runStagedSearch({ profile, country, activeOnly, mode, rawL
         if (canonical) seenCanonical.add(canonical.toString());
       }
       lastError = null;
+      health.recordSuccess('apify_meta_ad_library');
     } catch (err) {
       logger.error('APIFY_META_AD_LIBRARY_STAGE_FAILED', { tier: tier.name, message: err.message });
       tiers.push({ tier: tier.name, queries: tier.queries, rawCount: 0, provider: 'apify_meta_ad_library', error: err.message });
       lastError = { provider: 'apify_meta_ad_library', message: err.message };
+      health.recordError('apify_meta_ad_library', health.classifyErrorType(err));
       // One tier failing doesn't stop the next tier from being tried — real per-stage isolation, same principle as per-platform isolation elsewhere.
     }
 

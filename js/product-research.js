@@ -7,8 +7,8 @@ import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 
 const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', META_AD_LIBRARY: 'Meta Ads Library' };
-const CLASS_LABEL = { EXACT_MATCH: 'تطابق تام', VERY_SIMILAR: 'مشابه جدًا', SIMILAR: 'مشابه', RELATED: 'ذو صلة', IRRELEVANT: 'غير مرتبط' };
-const CLASS_COLOR = { EXACT_MATCH: 'green', VERY_SIMILAR: 'green', SIMILAR: 'yellow', RELATED: '', IRRELEVANT: 'red' };
+const CLASS_LABEL = { EXACT_MATCH: 'تطابق تام', VERY_SIMILAR: 'مشابه جدًا', SIMILAR: 'مشابه', RELATED: 'ذو صلة', IRRELEVANT: 'غير مرتبط', UNCLASSIFIED: 'غير مصنف' };
+const CLASS_COLOR = { EXACT_MATCH: 'green', VERY_SIMILAR: 'green', SIMILAR: 'yellow', RELATED: '', IRRELEVANT: 'red', UNCLASSIFIED: '' };
 const STATUS_LABEL_AR = {
   PENDING: 'في الانتظار...', ANALYZING: 'جاري تحليل المنتج...', GENERATING_QUERIES: 'جاري إنشاء كلمات البحث...',
   SEARCHING: 'جاري البحث في المنصات...', RANKING: 'جاري تحليل وترتيب النتائج...',
@@ -24,6 +24,24 @@ let currentSearchId = null;
 let pollTimer = null;
 let currentTab = 'all';
 let currentPage = 1;
+
+// --- Deep Search durability across a browser refresh (Step 11/Test F) ---
+// The search itself already runs server-side and is fully re-fetchable by
+// id (GET /search/:id) — the only thing a refresh actually loses is the
+// in-memory `currentSearchId` JS variable pointing at it. Persisting just
+// that id (never any result data itself — always re-fetched fresh from the
+// server) means a refresh mid-search auto-resumes polling instead of
+// silently going blank until the user remembers to reopen it from History.
+const LAST_SEARCH_KEY = 'pr_last_search_id';
+function rememberSearchId(id) {
+  try { localStorage.setItem(LAST_SEARCH_KEY, String(id)); } catch { /* private-mode/storage-blocked — non-fatal, History still works */ }
+}
+function forgetSearchId() {
+  try { localStorage.removeItem(LAST_SEARCH_KEY); } catch { /* non-fatal */ }
+}
+function recallSearchId() {
+  try { return Number(localStorage.getItem(LAST_SEARCH_KEY)) || null; } catch { return null; }
+}
 
 function escapeHtml(s) { return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? ''); }
 
@@ -87,8 +105,12 @@ function wireImageUpload() {
 }
 
 // --- Provider status ---
-const STATUS_BADGE = { CONNECTED: 'green', ERROR: 'red', NOT_CONFIGURED: '' };
-const STATUS_LABEL = { CONNECTED: '✅ متصل', ERROR: '⚠️ خطأ', NOT_CONFIGURED: '⚪ غير مربوط' };
+const STATUS_BADGE = { CONNECTED: 'green', DEGRADED: 'yellow', ERROR: 'red', NOT_CONFIGURED: '' };
+const STATUS_LABEL = { CONNECTED: '✅ متصل', DEGRADED: '🟡 غير مستقر', ERROR: '⚠️ خطأ', NOT_CONFIGURED: '⚪ غير مربوط' };
+const ERROR_TYPE_LABEL_AR = {
+  INVALID_CREDENTIALS: 'بيانات اعتماد غير صحيحة', INSUFFICIENT_CREDITS: 'الرصيد/الفوترة غير متاح', RATE_LIMITED: 'تم تجاوز حد الطلبات',
+  TIMEOUT: 'انتهت المهلة', NETWORK_ERROR: 'مشكلة اتصال مؤقتة', SERVER_ERROR: 'خطأ من طرف المزود', VALIDATION_ERROR: 'طلب غير صحيح', UNKNOWN_ERROR: 'خطأ غير معروف',
+};
 
 async function loadProviderStatus() {
   try {
@@ -102,6 +124,10 @@ async function loadProviderStatus() {
             .map((f) => `<span class="badge ${STATUS_BADGE[f.status] || ''}">احتياطي (${f.provider === 'meta_ad_library_api' ? 'Meta Graph' : 'SerpApi'}): ${STATUS_LABEL[f.status] || f.status}</span>`)
             .join('');
           return primaryBadge + fbBadges;
+        }
+        if (p.platform === 'anthropic') {
+          const reason = p.detail && ERROR_TYPE_LABEL_AR[p.detail] ? ` — السبب: ${ERROR_TYPE_LABEL_AR[p.detail]}` : '';
+          return `<span class="badge ${STATUS_BADGE[p.status] || ''}">🤖 Anthropic (التحليل الذكي): ${STATUS_LABEL[p.status] || p.status}${reason}</span>`;
         }
         return `<span class="badge ${STATUS_BADGE[p.status] || ''}">${PLATFORM_LABEL[p.platform]}: ${STATUS_LABEL[p.status] || p.status}</span>`;
       })
@@ -142,6 +168,7 @@ async function startSearch() {
   try {
     const { searchId } = await api.post('/api/product-research/search', body);
     currentSearchId = searchId;
+    rememberSearchId(searchId);
     document.getElementById('prProgressCard').style.display = 'block';
     startPolling(searchId);
   } catch (err) {
@@ -177,7 +204,15 @@ function renderProgress(data) {
   let progressText = STATUS_LABEL_AR[data.status] || data.status;
   if (data.status === 'SEARCHING' && data.adLibraryStats) {
     const s = data.adLibraryStats;
-    progressText += ` — Meta Ads Library: استعلامات ${s.queriesExecuted}، إعلانات خام ${s.rawAdsCollected}، فريدة ${s.uniqueAdsAfterDedup}`;
+    progressText += ` — جاري البحث في Meta Ads Library: استعلام ${s.queriesExecuted}، تم جمع ${s.rawAdsCollected} إعلان خام، ${s.uniqueAdsAfterDedup} إعلان فريد`;
+  } else if (data.status === 'RANKING' && data.adLibraryStats) {
+    // Ranking is in progress — a relevant count isn't real yet at this point, never fake one (Step 12).
+    progressText += ` — ${data.adLibraryStats.uniqueAdsAfterDedup} إعلان فريد — النتائج لم يتم تصنيفها بعد`;
+  } else if (['COMPLETED', 'PARTIAL'].includes(data.status) && data.adLibraryStats) {
+    const s = data.adLibraryStats;
+    progressText += s.analysisAvailable
+      ? ` — ${s.uniqueAdsAfterDedup} إعلان فريد، ${s.exactMatches + s.verySimilar + s.similar} نتيجة ذات صلة عالية`
+      : ` — ${s.uniqueAdsAfterDedup} إعلان فريد — النتائج لم يتم تصنيفها بعد`;
   }
   document.getElementById('prProgressText').textContent = progressText;
   const statusList = document.getElementById('prPlatformStatusList');
@@ -195,6 +230,18 @@ function renderProgress(data) {
     errEl.style.display = 'none';
   }
 
+  // Non-blocking warnings (Step 17) — shown alongside real results, never
+  // instead of them. "Some sources didn't respond" = at least one platform
+  // that was actually selected for this search ended PARTIAL/FAILED, while
+  // at least one other real result still exists overall.
+  const srcWarnEl = document.getElementById('prWarningSources');
+  const someFailedOrPartial = data.platforms.some((p) => ['PARTIAL', 'FAILED'].includes(data.platformStatus?.[p]));
+  srcWarnEl.style.display = someFailedOrPartial ? 'block' : 'none';
+
+  const aiWarnEl = document.getElementById('prWarningAI');
+  const aiUnavailable = data.aiProfile?._analysisSource === 'fallback' || (data.adLibraryStats && data.adLibraryStats.analysisAvailable === false && data.adLibraryStats.adsFound > 0);
+  aiWarnEl.style.display = ['COMPLETED', 'PARTIAL'].includes(data.status) && aiUnavailable ? 'block' : 'none';
+
   document.getElementById('prSummaryTiles').style.display = ['COMPLETED', 'PARTIAL', 'FAILED'].includes(data.status) ? 'grid' : 'none';
 }
 
@@ -209,6 +256,7 @@ async function loadResultsSection(searchId, page = 1) {
   if (activeFilter) params.active = activeFilter;
   const sortBy = document.getElementById('prSortBy').value;
   if (sortBy && sortBy !== 'match') params.sort = sortBy;
+  params.pageSize = Number(document.getElementById('prPageSize').value) || 50;
 
   let data;
   try {
@@ -221,20 +269,38 @@ async function loadResultsSection(searchId, page = 1) {
   document.getElementById('prResultsCard').style.display = 'block';
   const listEl = document.getElementById('prResultsList');
   const emptyEl = document.getElementById('prResultsEmpty');
+  const rangeEl = document.getElementById('prResultsRangeText');
   if (data.results.length === 0) {
     listEl.innerHTML = '';
     emptyEl.style.display = 'block';
+    rangeEl.textContent = data.total === 0 ? '' : 'مفيش نتائج تطابق الفلاتر المختارة دلوقتي — جرب توسّع الفلاتر.';
   } else {
     emptyEl.style.display = 'none';
     listEl.innerHTML = data.results.map(resultCardHtml).join('');
     wireResultButtons(listEl, searchId);
+    const from = (data.page - 1) * data.pageSize + 1;
+    const to = Math.min(data.page * data.pageSize, data.total);
+    rangeEl.textContent = `عرض ${from}–${to} من ${data.total} نتيجة`;
   }
 
+  // Large result sets (hundreds/thousands) never render as one long button
+  // row — capped to a window around the current page, with jump-to-
+  // first/last, so pagination itself never becomes the thing that looks broken.
   const pages = Math.ceil(data.total / data.pageSize);
   const pagEl = document.getElementById('prResultsPagination');
-  pagEl.innerHTML = pages > 1
-    ? Array.from({ length: pages }, (_, i) => `<button class="btn secondary small${i + 1 === page ? ' active' : ''}" data-page="${i + 1}">${i + 1}</button>`).join('')
-    : '';
+  if (pages > 1) {
+    const windowSize = 5;
+    let start = Math.max(1, page - Math.floor(windowSize / 2));
+    let end = Math.min(pages, start + windowSize - 1);
+    start = Math.max(1, end - windowSize + 1);
+    const btns = [];
+    if (start > 1) btns.push(`<button class="btn secondary small" data-page="1">1</button>${start > 2 ? '<span class="faint">…</span>' : ''}`);
+    for (let i = start; i <= end; i++) btns.push(`<button class="btn secondary small${i === page ? ' active' : ''}" data-page="${i}">${i}</button>`);
+    if (end < pages) btns.push(`${end < pages - 1 ? '<span class="faint">…</span>' : ''}<button class="btn secondary small" data-page="${pages}">${pages}</button>`);
+    pagEl.innerHTML = btns.join('');
+  } else {
+    pagEl.innerHTML = '';
+  }
   pagEl.querySelectorAll('button').forEach((b) => (b.onclick = () => loadResultsSection(searchId, Number(b.dataset.page))));
 
   await renderSummaryTiles(searchId, data.total);
@@ -265,10 +331,13 @@ async function renderSummaryTiles(searchId, totalVisible) {
         { label: 'تطابق تام', value: s.exactMatches },
         { label: 'مشابه جدًا', value: s.verySimilar },
         { label: 'مشابه', value: s.similar },
+        { label: 'ذو صلة', value: s.related },
+        { label: 'غير مصنف', value: s.unclassified },
         { label: 'كرييتيف موجود', value: s.creativesFound },
         { label: 'استعلامات نُفذت', value: s.queriesExecuted },
       ];
       adTilesEl.innerHTML = adTiles.map((t) => `<div class="stat-tile"><div class="label">${escapeHtml(t.label)}</div><div class="value">${t.value}</div></div>`).join('')
+        + (!s.analysisAvailable ? `<div class="faint" style="grid-column:1/-1; font-size:12px; margin-top:4px;">🤖 التحليل الذكي غير متاح حالياً — النتائج الحقيقية ما زالت معروضة، وكلها ظاهرة تحت "غير مصنف".</div>` : '')
         + (s.providerLimitReached ? `<div class="faint" style="grid-column:1/-1; font-size:12px; margin-top:4px;">⚠️ وصلنا للحد الأقصى المطلوب (${s.requestedRawLimit}) — يمكن فيه إعلانات تانية متاحة لو رفعت الحد.</div>` : '');
       adTilesEl.style.display = 'grid';
     } else {
@@ -280,27 +349,35 @@ async function renderSummaryTiles(searchId, totalVisible) {
 }
 
 function resultCardHtml(r) {
+  // A real result renders regardless of which optional fields are null —
+  // classification/match score/AI reason/adText/CTA/creative are all
+  // enhancement, never a requirement for the card to exist (Steps 1/3/21).
   const isAd = r.platform === 'META_AD_LIBRARY';
-  const cls = r.classification ? `<span class="badge ${CLASS_COLOR[r.classification] || ''}">${CLASS_LABEL[r.classification] || r.classification}${r.matchScore !== null ? ` — ${r.matchScore}%` : ''}</span>` : '<span class="faint">مش متقيّم لسه</span>';
+  const classification = r.classification || 'UNCLASSIFIED';
+  const cls = `<span class="badge ${CLASS_COLOR[classification] || ''}">${CLASS_LABEL[classification] || classification}${r.matchScore !== null && r.matchScore !== undefined ? ` — ${r.matchScore}%` : ''}</span>`;
   const m = r.metrics || {};
   const daysRunning = isAd && r.publishedAt ? Math.max(0, Math.floor((Date.now() - new Date(r.publishedAt).getTime()) / 86400000)) : null;
+  const hasCreative = Boolean(r.thumbnail);
   const adMeta = isAd
     ? [
-        m.activeStatus ? `<span class="badge ${m.activeStatus === 'ACTIVE' ? 'green' : ''}">${m.activeStatus === 'ACTIVE' ? '🟢 نشط' : '⚪ متوقف'}</span>` : '',
+        m.activeStatus ? `<span class="badge ${m.activeStatus === 'ACTIVE' ? 'green' : ''}">${m.activeStatus === 'ACTIVE' ? '🟢 نشط' : '⚪ متوقف'}</span>` : '<span class="faint">حالة النشاط غير معروفة</span>',
         m.cta ? `<span>CTA: ${escapeHtml(m.cta)}</span>` : '',
         m.ctaDomain ? `<span>🔗 ${escapeHtml(m.ctaDomain)}</span>` : '',
         daysRunning !== null ? `<span>📅 شغال من ${daysRunning} يوم</span>` : '',
         m.endDate ? `<span>انتهى: ${new Date(m.endDate).toLocaleDateString('ar-EG')}</span>` : '',
         m.platformsShownOn?.length ? `<span>عرض على: ${m.platformsShownOn.join('، ')}</span>` : '',
+        `<span>${hasCreative ? '🖼️ كرييتيف متاح' : 'مفيش كرييتيف متاح'}</span>`,
       ].filter(Boolean).join('')
     : '';
   const matchedQuery = r.discoveredByQueries?.[0]?.query;
+  const showAiUnavailableNote = classification === 'UNCLASSIFIED';
   return `
     <div class="action-card" data-result-id="${r.id}">
       <div class="action-card-title">${r.thumbnail ? `<img src="${escapeHtml(r.thumbnail)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;vertical-align:middle;margin-left:8px;" />` : ''}${escapeHtml(r.title || r.accountName || 'بدون عنوان')}</div>
       <div class="action-card-metrics">
         <span>${PLATFORM_LABEL[r.platform] || r.platform}</span>
         <span>${escapeHtml(r.contentType)}</span>
+        ${r.provider ? `<span class="faint">مصدر: ${escapeHtml(r.provider)}</span>` : ''}
         ${r.accountName ? `<span>👤 ${escapeHtml(r.accountName)}</span>` : ''}
         ${m.views ? `<span>👁️ ${m.views.toLocaleString('ar-EG')}</span>` : ''}
         ${m.likes ? `<span>❤️ ${m.likes.toLocaleString('ar-EG')}</span>` : ''}
@@ -309,9 +386,10 @@ function resultCardHtml(r) {
       </div>
       ${isAd ? `<div class="action-card-reasons">${r.snippet ? escapeHtml(r.snippet.slice(0, 160)) : '<span class="faint">نص الإعلان غير متاح من المصدر</span>'}</div>` : (r.snippet ? `<div class="action-card-reasons">${escapeHtml(r.snippet.slice(0, 160))}</div>` : '')}
       ${matchedQuery ? `<div class="faint" style="font-size:11.5px;">🔍 اتلقى بكلمة: ${escapeHtml(matchedQuery)}</div>` : ''}
-      ${r.aiReason ? `<div class="action-card-confidence">🤖 ${escapeHtml(r.aiReason)}</div>` : ''}
+      ${r.aiReason ? `<div class="action-card-confidence">🤖 ${escapeHtml(r.aiReason)}</div>` : (showAiUnavailableNote ? '<div class="faint" style="font-size:11.5px;">التحليل الذكي غير متاح حالياً</div>' : '')}
       <div class="toolbar" style="margin-top:8px;">
         <a class="btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${isAd ? 'فتح الإعلان' : 'فتح الرابط'}</a>
+        ${isAd ? `<a class="btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">فتح Snapshot</a>` : ''}
         <button class="btn secondary small" data-action="save-competitor" data-id="${r.id}">${r.isSavedCompetitor ? '✅ محفوظ كمنافس' : 'حفظ كمنافس'}</button>
         <button class="btn secondary small" data-action="analyze" data-id="${r.id}">${isAd ? 'تحليل الإعلان' : 'تحليل المحتوى'}</button>
         ${isAd && r.accountUrl ? `<a class="btn secondary small" href="${escapeHtml(r.accountUrl)}" target="_blank" rel="noopener noreferrer">بحث عن المعلن</a>` : ''}
@@ -467,6 +545,7 @@ async function loadHistory() {
 
 async function reopenSearch(searchId) {
   currentSearchId = searchId;
+  rememberSearchId(searchId);
   document.getElementById('prProgressCard').style.display = 'block';
   const data = await api.get(`/api/product-research/search/${searchId}`);
   renderProgress(data);
@@ -480,6 +559,7 @@ async function rerunSearch(searchId) {
   try {
     await api.post(`/api/product-research/search/${searchId}/rerun`, {});
     currentSearchId = searchId;
+    rememberSearchId(searchId);
     document.getElementById('prProgressCard').style.display = 'block';
     startPolling(searchId);
     window.scrollTo({ top: document.getElementById('prProgressCard').offsetTop - 20, behavior: 'smooth' });
@@ -514,10 +594,30 @@ async function init() {
     if (currentSearchId) loadResultsSection(currentSearchId, 1);
   };
 
+  document.getElementById('prPageSize').onchange = () => {
+    if (currentSearchId) loadResultsSection(currentSearchId, 1);
+  };
+
   document.getElementById('prBtnStartSearch').onclick = startSearch;
 
   await loadProviderStatus();
   await loadHistory();
+
+  // Deep Search durability (Step 11/Test F) — resume a search that was
+  // still running when the page was last open, instead of it silently
+  // vanishing on refresh. Only auto-resumes non-terminal searches; a
+  // finished one is left for the user to reopen from History deliberately.
+  const lastId = recallSearchId();
+  if (lastId) {
+    try {
+      const data = await api.get(`/api/product-research/search/${lastId}`);
+      if (['PENDING', 'ANALYZING', 'GENERATING_QUERIES', 'SEARCHING', 'RANKING'].includes(data.status)) {
+        currentSearchId = lastId;
+        document.getElementById('prProgressCard').style.display = 'block';
+        startPolling(lastId);
+      }
+    } catch { forgetSearchId(); /* the remembered search no longer exists — clear it rather than retrying forever */ }
+  }
 }
 
 init();

@@ -145,6 +145,9 @@
         <div id="prProgressText" style="font-size:14px; margin-bottom:10px;"></div>
         <div class="toolbar" id="prPlatformStatusList"></div>
         <div id="prProgressError" class="empty-state" style="display:none; margin-top:10px;"></div>
+        <!-- Non-blocking warnings — real results still show underneath these; never a full-page error state. -->
+        <div id="prWarningSources" class="faint" style="display:none; margin-top:10px; font-size:12.5px;">⚠️ بعض مصادر البحث لم تستجب، وتم عرض النتائج المتاحة.</div>
+        <div id="prWarningAI" class="faint" style="display:none; margin-top:6px; font-size:12.5px;">🤖 التحليل الذكي غير متاح حالياً — النتائج الحقيقية ما زالت معروضة.</div>
       </div>
 
       <!-- SECTION 4: Summary KPIs -->
@@ -170,6 +173,8 @@
             <option value="VERY_SIMILAR">مشابه جدًا</option>
             <option value="SIMILAR">مشابه</option>
             <option value="RELATED">ذو صلة</option>
+            <option value="IRRELEVANT">غير مرتبط</option>
+            <option value="UNCLASSIFIED">غير مصنف</option>
           </select>
           <select id="prActiveFilter">
             <option value="">كل الإعلانات</option>
@@ -181,7 +186,13 @@
             <option value="oldest">الأقدم</option>
             <option value="active">النشط أولًا</option>
           </select>
+          <select id="prPageSize">
+            <option value="25">25 / صفحة</option>
+            <option value="50" selected>50 / صفحة</option>
+            <option value="100">100 / صفحة</option>
+          </select>
         </div>
+        <div id="prResultsRangeText" class="faint" style="font-size:12.5px; margin-bottom:8px;"></div>
         <div id="prResultsList"></div>
         <div id="prResultsEmpty" class="empty-state" style="display:none;">مفيش نتائج لسه.</div>
         <div class="toolbar" style="margin-top:14px; justify-content:center;" id="prResultsPagination"></div>
