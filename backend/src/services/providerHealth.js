@@ -61,20 +61,38 @@ export function classify(provider, isConfigured) {
   return { status: s.lastSuccessfulRequestAt ? 'DEGRADED' : 'ERROR', ...s };
 }
 
+// Real, confirmed-live message patterns for quota/credit exhaustion —
+// found via a real production incident (SerpApi + YouTube Data API both
+// ran out of quota simultaneously, misread as a code regression until the
+// actual stored Query.error text was inspected). Neither provider signals
+// this with a status code alone: SerpApi returns quota exhaustion as a 200
+// OK with an error field in the body (no 4xx at all), and YouTube's 403
+// is shared between "quota exceeded" and "invalid API key" — status code
+// alone can't tell them apart, so the message text is checked first and is
+// the authoritative signal here, not a fallback.
+const QUOTA_PATTERN = /run\s*out\s*of\s*searches|quota\s*exceeded|quotaexceeded|dailylimitexceeded|rate\s*limit\s*exceeded/i;
+
 /** Categorizes a thrown error into a bounded, log-safe type — used both for health tracking and for deciding whether a retry is worth attempting (services/ai.js). Never includes the raw error message here (that's logged separately, already scrubbed of secrets at the call site). */
 export function classifyErrorType(err) {
   const status = err?.httpStatus || err?.status;
+  const message = err?.message || '';
+  // Checked first, ahead of status-code mapping: a 403 can mean "quota
+  // exceeded" (temporary, resets on its own) just as easily as "invalid
+  // key" (permanent) -- and SerpApi's quota error carries no error status
+  // at all. Getting this wrong previously classified a real, resettable
+  // quota exhaustion as a permanent INVALID_CREDENTIALS/UNKNOWN failure.
+  if (QUOTA_PATTERN.test(message)) return 'QUOTA_EXCEEDED';
   if (status === 429) return 'RATE_LIMITED';
   if (status === 401 || status === 403) return 'INVALID_CREDENTIALS';
-  if (status === 402 || /insufficient.?credit|billing/i.test(err?.message || '')) return 'INSUFFICIENT_CREDITS';
+  if (status === 402 || /insufficient.?credit|billing/i.test(message)) return 'INSUFFICIENT_CREDITS';
   if (status >= 400 && status < 500) return 'VALIDATION_ERROR';
   if (status >= 500) return 'SERVER_ERROR';
-  if (err?.name === 'AbortError' || /timeout/i.test(err?.message || '')) return 'TIMEOUT';
-  if (/network|fetch|ECONNRESET|ENOTFOUND|ETIMEDOUT/i.test(err?.message || '')) return 'NETWORK_ERROR';
+  if (err?.name === 'AbortError' || /timeout/i.test(message)) return 'TIMEOUT';
+  if (/network|fetch|ECONNRESET|ENOTFOUND|ETIMEDOUT/i.test(message)) return 'NETWORK_ERROR';
   return 'UNKNOWN_ERROR';
 }
 
-/** Whether an error type is worth a bounded retry (Step 15) — transient only, never a permanent/config-level failure. */
+/** Whether an error type is worth a bounded retry (Step 15) — transient only, never a permanent/config-level failure. QUOTA_EXCEEDED is deliberately NOT retried here: a daily/monthly quota doesn't recover within this request's retry window (seconds), so retrying just burns time without changing the outcome -- it recovers on the provider's own schedule (YouTube resets daily at midnight Pacific; SerpApi resets on the account's billing cycle). */
 export function isRetryable(errorType) {
   return ['TIMEOUT', 'NETWORK_ERROR', 'RATE_LIMITED', 'SERVER_ERROR'].includes(errorType);
 }

@@ -16,6 +16,18 @@ const STATUS_LABEL_AR = {
 };
 const PLATFORM_STATUS_LABEL_AR = { PENDING: 'في الانتظار', COMPLETE: 'مكتمل', PARTIAL: 'جزئي', FAILED: 'فشل', NOT_CONFIGURED: 'غير مربوط' };
 const PLATFORM_STATUS_COLOR = { COMPLETE: 'green', PARTIAL: 'yellow', FAILED: 'red', NOT_CONFIGURED: '' };
+// Real diagnostic reason shown next to a FAILED/PARTIAL platform badge —
+// found via a real incident where SerpApi + YouTube both genuinely ran out
+// of quota at the same time and every affected platform's bare "فشل" badge
+// looked identical to a code bug. QUOTA_EXCEEDED is the one that matters
+// most here (external, resolves on its own — never a code problem); the
+// rest cover the other classifyErrorType() outcomes honestly too.
+const PLATFORM_ERROR_LABEL_AR = {
+  QUOTA_EXCEEDED: 'انتهت حصة/رصيد المزود (مؤقت — هيرجع لوحده)', RATE_LIMITED: 'تم تجاوز حد الطلبات (مؤقت)',
+  INVALID_CREDENTIALS: 'بيانات اعتماد المزود غير صحيحة', INSUFFICIENT_CREDITS: 'الرصيد/الفوترة غير متاح عند المزود',
+  TIMEOUT: 'انتهت المهلة أثناء الاتصال بالمزود', NETWORK_ERROR: 'مشكلة اتصال مؤقتة بالمزود', SERVER_ERROR: 'خطأ من طرف المزود',
+  VALIDATION_ERROR: 'طلب غير صحيح للمزود', UNKNOWN_ERROR: 'خطأ غير معروف من المزود',
+};
 
 const chips = { alt: [], ar: [], en: [], kw: [] };
 let imageBase64 = null;
@@ -219,7 +231,14 @@ function renderProgress(data) {
   statusList.innerHTML = data.platforms
     .map((p) => {
       const s = data.platformStatus?.[p] || 'PENDING';
-      return `<span class="badge ${PLATFORM_STATUS_COLOR[s] || ''}">${PLATFORM_LABEL[p]}: ${PLATFORM_STATUS_LABEL_AR[s] || s}</span>`;
+      const err = data.platformErrors?.[p];
+      // A real, specific reason (e.g. "provider quota exhausted, resolves
+      // on its own") instead of a bare "فشل" that reads the same whether
+      // the cause is a real code bug or a genuine, temporary external
+      // provider limit — this is what actually failed and why, not a
+      // guess (Step: UI error accuracy).
+      const reason = err ? ` — ${escapeHtml(PLATFORM_ERROR_LABEL_AR[err.errorType] || err.errorType)}` : '';
+      return `<span class="badge ${PLATFORM_STATUS_COLOR[s] || ''}" title="${err ? escapeHtml(err.message) : ''}">${PLATFORM_LABEL[p]}: ${PLATFORM_STATUS_LABEL_AR[s] || s}${reason}</span>`;
     })
     .join('');
   const errEl = document.getElementById('prProgressError');

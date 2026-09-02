@@ -36,7 +36,9 @@ export async function search({ query, resultsLimit = 10 }) {
   if (!res.ok || data?.error) {
     const msg = data?.error?.message || `YouTube API error ${res.status}`;
     logger.error('YOUTUBE_SEARCH_PROVIDER_FAILED', { status: res.status, message: msg });
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.httpStatus = res.status; // carried through so providerHealth.classifyErrorType() can tell a real quota/rate-limit failure from a validation error, not guess from the message text alone
+    throw err;
   }
 
   const items = data.items || [];

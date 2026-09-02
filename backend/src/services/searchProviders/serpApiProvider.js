@@ -55,7 +55,14 @@ async function runGoogleQuery(fullQuery, resultsLimit, logContext) {
   if (!res.ok || data?.error) {
     const msg = data?.error || `SerpApi error ${res.status}`;
     logger.error('SERPAPI_PROVIDER_FAILED', { status: res.status, message: msg, ...logContext });
-    throw new Error(msg);
+    const err = new Error(msg);
+    // SerpApi reports quota exhaustion ("Your account has run out of
+    // searches.") as a 200 OK with an error field in the body, not a 4xx/
+    // 5xx status -- httpStatus alone can't distinguish it from a real
+    // failure, so the message text itself is the only real signal
+    // (providerHealth.classifyErrorType() pattern-matches it).
+    err.httpStatus = res.status;
+    throw err;
   }
   return data.organic_results || [];
 }

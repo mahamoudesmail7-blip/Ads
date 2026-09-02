@@ -49,7 +49,9 @@ export async function search({ query, platform, resultsLimit = 10 }) {
   if (!res.ok || data?.error) {
     const msg = data?.error?.message || `Google Search API error ${res.status}`;
     logger.error('GOOGLE_SEARCH_PROVIDER_FAILED', { status: res.status, message: msg, platform });
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.httpStatus = res.status;
+    throw err;
   }
 
   return (data.items || []).map((item) => ({

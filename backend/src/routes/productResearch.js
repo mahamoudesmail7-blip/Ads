@@ -10,6 +10,7 @@ import { logger } from '../logger.js';
 import { runSearchPipeline } from '../services/productResearchOrchestrator.js';
 import { getProviderStatus } from '../services/searchProviders/index.js';
 import { analyzeContent } from '../services/productResearchAI.js';
+import { classifyErrorType } from '../services/providerHealth.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -160,6 +161,29 @@ router.get(
       };
     }
 
+    // Real diagnostic reason per platform, not just a bare "FAILED" badge
+    // (found via a real incident: SerpApi/YouTube both genuinely ran out of
+    // quota at the same time, which every affected platform's raw "فشل"
+    // label made look identical to a code regression). Every query already
+    // stores its own real provider error — this just surfaces the most
+    // recent one per platform, classified the same way the health watchdog
+    // classifies it, so the UI can tell "external quota exhausted, will
+    // resolve on its own" apart from "something is actually broken".
+    const platformErrors = {};
+    const platformStatusMap = JSON.parse(search.platform_status_json || '{}');
+    const failedPlatforms = platforms.filter((p) => ['FAILED', 'PARTIAL'].includes(platformStatusMap[p]));
+    if (failedPlatforms.length > 0) {
+      const failedQueries = await prisma.productResearchQuery.findMany({
+        where: { search_id: search.id, platform: { in: failedPlatforms }, status: 'FAILED' },
+        select: { platform: true, error: true, created_at: true },
+        orderBy: { created_at: 'desc' },
+      });
+      for (const p of failedPlatforms) {
+        const latest = failedQueries.find((q) => q.platform === p && q.error);
+        if (latest) platformErrors[p] = { errorType: classifyErrorType({ message: latest.error }), message: latest.error };
+      }
+    }
+
     res.json({
       id: search.id,
       productName: search.product_name,
@@ -168,7 +192,8 @@ router.get(
       language: search.language,
       platforms,
       status: search.status,
-      platformStatus: JSON.parse(search.platform_status_json || '{}'),
+      platformStatus: platformStatusMap,
+      platformErrors,
       aiProfile: search.ai_profile_json ? JSON.parse(search.ai_profile_json) : null,
       error: search.error,
       resultCount,
