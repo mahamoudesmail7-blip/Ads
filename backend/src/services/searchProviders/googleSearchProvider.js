@@ -90,6 +90,12 @@ function buildGoogleError(res, data, context) {
   err.googleErrorStatus = g.status || null; // e.g. "INVALID_ARGUMENT" | "PERMISSION_DENIED" | "RESOURCE_EXHAUSTED"
   err.googleErrorReason = reason; // e.g. "badRequest" | "keyInvalid" | "dailyLimitExceeded" | "quotaExceeded"
   err.googleErrorMessage = message;
+  // Full raw error body (never contains the API key/cx — those are
+  // request params, not response fields) — kept only for diagnostics so a
+  // vague top-level message like "Request contains an invalid argument"
+  // can still be root-caused from Google's own field_violations/details,
+  // without ever guessing.
+  err.googleErrorRaw = g;
   return err;
 }
 
@@ -247,6 +253,7 @@ export async function testConnection(query = 'test') {
       googleErrorStatus: err.googleErrorStatus ?? null,
       googleErrorReason: err.googleErrorReason ?? null,
       googleErrorMessage: err.googleErrorMessage || err.message,
+      googleErrorRaw: err.googleErrorRaw ?? null,
       latencyMs: null,
       resultCount: null,
       searchInformation: null,

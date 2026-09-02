@@ -139,6 +139,7 @@ router.get(
           googleErrorStatus: err.googleErrorStatus ?? null,
           googleErrorReason: err.googleErrorReason ?? null,
           googleErrorMessage: err.googleErrorMessage || err.message,
+          googleErrorRaw: err.googleErrorRaw ?? null,
           errorType: googleSearchProvider.classifyGoogleErrorType(err),
         };
       }
@@ -171,6 +172,7 @@ router.get(
         googleErrorStatus: textCheck.googleErrorStatus,
         googleErrorReason: textCheck.googleErrorReason,
         googleErrorMessage: textCheck.googleErrorMessage,
+        googleErrorRaw: textCheck.googleErrorRaw ?? null,
         errorType: textCheck.ok ? null : googleSearchProvider.classifyGoogleErrorType({ googleErrorReason: textCheck.googleErrorReason, googleErrorStatus: textCheck.googleErrorStatus, googleErrorMessage: textCheck.googleErrorMessage, httpStatus: textCheck.httpStatus }),
         latencyMs: textCheck.latencyMs,
         resultCount: textCheck.resultCount,
