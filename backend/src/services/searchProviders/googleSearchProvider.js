@@ -46,7 +46,17 @@ export function classifyGoogleErrorType(err) {
   if (/billing|payment/.test(message)) return 'BILLING_REQUIRED';
   if (/image search|searchtype/.test(message)) return 'IMAGE_SEARCH_DISABLED';
   if (/not configured to search|siterestrict|refinelabels/.test(message)) return 'SEARCH_SCOPE_LIMITED';
-  if (reason === 'badrequest' || status === 'INVALID_ARGUMENT') return 'INVALID_REQUEST';
+  // "Request contains an invalid argument." is Google's real, generic
+  // wording for this class of failure (confirmed live against this
+  // project's own key/cx) — it carries no field name, but reason
+  // "badRequest"/status INVALID_ARGUMENT (when available) or this exact
+  // message text (when only the stored string survives, e.g. reclassified
+  // from ExperimentalCreativeQuery.error) both mean the request itself was
+  // rejected before Google even tried to search — most commonly a
+  // malformed `cx`. Kept as INVALID_REQUEST (not asserted as INVALID_CX)
+  // since the generic message alone can't distinguish that from a
+  // malformed `key` with the same symptom.
+  if (reason === 'badrequest' || status === 'INVALID_ARGUMENT' || /request contains an invalid argument/.test(message)) return 'INVALID_REQUEST';
   return 'GOOGLE_API_ERROR';
 }
 
