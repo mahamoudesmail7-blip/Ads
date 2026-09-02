@@ -31,6 +31,7 @@ import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
 import productResearchRoutes from './routes/productResearch.js';
+import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -72,6 +73,7 @@ app.use('/api/lost-orders', lostOrdersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
+app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
 app.use('/api/product-research', productResearchRoutes);
 
 // Serve the existing static frontend (order-monitor/) from this same

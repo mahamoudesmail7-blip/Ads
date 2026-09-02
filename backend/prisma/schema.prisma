@@ -48,6 +48,7 @@ model User {
   ai_audit_log_entries AiAuditLog[]
   product_research_searches     ProductResearchSearch[]
   product_research_competitors  ProductResearchCompetitor[]
+  experimental_creative_searches ExperimentalCreativeSearch[] // Internal Creative Discovery experimental section — fully separate tables from ProductResearch*, see model below
 
   @@map("users")
 }
@@ -788,4 +789,96 @@ model ProductResearchInsight {
   generated_at  DateTime @default(now())
 
   @@map("product_research_ai_insights")
+}
+
+// ============================================================
+// Internal Creative Discovery — EXPERIMENTAL, fully separate tables.
+// Deliberately NOT reusing ProductResearchSearch/Query/Result: the ask was
+// explicit isolation ("must be isolated so I can test... safely", "do not
+// change current database behavior unless strictly required") — a shared
+// table would mean any experimental-path bug or query mistake could leak
+// into the real Product Research history/results, which the isolation
+// requirement was specifically meant to prevent. Shape mirrors
+// ProductResearchSearch/Query/Result closely on purpose so the same
+// normalize/dedup/query-generation/ranking service functions can be reused
+// as-is (see experimentalCreativeDiscovery.js) without needing any change
+// to those shared services.
+// ============================================================
+
+model ExperimentalCreativeSearch {
+  id              Int       @id @default(autoincrement())
+  user_id         Int
+  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  source_mode     String    @default("INTERNAL_EXPERIMENTAL") // the explicit marker requested — never confused with a real ProductResearchSearch row (they're not even in the same table)
+  product_name    String
+  product_image   String?
+  country         String    @default("EG")
+  language        String    @default("AR_EN")
+  platforms_json  String
+  mode            String    @default("quick") // quick|deep
+  status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED|CANCELLED
+  platform_status_json String?
+  ai_profile_json String?
+  input_json      String?
+  error           String?
+  started_at      DateTime?
+  completed_at    DateTime?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  queries         ExperimentalCreativeQuery[]
+  results         ExperimentalCreativeResult[]
+
+  @@index([user_id])
+  @@index([status])
+  @@map("experimental_creative_searches")
+}
+
+model ExperimentalCreativeQuery {
+  id           Int      @id @default(autoincrement())
+  search_id    Int
+  search       ExperimentalCreativeSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  platform     String
+  query        String
+  query_type   String
+  provider     String // the REAL provider that actually ran this (e.g. serpapi, youtube_data_api, apify_meta_ad_library) — never a fabricated "internal" label; see the report on why
+  result_count Int      @default(0)
+  status       String   @default("PENDING")
+  error        String?
+  created_at   DateTime @default(now())
+
+  @@index([search_id])
+  @@map("experimental_creative_queries")
+}
+
+model ExperimentalCreativeResult {
+  id                Int       @id @default(autoincrement())
+  search_id         Int
+  search            ExperimentalCreativeSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  platform          String
+  content_type      String    @default("Unknown")
+  canonical_url     String
+  original_url      String
+  title             String?
+  snippet           String?
+  account_name      String?
+  account_url       String?
+  thumbnail         String?
+  published_at      DateTime?
+  metrics_json      String?
+  provider          String
+  classification    String?
+  match_score       Int?
+  confidence_score  Int?
+  ai_reason         String?
+  ignored           Boolean   @default(false)
+  raw_metadata_json String?
+  discovered_by_queries_json String?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  @@unique([search_id, canonical_url])
+  @@index([search_id])
+  @@index([platform])
+  @@map("experimental_creative_results")
 }

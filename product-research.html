@@ -18,6 +18,18 @@
         </div>
       </div>
 
+      <!-- Top-level section toggle: the existing Product Research system
+           (default, unchanged) vs. the new isolated experimental section.
+           Both live inside this same page per the request; only one shows
+           at a time. Switching tabs never touches the other tab's state —
+           see js/product-research-experimental.js's isolation note. -->
+      <div class="toolbar" style="margin-bottom:18px;">
+        <button class="btn secondary pr-section-tab active" data-section="current" id="prSectionTabCurrent">البحث الحالي</button>
+        <button class="btn secondary pr-section-tab" data-section="experimental" id="prSectionTabExperimental" style="display:none;">منصة البحث الجديدة — تجريبي</button>
+      </div>
+
+      <div id="prCurrentSection">
+
       <!-- Provider Status -->
       <div class="card" id="prProviderStatusCard" style="margin-bottom:22px;">
         <div class="section-title" style="margin-top:0;">⚙️ حالة مصادر البحث</div>
@@ -220,6 +232,299 @@
         </table>
       </div>
       <div id="prHistoryEmpty" class="empty-state" style="display:none; margin-bottom:22px;">مفيش عمليات بحث سابقة.</div>
+
+      </div><!-- /prCurrentSection -->
+
+      <!-- ============================================================
+           EXPERIMENTAL: Internal Creative Discovery Platform
+           Fully isolated section — separate DOM ids, separate JS state
+           (js/product-research-experimental.js), separate backend
+           endpoints (/api/product-research/experimental/*), separate DB
+           tables. Hidden by default (prSectionTabCurrent is active on
+           load); the CSS below is scoped to #prExperimentalSection only
+           and never touches css/style.css or any element outside this
+           block.
+           ============================================================ -->
+      <div id="prExperimentalSection" style="display:none;">
+        <style>
+          /* Scoped to #prExperimentalSection — a self-contained visual
+             layer for this one experimental subsection, per the request
+             ("only style the new experimental subsection", "do not
+             redesign the entire application"). Uses its own CSS custom
+             properties so it never leaks into or is affected by the rest
+             of the app's theme tokens. */
+          #prExperimentalSection {
+            --icd-bg: #0b0e1a;
+            --icd-panel: #12162a;
+            --icd-panel-2: #161b33;
+            --icd-border: #2a2f4a;
+            --icd-text: #e8eaf6;
+            --icd-faint: #8b90b3;
+            --icd-purple: #8b5cf6;
+            --icd-blue: #3b82f6;
+            --icd-cyan: #22d3ee;
+            --icd-green: #34d399;
+            --icd-yellow: #fbbf24;
+            --icd-red: #f87171;
+            background: radial-gradient(1200px 500px at 15% -10%, rgba(139,92,246,0.18), transparent 60%),
+                        radial-gradient(1000px 500px at 100% 0%, rgba(34,211,238,0.12), transparent 55%),
+                        var(--icd-bg);
+            border: 1px solid var(--icd-border);
+            border-radius: 18px;
+            padding: 22px;
+            color: var(--icd-text);
+            direction: rtl;
+          }
+          #prExperimentalSection .icd-header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+          #prExperimentalSection .icd-title { font-size: 20px; font-weight: 800; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-purple)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+          #prExperimentalSection .icd-subtitle { font-size: 12.5px; color: var(--icd-faint); margin-top: 2px; }
+          #prExperimentalSection .icd-badge { display: inline-block; font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--icd-purple); color: var(--icd-cyan); background: rgba(139,92,246,0.12); }
+          #prExperimentalSection .icd-panel { background: var(--icd-panel); border: 1px solid var(--icd-border); border-radius: 14px; padding: 16px; margin-bottom: 18px; }
+          #prExperimentalSection .icd-panel-title { font-size: 13.5px; font-weight: 700; margin-bottom: 12px; color: var(--icd-text); }
+          #prExperimentalSection label { font-size: 12px; color: var(--icd-faint); display: block; margin-bottom: 5px; }
+          #prExperimentalSection input[type="text"], #prExperimentalSection textarea, #prExperimentalSection select {
+            width: 100%; background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 9px; color: var(--icd-text);
+            padding: 8px 10px; font-size: 13px; font-family: inherit;
+          }
+          #prExperimentalSection input[type="text"]:focus, #prExperimentalSection textarea:focus, #prExperimentalSection select:focus {
+            outline: none; border-color: var(--icd-purple); box-shadow: 0 0 0 3px rgba(139,92,246,0.18);
+          }
+          #prExperimentalSection .icd-field { margin-bottom: 12px; }
+          #prExperimentalSection .icd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+          #prExperimentalSection .icd-chip { background: rgba(139,92,246,0.15); border: 1px solid var(--icd-purple); color: var(--icd-text); font-size: 11.5px; padding: 3px 8px; border-radius: 999px; display: flex; align-items: center; gap: 6px; }
+          #prExperimentalSection .icd-chip button { background: none; border: none; color: var(--icd-faint); cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
+          #prExperimentalSection .icd-btn { background: linear-gradient(90deg, var(--icd-purple), var(--icd-blue)); border: none; color: #fff; font-weight: 700; font-size: 13px; padding: 9px 18px; border-radius: 10px; cursor: pointer; box-shadow: 0 0 20px rgba(139,92,246,0.35); }
+          #prExperimentalSection .icd-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+          #prExperimentalSection .icd-btn.secondary { background: var(--icd-panel-2); border: 1px solid var(--icd-border); box-shadow: none; color: var(--icd-text); font-weight: 600; padding: 7px 14px; font-size: 12.5px; }
+          #prExperimentalSection .icd-btn.small { padding: 5px 11px; font-size: 11.5px; }
+          #prExperimentalSection .icd-row { display: flex; gap: 10px; flex-wrap: wrap; }
+          #prExperimentalSection .icd-row > * { flex: 1; min-width: 140px; }
+          #prExperimentalSection .icd-toggle-group { display: flex; gap: 8px; }
+          #prExperimentalSection .icd-toggle { flex: 1; text-align: center; padding: 8px; border-radius: 9px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); cursor: pointer; font-size: 12.5px; font-weight: 600; }
+          #prExperimentalSection .icd-toggle.active { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.1); box-shadow: 0 0 14px rgba(34,211,238,0.2); }
+          #prExperimentalSection .icd-product-card { display: flex; gap: 16px; align-items: center; }
+          #prExperimentalSection .icd-product-thumb { width: 64px; height: 64px; border-radius: 12px; object-fit: cover; border: 1px solid var(--icd-border); flex-shrink: 0; }
+          #prExperimentalSection .icd-product-thumb-placeholder { width: 64px; height: 64px; border-radius: 12px; border: 1px dashed var(--icd-border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 22px; }
+          #prExperimentalSection .icd-product-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--icd-faint); margin-top: 6px; }
+          #prExperimentalSection .icd-product-meta b { color: var(--icd-text); }
+          #prExperimentalSection .icd-platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+          #prExperimentalSection .icd-platform-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; padding: 13px; position: relative; overflow: hidden; }
+          #prExperimentalSection .icd-platform-card.status-COMPLETE, #prExperimentalSection .icd-platform-card.status-COMPLETED { border-color: var(--icd-green); box-shadow: 0 0 16px rgba(52,211,153,0.12); }
+          #prExperimentalSection .icd-platform-card.status-PARTIAL { border-color: var(--icd-yellow); }
+          #prExperimentalSection .icd-platform-card.status-FAILED { border-color: var(--icd-red); }
+          #prExperimentalSection .icd-platform-name { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+          #prExperimentalSection .icd-platform-provider { font-size: 10.5px; color: var(--icd-faint); margin-bottom: 8px; }
+          #prExperimentalSection .icd-platform-count { font-size: 22px; font-weight: 800; color: var(--icd-cyan); line-height: 1.1; }
+          #prExperimentalSection .icd-platform-count-label { font-size: 10.5px; color: var(--icd-faint); }
+          #prExperimentalSection .icd-platform-status { font-size: 11px; margin-top: 8px; padding: 3px 9px; border-radius: 999px; display: inline-block; }
+          #prExperimentalSection .icd-platform-status.st-pending { background: rgba(139,144,179,0.15); color: var(--icd-faint); }
+          #prExperimentalSection .icd-platform-status.st-running { background: rgba(59,130,246,0.15); color: var(--icd-blue); }
+          #prExperimentalSection .icd-platform-status.st-complete { background: rgba(52,211,153,0.15); color: var(--icd-green); }
+          #prExperimentalSection .icd-platform-status.st-partial { background: rgba(251,191,36,0.15); color: var(--icd-yellow); }
+          #prExperimentalSection .icd-platform-status.st-failed { background: rgba(248,113,113,0.15); color: var(--icd-red); }
+          #prExperimentalSection .icd-platform-error { font-size: 10.5px; color: var(--icd-red); margin-top: 6px; }
+          #prExperimentalSection .icd-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+          #prExperimentalSection .icd-summary-tile { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 10px; padding: 10px 12px; text-align: center; }
+          #prExperimentalSection .icd-summary-tile .n { font-size: 19px; font-weight: 800; color: var(--icd-text); }
+          #prExperimentalSection .icd-summary-tile .l { font-size: 10.5px; color: var(--icd-faint); margin-top: 2px; }
+          #prExperimentalSection .icd-result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+          #prExperimentalSection .icd-result-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .15s, box-shadow .15s; }
+          #prExperimentalSection .icd-result-card:hover { border-color: var(--icd-purple); box-shadow: 0 0 18px rgba(139,92,246,0.18); }
+          #prExperimentalSection .icd-result-thumb { width: 100%; height: 130px; object-fit: cover; background: #0d1024; }
+          #prExperimentalSection .icd-result-thumb-placeholder { width: 100%; height: 130px; background: #0d1024; display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 26px; }
+          #prExperimentalSection .icd-result-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+          #prExperimentalSection .icd-result-platform { font-size: 10px; color: var(--icd-cyan); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+          #prExperimentalSection .icd-result-title { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
+          #prExperimentalSection .icd-result-meta { font-size: 10.5px; color: var(--icd-faint); }
+          #prExperimentalSection .icd-result-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+          #prExperimentalSection .icd-mini-badge { font-size: 10px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--icd-border); color: var(--icd-faint); }
+          #prExperimentalSection .icd-mini-badge.green { border-color: var(--icd-green); color: var(--icd-green); }
+          #prExperimentalSection .icd-mini-badge.yellow { border-color: var(--icd-yellow); color: var(--icd-yellow); }
+          #prExperimentalSection .icd-mini-badge.cyan { border-color: var(--icd-cyan); color: var(--icd-cyan); }
+          #prExperimentalSection .icd-result-actions { display: flex; gap: 6px; margin-top: auto; padding-top: 6px; }
+          #prExperimentalSection .icd-empty { text-align: center; padding: 40px 20px; color: var(--icd-faint); font-size: 13px; }
+          #prExperimentalSection .icd-faint { color: var(--icd-faint); font-size: 12px; }
+          #prExperimentalSection a { color: var(--icd-cyan); }
+          #prExperimentalSection .icd-progress-text { font-size: 13px; color: var(--icd-text); margin-bottom: 8px; }
+        </style>
+
+        <div class="icd-header">
+          <div>
+            <div class="icd-title">منصة البحث الجديدة</div>
+            <div class="icd-subtitle">بحث متعدد المنصات — نسخة تجريبية</div>
+          </div>
+          <span class="icd-badge">EXPERIMENTAL</span>
+        </div>
+
+        <!-- Provider status (real, honest — never CONNECTED from key-presence alone) -->
+        <div class="icd-panel">
+          <div class="icd-panel-title">⚙️ حالة المزودين</div>
+          <div class="icd-row" id="icdProviderStatusList" style="flex-wrap:wrap;"></div>
+        </div>
+
+        <!-- Search input -->
+        <div class="icd-panel" id="icdInputPanel">
+          <div class="icd-panel-title">🧾 بيانات المنتج</div>
+          <div class="icd-field">
+            <label>اسم المنتج الرئيسي *</label>
+            <input type="text" id="icdProductName" placeholder="مثال: جهاز مساج فروة الرأس الكهربائي" />
+          </div>
+          <div class="icd-row">
+            <div class="icd-field">
+              <label>أسماء بديلة</label>
+              <div class="icd-chips" id="icdChipsAlt"></div>
+              <div class="icd-row" style="gap:6px;">
+                <input type="text" id="icdInputAlt" placeholder="اكتب واضغط Enter" />
+                <button type="button" class="icd-btn secondary small" data-icd-add-chip="alt">+ إضافة</button>
+              </div>
+            </div>
+            <div class="icd-field">
+              <label>أسماء عربي</label>
+              <div class="icd-chips" id="icdChipsAr"></div>
+              <div class="icd-row" style="gap:6px;">
+                <input type="text" id="icdInputAr" placeholder="اكتب واضغط Enter" />
+                <button type="button" class="icd-btn secondary small" data-icd-add-chip="ar">+ إضافة</button>
+              </div>
+            </div>
+            <div class="icd-field">
+              <label>أسماء إنجليزي</label>
+              <div class="icd-chips" id="icdChipsEn"></div>
+              <div class="icd-row" style="gap:6px;">
+                <input type="text" id="icdInputEn" placeholder="اكتب واضغط Enter" />
+                <button type="button" class="icd-btn secondary small" data-icd-add-chip="en">+ إضافة</button>
+              </div>
+            </div>
+            <div class="icd-field">
+              <label>كلمات مفتاحية</label>
+              <div class="icd-chips" id="icdChipsKw"></div>
+              <div class="icd-row" style="gap:6px;">
+                <input type="text" id="icdInputKw" placeholder="اكتب واضغط Enter" />
+                <button type="button" class="icd-btn secondary small" data-icd-add-chip="kw">+ إضافة</button>
+              </div>
+            </div>
+          </div>
+          <div class="icd-field">
+            <label>وصف المنتج (اختياري)</label>
+            <textarea id="icdDescription" rows="2"></textarea>
+          </div>
+          <div class="icd-field">
+            <label>صورة المنتج (اختياري — تُستخدم لاحقًا في المطابقة البصرية)</label>
+            <div class="icd-row" style="align-items:center;">
+              <button type="button" class="icd-btn secondary small" id="icdBtnPickImage">اختر صورة</button>
+              <span class="icd-faint" id="icdImageName"></span>
+            </div>
+            <img id="icdImagePreview" style="display:none; max-width:120px; border-radius:10px; margin-top:8px; border:1px solid var(--icd-border);" />
+            <input type="file" id="icdImageInput" accept="image/jpeg,image/png,image/webp" style="display:none;" />
+          </div>
+
+          <div class="icd-row">
+            <div class="icd-field">
+              <label>الدولة</label>
+              <select id="icdCountry">
+                <option value="EG">مصر</option>
+                <option value="SA">السعودية</option>
+                <option value="AE">الإمارات</option>
+                <option value="KW">الكويت</option>
+              </select>
+            </div>
+            <div class="icd-field">
+              <label>الحد الأقصى لإعلانات Meta (لو متضمنة)</label>
+              <select id="icdAdLibraryRawLimit">
+                <option value="100" selected>100</option>
+                <option value="250">250</option>
+                <option value="500">500</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="icd-field">
+            <label>المنصات</label>
+            <div class="icd-row" id="icdPlatformToggles" style="flex-wrap:wrap;">
+              <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="instagram" checked /> Instagram</label>
+              <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="facebook" checked /> Facebook</label>
+              <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="tiktok" checked /> TikTok</label>
+              <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="youtube" checked /> YouTube</label>
+              <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="META_AD_LIBRARY" checked /> Meta Ads Library</label>
+            </div>
+          </div>
+
+          <div class="icd-field">
+            <label>نوع البحث</label>
+            <div class="icd-toggle-group">
+              <div class="icd-toggle active" data-icd-mode="quick" id="icdModeQuick">⚡ بحث سريع</div>
+              <div class="icd-toggle" data-icd-mode="deep" id="icdModeDeep">🔬 بحث عميق</div>
+            </div>
+          </div>
+
+          <button class="icd-btn" id="icdBtnStartSearch" style="margin-top:10px;">🚀 ابدأ البحث التجريبي</button>
+        </div>
+
+        <!-- Top product card + progress -->
+        <div class="icd-panel" id="icdProductCard" style="display:none;">
+          <div class="icd-product-card">
+            <img class="icd-product-thumb" id="icdProductThumb" style="display:none;" />
+            <div class="icd-product-thumb-placeholder" id="icdProductThumbPlaceholder">📦</div>
+            <div style="flex:1;">
+              <div style="font-size:15px; font-weight:800;" id="icdProductName2"></div>
+              <div class="icd-product-meta" id="icdProductMeta"></div>
+            </div>
+            <button class="icd-btn secondary small" id="icdBtnNewSearch">🔄 بحث جديد</button>
+            <button class="icd-btn secondary small" id="icdBtnCancelSearch" style="display:none;">✖️ إلغاء</button>
+          </div>
+          <div class="icd-progress-text" id="icdProgressText" style="margin-top:14px;"></div>
+        </div>
+
+        <!-- Platform cards -->
+        <div class="icd-panel" id="icdPlatformPanel" style="display:none;">
+          <div class="icd-panel-title">📡 المنصات</div>
+          <div class="icd-platform-grid" id="icdPlatformGrid"></div>
+        </div>
+
+        <!-- Result summary -->
+        <div class="icd-panel" id="icdSummaryPanel" style="display:none;">
+          <div class="icd-panel-title">📊 ملخص النتائج</div>
+          <div class="icd-summary-grid" id="icdSummaryGrid"></div>
+        </div>
+
+        <!-- Filters -->
+        <div class="icd-panel" id="icdFiltersPanel" style="display:none;">
+          <div class="icd-row" style="flex-wrap:wrap;">
+            <select id="icdFilterPlatform">
+              <option value="">كل المنصات</option>
+              <option value="instagram">Instagram</option>
+              <option value="facebook">Facebook</option>
+              <option value="tiktok">TikTok</option>
+              <option value="META_AD_LIBRARY">Meta Ads Library</option>
+              <option value="youtube">YouTube</option>
+            </select>
+            <select id="icdFilterClassification">
+              <option value="">كل التصنيفات</option>
+              <option value="EXACT_MATCH">تطابق تام</option>
+              <option value="VERY_SIMILAR">مشابه جدًا</option>
+              <option value="SIMILAR">مشابه</option>
+              <option value="UNCLASSIFIED">غير مصنف</option>
+            </select>
+            <select id="icdFilterActive">
+              <option value="">كل النتائج</option>
+              <option value="active">نشط بس</option>
+            </select>
+            <select id="icdSortBy">
+              <option value="match">أفضل تطابق</option>
+              <option value="newest">الأحدث</option>
+              <option value="oldest">الأقدم</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Result grid -->
+        <div class="icd-panel" id="icdResultsPanel" style="display:none;">
+          <div class="icd-panel-title">🖼️ النتائج</div>
+          <div id="icdResultsRangeText" class="icd-faint" style="margin-bottom:10px;"></div>
+          <div class="icd-result-grid" id="icdResultGrid"></div>
+          <div class="icd-empty" id="icdResultsEmpty" style="display:none;">لم يتم العثور على نتائج بعد</div>
+          <div class="icd-row" style="margin-top:14px; justify-content:center;" id="icdResultsPagination"></div>
+        </div>
+      </div><!-- /prExperimentalSection -->
     </div>
   </div>
 
@@ -229,5 +534,6 @@
   </div>
 
   <script type="module" src="js/product-research.js"></script>
+  <script type="module" src="js/product-research-experimental.js"></script>
 </body>
 </html>
