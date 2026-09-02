@@ -57,6 +57,15 @@ router.get(
     const youtubeOk = youtubeSearchProvider.isConfigured();
     const igFbTiktokStatus = { provider: serpOk ? 'SerpApi (بحث نصي)' : (googleOk ? 'Google Custom Search (بحث نصي)' : null), status: serpOk || googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' };
     const metaAdLib = await metaAdLibraryProvider.getStatus();
+    // Real health, not "credentials are present" (Step 8): a cached
+    // (10min) but genuinely real Custom Search call — CONFIGURED alone
+    // never reports CONNECTED here anymore. This is scoped to the
+    // dedicated 'google' platform entry only; Instagram/Facebook/TikTok/
+    // YouTube's own status above still uses the pre-existing
+    // isConfigured()-based display for their Google FALLBACK path,
+        // unchanged — out of this task's explicit Google-only scope.
+    const googleHealth = await googleSearchProvider.getHealthStatus();
+    const googleStatusMap = { HEALTHY: 'CONNECTED', ERROR: 'ERROR', QUOTA_EXHAUSTED: 'ERROR', NOT_CONFIGURED: 'NOT_CONFIGURED' };
 
     res.json({
       enabled: true,
@@ -66,7 +75,14 @@ router.get(
         { platform: 'tiktok', ...igFbTiktokStatus },
         { platform: 'youtube', provider: youtubeOk ? 'YouTube Data API' : (googleOk ? 'Google Custom Search (بحث نصي)' : null), status: youtubeOk || googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
         { platform: 'META_AD_LIBRARY', provider: metaAdLib.provider === 'apify_meta_ad_library' ? 'Apify' : (metaAdLib.provider ? `${metaAdLib.provider} — احتياطي` : null), status: metaAdLib.status },
-        { platform: 'google', provider: googleOk ? 'Google Custom Search' : null, status: googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
+        {
+          platform: 'google',
+          provider: googleOk ? 'Google Custom Search' : null,
+          status: googleStatusMap[googleHealth.status] || 'NOT_CONFIGURED',
+          detail: googleHealth.reasonLabelAr || null,
+          healthStatus: googleHealth.status, // NOT_CONFIGURED | HEALTHY | ERROR | QUOTA_EXHAUSTED — the honest, specific state; `status` above is only the coarse badge color
+          lastCheckedAt: googleHealth.lastCheckedAt,
+        },
       ],
     });
   })
@@ -91,6 +107,79 @@ router.get(
       // estimate of money (never invents a dollar figure).
       externalVisionCallsAvoided: local.localImageAnalyses + local.localCandidateComparisons,
       worker: getWorkerDiagnostics(), // live worker-thread state — added specifically to diagnose a real stuck-analysis incident with no other log access available
+    });
+  })
+);
+
+// Real, tiny, on-demand Google diagnostic (Steps 1/4/5) — runs one real
+// cheap text call and one real cheap image call directly against Google's
+// API and reports exactly what Google said, with zero secrets in the
+// response. Does not create an ExperimentalCreativeSearch row (this is a
+// connectivity probe, not a product search) and does not touch anything
+// outside googleSearchProvider.js.
+router.get(
+  '/diagnostics/google',
+  asyncRoute(async (req, res) => {
+    if (!isFeatureEnabled()) return res.status(404).json({ error: 'FEATURE_DISABLED' });
+    const query = (req.query.q && String(req.query.q).trim()) || 'BOSCH electric kettle';
+
+    const configured = googleSearchProvider.isConfigured();
+    const textCheck = configured ? await googleSearchProvider.testConnection(query) : null;
+
+    let imageResult = { ok: false, error: 'SKIPPED_NOT_CONFIGURED', results: [] };
+    if (configured) {
+      try {
+        const images = await googleSearchProvider.searchImages({ query, resultsLimit: 3 });
+        imageResult = { ok: true, count: images.length, results: images.map((i) => ({ imageUrl: i.imageUrl, thumbnailUrl: i.thumbnailUrl, contextUrl: i.contextUrl, title: i.title, displayLink: i.displayLink, mimeType: i.mimeType, width: i.width, height: i.height })) };
+      } catch (err) {
+        imageResult = {
+          ok: false,
+          httpStatus: err.httpStatus ?? null,
+          googleErrorCode: err.googleErrorCode ?? null,
+          googleErrorStatus: err.googleErrorStatus ?? null,
+          googleErrorReason: err.googleErrorReason ?? null,
+          googleErrorMessage: err.googleErrorMessage || err.message,
+          errorType: googleSearchProvider.classifyGoogleErrorType(err),
+        };
+      }
+    }
+
+    // Real evidence of search scope (Step 3): look at the real displayLink
+    // values Google actually returned for an unrestricted, non-site-
+    // filtered query — if every result comes back on amazon.com, the
+    // engine is scoped to that one site; if displayLink varies across
+    // domains, the engine is searching the open web. Never asserted
+    // without this real check.
+    let scopeEvidence = null;
+    if (configured && textCheck?.ok) {
+      try {
+        const webItems = await googleSearchProvider.search({ query, platform: '__diagnostic_unfiltered__', resultsLimit: 10 });
+        const domains = [...new Set(webItems.map((i) => { try { return new URL(i.url).hostname; } catch { return null; } }).filter(Boolean))];
+        scopeEvidence = { sampleResultCount: webItems.length, uniqueDomains: domains, looksSiteRestricted: domains.length > 0 && domains.every((d) => d.includes('amazon.')), sampleResults: webItems.slice(0, 5).map((i) => ({ url: i.url, title: i.title, snippet: i.snippet, displayLink: (() => { try { return new URL(i.url).hostname; } catch { return null; } })() })) };
+      } catch (err) {
+        scopeEvidence = { error: err.message };
+      }
+    }
+
+    res.json({
+      configured,
+      query,
+      textSearch: textCheck ? {
+        ok: textCheck.ok,
+        httpStatus: textCheck.httpStatus,
+        googleErrorCode: textCheck.googleErrorCode,
+        googleErrorStatus: textCheck.googleErrorStatus,
+        googleErrorReason: textCheck.googleErrorReason,
+        googleErrorMessage: textCheck.googleErrorMessage,
+        errorType: textCheck.ok ? null : googleSearchProvider.classifyGoogleErrorType({ googleErrorReason: textCheck.googleErrorReason, googleErrorStatus: textCheck.googleErrorStatus, googleErrorMessage: textCheck.googleErrorMessage, httpStatus: textCheck.httpStatus }),
+        latencyMs: textCheck.latencyMs,
+        resultCount: textCheck.resultCount,
+        searchInformation: textCheck.searchInformation,
+        cxAccepted: textCheck.ok, // reaching ok:true means Google accepted both the key and cx
+        apiKeyAuthenticated: textCheck.ok || !['AUTH_FAILED', 'API_KEY_RESTRICTED'].includes(googleSearchProvider.classifyGoogleErrorType({ googleErrorReason: textCheck.googleErrorReason, googleErrorStatus: textCheck.googleErrorStatus, googleErrorMessage: textCheck.googleErrorMessage })),
+      } : null,
+      imageSearch: imageResult,
+      scopeEvidence,
     });
   })
 );
@@ -178,7 +267,17 @@ router.get(
     const platformErrors = {};
     for (const p of failedPlatforms) {
       const latest = queries.filter((q) => q.platform === p && q.status === 'FAILED' && q.error).sort((a, b) => b.id - a.id)[0];
-      if (latest) platformErrors[p] = { errorType: classifyErrorType({ message: latest.error }), message: latest.error };
+      if (!latest) continue;
+      // Google gets its own real, specific classifier (Step 7) — the
+      // generic one has no way to know Google's real error vocabulary and
+      // was exactly why the frontend showed "خطأ غير معروف" for a real,
+      // identifiable Google failure.
+      if (p === 'google') {
+        const errorType = googleSearchProvider.classifyGoogleErrorType({ message: latest.error });
+        platformErrors[p] = { errorType, message: latest.error, messageAr: googleSearchProvider.googleErrorLabelAr(errorType) };
+      } else {
+        platformErrors[p] = { errorType: classifyErrorType({ message: latest.error }), message: latest.error };
+      }
     }
 
     const unclassifiedCount = rows.filter((r) => !r.classification || r.classification === 'UNCLASSIFIED').length;

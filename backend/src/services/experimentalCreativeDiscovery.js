@@ -85,6 +85,46 @@ function normalizeGoogleResult(raw, query) {
 }
 
 /**
+ * Real Google Image Search results (searchType=image), normalized into
+ * the same result shape as every other platform so they show up as real,
+ * viewable result cards (thumbnail = the real image itself) — never
+ * silently collected-but-invisible. `canonical_url` is the real source
+ * page the image was found on (Google's own contextLink), which is what a
+ * user actually wants to open; the raw image URL/dimensions/mime are kept
+ * in metrics_json as real, honest candidateMedia for whatever later
+ * consumes it (Step 6) — this task performs no matching itself, only
+ * collects the real data cleanly.
+ */
+function normalizeGoogleImageResult(raw, query) {
+  const sourceUrl = raw.contextUrl || raw.imageUrl;
+  let url;
+  try { url = new URL(sourceUrl); } catch { return null; }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+  url.hash = '';
+  return {
+    platform: 'google',
+    content_type: 'Image',
+    canonical_url: url.toString(),
+    original_url: sourceUrl,
+    title: raw.title || null,
+    snippet: null,
+    account_name: raw.displayLink || null,
+    account_url: null,
+    thumbnail: raw.imageUrl || raw.thumbnailUrl || null,
+    published_at: null,
+    metrics_json: JSON.stringify({
+      candidateMedia: {
+        imageUrl: raw.imageUrl, thumbnailUrl: raw.thumbnailUrl, contextUrl: raw.contextUrl,
+        mimeType: raw.mimeType, width: raw.width, height: raw.height, thumbnailWidth: raw.thumbnailWidth, thumbnailHeight: raw.thumbnailHeight,
+      },
+    }),
+    provider: 'google_custom_search_image',
+    raw_metadata_json: JSON.stringify(raw.raw || {}).slice(0, 20000),
+    discovered_by_queries_json: JSON.stringify([{ query, queryType: 'GOOGLE_IMAGE_SEARCH' }]),
+  };
+}
+
+/**
  * Stage B (Step 16) — bounded, deterministic, append-only enrichment from
  * real Google results. Never touches mainProductName/brand/model/
  * visualFingerprint (Step 17/19: "IMAGE WINS" — the image-derived core
@@ -231,9 +271,40 @@ export async function runExperimentalSearchPipeline(searchId) {
           gFailure = true;
         }
       }
-      platformStatus.google = googleQueries.length === 0 ? 'NOT_CONFIGURED' : gSuccess ? (gFailure ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
+      // --- Google Image Search (Steps 5/6): real image results, collected
+      // and normalized as their own real, viewable result cards — never
+      // fed into any visual-matching logic here (that pipeline is
+      // untouched by this task). Runs once, on the primary query only, to
+      // keep this a genuinely light addition rather than doubling every
+      // tier's request volume. ---
+      let imgSuccess = false, imgFailure = false, imgCount = 0;
+      const primaryQuery = googleQueries[0];
+      if (primaryQuery && !isCancelled(searchId)) {
+        try {
+          const imageItems = await googleSearchProvider.searchImages({ query: primaryQuery.query, resultsLimit: 10 });
+          const normalizedImages = imageItems.map((raw) => normalizeGoogleImageResult(raw, primaryQuery.query)).filter(Boolean);
+          allNormalized.push(...normalizedImages);
+          imgCount = normalizedImages.length;
+          await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: primaryQuery.query, query_type: 'GOOGLE_IMAGE_SEARCH', provider: 'google_custom_search_image', status: 'COMPLETE', result_count: imgCount } });
+          imgSuccess = true;
+        } catch (err) {
+          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'google', query: primaryQuery.query, queryType: 'GOOGLE_IMAGE_SEARCH', errorType: err.name || 'Error' });
+          await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: primaryQuery.query, query_type: 'GOOGLE_IMAGE_SEARCH', provider: 'google_custom_search_image', status: 'FAILED', error: err.message } });
+          imgFailure = true;
+        }
+      }
+
+      // Honest combined status (Step 9): COMPLETE only if both real
+      // request types that were attempted succeeded; PARTIAL when only
+      // one did (e.g. text search works but image search is disabled on
+      // this engine, or vice versa) — never silently reported as a full
+      // success when only half of it actually worked.
+      const anyAttempted = googleQueries.length > 0 || Boolean(primaryQuery);
+      const anySucceeded = gSuccess || imgSuccess;
+      const anyFailedHere = gFailure || imgFailure;
+      platformStatus.google = !anyAttempted ? 'NOT_CONFIGURED' : anySucceeded ? (anyFailedHere ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
-      logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'google', status: platformStatus.google, queriesExecuted: googleQueries.length, resultsCollected: googleRawItems.length, durationMs: Date.now() - gStartedAt });
+      logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'google', status: platformStatus.google, queriesExecuted: googleQueries.length + (primaryQuery ? 1 : 0), resultsCollected: googleRawItems.length + imgCount, textResults: googleRawItems.length, imageResults: imgCount, durationMs: Date.now() - gStartedAt });
 
       if (hasImage && googleRawItems.length > 0) {
         profile = enrichProfileFromGoogleResults(profile, googleRawItems);
