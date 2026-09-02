@@ -158,7 +158,15 @@ export async function runExperimentalSearchPipeline(searchId) {
       // (productVisionService.js) — this orchestrator never knows or
       // cares whether LOCAL_VISION alone or LOCAL_VISION+ANTHROPIC
       // actually produced the profile (Step 1).
+      //
+      // Transient DB breadcrumb (cleared right after, never left visible
+      // to a real user) — added specifically to diagnose a real, still-
+      // unresolved hang on the live Railway deploy with no other log
+      // access available: lets a poll of GET /search/:id during a stuck
+      // run distinguish "never reached this call" from "stuck inside it".
+      await updateSearch(searchId, { error: `[DEBUG] entering analyzeProductImage at ${new Date().toISOString()}` });
       const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = await analyzeProductImage(input.imageBase64, input.imageMediaType);
+      await updateSearch(searchId, { error: null });
       identity = generatedIdentity;
       referenceEmbedding = embedding;
       referencePerceptualHash = perceptualHash;

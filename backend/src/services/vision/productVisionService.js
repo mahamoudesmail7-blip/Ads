@@ -128,10 +128,20 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
   const buffer = Buffer.from(imageBase64, 'base64');
 
   // --- LOCAL_VISION, always attempted, cache-checked first ---
+  // Timeout added defensively (Step: diagnosing a real, still-unresolved
+  // hang with no direct Railway log access) — a `.catch()` alone only
+  // handles a REJECTED promise, never a query that simply never settles;
+  // this guarantees the cache check itself can never be the thing that
+  // hangs the whole search, regardless of why.
+  logger.info(`${LOG_PREFIX} CACHE_CHECK_START`, { imageHash: imageHash.slice(0, 12) });
   let localProfile, embedding, perceptualHash;
-  const cachedLocal = await prisma.experimentalImageIdentityCache.findUnique({
-    where: { image_hash_model_version_provider: { image_hash: imageHash, model_version: LOCAL_MODEL_VERSION, provider: 'LOCAL_VISION' } },
-  }).catch(() => null);
+  const cachedLocal = await Promise.race([
+    prisma.experimentalImageIdentityCache.findUnique({
+      where: { image_hash_model_version_provider: { image_hash: imageHash, model_version: LOCAL_MODEL_VERSION, provider: 'LOCAL_VISION' } },
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
+  ]).catch((err) => { logger.error(`${LOG_PREFIX} CACHE_CHECK_FAILED`, { message: err.message }); return null; });
+  logger.info(`${LOG_PREFIX} CACHE_CHECK_DONE`, { hit: Boolean(cachedLocal) });
 
   if (cachedLocal) {
     localVision.recordCacheHit();
