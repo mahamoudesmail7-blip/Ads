@@ -164,8 +164,9 @@ export async function runExperimentalSearchPipeline(searchId) {
       // unresolved hang on the live Railway deploy with no other log
       // access available: lets a poll of GET /search/:id during a stuck
       // run distinguish "never reached this call" from "stuck inside it".
-      await updateSearch(searchId, { error: `[DEBUG] entering analyzeProductImage at ${new Date().toISOString()}` });
-      const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = await analyzeProductImage(input.imageBase64, input.imageMediaType);
+      const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = await analyzeProductImage(input.imageBase64, input.imageMediaType, async (step) => {
+        await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
+      });
       await updateSearch(searchId, { error: null });
       identity = generatedIdentity;
       referenceEmbedding = embedding;

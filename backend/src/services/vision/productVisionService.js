@@ -123,9 +123,11 @@ function mergeAnthropicEnrichment(localProfile, anthropicProfile) {
  * an enhancement layer on top, and only when it's actually worth trying.
  * @returns {Promise<{profile: object, identityProvider: 'LOCAL_VISION'|'LOCAL_VISION+ANTHROPIC', imageHash: string, embedding: number[]|null, perceptualHash: string|null}>}
  */
-export async function analyzeProductImage(imageBase64, imageMediaType) {
+export async function analyzeProductImage(imageBase64, imageMediaType, onProgress = () => {}) {
+  await onProgress('start');
   const imageHash = hashImage(imageBase64);
   const buffer = Buffer.from(imageBase64, 'base64');
+  await onProgress('hashed');
 
   // --- LOCAL_VISION, always attempted, cache-checked first ---
   // Timeout added defensively (Step: diagnosing a real, still-unresolved
@@ -134,6 +136,7 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
   // this guarantees the cache check itself can never be the thing that
   // hangs the whole search, regardless of why.
   logger.info(`${LOG_PREFIX} CACHE_CHECK_START`, { imageHash: imageHash.slice(0, 12) });
+  await onProgress('cache_check_start');
   let localProfile, embedding, perceptualHash;
   const cachedLocal = await Promise.race([
     prisma.experimentalImageIdentityCache.findUnique({
@@ -142,6 +145,7 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
     new Promise((resolve) => setTimeout(() => resolve(null), 10000)),
   ]).catch((err) => { logger.error(`${LOG_PREFIX} CACHE_CHECK_FAILED`, { message: err.message }); return null; });
   logger.info(`${LOG_PREFIX} CACHE_CHECK_DONE`, { hit: Boolean(cachedLocal) });
+  await onProgress(`cache_check_done:hit=${Boolean(cachedLocal)}`);
 
   if (cachedLocal) {
     localVision.recordCacheHit();
@@ -151,7 +155,9 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
     perceptualHash = cachedData.perceptualHash;
     logger.info(`${LOG_PREFIX} LOCAL_CACHE_HIT`, { imageHash: imageHash.slice(0, 12) });
   } else {
+    await onProgress('calling_analyzeLocal');
     const local = await localVision.analyzeLocal(buffer);
+    await onProgress('analyzeLocal_returned');
     localProfile = localToProfileShape(local);
     embedding = local.embedding;
     perceptualHash = local.perceptualHash;
@@ -159,6 +165,7 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
       data: { image_hash: imageHash, model_version: LOCAL_MODEL_VERSION, provider: 'LOCAL_VISION', profile_json: JSON.stringify({ profile: localProfile, embedding, perceptualHash }) },
     }).catch((err) => logger.error(`${LOG_PREFIX} LOCAL_CACHE_WRITE_FAILED`, { message: err.message }));
     logger.info(`${LOG_PREFIX} LOCAL_IDENTITY_GENERATED`, { imageHash: imageHash.slice(0, 12), mainProductName: localProfile.mainProductName, overallConfidence: localProfile.overallConfidence, brand: localProfile.brand });
+    await onProgress('cache_written');
   }
 
   // --- ANTHROPIC_VISION, optional enhancement only ---
