@@ -26,9 +26,10 @@ import * as apifyProvider from '../services/searchProviders/apifyMetaAdLibraryPr
 import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibraryProvider.js';
 
 const router = Router();
-const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
+const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY', 'google'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const PLACEHOLDER_PRODUCT_NAME = '(تحليل تلقائي من الصورة)'; // real, honest placeholder — always overwritten with the real generated name before the search reaches a terminal status (Step 21); never left visible as a final name
 
 function isFeatureEnabled() {
   const raw = (process.env.INTERNAL_CREATIVE_DISCOVERY_ENABLED || '').trim().toLowerCase();
@@ -64,6 +65,7 @@ router.get(
         { platform: 'tiktok', ...igFbTiktokStatus },
         { platform: 'youtube', provider: youtubeOk ? 'YouTube Data API' : (googleOk ? 'Google Custom Search (بحث نصي)' : null), status: youtubeOk || googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
         { platform: 'META_AD_LIBRARY', provider: metaAdLib.provider === 'apify_meta_ad_library' ? 'Apify' : (metaAdLib.provider ? `${metaAdLib.provider} — احتياطي` : null), status: metaAdLib.status },
+        { platform: 'google', provider: googleOk ? 'Google Custom Search' : null, status: googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
       ],
     });
   })
@@ -76,8 +78,14 @@ router.post(
 
     const { productName, possibleNames, namesAr, namesEn, keywords, description, imageBase64, imageMediaType, country, language, platforms, mode, adLibraryRawLimit, adLibraryActiveOnly } = req.body || {};
 
-    if (!productName || typeof productName !== 'string' || !productName.trim()) {
-      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اسم المنتج مطلوب.' });
+    const hasTypedName = typeof productName === 'string' && productName.trim().length > 0;
+    const hasImage = Boolean(imageBase64);
+    // Image-only mode (Step 1): typing a product name is no longer
+    // required as long as a reference image was uploaded — Stage A
+    // (productIdentityVision) generates the name automatically. Only
+    // reject when NEITHER a name nor an image was given at all.
+    if (!hasTypedName && !hasImage) {
+      return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اكتب اسم المنتج أو ارفع صورة له.' });
     }
     const selectedPlatforms = Array.isArray(platforms) ? platforms.filter((p) => PLATFORMS.includes(p)) : [];
     if (selectedPlatforms.length === 0) {
@@ -85,7 +93,7 @@ router.post(
     }
 
     let storedImage = null;
-    if (imageBase64) {
+    if (hasImage) {
       if (!ALLOWED_IMAGE_TYPES.includes(imageMediaType)) {
         return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'نوع الصورة لازم يكون JPEG أو PNG أو WEBP.' });
       }
@@ -107,7 +115,8 @@ router.post(
       data: {
         user_id: req.user.id,
         source_mode: 'INTERNAL_EXPERIMENTAL',
-        product_name: productName.trim(),
+        search_mode: !hasTypedName && hasImage ? 'IMAGE_ONLY' : 'TEXT',
+        product_name: hasTypedName ? productName.trim() : PLACEHOLDER_PRODUCT_NAME,
         product_image: storedImage,
         country: country || 'EG',
         language: language || 'AR_EN',
@@ -154,8 +163,10 @@ router.get(
     res.json({
       id: search.id,
       sourceMode: search.source_mode,
+      searchMode: search.search_mode,
       productName: search.product_name,
       productImage: search.product_image,
+      identityProfile: search.identity_profile_json ? JSON.parse(search.identity_profile_json) : null,
       country: search.country,
       language: search.language,
       platforms,
@@ -201,7 +212,17 @@ router.get(
     }
     if (active === 'active') where.metrics_json = { contains: '"activeStatus":"ACTIVE"' };
 
-    const orderBy = sort === 'newest' ? [{ published_at: 'desc' }] : sort === 'oldest' ? [{ published_at: 'asc' }] : [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }];
+    // When a reference image exists, the visually-verified final_score
+    // (Steps 17/29 — 80% visual / 15% text / 5% distinctive attributes)
+    // is the honest default ranking signal for "same physical product
+    // first"; falls back to the text match_score for anything not
+    // visually verified (beyond the comparison cap) or when no image was
+    // ever uploaded for this search.
+    const searchHasImage = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId }, select: { product_image: true } }).then((s) => Boolean(s?.product_image));
+    const defaultOrderBy = searchHasImage
+      ? [{ final_score: { sort: 'desc', nulls: 'last' } }, { match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }]
+      : [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }];
+    const orderBy = sort === 'newest' ? [{ published_at: 'desc' }] : sort === 'oldest' ? [{ published_at: 'asc' }] : defaultOrderBy;
 
     const [total, rows] = await Promise.all([
       prisma.experimentalCreativeResult.count({ where }),
@@ -228,6 +249,8 @@ router.get(
         classification: r.classification || 'UNCLASSIFIED',
         matchScore: r.match_score,
         confidenceScore: r.confidence_score,
+        visualMatchScore: r.visual_match_score,
+        finalScore: r.final_score,
         aiReason: r.ai_reason,
         discoveredByQueries: r.discovered_by_queries_json ? JSON.parse(r.discovered_by_queries_json) : [],
       })),

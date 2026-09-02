@@ -12,7 +12,7 @@ import { api } from './api-client.js';
 
 const EXP_API = '/api/product-research/experimental';
 
-const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', META_AD_LIBRARY: 'Meta Ads Library' };
+const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', META_AD_LIBRARY: 'Meta Ads Library', google: 'Google' };
 const CLASS_LABEL = { EXACT_MATCH: 'تطابق تام', VERY_SIMILAR: 'مشابه جدًا', SIMILAR: 'مشابه', RELATED: 'ذو صلة', IRRELEVANT: 'غير مرتبط', UNCLASSIFIED: 'غير مصنف' };
 const CLASS_COLOR = { EXACT_MATCH: 'green', VERY_SIMILAR: 'green', SIMILAR: 'yellow', UNCLASSIFIED: '' };
 const STATUS_LABEL_AR = {
@@ -156,8 +156,12 @@ function setMode(mode) {
 
 // --- Start / cancel / new search ---
 async function startSearch() {
+  // Image-only mode (Step 1): a typed product name is no longer required
+  // as long as an image was uploaded — Stage A generates the name
+  // automatically server-side. Only block submit when NEITHER exists.
   const productName = document.getElementById('icdProductName').value.trim();
-  if (!productName) return UI.toast('اكتب اسم المنتج الأول', 'error');
+  const hasImage = Boolean(internalCreativeDiscovery.imageBase64);
+  if (!productName && !hasImage) return UI.toast('اكتب اسم المنتج أو ارفع صورة له', 'error');
   const platforms = [...document.querySelectorAll('#icdPlatformToggles input:checked')].map((i) => i.value);
   if (platforms.length === 0) return UI.toast('اختار منصة واحدة على الأقل', 'error');
 
@@ -258,6 +262,8 @@ function renderProgress(data) {
   let progressText = STATUS_LABEL_AR[data.status] || data.status;
   document.getElementById('icdProgressText').textContent = progressText;
 
+  renderIdentityProfile(data);
+
   const grid = document.getElementById('icdPlatformGrid');
   grid.innerHTML = data.platforms
     .map((p) => {
@@ -290,6 +296,48 @@ function renderProgress(data) {
       { l: 'مشابهة', n: s.similar },
       { l: 'غير مصنفة', n: s.unclassified },
     ].map((t) => `<div class="icd-summary-tile"><div class="n">${t.n}</div><div class="l">${escapeHtml(t.l)}</div></div>`).join('');
+  }
+}
+
+// --- Identity Profile (Steps 21-23) — analysis state + the compact
+// auto-generated profile display, real data only, never fabricated. ---
+function renderIdentityProfile(data) {
+  const panel = document.getElementById('icdIdentityPanel');
+  if (!data.productImage) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+
+  const stateEl = document.getElementById('icdAnalysisStateText');
+  const profile = data.identityProfile;
+  const cardEl = document.getElementById('icdIdentityProfileCard');
+
+  if (!profile) {
+    stateEl.textContent = ['ANALYZING'].includes(data.status) || data.status === 'PENDING' ? 'جاري التعرف على المنتج...' : 'لسه هيبدأ التعرف على المنتج...';
+    cardEl.style.display = 'none';
+    return;
+  }
+
+  if (!profile.mainProductName) {
+    stateEl.textContent = 'الصورة غير كافية للتعرف الدقيق على المنتج';
+    cardEl.style.display = 'none';
+    return;
+  }
+
+  // Confidence is Claude's own real, honest self-assessment — never invented here.
+  stateEl.textContent = profile.overallConfidence >= 60 ? 'تم التعرف على المنتج' : 'تم التعرف بشكل مبدئي';
+  cardEl.style.display = 'block';
+
+  document.getElementById('icdIdName').textContent = `${profile.mainProductName} (ثقة ${profile.mainProductNameConfidence}%)`;
+  document.getElementById('icdIdBrand').textContent = profile.brand ? `${profile.brand} (${profile.brandConfidence}%)` : 'غير ظاهر';
+  document.getElementById('icdIdModel').textContent = profile.model ? `${profile.model} (${profile.modelConfidence}%)` : 'غير ظاهر';
+  const altNames = [...new Set([...(profile.alternativeNames || []), ...(profile.arabicNames || []), ...(profile.englishNames || [])])];
+  document.getElementById('icdIdAltNames').innerHTML = altNames.length ? altNames.map((n) => `<span class="icd-mini-badge">${escapeHtml(n)}</span>`).join('') : '<span class="icd-faint">لا يوجد</span>';
+  document.getElementById('icdIdKeywords').innerHTML = (profile.keywords || []).length ? profile.keywords.map((k) => `<span class="icd-mini-badge cyan">${escapeHtml(k)}</span>`).join('') : '<span class="icd-faint">لا يوجد</span>';
+  document.getElementById('icdIdDescription').textContent = profile.description || 'غير متاح';
+  const features = [...(profile.distinctiveFeatures || [])];
+  document.getElementById('icdIdFeatures').innerHTML = features.length ? features.map((f) => `<span class="icd-mini-badge yellow">${escapeHtml(f)}</span>`).join('') : '<span class="icd-faint">لا يوجد</span>';
+
+  if (profile.multipleProductsDetected) {
+    stateEl.textContent += ' — تم اكتشاف أكثر من منتج في الصورة، وتم التركيز على الأبرز';
   }
 }
 
@@ -362,6 +410,7 @@ function resultCardHtml(r) {
       <div class="icd-result-meta">${r.accountName ? `👤 ${escapeHtml(r.accountName)}` : ''}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString('ar-EG')}` : ''}</div>
       <div class="icd-result-badges">
         <span class="icd-mini-badge ${CLASS_COLOR[classification] || ''}">${CLASS_LABEL[classification] || classification}${r.matchScore !== null && r.matchScore !== undefined ? ` ${r.matchScore}%` : ''}</span>
+        ${r.visualMatchScore !== null && r.visualMatchScore !== undefined ? `<span class="icd-mini-badge cyan">🖼️ تطابق بصري ${r.visualMatchScore}%</span>` : ''}
         ${m.activeStatus === 'ACTIVE' ? '<span class="icd-mini-badge green">🟢 نشط</span>' : ''}
         <span class="icd-mini-badge">${escapeHtml(r.provider || '')}</span>
       </div>
@@ -386,6 +435,10 @@ function init() {
   document.getElementById('icdBtnStartSearch')?.addEventListener('click', startSearch);
   document.getElementById('icdBtnCancelSearch')?.addEventListener('click', cancelSearch);
   document.getElementById('icdBtnNewSearch')?.addEventListener('click', resetToNewSearch);
+  document.getElementById('icdBtnToggleAdvanced')?.addEventListener('click', () => {
+    const el = document.getElementById('icdAdvancedFields');
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  });
 
   ['icdFilterPlatform', 'icdFilterClassification', 'icdFilterActive', 'icdSortBy'].forEach((id) => {
     document.getElementById(id)?.addEventListener('change', () => {

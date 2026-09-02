@@ -362,59 +362,70 @@
           <div class="icd-row" id="icdProviderStatusList" style="flex-wrap:wrap;"></div>
         </div>
 
-        <!-- Search input -->
+        <!-- Search input — image is the PRIMARY input (Step 20): the
+             product name and every other text field are optional as long
+             as an image is uploaded; Stage A (Claude vision) generates the
+             full Product Identity Profile automatically. -->
         <div class="icd-panel" id="icdInputPanel">
           <div class="icd-panel-title">🧾 بيانات المنتج</div>
+
           <div class="icd-field">
-            <label>اسم المنتج الرئيسي *</label>
-            <input type="text" id="icdProductName" placeholder="مثال: جهاز مساج فروة الرأس الكهربائي" />
-          </div>
-          <div class="icd-row">
-            <div class="icd-field">
-              <label>أسماء بديلة</label>
-              <div class="icd-chips" id="icdChipsAlt"></div>
-              <div class="icd-row" style="gap:6px;">
-                <input type="text" id="icdInputAlt" placeholder="اكتب واضغط Enter" />
-                <button type="button" class="icd-btn secondary small" data-icd-add-chip="alt">+ إضافة</button>
-              </div>
-            </div>
-            <div class="icd-field">
-              <label>أسماء عربي</label>
-              <div class="icd-chips" id="icdChipsAr"></div>
-              <div class="icd-row" style="gap:6px;">
-                <input type="text" id="icdInputAr" placeholder="اكتب واضغط Enter" />
-                <button type="button" class="icd-btn secondary small" data-icd-add-chip="ar">+ إضافة</button>
-              </div>
-            </div>
-            <div class="icd-field">
-              <label>أسماء إنجليزي</label>
-              <div class="icd-chips" id="icdChipsEn"></div>
-              <div class="icd-row" style="gap:6px;">
-                <input type="text" id="icdInputEn" placeholder="اكتب واضغط Enter" />
-                <button type="button" class="icd-btn secondary small" data-icd-add-chip="en">+ إضافة</button>
-              </div>
-            </div>
-            <div class="icd-field">
-              <label>كلمات مفتاحية</label>
-              <div class="icd-chips" id="icdChipsKw"></div>
-              <div class="icd-row" style="gap:6px;">
-                <input type="text" id="icdInputKw" placeholder="اكتب واضغط Enter" />
-                <button type="button" class="icd-btn secondary small" data-icd-add-chip="kw">+ إضافة</button>
-              </div>
-            </div>
-          </div>
-          <div class="icd-field">
-            <label>وصف المنتج (اختياري)</label>
-            <textarea id="icdDescription" rows="2"></textarea>
-          </div>
-          <div class="icd-field">
-            <label>صورة المنتج (اختياري — تُستخدم لاحقًا في المطابقة البصرية)</label>
-            <div class="icd-row" style="align-items:center;">
-              <button type="button" class="icd-btn secondary small" id="icdBtnPickImage">اختر صورة</button>
+            <label style="font-size:13px; color:var(--icd-text); font-weight:700;">📷 ارفع صورة المنتج فقط وسيتم التعرف عليه تلقائيًا</label>
+            <div class="icd-row" style="align-items:center; margin-top:4px;">
+              <button type="button" class="icd-btn" id="icdBtnPickImage">اختر صورة المنتج</button>
               <span class="icd-faint" id="icdImageName"></span>
             </div>
-            <img id="icdImagePreview" style="display:none; max-width:120px; border-radius:10px; margin-top:8px; border:1px solid var(--icd-border);" />
+            <img id="icdImagePreview" style="display:none; max-width:140px; border-radius:10px; margin-top:10px; border:1px solid var(--icd-border);" />
             <input type="file" id="icdImageInput" accept="image/jpeg,image/png,image/webp" style="display:none;" />
+            <div class="icd-faint" style="margin-top:6px;">مفيش صورة؟ تقدر تكتب اسم المنتج يدويًا من "بيانات متقدمة" تحت.</div>
+          </div>
+
+          <div class="icd-field">
+            <label>اسم المنتج الرئيسي (اختياري لو رفعت صورة)</label>
+            <input type="text" id="icdProductName" placeholder="مثال: جهاز مساج فروة الرأس الكهربائي" />
+          </div>
+
+          <!-- Advanced manual fields — collapsed by default (Step 20), never required. Auto-filled from the generated Product Identity Profile once analysis finishes, so the user can review/edit and start a new search with adjustments if they want. -->
+          <button type="button" class="icd-btn secondary small" id="icdBtnToggleAdvanced" style="margin-bottom:10px;">⚙️ بيانات متقدمة (اختياري)</button>
+          <div id="icdAdvancedFields" style="display:none;">
+            <div class="icd-row">
+              <div class="icd-field">
+                <label>أسماء بديلة</label>
+                <div class="icd-chips" id="icdChipsAlt"></div>
+                <div class="icd-row" style="gap:6px;">
+                  <input type="text" id="icdInputAlt" placeholder="اكتب واضغط Enter" />
+                  <button type="button" class="icd-btn secondary small" data-icd-add-chip="alt">+ إضافة</button>
+                </div>
+              </div>
+              <div class="icd-field">
+                <label>أسماء عربي</label>
+                <div class="icd-chips" id="icdChipsAr"></div>
+                <div class="icd-row" style="gap:6px;">
+                  <input type="text" id="icdInputAr" placeholder="اكتب واضغط Enter" />
+                  <button type="button" class="icd-btn secondary small" data-icd-add-chip="ar">+ إضافة</button>
+                </div>
+              </div>
+              <div class="icd-field">
+                <label>أسماء إنجليزي</label>
+                <div class="icd-chips" id="icdChipsEn"></div>
+                <div class="icd-row" style="gap:6px;">
+                  <input type="text" id="icdInputEn" placeholder="اكتب واضغط Enter" />
+                  <button type="button" class="icd-btn secondary small" data-icd-add-chip="en">+ إضافة</button>
+                </div>
+              </div>
+              <div class="icd-field">
+                <label>كلمات مفتاحية</label>
+                <div class="icd-chips" id="icdChipsKw"></div>
+                <div class="icd-row" style="gap:6px;">
+                  <input type="text" id="icdInputKw" placeholder="اكتب واضغط Enter" />
+                  <button type="button" class="icd-btn secondary small" data-icd-add-chip="kw">+ إضافة</button>
+                </div>
+              </div>
+            </div>
+            <div class="icd-field">
+              <label>وصف المنتج (اختياري)</label>
+              <textarea id="icdDescription" rows="2"></textarea>
+            </div>
           </div>
 
           <div class="icd-row">
@@ -445,6 +456,7 @@
               <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="tiktok" checked /> TikTok</label>
               <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="youtube" checked /> YouTube</label>
               <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="META_AD_LIBRARY" checked /> Meta Ads Library</label>
+              <label class="icd-faint" style="display:flex; align-items:center; gap:5px; min-width:auto;"><input type="checkbox" value="google" checked /> Google</label>
             </div>
           </div>
 
@@ -456,7 +468,44 @@
             </div>
           </div>
 
-          <button class="icd-btn" id="icdBtnStartSearch" style="margin-top:10px;">🚀 ابدأ البحث التجريبي</button>
+          <button class="icd-btn" id="icdBtnStartSearch" style="margin-top:10px;">🚀 ابدأ البحث</button>
+        </div>
+
+        <!-- Analysis state + generated Product Identity Profile (Steps 21/22/23) -->
+        <div class="icd-panel" id="icdIdentityPanel" style="display:none;">
+          <div class="icd-panel-title" id="icdAnalysisStateText">جاري التعرف على المنتج...</div>
+          <div id="icdIdentityProfileCard" style="display:none;">
+            <div class="icd-row" style="flex-wrap:wrap; gap:16px;">
+              <div style="flex:2; min-width:220px;">
+                <div class="icd-faint">اسم المنتج</div>
+                <div style="font-weight:700; font-size:14px;" id="icdIdName"></div>
+              </div>
+              <div style="flex:1; min-width:140px;">
+                <div class="icd-faint">العلامة التجارية</div>
+                <div id="icdIdBrand"></div>
+              </div>
+              <div style="flex:1; min-width:140px;">
+                <div class="icd-faint">الموديل</div>
+                <div id="icdIdModel"></div>
+              </div>
+            </div>
+            <div class="icd-field" style="margin-top:10px;">
+              <div class="icd-faint">الأسماء البديلة</div>
+              <div id="icdIdAltNames" class="icd-result-badges"></div>
+            </div>
+            <div class="icd-field">
+              <div class="icd-faint">الكلمات المفتاحية</div>
+              <div id="icdIdKeywords" class="icd-result-badges"></div>
+            </div>
+            <div class="icd-field">
+              <div class="icd-faint">الوصف</div>
+              <div id="icdIdDescription" style="font-size:12.5px;"></div>
+            </div>
+            <div class="icd-field">
+              <div class="icd-faint">الخصائص المميزة</div>
+              <div id="icdIdFeatures" class="icd-result-badges"></div>
+            </div>
+          </div>
         </div>
 
         <!-- Top product card + progress -->
@@ -496,6 +545,7 @@
               <option value="tiktok">TikTok</option>
               <option value="META_AD_LIBRARY">Meta Ads Library</option>
               <option value="youtube">YouTube</option>
+              <option value="google">Google</option>
             </select>
             <select id="icdFilterClassification">
               <option value="">كل التصنيفات</option>

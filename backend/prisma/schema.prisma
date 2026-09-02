@@ -810,7 +810,8 @@ model ExperimentalCreativeSearch {
   user_id         Int
   user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
   source_mode     String    @default("INTERNAL_EXPERIMENTAL") // the explicit marker requested — never confused with a real ProductResearchSearch row (they're not even in the same table)
-  product_name    String
+  search_mode     String    @default("TEXT") // TEXT | IMAGE_ONLY — IMAGE_ONLY means product_name was empty at submit time and gets filled in from the generated Product Identity Profile once Stage A finishes
+  product_name    String // for IMAGE_ONLY this starts as a placeholder and is overwritten once Stage A image analysis produces a real mainProductName — never left as the placeholder in a COMPLETED/PARTIAL row
   product_image   String?
   country         String    @default("EG")
   language        String    @default("AR_EN")
@@ -819,6 +820,8 @@ model ExperimentalCreativeSearch {
   status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED|CANCELLED
   platform_status_json String?
   ai_profile_json String?
+  identity_profile_json String? // the full Product Identity Profile generated from the image (Stage A + any Stage B enrichment) — see productIdentityVision.js
+  reference_image_hash  String? // sha256 of the uploaded image bytes — cache key alongside model_version
   input_json      String?
   error           String?
   started_at      DateTime?
@@ -871,6 +874,8 @@ model ExperimentalCreativeResult {
   match_score       Int?
   confidence_score  Int?
   ai_reason         String?
+  visual_match_score Int? // 0-100, real Claude-vision side-by-side comparison against the reference image — null when not computed (e.g. no reference image, no candidate thumbnail, or beyond the per-search comparison cap) — never guessed
+  final_score       Int?  // the weighted combination (80% visual / 15% text / 5% distinctive attributes) used for image-mode ranking when a reference image exists — null otherwise, text match_score is used as-is
   ignored           Boolean   @default(false)
   raw_metadata_json String?
   discovered_by_queries_json String?
@@ -881,4 +886,20 @@ model ExperimentalCreativeResult {
   @@index([search_id])
   @@index([platform])
   @@map("experimental_creative_results")
+}
+
+// Caches a generated Product Identity Profile by (reference image content
+// hash, model version) so re-opening/re-running a search with the exact
+// same uploaded image never re-spends a Claude vision call (Steps 26/27).
+// Deliberately keyed on the image bytes' hash, not a search id, so it's
+// shared across searches/users that happen to upload the identical file.
+model ExperimentalImageIdentityCache {
+  id            Int      @id @default(autoincrement())
+  image_hash    String   // sha256 of the raw image bytes
+  model_version String   // bumped whenever the identity-generation prompt/shape changes, so an old cached profile is never served against a newer expected shape
+  profile_json  String   // the full generated Product Identity Profile
+  created_at    DateTime @default(now())
+
+  @@unique([image_hash, model_version])
+  @@map("experimental_image_identity_cache")
 }
