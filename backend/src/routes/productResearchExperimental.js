@@ -24,6 +24,7 @@ import * as youtubeSearchProvider from '../services/searchProviders/youtubeSearc
 import * as googleSearchProvider from '../services/searchProviders/googleSearchProvider.js';
 import * as apifyProvider from '../services/searchProviders/apifyMetaAdLibraryProvider.js';
 import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibraryProvider.js';
+import { getLocalVisionStats } from '../services/vision/localVisionProvider.js';
 
 const router = Router();
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY', 'google'];
@@ -67,6 +68,28 @@ router.get(
         { platform: 'META_AD_LIBRARY', provider: metaAdLib.provider === 'apify_meta_ad_library' ? 'Apify' : (metaAdLib.provider ? `${metaAdLib.provider} — احتياطي` : null), status: metaAdLib.status },
         { platform: 'google', provider: googleOk ? 'Google Custom Search' : null, status: googleOk ? 'CONNECTED' : 'NOT_CONFIGURED' },
       ],
+    });
+  })
+);
+
+// Real, in-memory, process-lifetime usage/cost counters (Step 25) — never
+// invented monetary savings, just real counts of what actually ran
+// locally vs. what would otherwise have been an external (paid/rate-
+// limited) vision call.
+router.get(
+  '/diagnostics',
+  asyncRoute(async (req, res) => {
+    if (!isFeatureEnabled()) return res.status(404).json({ error: 'FEATURE_DISABLED' });
+    const local = getLocalVisionStats();
+    res.json({
+      localImageAnalyses: local.localImageAnalyses,
+      localCandidateComparisons: local.localCandidateComparisons,
+      cacheHits: local.cacheHits,
+      averageProcessingMs: local.averageProcessingMs,
+      // Every local analysis/comparison is one real external Anthropic
+      // vision call that was NOT made — a direct, honest count, not an
+      // estimate of money (never invents a dollar figure).
+      externalVisionCallsAvoided: local.localImageAnalyses + local.localCandidateComparisons,
     });
   })
 );
@@ -167,6 +190,7 @@ router.get(
       productName: search.product_name,
       productImage: search.product_image,
       identityProfile: search.identity_profile_json ? JSON.parse(search.identity_profile_json) : null,
+      identityProvider: search.identity_provider, // LOCAL_VISION | LOCAL_VISION+ANTHROPIC — diagnostic (Step 24), never required for the profile above to exist
       country: search.country,
       language: search.language,
       platforms,
@@ -250,6 +274,8 @@ router.get(
         matchScore: r.match_score,
         confidenceScore: r.confidence_score,
         visualMatchScore: r.visual_match_score,
+        localVisualMatchScore: r.local_visual_match_score,
+        visualMatchProvider: r.visual_match_provider,
         finalScore: r.final_score,
         aiReason: r.ai_reason,
         discoveredByQueries: r.discovered_by_queries_json ? JSON.parse(r.discovered_by_queries_json) : [],

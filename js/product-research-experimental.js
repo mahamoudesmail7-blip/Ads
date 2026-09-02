@@ -322,8 +322,13 @@ function renderIdentityProfile(data) {
     return;
   }
 
-  // Confidence is Claude's own real, honest self-assessment — never invented here.
-  stateEl.textContent = profile.overallConfidence >= 60 ? 'تم التعرف على المنتج' : 'تم التعرف بشكل مبدئي';
+  // identityProvider reflects which real provider actually produced this
+  // profile (Step 24 diagnostic, Step 23 UI text) — LOCAL_VISION always
+  // runs; ANTHROPIC is layered on top only when it was actually available
+  // and actually improved something, never required (Step 31).
+  const usedAnthropic = data.identityProvider === 'LOCAL_VISION+ANTHROPIC';
+  const confidenceLabel = profile.overallConfidence >= 60 ? 'تم التعرف على المنتج محليًا' : 'تم التعرف بشكل مبدئي محليًا';
+  stateEl.textContent = usedAnthropic ? `${confidenceLabel} — تم تحسين التعرف بالذكاء الاصطناعي` : confidenceLabel;
   cardEl.style.display = 'block';
 
   document.getElementById('icdIdName').textContent = `${profile.mainProductName} (ثقة ${profile.mainProductNameConfidence}%)`;

@@ -10,3 +10,5 @@ backend/prisma/dev.db-journal
 backend/prisma/migrations_sqlite_backup/
 *.log
 start-server.bat
+backend/.vision-cache/
+backend/*.traineddata

@@ -36,7 +36,8 @@ import { normalizeResult, deduplicateResults } from './productResearchNormalize.
 import * as apifyProvider from './searchProviders/apifyMetaAdLibraryProvider.js';
 import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 import * as googleSearchProvider from './searchProviders/googleSearchProvider.js';
-import { analyzeProductImage, identityToSearchProfile, compareVisualMatch } from './productIdentityVision.js';
+import { identityToSearchProfile } from './productIdentityVision.js';
+import { analyzeProductImage, compareVisualMatch } from './vision/productVisionService.js';
 
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube']; // META_AD_LIBRARY handled separately (Apify staged); 'google' handled separately (own normalizer, see below)
@@ -147,15 +148,21 @@ export async function runExperimentalSearchPipeline(searchId) {
   try {
     await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus) });
 
-    let profile, aiSource, identity = null;
+    let profile, aiSource, identity = null, referenceEmbedding = null, referencePerceptualHash = null;
     if (hasImage) {
       // Stage A — image is the primary identity signal (Step 17), always
       // run when an image exists, regardless of whether the user also
       // typed something (typed text becomes a manual override merged on
       // top, never dropped — identityToSearchProfile's manualOverrides).
-      const { profile: generatedIdentity, source, imageHash } = await analyzeProductImage(input.imageBase64, input.imageMediaType);
+      // Goes through the LOCAL_VISION-first provider abstraction
+      // (productVisionService.js) — this orchestrator never knows or
+      // cares whether LOCAL_VISION alone or LOCAL_VISION+ANTHROPIC
+      // actually produced the profile (Step 1).
+      const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = await analyzeProductImage(input.imageBase64, input.imageMediaType);
       identity = generatedIdentity;
-      await updateSearch(searchId, { reference_image_hash: imageHash, identity_profile_json: JSON.stringify(identity) });
+      referenceEmbedding = embedding;
+      referencePerceptualHash = perceptualHash;
+      await updateSearch(searchId, { reference_image_hash: imageHash, identity_profile_json: JSON.stringify(identity), identity_provider: identityProvider });
 
       // search.product_name is a real placeholder string (never null, see
       // the schema comment) for a pure IMAGE_ONLY submission, so it's
@@ -174,7 +181,7 @@ export async function runExperimentalSearchPipeline(searchId) {
         await updateSearch(searchId, { product_name: identity.mainProductName || search.product_name });
       }
       profile = identityToSearchProfile(identity, { productName: hadManualName ? search.product_name : undefined, possibleNames: input.possibleNames, namesAr: input.namesAr, namesEn: input.namesEn, keywords: input.keywords });
-      aiSource = source;
+      aiSource = identityProvider;
     } else {
       ({ profile, source: aiSource } = await analyzeProduct({ ...input, productName: search.product_name }));
     }
@@ -310,25 +317,39 @@ export async function runExperimentalSearchPipeline(searchId) {
         await prisma.experimentalCreativeResult.updateMany({ where: { id: { in: unrankedIds } }, data: { classification: 'UNCLASSIFIED', ai_reason: 'التحليل الذكي لسه ما وصلش للنتيجة دي (تجاوزت حد الدفعة) — النتيجة حقيقية ومعروضة زي ما هي.' } });
       }
 
-      // --- Visual verification pass (Steps 17/29): real Claude-vision
-      // comparisons, capped at MAX_VISUAL_COMPARISONS for real cost
-      // control, only over results that have a real thumbnail to compare
-      // against. Only runs when a real reference image was uploaded.
-      if (hasImage && !isCancelled(searchId)) {
+      // --- Visual verification pass (Steps 9-11/17/29): real local
+      // embedding/perceptual-hash/OCR-brand comparison, always attempted
+      // when a real reference embedding exists — capped at
+      // MAX_VISUAL_COMPARISONS for real cost/time control, only over
+      // results that have a real thumbnail. ANTHROPIC_VISION is layered
+      // on top only when worth trying (productVisionService.compareVisualMatch
+      // decides that internally) — never required for this pass to run at
+      // all (Step 31).
+      if (hasImage && referenceEmbedding && !isCancelled(searchId)) {
         const rescored = await prisma.experimentalCreativeResult.findMany({
           where: { search_id: searchId, thumbnail: { not: null } },
           orderBy: [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }],
           take: MAX_VISUAL_COMPARISONS,
         });
+        const reference = { embedding: referenceEmbedding, perceptualHash: referencePerceptualHash, brand: identity?.brand || null, model: identity?.model || null, imageBase64: input.imageBase64, imageMediaType: input.imageMediaType };
         for (const r of rescored) {
-          const cmp = await compareVisualMatch(input.imageBase64, input.imageMediaType, r.thumbnail);
-          if (cmp.error) {
-            logger.error(`${LOG_PREFIX} VISUAL_COMPARE_FAILED`, { searchId, resultId: r.id, message: cmp.error });
-            continue; // honest skip — never fabricates a score when the real comparison failed (e.g. broken thumbnail URL)
+          const cmp = await compareVisualMatch(reference, r.thumbnail, `${r.title || ''} ${r.snippet || ''}`);
+          if (cmp.error || cmp.visualMatchScore === null) {
+            if (cmp.error) logger.error(`${LOG_PREFIX} VISUAL_COMPARE_FAILED`, { searchId, resultId: r.id, message: cmp.error });
+            continue; // honest skip — never fabricates a score when the real comparison failed (e.g. broken thumbnail URL) or couldn't run at all
           }
           const distinctScore = distinctiveAttributeScore(identity, r);
           const finalScore = Math.round(0.8 * cmp.visualMatchScore + 0.15 * (r.match_score ?? 0) + 0.05 * (distinctScore ?? 0));
-          await prisma.experimentalCreativeResult.update({ where: { id: r.id }, data: { visual_match_score: cmp.visualMatchScore, final_score: finalScore, ai_reason: cmp.reason ? `${r.ai_reason ? r.ai_reason + ' | ' : ''}🖼️ ${cmp.reason}` : r.ai_reason } });
+          await prisma.experimentalCreativeResult.update({
+            where: { id: r.id },
+            data: {
+              visual_match_score: cmp.visualMatchScore,
+              local_visual_match_score: cmp.localVisualMatchScore,
+              visual_match_provider: cmp.visualMatchProvider,
+              final_score: finalScore,
+              ai_reason: cmp.reason ? `${r.ai_reason ? r.ai_reason + ' | ' : ''}🖼️ ${cmp.reason}` : r.ai_reason,
+            },
+          });
         }
         logger.info(`${LOG_PREFIX} VISUAL_VERIFICATION_DONE`, { searchId, compared: rescored.length });
       }

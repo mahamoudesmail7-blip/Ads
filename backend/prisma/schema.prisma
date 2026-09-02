@@ -820,7 +820,8 @@ model ExperimentalCreativeSearch {
   status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED|CANCELLED
   platform_status_json String?
   ai_profile_json String?
-  identity_profile_json String? // the full Product Identity Profile generated from the image (Stage A + any Stage B enrichment) — see productIdentityVision.js
+  identity_profile_json String? // the full Product Identity Profile generated from the image (Stage A + any Stage B enrichment) — see productVisionService.js
+  identity_provider      String? // LOCAL_VISION | LOCAL_VISION+ANTHROPIC | ANTHROPIC_VISION — diagnostic: which real provider(s) actually produced this profile (Step 24)
   reference_image_hash  String? // sha256 of the uploaded image bytes — cache key alongside model_version
   input_json      String?
   error           String?
@@ -874,7 +875,9 @@ model ExperimentalCreativeResult {
   match_score       Int?
   confidence_score  Int?
   ai_reason         String?
-  visual_match_score Int? // 0-100, real Claude-vision side-by-side comparison against the reference image — null when not computed (e.g. no reference image, no candidate thumbnail, or beyond the per-search comparison cap) — never guessed
+  visual_match_score Int? // 0-100, the FINAL visual score used for ranking — local embedding/perceptual-hash/OCR comparison, optionally blended with a real Claude-vision semantic score when Anthropic is healthy. Null when not computed (no reference image, no candidate thumbnail, candidate fetch failed, or beyond the per-search comparison cap) — never guessed.
+  local_visual_match_score Int? // 0-100, the raw LOCAL_VISION-only score (embedding cosine similarity + perceptual hash + OCR brand/model match) — always populated whenever local comparison genuinely ran, independent of Anthropic (Step 10/11)
+  visual_match_provider String? // LOCAL_EMBEDDING | LOCAL_EMBEDDING+ANTHROPIC — diagnostic (Step 24)
   final_score       Int?  // the weighted combination (80% visual / 15% text / 5% distinctive attributes) used for image-mode ranking when a reference image exists — null otherwise, text match_score is used as-is
   ignored           Boolean   @default(false)
   raw_metadata_json String?
@@ -896,10 +899,11 @@ model ExperimentalCreativeResult {
 model ExperimentalImageIdentityCache {
   id            Int      @id @default(autoincrement())
   image_hash    String   // sha256 of the raw image bytes
-  model_version String   // bumped whenever the identity-generation prompt/shape changes, so an old cached profile is never served against a newer expected shape
-  profile_json  String   // the full generated Product Identity Profile
+  model_version String   // bumped whenever a provider's output shape changes, so an old cached profile is never served against a newer expected shape
+  provider      String   @default("ANTHROPIC_VISION") // LOCAL_VISION | ANTHROPIC_VISION — the two providers cache independently under the same image_hash, since LOCAL_VISION is now always attempted and ANTHROPIC_VISION only sometimes
+  profile_json  String   // LOCAL_VISION: {ocr, embedding, perceptualHash, colors, category, ...}. ANTHROPIC_VISION: the full Claude-generated Product Identity Profile (unchanged shape)
   created_at    DateTime @default(now())
 
-  @@unique([image_hash, model_version])
+  @@unique([image_hash, model_version, provider])
   @@map("experimental_image_identity_cache")
 }

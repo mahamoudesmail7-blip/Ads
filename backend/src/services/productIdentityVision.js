@@ -18,9 +18,10 @@ import { askClaude } from './ai.js';
 
 // Bumped whenever the prompt/output shape changes, so a stale cached
 // profile is never served against code expecting a different shape
-// (Step 27's cache key is [image_hash, model_version] specifically so this
-// bump alone invalidates every old cache entry safely).
+// (the cache key is [image_hash, model_version, provider] — this bump
+// alone invalidates every old cached entry for this provider safely).
 const MODEL_VERSION = 'identity-v1';
+const PROVIDER = 'ANTHROPIC_VISION'; // this file is the ANTHROPIC_VISION implementation behind productVisionService.js's provider abstraction — LOCAL_VISION (localVisionProvider.js) caches independently under the same table/image_hash
 
 function safeJsonParse(text) {
   const stripped = text.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
@@ -116,7 +117,7 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
   // Cache check first (Steps 26/27) — never re-spend a vision call on the
   // exact same image bytes + prompt version.
   const cached = await prisma.experimentalImageIdentityCache.findUnique({
-    where: { image_hash_model_version: { image_hash: imageHash, model_version: MODEL_VERSION } },
+    where: { image_hash_model_version_provider: { image_hash: imageHash, model_version: MODEL_VERSION, provider: PROVIDER } },
   }).catch(() => null);
   if (cached) {
     logger.info('[InternalCreativeDiscovery] IDENTITY_CACHE_HIT', { imageHash: imageHash.slice(0, 12) });
@@ -134,7 +135,7 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
 
     const profile = normalizeProfile(parsed);
     await prisma.experimentalImageIdentityCache.create({
-      data: { image_hash: imageHash, model_version: MODEL_VERSION, profile_json: JSON.stringify(profile) },
+      data: { image_hash: imageHash, model_version: MODEL_VERSION, provider: PROVIDER, profile_json: JSON.stringify(profile) },
     }).catch((err) => logger.error('[InternalCreativeDiscovery] IDENTITY_CACHE_WRITE_FAILED', { message: err.message }));
 
     logger.info('[InternalCreativeDiscovery] IDENTITY_GENERATED', { imageHash: imageHash.slice(0, 12), mainProductName: profile.mainProductName, overallConfidence: profile.overallConfidence, multipleProductsDetected: profile.multipleProductsDetected });
