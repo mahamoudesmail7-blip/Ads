@@ -34,10 +34,26 @@
 // into a separate worker service is the documented next step (Step 26) —
 // not attempted here since this session has no ability to provision new
 // Railway infrastructure.
+import os from 'os';
+import path from 'path';
 import { createWorker } from 'tesseract.js';
 import { logger } from '../../logger.js';
 
 const LOG_PREFIX = '[LocalVision]';
+
+// A relative './.vision-cache' path depends on the process's CWD being
+// both correct AND writable, which isn't guaranteed on every host — a
+// real, reproduced hang on first deploy (a model "load" that never
+// resolved or rejected for 7+ minutes, with no way to diagnose further
+// without direct log access) is consistent with a silent disk-write
+// failure in exactly this kind of path. os.tmpdir() is writable on every
+// platform this app targets (Windows dev, Railway's Linux containers) —
+// used as the default; VISION_MODEL_CACHE_DIR still overrides it.
+function visionCacheDir() {
+  return process.env.VISION_MODEL_CACHE_DIR || path.join(os.tmpdir(), 'internal-creative-discovery-vision-cache');
+}
+
+const MODEL_LOAD_TIMEOUT_MS = 120000; // generous, but never infinite — a real cold download of ~90MB should comfortably finish inside this; if it doesn't, something is actually wrong (network/disk) and the caller deserves a real error, not a permanent hang
 
 // Zero-shot category taxonomy — mixes broad families (needed as an honest
 // fallback for products that don't match a specific type below) WITH
@@ -74,25 +90,38 @@ async function bufferToRawImage(buffer) {
 }
 
 // --- Lazy singleton model loading (Steps 26/27) ---
+// A hung/failed load must never permanently poison the singleton: the
+// cached promise is cleared on failure so the NEXT real request gets a
+// fresh attempt instead of forever awaiting (or instantly re-rejecting
+// from) a dead promise — a real, reproduced failure mode (see the timeout
+// comment above), not a theoretical one.
 let embedderPromise = null;
 let classifierPromise = null;
 function getEmbedder() {
   if (!embedderPromise) {
     logger.info(`${LOG_PREFIX} LOADING_EMBEDDER_MODEL`);
-    embedderPromise = import('@xenova/transformers').then(({ pipeline, env }) => {
-      env.cacheDir = process.env.VISION_MODEL_CACHE_DIR || './.vision-cache';
-      return pipeline('image-feature-extraction', 'Xenova/clip-vit-base-patch32', { quantized: true });
-    });
+    embedderPromise = withTimeout(
+      import('@xenova/transformers').then(({ pipeline, env }) => {
+        env.cacheDir = visionCacheDir();
+        return pipeline('image-feature-extraction', 'Xenova/clip-vit-base-patch32', { quantized: true });
+      }),
+      MODEL_LOAD_TIMEOUT_MS,
+      'embedder model load'
+    ).catch((err) => { embedderPromise = null; throw err; });
   }
   return embedderPromise;
 }
 function getClassifier() {
   if (!classifierPromise) {
     logger.info(`${LOG_PREFIX} LOADING_CLASSIFIER_MODEL`);
-    classifierPromise = import('@xenova/transformers').then(({ pipeline, env }) => {
-      env.cacheDir = process.env.VISION_MODEL_CACHE_DIR || './.vision-cache';
-      return pipeline('zero-shot-image-classification', 'Xenova/clip-vit-base-patch32', { quantized: true });
-    });
+    classifierPromise = withTimeout(
+      import('@xenova/transformers').then(({ pipeline, env }) => {
+        env.cacheDir = visionCacheDir();
+        return pipeline('zero-shot-image-classification', 'Xenova/clip-vit-base-patch32', { quantized: true });
+      }),
+      MODEL_LOAD_TIMEOUT_MS,
+      'classifier model load'
+    ).catch((err) => { classifierPromise = null; throw err; });
   }
   return classifierPromise;
 }
@@ -256,7 +285,7 @@ export function embeddingSimilarity(a, b) {
  * images, and prompt termination keeps peak memory predictable.
  */
 async function runOCR(buffer) {
-  const worker = await createWorker('eng', undefined, { cachePath: process.env.VISION_MODEL_CACHE_DIR || './.vision-cache' });
+  const worker = await withTimeout(createWorker('eng', undefined, { cachePath: visionCacheDir() }), MODEL_LOAD_TIMEOUT_MS, 'OCR worker creation');
   try {
     const { data } = await withTimeout(worker.recognize(buffer, {}, { blocks: true }), 20000, 'OCR');
     const words = [];
