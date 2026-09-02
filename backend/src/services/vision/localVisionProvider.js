@@ -50,11 +50,32 @@ const WORKER_PATH = path.join(__dirname, 'localVisionWorker.js');
 const CALL_TIMEOUT_MS = 180000;
 
 let worker = null;
+let workerSpawnedAt = null;
 let nextRequestId = 1;
-const pending = new Map(); // id -> {resolve, reject, timer}
+const pending = new Map(); // id -> {resolve, reject, timer, type, startedAt}
+
+/**
+ * Real, live visibility into the worker's state — added specifically
+ * because this exact hang (Step 28's live test getting stuck) could not
+ * be diagnosed any other way without direct Railway log/console access,
+ * which this session does not have. Polling this during a stuck request
+ * distinguishes "the worker was never spawned/never received the message"
+ * from "the worker is alive and has been busy on one real request for an
+ * unusually long time" — two very different problems with different fixes.
+ */
+export function getWorkerDiagnostics() {
+  return {
+    workerAlive: Boolean(worker),
+    workerAgeMs: workerSpawnedAt ? Date.now() - workerSpawnedAt : null,
+    pendingRequests: [...pending.values()].map((p) => ({ type: p.type, ageMs: Date.now() - p.startedAt })),
+  };
+}
 
 function spawnWorker() {
+  logger.info(`${LOG_PREFIX} SPAWNING_WORKER`, { path: WORKER_PATH });
   const w = new Worker(WORKER_PATH);
+  workerSpawnedAt = Date.now();
+  w.on('online', () => logger.info(`${LOG_PREFIX} WORKER_ONLINE`, {}));
   w.on('message', (msg) => {
     const entry = pending.get(msg.id);
     if (!entry) return;
@@ -64,12 +85,12 @@ function spawnWorker() {
     else entry.resolve(msg.result);
   });
   w.on('error', (err) => {
-    logger.error(`${LOG_PREFIX} WORKER_ERROR`, { message: err.message });
+    logger.error(`${LOG_PREFIX} WORKER_ERROR`, { message: err.message, stack: err.stack?.slice(0, 500) });
     failAllPending(err);
     worker = null; // replaced fresh on the next call
   });
   w.on('exit', (code) => {
-    if (code !== 0) logger.error(`${LOG_PREFIX} WORKER_EXITED`, { code });
+    logger.info(`${LOG_PREFIX} WORKER_EXITED`, { code });
     failAllPending(new Error(`local vision worker exited (code ${code})`));
     worker = null;
   });
@@ -110,7 +131,7 @@ function callWorker(type, buffer) {
       worker = null;
       reject(new Error(`local vision ${type} timed out after ${CALL_TIMEOUT_MS}ms`));
     }, CALL_TIMEOUT_MS);
-    pending.set(id, { resolve, reject, timer });
+    pending.set(id, { resolve, reject, timer, type, startedAt: Date.now() });
     // Buffers transfer as a real ArrayBuffer copy across the thread
     // boundary (structured clone) — no shared-memory hazards, no manual
     // serialization needed.

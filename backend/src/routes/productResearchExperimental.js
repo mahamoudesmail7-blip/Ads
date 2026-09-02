@@ -24,7 +24,7 @@ import * as youtubeSearchProvider from '../services/searchProviders/youtubeSearc
 import * as googleSearchProvider from '../services/searchProviders/googleSearchProvider.js';
 import * as apifyProvider from '../services/searchProviders/apifyMetaAdLibraryProvider.js';
 import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibraryProvider.js';
-import { getLocalVisionStats } from '../services/vision/localVisionProvider.js';
+import { getLocalVisionStats, getWorkerDiagnostics } from '../services/vision/localVisionProvider.js';
 
 const router = Router();
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY', 'google'];
@@ -90,6 +90,7 @@ router.get(
       // vision call that was NOT made — a direct, honest count, not an
       // estimate of money (never invents a dollar figure).
       externalVisionCallsAvoided: local.localImageAnalyses + local.localCandidateComparisons,
+      worker: getWorkerDiagnostics(), // live worker-thread state — added specifically to diagnose a real stuck-analysis incident with no other log access available
     });
   })
 );
