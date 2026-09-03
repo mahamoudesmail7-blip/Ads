@@ -52,6 +52,35 @@ async function updateSearch(id, data) {
   return prisma.experimentalCreativeSearch.update({ where: { id }, data });
 }
 
+// --- Real per-platform progress (0-100), backend-driven only ---
+// Every value here is set at the moment a real execution stage actually
+// happens (job created, provider initialized, queries prepared, a real
+// query started/returned, results collected, normalized, saved,
+// platform terminal) — never a frontend timer, never guessed. Persisted
+// to platform_progress_json on every change so it survives a page
+// refresh (the frontend re-reads it from GET /search/:id, the same way
+// it already reads platformStatus). Monotonic: a platform's progress
+// never regresses, and a FAILED platform freezes at the real percentage
+// it had actually reached — never jumps to 100.
+const PLATFORM_PROGRESS_STAGE = {
+  CREATED: 1, INITIALIZED: 5, QUERIES_PREPARED: 10, QUERIES_START: 20, QUERIES_END: 65, NORMALIZED: 80, SAVED: 90, COMPLETE: 100,
+};
+
+/** Sets one platform's real progress and persists it immediately. `platformProgress` is the in-memory map this pipeline run owns; the DB write is what makes it survive a refresh. */
+async function setPlatformProgress(searchId, platformProgress, platform, value) {
+  const next = Math.max(platformProgress[platform] || 0, Math.min(100, Math.round(value)));
+  if (next === platformProgress[platform]) return; // no real change — skip the write
+  platformProgress[platform] = next;
+  await updateSearch(searchId, { platform_progress_json: JSON.stringify(platformProgress) }).catch((err) => logger.error(`${LOG_PREFIX} PROGRESS_WRITE_FAILED`, { searchId, platform, message: err.message }));
+}
+
+/** Linear progress across a real, bounded query loop (Step: "لو عندنا 5 queries، كل query تخلص تزود النسبة تدريجيًا") — completedQueries/totalQueries maps onto [QUERIES_START, QUERIES_END], never a random jump. */
+function queryLoopProgress(completed, total) {
+  if (total <= 0) return PLATFORM_PROGRESS_STAGE.QUERIES_END;
+  const frac = Math.min(1, completed / total);
+  return PLATFORM_PROGRESS_STAGE.QUERIES_START + (PLATFORM_PROGRESS_STAGE.QUERIES_END - PLATFORM_PROGRESS_STAGE.QUERIES_START) * frac;
+}
+
 // Real, per-call, always-firing timeout (Step 10) — wraps a single
 // provider/query call so a genuinely hung HTTP request can never block a
 // platform (or the whole pipeline) forever. Scoped here, not inside the
@@ -279,6 +308,10 @@ export async function runExperimentalSearchPipeline(searchId) {
 
   const platforms = JSON.parse(search.platforms_json || '[]').filter((p) => ALL_PLATFORMS.includes(p));
   const platformStatus = Object.fromEntries(platforms.map((p) => [p, 'PENDING']));
+  // Real progress (Step: real Progress system) — 1% the instant each
+  // platform's job exists, before any real work has happened yet (PENDING
+  // → 1%, per the requested status mapping).
+  const platformProgress = Object.fromEntries(platforms.map((p) => [p, PLATFORM_PROGRESS_STAGE.CREATED]));
   const input = JSON.parse(search.input_json || '{}');
   const hasImage = Boolean(input.imageBase64);
 
@@ -287,7 +320,7 @@ export async function runExperimentalSearchPipeline(searchId) {
   const genericPlatforms = platforms.filter((p) => GENERIC_PLATFORMS.includes(p));
 
   try {
-    await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus) });
+    await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus), platform_progress_json: JSON.stringify(platformProgress) });
 
     logger.info(`${LOG_PREFIX} SEARCH_START`, { searchId, hasImage, searchMode: search.search_mode, mode: search.mode, platforms });
     let profile, aiSource, identity = null, referenceEmbedding = null, referencePerceptualHash = null;
@@ -406,7 +439,14 @@ export async function runExperimentalSearchPipeline(searchId) {
     if (usesGoogle && !isCancelled(searchId)) {
       platformStatus.google = 'SEARCHING';
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
+      await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.INITIALIZED);
       const googleQueries = generateSearchQueries(profile, ['google']);
+      // Real query-count-based progress (Step: "لو عندنا 5 queries، كل
+      // query تخلص تزود النسبة تدريجيًا") — total real units = text
+      // queries + the one image-search pass that runs after them.
+      const googleTotalUnits = googleQueries.length + (googleQueries.length > 0 ? 1 : 0);
+      let googleCompletedUnits = 0;
+      await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.QUERIES_PREPARED);
       const gStartedAt = Date.now();
       let gSuccess = false, gFailure = false;
       const googleRawItems = [];
@@ -433,6 +473,8 @@ export async function runExperimentalSearchPipeline(searchId) {
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: q.query, query_type: q.queryType, provider: 'google_custom_search', status: 'FAILED', error: err.message } });
           gFailure = true;
         }
+        googleCompletedUnits += 1;
+        await setPlatformProgress(searchId, platformProgress, 'google', queryLoopProgress(googleCompletedUnits, googleTotalUnits));
       }
       // --- Google Image Search (Steps 5/6): real image results, collected
       // and normalized as their own real, viewable result cards — never
@@ -455,10 +497,15 @@ export async function runExperimentalSearchPipeline(searchId) {
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: primaryQuery.query, query_type: 'GOOGLE_IMAGE_SEARCH', provider: 'google_custom_search_image', status: 'FAILED', error: err.message } });
           imgFailure = true;
         }
+        googleCompletedUnits += 1;
+        await setPlatformProgress(searchId, platformProgress, 'google', queryLoopProgress(googleCompletedUnits, googleTotalUnits));
       }
 
+      await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.QUERIES_END);
       allNormalized.push(...googleNormalizedBatch);
+      await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.NORMALIZED);
       const googleSavedCount = await saveIncrementalResults(searchId, googleNormalizedBatch);
+      await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.SAVED);
 
       // Honest combined status (Step 9): COMPLETE only if both real
       // request types that were attempted succeeded; PARTIAL when only
@@ -469,6 +516,11 @@ export async function runExperimentalSearchPipeline(searchId) {
       const anySucceeded = gSuccess || imgSuccess;
       const anyFailedHere = gFailure || imgFailure;
       platformStatus.google = !anyAttempted ? 'NOT_CONFIGURED' : anySucceeded ? (anyFailedHere ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
+      // FAILED freezes at the real percentage already reached — never
+      // jumps to 100 (the requested "لا تغيّر النسبة إلى 100% عند الفشل").
+      if (platformStatus.google !== 'FAILED') {
+        await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.COMPLETE);
+      }
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
       logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'google', status: platformStatus.google, queriesExecuted: googleQueries.length + (primaryQuery ? 1 : 0), resultsCollected: googleRawItems.length + imgCount, saved: googleSavedCount, textResults: googleRawItems.length, imageResults: imgCount, durationMs: Date.now() - gStartedAt });
 
@@ -500,8 +552,11 @@ export async function runExperimentalSearchPipeline(searchId) {
       if (platformQueries.length > 0) {
         platformStatus[platform] = 'SEARCHING';
         await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
+        await setPlatformProgress(searchId, platformProgress, platform, PLATFORM_PROGRESS_STAGE.INITIALIZED);
+        await setPlatformProgress(searchId, platformProgress, platform, PLATFORM_PROGRESS_STAGE.QUERIES_PREPARED);
       }
 
+      let platformCompletedQueries = 0;
       for (const q of platformQueries) {
         try {
           const result = await withTimeout(runProviderSearch({ platform, query: q.query, resultsLimit: 25, country: search.country }), PROVIDER_TIMEOUT_MS, platform);
@@ -516,12 +571,19 @@ export async function runExperimentalSearchPipeline(searchId) {
           await prisma.experimentalCreativeQuery.update({ where: { id: q.id }, data: { status: 'FAILED', error: err.message } });
           platformHadFailure = true;
         }
+        platformCompletedQueries += 1;
+        await setPlatformProgress(searchId, platformProgress, platform, queryLoopProgress(platformCompletedQueries, platformQueries.length));
       }
 
+      if (platformQueries.length > 0) await setPlatformProgress(searchId, platformProgress, platform, PLATFORM_PROGRESS_STAGE.NORMALIZED);
       allNormalized.push(...platformNormalizedBatch);
       const platformSavedCount = await saveIncrementalResults(searchId, platformNormalizedBatch);
+      if (platformQueries.length > 0) await setPlatformProgress(searchId, platformProgress, platform, PLATFORM_PROGRESS_STAGE.SAVED);
 
       platformStatus[platform] = platformQueries.length === 0 ? 'NOT_CONFIGURED' : platformHadSuccess ? (platformHadFailure ? 'PARTIAL' : 'COMPLETE') : (providerAnyConfigured ? 'FAILED' : 'NOT_CONFIGURED');
+      if (platformStatus[platform] !== 'FAILED') {
+        await setPlatformProgress(searchId, platformProgress, platform, PLATFORM_PROGRESS_STAGE.COMPLETE);
+      }
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
       logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform, status: platformStatus[platform], queriesExecuted: platformQueries.length, resultsCollected: platformNormalizedBatch.length, saved: platformSavedCount, durationMs: Date.now() - platformStartedAt });
     }
@@ -529,14 +591,24 @@ export async function runExperimentalSearchPipeline(searchId) {
     if (platforms.includes('META_AD_LIBRARY') && !isCancelled(searchId)) {
       platformStatus.META_AD_LIBRARY = 'SEARCHING';
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
+      await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.INITIALIZED);
       const adStartedAt = Date.now();
       const adNormalizedBatch = [];
       if (apifyHandlesAdLibrary) {
         const mode = search.mode === 'deep' ? 'deep' : 'quick';
         const rawLimit = [100, 250, 500, 1000, 2000].includes(Number(input.adLibraryRawLimit)) ? Number(input.adLibraryRawLimit) : 100;
         const activeOnly = Boolean(input.adLibraryActiveOnly);
+        await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.QUERIES_PREPARED);
         try {
+          // A single staged call spanning multiple internal tiers — no
+          // per-tier signal is exposed to this caller without editing the
+          // shared metaAdLibraryProvider.js, so progress advances to a
+          // real mid-point before the await and jumps to QUERIES_END the
+          // moment the real (tiered) response comes back, rather than
+          // faking intermediate ticks with no real signal behind them.
+          await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.QUERIES_START);
           const staged = await withTimeout(runStagedSearch({ profile, country: search.country, activeOnly, mode, rawLimit }), META_AD_LIBRARY_TIMEOUT_MS, 'META_AD_LIBRARY:apify');
+          await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.QUERIES_END);
           let platformHadSuccess = false, platformHadFailure = false;
           for (const tierResult of staged.tiers) {
             await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: tierResult.queries.join('، '), query_type: tierResult.tier, provider: tierResult.provider, status: tierResult.error ? 'FAILED' : 'COMPLETE', result_count: tierResult.rawCount, error: tierResult.error } });
@@ -564,7 +636,8 @@ export async function runExperimentalSearchPipeline(searchId) {
         // wasn't available — Step 12).
         logger.info(`${LOG_PREFIX} Meta Ads primary (Apify) unavailable — starting Graph/SerpApi fallback`, { searchId });
         const fbQueries = generateSearchQueries(profile, ['META_AD_LIBRARY']);
-        let fbSuccess = false, fbFailure = false;
+        await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.QUERIES_PREPARED);
+        let fbSuccess = false, fbFailure = false, fbCompleted = 0;
         for (const q of fbQueries) {
           try {
             const result = await withTimeout(runProviderSearch({ platform: 'META_AD_LIBRARY', query: q.query, resultsLimit: 25, country: search.country }), PROVIDER_TIMEOUT_MS, 'META_AD_LIBRARY:fallback');
@@ -578,12 +651,19 @@ export async function runExperimentalSearchPipeline(searchId) {
             await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: q.query, query_type: q.queryType, provider: 'meta_ad_library_fallback', status: 'FAILED', error: err.message } });
             fbFailure = true;
           }
+          fbCompleted += 1;
+          await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', queryLoopProgress(fbCompleted, fbQueries.length));
         }
         platformStatus.META_AD_LIBRARY = fbQueries.length === 0 ? 'NOT_CONFIGURED' : fbSuccess ? (fbFailure ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
         logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'META_AD_LIBRARY', provider: 'fallback_dispatcher', status: platformStatus.META_AD_LIBRARY, queriesExecuted: fbQueries.length, resultsCollected: adNormalizedBatch.length, durationMs: Date.now() - adStartedAt });
       }
+      await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.NORMALIZED);
       allNormalized.push(...adNormalizedBatch);
       await saveIncrementalResults(searchId, adNormalizedBatch);
+      await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.SAVED);
+      if (platformStatus.META_AD_LIBRARY !== 'FAILED') {
+        await setPlatformProgress(searchId, platformProgress, 'META_AD_LIBRARY', PLATFORM_PROGRESS_STAGE.COMPLETE);
+      }
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
     }
 

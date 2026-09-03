@@ -277,6 +277,11 @@ router.get(
     const resultCount = await prisma.experimentalCreativeResult.count({ where: { search_id: search.id, ignored: false } });
     const platforms = JSON.parse(search.platforms_json || '[]');
     const platformStatusMap = JSON.parse(search.platform_status_json || '{}');
+    // Real per-platform 0-100 progress (Step: real Progress system) —
+    // read straight from the DB column experimentalCreativeDiscovery.js
+    // writes at each real execution stage, so it survives a page refresh
+    // by construction (never reconstructed from frontend memory/timers).
+    const platformProgressMap = JSON.parse(search.platform_progress_json || '{}');
 
     // Real per-platform collected/unique counts — never hardcoded demo numbers.
     const rows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id, ignored: false }, select: { platform: true, classification: true } });
@@ -318,6 +323,7 @@ router.get(
       mode: search.mode,
       status: search.status,
       platformStatus: platformStatusMap,
+      platformProgress: platformProgressMap,
       platformErrors,
       byPlatform,
       aiProfile: search.ai_profile_json ? JSON.parse(search.ai_profile_json) : null,

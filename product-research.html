@@ -314,6 +314,12 @@
           #prExperimentalSection .icd-platform-card.status-FAILED { border-color: var(--icd-red); }
           #prExperimentalSection .icd-platform-name { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
           #prExperimentalSection .icd-platform-provider { font-size: 10.5px; color: var(--icd-faint); margin-bottom: 8px; }
+          #prExperimentalSection .icd-platform-progress-pct { font-size: 15px; font-weight: 800; color: var(--icd-text); }
+          #prExperimentalSection .icd-platform-progress-bar { height: 6px; border-radius: 999px; background: rgba(139,144,179,0.18); overflow: hidden; margin: 5px 0 10px; }
+          #prExperimentalSection .icd-platform-progress-fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; background: var(--icd-blue); }
+          #prExperimentalSection .icd-platform-progress-fill.st-complete { background: var(--icd-green); }
+          #prExperimentalSection .icd-platform-progress-fill.st-partial { background: var(--icd-yellow); }
+          #prExperimentalSection .icd-platform-progress-fill.st-failed { background: var(--icd-red); }
           #prExperimentalSection .icd-platform-count { font-size: 22px; font-weight: 800; color: var(--icd-cyan); line-height: 1.1; }
           #prExperimentalSection .icd-platform-count-label { font-size: 10.5px; color: var(--icd-faint); }
           #prExperimentalSection .icd-platform-status { font-size: 11px; margin-top: 8px; padding: 3px 9px; border-radius: 999px; display: inline-block; }

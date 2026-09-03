@@ -271,9 +271,19 @@ function renderProgress(data) {
       const count = data.byPlatform?.[p] ?? 0;
       const err = data.platformErrors?.[p];
       const statusClass = { COMPLETE: 'COMPLETE', PARTIAL: 'PARTIAL', FAILED: 'FAILED' }[s] || '';
+      // Real, backend-driven percentage (Step: real Progress system) —
+      // read straight from data.platformProgress on every poll, never
+      // computed or animated by a frontend timer. Defaults to 1% only
+      // when the field is genuinely absent (e.g. an older search row from
+      // before this feature) — never fabricated beyond that. The bar's
+      // `width` transitions smoothly via CSS between real values; the
+      // number itself is exactly what the backend last persisted.
+      const progress = Math.max(1, Math.min(100, Math.round(data.platformProgress?.[p] ?? 1)));
       return `<div class="icd-platform-card status-${statusClass}">
         <div class="icd-platform-name">${PLATFORM_LABEL[p] || p}</div>
         <div class="icd-platform-provider" data-provider-for="${p}">جاري التحقق...</div>
+        <div class="icd-platform-progress-pct">${progress}%</div>
+        <div class="icd-platform-progress-bar"><div class="icd-platform-progress-fill st-${statusClass ? statusClass.toLowerCase() : 'running'}" style="width:${progress}%"></div></div>
         <div class="icd-platform-count">${count}</div>
         <div class="icd-platform-count-label">نتيجة تم جمعها</div>
         <span class="icd-platform-status ${PLATFORM_STATUS_CLASS[s] || 'st-pending'}">${PLATFORM_STATUS_AR[s] || s}</span>

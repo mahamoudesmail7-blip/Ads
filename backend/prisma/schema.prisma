@@ -819,6 +819,7 @@ model ExperimentalCreativeSearch {
   mode            String    @default("quick") // quick|deep
   status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED|CANCELLED
   platform_status_json String?
+  platform_progress_json String? // real per-platform 0-100 progress, JSON map {platform: number} — driven entirely by real execution stages in experimentalCreativeDiscovery.js (job created/provider initialized/queries prepared/per-query progress/results collected/normalized/saved/completed), never a frontend timer; persisted here so it survives a page refresh (Step: real Progress system)
   ai_profile_json String?
   identity_profile_json String? // the full Product Identity Profile generated from the image (Stage A + any Stage B enrichment) — see productVisionService.js
   identity_provider      String? // LOCAL_VISION | LOCAL_VISION+ANTHROPIC | ANTHROPIC_VISION — diagnostic: which real provider(s) actually produced this profile (Step 24)
