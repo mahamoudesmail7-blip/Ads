@@ -343,8 +343,35 @@ export async function runExperimentalSearchPipeline(searchId) {
         // didn't finish in time. Never fabricates a visual identity;
         // identity/referenceEmbedding simply stay null, and visual
         // verification later in the pipeline is skipped accordingly.
+        //
+        // REAL BUG FOUND live while testing this exact fix: analyzeProduct()
+        // sends `imageBase64` to Claude Vision whenever it's present
+        // (productResearchAI.js) — passing the original `input` through
+        // unchanged here would have silently re-attached the very image
+        // this fallback exists to stop waiting on, defeating the whole
+        // point. imageBase64/imageMediaType are explicitly stripped so
+        // this is a genuinely fast, real, text-only call — and it's still
+        // bounded by its own independent timeout as defense in depth,
+        // since askClaude() has no timeout of its own.
         logger.info(`${LOG_PREFIX} STAGE_A_FALLBACK_TO_TEXT`, { searchId });
-        ({ profile, source: aiSource } = await analyzeProduct({ ...input, productName: search.product_name }));
+        const { imageBase64: _img, imageMediaType: _imgType, ...textOnlyInput } = input;
+        try {
+          ({ profile, source: aiSource } = await withTimeout(analyzeProduct({ ...textOnlyInput, productName: search.product_name }), PROVIDER_TIMEOUT_MS, 'analyzeProduct_fallback'));
+        } catch (err) {
+          logger.error(`${LOG_PREFIX} STAGE_A_FALLBACK_TIMED_OUT`, { searchId, message: err.message });
+          // Honest, fully deterministic profile (Step 23: never invent
+          // fields) — same shape analyzeProduct() itself falls back to
+          // internally, used here only because even the bounded Claude
+          // call didn't return in time; real platform search still runs
+          // on the real typed name/keywords.
+          profile = {
+            main_product_name: search.product_name, product_category: '', product_description: input.description || '',
+            possible_names_ar: input.namesAr || [], possible_names_en: input.namesEn || [], alternative_names: input.possibleNames || [],
+            supplier_names: [], generic_names: [], benefits: [], problems_solved: [], features: [], use_cases: [], target_audience: [],
+            keywords_ar: input.namesAr || [], keywords_en: input.keywords || [], visual_identifiers: [], negative_keywords: [],
+          };
+          aiSource = 'fallback';
+        }
       } else {
         // Pure IMAGE_ONLY with no usable identity within budget — an
         // honest, fast failure instead of hanging.
@@ -352,7 +379,22 @@ export async function runExperimentalSearchPipeline(searchId) {
         return;
       }
     } else {
-      ({ profile, source: aiSource } = await analyzeProduct({ ...input, productName: search.product_name }));
+      // No image at all — Step 10's real-timeout guarantee applies here
+      // too, even though this exact call is already proven fast in
+      // production; a genuine external-API hang should never be able to
+      // block the pipeline regardless of which entry point it came from.
+      try {
+        ({ profile, source: aiSource } = await withTimeout(analyzeProduct({ ...input, productName: search.product_name }), PROVIDER_TIMEOUT_MS, 'analyzeProduct'));
+      } catch (err) {
+        logger.error(`${LOG_PREFIX} TEXT_ANALYSIS_TIMED_OUT`, { searchId, message: err.message });
+        profile = {
+          main_product_name: search.product_name, product_category: '', product_description: input.description || '',
+          possible_names_ar: input.namesAr || [], possible_names_en: input.namesEn || [], alternative_names: input.possibleNames || [],
+          supplier_names: [], generic_names: [], benefits: [], problems_solved: [], features: [], use_cases: [], target_audience: [],
+          keywords_ar: input.namesAr || [], keywords_en: input.keywords || [], visual_identifiers: [], negative_keywords: [],
+        };
+        aiSource = 'fallback';
+      }
     }
     logger.info(`${LOG_PREFIX} PRODUCT_ANALYSIS_COMPLETE`, { searchId, mainProductName: profile?.main_product_name });
     await updateSearch(searchId, { status: 'GENERATING_QUERIES', ai_profile_json: JSON.stringify({ ...profile, _analysisSource: aiSource }) });
