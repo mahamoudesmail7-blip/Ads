@@ -52,6 +52,40 @@ async function updateSearch(id, data) {
   return prisma.experimentalCreativeSearch.update({ where: { id }, data });
 }
 
+// Real, per-call, always-firing timeout (Step 10) — wraps a single
+// provider/query call so a genuinely hung HTTP request can never block a
+// platform (or the whole pipeline) forever. Scoped here, not inside the
+// shared provider files (searchProviders/index.js, googleSearchProvider.js,
+// etc.) — those are shared with the old Product Research pipeline, which
+// this task's constraint says not to touch; bounding the wait at the
+// orchestrator level gets the same real protection without editing a
+// shared file. On timeout the specific query is marked FAILED with a
+// clear reason and every other platform/query continues unaffected.
+const PROVIDER_TIMEOUT_MS = 30000;
+const META_AD_LIBRARY_TIMEOUT_MS = 120000; // Apify actor runs are real, slower background jobs — a longer, still-bounded budget
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`مهلة الطلب انتهت (${label}) بعد ${Math.round(ms / 1000)} ثانية`), { code: 'PROVIDER_TIMEOUT' })), ms)),
+  ]);
+}
+
+// Incremental save (Step 7) — persists one platform's real results the
+// moment they arrive instead of waiting for every platform to finish.
+// GET /search/:id already computes resultCount/byPlatform live from the
+// DB on every poll (never from a cached counter), so a row written here
+// is visible to the frontend on its very next poll while other platforms
+// may still be running. Relies on the real @@unique([search_id,
+// canonical_url]) constraint (skipDuplicates) so calling this once per
+// platform can never create a duplicate row even if two platforms surface
+// the same canonical URL.
+async function saveIncrementalResults(searchId, normalizedBatch) {
+  const deduped = deduplicateResults(normalizedBatch.filter(Boolean));
+  if (deduped.length === 0) return 0;
+  await prisma.experimentalCreativeResult.createMany({ data: deduped.map((r) => ({ ...r, search_id: searchId })), skipDuplicates: true });
+  return deduped.length;
+}
+
 // --- Stale-search watchdog (real production incident found live: search
 // jobs live only in one process's in-memory promise chain, with no
 // persistent job queue. If that process dies mid-run — a Railway
@@ -234,67 +268,112 @@ export async function runExperimentalSearchPipeline(searchId) {
   try {
     await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus) });
 
+    logger.info(`${LOG_PREFIX} SEARCH_START`, { searchId, hasImage, searchMode: search.search_mode, mode: search.mode, platforms });
     let profile, aiSource, identity = null, referenceEmbedding = null, referencePerceptualHash = null;
+    // search.product_name is a real placeholder string (never null, see
+    // the schema comment) for a pure IMAGE_ONLY submission, so it's ALWAYS
+    // truthy — search_mode, not product_name, is the real signal for "no
+    // manual name was actually typed" here.
+    const hadManualName = search.search_mode !== 'IMAGE_ONLY';
     if (hasImage) {
       // Stage A — image is the primary identity signal (Step 17), always
-      // run when an image exists, regardless of whether the user also
-      // typed something (typed text becomes a manual override merged on
-      // top, never dropped — identityToSearchProfile's manualOverrides).
-      // Goes through the LOCAL_VISION-first provider abstraction
-      // (productVisionService.js) — this orchestrator never knows or
-      // cares whether LOCAL_VISION alone or LOCAL_VISION+ANTHROPIC
-      // actually produced the profile (Step 1).
+      // attempted first when an image exists. Goes through the
+      // LOCAL_VISION-first provider abstraction (productVisionService.js)
+      // — this orchestrator never knows or cares whether LOCAL_VISION
+      // alone or LOCAL_VISION+ANTHROPIC actually produced the profile
+      // (Step 1).
       //
-      // Transient DB breadcrumb (cleared right after, never left visible
-      // to a real user) — added specifically to diagnose a real, still-
-      // unresolved hang on the live Railway deploy with no other log
-      // access available: lets a poll of GET /search/:id during a stuck
-      // run distinguish "never reached this call" from "stuck inside it".
-      const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = await analyzeProductImage(input.imageBase64, input.imageMediaType, async (step) => {
-        await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
-      });
+      // REAL PRODUCTION FINDING: the Local Vision worker's own internal
+      // 180s timeout was NOT reliably firing — three separate real
+      // searches (ids 31/32/33) sat stuck past that mark with zero
+      // recovery until this session's stale-search watchdog eventually
+      // caught them at the 6-minute mark, meaning the pipeline never even
+      // reached platform search. This outer, independent race is the
+      // actual fix: it guarantees the ORCHESTRATOR can never wait on
+      // Stage A forever, regardless of what's wrong inside the worker.
+      // Local Vision's own internals are intentionally untouched (Step 20
+      // — not proven to be the root cause, only proven unreliable from
+      // the outside) — this only bounds how long this file waits for it.
+      const IMAGE_IDENTITY_TIMEOUT_MS = 60000;
+      logger.info(`${LOG_PREFIX} STAGE_A_START`, { searchId });
+      let identityResult = null;
+      try {
+        identityResult = await Promise.race([
+          analyzeProductImage(input.imageBase64, input.imageMediaType, async (step) => {
+            // Transient DB breadcrumb (cleared right after) — lets a poll
+            // of GET /search/:id during a still-running Stage A
+            // distinguish "never reached this call" from "stuck inside
+            // it", without depending on this race for correctness.
+            await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`Local Vision لسه بيحلل الصورة ومردش خلال ${Math.round(IMAGE_IDENTITY_TIMEOUT_MS / 1000)} ثانية`), { code: 'IMAGE_IDENTITY_TIMEOUT' })), IMAGE_IDENTITY_TIMEOUT_MS)),
+        ]);
+      } catch (err) {
+        if (err.code !== 'IMAGE_IDENTITY_TIMEOUT') throw err; // a REAL analysis error still fails the search honestly (outer catch), unchanged behavior
+        logger.error(`${LOG_PREFIX} STAGE_A_TIMED_OUT`, { searchId, timeoutMs: IMAGE_IDENTITY_TIMEOUT_MS, hadManualName });
+      }
       await updateSearch(searchId, { error: null });
-      identity = generatedIdentity;
-      referenceEmbedding = embedding;
-      referencePerceptualHash = perceptualHash;
-      await updateSearch(searchId, { reference_image_hash: imageHash, identity_profile_json: JSON.stringify(identity), identity_provider: identityProvider });
 
-      // search.product_name is a real placeholder string (never null, see
-      // the schema comment) for a pure IMAGE_ONLY submission, so it's
-      // ALWAYS truthy — search_mode, not product_name, is the real signal
-      // for "no manual name was actually typed" here.
-      const hadManualName = search.search_mode !== 'IMAGE_ONLY';
-      if (!identity.mainProductName && !hadManualName) {
-        // Neither the image nor manual text produced a usable name — an
-        // honest failure, never a silent guess (Step 23), and never lets
-        // the placeholder string itself leak into query generation.
-        await updateSearch(searchId, { status: 'FAILED', error: 'مقدرش أتعرف على المنتج من الصورة، ولا فيه اسم منتج مكتوب. جرب صورة أوضح أو اكتب اسم المنتج يدويًا.', completed_at: new Date() });
+      if (identityResult) {
+        const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = identityResult;
+        identity = generatedIdentity;
+        referenceEmbedding = embedding;
+        referencePerceptualHash = perceptualHash;
+        await updateSearch(searchId, { reference_image_hash: imageHash, identity_profile_json: JSON.stringify(identity), identity_provider: identityProvider });
+
+        if (!identity.mainProductName && !hadManualName) {
+          // Neither the image nor manual text produced a usable name — an
+          // honest failure, never a silent guess (Step 23), and never
+          // lets the placeholder string itself leak into query generation.
+          await updateSearch(searchId, { status: 'FAILED', error: 'مقدرش أتعرف على المنتج من الصورة، ولا فيه اسم منتج مكتوب. جرب صورة أوضح أو اكتب اسم المنتج يدويًا.', completed_at: new Date() });
+          return;
+        }
+        if (!hadManualName) {
+          // Fill the real placeholder product_name with the real generated name (Step 21's auto-fill).
+          await updateSearch(searchId, { product_name: identity.mainProductName || search.product_name });
+        }
+        profile = identityToSearchProfile(identity, { productName: hadManualName ? search.product_name : undefined, possibleNames: input.possibleNames, namesAr: input.namesAr, namesEn: input.namesEn, keywords: input.keywords });
+        aiSource = identityProvider;
+        logger.info(`${LOG_PREFIX} STAGE_A_DONE`, { searchId, identityProvider, mainProductName: identity.mainProductName });
+      } else if (hadManualName) {
+        // Real degrade-to-text fallback (Step 16: make the existing
+        // pipeline reliably execute rather than a rewrite) — a typed
+        // name/keywords already exist, so real platform search can still
+        // proceed honestly on that real signal even though image identity
+        // didn't finish in time. Never fabricates a visual identity;
+        // identity/referenceEmbedding simply stay null, and visual
+        // verification later in the pipeline is skipped accordingly.
+        logger.info(`${LOG_PREFIX} STAGE_A_FALLBACK_TO_TEXT`, { searchId });
+        ({ profile, source: aiSource } = await analyzeProduct({ ...input, productName: search.product_name }));
+      } else {
+        // Pure IMAGE_ONLY with no usable identity within budget — an
+        // honest, fast failure instead of hanging.
+        await updateSearch(searchId, { status: 'FAILED', error: 'تحليل الصورة محليًا اخد وقت أطول من المتوقع من غير رد، ومفيش اسم منتج مكتوب نكمل بيه. جرب تاني أو اكتب اسم المنتج يدويًا.', completed_at: new Date() });
         return;
       }
-      if (!hadManualName) {
-        // Fill the real placeholder product_name with the real generated name (Step 21's auto-fill).
-        await updateSearch(searchId, { product_name: identity.mainProductName || search.product_name });
-      }
-      profile = identityToSearchProfile(identity, { productName: hadManualName ? search.product_name : undefined, possibleNames: input.possibleNames, namesAr: input.namesAr, namesEn: input.namesEn, keywords: input.keywords });
-      aiSource = identityProvider;
     } else {
       ({ profile, source: aiSource } = await analyzeProduct({ ...input, productName: search.product_name }));
     }
+    logger.info(`${LOG_PREFIX} PRODUCT_ANALYSIS_COMPLETE`, { searchId, mainProductName: profile?.main_product_name });
     await updateSearch(searchId, { status: 'GENERATING_QUERIES', ai_profile_json: JSON.stringify({ ...profile, _analysisSource: aiSource }) });
 
     if (isCancelled(searchId)) return finalizeCancelled(searchId);
 
     await updateSearch(searchId, { status: 'SEARCHING' });
+    logger.info(`${LOG_PREFIX} STARTING_PLATFORM_DISCOVERY`, { searchId, platforms });
     const providerAnyConfigured = (await isAnyProviderConfigured()) || apifyHandlesAdLibrary || usesGoogle;
     const allNormalized = [];
 
     // --- Google first (Step 16's Stage B needs its evidence before the
     // remaining platforms' queries are generated from the enriched profile) ---
     if (usesGoogle && !isCancelled(searchId)) {
+      platformStatus.google = 'SEARCHING';
+      await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
       const googleQueries = generateSearchQueries(profile, ['google']);
       const gStartedAt = Date.now();
       let gSuccess = false, gFailure = false;
       const googleRawItems = [];
+      const googleNormalizedBatch = [];
       for (const q of googleQueries) {
         try {
           // Direct call, bypassing the shared runProviderSearch dispatcher
@@ -305,14 +384,15 @@ export async function runExperimentalSearchPipeline(searchId) {
           // touch. googleSearchProvider.search() itself needs zero
           // change: an unrecognized platform value already falls through
           // to a plain, unfiltered query (confirmed by reading its code).
-          const items = await googleSearchProvider.search({ query: q.query, platform: 'google', resultsLimit: 10 });
+          const items = await withTimeout(googleSearchProvider.search({ query: q.query, platform: 'google', resultsLimit: 10 }), PROVIDER_TIMEOUT_MS, 'google');
           googleRawItems.push(...items);
           const normalized = items.map((raw) => normalizeGoogleResult(raw, q.query)).filter(Boolean);
-          allNormalized.push(...normalized);
+          googleNormalizedBatch.push(...normalized);
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: q.query, query_type: q.queryType, provider: 'google_custom_search', status: 'COMPLETE', result_count: normalized.length } });
           gSuccess = true;
+          logger.info(`${LOG_PREFIX}[google] query`, { searchId, query: q.query, received: items.length });
         } catch (err) {
-          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'google', query: q.query, errorType: err.name || 'Error' });
+          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'google', query: q.query, errorType: err.code === 'PROVIDER_TIMEOUT' ? 'TIMEOUT' : err.name || 'Error' });
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: q.query, query_type: q.queryType, provider: 'google_custom_search', status: 'FAILED', error: err.message } });
           gFailure = true;
         }
@@ -327,18 +407,21 @@ export async function runExperimentalSearchPipeline(searchId) {
       const primaryQuery = googleQueries[0];
       if (primaryQuery && !isCancelled(searchId)) {
         try {
-          const imageItems = await googleSearchProvider.searchImages({ query: primaryQuery.query, resultsLimit: 10 });
+          const imageItems = await withTimeout(googleSearchProvider.searchImages({ query: primaryQuery.query, resultsLimit: 10 }), PROVIDER_TIMEOUT_MS, 'google_image');
           const normalizedImages = imageItems.map((raw) => normalizeGoogleImageResult(raw, primaryQuery.query)).filter(Boolean);
-          allNormalized.push(...normalizedImages);
+          googleNormalizedBatch.push(...normalizedImages);
           imgCount = normalizedImages.length;
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: primaryQuery.query, query_type: 'GOOGLE_IMAGE_SEARCH', provider: 'google_custom_search_image', status: 'COMPLETE', result_count: imgCount } });
           imgSuccess = true;
         } catch (err) {
-          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'google', query: primaryQuery.query, queryType: 'GOOGLE_IMAGE_SEARCH', errorType: err.name || 'Error' });
+          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'google', query: primaryQuery.query, queryType: 'GOOGLE_IMAGE_SEARCH', errorType: err.code === 'PROVIDER_TIMEOUT' ? 'TIMEOUT' : err.name || 'Error' });
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: primaryQuery.query, query_type: 'GOOGLE_IMAGE_SEARCH', provider: 'google_custom_search_image', status: 'FAILED', error: err.message } });
           imgFailure = true;
         }
       }
+
+      allNormalized.push(...googleNormalizedBatch);
+      const googleSavedCount = await saveIncrementalResults(searchId, googleNormalizedBatch);
 
       // Honest combined status (Step 9): COMPLETE only if both real
       // request types that were attempted succeeded; PARTIAL when only
@@ -350,7 +433,7 @@ export async function runExperimentalSearchPipeline(searchId) {
       const anyFailedHere = gFailure || imgFailure;
       platformStatus.google = !anyAttempted ? 'NOT_CONFIGURED' : anySucceeded ? (anyFailedHere ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
-      logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'google', status: platformStatus.google, queriesExecuted: googleQueries.length + (primaryQuery ? 1 : 0), resultsCollected: googleRawItems.length + imgCount, textResults: googleRawItems.length, imageResults: imgCount, durationMs: Date.now() - gStartedAt });
+      logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'google', status: platformStatus.google, queriesExecuted: googleQueries.length + (primaryQuery ? 1 : 0), resultsCollected: googleRawItems.length + imgCount, saved: googleSavedCount, textResults: googleRawItems.length, imageResults: imgCount, durationMs: Date.now() - gStartedAt });
 
       if (hasImage && googleRawItems.length > 0) {
         profile = enrichProfileFromGoogleResults(profile, googleRawItems);
@@ -375,60 +458,107 @@ export async function runExperimentalSearchPipeline(searchId) {
       const platformQueries = savedQueries.filter((q) => q.platform === platform);
       let platformHadSuccess = false, platformHadFailure = false;
       const platformStartedAt = Date.now();
+      const platformNormalizedBatch = [];
+
+      if (platformQueries.length > 0) {
+        platformStatus[platform] = 'SEARCHING';
+        await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
+      }
 
       for (const q of platformQueries) {
         try {
-          const result = await runProviderSearch({ platform, query: q.query, resultsLimit: 25, country: search.country });
+          const result = await withTimeout(runProviderSearch({ platform, query: q.query, resultsLimit: 25, country: search.country }), PROVIDER_TIMEOUT_MS, platform);
           const normalized = result.items.map((raw) => normalizeResult(raw, { platform, provider: result.providerName, query: q.query, queryType: q.query_type })).filter(Boolean);
-          allNormalized.push(...normalized);
+          platformNormalizedBatch.push(...normalized);
           await prisma.experimentalCreativeQuery.update({ where: { id: q.id }, data: { status: 'COMPLETE', provider: result.providerName, result_count: normalized.length } });
           platformHadSuccess = true;
+          logger.info(`${LOG_PREFIX}[${platform}] query`, { searchId, query: q.query, received: result.items.length, provider: result.providerName });
         } catch (err) {
-          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform, provider: q.provider, query: q.query, errorType: err.name || 'Error' });
+          const errorType = err.code === 'PROVIDER_TIMEOUT' ? 'TIMEOUT' : err.name || 'Error';
+          logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform, provider: q.provider, query: q.query, errorType });
           await prisma.experimentalCreativeQuery.update({ where: { id: q.id }, data: { status: 'FAILED', error: err.message } });
           platformHadFailure = true;
         }
       }
 
+      allNormalized.push(...platformNormalizedBatch);
+      const platformSavedCount = await saveIncrementalResults(searchId, platformNormalizedBatch);
+
       platformStatus[platform] = platformQueries.length === 0 ? 'NOT_CONFIGURED' : platformHadSuccess ? (platformHadFailure ? 'PARTIAL' : 'COMPLETE') : (providerAnyConfigured ? 'FAILED' : 'NOT_CONFIGURED');
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
-      logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform, status: platformStatus[platform], queriesExecuted: platformQueries.length, resultsCollected: allNormalized.filter((r) => r.platform === platform).length, durationMs: Date.now() - platformStartedAt });
+      logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform, status: platformStatus[platform], queriesExecuted: platformQueries.length, resultsCollected: platformNormalizedBatch.length, saved: platformSavedCount, durationMs: Date.now() - platformStartedAt });
     }
 
-    if (apifyHandlesAdLibrary && !isCancelled(searchId)) {
-      const mode = search.mode === 'deep' ? 'deep' : 'quick';
-      const rawLimit = [100, 250, 500, 1000, 2000].includes(Number(input.adLibraryRawLimit)) ? Number(input.adLibraryRawLimit) : 100;
-      const activeOnly = Boolean(input.adLibraryActiveOnly);
+    if (platforms.includes('META_AD_LIBRARY') && !isCancelled(searchId)) {
+      platformStatus.META_AD_LIBRARY = 'SEARCHING';
+      await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
       const adStartedAt = Date.now();
-      try {
-        const staged = await runStagedSearch({ profile, country: search.country, activeOnly, mode, rawLimit });
-        let platformHadSuccess = false, platformHadFailure = false;
-        for (const tierResult of staged.tiers) {
-          await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: tierResult.queries.join('، '), query_type: tierResult.tier, provider: tierResult.provider, status: tierResult.error ? 'FAILED' : 'COMPLETE', result_count: tierResult.rawCount, error: tierResult.error } });
-          if (tierResult.error) platformHadFailure = true; else platformHadSuccess = true;
+      const adNormalizedBatch = [];
+      if (apifyHandlesAdLibrary) {
+        const mode = search.mode === 'deep' ? 'deep' : 'quick';
+        const rawLimit = [100, 250, 500, 1000, 2000].includes(Number(input.adLibraryRawLimit)) ? Number(input.adLibraryRawLimit) : 100;
+        const activeOnly = Boolean(input.adLibraryActiveOnly);
+        try {
+          const staged = await withTimeout(runStagedSearch({ profile, country: search.country, activeOnly, mode, rawLimit }), META_AD_LIBRARY_TIMEOUT_MS, 'META_AD_LIBRARY:apify');
+          let platformHadSuccess = false, platformHadFailure = false;
+          for (const tierResult of staged.tiers) {
+            await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: tierResult.queries.join('، '), query_type: tierResult.tier, provider: tierResult.provider, status: tierResult.error ? 'FAILED' : 'COMPLETE', result_count: tierResult.rawCount, error: tierResult.error } });
+            if (tierResult.error) platformHadFailure = true; else platformHadSuccess = true;
+          }
+          for (const raw of staged.allRawItems) {
+            const normalized = normalizeResult(raw, { platform: 'META_AD_LIBRARY', provider: 'apify_meta_ad_library', query: raw._sourceQueries?.join('، ') || '', queryType: 'APIFY_STAGED' });
+            if (normalized) adNormalizedBatch.push(normalized);
+          }
+          platformStatus.META_AD_LIBRARY = platformHadSuccess ? (platformHadFailure ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
+          logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'META_AD_LIBRARY', provider: 'apify_meta_ad_library', status: platformStatus.META_AD_LIBRARY, queriesExecuted: staged.tiers.length, resultsCollected: staged.allRawItems.length, durationMs: Date.now() - adStartedAt });
+        } catch (err) {
+          const errorType = err.code === 'PROVIDER_TIMEOUT' ? 'TIMEOUT' : err.name || 'Error';
+          logger.error(`${LOG_PREFIX} META_AD_LIBRARY_FAILED`, { searchId, provider: 'apify', errorType, message: err.message });
+          await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: '(staged discovery)', query_type: 'APIFY_STAGED', provider: 'apify_meta_ad_library', status: 'FAILED', error: err.message } });
+          platformStatus.META_AD_LIBRARY = 'FAILED';
         }
-        for (const raw of staged.allRawItems) {
-          const normalized = normalizeResult(raw, { platform: 'META_AD_LIBRARY', provider: 'apify_meta_ad_library', query: raw._sourceQueries?.join('، ') || '', queryType: 'APIFY_STAGED' });
-          if (normalized) allNormalized.push(normalized);
+      } else {
+        // Apify not configured/available — verify the fallback documented
+        // in metaAdLibraryProvider.js (Graph API, then SerpApi Ad-Library
+        // search) actually runs, via the shared dispatcher, instead of
+        // silently leaving this platform stuck at PENDING forever (a real
+        // gap found live: there was previously no branch at all for this
+        // case, so META_AD_LIBRARY never got a terminal status when Apify
+        // wasn't available — Step 12).
+        logger.info(`${LOG_PREFIX} Meta Ads primary (Apify) unavailable — starting Graph/SerpApi fallback`, { searchId });
+        const fbQueries = generateSearchQueries(profile, ['META_AD_LIBRARY']);
+        let fbSuccess = false, fbFailure = false;
+        for (const q of fbQueries) {
+          try {
+            const result = await withTimeout(runProviderSearch({ platform: 'META_AD_LIBRARY', query: q.query, resultsLimit: 25, country: search.country }), PROVIDER_TIMEOUT_MS, 'META_AD_LIBRARY:fallback');
+            const normalized = result.items.map((raw) => normalizeResult(raw, { platform: 'META_AD_LIBRARY', provider: result.providerName, query: q.query, queryType: q.queryType })).filter(Boolean);
+            adNormalizedBatch.push(...normalized);
+            await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: q.query, query_type: q.queryType, provider: result.providerName, status: 'COMPLETE', result_count: normalized.length } });
+            fbSuccess = true;
+          } catch (err) {
+            const errorType = err.code === 'PROVIDER_TIMEOUT' ? 'TIMEOUT' : err.name || 'Error';
+            logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'META_AD_LIBRARY', query: q.query, errorType });
+            await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: q.query, query_type: q.queryType, provider: 'meta_ad_library_fallback', status: 'FAILED', error: err.message } });
+            fbFailure = true;
+          }
         }
-        platformStatus.META_AD_LIBRARY = platformHadSuccess ? (platformHadFailure ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
-        logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'META_AD_LIBRARY', provider: 'apify_meta_ad_library', status: platformStatus.META_AD_LIBRARY, queriesExecuted: staged.tiers.length, resultsCollected: staged.allRawItems.length, durationMs: Date.now() - adStartedAt });
-      } catch (err) {
-        logger.error(`${LOG_PREFIX} META_AD_LIBRARY_FAILED`, { searchId, errorType: err.name || 'Error', message: err.message });
-        await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'META_AD_LIBRARY', query: '(staged discovery)', query_type: 'APIFY_STAGED', provider: 'apify_meta_ad_library', status: 'FAILED', error: err.message } });
-        platformStatus.META_AD_LIBRARY = 'FAILED';
+        platformStatus.META_AD_LIBRARY = fbQueries.length === 0 ? 'NOT_CONFIGURED' : fbSuccess ? (fbFailure ? 'PARTIAL' : 'COMPLETE') : 'FAILED';
+        logger.info(`${LOG_PREFIX} PLATFORM_DONE`, { searchId, platform: 'META_AD_LIBRARY', provider: 'fallback_dispatcher', status: platformStatus.META_AD_LIBRARY, queriesExecuted: fbQueries.length, resultsCollected: adNormalizedBatch.length, durationMs: Date.now() - adStartedAt });
       }
+      allNormalized.push(...adNormalizedBatch);
+      await saveIncrementalResults(searchId, adNormalizedBatch);
       await updateSearch(searchId, { platform_status_json: JSON.stringify(platformStatus) });
     }
 
     if (isCancelled(searchId)) return finalizeCancelled(searchId);
 
+    // Every platform above already persisted its own results the moment
+    // they arrived (Step 7 — saveIncrementalResults, per-platform, right
+    // after that platform finished) rather than batching to this point —
+    // this just reads back the real, already-saved total for ranking.
+    // `deduped`/`allNormalized` kept only for the SEARCH_DONE log below.
     const deduped = deduplicateResults(allNormalized);
-    let saved = [];
-    if (deduped.length > 0) {
-      await prisma.experimentalCreativeResult.createMany({ data: deduped.map((r) => ({ ...r, search_id: searchId })), skipDuplicates: true });
-      saved = await prisma.experimentalCreativeResult.findMany({ where: { search_id: searchId } });
-    }
+    const saved = await prisma.experimentalCreativeResult.findMany({ where: { search_id: searchId } });
 
     if (saved.length > 0) {
       await updateSearch(searchId, { status: 'RANKING' });

@@ -20,8 +20,8 @@ const STATUS_LABEL_AR = {
   SEARCHING: 'جاري البحث في المنصات...', RANKING: 'جاري تحليل وترتيب النتائج...',
   COMPLETED: '✅ اكتمل البحث', PARTIAL: '⚠️ اكتمل جزئيًا', FAILED: '❌ فشل البحث', CANCELLED: '⛔ اتلغى البحث',
 };
-const PLATFORM_STATUS_AR = { PENDING: 'في الانتظار', COMPLETE: 'مكتمل', PARTIAL: 'نتائج جزئية', FAILED: 'فشل', NOT_CONFIGURED: 'غير مربوط' };
-const PLATFORM_STATUS_CLASS = { PENDING: 'st-pending', COMPLETE: 'st-complete', PARTIAL: 'st-partial', FAILED: 'st-failed', NOT_CONFIGURED: 'st-pending' };
+const PLATFORM_STATUS_AR = { PENDING: 'في الانتظار', SEARCHING: 'جاري البحث...', COMPLETE: 'مكتمل', PARTIAL: 'نتائج جزئية', FAILED: 'فشل', NOT_CONFIGURED: 'غير مربوط' };
+const PLATFORM_STATUS_CLASS = { PENDING: 'st-pending', SEARCHING: 'st-running', COMPLETE: 'st-complete', PARTIAL: 'st-partial', FAILED: 'st-failed', NOT_CONFIGURED: 'st-pending' };
 const PROVIDER_STATUS_BADGE = { CONNECTED: 'green', DEGRADED: 'yellow', ERROR: 'red', NOT_CONFIGURED: 'faint' };
 const PROVIDER_STATUS_LABEL = { CONNECTED: '✅ متصل', DEGRADED: '🟡 غير مستقر', ERROR: '⚠️ خطأ', NOT_CONFIGURED: '⚪ غير مربوط' };
 const PLATFORM_ERROR_LABEL_AR = {
