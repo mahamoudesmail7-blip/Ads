@@ -10,6 +10,37 @@ import { logger } from '../../logger.js';
 
 const ENDPOINT = 'https://www.googleapis.com/customsearch/v1';
 
+// --- Conclusively verified unavailable for this Google Cloud project
+// (real production evidence, not guessed) ---
+// Real live requests kept returning 403 PERMISSION_DENIED / reason
+// "forbidden" / "This project does not have the access to Custom Search
+// JSON API." AFTER every configuration angle was independently confirmed
+// correct: Custom Search API enabled on the right project, correct API
+// key, key's API restrictions set to Custom Search API specifically,
+// application restrictions set to None, correct Search Engine ID (cx),
+// and daily quota available (100/day, not exhausted). With every
+// credential/config dimension eliminated, the remaining explanation is
+// that this Google Cloud project itself does not have real access to the
+// API (a project-level entitlement, not something a key/cx change can
+// fix) — Google's Custom Search JSON API is known to be withheld from
+// some projects/regions/account types outside of the documented
+// enable/key/quota flow entirely.
+//
+// This flag stops every real network call this file would otherwise make
+// (see the short-circuit in callGoogle() below) so nothing keeps spending
+// the limited daily quota against a request that has already failed
+// identically, byte-for-byte, on repeat real attempts. Flip this back to
+// `false` only after a real, deliberate reason to re-test (e.g. Google
+// support confirms access was granted) — never as a guess.
+const UNSUPPORTED_FOR_NEW_PROJECT = true;
+const UNSUPPORTED_REASON = {
+  httpStatus: 403,
+  googleErrorCode: 403,
+  googleErrorStatus: 'PERMISSION_DENIED',
+  googleErrorReason: 'forbidden',
+  googleErrorMessage: 'This project does not have the access to Custom Search JSON API.',
+};
+
 const SITE_FILTER = {
   instagram: 'site:instagram.com',
   facebook: 'site:facebook.com',
@@ -33,6 +64,12 @@ export function isConfigured() {
 export function classifyGoogleErrorType(err) {
   if (err?.googleErrorReason === 'NOT_CONFIGURED') return 'NOT_CONFIGURED';
   if (err?.googleErrorReason === 'NETWORK_ERROR') return 'NETWORK_ERROR';
+  if (err?.googleErrorReason === 'UNSUPPORTED_FOR_NEW_PROJECT') return 'UNSUPPORTED_FOR_NEW_PROJECT';
+  // Message-text fallback for the DB-reclassification path (only
+  // err.message survives into ExperimentalCreativeQuery.error) — matches
+  // this exact, real, conclusively-verified wording so a stored old error
+  // still reclassifies correctly on later reads.
+  if (/does not have the access to custom search json api/i.test(err?.googleErrorMessage || err?.message || '')) return 'UNSUPPORTED_FOR_NEW_PROJECT';
   const reason = (err?.googleErrorReason || '').toLowerCase();
   const status = err?.googleErrorStatus || '';
   const message = (err?.googleErrorMessage || err?.message || '').toLowerCase();
@@ -73,6 +110,7 @@ const GOOGLE_ERROR_LABEL_AR = {
   INVALID_REQUEST: 'طلب غير صحيح لجوجل',
   IMAGE_SEARCH_DISABLED: 'البحث بالصور غير مفعّل على محرك البحث ده',
   SEARCH_SCOPE_LIMITED: 'محرك البحث محدود بنطاق مواقع معيّن، مش الويب كله',
+  UNSUPPORTED_FOR_NEW_PROJECT: 'Google Custom Search JSON API غير متاح لمشروع جوجل ده — تم التأكد الحي إن كل الإعدادات صحيحة (المفتاح، صلاحياته، معرّف محرك البحث، الكوتة) وبرضو جوجل بترفض بنفس الخطأ',
   GOOGLE_API_ERROR: 'خطأ من واجهة جوجل',
 };
 
@@ -115,6 +153,22 @@ async function callGoogle(params, context) {
   if (!apiKey || !engineId) {
     const err = new Error('Google Search Provider غير مربوط — GOOGLE_SEARCH_API_KEY أو GOOGLE_SEARCH_ENGINE_ID مش متظبطين.');
     err.googleErrorReason = 'NOT_CONFIGURED';
+    throw err;
+  }
+
+  // Single choke point: every real network call this file can make goes
+  // through here, so gating it here (not per-caller) is what actually
+  // "stops automatic requests to Google" everywhere at once — no live
+  // HTTP request is made at all once this is set, so no quota is spent
+  // re-confirming an already conclusively-verified real failure.
+  if (UNSUPPORTED_FOR_NEW_PROJECT) {
+    const err = new Error(UNSUPPORTED_REASON.googleErrorMessage);
+    err.httpStatus = UNSUPPORTED_REASON.httpStatus;
+    err.googleErrorCode = UNSUPPORTED_REASON.googleErrorCode;
+    err.googleErrorStatus = UNSUPPORTED_REASON.googleErrorStatus;
+    err.googleErrorReason = 'UNSUPPORTED_FOR_NEW_PROJECT';
+    err.googleErrorMessage = UNSUPPORTED_REASON.googleErrorMessage;
+    err.googleErrorRaw = { code: UNSUPPORTED_REASON.googleErrorCode, message: UNSUPPORTED_REASON.googleErrorMessage, status: UNSUPPORTED_REASON.googleErrorStatus, errors: [{ message: UNSUPPORTED_REASON.googleErrorMessage, domain: 'global', reason: 'forbidden' }] };
     throw err;
   }
 
@@ -226,10 +280,17 @@ let statusCache = null; // {result, at}
 const STATUS_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /**
- * @returns {Promise<{status: 'NOT_CONFIGURED'|'HEALTHY'|'ERROR'|'QUOTA_EXHAUSTED', reasonType: string|null, reasonLabelAr: string|null, lastCheckedAt: string, latencyMs: number|null}>}
+ * @returns {Promise<{status: 'NOT_CONFIGURED'|'HEALTHY'|'ERROR'|'QUOTA_EXHAUSTED'|'UNSUPPORTED_FOR_NEW_PROJECT', reasonType: string|null, reasonLabelAr: string|null, lastCheckedAt: string, latencyMs: number|null}>}
  */
 export async function getHealthStatus({ force = false } = {}) {
   if (!isConfigured()) return { status: 'NOT_CONFIGURED', reasonType: null, reasonLabelAr: null, lastCheckedAt: new Date().toISOString(), latencyMs: null };
+  // Never CONNECTED/HEALTHY just because credentials exist, and never
+  // spends a real request re-confirming a conclusively-verified failure
+  // (Step 3 of the Google fix-up request) — reported directly, no
+  // testConnection() call at all.
+  if (UNSUPPORTED_FOR_NEW_PROJECT) {
+    return { status: 'UNSUPPORTED_FOR_NEW_PROJECT', reasonType: 'UNSUPPORTED_FOR_NEW_PROJECT', reasonLabelAr: googleErrorLabelAr('UNSUPPORTED_FOR_NEW_PROJECT'), lastCheckedAt: new Date().toISOString(), latencyMs: null };
+  }
   if (!force && statusCache && Date.now() - statusCache.at < STATUS_CACHE_TTL_MS) return statusCache.result;
 
   const check = await testConnection('test');

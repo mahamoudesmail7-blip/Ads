@@ -65,7 +65,18 @@ router.get(
     // isConfigured()-based display for their Google FALLBACK path,
         // unchanged — out of this task's explicit Google-only scope.
     const googleHealth = await googleSearchProvider.getHealthStatus();
-    const googleStatusMap = { HEALTHY: 'CONNECTED', ERROR: 'ERROR', QUOTA_EXHAUSTED: 'ERROR', NOT_CONFIGURED: 'NOT_CONFIGURED' };
+    // UNSUPPORTED_FOR_NEW_PROJECT (Step 1 of the follow-up request) is its
+    // own honest state, never squeezed into CONNECTED just because
+    // GOOGLE_SEARCH_API_KEY/GOOGLE_SEARCH_ENGINE_ID exist — conclusively
+    // verified via real production requests (403 PERMISSION_DENIED /
+    // "This project does not have the access to Custom Search JSON API.")
+    // after every other configuration angle (key, key's API restriction,
+    // app restriction, cx, quota) was independently confirmed correct.
+    // Mapped to the same 'ERROR' badge color as a generic failure (no
+    // frontend change needed — it already falls back gracefully for
+    // unrecognized status strings), but `healthStatus` below carries the
+    // real, specific, distinct value.
+    const googleStatusMap = { HEALTHY: 'CONNECTED', ERROR: 'ERROR', QUOTA_EXHAUSTED: 'ERROR', UNSUPPORTED_FOR_NEW_PROJECT: 'ERROR', NOT_CONFIGURED: 'NOT_CONFIGURED' };
 
     res.json({
       enabled: true,
@@ -80,7 +91,7 @@ router.get(
           provider: googleOk ? 'Google Custom Search' : null,
           status: googleStatusMap[googleHealth.status] || 'NOT_CONFIGURED',
           detail: googleHealth.reasonLabelAr || null,
-          healthStatus: googleHealth.status, // NOT_CONFIGURED | HEALTHY | ERROR | QUOTA_EXHAUSTED — the honest, specific state; `status` above is only the coarse badge color
+          healthStatus: googleHealth.status, // NOT_CONFIGURED | HEALTHY | ERROR | QUOTA_EXHAUSTED | UNSUPPORTED_FOR_NEW_PROJECT — the honest, specific state; `status` above is only the coarse badge color
           lastCheckedAt: googleHealth.lastCheckedAt,
         },
       ],
