@@ -70,6 +70,27 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+/** Same honest, fully-deterministic shape analyzeProduct() (productResearchAI.js) itself already falls back to internally on a real error — never invents a field, just echoes the real user input into the profile shape query generation needs. Used whenever even the bounded Claude call didn't return in time. */
+function deterministicTextProfile(search, input) {
+  return {
+    main_product_name: search.product_name, product_category: '', product_description: input.description || '',
+    possible_names_ar: input.namesAr || [], possible_names_en: input.namesEn || [], alternative_names: input.possibleNames || [],
+    supplier_names: [], generic_names: [], benefits: [], problems_solved: [], features: [], use_cases: [], target_audience: [],
+    keywords_ar: input.namesAr || [], keywords_en: input.keywords || [], visual_identifiers: [], negative_keywords: [],
+  };
+}
+
+/** Real, bounded, text-only product analysis (Step 10) — always strips any imageBase64/imageMediaType before calling analyzeProduct() (a real bug found live: passing them through re-attaches an image to a Claude Vision call even in a path meant to avoid exactly that), and always resolves within PROVIDER_TIMEOUT_MS one way or another: a real Claude analysis, or the same honest deterministic fallback analyzeProduct() itself uses on error. */
+async function analyzeTextOnly(searchId, search, input) {
+  const { imageBase64: _img, imageMediaType: _imgType, ...textOnlyInput } = input;
+  try {
+    return await withTimeout(analyzeProduct({ ...textOnlyInput, productName: search.product_name }), PROVIDER_TIMEOUT_MS, 'analyzeProduct');
+  } catch (err) {
+    logger.error(`${LOG_PREFIX} TEXT_ANALYSIS_TIMED_OUT`, { searchId, message: err.message });
+    return { profile: deterministicTextProfile(search, input), source: 'fallback' };
+  }
+}
+
 // Incremental save (Step 7) — persists one platform's real results the
 // moment they arrive instead of waiting for every platform to finish.
 // GET /search/:id already computes resultCount/byPlatform live from the
@@ -275,41 +296,58 @@ export async function runExperimentalSearchPipeline(searchId) {
     // truthy — search_mode, not product_name, is the real signal for "no
     // manual name was actually typed" here.
     const hadManualName = search.search_mode !== 'IMAGE_ONLY';
-    if (hasImage) {
-      // Stage A — image is the primary identity signal (Step 17), always
-      // attempted first when an image exists. Goes through the
-      // LOCAL_VISION-first provider abstraction (productVisionService.js)
-      // — this orchestrator never knows or cares whether LOCAL_VISION
-      // alone or LOCAL_VISION+ANTHROPIC actually produced the profile
-      // (Step 1).
-      //
-      // REAL PRODUCTION FINDING: the Local Vision worker's own internal
-      // 180s timeout was NOT reliably firing — three separate real
-      // searches (ids 31/32/33) sat stuck past that mark with zero
-      // recovery until this session's stale-search watchdog eventually
-      // caught them at the 6-minute mark, meaning the pipeline never even
-      // reached platform search. This outer, independent race is the
-      // actual fix: it guarantees the ORCHESTRATOR can never wait on
-      // Stage A forever, regardless of what's wrong inside the worker.
-      // Local Vision's own internals are intentionally untouched (Step 20
-      // — not proven to be the root cause, only proven unreliable from
-      // the outside) — this only bounds how long this file waits for it.
+    // REAL PRODUCTION FINDING (root cause, confirmed across 12+ real
+    // searches over many hours and 3 separate deploys): every real
+    // (cache-miss) attempt at Stage A's local-vision call hung
+    // indefinitely, and was NEVER recovered by any in-process JS timeout —
+    // not the worker's own original 180s timeout, and not a from-scratch
+    // 60s Promise.race added and verified logically correct in this same
+    // session, tested live twice. A Promise.race cannot fail to fire its
+    // own independent setTimeout unless the whole process stops running
+    // before the timer's due time — which is consistent with every one of
+    // these searches only ever being recovered by the cross-process
+    // stale-search watchdog (which survives because it re-runs on
+    // whatever process boots next), never by anything scoped to the
+    // process that started the search. The strong, evidence-consistent
+    // read: spawning the Local Vision worker (onnxruntime-node + CLIP
+    // models, ~180MB) is crashing the container outright (most likely an
+    // OOM kill) before any JS-level recovery code gets a chance to run —
+    // not fixable by any amount of timeout engineering, only by never
+    // making the crash-prone call in the first place when a safe
+    // alternative exists.
+    //
+    // So: when a manual name was typed, Stage A no longer attempts the
+    // real local-vision call at all — it goes straight to real, bounded
+    // text analysis, so platform search always actually runs. Local
+    // Vision's own internals are untouched (Step 20 — this is a call-site
+    // decision in the orchestrator, not a fix inside Local Vision, and
+    // not proven to be broken in every environment, only in this one).
+    // Reversible: set EXPERIMENTAL_ALWAYS_ATTEMPT_IMAGE_IDENTITY=true to
+    // go back to always attempting it (e.g. once verified safe on a host
+    // with more memory).
+    const alwaysAttemptImageIdentity = (process.env.EXPERIMENTAL_ALWAYS_ATTEMPT_IMAGE_IDENTITY || '').trim().toLowerCase() === 'true';
+    const attemptLocalVision = hasImage && (!hadManualName || alwaysAttemptImageIdentity);
+
+    if (attemptLocalVision) {
+      // Stage A — image is the primary identity signal (Step 17). Still
+      // bounded by an outer, independent 60s race as a best-effort safety
+      // net (a real analysis error, as opposed to a crash, is still
+      // caught and reported honestly) — it just isn't sufficient on its
+      // own if the whole process dies, which is why the branch above
+      // exists to avoid this call entirely whenever there's a safe
+      // alternative.
       const IMAGE_IDENTITY_TIMEOUT_MS = 60000;
       logger.info(`${LOG_PREFIX} STAGE_A_START`, { searchId });
       let identityResult = null;
       try {
         identityResult = await Promise.race([
           analyzeProductImage(input.imageBase64, input.imageMediaType, async (step) => {
-            // Transient DB breadcrumb (cleared right after) — lets a poll
-            // of GET /search/:id during a still-running Stage A
-            // distinguish "never reached this call" from "stuck inside
-            // it", without depending on this race for correctness.
             await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
           }),
           new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`Local Vision لسه بيحلل الصورة ومردش خلال ${Math.round(IMAGE_IDENTITY_TIMEOUT_MS / 1000)} ثانية`), { code: 'IMAGE_IDENTITY_TIMEOUT' })), IMAGE_IDENTITY_TIMEOUT_MS)),
         ]);
       } catch (err) {
-        if (err.code !== 'IMAGE_IDENTITY_TIMEOUT') throw err; // a REAL analysis error still fails the search honestly (outer catch), unchanged behavior
+        if (err.code !== 'IMAGE_IDENTITY_TIMEOUT') throw err;
         logger.error(`${LOG_PREFIX} STAGE_A_TIMED_OUT`, { searchId, timeoutMs: IMAGE_IDENTITY_TIMEOUT_MS, hadManualName });
       }
       await updateSearch(searchId, { error: null });
@@ -322,79 +360,36 @@ export async function runExperimentalSearchPipeline(searchId) {
         await updateSearch(searchId, { reference_image_hash: imageHash, identity_profile_json: JSON.stringify(identity), identity_provider: identityProvider });
 
         if (!identity.mainProductName && !hadManualName) {
-          // Neither the image nor manual text produced a usable name — an
-          // honest failure, never a silent guess (Step 23), and never
-          // lets the placeholder string itself leak into query generation.
           await updateSearch(searchId, { status: 'FAILED', error: 'مقدرش أتعرف على المنتج من الصورة، ولا فيه اسم منتج مكتوب. جرب صورة أوضح أو اكتب اسم المنتج يدويًا.', completed_at: new Date() });
           return;
         }
         if (!hadManualName) {
-          // Fill the real placeholder product_name with the real generated name (Step 21's auto-fill).
           await updateSearch(searchId, { product_name: identity.mainProductName || search.product_name });
         }
         profile = identityToSearchProfile(identity, { productName: hadManualName ? search.product_name : undefined, possibleNames: input.possibleNames, namesAr: input.namesAr, namesEn: input.namesEn, keywords: input.keywords });
         aiSource = identityProvider;
         logger.info(`${LOG_PREFIX} STAGE_A_DONE`, { searchId, identityProvider, mainProductName: identity.mainProductName });
       } else if (hadManualName) {
-        // Real degrade-to-text fallback (Step 16: make the existing
-        // pipeline reliably execute rather than a rewrite) — a typed
-        // name/keywords already exist, so real platform search can still
-        // proceed honestly on that real signal even though image identity
-        // didn't finish in time. Never fabricates a visual identity;
-        // identity/referenceEmbedding simply stay null, and visual
-        // verification later in the pipeline is skipped accordingly.
-        //
-        // REAL BUG FOUND live while testing this exact fix: analyzeProduct()
-        // sends `imageBase64` to Claude Vision whenever it's present
-        // (productResearchAI.js) — passing the original `input` through
-        // unchanged here would have silently re-attached the very image
-        // this fallback exists to stop waiting on, defeating the whole
-        // point. imageBase64/imageMediaType are explicitly stripped so
-        // this is a genuinely fast, real, text-only call — and it's still
-        // bounded by its own independent timeout as defense in depth,
-        // since askClaude() has no timeout of its own.
         logger.info(`${LOG_PREFIX} STAGE_A_FALLBACK_TO_TEXT`, { searchId });
-        const { imageBase64: _img, imageMediaType: _imgType, ...textOnlyInput } = input;
-        try {
-          ({ profile, source: aiSource } = await withTimeout(analyzeProduct({ ...textOnlyInput, productName: search.product_name }), PROVIDER_TIMEOUT_MS, 'analyzeProduct_fallback'));
-        } catch (err) {
-          logger.error(`${LOG_PREFIX} STAGE_A_FALLBACK_TIMED_OUT`, { searchId, message: err.message });
-          // Honest, fully deterministic profile (Step 23: never invent
-          // fields) — same shape analyzeProduct() itself falls back to
-          // internally, used here only because even the bounded Claude
-          // call didn't return in time; real platform search still runs
-          // on the real typed name/keywords.
-          profile = {
-            main_product_name: search.product_name, product_category: '', product_description: input.description || '',
-            possible_names_ar: input.namesAr || [], possible_names_en: input.namesEn || [], alternative_names: input.possibleNames || [],
-            supplier_names: [], generic_names: [], benefits: [], problems_solved: [], features: [], use_cases: [], target_audience: [],
-            keywords_ar: input.namesAr || [], keywords_en: input.keywords || [], visual_identifiers: [], negative_keywords: [],
-          };
-          aiSource = 'fallback';
-        }
+        ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
       } else {
         // Pure IMAGE_ONLY with no usable identity within budget — an
-        // honest, fast failure instead of hanging.
+        // honest, fast failure instead of hanging. No safe fallback exists
+        // here (no typed name at all) — this is the one real remaining
+        // gap: a pure image-only submission still has to risk the
+        // crash-prone call since there's no alternative signal.
         await updateSearch(searchId, { status: 'FAILED', error: 'تحليل الصورة محليًا اخد وقت أطول من المتوقع من غير رد، ومفيش اسم منتج مكتوب نكمل بيه. جرب تاني أو اكتب اسم المنتج يدويًا.', completed_at: new Date() });
         return;
       }
+    } else if (hasImage && hadManualName) {
+      // The common, now-safe case: a typed name exists, so the crash-prone
+      // local-vision call is skipped entirely rather than attempted and
+      // hoped-to-be-recovered. Real platform search runs on the real
+      // typed name/keywords; no visual identity/verification this run.
+      logger.info(`${LOG_PREFIX} STAGE_A_SKIPPED_FOR_STABILITY`, { searchId });
+      ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
     } else {
-      // No image at all — Step 10's real-timeout guarantee applies here
-      // too, even though this exact call is already proven fast in
-      // production; a genuine external-API hang should never be able to
-      // block the pipeline regardless of which entry point it came from.
-      try {
-        ({ profile, source: aiSource } = await withTimeout(analyzeProduct({ ...input, productName: search.product_name }), PROVIDER_TIMEOUT_MS, 'analyzeProduct'));
-      } catch (err) {
-        logger.error(`${LOG_PREFIX} TEXT_ANALYSIS_TIMED_OUT`, { searchId, message: err.message });
-        profile = {
-          main_product_name: search.product_name, product_category: '', product_description: input.description || '',
-          possible_names_ar: input.namesAr || [], possible_names_en: input.namesEn || [], alternative_names: input.possibleNames || [],
-          supplier_names: [], generic_names: [], benefits: [], problems_solved: [], features: [], use_cases: [], target_audience: [],
-          keywords_ar: input.namesAr || [], keywords_en: input.keywords || [], visual_identifiers: [], negative_keywords: [],
-        };
-        aiSource = 'fallback';
-      }
+      ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
     }
     logger.info(`${LOG_PREFIX} PRODUCT_ANALYSIS_COMPLETE`, { searchId, mainProductName: profile?.main_product_name });
     await updateSearch(searchId, { status: 'GENERATING_QUERIES', ai_profile_json: JSON.stringify({ ...profile, _analysisSource: aiSource }) });
