@@ -43,7 +43,7 @@ const internalCreativeDiscovery = {
   mode: 'quick',
   currentPage: 1,
   showAllMatches: false, // "توسيع النتائج المشابهة" toggle — false = strict >=75 default view
-  currentSearchHasImage: false, // whether the CURRENT search had a reference image at all (real, from the backend — never guessed)
+  currentSearchVisualMatchingActive: false, // whether the CURRENT search has a REAL visual profile (identityProvider set) — never just "an image was uploaded"
 };
 
 function escapeHtml(s) { return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? ''); }
@@ -278,7 +278,15 @@ function startPolling(searchId) {
 }
 
 function renderProgress(data) {
-  internalCreativeDiscovery.currentSearchHasImage = Boolean(data.productImage);
+  // Real signal, not "an image was uploaded": identityProvider is only
+  // ever set once Stage A's real local-vision pass actually succeeded
+  // (productVisionService.analyzeProductImages). An uploaded image whose
+  // visual analysis was skipped or timed out leaves this null — in that
+  // case every result's visual_match_score stays null too, so applying
+  // the strict >=75 default filter would hide EVERY result instead of
+  // just the weak ones. Only switch into the strict-by-default view when
+  // there's a real visual profile behind it.
+  internalCreativeDiscovery.currentSearchVisualMatchingActive = Boolean(data.productImage) && Boolean(data.identityProvider);
   document.getElementById('icdProductName2').textContent = data.productName;
   const thumb = document.getElementById('icdProductThumb');
   const placeholder = document.getElementById('icdProductThumbPlaceholder');
@@ -421,7 +429,7 @@ async function loadResults(searchId, page = 1) {
   // visualMatchScore >= 75 results are requested at all — never mixed
   // client-side, the backend itself excludes weaker/unverified matches
   // from this response.
-  if (internalCreativeDiscovery.currentSearchHasImage && !internalCreativeDiscovery.showAllMatches) {
+  if (internalCreativeDiscovery.currentSearchVisualMatchingActive && !internalCreativeDiscovery.showAllMatches) {
     params.minVisualMatchScore = 75;
   }
 
@@ -440,7 +448,7 @@ async function loadResults(searchId, page = 1) {
   if (data.results.length === 0) {
     grid.innerHTML = '';
     empty.style.display = 'block';
-    empty.textContent = internalCreativeDiscovery.currentSearchHasImage && !internalCreativeDiscovery.showAllMatches
+    empty.textContent = internalCreativeDiscovery.currentSearchVisualMatchingActive && !internalCreativeDiscovery.showAllMatches
       ? 'مفيش نتايج مطابقة تمامًا للمنتج لسه — جرب "توسيع النتائج المشابهة" فوق.'
       : 'مفيش نتايج.';
     rangeEl.textContent = '';
@@ -464,7 +472,7 @@ async function loadResults(searchId, page = 1) {
 function renderExpandToggle(searchId, total) {
   const row = document.getElementById('icdExpandMatchesRow');
   if (!row) return;
-  if (!internalCreativeDiscovery.currentSearchHasImage) { row.style.display = 'none'; return; }
+  if (!internalCreativeDiscovery.currentSearchVisualMatchingActive) { row.style.display = 'none'; return; }
   row.style.display = 'block';
   row.innerHTML = internalCreativeDiscovery.showAllMatches
     ? `<button class="icd-btn secondary small" id="icdBtnCollapseMatches">🎯 عرض المطابقات القوية فقط (75%+)</button>`
@@ -492,7 +500,7 @@ function resultCardHtml(r) {
         <span class="icd-mini-badge ${CLASS_COLOR[classification] || ''}">${CLASS_LABEL[classification] || classification}${r.matchScore !== null && r.matchScore !== undefined ? ` ${r.matchScore}%` : ''}</span>
         ${r.visualMatchScore !== null && r.visualMatchScore !== undefined
           ? `<span class="icd-mini-badge ${r.visualMatchScore >= 85 ? 'green' : r.visualMatchScore >= 75 ? 'cyan' : 'yellow'}" title="${escapeHtml((r.matchReasons || []).join('، '))}">🖼️ ${r.visualMatchScore}% — ${escapeHtml(r.matchLabel || '')}</span>`
-          : (internalCreativeDiscovery.currentSearchHasImage ? '<span class="icd-mini-badge">🖼️ لم يتم التحقق بصريًا</span>' : '')}
+          : (internalCreativeDiscovery.currentSearchVisualMatchingActive ? '<span class="icd-mini-badge">🖼️ لم يتم التحقق بصريًا</span>' : '')}
         ${m.activeStatus === 'ACTIVE' ? '<span class="icd-mini-badge green">🟢 نشط</span>' : ''}
         <span class="icd-mini-badge">${escapeHtml(r.provider || '')}</span>
       </div>

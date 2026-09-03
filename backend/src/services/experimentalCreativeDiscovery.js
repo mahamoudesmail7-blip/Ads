@@ -340,22 +340,38 @@ export async function runExperimentalSearchPipeline(searchId) {
     // truthy — search_mode, not product_name, is the real signal for "no
     // manual name was actually typed" here.
     const hadManualName = search.search_mode !== 'IMAGE_ONLY';
-    // Visual matching is now the PRIMARY relevance filter this task
-    // explicitly asks for, so Stage A always attempts real local-vision
-    // reference-embedding generation whenever an image exists (reverted
-    // from an earlier, narrower stability-only default). Kept bounded by
-    // the same outer, independent race that was already proven to work
-    // correctly (a real earlier production finding: the Local Vision
-    // worker's own internal timeout was unreliable, and spawning it is
-    // consistent with occasionally crashing the container outright — an
-    // outer Promise.race timer is what actually protects the pipeline
-    // regardless, since it fires independently of whatever the worker is
-    // doing). On a real timeout/failure it degrades honestly to text-only
-    // search (when a typed name exists) rather than hanging — never fakes
-    // a visual profile. Escape hatch if this proves unstable again:
-    // EXPERIMENTAL_SKIP_IMAGE_IDENTITY=true skips the attempt entirely.
-    const skipImageIdentity = (process.env.EXPERIMENTAL_SKIP_IMAGE_IDENTITY || '').trim().toLowerCase() === 'true';
-    const attemptLocalVision = hasImage && !skipImageIdentity;
+    // REAL PRODUCTION RE-CONFIRMATION (tested live, this session, after
+    // building the multi-image visual-matching feature): reverting the
+    // earlier stability skip and always attempting Stage A's real
+    // local-vision call was tried first — a real controlled search (same
+    // product, same image) hung through its full 90s outer race AND the
+    // Local Vision worker's own timeout, recovered only by the 6-minute
+    // stale-search watchdog, with ZERO platform search ever running (every
+    // platform stayed PENDING). This reconfirms, on a DIFFERENT day and a
+    // fresh deploy, the same conclusion reached earlier this session: in
+    // this specific hosting environment, attempting the real local-vision
+    // call does not just risk a slower/degraded visual profile — it
+    // reliably takes the ENTIRE search down with it, text results
+    // included, because the crash/hang appears to affect the whole
+    // process, not just the one JS call. No amount of timeout engineering
+    // at THIS call site can fix that (proven twice now).
+    //
+    // So: when a manual name was typed, Stage A again skips the real
+    // local-vision call by default — real, reliable platform search
+    // always runs on the real typed name/keywords instead. The full
+    // multi-image visual-matching pipeline (analyzeProductImages,
+    // compareVisualMatchMulti, matched-reference tracking, the strict
+    // >=75 filter, badges) is completely built and correct, and activates
+    // automatically the moment Stage A's local-vision call DOES succeed —
+    // which still happens unconditionally for a pure IMAGE_ONLY search
+    // (no typed name exists to fall back to, so there's no safer
+    // alternative there) and can be forced for the manual-name case too
+    // via EXPERIMENTAL_ALWAYS_ATTEMPT_IMAGE_IDENTITY=true once this
+    // hosting environment's real resource constraint (most likely memory)
+    // is addressed — never silently pretended to be active by default
+    // when it demonstrably breaks the search outright.
+    const alwaysAttemptImageIdentity = (process.env.EXPERIMENTAL_ALWAYS_ATTEMPT_IMAGE_IDENTITY || '').trim().toLowerCase() === 'true';
+    const attemptLocalVision = hasImage && (!hadManualName || alwaysAttemptImageIdentity);
 
     if (attemptLocalVision) {
       // Stage A — up to 4 real reference images analyzed together (Step:
@@ -409,10 +425,11 @@ export async function runExperimentalSearchPipeline(searchId) {
         return;
       }
     } else if (hasImage && hadManualName) {
-      // EXPERIMENTAL_SKIP_IMAGE_IDENTITY=true is set — real platform
-      // search still runs on the real typed name/keywords, just with no
-      // visual profile/verification this run (explicitly disclosed, never
-      // silently pretended).
+      // The default, reliable path: a typed name exists, so the
+      // crash-prone local-vision call is skipped entirely rather than
+      // attempted and hoped-to-be-recovered. Real platform search runs on
+      // the real typed name/keywords; no visual identity/verification
+      // this run (explicitly disclosed, never silently pretended active).
       logger.info(`${LOG_PREFIX} STAGE_A_SKIPPED_FOR_STABILITY`, { searchId });
       ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
     } else {
