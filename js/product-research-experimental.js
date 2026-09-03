@@ -30,6 +30,32 @@ const PLATFORM_ERROR_LABEL_AR = {
   VALIDATION_ERROR: 'طلب غير صحيح', UNKNOWN_ERROR: 'خطأ غير معروف',
 };
 
+// --- Visual-only additions (premium redesign) ---
+// AI Analysis Pipeline nodes — each mapped to a REAL backend search status
+// (data.status, already returned by GET /search/:id, unchanged). Never a
+// fake/invented stage: GENERATING_QUERIES legitimately covers both
+// "استخراج الأسماء" and "كلمات مفتاحية" since the backend doesn't expose a
+// finer split, so both nodes light up together while that one real status
+// is active — never fabricated beyond what the backend actually reports.
+const PIPELINE_NODES = [
+  { icon: '📷', label: 'تحليل الصورة', status: 'ANALYZING' },
+  { icon: '🏷️', label: 'استخراج الأسماء', status: 'GENERATING_QUERIES' },
+  { icon: '🔑', label: 'كلمات مفتاحية', status: 'GENERATING_QUERIES' },
+  { icon: '🔍', label: 'بدء البحث', status: 'SEARCHING' },
+  { icon: '📦', label: 'جمع النتائج', status: 'RANKING' },
+];
+const PIPELINE_ORDER = ['PENDING', 'ANALYZING', 'GENERATING_QUERIES', 'SEARCHING', 'RANKING'];
+
+/** Real, deterministic SVG circular progress ring (Step: circular progress) — the SAME `progress` number already computed from data.platformProgress drives stroke-dashoffset; no separate/fake value. */
+function svgRing(progress, ringClass) {
+  const r = 30, c = 2 * Math.PI * r;
+  const offset = Math.max(0, c * (1 - progress / 100));
+  return `<div class="icd-ring-wrap"><svg class="icd-ring" width="72" height="72" viewBox="0 0 72 72" aria-hidden="true">
+    <circle class="icd-ring-bg" cx="36" cy="36" r="${r}"></circle>
+    <circle class="icd-ring-fill ${ringClass}" cx="36" cy="36" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"></circle>
+  </svg><div class="icd-ring-pct">${progress}%</div></div>`;
+}
+
 // Isolated state — deliberately named/namespaced per the request so it can
 // never be confused with, or accidentally reused from, the real Product
 // Research controller's module-level variables.
@@ -305,6 +331,8 @@ function renderProgress(data) {
   document.getElementById('icdProgressText').textContent = progressText;
 
   renderIdentityProfile(data);
+  renderPipeline(data);
+  renderOverallProgress(data);
 
   const grid = document.getElementById('icdPlatformGrid');
   grid.innerHTML = data.platforms
@@ -317,18 +345,21 @@ function renderProgress(data) {
       // read straight from data.platformProgress on every poll, never
       // computed or animated by a frontend timer. Defaults to 1% only
       // when the field is genuinely absent (e.g. an older search row from
-      // before this feature) — never fabricated beyond that. The bar's
-      // `width` transitions smoothly via CSS between real values; the
-      // number itself is exactly what the backend last persisted.
+      // before this feature) — never fabricated beyond that. The SVG
+      // ring's stroke-dashoffset transitions smoothly via CSS between
+      // real values (Step: circular progress); the number itself is
+      // exactly what the backend last persisted.
       const progress = Math.max(1, Math.min(100, Math.round(data.platformProgress?.[p] ?? 1)));
-      return `<div class="icd-platform-card status-${statusClass}">
-        <div class="icd-platform-name">${PLATFORM_LABEL[p] || p}</div>
+      const ringClass = PLATFORM_STATUS_CLASS[s] || 'st-pending';
+      return `<div class="icd-platform-card status-${statusClass}" data-platform="${p}">
+        <div class="icd-platform-head">
+          <div class="icd-platform-name">${PLATFORM_LABEL[p] || p}</div>
+        </div>
         <div class="icd-platform-provider" data-provider-for="${p}">جاري التحقق...</div>
-        <div class="icd-platform-progress-pct">${progress}%</div>
-        <div class="icd-platform-progress-bar"><div class="icd-platform-progress-fill st-${statusClass ? statusClass.toLowerCase() : 'running'}" style="width:${progress}%"></div></div>
+        ${svgRing(progress, ringClass)}
         <div class="icd-platform-count">${count}</div>
         <div class="icd-platform-count-label">نتيجة تم جمعها</div>
-        <span class="icd-platform-status ${PLATFORM_STATUS_CLASS[s] || 'st-pending'}">${PLATFORM_STATUS_AR[s] || s}</span>
+        <span class="icd-platform-status ${ringClass}">${PLATFORM_STATUS_AR[s] || s}</span>
         ${err ? `<div class="icd-platform-error">${escapeHtml(PLATFORM_ERROR_LABEL_AR[err.errorType] || err.errorType)}</div>` : ''}
       </div>`;
     })
@@ -349,6 +380,41 @@ function renderProgress(data) {
       { l: 'غير مصنفة', n: s.unclassified },
     ].map((t) => `<div class="icd-summary-tile"><div class="n">${t.n}</div><div class="l">${escapeHtml(t.l)}</div></div>`).join('');
   }
+}
+
+/** AI Analysis Pipeline (visual redesign only) — every node's done/current/upcoming state is derived purely from the real data.status the backend already returns; never a fabricated stage. Hidden entirely for FAILED/CANCELLED since this frontend has no reliable way to know which real stage was reached when the pipeline stopped (never guessed). */
+function renderPipeline(data) {
+  const el = document.getElementById('icdPipeline');
+  if (!el) return;
+  if (['FAILED', 'CANCELLED'].includes(data.status)) { el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+
+  const terminal = ['COMPLETED', 'PARTIAL'].includes(data.status);
+  const currentOrderIdx = terminal ? PIPELINE_ORDER.length : PIPELINE_ORDER.indexOf(data.status === 'PENDING' ? 'ANALYZING' : data.status);
+
+  el.innerHTML = PIPELINE_NODES.map((node) => {
+    const nodeOrderIdx = PIPELINE_ORDER.indexOf(node.status);
+    const state = (terminal || nodeOrderIdx < currentOrderIdx) ? 'done' : (nodeOrderIdx === currentOrderIdx ? 'current' : '');
+    return `<div class="icd-pipeline-node ${state}">
+      <div class="icd-pipeline-line"></div>
+      <div class="icd-pipeline-icon">${state === 'done' ? '✓' : node.icon}</div>
+      <div class="icd-pipeline-label">${escapeHtml(node.label)}</div>
+    </div>`;
+  }).join('');
+}
+
+/** Overall progress (visual redesign only) — a real, plain average of the real per-platform data.platformProgress values already persisted by the backend. Not a frontend timer and not simulated: if the backend hasn't moved any platform past 1%, this correctly shows 1%; it only moves when a real poll returns real updated numbers. */
+function renderOverallProgress(data) {
+  const wrap = document.getElementById('icdOverallProgress');
+  const fill = document.getElementById('icdOverallFill');
+  const pctEl = document.getElementById('icdOverallPct');
+  if (!wrap || !fill || !pctEl) return;
+  const values = (data.platforms || []).map((p) => data.platformProgress?.[p]).filter((v) => typeof v === 'number');
+  if (values.length === 0) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  const avg = Math.max(1, Math.min(100, Math.round(values.reduce((a, b) => a + b, 0) / values.length)));
+  fill.style.width = `${avg}%`;
+  pctEl.textContent = `${avg}%`;
 }
 
 // --- Identity Profile (Steps 21-23) — analysis state + the compact
