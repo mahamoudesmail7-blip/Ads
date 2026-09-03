@@ -33,15 +33,17 @@ const PLATFORM_ERROR_LABEL_AR = {
 // Isolated state — deliberately named/namespaced per the request so it can
 // never be confused with, or accidentally reused from, the real Product
 // Research controller's module-level variables.
+const MAX_REFERENCE_IMAGES = 4;
 const internalCreativeDiscovery = {
   featureEnabled: false,
   chips: { alt: [], ar: [], en: [], kw: [] },
-  imageBase64: null,
-  imageMediaType: null,
+  images: [], // {base64, mediaType, name, dataUrl}[] — 1-4 real reference angles of the SAME product (Step: multi-image visual matching)
   currentSearchId: null,
   pollTimer: null,
   mode: 'quick',
   currentPage: 1,
+  showAllMatches: false, // "توسيع النتائج المشابهة" toggle — false = strict >=75 default view
+  currentSearchHasImage: false, // whether the CURRENT search had a reference image at all (real, from the backend — never guessed)
 };
 
 function escapeHtml(s) { return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? ''); }
@@ -95,33 +97,60 @@ function wireChipInput(inputId, field) {
   document.querySelector(`[data-icd-add-chip="${field}"]`)?.addEventListener('click', () => addChip(field, input));
 }
 
+function renderImagePreviews() {
+  const el = document.getElementById('icdImagePreviews');
+  if (!el) return;
+  el.innerHTML = internalCreativeDiscovery.images
+    .map((img, i) => `<div class="icd-ref-thumb"><img src="${img.dataUrl}" alt="صورة ${i + 1}"><span class="icd-ref-idx">${i + 1}</span><button type="button" data-remove-image="${i}" title="حذف">×</button></div>`)
+    .join('');
+  el.querySelectorAll('[data-remove-image]').forEach((btn) => {
+    btn.onclick = () => {
+      internalCreativeDiscovery.images.splice(Number(btn.dataset.removeImage), 1);
+      renderImagePreviews();
+      updateImagePickerState();
+    };
+  });
+}
+
+function updateImagePickerState() {
+  const btn = document.getElementById('icdBtnPickImage');
+  const nameEl = document.getElementById('icdImageName');
+  if (!btn || !nameEl) return;
+  const count = internalCreativeDiscovery.images.length;
+  btn.disabled = count >= MAX_REFERENCE_IMAGES;
+  nameEl.textContent = count > 0 ? `${count}/${MAX_REFERENCE_IMAGES} صور مرفوعة` : '';
+}
+
+/** 1-4 real reference images of the SAME product (Step: multi-image visual matching) — 1 image still works fine; extra angles (side/back/packaging) only make visual matching more accurate, never required. */
 function wireImageUpload() {
   const input = document.getElementById('icdImageInput');
   const btn = document.getElementById('icdBtnPickImage');
   if (!input || !btn) return;
   btn.onclick = () => input.click();
   input.addEventListener('change', () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      UI.toast('نوع الصورة لازم يكون JPEG أو PNG أو WEBP', 'error');
-      input.value = ''; return;
+    const files = [...(input.files || [])];
+    input.value = ''; // allow re-selecting the same file later
+    if (files.length === 0) return;
+    const remainingSlots = MAX_REFERENCE_IMAGES - internalCreativeDiscovery.images.length;
+    if (remainingSlots <= 0) { UI.toast(`أقصى عدد صور ${MAX_REFERENCE_IMAGES}`, 'error'); return; }
+    for (const file of files.slice(0, remainingSlots)) {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        UI.toast('نوع الصورة لازم يكون JPEG أو PNG أو WEBP', 'error');
+        continue;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        UI.toast('حجم كل صورة لازم يكون أقل من 5 ميجا', 'error');
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        internalCreativeDiscovery.images.push({ base64: dataUrl.split(',')[1], mediaType: file.type, name: file.name, dataUrl });
+        renderImagePreviews();
+        updateImagePickerState();
+      };
+      reader.readAsDataURL(file);
     }
-    if (file.size > 5 * 1024 * 1024) {
-      UI.toast('حجم الصورة أكبر من 5 ميجا', 'error');
-      input.value = ''; return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
-      internalCreativeDiscovery.imageBase64 = dataUrl.split(',')[1];
-      internalCreativeDiscovery.imageMediaType = file.type;
-      document.getElementById('icdImageName').textContent = file.name;
-      const preview = document.getElementById('icdImagePreview');
-      preview.src = dataUrl;
-      preview.style.display = 'block';
-    };
-    reader.readAsDataURL(file);
   });
 }
 
@@ -160,7 +189,7 @@ async function startSearch() {
   // as long as an image was uploaded — Stage A generates the name
   // automatically server-side. Only block submit when NEITHER exists.
   const productName = document.getElementById('icdProductName').value.trim();
-  const hasImage = Boolean(internalCreativeDiscovery.imageBase64);
+  const hasImage = internalCreativeDiscovery.images.length > 0;
   if (!productName && !hasImage) return UI.toast('اكتب اسم المنتج أو ارفع صورة له', 'error');
   const platforms = [...document.querySelectorAll('#icdPlatformToggles input:checked')].map((i) => i.value);
   if (platforms.length === 0) return UI.toast('اختار منصة واحدة على الأقل', 'error');
@@ -172,8 +201,11 @@ async function startSearch() {
     namesEn: internalCreativeDiscovery.chips.en,
     keywords: internalCreativeDiscovery.chips.kw,
     description: document.getElementById('icdDescription').value.trim(),
-    imageBase64: internalCreativeDiscovery.imageBase64 || undefined,
-    imageMediaType: internalCreativeDiscovery.imageMediaType || undefined,
+    // 1-4 real reference images of the SAME product (Step: multi-image
+    // visual matching) — the backend also still accepts the old singular
+    // imageBase64/imageMediaType shape, but this page always sends the
+    // new array now.
+    images: hasImage ? internalCreativeDiscovery.images.map((img) => ({ imageBase64: img.base64, imageMediaType: img.mediaType })) : undefined,
     country: document.getElementById('icdCountry').value,
     platforms,
     mode: internalCreativeDiscovery.mode,
@@ -210,6 +242,7 @@ async function cancelSearch() {
 function resetToNewSearch() {
   if (internalCreativeDiscovery.pollTimer) clearInterval(internalCreativeDiscovery.pollTimer);
   internalCreativeDiscovery.currentSearchId = null;
+  internalCreativeDiscovery.showAllMatches = false;
   document.getElementById('icdProductCard').style.display = 'none';
   document.getElementById('icdPlatformPanel').style.display = 'none';
   document.getElementById('icdSummaryPanel').style.display = 'none';
@@ -245,6 +278,7 @@ function startPolling(searchId) {
 }
 
 function renderProgress(data) {
+  internalCreativeDiscovery.currentSearchHasImage = Boolean(data.productImage);
   document.getElementById('icdProductName2').textContent = data.productName;
   const thumb = document.getElementById('icdProductThumb');
   const placeholder = document.getElementById('icdProductThumbPlaceholder');
@@ -256,7 +290,7 @@ function renderProgress(data) {
     `<span>عدد المنصات: <b>${data.platforms.length}</b></span>`,
     `<span>إجمالي النتائج: <b>${data.resultCount}</b></span>`,
     `<span>الحالة: <b>${STATUS_LABEL_AR[data.status] || data.status}</b></span>`,
-    data.productImage ? `<span>🖼️ بحث بالصورة</span>` : '',
+    data.productImages?.length ? `<span>🖼️ بحث بالصورة (${data.productImages.length} صور مرجعية)</span>` : '',
   ].filter(Boolean).join('');
 
   let progressText = STATUS_LABEL_AR[data.status] || data.status;
@@ -382,6 +416,14 @@ async function loadResults(searchId, page = 1) {
   if (active) params.active = active;
   const sort = document.getElementById('icdSortBy')?.value;
   if (sort && sort !== 'match') params.sort = sort;
+  // Strict same-exact-product default (Step 5): whenever the search has a
+  // reference image and the user hasn't asked to expand, only real
+  // visualMatchScore >= 75 results are requested at all — never mixed
+  // client-side, the backend itself excludes weaker/unverified matches
+  // from this response.
+  if (internalCreativeDiscovery.currentSearchHasImage && !internalCreativeDiscovery.showAllMatches) {
+    params.minVisualMatchScore = 75;
+  }
 
   let data;
   try {
@@ -394,9 +436,13 @@ async function loadResults(searchId, page = 1) {
   const grid = document.getElementById('icdResultGrid');
   const empty = document.getElementById('icdResultsEmpty');
   const rangeEl = document.getElementById('icdResultsRangeText');
+  renderExpandToggle(searchId, data.total);
   if (data.results.length === 0) {
     grid.innerHTML = '';
     empty.style.display = 'block';
+    empty.textContent = internalCreativeDiscovery.currentSearchHasImage && !internalCreativeDiscovery.showAllMatches
+      ? 'مفيش نتايج مطابقة تمامًا للمنتج لسه — جرب "توسيع النتائج المشابهة" فوق.'
+      : 'مفيش نتايج.';
     rangeEl.textContent = '';
   } else {
     empty.style.display = 'none';
@@ -414,6 +460,25 @@ async function loadResults(searchId, page = 1) {
   pagEl.querySelectorAll('button').forEach((b) => (b.onclick = () => loadResults(searchId, Number(b.dataset.page))));
 }
 
+/** "توسيع النتائج المشابهة" (Step 5) — only shown at all when this search has a reference image; lets the strict >=75 default view be relaxed on demand without ever silently mixing weak matches into it automatically. */
+function renderExpandToggle(searchId, total) {
+  const row = document.getElementById('icdExpandMatchesRow');
+  if (!row) return;
+  if (!internalCreativeDiscovery.currentSearchHasImage) { row.style.display = 'none'; return; }
+  row.style.display = 'block';
+  row.innerHTML = internalCreativeDiscovery.showAllMatches
+    ? `<button class="icd-btn secondary small" id="icdBtnCollapseMatches">🎯 عرض المطابقات القوية فقط (75%+)</button>`
+    : `<button class="icd-btn secondary small" id="icdBtnExpandMatches">توسيع النتائج المشابهة (عرض كل الدرجات)</button>`;
+  document.getElementById('icdBtnExpandMatches')?.addEventListener('click', () => {
+    internalCreativeDiscovery.showAllMatches = true;
+    loadResults(searchId, 1);
+  });
+  document.getElementById('icdBtnCollapseMatches')?.addEventListener('click', () => {
+    internalCreativeDiscovery.showAllMatches = false;
+    loadResults(searchId, 1);
+  });
+}
+
 function resultCardHtml(r) {
   const classification = r.classification || 'UNCLASSIFIED';
   const m = r.metrics || {};
@@ -425,7 +490,9 @@ function resultCardHtml(r) {
       <div class="icd-result-meta">${r.accountName ? `👤 ${escapeHtml(r.accountName)}` : ''}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString('ar-EG')}` : ''}</div>
       <div class="icd-result-badges">
         <span class="icd-mini-badge ${CLASS_COLOR[classification] || ''}">${CLASS_LABEL[classification] || classification}${r.matchScore !== null && r.matchScore !== undefined ? ` ${r.matchScore}%` : ''}</span>
-        ${r.visualMatchScore !== null && r.visualMatchScore !== undefined ? `<span class="icd-mini-badge cyan">🖼️ تطابق بصري ${r.visualMatchScore}%</span>` : ''}
+        ${r.visualMatchScore !== null && r.visualMatchScore !== undefined
+          ? `<span class="icd-mini-badge ${r.visualMatchScore >= 85 ? 'green' : r.visualMatchScore >= 75 ? 'cyan' : 'yellow'}" title="${escapeHtml((r.matchReasons || []).join('، '))}">🖼️ ${r.visualMatchScore}% — ${escapeHtml(r.matchLabel || '')}</span>`
+          : (internalCreativeDiscovery.currentSearchHasImage ? '<span class="icd-mini-badge">🖼️ لم يتم التحقق بصريًا</span>' : '')}
         ${m.activeStatus === 'ACTIVE' ? '<span class="icd-mini-badge green">🟢 نشط</span>' : ''}
         <span class="icd-mini-badge">${escapeHtml(r.provider || '')}</span>
       </div>
@@ -445,6 +512,7 @@ function init() {
   wireChipInput('icdInputEn', 'en');
   wireChipInput('icdInputKw', 'kw');
   wireImageUpload();
+  updateImagePickerState();
   wireModeToggle();
 
   document.getElementById('icdBtnStartSearch')?.addEventListener('click', startSearch);

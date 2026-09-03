@@ -290,6 +290,10 @@
             outline: none; border-color: var(--icd-purple); box-shadow: 0 0 0 3px rgba(139,92,246,0.18);
           }
           #prExperimentalSection .icd-field { margin-bottom: 12px; }
+          #prExperimentalSection .icd-ref-thumb { position: relative; width: 84px; height: 84px; border-radius: 10px; overflow: hidden; border: 1px solid var(--icd-border); }
+          #prExperimentalSection .icd-ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+          #prExperimentalSection .icd-ref-thumb button { position: absolute; top: 2px; inset-inline-end: 2px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(15,17,26,0.75); color: #fff; font-size: 11px; line-height: 1; cursor: pointer; }
+          #prExperimentalSection .icd-ref-thumb .icd-ref-idx { position: absolute; bottom: 2px; inset-inline-start: 2px; background: rgba(15,17,26,0.75); color: #fff; font-size: 9.5px; padding: 1px 5px; border-radius: 999px; }
           #prExperimentalSection .icd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
           #prExperimentalSection .icd-chip { background: rgba(139,92,246,0.15); border: 1px solid var(--icd-purple); color: var(--icd-text); font-size: 11.5px; padding: 3px 8px; border-radius: 999px; display: flex; align-items: center; gap: 6px; }
           #prExperimentalSection .icd-chip button { background: none; border: none; color: var(--icd-faint); cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
@@ -376,14 +380,14 @@
           <div class="icd-panel-title">🧾 بيانات المنتج</div>
 
           <div class="icd-field">
-            <label style="font-size:13px; color:var(--icd-text); font-weight:700;">📷 ارفع صورة المنتج فقط وسيتم التعرف عليه تلقائيًا</label>
+            <label style="font-size:13px; color:var(--icd-text); font-weight:700;">📷 ارفع صور المنتج وسيتم التعرف عليه تلقائيًا</label>
             <div class="icd-row" style="align-items:center; margin-top:4px;">
-              <button type="button" class="icd-btn" id="icdBtnPickImage">اختر صورة المنتج</button>
+              <button type="button" class="icd-btn" id="icdBtnPickImage">إضافة صورة</button>
               <span class="icd-faint" id="icdImageName"></span>
             </div>
-            <img id="icdImagePreview" style="display:none; max-width:140px; border-radius:10px; margin-top:10px; border:1px solid var(--icd-border);" />
-            <input type="file" id="icdImageInput" accept="image/jpeg,image/png,image/webp" style="display:none;" />
-            <div class="icd-faint" style="margin-top:6px;">مفيش صورة؟ تقدر تكتب اسم المنتج يدويًا من "بيانات متقدمة" تحت.</div>
+            <div id="icdImagePreviews" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;"></div>
+            <input type="file" id="icdImageInput" accept="image/jpeg,image/png,image/webp" multiple style="display:none;" />
+            <div class="icd-faint" style="margin-top:6px;">ارفع حتى 4 صور لنفس المنتج من زوايا مختلفة للحصول على نتائج أدق. مفيش صورة؟ تقدر تكتب اسم المنتج يدويًا من "بيانات متقدمة" تحت.</div>
           </div>
 
           <div class="icd-field">
@@ -575,6 +579,7 @@
         <!-- Result grid -->
         <div class="icd-panel" id="icdResultsPanel" style="display:none;">
           <div class="icd-panel-title">🖼️ النتائج</div>
+          <div id="icdExpandMatchesRow" style="display:none; margin-bottom:10px;"></div>
           <div id="icdResultsRangeText" class="icd-faint" style="margin-bottom:10px;"></div>
           <div class="icd-result-grid" id="icdResultGrid"></div>
           <div class="icd-empty" id="icdResultsEmpty" style="display:none;">لم يتم العثور على نتائج بعد</div>

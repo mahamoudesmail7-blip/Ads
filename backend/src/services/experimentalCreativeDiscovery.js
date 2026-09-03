@@ -37,12 +37,16 @@ import * as apifyProvider from './searchProviders/apifyMetaAdLibraryProvider.js'
 import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 import * as googleSearchProvider from './searchProviders/googleSearchProvider.js';
 import { identityToSearchProfile } from './productIdentityVision.js';
-import { analyzeProductImage, compareVisualMatch } from './vision/productVisionService.js';
+import { analyzeProductImages, compareVisualMatchMulti } from './vision/productVisionService.js';
 
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube']; // META_AD_LIBRARY handled separately (Apify staged); 'google' handled separately (own normalizer, see below)
 const ALL_PLATFORMS = [...GENERIC_PLATFORMS, 'youtube', 'META_AD_LIBRARY', 'google'];
-const MAX_VISUAL_COMPARISONS = 12; // real cost cap on Claude-vision side-by-side comparisons per search — never unbounded
+// Widened from 12 (Step: visual matching is now the PRIMARY relevance
+// filter, not just a re-rank bonus — Step 13 still caps it for real cost
+// control, just at a number that can plausibly cover a search's real
+// candidate pool instead of only its very top text-ranked slice).
+const MAX_VISUAL_COMPARISONS = 30;
 
 const cancelFlags = new Set();
 export function requestCancel(searchId) { cancelFlags.add(searchId); }
@@ -313,7 +317,14 @@ export async function runExperimentalSearchPipeline(searchId) {
   // → 1%, per the requested status mapping).
   const platformProgress = Object.fromEntries(platforms.map((p) => [p, PLATFORM_PROGRESS_STAGE.CREATED]));
   const input = JSON.parse(search.input_json || '{}');
-  const hasImage = Boolean(input.imageBase64);
+  // Multi-image reference support (Step: same-exact-product visual
+  // matching, 1-4 real uploaded angles) — `input.images` is the real
+  // shape new searches use; a legacy row with only the old singular
+  // imageBase64 still works unchanged (treated as a 1-element array).
+  const referenceInputImages = Array.isArray(input.images) && input.images.length > 0
+    ? input.images
+    : (input.imageBase64 ? [{ imageBase64: input.imageBase64, imageMediaType: input.imageMediaType }] : []);
+  const hasImage = referenceInputImages.length > 0;
 
   const apifyHandlesAdLibrary = platforms.includes('META_AD_LIBRARY') && apifyProvider.isConfigured();
   const usesGoogle = platforms.includes('google') && googleSearchProvider.isConfigured();
@@ -322,62 +333,45 @@ export async function runExperimentalSearchPipeline(searchId) {
   try {
     await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus), platform_progress_json: JSON.stringify(platformProgress) });
 
-    logger.info(`${LOG_PREFIX} SEARCH_START`, { searchId, hasImage, searchMode: search.search_mode, mode: search.mode, platforms });
-    let profile, aiSource, identity = null, referenceEmbedding = null, referencePerceptualHash = null;
+    logger.info(`${LOG_PREFIX} SEARCH_START`, { searchId, hasImage, referenceImageCount: referenceInputImages.length, searchMode: search.search_mode, mode: search.mode, platforms });
+    let profile, aiSource, identity = null, referenceImages = [];
     // search.product_name is a real placeholder string (never null, see
     // the schema comment) for a pure IMAGE_ONLY submission, so it's ALWAYS
     // truthy — search_mode, not product_name, is the real signal for "no
     // manual name was actually typed" here.
     const hadManualName = search.search_mode !== 'IMAGE_ONLY';
-    // REAL PRODUCTION FINDING (root cause, confirmed across 12+ real
-    // searches over many hours and 3 separate deploys): every real
-    // (cache-miss) attempt at Stage A's local-vision call hung
-    // indefinitely, and was NEVER recovered by any in-process JS timeout —
-    // not the worker's own original 180s timeout, and not a from-scratch
-    // 60s Promise.race added and verified logically correct in this same
-    // session, tested live twice. A Promise.race cannot fail to fire its
-    // own independent setTimeout unless the whole process stops running
-    // before the timer's due time — which is consistent with every one of
-    // these searches only ever being recovered by the cross-process
-    // stale-search watchdog (which survives because it re-runs on
-    // whatever process boots next), never by anything scoped to the
-    // process that started the search. The strong, evidence-consistent
-    // read: spawning the Local Vision worker (onnxruntime-node + CLIP
-    // models, ~180MB) is crashing the container outright (most likely an
-    // OOM kill) before any JS-level recovery code gets a chance to run —
-    // not fixable by any amount of timeout engineering, only by never
-    // making the crash-prone call in the first place when a safe
-    // alternative exists.
-    //
-    // So: when a manual name was typed, Stage A no longer attempts the
-    // real local-vision call at all — it goes straight to real, bounded
-    // text analysis, so platform search always actually runs. Local
-    // Vision's own internals are untouched (Step 20 — this is a call-site
-    // decision in the orchestrator, not a fix inside Local Vision, and
-    // not proven to be broken in every environment, only in this one).
-    // Reversible: set EXPERIMENTAL_ALWAYS_ATTEMPT_IMAGE_IDENTITY=true to
-    // go back to always attempting it (e.g. once verified safe on a host
-    // with more memory).
-    const alwaysAttemptImageIdentity = (process.env.EXPERIMENTAL_ALWAYS_ATTEMPT_IMAGE_IDENTITY || '').trim().toLowerCase() === 'true';
-    const attemptLocalVision = hasImage && (!hadManualName || alwaysAttemptImageIdentity);
+    // Visual matching is now the PRIMARY relevance filter this task
+    // explicitly asks for, so Stage A always attempts real local-vision
+    // reference-embedding generation whenever an image exists (reverted
+    // from an earlier, narrower stability-only default). Kept bounded by
+    // the same outer, independent race that was already proven to work
+    // correctly (a real earlier production finding: the Local Vision
+    // worker's own internal timeout was unreliable, and spawning it is
+    // consistent with occasionally crashing the container outright — an
+    // outer Promise.race timer is what actually protects the pipeline
+    // regardless, since it fires independently of whatever the worker is
+    // doing). On a real timeout/failure it degrades honestly to text-only
+    // search (when a typed name exists) rather than hanging — never fakes
+    // a visual profile. Escape hatch if this proves unstable again:
+    // EXPERIMENTAL_SKIP_IMAGE_IDENTITY=true skips the attempt entirely.
+    const skipImageIdentity = (process.env.EXPERIMENTAL_SKIP_IMAGE_IDENTITY || '').trim().toLowerCase() === 'true';
+    const attemptLocalVision = hasImage && !skipImageIdentity;
 
     if (attemptLocalVision) {
-      // Stage A — image is the primary identity signal (Step 17). Still
-      // bounded by an outer, independent 60s race as a best-effort safety
-      // net (a real analysis error, as opposed to a crash, is still
-      // caught and reported honestly) — it just isn't sufficient on its
-      // own if the whole process dies, which is why the branch above
-      // exists to avoid this call entirely whenever there's a safe
-      // alternative.
-      const IMAGE_IDENTITY_TIMEOUT_MS = 60000;
-      logger.info(`${LOG_PREFIX} STAGE_A_START`, { searchId });
+      // Stage A — up to 4 real reference images analyzed together (Step:
+      // multi-image product visual profile). Widened budget vs. the
+      // previous single-image 60s since additional angles add real,
+      // bounded sequential work (each capped individually inside
+      // analyzeProductImages — one bad angle never blocks the others).
+      const IMAGE_IDENTITY_TIMEOUT_MS = 90000;
+      logger.info(`${LOG_PREFIX} STAGE_A_START`, { searchId, referenceImageCount: referenceInputImages.length });
       let identityResult = null;
       try {
         identityResult = await Promise.race([
-          analyzeProductImage(input.imageBase64, input.imageMediaType, async (step) => {
+          analyzeProductImages(referenceInputImages, async (step) => {
             await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
           }),
-          new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`Local Vision لسه بيحلل الصورة ومردش خلال ${Math.round(IMAGE_IDENTITY_TIMEOUT_MS / 1000)} ثانية`), { code: 'IMAGE_IDENTITY_TIMEOUT' })), IMAGE_IDENTITY_TIMEOUT_MS)),
+          new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`Local Vision لسه بيحلل الصور ومردش خلال ${Math.round(IMAGE_IDENTITY_TIMEOUT_MS / 1000)} ثانية`), { code: 'IMAGE_IDENTITY_TIMEOUT' })), IMAGE_IDENTITY_TIMEOUT_MS)),
         ]);
       } catch (err) {
         if (err.code !== 'IMAGE_IDENTITY_TIMEOUT') throw err;
@@ -386,11 +380,11 @@ export async function runExperimentalSearchPipeline(searchId) {
       await updateSearch(searchId, { error: null });
 
       if (identityResult) {
-        const { profile: generatedIdentity, identityProvider, imageHash, embedding, perceptualHash } = identityResult;
+        const { profile: generatedIdentity, identityProvider, imageHash, references } = identityResult;
         identity = generatedIdentity;
-        referenceEmbedding = embedding;
-        referencePerceptualHash = perceptualHash;
+        referenceImages = references || []; // {embedding, perceptualHash, imageIndex}[] — real signals only, 1-4 entries, honestly fewer if an angle failed
         await updateSearch(searchId, { reference_image_hash: imageHash, identity_profile_json: JSON.stringify(identity), identity_provider: identityProvider });
+        logger.info(`${LOG_PREFIX} VISUAL_PROFILE_BUILT`, { searchId, referenceCount: referenceImages.length, requestedCount: referenceInputImages.length });
 
         if (!identity.mainProductName && !hadManualName) {
           await updateSearch(searchId, { status: 'FAILED', error: 'مقدرش أتعرف على المنتج من الصورة، ولا فيه اسم منتج مكتوب. جرب صورة أوضح أو اكتب اسم المنتج يدويًا.', completed_at: new Date() });
@@ -415,10 +409,10 @@ export async function runExperimentalSearchPipeline(searchId) {
         return;
       }
     } else if (hasImage && hadManualName) {
-      // The common, now-safe case: a typed name exists, so the crash-prone
-      // local-vision call is skipped entirely rather than attempted and
-      // hoped-to-be-recovered. Real platform search runs on the real
-      // typed name/keywords; no visual identity/verification this run.
+      // EXPERIMENTAL_SKIP_IMAGE_IDENTITY=true is set — real platform
+      // search still runs on the real typed name/keywords, just with no
+      // visual profile/verification this run (explicitly disclosed, never
+      // silently pretended).
       logger.info(`${LOG_PREFIX} STAGE_A_SKIPPED_FOR_STABILITY`, { searchId });
       ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
     } else {
@@ -690,23 +684,29 @@ export async function runExperimentalSearchPipeline(searchId) {
         await prisma.experimentalCreativeResult.updateMany({ where: { id: { in: unrankedIds } }, data: { classification: 'UNCLASSIFIED', ai_reason: 'التحليل الذكي لسه ما وصلش للنتيجة دي (تجاوزت حد الدفعة) — النتيجة حقيقية ومعروضة زي ما هي.' } });
       }
 
-      // --- Visual verification pass (Steps 9-11/17/29): real local
-      // embedding/perceptual-hash/OCR-brand comparison, always attempted
-      // when a real reference embedding exists — capped at
-      // MAX_VISUAL_COMPARISONS for real cost/time control, only over
-      // results that have a real thumbnail. ANTHROPIC_VISION is layered
-      // on top only when worth trying (productVisionService.compareVisualMatch
-      // decides that internally) — never required for this pass to run at
-      // all (Step 31).
-      if (hasImage && referenceEmbedding && !isCancelled(searchId)) {
+      // --- Visual verification pass (Step: same-exact-product visual
+      // matching — now the PRIMARY relevance filter, not just a re-rank
+      // bonus). Compares every candidate against ALL uploaded reference
+      // images (compareVisualMatchMulti keeps the BEST match across
+      // angles — Step 6), capped at MAX_VISUAL_COMPARISONS for real cost
+      // control, only over results with a real thumbnail (Step 8: no true
+      // video frame extraction in this pass — no video-processing
+      // dependency exists in this codebase, and adding one, e.g. ffmpeg,
+      // would be a real new native dependency on top of an already
+      // memory-fragile host; the platform's own real thumbnail is the
+      // visual signal used for both images and videos, disclosed
+      // honestly rather than silently pretended to be frame-sampled).
+      // ANTHROPIC_VISION is layered on top only when worth trying —
+      // never required for this pass to run at all (Step 31).
+      if (hasImage && referenceImages.length > 0 && !isCancelled(searchId)) {
         const rescored = await prisma.experimentalCreativeResult.findMany({
           where: { search_id: searchId, thumbnail: { not: null } },
           orderBy: [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }],
           take: MAX_VISUAL_COMPARISONS,
         });
-        const reference = { embedding: referenceEmbedding, perceptualHash: referencePerceptualHash, brand: identity?.brand || null, model: identity?.model || null, imageBase64: input.imageBase64, imageMediaType: input.imageMediaType };
+        const primaryMeta = { brand: identity?.brand || null, model: identity?.model || null, imageBase64: referenceInputImages[0].imageBase64, imageMediaType: referenceInputImages[0].imageMediaType };
         for (const r of rescored) {
-          const cmp = await compareVisualMatch(reference, r.thumbnail, `${r.title || ''} ${r.snippet || ''}`);
+          const cmp = await compareVisualMatchMulti(referenceImages, primaryMeta, r.thumbnail, `${r.title || ''} ${r.snippet || ''}`);
           if (cmp.error || cmp.visualMatchScore === null) {
             if (cmp.error) logger.error(`${LOG_PREFIX} VISUAL_COMPARE_FAILED`, { searchId, resultId: r.id, message: cmp.error });
             continue; // honest skip — never fabricates a score when the real comparison failed (e.g. broken thumbnail URL) or couldn't run at all
@@ -719,12 +719,14 @@ export async function runExperimentalSearchPipeline(searchId) {
               visual_match_score: cmp.visualMatchScore,
               local_visual_match_score: cmp.localVisualMatchScore,
               visual_match_provider: cmp.visualMatchProvider,
+              matched_reference_index: cmp.matchedReferenceIndex,
+              match_reasons: cmp.matchReasons?.length ? JSON.stringify(cmp.matchReasons) : null,
               final_score: finalScore,
               ai_reason: cmp.reason ? `${r.ai_reason ? r.ai_reason + ' | ' : ''}🖼️ ${cmp.reason}` : r.ai_reason,
             },
           });
         }
-        logger.info(`${LOG_PREFIX} VISUAL_VERIFICATION_DONE`, { searchId, compared: rescored.length });
+        logger.info(`${LOG_PREFIX} VISUAL_VERIFICATION_DONE`, { searchId, compared: rescored.length, referenceImageCount: referenceImages.length });
       }
     }
 

@@ -210,10 +210,20 @@ router.post(
   asyncRoute(async (req, res) => {
     if (!isFeatureEnabled()) return res.status(404).json({ error: 'FEATURE_DISABLED', message: 'المنصة التجريبية متوقفة حاليًا.' });
 
-    const { productName, possibleNames, namesAr, namesEn, keywords, description, imageBase64, imageMediaType, country, language, platforms, mode, adLibraryRawLimit, adLibraryActiveOnly } = req.body || {};
+    const { productName, possibleNames, namesAr, namesEn, keywords, description, imageBase64, imageMediaType, images, country, language, platforms, mode, adLibraryRawLimit, adLibraryActiveOnly } = req.body || {};
+
+    // Multi-image reference support (Step: same-exact-product visual
+    // matching, 1-4 real uploaded angles). `images` (array) is the new,
+    // preferred shape; the old singular imageBase64/imageMediaType still
+    // works unchanged for full backward compatibility — treated as a
+    // 1-element images array internally.
+    const MAX_REFERENCE_IMAGES = 4;
+    const rawImages = Array.isArray(images) && images.length > 0
+      ? images.slice(0, MAX_REFERENCE_IMAGES)
+      : (imageBase64 ? [{ imageBase64, imageMediaType }] : []);
 
     const hasTypedName = typeof productName === 'string' && productName.trim().length > 0;
-    const hasImage = Boolean(imageBase64);
+    const hasImage = rawImages.length > 0;
     // Image-only mode (Step 1): typing a product name is no longer
     // required as long as a reference image was uploaded — Stage A
     // (productIdentityVision) generates the name automatically. Only
@@ -226,21 +236,28 @@ router.post(
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اختار منصة واحدة على الأقل.' });
     }
 
-    let storedImage = null;
-    if (hasImage) {
-      if (!ALLOWED_IMAGE_TYPES.includes(imageMediaType)) {
+    const validatedImages = [];
+    for (const img of rawImages) {
+      if (!img?.imageBase64) continue;
+      if (!ALLOWED_IMAGE_TYPES.includes(img.imageMediaType)) {
         return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'نوع الصورة لازم يكون JPEG أو PNG أو WEBP.' });
       }
-      const buffer = Buffer.from(imageBase64, 'base64');
+      const buffer = Buffer.from(img.imageBase64, 'base64');
       if (buffer.length > MAX_IMAGE_BYTES) {
-        return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'حجم الصورة أكبر من 5 ميجا.' });
+        return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'حجم كل صورة لازم يكون أقل من 5 ميجا.' });
       }
-      storedImage = `data:${imageMediaType};base64,${imageBase64}`;
+      validatedImages.push({ imageBase64: img.imageBase64, imageMediaType: img.imageMediaType, dataUri: `data:${img.imageMediaType};base64,${img.imageBase64}` });
     }
+    const storedImage = validatedImages[0]?.dataUri || null; // back-compat: product_image always the first reference
+    const storedImagesJson = validatedImages.length > 0 ? JSON.stringify(validatedImages.map((i) => i.dataUri)) : null;
 
     const validRawLimit = [100, 250, 500, 1000, 2000].includes(Number(adLibraryRawLimit)) ? Number(adLibraryRawLimit) : 100;
     const input = {
-      possibleNames: possibleNames || [], namesAr: namesAr || [], namesEn: namesEn || [], keywords: keywords || [], description: description || '', imageBase64, imageMediaType,
+      possibleNames: possibleNames || [], namesAr: namesAr || [], namesEn: namesEn || [], keywords: keywords || [], description: description || '',
+      // Kept for any existing reader of the single-image fields (back-compat).
+      imageBase64: validatedImages[0]?.imageBase64, imageMediaType: validatedImages[0]?.imageMediaType,
+      // The real multi-image set the pipeline now uses.
+      images: validatedImages.map((i) => ({ imageBase64: i.imageBase64, imageMediaType: i.imageMediaType })),
       adLibraryRawLimit: validRawLimit,
       adLibraryActiveOnly: Boolean(adLibraryActiveOnly),
     };
@@ -252,6 +269,7 @@ router.post(
         search_mode: !hasTypedName && hasImage ? 'IMAGE_ONLY' : 'TEXT',
         product_name: hasTypedName ? productName.trim() : PLACEHOLDER_PRODUCT_NAME,
         product_image: storedImage,
+        product_images_json: storedImagesJson,
         country: country || 'EG',
         language: language || 'AR_EN',
         platforms_json: JSON.stringify(selectedPlatforms),
@@ -315,6 +333,7 @@ router.get(
       searchMode: search.search_mode,
       productName: search.product_name,
       productImage: search.product_image,
+      productImages: search.product_images_json ? JSON.parse(search.product_images_json) : (search.product_image ? [search.product_image] : []),
       identityProfile: search.identity_profile_json ? JSON.parse(search.identity_profile_json) : null,
       identityProvider: search.identity_provider, // LOCAL_VISION | LOCAL_VISION+ANTHROPIC — diagnostic (Step 24), never required for the profile above to exist
       country: search.country,
@@ -350,7 +369,7 @@ router.get(
   '/search/:id/results',
   asyncRoute(async (req, res) => {
     const searchId = Number(req.params.id);
-    const { platform, classification, active, sort, page, pageSize: pageSizeParam } = req.query;
+    const { platform, classification, active, sort, page, pageSize: pageSizeParam, minVisualMatchScore } = req.query;
     const pageSize = [25, 50, 100].includes(Number(pageSizeParam)) ? Number(pageSizeParam) : 50;
     const pageNum = Math.max(1, Number(page) || 1);
 
@@ -362,6 +381,18 @@ router.get(
       where.OR = [{ classification: 'UNCLASSIFIED' }, { classification: null }];
     }
     if (active === 'active') where.metrics_json = { contains: '"activeStatus":"ACTIVE"' };
+    // Strict same-exact-product filter (Step: visual matching as the
+    // PRIMARY relevance filter, not just a re-rank bonus). Only applied
+    // when the caller explicitly passes a positive threshold — the
+    // frontend defaults to 75 whenever the search has a reference image,
+    // and re-requests with 0 (or omits it) for "توسيع النتائج المشابهة".
+    // A null visual_match_score (never compared, or no reference image at
+    // all) never satisfies `gte`, so it's correctly excluded from a
+    // strict view rather than silently assumed to match.
+    const minScore = Number(minVisualMatchScore);
+    if (Number.isFinite(minScore) && minScore > 0) {
+      where.visual_match_score = { gte: minScore };
+    }
 
     // When a reference image exists, the visually-verified final_score
     // (Steps 17/29 — 80% visual / 15% text / 5% distinctive attributes)
@@ -403,6 +434,13 @@ router.get(
         visualMatchScore: r.visual_match_score,
         localVisualMatchScore: r.local_visual_match_score,
         visualMatchProvider: r.visual_match_provider,
+        matchedReferenceIndex: r.matched_reference_index,
+        matchReasons: r.match_reasons ? JSON.parse(r.match_reasons) : [],
+        // Real, honest label straight from the real stored score (Step:
+        // result badges) — never shown for a null score (no comparison
+        // ever ran), which the frontend renders as "لم يتم التحقق بصريًا"
+        // instead of guessing a tier.
+        matchLabel: r.visual_match_score === null ? null : r.visual_match_score >= 85 ? 'مطابقة قوية' : r.visual_match_score >= 75 ? 'مطابقة جيدة' : 'منتج مشابه',
         finalScore: r.final_score,
         aiReason: r.ai_reason,
         discoveredByQueries: r.discovered_by_queries_json ? JSON.parse(r.discovered_by_queries_json) : [],

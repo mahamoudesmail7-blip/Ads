@@ -189,6 +189,134 @@ export async function analyzeProductImage(imageBase64, imageMediaType, onProgres
 }
 
 /**
+ * Multi-image identity generation (Step: same-exact-product visual
+ * matching, 1-4 real uploaded reference images). Runs the FULL real
+ * analysis (OCR + CLIP + zero-shot classification, i.e. analyzeProductImage
+ * itself) on the FIRST/primary image only — that stays the one real, deep
+ * identity pass driving the product name/brand/model/category exactly as
+ * before. Every ADDITIONAL image (up to 3 more) only gets the lighter
+ * analyzeCandidateLocal() pass (embedding + perceptual hash) — a real
+ * reference signal for that angle without paying for 4x OCR/classification
+ * (Step 13's cost-control principle). All images share the SAME
+ * concurrency-1 worker queue, so they're processed sequentially regardless;
+ * one additional angle failing (a bad image, a transient worker error)
+ * only drops that one reference — never fails the whole identity pass.
+ * @param {{imageBase64:string, imageMediaType:string}[]} images 1-4 real uploaded reference images, images[0] is primary
+ * @returns {Promise<{profile, identityProvider, imageHash, embedding, perceptualHash, references: {embedding:number[]|null, perceptualHash:string|null, imageIndex:number}[]}>}
+ */
+export async function analyzeProductImages(images, onProgress = () => {}) {
+  const primary = images[0];
+  const primaryResult = await analyzeProductImage(primary.imageBase64, primary.imageMediaType, onProgress);
+  const references = [{ embedding: primaryResult.embedding, perceptualHash: primaryResult.perceptualHash, imageIndex: 0 }];
+
+  for (let i = 1; i < images.length; i++) {
+    try {
+      await onProgress(`additional_reference_${i}_start`);
+      const buffer = Buffer.from(images[i].imageBase64, 'base64');
+      const candidate = await localVision.analyzeCandidateLocal(buffer);
+      references.push({ embedding: candidate.embedding, perceptualHash: candidate.perceptualHash, imageIndex: i });
+      logger.info(`${LOG_PREFIX} ADDITIONAL_REFERENCE_DONE`, { imageIndex: i });
+    } catch (err) {
+      logger.error(`${LOG_PREFIX} ADDITIONAL_REFERENCE_FAILED`, { imageIndex: i, message: err.message });
+      // Honest skip (Step 6: "1 image should still work") — this angle
+      // just doesn't contribute a reference embedding; never fabricated,
+      // never blocks the other angles or the primary identity.
+    }
+  }
+
+  return { ...primaryResult, references };
+}
+
+/**
+ * Real, deterministic, explainable strings describing WHY a score was
+ * reached (Step: matchReasons) — every reason maps to a real signal that
+ * actually contributed above a real threshold; never invented, never
+ * generic filler.
+ */
+function buildMatchReasons({ embSim, hashSim, brandBonus }) {
+  const reasons = [];
+  if (embSim !== null && embSim >= 80) reasons.push('تشابه بصري عالي جدًا (embedding)');
+  else if (embSim !== null && embSim >= 60) reasons.push('تشابه بصري ملحوظ (embedding)');
+  if (hashSim !== null && hashSim >= 80) reasons.push('تطابق شكل/تكوين عام قوي');
+  if (brandBonus >= 15) reasons.push('تطابق اسم العلامة التجارية في النص');
+  if (brandBonus >= 10 && brandBonus < 15) reasons.push('تطابق الموديل في النص');
+  return reasons;
+}
+
+/**
+ * Multi-reference candidate comparison (Step: same-exact-product visual
+ * matching) — compares ONE real candidate image against ALL of the user's
+ * uploaded reference angles and keeps the BEST real match (Step 6: "A
+ * result can match strongly if it matches one angle very closely"). The
+ * candidate is downloaded and locally analyzed only ONCE regardless of how
+ * many references exist (real cost control, Step 13) — only the
+ * similarity math is repeated per reference, which is cheap/synchronous.
+ * ANTHROPIC_VISION semantic enhancement (when worth trying) still only
+ * ever compares against the PRIMARY reference image, to keep this at one
+ * extra external call per candidate at most, never one per reference.
+ * @param {{embedding:number[]|null, perceptualHash:string|null, imageIndex:number}[]} references from analyzeProductImages().references
+ * @param {{brand:string|null, model:string|null, imageBase64:string, imageMediaType:string}} primaryMeta brand/model + the primary image, for the text bonus and any Anthropic enhancement
+ * @param {string} candidateThumbnailUrl
+ * @param {string} candidateText
+ * @returns {Promise<{localVisualMatchScore:number|null, visualMatchScore:number|null, visualMatchProvider:string|null, matchedReferenceIndex:number|null, matchReasons:string[], reason:string|null, error?:string}>}
+ */
+export async function compareVisualMatchMulti(references, primaryMeta, candidateThumbnailUrl, candidateText = '') {
+  const realReferences = (references || []).filter((r) => r.embedding);
+  if (realReferences.length === 0) return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null };
+
+  let candidateBuffer;
+  try {
+    const res = await fetch(candidateThumbnailUrl, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`تعذر تحميل صورة المرشح: ${res.status}`);
+    const contentType = (res.headers.get('content-type') || '').split(';')[0];
+    if (!contentType.startsWith('image/')) throw new Error('الرابط مش صورة حقيقية');
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 5 * 1024 * 1024) throw new Error('صورة المرشح أكبر من الحد المسموح');
+    candidateBuffer = buf;
+  } catch (err) {
+    return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null, error: err.message };
+  }
+
+  const candidate = await localVision.analyzeCandidateLocal(candidateBuffer);
+  const lowerText = candidateText.toLowerCase();
+  let brandBonus = 0;
+  if (primaryMeta.brand && lowerText.includes(primaryMeta.brand.toLowerCase())) brandBonus += 15;
+  if (primaryMeta.model && lowerText.includes(primaryMeta.model.toLowerCase())) brandBonus += 10;
+
+  let best = null;
+  for (const ref of realReferences) {
+    const embSim = localVision.embeddingSimilarity(ref.embedding, candidate.embedding);
+    const hashSim = localVision.perceptualHashSimilarity(ref.perceptualHash, candidate.perceptualHash);
+    const parts = [embSim, hashSim].filter((v) => v !== null);
+    if (parts.length === 0) continue;
+    const base = embSim !== null && hashSim !== null ? 0.7 * embSim + 0.3 * hashSim : parts[0];
+    const score = Math.max(0, Math.min(100, Math.round(base + brandBonus)));
+    if (!best || score > best.score) best = { score, imageIndex: ref.imageIndex, embSim, hashSim };
+  }
+  if (!best) return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null };
+
+  const localVisualMatchScore = best.score;
+  const matchReasons = buildMatchReasons({ embSim: best.embSim, hashSim: best.hashSim, brandBonus });
+  let visualMatchScore = localVisualMatchScore;
+  let visualMatchProvider = 'LOCAL_EMBEDDING';
+  let reason = null;
+  if (anthropicWorthTrying()) {
+    try {
+      const semantic = await anthropicCompareVisual(primaryMeta.imageBase64, primaryMeta.imageMediaType, candidateThumbnailUrl);
+      if (semantic.visualMatchScore !== null) {
+        visualMatchScore = Math.round(0.5 * localVisualMatchScore + 0.5 * semantic.visualMatchScore);
+        visualMatchProvider = 'LOCAL_EMBEDDING+ANTHROPIC';
+        reason = semantic.reason;
+      }
+    } catch (err) {
+      logger.error('[ProductVisionService] ANTHROPIC_COMPARE_FAILED', { errorType: classifyErrorType(err), message: err.message });
+    }
+  }
+
+  return { localVisualMatchScore, visualMatchScore, visualMatchProvider, matchedReferenceIndex: best.imageIndex, matchReasons, reason };
+}
+
+/**
  * Local candidate-vs-reference comparison (Steps 9/10) — always attempted
  * when a reference embedding exists. Combines real embedding cosine
  * similarity, real perceptual-hash similarity, and a real brand/model

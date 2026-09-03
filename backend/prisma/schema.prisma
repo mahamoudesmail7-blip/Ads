@@ -812,7 +812,8 @@ model ExperimentalCreativeSearch {
   source_mode     String    @default("INTERNAL_EXPERIMENTAL") // the explicit marker requested — never confused with a real ProductResearchSearch row (they're not even in the same table)
   search_mode     String    @default("TEXT") // TEXT | IMAGE_ONLY — IMAGE_ONLY means product_name was empty at submit time and gets filled in from the generated Product Identity Profile once Stage A finishes
   product_name    String // for IMAGE_ONLY this starts as a placeholder and is overwritten once Stage A image analysis produces a real mainProductName — never left as the placeholder in a COMPLETED/PARTIAL row
-  product_image   String?
+  product_image   String? // kept as the FIRST reference image for backward compatibility with every existing read path — never removed
+  product_images_json String? // JSON array of 1-4 real uploaded reference image data-URIs (Step: same-exact-product visual matching) — product_image always equals element [0] of this array when present
   country         String    @default("EG")
   language        String    @default("AR_EN")
   platforms_json  String
@@ -880,6 +881,8 @@ model ExperimentalCreativeResult {
   local_visual_match_score Int? // 0-100, the raw LOCAL_VISION-only score (embedding cosine similarity + perceptual hash + OCR brand/model match) — always populated whenever local comparison genuinely ran, independent of Anthropic (Step 10/11)
   visual_match_provider String? // LOCAL_EMBEDDING | LOCAL_EMBEDDING+ANTHROPIC — diagnostic (Step 24)
   final_score       Int?  // the weighted combination (80% visual / 15% text / 5% distinctive attributes) used for image-mode ranking when a reference image exists — null otherwise, text match_score is used as-is
+  matched_reference_index Int? // which uploaded reference image (0-based, into product_images_json) produced the BEST visual match for this result — real multi-reference matching (Step: same-exact-product visual matching), null when no reference image or comparison never ran
+  match_reasons     String? // JSON array of short, honest strings describing WHY this score was reached (e.g. "تشابه بصري عالي (embedding)", "تطابق لون مميز", "تطابق نص/موديل OCR") — never invented, only set when a real signal actually contributed
   ignored           Boolean   @default(false)
   raw_metadata_json String?
   discovered_by_queries_json String?
