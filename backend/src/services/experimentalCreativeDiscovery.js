@@ -52,6 +52,52 @@ async function updateSearch(id, data) {
   return prisma.experimentalCreativeSearch.update({ where: { id }, data });
 }
 
+// --- Stale-search watchdog (real production incident found live: search
+// jobs live only in one process's in-memory promise chain, with no
+// persistent job queue. If that process dies mid-run — a Railway
+// redeploy, a crash, an OOM restart — the DB row is left orphaned forever
+// in a non-terminal status (ANALYZING/SEARCHING/GENERATING_QUERIES/
+// PENDING), and nothing is left running that could ever mark it done.
+// Confirmed live: 8 real user searches stuck this way, some for 6+
+// hours, all frozen at the exact same real breadcrumb, none ever reaching
+// the 180s worker-timeout FAILED path a live process would produce.
+// This sweep is the recovery layer that path never got: it doesn't
+// change why a run can die, it guarantees a died run always ends up
+// FAILED — honestly, visibly, and promptly — instead of hanging the UI
+// forever on a page that keeps polling a row nothing will ever update
+// again. ---
+const STALE_SEARCH_TIMEOUT_MS = 6 * 60 * 1000; // safely past the 180s worker-call timeout plus normal per-step overhead
+const STALE_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+const STALE_SEARCH_MESSAGE = 'انقطعت المعالجة بشكل غير متوقع (مشكلة مؤقتة في السيرفر) قبل ما تخلص — جرب تبحث تاني.';
+
+/** Marks any non-terminal ExperimentalCreativeSearch older than the stale cutoff as FAILED with an honest message. Exported for the module-load watchdog below and for a manual/admin trigger if ever needed — never deletes a row, only gives it the terminal status a dead process could no longer provide. */
+export async function reapStaleExperimentalSearches() {
+  const cutoff = new Date(Date.now() - STALE_SEARCH_TIMEOUT_MS);
+  const stale = await prisma.experimentalCreativeSearch.findMany({
+    where: { status: { in: ['PENDING', 'ANALYZING', 'GENERATING_QUERIES', 'SEARCHING'] }, created_at: { lt: cutoff } },
+    select: { id: true, status: true },
+  });
+  for (const s of stale) {
+    await prisma.experimentalCreativeSearch
+      .update({ where: { id: s.id }, data: { status: 'FAILED', error: STALE_SEARCH_MESSAGE, completed_at: new Date() } })
+      .then(() => logger.info(`${LOG_PREFIX} REAPED_STALE_SEARCH`, { searchId: s.id, previousStatus: s.status }))
+      .catch((err) => logger.error(`${LOG_PREFIX} REAP_STALE_FAILED`, { searchId: s.id, message: err.message }));
+    cancelFlags.delete(s.id); // harmless if unset — clears any leftover in-process cancel flag pointing at this now-terminal row
+  }
+  return stale.length;
+}
+
+let watchdogTimer = null;
+/** Idempotent — safe to call more than once (e.g. from module re-evaluation in dev). Runs one sweep immediately (recovers anything orphaned by the PREVIOUS process before this one existed) then repeats on an interval so a run that dies while THIS process is alive still gets recovered without needing a restart. */
+export function startStaleSearchWatchdog() {
+  if (watchdogTimer) return;
+  reapStaleExperimentalSearches().catch((err) => logger.error(`${LOG_PREFIX} REAP_STALE_STARTUP_FAILED`, { message: err.message }));
+  watchdogTimer = setInterval(() => {
+    reapStaleExperimentalSearches().catch((err) => logger.error(`${LOG_PREFIX} REAP_STALE_SWEEP_FAILED`, { message: err.message }));
+  }, STALE_SWEEP_INTERVAL_MS);
+  watchdogTimer.unref?.(); // never keeps the process alive on its own
+}
+
 // Google results never go through productResearchNormalize.js's
 // normalizeResult()/validateAndCanonicalize() — that file is shared with
 // the real Product Research pipeline and this task's constraint is to

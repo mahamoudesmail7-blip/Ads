@@ -17,7 +17,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
-import { runExperimentalSearchPipeline, requestCancel } from '../services/experimentalCreativeDiscovery.js';
+import { runExperimentalSearchPipeline, requestCancel, startStaleSearchWatchdog } from '../services/experimentalCreativeDiscovery.js';
 import { classifyErrorType } from '../services/providerHealth.js';
 import * as serpApiProvider from '../services/searchProviders/serpApiProvider.js';
 import * as youtubeSearchProvider from '../services/searchProviders/youtubeSearchProvider.js';
@@ -36,6 +36,14 @@ function isFeatureEnabled() {
   const raw = (process.env.INTERNAL_CREATIVE_DISCOVERY_ENABLED || '').trim().toLowerCase();
   return raw !== 'false' && raw !== '0'; // default ON — see header comment
 }
+
+// Starts the stale-search recovery sweep the moment this route module is
+// first loaded — which happens unconditionally at server startup (see
+// server.js's top-level import), so every real process boot immediately
+// recovers whatever the PREVIOUS process left orphaned, without touching
+// server.js itself (this file is already the sole owner of everything
+// experimental). See experimentalCreativeDiscovery.js for what this fixes.
+if (isFeatureEnabled()) startStaleSearchWatchdog();
 
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
 
