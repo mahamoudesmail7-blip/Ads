@@ -26,7 +26,7 @@ import * as apifyProvider from '../services/searchProviders/apifyMetaAdLibraryPr
 import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibraryProvider.js';
 import { getLocalVisionStats, getWorkerDiagnostics } from '../services/vision/localVisionProvider.js';
 import { warmUpLocalVision } from '../services/vision/productVisionService.js';
-import { analyzeCompetitorAds, aggregateCompetitorAnalysis, generateDecisionIntelligence } from '../services/adAnalysis.js';
+import { analyzeCompetitorAds, aggregateCompetitorAnalysis, generateDecisionIntelligence, computeAdLongevity } from '../services/adAnalysis.js';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -523,8 +523,63 @@ router.get(
         finalScore: r.final_score,
         aiReason: r.ai_reason,
         discoveredByQueries: r.discovered_by_queries_json ? JSON.parse(r.discovered_by_queries_json) : [],
+        // Step: Meta Ads competitor intelligence, per-card compact analysis
+        // (Part 7/8) — only ever populated for META_AD_LIBRARY rows that
+        // actually went through analyzeOneAd(); everything else stays
+        // null, rendered by the frontend as "غير مذكور", never a guess.
+        adAnalysis: r.ad_analysis_json ? JSON.parse(r.ad_analysis_json) : null,
+        adAnalysisStatus: r.ad_analysis_status,
+        adLongevity: r.platform === 'META_AD_LIBRARY' ? computeAdLongevity(r.published_at, r.metrics_json ? JSON.parse(r.metrics_json) : {}) : null,
       })),
     });
+  })
+);
+
+// Step: Part 4 — "الكلمات اللي جابت نتائج". On-demand only (never polled),
+// two queries total regardless of how many search terms ran. Attributes
+// each real saved result back to the real query term(s) that found it via
+// the already-existing discovered_by_queries_json — for Meta Ads Library's
+// tier-batched path that field holds several terms joined by "، ", so each
+// term in the join is credited individually (the batching itself in
+// metaAdLibraryProvider.js is untouched — Part 13 explicitly protects it).
+router.get(
+  '/search/:id/query-breakdown',
+  asyncRoute(async (req, res) => {
+    const searchId = Number(req.params.id);
+    const search = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId } });
+    if (!search) return res.status(404).json({ error: 'NOT_FOUND', message: 'البحث التجريبي ده مش موجود.' });
+
+    const [queries, results] = await Promise.all([
+      prisma.experimentalCreativeQuery.findMany({ where: { search_id: searchId }, select: { platform: true, query: true, result_count: true, status: true } }),
+      prisma.experimentalCreativeResult.findMany({ where: { search_id: searchId }, select: { platform: true, match_decision: true, discovered_by_queries_json: true } }),
+    ]);
+
+    const counters = new Map(); // "platform|term" -> row
+    const getRow = (platform, term) => {
+      const key = `${platform}|${term}`;
+      if (!counters.has(key)) counters.set(key, { platform, query: term, status: null, resultCount: 0, candidatesLinked: 0, exactMatches: 0, metaAdsFound: 0 });
+      return counters.get(key);
+    };
+    for (const q of queries) {
+      const row = getRow(q.platform, q.query);
+      row.status = q.status;
+      row.resultCount = q.result_count;
+    }
+    for (const r of results) {
+      let discovered = [];
+      try { discovered = JSON.parse(r.discovered_by_queries_json || '[]'); } catch { /* ignore */ }
+      for (const d of discovered) {
+        const terms = String(d.query || '').includes('،') ? d.query.split('،').map((s) => s.trim()).filter(Boolean) : [d.query].filter(Boolean);
+        for (const term of terms) {
+          const row = getRow(r.platform, term);
+          row.candidatesLinked++;
+          if (r.match_decision === 'EXACT') row.exactMatches++;
+          if (r.platform === 'META_AD_LIBRARY') row.metaAdsFound++;
+        }
+      }
+    }
+    const breakdown = [...counters.values()].filter((r) => r.query).sort((a, b) => b.candidatesLinked - a.candidatesLinked);
+    res.json({ breakdown });
   })
 );
 

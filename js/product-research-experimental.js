@@ -79,6 +79,7 @@ const internalCreativeDiscovery = {
   currentPage: 1,
   matchGroup: 'EXACT', // Step: exact product matching — 'EXACT' | 'REVIEW' tab, only meaningful when currentSearchVisualMatchingActive
   lastMatchDecisions: null, // {exact, review, reject} counts from the most recent poll's summary — used for the tab labels/counts without a separate request
+  resultsById: {}, // Step: Part 8 — id -> full result object from the most recent loadResults(), read by the "عرض التحليل" expandable toggle
   currentSearchVisualMatchingActive: false, // whether the CURRENT search actually ran real visual verification (data.visualMatchingActive) — never just "an image was uploaded"
 };
 
@@ -295,6 +296,12 @@ function resetToNewSearch() {
   document.getElementById('icdResultsPanel').style.display = 'none';
   document.getElementById('icdBtnCancelSearch').style.display = 'none';
   resetCompetitorPanel();
+  const qbPanel = document.getElementById('icdQueryBreakdownPanel');
+  const qbBody = document.getElementById('icdQueryBreakdownBody');
+  const qbHint = document.getElementById('icdQueryBreakdownToggleHint');
+  if (qbPanel) qbPanel.style.display = 'none';
+  if (qbBody) qbBody.style.display = 'none';
+  if (qbHint) qbHint.textContent = 'اضغط للعرض';
 }
 
 /** Step: Meta Ads competitor intelligence — collapsed/empty state for a fresh search, and stops any in-flight slow poll from a PREVIOUS search. */
@@ -365,6 +372,11 @@ function renderProgress(data) {
     `<span>إجمالي النتائج: <b>${data.resultCount}</b></span>`,
     `<span>الحالة: <b>${STATUS_LABEL_AR[data.status] || data.status}</b></span>`,
     data.productImages?.length ? `<span>🖼️ بحث بالصورة (${data.productImages.length} صور مرجعية)</span>` : '',
+    // Step: honest AI-expansion status (Part 2/11) — never pretend Claude
+    // enriched the name/keyword vocabulary when it actually fell back
+    // (e.g. insufficient Anthropic credits). The names the user typed
+    // themselves (أسماء المنتج chips) still drive the real search either way.
+    data.aiProfile?._analysisSource === 'fallback' ? '<span class="icd-mini-badge yellow">⚠️ توسيع الأسماء بالذكاء الاصطناعي غير متاح حاليًا — استخدم الأسماء اللي كتبتها بس</span>' : '',
   ].filter(Boolean).join('');
 
   let progressText = STATUS_LABEL_AR[data.status] || data.status;
@@ -630,6 +642,11 @@ async function loadResults(searchId, page = 1) {
   } else {
     empty.style.display = 'none';
     grid.innerHTML = data.results.map(resultCardHtml).join('');
+    // Step: Part 8 — the "عرض التحليل" expandable view needs the full
+    // adAnalysis object at toggle time; kept in a plain map rather than
+    // re-fetching, refreshed on every page load (stale entries from a
+    // previous page are harmless — only ever read by their own id).
+    for (const r of data.results) internalCreativeDiscovery.resultsById[r.id] = r;
     const from = (data.page - 1) * data.pageSize + 1;
     const to = Math.min(data.page * data.pageSize, data.total);
     rangeEl.textContent = `عرض ${from}–${to} من ${data.total} نتيجة`;
@@ -674,6 +691,49 @@ function renderMatchTabs(searchId) {
   });
 }
 
+const OFFER_KEY_LABEL_SHORT_AR = { cod: 'الدفع عند الاستلام', freeShipping: 'شحن مجاني', bundle: 'باقة', warranty: 'ضمان', limitedQuantity: 'كمية محدودة' };
+
+/** Step: Part 7 — compact per-card analysis, Meta results only, only when analyzeOneAd() actually ran. Every absent value renders "غير مذكور", never a fabricated 0/EGP. */
+function metaAnalysisCompactHtml(r) {
+  if (r.platform !== 'META_AD_LIBRARY' || !r.adAnalysis) return '';
+  const a = r.adAnalysis;
+  const na = 'غير مذكور';
+  const priceText = a.price?.hasPrice ? `${a.price.value} ${a.price.currency}` : na;
+  const discountText = a.discount?.hasDiscount ? (a.discount.percentage ? `${a.discount.percentage}%` : 'موجود') : na;
+  const offerText = Object.entries(OFFER_KEY_LABEL_SHORT_AR).filter(([k]) => a.offers?.[k]).map(([, label]) => label).join('، ') || na;
+  const hookTypesText = (a.hook?.types || []).map((t) => HOOK_TYPE_LABEL_AR[t] || t).join('، ') || na;
+  const verificationText = r.matchDecision === 'EXACT' ? `مطابق ${r.exactMatchScore}%` : r.matchDecision === 'REVIEW' ? `محتاج مراجعة (${r.exactMatchScore}%)` : 'لم يتم التحقق بصريًا';
+  const sourceNote = a.hook?.source === 'RULE_BASED' ? '<span class="icd-faint">(تحليل محلي — بدون AI)</span>' : '';
+  return `<div class="icd-ad-analysis">
+    <div class="icd-ad-row"><b>الهوك:</b> ${escapeHtml(a.hook?.text || na)} ${sourceNote}</div>
+    <div class="icd-ad-row"><b>نوع الهوك:</b> ${escapeHtml(hookTypesText)}</div>
+    <div class="icd-ad-row"><b>زاوية البيع:</b> ${escapeHtml(a.sellingAngle?.value || na)}</div>
+    <div class="icd-ad-row"><b>السعر:</b> ${escapeHtml(priceText)}</div>
+    <div class="icd-ad-row"><b>الخصم:</b> ${escapeHtml(discountText)}</div>
+    <div class="icd-ad-row"><b>العرض:</b> ${escapeHtml(offerText)}</div>
+    <div class="icd-ad-row"><b>CTA:</b> ${escapeHtml(a.cta?.text || na)}</div>
+    <div class="icd-ad-row"><b>نوع الإعلان:</b> ${escapeHtml(a.creativeFormat?.value || na)}</div>
+    <div class="icd-ad-row"><b>مدة التشغيل:</b> ${r.adLongevity?.days != null ? r.adLongevity.days + ' يوم' : 'غير متاح'}</div>
+    <div class="icd-ad-row"><b>Verification:</b> ${escapeHtml(verificationText)}</div>
+    <button class="icd-btn secondary small" data-action="toggle-analysis" data-id="${r.id}">عرض التحليل</button>
+    <div class="icd-ad-full" id="icdAdFull${r.id}" style="display:none;"></div>
+  </div>`;
+}
+
+/** Step: Part 8 — the rest of the analysis, revealed only on demand so cards stay lightweight by default. */
+function metaAnalysisFullHtml(a) {
+  const na = 'غير مذكور';
+  return `
+    <div class="icd-ad-row"><b>المشكلة:</b> ${escapeHtml(a.problem?.value || na)}</div>
+    <div class="icd-ad-row"><b>الفوائد:</b> ${(a.benefits?.items || []).map(escapeHtml).join('، ') || na}</div>
+    <div class="icd-ad-row"><b>الخصائص:</b> ${(a.features?.items || []).map(escapeHtml).join('، ') || na}</div>
+    <div class="icd-ad-row"><b>الجمهور المستهدف (استنتاج AI):</b> ${escapeHtml(a.targetAudience?.value || na)}</div>
+    <div class="icd-ad-row"><b>أسلوب الإبداع:</b> ${escapeHtml(a.creativeStyle?.value || na)}</div>
+    <div class="icd-ad-row"><b>عناصر الثقة:</b> ${(a.trustElements?.elements || []).join('، ') || na}</div>
+    <div class="icd-ad-row"><b>إلحاح:</b> ${a.urgency?.present ? escapeHtml((a.urgency.phrases || []).join('، ')) : na}</div>
+    <div class="icd-ad-row icd-faint">مصدر التحليل الدلالي: ${a.hook?.source === 'AI_ANALYZED' ? 'ذكاء اصطناعي (AI)' : a.hook?.source === 'RULE_BASED' ? 'قواعد محلية (بدون AI)' : 'غير معروف'}</div>`;
+}
+
 function resultCardHtml(r) {
   const classification = r.classification || 'UNCLASSIFIED';
   const m = r.metrics || {};
@@ -691,6 +751,7 @@ function resultCardHtml(r) {
         ${m.activeStatus === 'ACTIVE' ? '<span class="icd-mini-badge green">🟢 نشط</span>' : ''}
         <span class="icd-mini-badge">${escapeHtml(r.provider || '')}</span>
       </div>
+      ${metaAnalysisCompactHtml(r)}
       <div class="icd-result-actions">
         <a class="icd-btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">فتح المصدر</a>
         <button class="icd-btn secondary small" data-action="save" data-id="${r.id}" data-media-type="${m.mediaType ? String(m.mediaType).toLowerCase() : ''}" data-has-multi="${m.hasMultipleMedia ? '1' : '0'}">حفظ</button>
@@ -760,14 +821,71 @@ function wireResultGridDownloads() {
   if (!grid || grid.dataset.downloadsWired) return;
   grid.dataset.downloadsWired = '1';
   grid.addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-action="save"]');
-    if (!btn || btn.disabled) return;
-    const resultId = btn.dataset.id;
-    const hasMulti = btn.dataset.hasMulti === '1';
-    const mediaType = btn.dataset.mediaType.includes('video') ? 'video' : 'image';
-    if (hasMulti) { showDownloadChoice(btn, resultId); return; }
-    downloadResult(resultId, mediaType, btn);
+    const saveBtn = e.target.closest('[data-action="save"]');
+    if (saveBtn && !saveBtn.disabled) {
+      const resultId = saveBtn.dataset.id;
+      const hasMulti = saveBtn.dataset.hasMulti === '1';
+      const mediaType = saveBtn.dataset.mediaType.includes('video') ? 'video' : 'image';
+      if (hasMulti) { showDownloadChoice(saveBtn, resultId); return; }
+      downloadResult(resultId, mediaType, saveBtn);
+      return;
+    }
+    // Step: Part 8 — expandable full analysis, lazily rendered from the
+    // already-fetched result object (internalCreativeDiscovery.resultsById)
+    // — never a new request, cards stay lightweight until actually opened.
+    const toggleBtn = e.target.closest('[data-action="toggle-analysis"]');
+    if (toggleBtn) {
+      const r = internalCreativeDiscovery.resultsById[toggleBtn.dataset.id];
+      const full = document.getElementById(`icdAdFull${toggleBtn.dataset.id}`);
+      if (!r || !full) return;
+      const isOpen = full.style.display !== 'none';
+      if (isOpen) {
+        full.style.display = 'none';
+        toggleBtn.textContent = 'عرض التحليل';
+      } else {
+        if (!full.dataset.rendered) { full.innerHTML = metaAnalysisFullHtml(r.adAnalysis || {}); full.dataset.rendered = '1'; }
+        full.style.display = 'block';
+        toggleBtn.textContent = 'إخفاء التحليل';
+      }
+    }
   });
+}
+
+// --- Query breakdown ("الكلمات اللي جابت نتائج") — Part 4 ---
+function wireQueryBreakdownToggle() {
+  const toggle = document.getElementById('icdQueryBreakdownToggle');
+  if (!toggle || toggle.dataset.wired) return;
+  toggle.dataset.wired = '1';
+  toggle.addEventListener('click', async () => {
+    const body = document.getElementById('icdQueryBreakdownBody');
+    const hint = document.getElementById('icdQueryBreakdownToggleHint');
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    if (hint) hint.textContent = isOpen ? 'اضغط للعرض' : 'اضغط للإخفاء';
+    if (!isOpen && internalCreativeDiscovery.currentSearchId) await loadQueryBreakdown(internalCreativeDiscovery.currentSearchId);
+  });
+}
+
+async function loadQueryBreakdown(searchId) {
+  const table = document.getElementById('icdQueryBreakdownTable');
+  let data;
+  try {
+    data = await api.get(`${EXP_API}/search/${searchId}/query-breakdown`);
+  } catch (err) {
+    table.innerHTML = `<tbody><tr><td>${escapeHtml(err.message)}</td></tr></tbody>`;
+    return;
+  }
+  const rows = data.breakdown || [];
+  if (rows.length === 0) { table.innerHTML = '<tbody><tr><td class="icd-faint">لا توجد بيانات.</td></tr></tbody>'; return; }
+  const headers = ['الكلمة', 'المنصة', 'مرشحين تم إيجادهم', 'مطابقات تامة', 'إعلانات Meta'];
+  table.innerHTML = `<thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `
+    <tr>
+      <td>${escapeHtml(r.query)}</td>
+      <td>${escapeHtml(PLATFORM_LABEL[r.platform] || r.platform)}</td>
+      <td>${r.candidatesLinked}</td>
+      <td>${r.exactMatches}</td>
+      <td>${r.platform === 'META_AD_LIBRARY' ? r.metaAdsFound : '—'}</td>
+    </tr>`).join('')}</tbody>`;
 }
 
 // --- Meta Ads Competitor Intelligence (Part 2) ---
@@ -777,10 +895,10 @@ function wireResultGridDownloads() {
 // this can never regress the page-performance work from the previous
 // session.
 const HOOK_TYPE_LABEL_AR = {
-  Problem: 'مشكلة', Pain: 'ألم/معاناة', Curiosity: 'فضول', Benefit: 'فايدة', Price: 'سعر', Discount: 'خصم',
+  Question: 'سؤال', Problem: 'مشكلة', Pain: 'ألم/معاناة', Curiosity: 'فضول', Benefit: 'فايدة', Price: 'سعر', Discount: 'خصم',
   Demonstration: 'عرض توضيحي', 'Before/After': 'قبل/بعد', 'Social Proof': 'دليل اجتماعي', Fear: 'خوف',
   Convenience: 'سهولة', Lifestyle: 'أسلوب حياة', Gift: 'هدية', Urgency: 'إلحاح', 'Product Reveal': 'كشف المنتج',
-  Educational: 'تعليمي', Story: 'قصة', Other: 'أخرى',
+  Educational: 'تعليمي', Story: 'قصة', Other: 'أخرى', UNKNOWN: 'غير محدد',
 };
 const OFFER_KEY_LABEL_AR = { cod: 'الدفع عند الاستلام', freeShipping: 'شحن مجاني', bundle: 'باقة/عرض', warranty: 'ضمان', limitedQuantity: 'كمية محدودة' };
 
@@ -805,6 +923,8 @@ function renderCompetitorTabAvailability(data) {
   if (!panel) return;
   const terminal = ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(data.status);
   panel.style.display = (terminal && data.platforms.includes('META_AD_LIBRARY')) ? 'block' : 'none';
+  const qbPanel = document.getElementById('icdQueryBreakdownPanel');
+  if (qbPanel) qbPanel.style.display = (terminal && data.resultCount > 0) ? 'block' : 'none';
 }
 
 function barListHtml(items, limit = 8) {
@@ -817,16 +937,32 @@ function barListHtml(items, limit = 8) {
     </div>`).join('');
 }
 
+/**
+ * Step: Part 5/9 — explicit buckets, never a silently-empty panel. Shown
+ * plainly regardless of how many landed in each bucket — the whole point
+ * is that "0 EXACT" no longer looks like the feature is broken when 70
+ * real ads were simply never visually compared.
+ */
 function renderCompetitorSummary(data) {
+  const b = data.buckets || {};
   const tiles = [
-    { n: data.adsFound, l: 'إعلانات مطابقة تمامًا' },
-    { n: data.adsAnalyzed, l: 'تم تحليلها' },
-    { n: data.pending, l: 'قيد التحليل' },
-    { n: data.failed, l: 'فشل التحليل' },
+    { n: b.metaAdsFound ?? data.adsFound, l: 'إعلانات Meta تم العثور عليها' },
+    { n: b.verifiedExact ?? 0, l: 'مطابق للمنتج (verified)' },
+    { n: b.possibleReview ?? 0, l: 'محتاج مراجعة' },
+    { n: b.unverified ?? 0, l: 'لم يتم التحقق بصريًا' },
+    { n: b.rejected ?? 0, l: 'مرفوض (منتج مختلف)' },
+    { n: b.analyzed ?? data.adsAnalyzed, l: 'تم تحليلها' },
     { n: `${data.price.visibilityPct}%`, l: 'إظهار السعر' },
     { n: `${data.discountUsageRate}%`, l: 'استخدام الخصم' },
   ];
   document.getElementById('icdCompetitorSummary').innerHTML = tiles.map((t) => `<div class="icd-summary-tile"><div class="n">${t.n}</div><div class="l">${t.l}</div></div>`).join('');
+
+  // Step: Part 11 — AI status transparency, never a blank/mysterious section.
+  const aiEl = document.getElementById('icdCompetitorAiStatus');
+  if (aiEl && data.aiStatus) {
+    const color = data.aiStatus.status === 'AVAILABLE' ? 'green' : data.aiStatus.status === 'NOT_CONFIGURED' ? '' : 'yellow';
+    aiEl.innerHTML = `<span class="icd-mini-badge ${color}">${data.aiStatus.status === 'AVAILABLE' ? '✅' : '⚠️'} ${escapeHtml(data.aiStatus.label)}</span>`;
+  }
 }
 
 function renderCompetitorPrice(price) {
@@ -949,6 +1085,7 @@ function init() {
   updateImagePickerState();
   wireModeToggle();
   wireResultGridDownloads();
+  wireQueryBreakdownToggle();
 
   document.getElementById('icdBtnStartSearch')?.addEventListener('click', startSearch);
   document.getElementById('icdBtnCancelSearch')?.addEventListener('click', cancelSearch);

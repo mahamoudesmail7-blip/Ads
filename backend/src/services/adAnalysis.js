@@ -29,6 +29,7 @@ import crypto from 'crypto';
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
 import { askClaude } from './ai.js';
+import { classify as healthClassify } from './providerHealth.js';
 
 const LOG_PREFIX = '[AdAnalysis]';
 // Bumped whenever the extraction/prompt/output shape changes, so a stale
@@ -163,13 +164,87 @@ export function deterministicExtract(result) {
 }
 
 // ============================================================================
+// RULE-BASED HOOK/ANGLE FALLBACK — used whenever Claude is unavailable
+// (Step: Part 6B). Every tag maps to a real keyword/pattern match against
+// the actual ad title+snippet text; a category with no textual evidence
+// is never guessed — 'UNKNOWN' instead. Shares the exact HOOK_TYPES
+// vocabulary the AI path uses (below) so aggregation never has to
+// reconcile two different taxonomies.
+// ============================================================================
+
+const HOOK_RULES = [
+  { type: 'Fear', regex: /خطر|تجسس|مراقب|اختراق|يتجسس|تُراقب|احمِ نفسك|حماية|أمان/ },
+  { type: 'Problem', regex: /مشكلة|بتعاني|تعبت من|تعاني من|زهقت من/ },
+  { type: 'Curiosity', regex: /هل تعلم|تعرف إن|فاكر|تخيل لو|عارف إن/ },
+  { type: 'Demonstration', regex: /شاهد كيف|شوف إزاي|جرب دلوقتي|طريقة الاستخدام|بالفيديو/ },
+  { type: 'Social Proof', regex: /تقييم|عميل راضي|الأكثر مبيعًا|آلاف العملاء|طلب تم/ },
+  { type: 'Convenience', regex: /سهل الاستخدام|في دقيقة|بساطة|بدون تعقيد/ },
+  { type: 'Benefit', regex: /يساعدك|يوفر لك|هتحس|راحة تامة|هتلاحظ الفرق/ },
+];
+
+/** Real, evidence-based hook classification — never invents a category. */
+function ruleBasedHook(title, snippet, deterministic) {
+  const text = `${title || ''} ${snippet || ''}`;
+  const types = new Set();
+  const firstLine = (title || snippet || '').split(/[\n.!]/)[0] || '';
+  if (firstLine.includes('؟')) types.add('Question');
+  for (const { type, regex } of HOOK_RULES) if (regex.test(text)) types.add(type);
+  if (deterministic.price.hasPrice) types.add('Price');
+  if (deterministic.discount.hasDiscount) types.add('Discount');
+  if (deterministic.urgency.present) types.add('Urgency');
+  if (types.size === 0) types.add('UNKNOWN');
+  return { text: firstLine.trim().slice(0, 140), types: [...types], source: 'RULE_BASED' };
+}
+
+const ANGLE_RULES = [
+  { angle: 'Security', regex: /أمان|حماية|خطر|تجسس|مراقبة|اختراق/ },
+  { angle: 'Privacy', regex: /خصوصية|سرية|أسرارك/ },
+  { angle: 'Convenience', regex: /سهل|سهولة|بساطة|في دقايق|بدون مجهود/ },
+  { angle: 'Portability', regex: /محمول|خفيف|صغير الحجم|يتحرك معاك|سهل الحمل/ },
+  { angle: 'Technology', regex: /تقنية|ذكي|تكنولوجيا|رقمي/ },
+  { angle: 'Home Use', regex: /في البيت|للمنزل|الاستخدام المنزلي/ },
+];
+
+/** Real, evidence-based selling-angle classification — 'UNKNOWN' when nothing in the text supports a category. */
+function ruleBasedAngle(title, snippet, deterministic) {
+  const text = `${title || ''} ${snippet || ''}`;
+  for (const { angle, regex } of ANGLE_RULES) if (regex.test(text)) return { value: angle, source: 'RULE_BASED' };
+  if (deterministic.discount.hasDiscount || deterministic.price.hasPrice) return { value: 'Price/Value', source: 'RULE_BASED' };
+  return { value: 'UNKNOWN', source: 'RULE_BASED' };
+}
+
+function ruleBasedAnalyze(result, deterministic) {
+  return {
+    hook: ruleBasedHook(result.title, result.snippet, deterministic),
+    sellingAngle: ruleBasedAngle(result.title, result.snippet, deterministic),
+    problem: { value: '', source: 'RULE_BASED' }, // needs real semantic judgment — never guessed deterministically
+    benefits: { items: [], source: 'RULE_BASED' },
+    features: { items: [], source: 'RULE_BASED' },
+    targetAudience: { value: '', source: 'RULE_BASED' },
+    creativeStyle: { value: '', source: 'RULE_BASED' },
+  };
+}
+
+// Mirrors the exact anthropicWorthTrying() pattern already established in
+// productVisionService.js — checked ONCE per ad before ever attempting a
+// call, so once Claude proves itself unavailable (e.g. insufficient
+// credits) for the first ad in a batch, every remaining ad in that batch
+// (and every ad in every later search, until Anthropic recovers) skips
+// straight to the rule-based fallback instead of each paying its own
+// failing network round-trip.
+function anthropicWorthTrying() {
+  if (!process.env.ANTHROPIC_API_KEY?.trim()) return false;
+  return healthClassify('anthropic', true).status !== 'ERROR';
+}
+
+// ============================================================================
 // AI SEMANTIC ANALYSIS — one text-only Claude call per ad, only for fields
 // that genuinely need judgment. The already-deterministic fields are given
 // to Claude as context so it never re-derives (and potentially
 // contradicts) price/discount/offers itself.
 // ============================================================================
 
-const HOOK_TYPES = ['Problem', 'Pain', 'Curiosity', 'Benefit', 'Price', 'Discount', 'Demonstration', 'Before/After', 'Social Proof', 'Fear', 'Convenience', 'Lifestyle', 'Gift', 'Urgency', 'Product Reveal', 'Educational', 'Story', 'Other'];
+const HOOK_TYPES = ['Question', 'Problem', 'Pain', 'Curiosity', 'Benefit', 'Price', 'Discount', 'Demonstration', 'Before/After', 'Social Proof', 'Fear', 'Convenience', 'Lifestyle', 'Gift', 'Urgency', 'Product Reveal', 'Educational', 'Story', 'Other', 'UNKNOWN'];
 
 const SYSTEM_PROMPT = `إنت محلل إعلانات تسويقية خبير. هتاخد نص إعلان حقيقي (عنوان + نص الإعلان) + حقايق مستخرجة أوتوماتيكيًا بالفعل (سعر/خصم/عروض — متكررهاش أو تتناقض معاها). مهمتك فقط التحليل الدلالي اللي محتاج فهم حقيقي للنص. رجّع JSON فقط بالشكل ده بالظبط:
 
@@ -220,7 +295,22 @@ async function aiAnalyze(result, deterministic) {
   }
 }
 
-/** Analyzes ONE ad — cache-first, deterministic-first, AI only on a genuine cache miss. Never throws (Step: failure isolation) — a failure comes back as {status:'FAILED', error}. */
+/**
+ * Analyzes ONE ad — cache-first, deterministic-first, AI only when
+ * genuinely worth trying. Never throws (Step: failure isolation).
+ *
+ * FIXED real production bug (found by inspecting live data, not assumed):
+ * this used to discard the perfectly good deterministic fields entirely
+ * whenever the AI call failed, returning only {status:'FAILED'} with no
+ * analysis_json at all — with Anthropic's account out of credits, this
+ * meant EVERY ad analysis in production was silently thrown away, full
+ * stop, regardless of how much real price/discount/offer/CTA data had
+ * already been extracted for free. Deterministic fields (plus a rule-
+ * based hook/selling-angle fallback, never a guess) are now ALWAYS
+ * persisted — only the semantic layer's source flips between
+ * 'AI_ANALYZED'/'AI_INFERRED' and 'RULE_BASED' depending on what actually
+ * ran.
+ */
 export async function analyzeOneAd(result) {
   const metrics = parseMetrics(result);
   const adKey = adKeyFor(result, metrics);
@@ -234,40 +324,68 @@ export async function analyzeOneAd(result) {
   }
 
   const deterministic = deterministicExtract(result);
-  const ai = await aiAnalyze(result, deterministic);
-  if (!ai.ok) {
-    logger.error(`${LOG_PREFIX} AI_ANALYSIS_FAILED`, { adKey: adKey.slice(0, 12), message: ai.error });
-    return { status: 'FAILED', error: ai.error };
+  const worthTrying = anthropicWorthTrying();
+  const ai = worthTrying ? await aiAnalyze(result, deterministic) : { ok: false, error: 'Anthropic not worth trying (circuit open or unconfigured)' };
+
+  let semantic, status;
+  if (ai.ok) {
+    semantic = ai.data;
+    status = 'DONE';
+  } else {
+    if (worthTrying) logger.error(`${LOG_PREFIX} AI_ANALYSIS_FAILED`, { adKey: adKey.slice(0, 12), message: ai.error });
+    semantic = ruleBasedAnalyze(result, deterministic);
+    status = 'DETERMINISTIC_ONLY';
   }
 
-  const analysis = { ...deterministic, ...ai.data, modelVersion: MODEL_VERSION, analyzedAt: new Date().toISOString() };
-  await prisma.experimentalAdAnalysisCache.create({
-    data: { ad_key: adKey, model_version: MODEL_VERSION, analysis_json: JSON.stringify(analysis) },
-  }).catch((err) => logger.error(`${LOG_PREFIX} CACHE_WRITE_FAILED`, { message: err.message }));
-  return { status: 'DONE', analysis, fromCache: false };
+  const analysis = { ...deterministic, ...semantic, modelVersion: MODEL_VERSION, analyzedAt: new Date().toISOString() };
+
+  // Only a REAL AI result is cached — a deterministic-only result must
+  // never be permanently stuck for this ad; the next time it's
+  // encountered (this search's own re-analysis is deduped elsewhere, but
+  // a DIFFERENT future search finding the same ad) Anthropic gets a fresh
+  // chance once it's healthy again, at zero extra cost either way (the
+  // deterministic/rule-based pass is free to recompute).
+  if (status === 'DONE') {
+    await prisma.experimentalAdAnalysisCache.create({
+      data: { ad_key: adKey, model_version: MODEL_VERSION, analysis_json: JSON.stringify(analysis) },
+    }).catch((err) => logger.error(`${LOG_PREFIX} CACHE_WRITE_FAILED`, { message: err.message }));
+  }
+  return { status, analysis, fromCache: false };
 }
 
 /**
  * Entry point — fired (not awaited) from productResearchExperimental.js
- * right after the main pipeline resolves. Only ever looks at verified-
- * exact Meta Ads Library results for this one search. One ad's failure
- * never stops the batch.
+ * right after the main pipeline resolves.
+ *
+ * Step: Part 5 — widened from strictly match_decision:'EXACT' to
+ * `ignored:false` (EXACT + REVIEW + never-visually-compared/null) —
+ * REJECT is the only thing `ignored:true` ever sets, so it stays
+ * categorically excluded. A result that was never compared (e.g. beyond
+ * the visual-comparison cap) was never DISQUALIFIED either — analyzing it
+ * and honestly labeling it "unverified" is strictly better than the old
+ * behavior of silently finding zero qualifying ads and leaving the whole
+ * panel looking broken, which is exactly what happened on the real
+ * production searches this fix was diagnosed against (0 EXACT, 0 REVIEW,
+ * 70 never-compared, out of 100 real Meta ads). Market-level percentage
+ * aggregates still only ever draw from EXACT+REVIEW rows (see
+ * aggregateCompetitorAnalysis) — this widening is about not silently
+ * discarding per-ad analysis, never about polluting the stats.
  */
 export async function analyzeCompetitorAds(searchId) {
   const qualifying = await prisma.experimentalCreativeResult.findMany({
-    where: { search_id: searchId, platform: 'META_AD_LIBRARY', match_decision: 'EXACT' },
+    where: { search_id: searchId, platform: 'META_AD_LIBRARY', ignored: false },
   });
   if (qualifying.length === 0) {
     logger.info(`${LOG_PREFIX} NO_QUALIFYING_ADS`, { searchId });
     return;
   }
   logger.info(`${LOG_PREFIX} BATCH_START`, { searchId, count: qualifying.length });
-  let done = 0, failed = 0, cached = 0;
+  let done = 0, deterministicOnly = 0, failed = 0, cached = 0;
   for (const r of qualifying) {
     try {
       const result = await analyzeOneAd(r);
       if (result.fromCache) cached++;
-      if (result.status === 'DONE') done++; else failed++;
+      if (result.status === 'DONE') done++; else deterministicOnly++;
       await prisma.experimentalCreativeResult.update({
         where: { id: r.id },
         data: {
@@ -283,7 +401,7 @@ export async function analyzeCompetitorAds(searchId) {
       // Continue to the next ad regardless — one failure never stops the batch.
     }
   }
-  logger.info(`${LOG_PREFIX} BATCH_DONE`, { searchId, total: qualifying.length, done, failed, cached });
+  logger.info(`${LOG_PREFIX} BATCH_DONE`, { searchId, total: qualifying.length, done, deterministicOnly, failed, cached });
 }
 
 // ============================================================================
@@ -313,20 +431,52 @@ function distribution(analyses, pick) {
     .sort((a, b) => b.count - a.count);
 }
 
+/** Real, honest AI-availability status (Step: Part 11) — reads the SAME providerHealth tracker every real Anthropic call already feeds, never a synthetic probe. Distinguishes the specific insufficient-credits condition from a generic transient error so the UI banner can say something genuinely useful instead of a mysterious "AI failed". */
+export function getAiStatus() {
+  if (!process.env.ANTHROPIC_API_KEY?.trim()) return { status: 'NOT_CONFIGURED', label: 'الذكاء الاصطناعي غير مفعّل في هذا النظام.' };
+  const health = healthClassify('anthropic', true);
+  if (health.status === 'CONNECTED') return { status: 'AVAILABLE', label: 'تحليل AI مكتمل' };
+  if (health.lastErrorType === 'INSUFFICIENT_CREDITS') return { status: 'DEGRADED_NO_CREDITS', label: 'تحليل AI غير متاح — تم استخدام التحليل المحلي (رصيد Anthropic غير كافٍ)' };
+  return { status: 'DEGRADED_ERROR', label: 'تحليل AI غير متاح مؤقتًا — تم استخدام التحليل المحلي' };
+}
+
 /**
  * Pure aggregation — no AI call here. Reads whatever has been analyzed so
  * far (a batch may still be in progress; the caller sees real partial
  * data, honestly labeled, never a fake "complete" state).
+ *
+ * Step: Part 5/9 — explicit buckets, never a silently-empty panel.
+ * `qualifying` now covers everything analyzeCompetitorAds() analyzes
+ * (EXACT + REVIEW + never-compared/null, i.e. ignored:false) so per-ad
+ * analysis (hook/price/offer/etc.) is available and shown for all of
+ * them. Market-level PERCENTAGE aggregates below are deliberately
+ * restricted to `statsRows` (EXACT + REVIEW only) — an unverified ad was
+ * never confirmed to even be the right product, so it's shown honestly
+ * (counted, individually analyzable) but never allowed to skew "most
+ * common hook/angle/price" stats. REJECT never appears anywhere here at
+ * all (excluded by `ignored:false` at the query level already).
  */
 export async function aggregateCompetitorAnalysis(searchId) {
-  const qualifying = await prisma.experimentalCreativeResult.findMany({
-    where: { search_id: searchId, platform: 'META_AD_LIBRARY', match_decision: 'EXACT' },
-  });
-  const analyzed = qualifying.filter((r) => r.ad_analysis_status === 'DONE' && r.ad_analysis_json);
-  const pending = qualifying.filter((r) => !r.ad_analysis_status || r.ad_analysis_status === 'PENDING').length;
+  const [qualifying, rejectedCount] = await Promise.all([
+    prisma.experimentalCreativeResult.findMany({ where: { search_id: searchId, platform: 'META_AD_LIBRARY', ignored: false } }),
+    prisma.experimentalCreativeResult.count({ where: { search_id: searchId, platform: 'META_AD_LIBRARY', match_decision: 'REJECT' } }),
+  ]);
+  const analyzed = qualifying.filter((r) => (r.ad_analysis_status === 'DONE' || r.ad_analysis_status === 'DETERMINISTIC_ONLY') && r.ad_analysis_json);
+  const pending = qualifying.filter((r) => !r.ad_analysis_status).length;
   const failed = qualifying.filter((r) => r.ad_analysis_status === 'FAILED').length;
+  const buckets = {
+    metaAdsFound: qualifying.length + rejectedCount,
+    verifiedExact: qualifying.filter((r) => r.match_decision === 'EXACT').length,
+    possibleReview: qualifying.filter((r) => r.match_decision === 'REVIEW').length,
+    unverified: qualifying.filter((r) => r.match_decision === null).length,
+    rejected: rejectedCount,
+    analyzed: analyzed.length,
+    analysisFailed: failed,
+  };
 
-  const rows = analyzed.map((r) => ({ result: r, analysis: JSON.parse(r.ad_analysis_json), metrics: parseMetrics(r) }));
+  // Stats-eligible = analyzed AND confirmed EXACT or REVIEW — never the unverified bucket (see comment above).
+  const statsRows = analyzed.filter((r) => r.match_decision === 'EXACT' || r.match_decision === 'REVIEW');
+  const rows = statsRows.map((r) => ({ result: r, analysis: JSON.parse(r.ad_analysis_json), metrics: parseMetrics(r) }));
 
   const hooks = distribution(rows, (r) => r.analysis.hook?.types || []);
   const sellingAngles = distribution(rows, (r) => r.analysis.sellingAngle?.value).filter((d) => d.value);
@@ -355,6 +505,9 @@ export async function aggregateCompetitorAnalysis(searchId) {
   const discountCount = rows.filter((r) => r.analysis.discount?.hasDiscount).length;
   const urgencyCount = rows.filter((r) => r.analysis.urgency?.present).length;
   const trustElementUsage = distribution(rows, (r) => r.analysis.trustElements?.elements || []);
+  // Part 10 — video-vs-image ratio is just creativeFormats re-read; kept as
+  // its own named field since the decision assistant references it directly.
+  const formatRatio = { video: creativeFormats.find((f) => f.value === 'Video')?.count || 0, image: creativeFormats.find((f) => f.value === 'Image')?.count || 0 };
 
   // Competitor scorecard — grouped by page/account, real columns only
   // (no ROAS/CPA/Purchases/Revenue — this pipeline has no such data).
@@ -379,17 +532,21 @@ export async function aggregateCompetitorAnalysis(searchId) {
       creativeStyle: first.analysis.creativeStyle?.value || null,
       cta: first.analysis.cta?.text || null,
       adLongevityDays: longevity.days,
-      exactProductMatch: true,
+      matchDecision: first.result.match_decision, // EXACT | REVIEW — honest, never hardcoded true (this scorecard is built only from statsRows, so it's always one of these two)
       url: first.result.canonical_url,
     };
   }).sort((a, b) => b.adsFound - a.adsFound);
 
   return {
+    // Kept for back-compat with the existing frontend field names.
     adsFound: qualifying.length,
     adsAnalyzed: analyzed.length,
     pending,
     failed,
     batchStatus: qualifying.length === 0 ? 'NONE' : pending > 0 ? 'IN_PROGRESS' : 'DONE',
+    buckets,
+    aiStatus: getAiStatus(),
+    statsBasedOnCount: rows.length, // how many of `adsAnalyzed` actually fed the percentages below (EXACT+REVIEW only)
     hooks,
     sellingAngles,
     painPoints,
@@ -398,14 +555,15 @@ export async function aggregateCompetitorAnalysis(searchId) {
     ctas,
     creativeFormats,
     creativeStyles,
+    formatRatio,
     price: {
-      adsAnalyzed: analyzed.length,
+      adsAnalyzed: rows.length,
       adsWithPrice: withPrice.length,
-      visibilityPct: analyzed.length ? Math.round((withPrice.length / analyzed.length) * 1000) / 10 : 0,
+      visibilityPct: rows.length ? Math.round((withPrice.length / rows.length) * 1000) / 10 : 0,
       byCurrency: priceStatsByCurrency,
     },
-    discountUsageRate: analyzed.length ? Math.round((discountCount / analyzed.length) * 1000) / 10 : 0,
-    urgencyUsageRate: analyzed.length ? Math.round((urgencyCount / analyzed.length) * 1000) / 10 : 0,
+    discountUsageRate: rows.length ? Math.round((discountCount / rows.length) * 1000) / 10 : 0,
+    urgencyUsageRate: rows.length ? Math.round((urgencyCount / rows.length) * 1000) / 10 : 0,
     trustElementUsage,
     offerUsage,
     competitors,
@@ -429,18 +587,29 @@ const DECISION_SYSTEM_PROMPT = `إنت مساعد قرارات إعلانية. �
   "creativeRecommendations": [""],
   "offerPositioning": ""
 }
-قواعد: 3-5 عناصر في testOpportunities. "underused" مش معناها بالضرورة "أفضل" — نبّه على كده صراحة في why لو محتاج. ممنوع تدّعي إن المنافسين رابحين إلا لو في بيانات أداء حقيقية (مفيش هنا) — ركز على الأنماط والفرص بس.`;
+قواعد: 3-5 عناصر في testOpportunities. "underused" مش معناها بالضرورة "أفضل" — نبّه على كده صراحة في why لو محتاج. ممنوع تدّعي إن المنافسين رابحين إلا لو في بيانات أداء حقيقية (مفيش هنا) — ركز على الأنماط والفرص بس. استخدم عبارة "يستحق الاختبار" لأي زاوية أو صيغة مقترحة — ممنوع تمامًا كلمة "رابحة" أو "فايزة" أو أي وصف بيدّعي نتيجة أداء حقيقية غير موجودة.`;
 
 const decisionIntelligenceCache = new Map(); // searchId -> {statsHash, result} — process-lifetime only, same "no new infra" convention as apifyMetaAdLibraryProvider.js's statusCache; safe to lose on restart, regenerated on next request.
 
 function deterministicDecisionFallback(agg) {
+  const topCta = agg.ctas[0];
+  const dominantFormat = agg.formatRatio.video >= agg.formatRatio.image ? `فيديو (${agg.formatRatio.video})` : `صورة (${agg.formatRatio.image})`;
+  const topPainPoint = agg.painPoints[0];
   return {
-    topPatterns: agg.hooks.slice(0, 3).map((h) => `استخدام هوك "${h.value}" في ${h.pct}% من الإعلانات المحللة`),
+    topPatterns: [
+      ...agg.hooks.slice(0, 3).map((h) => `استخدام هوك "${h.value}" في ${h.pct}% من الإعلانات المحللة`),
+      `الصيغة الأكثر استخدامًا: ${dominantFormat}`,
+      topCta ? `الـCTA الأكثر استخدامًا: "${topCta.value}" (${topCta.pct}%)` : null,
+    ].filter(Boolean),
     saturatedAngles: agg.sellingAngles.filter((a) => a.pct >= 30).map((a) => a.value),
     underusedAngles: agg.sellingAngles.filter((a) => a.pct > 0 && a.pct < 15).map((a) => a.value),
+    // Never a claim of a "winning" angle without real performance data —
+    // deliberately empty in the deterministic fallback (a genuine "worth
+    // testing" recommendation needs real judgment, not a keyword count).
     testOpportunities: [],
-    creativeRecommendations: agg.creativeFormats.slice(0, 2).map((f) => `تجربة صيغة ${f.value} (مستخدمة في ${f.pct}% من الإعلانات المحللة)`),
-    offerPositioning: `${agg.discountUsageRate}% من الإعلانات المحللة بتستخدم خصم، و${agg.price.visibilityPct}% بتظهر السعر صراحة.`,
+    creativeRecommendations: agg.creativeFormats.slice(0, 2).map((f) => `${f.value} يستحق الاختبار (مستخدم بالفعل في ${f.pct}% من الإعلانات المحللة عند المنافسين)`),
+    offerPositioning: `${agg.discountUsageRate}% من الإعلانات المحللة بتستخدم خصم، و${agg.price.visibilityPct}% بتظهر السعر صراحة.`
+      + (topPainPoint ? ` أكتر نقطة ألم بيركزوا عليها: "${topPainPoint.value}".` : ''),
     source: 'DETERMINISTIC_FALLBACK',
   };
 }
@@ -456,11 +625,12 @@ export async function generateDecisionIntelligence(searchId, agg) {
     const text = await askClaude({
       system: DECISION_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify({
-        adsAnalyzed: agg.adsAnalyzed,
+        adsAnalyzed: agg.statsBasedOnCount,
         hooks: agg.hooks, sellingAngles: agg.sellingAngles, painPoints: agg.painPoints,
         benefits: agg.benefits, features: agg.features, price: agg.price,
         discountUsageRate: agg.discountUsageRate, urgencyUsageRate: agg.urgencyUsageRate,
         offerUsage: agg.offerUsage, creativeFormats: agg.creativeFormats, creativeStyles: agg.creativeStyles,
+        ctas: agg.ctas, formatRatio: agg.formatRatio,
       }) }],
       maxTokens: 1400,
     });
