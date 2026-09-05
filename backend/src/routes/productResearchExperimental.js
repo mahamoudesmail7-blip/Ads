@@ -586,8 +586,23 @@ async function fetchAllowedMedia(startUrl) {
   throw Object.assign(new Error('عدد كبير جدًا من عمليات إعادة التوجيه'), { code: 'BLOCKED' });
 }
 
-function safeFilenamePart(s) {
-  return String(s || '').replace(/[^\p{L}\p{N}\- _]/gu, '').trim().slice(0, 60) || 'file';
+// REAL PRODUCTION BUG, caught by live-testing this exact endpoint against
+// a real Arabic product name (confirmed by reproducing it directly: Node's
+// http layer throws "Invalid character in header content" synchronously
+// the moment a Content-Disposition value contains non-Latin1 text) —
+// every download attempt was failing with a 500 the moment it reached
+// res.setHeader(), since literally every real product name in this app is
+// Arabic. Plain `filename=` must stay ASCII-only; the real Arabic name is
+// carried separately via the standard RFC 5987 `filename*=UTF-8''...`
+// form, which modern browsers use for the actual saved filename.
+function asciiFilenamePart(s) {
+  return String(s || '').replace(/[^A-Za-z0-9\- _]/g, '').trim().slice(0, 60);
+}
+function contentDispositionHeader(displayName, ext) {
+  const asciiSlug = asciiFilenamePart(displayName) || 'download';
+  const asciiFilename = `${asciiSlug}.${ext}`;
+  const utf8Filename = encodeURIComponent(`${displayName}.${ext}`);
+  return `attachment; filename="${asciiFilename}"; filename*=UTF-8''${utf8Filename}`;
 }
 
 router.get(
@@ -631,9 +646,9 @@ router.get(
     if (!upstream.body) return res.status(502).json({ error: 'DOWNLOAD_FAILED', message: 'تعذر تحميل الملف.' });
 
     const ext = isVideo ? 'mp4' : (upstream.headers.get('content-type') || '').includes('png') ? 'png' : 'jpg';
-    const filename = `${safeFilenamePart(search.product_name)}-${safeFilenamePart(result.platform)}-${result.id}.${ext}`;
+    const displayName = `${search.product_name || 'product'}-${result.platform}-${result.id}`;
     res.setHeader('Content-Type', upstream.headers.get('content-type') || (isVideo ? 'video/mp4' : 'image/jpeg'));
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', contentDispositionHeader(displayName, ext));
     const upstreamLength = upstream.headers.get('content-length');
     if (upstreamLength) res.setHeader('Content-Length', upstreamLength);
 
