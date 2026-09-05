@@ -291,7 +291,14 @@
             overflow: hidden;
             isolation: isolate;
           }
-          /* Very subtle animated grid + drifting glow — near-invisible unless looked for, per the request. Pure CSS, no JS, disabled under reduced-motion below. */
+          /* PERF NOTE (see report): the grid/glow used to be continuously
+             animated (background-position / transform on a 46s and 18s
+             infinite loop) running the ENTIRE time the section was open,
+             not just during a search. Animating background-position in
+             particular forces the browser to repaint the whole section
+             every frame — this was one of the single biggest sources of
+             the reported slowdown. Both are now static: same visual
+             richness, zero ongoing paint/composite cost. */
           #prExperimentalSection::before {
             content: ''; position: absolute; inset: 0; z-index: -2; pointer-events: none;
             background-image:
@@ -299,16 +306,12 @@
               linear-gradient(90deg, rgba(129,140,248,0.05) 1px, transparent 1px);
             background-size: 42px 42px;
             mask-image: radial-gradient(1000px 600px at 50% 0%, #000 0%, transparent 75%);
-            animation: icdGridDrift 46s linear infinite;
           }
           #prExperimentalSection::after {
             content: ''; position: absolute; z-index: -1; pointer-events: none;
             width: 380px; height: 380px; border-radius: 50%; top: -140px; inset-inline-end: -100px;
             background: radial-gradient(circle, rgba(34,211,238,0.14), transparent 70%);
-            animation: icdGlowDrift 18s ease-in-out infinite alternate;
           }
-          @keyframes icdGridDrift { from { background-position: 0 0, 0 0; } to { background-position: 42px 42px, 42px 42px; } }
-          @keyframes icdGlowDrift { from { transform: translate(0,0) scale(1); } to { transform: translate(-30px, 30px) scale(1.15); } }
 
           #prExperimentalSection .icd-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 22px; position: relative; z-index: 1; }
           #prExperimentalSection .icd-header-left { display: flex; align-items: center; gap: 14px; }
@@ -318,14 +321,22 @@
           #prExperimentalSection .icd-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--icd-border-strong); color: var(--icd-cyan); background: rgba(139,92,246,0.10); letter-spacing: .03em; }
           #prExperimentalSection .icd-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--icd-cyan); box-shadow: 0 0 8px var(--icd-cyan); animation: icdPulseDot 2s ease-in-out infinite; }
 
+          /* PERF NOTE: blur reduced 16px→7px here, and REMOVED entirely
+             below from .icd-platform-card / .icd-result-card, where up to
+             ~6 platform cards and up to 100 result cards each forced their
+             own independent backdrop-filter composite — that multiplied
+             cost is a bigger factor than the blur radius on the handful
+             (~7) of outer panels. */
           #prExperimentalSection .icd-panel {
             background: var(--icd-panel); border: 1px solid var(--icd-border); border-radius: 16px; padding: 18px; margin-bottom: 18px;
-            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 20px 40px -28px rgba(0,0,0,0.6);
+            backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+            box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 14px 28px -22px rgba(0,0,0,0.6);
             position: relative; z-index: 1;
-            transition: border-color .25s ease, box-shadow .25s ease;
+            transition: border-color .25s ease;
           }
-          #prExperimentalSection .icd-panel:hover { border-color: var(--icd-border-strong); }
+          @media (hover: hover) and (pointer: fine) {
+            #prExperimentalSection .icd-panel:hover { border-color: var(--icd-border-strong); }
+          }
           #prExperimentalSection .icd-panel-title { font-size: 13.5px; font-weight: 700; margin-bottom: 14px; color: var(--icd-text); display: flex; align-items: center; gap: 8px; }
           #prExperimentalSection label { font-size: 12px; color: var(--icd-faint); display: block; margin-bottom: 5px; }
           #prExperimentalSection input[type="text"], #prExperimentalSection textarea, #prExperimentalSection select {
@@ -346,38 +357,51 @@
 
           #prExperimentalSection .icd-btn {
             background: linear-gradient(90deg, var(--icd-purple), var(--icd-blue)); border: none; color: #fff; font-weight: 700; font-size: 13px;
-            padding: 10px 20px; border-radius: 11px; cursor: pointer; box-shadow: 0 0 22px rgba(139,92,246,0.35);
-            transition: transform .15s ease, box-shadow .25s ease, filter .2s ease;
+            padding: 10px 20px; border-radius: 11px; cursor: pointer; box-shadow: 0 0 16px rgba(139,92,246,0.3);
+            transition: transform .15s ease, box-shadow .25s ease;
           }
-          #prExperimentalSection .icd-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 30px rgba(139,92,246,0.5); filter: brightness(1.06); }
+          /* PERF NOTE: hover transform/glow/filter gated to real hover-capable pointers only — on touch, :hover can stick after a tap until the next tap elsewhere, wasting paint on mobile for an effect that was never meant to be visible there. */
+          @media (hover: hover) and (pointer: fine) {
+            #prExperimentalSection .icd-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 24px rgba(139,92,246,0.45); }
+            #prExperimentalSection .icd-btn.secondary:hover:not(:disabled) { border-color: var(--icd-border-strong); transform: translateY(-1px); }
+            #prExperimentalSection .icd-toggle:hover { border-color: var(--icd-border-strong); }
+          }
           #prExperimentalSection .icd-btn:active:not(:disabled) { transform: translateY(0); }
           #prExperimentalSection .icd-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
           #prExperimentalSection .icd-btn.secondary { background: var(--icd-panel-2); border: 1px solid var(--icd-border); box-shadow: none; color: var(--icd-text); font-weight: 600; padding: 7px 14px; font-size: 12.5px; }
-          #prExperimentalSection .icd-btn.secondary:hover:not(:disabled) { border-color: var(--icd-border-strong); box-shadow: 0 0 14px rgba(34,211,238,0.12); transform: translateY(-1px); }
           #prExperimentalSection .icd-btn.small { padding: 5px 11px; font-size: 11.5px; }
           #prExperimentalSection .icd-row { display: flex; gap: 10px; flex-wrap: wrap; }
           #prExperimentalSection .icd-row > * { flex: 1; min-width: 140px; }
 
           #prExperimentalSection .icd-toggle-group { display: flex; gap: 8px; }
-          #prExperimentalSection .icd-toggle { flex: 1; text-align: center; padding: 9px; border-radius: 10px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); cursor: pointer; font-size: 12.5px; font-weight: 600; position: relative; transition: border-color .2s, color .2s, box-shadow .2s; }
-          #prExperimentalSection .icd-toggle:hover { border-color: var(--icd-border-strong); }
-          #prExperimentalSection .icd-toggle[data-icd-mode="quick"].active { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.1); box-shadow: 0 0 16px rgba(34,211,238,0.22), 0 0 0 1px rgba(34,211,238,0.25) inset; }
-          #prExperimentalSection .icd-toggle[data-icd-mode="deep"].active { border-color: var(--icd-purple); color: #c4b5fd; background: rgba(139,92,246,0.12); box-shadow: 0 0 16px rgba(139,92,246,0.28), 0 0 0 1px rgba(139,92,246,0.28) inset; }
-          #prExperimentalSection .icd-toggle.active::after { content: ''; position: absolute; top: 5px; inset-inline-end: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
+          #prExperimentalSection .icd-toggle { flex: 1; text-align: center; padding: 9px; border-radius: 10px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); cursor: pointer; font-size: 12.5px; font-weight: 600; position: relative; transition: border-color .2s, color .2s; }
+          #prExperimentalSection .icd-toggle[data-icd-mode="quick"].active { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.1); box-shadow: 0 0 0 1px rgba(34,211,238,0.25) inset; }
+          #prExperimentalSection .icd-toggle[data-icd-mode="deep"].active { border-color: var(--icd-purple); color: #c4b5fd; background: rgba(139,92,246,0.12); box-shadow: 0 0 0 1px rgba(139,92,246,0.28) inset; }
+          #prExperimentalSection .icd-toggle.active::after { content: ''; position: absolute; top: 5px; inset-inline-end: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
           /* --- AI Product Analysis Hero --- */
           #prExperimentalSection .icd-product-card { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
           #prExperimentalSection .icd-hero-stage { position: relative; width: 72px; height: 72px; flex-shrink: 0; }
+          /* PERF NOTE: the halo pulse and scanning line used to run
+             forever, including long after a search finished (the hero
+             card stays visible showing the final result). `top` in
+             particular is a layout-triggering property — animating it every
+             2.6s for the lifetime of the page was real, avoidable cost.
+             Both now only animate while JS adds .icd-searching-active to
+             #icdProductCard (real search in progress) — otherwise fully
+             static, zero ongoing cost. */
           #prExperimentalSection .icd-hero-stage::before {
             content: ''; position: absolute; inset: -10px; border-radius: 50%;
             background: radial-gradient(circle, rgba(34,211,238,0.28), transparent 70%);
-            filter: blur(2px); animation: icdHaloPulse 3.4s ease-in-out infinite;
+            filter: blur(2px); opacity: .55;
           }
+          #prExperimentalSection .icd-searching-active .icd-hero-stage::before { animation: icdHaloPulse 3.4s ease-in-out infinite; }
           #prExperimentalSection .icd-hero-stage::after {
             content: ''; position: absolute; inset: -3px; border-radius: 16px; border: 1px solid rgba(34,211,238,0.35);
             box-shadow: 0 0 0 1px rgba(139,92,246,0.15) inset; pointer-events: none;
           }
-          #prExperimentalSection .icd-hero-scan { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; pointer-events: none; }
+          #prExperimentalSection .icd-hero-scan { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; pointer-events: none; display: none; }
+          #prExperimentalSection .icd-searching-active .icd-hero-scan { display: block; }
           #prExperimentalSection .icd-hero-scan span { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--icd-cyan), transparent); box-shadow: 0 0 8px var(--icd-cyan); animation: icdScan 2.6s linear infinite; }
           #prExperimentalSection .icd-product-thumb { position: relative; width: 72px; height: 72px; border-radius: 12px; object-fit: cover; border: 1px solid var(--icd-border-strong); flex-shrink: 0; }
           #prExperimentalSection .icd-product-thumb-placeholder { position: relative; width: 72px; height: 72px; border-radius: 12px; border: 1px dashed var(--icd-border-strong); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 24px; }
@@ -395,7 +419,12 @@
           #prExperimentalSection .icd-pipeline-node.done .icd-pipeline-icon { border-color: var(--icd-green); color: var(--icd-green); background: rgba(52,211,153,0.12); box-shadow: 0 0 12px rgba(52,211,153,0.25); }
           #prExperimentalSection .icd-pipeline-node.done .icd-pipeline-label { color: var(--icd-text); }
           #prExperimentalSection .icd-pipeline-node.done .icd-pipeline-line { background: linear-gradient(90deg, var(--icd-green), var(--icd-cyan)); }
-          #prExperimentalSection .icd-pipeline-node.current .icd-pipeline-icon { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.14); box-shadow: 0 0 0 4px rgba(34,211,238,0.12), 0 0 16px rgba(34,211,238,0.4); animation: icdPulseRing 1.8s ease-in-out infinite; }
+          /* PERF NOTE: was an infinite two-layer animated box-shadow (the
+             browser recomputes the shadow's spread/blur every frame — one
+             of the more expensive things to animate). A static box-shadow
+             plus a cheap opacity pulse reads the same visually for a small
+             34px icon at a fraction of the paint cost. */
+          #prExperimentalSection .icd-pipeline-node.current .icd-pipeline-icon { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.14); box-shadow: 0 0 12px rgba(34,211,238,0.35); animation: icdRingPulse 1.8s ease-in-out infinite; }
           #prExperimentalSection .icd-pipeline-node.current .icd-pipeline-label { color: var(--icd-cyan); font-weight: 700; }
           #prExperimentalSection .icd-pipeline-node.failed .icd-pipeline-icon { border-color: var(--icd-red); color: var(--icd-red); background: rgba(248,113,113,0.12); }
           #prExperimentalSection .icd-pipeline-node.failed .icd-pipeline-label { color: var(--icd-red); }
@@ -404,16 +433,25 @@
           #prExperimentalSection .icd-overall-wrap { display: flex; align-items: center; gap: 16px; }
           #prExperimentalSection .icd-overall-bar { flex: 1; height: 12px; border-radius: 999px; background: rgba(139,144,179,0.14); overflow: hidden; position: relative; border: 1px solid var(--icd-border); }
           #prExperimentalSection .icd-overall-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-blue), var(--icd-purple)); transition: width .6s cubic-bezier(.4,0,.2,1); position: relative; overflow: hidden; }
-          #prExperimentalSection .icd-overall-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent); width: 40%; animation: icdEnergyFlow 2s linear infinite; }
+          /* PERF NOTE: shimmer only actually runs while a search is active — after COMPLETED/PARTIAL/FAILED the bar stops moving and there's no real progress left to animate, so the shimmer stopped meaning anything anyway. */
+          #prExperimentalSection .icd-overall-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent); width: 40%; display: none; }
+          #prExperimentalSection .icd-searching-active .icd-overall-fill::after { display: block; animation: icdEnergyFlow 2s linear infinite; }
           #prExperimentalSection .icd-overall-pct { font-size: 22px; font-weight: 800; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-purple)); -webkit-background-clip: text; background-clip: text; color: transparent; min-width: 58px; text-align: center; }
 
           /* --- Platform cards (premium AI processing modules) --- */
           #prExperimentalSection .icd-platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+          /* PERF NOTE: backdrop-filter removed here — up to 6 platform
+             cards each independently blurring their own backdrop was a
+             real, multiplying cost on top of the panel behind them; the
+             existing semi-transparent --icd-panel-2 background still reads
+             as "glass" without it. */
           #prExperimentalSection .icd-platform-card {
             background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 14px; padding: 15px; position: relative; overflow: hidden;
-            backdrop-filter: blur(10px); transition: border-color .3s ease, box-shadow .3s ease, transform .15s ease;
+            transition: border-color .3s ease;
           }
-          #prExperimentalSection .icd-platform-card:hover { transform: translateY(-2px); border-color: var(--icd-border-strong); }
+          @media (hover: hover) and (pointer: fine) {
+            #prExperimentalSection .icd-platform-card:hover { border-color: var(--icd-border-strong); }
+          }
           #prExperimentalSection .icd-platform-card::before { content: ''; position: absolute; top: 0; inset-inline: 0; height: 2px; background: var(--icd-plat-accent, var(--icd-border)); opacity: .8; }
           #prExperimentalSection .icd-platform-card[data-platform="instagram"] { --icd-plat-accent: linear-gradient(90deg, #f472b6, #a78bfa); }
           #prExperimentalSection .icd-platform-card[data-platform="facebook"] { --icd-plat-accent: #3b82f6; }
@@ -421,7 +459,7 @@
           #prExperimentalSection .icd-platform-card[data-platform="youtube"] { --icd-plat-accent: #f87171; }
           #prExperimentalSection .icd-platform-card[data-platform="META_AD_LIBRARY"] { --icd-plat-accent: linear-gradient(90deg, #818cf8, #8b5cf6); }
           #prExperimentalSection .icd-platform-card[data-platform="google"] { --icd-plat-accent: linear-gradient(90deg, #34d399, #fbbf24, #f87171, #3b82f6); }
-          #prExperimentalSection .icd-platform-card.status-COMPLETE, #prExperimentalSection .icd-platform-card.status-COMPLETED { border-color: var(--icd-green); box-shadow: 0 0 18px rgba(52,211,153,0.14); }
+          #prExperimentalSection .icd-platform-card.status-COMPLETE, #prExperimentalSection .icd-platform-card.status-COMPLETED { border-color: var(--icd-green); }
           #prExperimentalSection .icd-platform-card.status-PARTIAL { border-color: var(--icd-yellow); }
           #prExperimentalSection .icd-platform-card.status-FAILED { border-color: var(--icd-red); }
           #prExperimentalSection .icd-platform-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
@@ -432,10 +470,16 @@
           #prExperimentalSection .icd-ring { transform: rotate(-90deg); }
           #prExperimentalSection .icd-ring-bg { fill: none; stroke: rgba(139,144,179,0.16); stroke-width: 7; }
           #prExperimentalSection .icd-ring-fill { fill: none; stroke-width: 7; stroke-linecap: round; transition: stroke-dashoffset .6s cubic-bezier(.4,0,.2,1), stroke .3s ease; stroke: var(--icd-blue); }
-          #prExperimentalSection .icd-ring-fill.st-complete { stroke: var(--icd-green); filter: drop-shadow(0 0 5px rgba(52,211,153,0.55)); }
-          #prExperimentalSection .icd-ring-fill.st-partial { stroke: var(--icd-yellow); filter: drop-shadow(0 0 5px rgba(251,191,36,0.5)); }
+          /* PERF NOTE: `filter: drop-shadow` on every ring (including
+             terminal COMPLETE/PARTIAL rings that never change again) forces
+             its own compositing layer per card — removed on the terminal
+             states (color alone still reads clearly); kept ONLY the cheap
+             opacity pulse (no filter) on the one ring that's actually
+             SEARCHING right now. */
+          #prExperimentalSection .icd-ring-fill.st-complete { stroke: var(--icd-green); }
+          #prExperimentalSection .icd-ring-fill.st-partial { stroke: var(--icd-yellow); }
           #prExperimentalSection .icd-ring-fill.st-failed { stroke: var(--icd-red); }
-          #prExperimentalSection .icd-ring-fill.st-running { stroke: var(--icd-cyan); filter: drop-shadow(0 0 6px rgba(34,211,238,0.6)); animation: icdRingPulse 1.8s ease-in-out infinite; }
+          #prExperimentalSection .icd-ring-fill.st-running { stroke: var(--icd-cyan); animation: icdRingPulse 1.8s ease-in-out infinite; }
           #prExperimentalSection .icd-ring-fill.st-pending { stroke: rgba(139,144,179,0.35); }
           #prExperimentalSection .icd-ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 800; color: var(--icd-text); }
 
@@ -463,13 +507,21 @@
           #prExperimentalSection .icd-platform-progress-fill.st-failed { background: var(--icd-red); }
 
           #prExperimentalSection .icd-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
-          #prExperimentalSection .icd-summary-tile { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; padding: 12px; text-align: center; transition: border-color .2s, transform .15s; }
-          #prExperimentalSection .icd-summary-tile:hover { border-color: var(--icd-border-strong); transform: translateY(-1px); }
+          #prExperimentalSection .icd-summary-tile { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; padding: 12px; text-align: center; transition: border-color .2s; }
+          @media (hover: hover) and (pointer: fine) {
+            #prExperimentalSection .icd-summary-tile:hover { border-color: var(--icd-border-strong); }
+          }
           #prExperimentalSection .icd-summary-tile .n { font-size: 19px; font-weight: 800; color: var(--icd-text); }
           #prExperimentalSection .icd-summary-tile .l { font-size: 10.5px; color: var(--icd-faint); margin-top: 2px; }
           #prExperimentalSection .icd-result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
-          #prExperimentalSection .icd-result-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .2s, box-shadow .2s, transform .15s; backdrop-filter: blur(10px); }
-          #prExperimentalSection .icd-result-card:hover { border-color: var(--icd-purple); box-shadow: 0 0 20px rgba(139,92,246,0.2); transform: translateY(-2px); }
+          /* PERF NOTE: backdrop-filter removed — this grid can hold up to
+             100 cards at once (pageSize option), each independently
+             blurring was by far the largest single multiplier in the whole
+             redesign. Hover glow/lift gated to real hover-capable pointers. */
+          #prExperimentalSection .icd-result-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .2s; content-visibility: auto; contain-intrinsic-size: 0 280px; }
+          @media (hover: hover) and (pointer: fine) {
+            #prExperimentalSection .icd-result-card:hover { border-color: var(--icd-purple); }
+          }
           #prExperimentalSection .icd-result-thumb { width: 100%; height: 130px; object-fit: cover; background: #0d1024; }
           #prExperimentalSection .icd-result-thumb-placeholder { width: 100%; height: 130px; background: #0d1024; display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 26px; }
           #prExperimentalSection .icd-result-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
@@ -486,19 +538,14 @@
           #prExperimentalSection .icd-faint { color: var(--icd-faint); font-size: 12px; }
           #prExperimentalSection a { color: var(--icd-cyan); }
 
-          /* --- Decorative particles (a handful of static elements, CSS-animated only) --- */
-          #prExperimentalSection .icd-particles { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 0; }
-          #prExperimentalSection .icd-particle { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: var(--icd-cyan); opacity: .5; box-shadow: 0 0 6px var(--icd-cyan); animation: icdFloat 12s ease-in-out infinite; }
-          #prExperimentalSection .icd-particle:nth-child(2) { background: var(--icd-purple); box-shadow: 0 0 6px var(--icd-purple); animation-duration: 16s; animation-delay: -3s; }
-          #prExperimentalSection .icd-particle:nth-child(3) { background: var(--icd-blue); box-shadow: 0 0 6px var(--icd-blue); animation-duration: 14s; animation-delay: -7s; }
-          #prExperimentalSection .icd-particle:nth-child(4) { animation-duration: 19s; animation-delay: -10s; }
-          #prExperimentalSection .icd-particle:nth-child(5) { background: var(--icd-purple); box-shadow: 0 0 6px var(--icd-purple); animation-duration: 15s; animation-delay: -5s; }
-
-          @keyframes icdFloat { 0%,100% { transform: translate(0,0); opacity: .5; } 50% { transform: translate(14px,-22px); opacity: .9; } }
+          /* PERF NOTE: the floating-particle layer (5 elements, permanently
+             animating from page load to page close regardless of any
+             search state) has been removed outright per the explicit
+             request to remove continuous decorative background motion —
+             it was pure decoration with a real, permanent cost. */
           @keyframes icdPulseDot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
           @keyframes icdHaloPulse { 0%,100% { opacity: .55; transform: scale(1); } 50% { opacity: .9; transform: scale(1.08); } }
           @keyframes icdScan { 0% { top: 0; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
-          @keyframes icdPulseRing { 0%,100% { box-shadow: 0 0 0 4px rgba(34,211,238,0.12), 0 0 16px rgba(34,211,238,0.4); } 50% { box-shadow: 0 0 0 7px rgba(34,211,238,0.06), 0 0 22px rgba(34,211,238,0.55); } }
           @keyframes icdRingPulse { 0%,100% { opacity: 1; } 50% { opacity: .65; } }
           @keyframes icdEnergyFlow { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
 
@@ -518,15 +565,6 @@
             #prExperimentalSection .icd-overall-pct { font-size: 18px; min-width: 46px; }
           }
         </style>
-
-        <!-- Purely decorative — a handful of static, CSS-animated dots; never represents real data (Step: subtle background motion). -->
-        <div class="icd-particles" aria-hidden="true">
-          <span class="icd-particle" style="top:8%; inset-inline-start:6%;"></span>
-          <span class="icd-particle" style="top:18%; inset-inline-start:92%;"></span>
-          <span class="icd-particle" style="top:60%; inset-inline-start:3%;"></span>
-          <span class="icd-particle" style="top:75%; inset-inline-start:88%;"></span>
-          <span class="icd-particle" style="top:40%; inset-inline-start:50%;"></span>
-        </div>
 
         <div class="icd-header">
           <div class="icd-header-left">

@@ -46,13 +46,19 @@ const PIPELINE_NODES = [
 ];
 const PIPELINE_ORDER = ['PENDING', 'ANALYZING', 'GENERATING_QUERIES', 'SEARCHING', 'RANKING'];
 
-/** Real, deterministic SVG circular progress ring (Step: circular progress) — the SAME `progress` number already computed from data.platformProgress drives stroke-dashoffset; no separate/fake value. */
+// Shared ring geometry (perf: computed once, reused by both the initial
+// build and every incremental update below — see renderPlatformGrid).
+const RING_R = 30;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
+function ringDashOffset(progress) {
+  return Math.max(0, RING_CIRCUMFERENCE * (1 - progress / 100)).toFixed(1);
+}
+
+/** Real, deterministic SVG circular progress ring (Step: circular progress) — the SAME `progress` number already computed from data.platformProgress drives stroke-dashoffset; no separate/fake value. Used only for the FIRST render of a platform card — every later poll updates the existing ring's attributes in place (renderPlatformGrid) instead of rebuilding this markup, so the CSS `transition` on stroke-dashoffset can actually interpolate between real values instead of snapping on a freshly-created node. */
 function svgRing(progress, ringClass) {
-  const r = 30, c = 2 * Math.PI * r;
-  const offset = Math.max(0, c * (1 - progress / 100));
   return `<div class="icd-ring-wrap"><svg class="icd-ring" width="72" height="72" viewBox="0 0 72 72" aria-hidden="true">
-    <circle class="icd-ring-bg" cx="36" cy="36" r="${r}"></circle>
-    <circle class="icd-ring-fill ${ringClass}" cx="36" cy="36" r="${r}" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"></circle>
+    <circle class="icd-ring-bg" cx="36" cy="36" r="${RING_R}"></circle>
+    <circle class="icd-ring-fill ${ringClass}" cx="36" cy="36" r="${RING_R}" stroke-dasharray="${RING_CIRCUMFERENCE.toFixed(1)}" stroke-dashoffset="${ringDashOffset(progress)}"></circle>
   </svg><div class="icd-ring-pct">${progress}%</div></div>`;
 }
 
@@ -247,6 +253,12 @@ async function startSearch() {
     document.getElementById('icdProductCard').style.display = 'block';
     document.getElementById('icdPlatformPanel').style.display = 'block';
     document.getElementById('icdBtnCancelSearch').style.display = '';
+    // renderPlatformGrid() now updates existing cards by platform key
+    // instead of replacing the whole grid every poll (perf) — so a NEW
+    // search must explicitly start from an empty grid, otherwise it would
+    // silently reuse/update the PREVIOUS search's cards.
+    const grid = document.getElementById('icdPlatformGrid');
+    if (grid) grid.innerHTML = '';
     startPolling(searchId);
   } catch (err) {
     UI.toast(err.message, 'error');
@@ -330,56 +342,121 @@ function renderProgress(data) {
   let progressText = STATUS_LABEL_AR[data.status] || data.status;
   document.getElementById('icdProgressText').textContent = progressText;
 
+  // PERF: a single class drives every "only while actively searching"
+  // visual (hero halo/scan, overall-progress shimmer) via CSS — computed
+  // once per poll from the real status, never a separate timer.
+  const isActive = !['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(data.status);
+  document.getElementById('icdProductCard')?.classList.toggle('icd-searching-active', isActive);
+
   renderIdentityProfile(data);
   renderPipeline(data);
   renderOverallProgress(data);
+  renderPlatformGrid(data);
+  renderSummaryTiles(data);
+}
 
+/**
+ * PERF (Step: avoid re-rendering all platform cards on every poll): the
+ * previous version replaced the ENTIRE grid's innerHTML every 2s poll,
+ * destroying and recreating every card (and its SVG ring) even when
+ * nothing about that platform had changed — real cost multiplied by up to
+ * 6 platforms every single tick for the whole duration of a search, and
+ * it also meant the ring's CSS `transition` could never actually
+ * interpolate (a brand-new SVG node has no "previous value" to animate
+ * from). This now builds each card ONCE and, on every later poll, only
+ * touches the specific attributes/text that actually changed — same real
+ * data, same real values, far less DOM/style work per tick.
+ */
+function renderPlatformGrid(data) {
   const grid = document.getElementById('icdPlatformGrid');
-  grid.innerHTML = data.platforms
-    .map((p) => {
-      const s = data.platformStatus?.[p] || 'PENDING';
-      const count = data.byPlatform?.[p] ?? 0;
-      const err = data.platformErrors?.[p];
-      const statusClass = { COMPLETE: 'COMPLETE', PARTIAL: 'PARTIAL', FAILED: 'FAILED' }[s] || '';
-      // Real, backend-driven percentage (Step: real Progress system) —
-      // read straight from data.platformProgress on every poll, never
-      // computed or animated by a frontend timer. Defaults to 1% only
-      // when the field is genuinely absent (e.g. an older search row from
-      // before this feature) — never fabricated beyond that. The SVG
-      // ring's stroke-dashoffset transitions smoothly via CSS between
-      // real values (Step: circular progress); the number itself is
-      // exactly what the backend last persisted.
-      const progress = Math.max(1, Math.min(100, Math.round(data.platformProgress?.[p] ?? 1)));
-      const ringClass = PLATFORM_STATUS_CLASS[s] || 'st-pending';
-      return `<div class="icd-platform-card status-${statusClass}" data-platform="${p}">
-        <div class="icd-platform-head">
-          <div class="icd-platform-name">${PLATFORM_LABEL[p] || p}</div>
-        </div>
+  if (!grid) return;
+  const existing = new Map([...grid.children].map((el) => [el.dataset.platform, el]));
+
+  for (const p of data.platforms) {
+    const s = data.platformStatus?.[p] || 'PENDING';
+    const count = data.byPlatform?.[p] ?? 0;
+    const err = data.platformErrors?.[p];
+    const statusClass = { COMPLETE: 'COMPLETE', PARTIAL: 'PARTIAL', FAILED: 'FAILED' }[s] || '';
+    // Real, backend-driven percentage (Step: real Progress system) — read
+    // straight from data.platformProgress on every poll, never computed or
+    // animated by a frontend timer. Defaults to 1% only when the field is
+    // genuinely absent (e.g. an older search row from before this
+    // feature) — never fabricated beyond that.
+    const progress = Math.max(1, Math.min(100, Math.round(data.platformProgress?.[p] ?? 1)));
+    const ringClass = PLATFORM_STATUS_CLASS[s] || 'st-pending';
+
+    let card = existing.get(p);
+    if (!card) {
+      // First time this platform card is rendered for this search — build it once.
+      card = document.createElement('div');
+      card.dataset.platform = p;
+      card.innerHTML = `<div class="icd-platform-head"><div class="icd-platform-name">${PLATFORM_LABEL[p] || p}</div></div>
         <div class="icd-platform-provider" data-provider-for="${p}">جاري التحقق...</div>
         ${svgRing(progress, ringClass)}
         <div class="icd-platform-count">${count}</div>
         <div class="icd-platform-count-label">نتيجة تم جمعها</div>
-        <span class="icd-platform-status ${ringClass}">${PLATFORM_STATUS_AR[s] || s}</span>
-        ${err ? `<div class="icd-platform-error">${escapeHtml(PLATFORM_ERROR_LABEL_AR[err.errorType] || err.errorType)}</div>` : ''}
-      </div>`;
-    })
-    .join('');
+        <span class="icd-platform-status ${ringClass}">${PLATFORM_STATUS_AR[s] || s}</span>`;
+      card.className = `icd-platform-card status-${statusClass}`;
+      card.dataset._status = s;
+      card.dataset._progress = String(progress);
+      grid.appendChild(card);
+      continue; // already fully up to date on first paint
+    }
+
+    // Update only what actually changed (Step: update only DOM values that changed).
+    if (card.dataset._status !== s) {
+      card.dataset._status = s;
+      card.className = `icd-platform-card status-${statusClass}`;
+      const ringFill = card.querySelector('.icd-ring-fill');
+      if (ringFill) ringFill.setAttribute('class', `icd-ring-fill ${ringClass}`);
+      const statusEl = card.querySelector('.icd-platform-status');
+      if (statusEl) { statusEl.className = `icd-platform-status ${ringClass}`; statusEl.textContent = PLATFORM_STATUS_AR[s] || s; }
+    }
+    if (card.dataset._progress !== String(progress)) {
+      card.dataset._progress = String(progress);
+      const ringFill = card.querySelector('.icd-ring-fill');
+      // Same DOM node as last poll → the CSS `transition` on
+      // stroke-dashoffset now genuinely interpolates from the real
+      // previous value to the real new one (Step: rings transition only
+      // when real progress changes).
+      if (ringFill) ringFill.setAttribute('stroke-dashoffset', ringDashOffset(progress));
+      const pctEl = card.querySelector('.icd-ring-pct');
+      if (pctEl) pctEl.textContent = `${progress}%`;
+    }
+    const countEl = card.querySelector('.icd-platform-count');
+    if (countEl && countEl.textContent !== String(count)) countEl.textContent = count;
+
+    const errText = err ? (PLATFORM_ERROR_LABEL_AR[err.errorType] || err.errorType) : '';
+    let errEl = card.querySelector('.icd-platform-error');
+    if (errText) {
+      if (!errEl) { card.insertAdjacentHTML('beforeend', `<div class="icd-platform-error"></div>`); errEl = card.querySelector('.icd-platform-error'); }
+      if (errEl.textContent !== errText) errEl.textContent = errText;
+    } else if (errEl) {
+      errEl.remove();
+    }
+  }
+
+  // Defensive parity with the old full-replace behavior — data.platforms
+  // doesn't actually change once a search starts, but if it ever did,
+  // don't leave a stale card behind.
+  for (const [p, el] of existing) if (!data.platforms.includes(p)) el.remove();
 
   // Fill in the real provider name per platform card from the same status
   // endpoint already loaded (avoids a second round trip on every poll tick).
   applyKnownProviders();
+}
 
-  if (data.summary) {
-    const s = data.summary;
-    document.getElementById('icdSummaryGrid').innerHTML = [
-      { l: 'إجمالي النتائج', n: s.totalResults },
-      { l: 'النتائج الفريدة', n: s.uniqueResults },
-      { l: 'مطابقة تامة', n: s.exactMatches },
-      { l: 'مطابقة قوية', n: s.verySimilar },
-      { l: 'مشابهة', n: s.similar },
-      { l: 'غير مصنفة', n: s.unclassified },
-    ].map((t) => `<div class="icd-summary-tile"><div class="n">${t.n}</div><div class="l">${escapeHtml(t.l)}</div></div>`).join('');
-  }
+function renderSummaryTiles(data) {
+  if (!data.summary) return;
+  const s = data.summary;
+  document.getElementById('icdSummaryGrid').innerHTML = [
+    { l: 'إجمالي النتائج', n: s.totalResults },
+    { l: 'النتائج الفريدة', n: s.uniqueResults },
+    { l: 'مطابقة تامة', n: s.exactMatches },
+    { l: 'مطابقة قوية', n: s.verySimilar },
+    { l: 'مشابهة', n: s.similar },
+    { l: 'غير مصنفة', n: s.unclassified },
+  ].map((t) => `<div class="icd-summary-tile"><div class="n">${t.n}</div><div class="l">${escapeHtml(t.l)}</div></div>`).join('');
 }
 
 /** AI Analysis Pipeline (visual redesign only) — every node's done/current/upcoming state is derived purely from the real data.status the backend already returns; never a fabricated stage. Hidden entirely for FAILED/CANCELLED since this frontend has no reliable way to know which real stage was reached when the pipeline stopped (never guessed). */
@@ -557,7 +634,7 @@ function resultCardHtml(r) {
   const classification = r.classification || 'UNCLASSIFIED';
   const m = r.metrics || {};
   return `<div class="icd-result-card">
-    ${r.thumbnail ? `<img class="icd-result-thumb" src="${escapeHtml(r.thumbnail)}" />` : `<div class="icd-result-thumb-placeholder">🖼️</div>`}
+    ${r.thumbnail ? `<img class="icd-result-thumb" src="${escapeHtml(r.thumbnail)}" loading="lazy" decoding="async" />` : `<div class="icd-result-thumb-placeholder">🖼️</div>`}
     <div class="icd-result-body">
       <div class="icd-result-platform">${PLATFORM_LABEL[r.platform] || r.platform}</div>
       <div class="icd-result-title">${escapeHtml(r.title || r.accountName || 'بدون عنوان')}</div>
