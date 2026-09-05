@@ -537,6 +537,24 @@
           #prExperimentalSection .icd-empty { text-align: center; padding: 40px 20px; color: var(--icd-faint); font-size: 13px; }
           #prExperimentalSection .icd-faint { color: var(--icd-faint); font-size: 12px; }
           #prExperimentalSection a { color: var(--icd-cyan); }
+          #prExperimentalSection .icd-mini-badge.red { border-color: var(--icd-red); color: var(--icd-red); }
+
+          /* Step: Meta Ads competitor intelligence — plain CSS bars, no
+             chart library, no animation (consistent with the perf-
+             optimization pass). Lazy-rendered only when the panel is
+             opened. */
+          #prExperimentalSection .icd-bar-list { display: flex; flex-direction: column; gap: 8px; }
+          #prExperimentalSection .icd-bar-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+          #prExperimentalSection .icd-bar-label { flex: 0 0 150px; color: var(--icd-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          #prExperimentalSection .icd-bar-track { flex: 1; height: 8px; background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 999px; overflow: hidden; }
+          #prExperimentalSection .icd-bar-fill { height: 100%; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-purple)); }
+          #prExperimentalSection .icd-bar-pct { flex: 0 0 50px; text-align: end; color: var(--icd-faint); font-size: 11px; }
+          #prExperimentalSection .icd-competitor-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 820px; }
+          #prExperimentalSection .icd-competitor-table th, #prExperimentalSection .icd-competitor-table td { padding: 8px 10px; border-bottom: 1px solid var(--icd-border); text-align: start; white-space: nowrap; }
+          #prExperimentalSection .icd-competitor-table th { color: var(--icd-faint); font-weight: 600; font-size: 11px; }
+          #prExperimentalSection .icd-decision-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+          #prExperimentalSection .icd-decision-card .t { font-weight: 700; font-size: 12.5px; margin-bottom: 6px; }
+          #prExperimentalSection .icd-decision-card ul { margin: 0; padding-inline-start: 18px; font-size: 12px; color: var(--icd-text); line-height: 1.7; }
 
           /* PERF NOTE: the floating-particle layer (5 elements, permanently
              animating from page load to page close regardless of any
@@ -826,6 +844,47 @@
           <div class="icd-result-grid" id="icdResultGrid"></div>
           <div class="icd-empty" id="icdResultsEmpty" style="display:none;">لم يتم العثور على نتائج بعد</div>
           <div class="icd-row" style="margin-top:14px; justify-content:center;" id="icdResultsPagination"></div>
+        </div>
+
+        <!-- Meta Ads Competitor Intelligence (Part 2) — lazy: fetched only
+             when opened, never on the fast 2s progress poll. Hidden by
+             default; renderCompetitorTabAvailability() reveals it only
+             when the search actually found verified-exact Meta Ads
+             Library ads. -->
+        <div class="icd-panel" id="icdCompetitorPanel" style="display:none;">
+          <div class="icd-panel-title" id="icdCompetitorToggle" style="cursor:pointer; display:flex; align-items:center; justify-content:space-between;">
+            <span>🎯 تحليل المنافسين</span>
+            <span class="icd-faint" id="icdCompetitorToggleHint">اضغط للعرض</span>
+          </div>
+          <div id="icdCompetitorBody" style="display:none; margin-top:14px;">
+            <div class="icd-empty" id="icdCompetitorEmpty" style="display:none;"></div>
+            <div id="icdCompetitorContent" style="display:none;">
+              <div class="icd-summary-grid" id="icdCompetitorSummary"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">📊 أكثر الهوكات استخدامًا</div>
+              <div id="icdCompetitorHooks" class="icd-bar-list"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">🎯 زوايا البيع</div>
+              <div id="icdCompetitorAngles" class="icd-bar-list"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">💰 تحليل الأسعار</div>
+              <div id="icdCompetitorPrice" class="icd-faint"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">🎁 تحليل العروض</div>
+              <div id="icdCompetitorOffers" class="icd-bar-list"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">🎬 تحليل الإبداع (Creative)</div>
+              <div id="icdCompetitorCreative" class="icd-bar-list"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">🧭 مساعد القرار بالذكاء الاصطناعي</div>
+              <div id="icdCompetitorDecision"></div>
+
+              <div class="icd-panel-title" style="margin-top:18px;">🏆 جدول مقارنة المنافسين</div>
+              <div class="icd-table-wrap" style="overflow-x:auto;">
+                <table class="icd-competitor-table" id="icdCompetitorTable"></table>
+              </div>
+            </div>
+          </div>
         </div>
       </div><!-- /prExperimentalSection -->
     </div>

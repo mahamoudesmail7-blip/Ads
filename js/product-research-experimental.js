@@ -74,6 +74,7 @@ const internalCreativeDiscovery = {
   images: [], // {base64, mediaType, name, dataUrl}[] — 1-4 real reference angles of the SAME product (Step: multi-image visual matching)
   currentSearchId: null,
   pollTimer: null,
+  competitorPollTimer: null, // Step: Meta Ads competitor intelligence — separate slow poll, only while a batch is genuinely in progress, decoupled from the fast 2s progress poll
   mode: 'quick',
   currentPage: 1,
   matchGroup: 'EXACT', // Step: exact product matching — 'EXACT' | 'REVIEW' tab, only meaningful when currentSearchVisualMatchingActive
@@ -262,7 +263,9 @@ async function startSearch() {
     // silently reuse/update the PREVIOUS search's cards.
     const grid = document.getElementById('icdPlatformGrid');
     if (grid) grid.innerHTML = '';
+    resetCompetitorPanel();
     startPolling(searchId);
+    wireCompetitorToggle();
   } catch (err) {
     UI.toast(err.message, 'error');
   } finally {
@@ -291,6 +294,25 @@ function resetToNewSearch() {
   document.getElementById('icdFiltersPanel').style.display = 'none';
   document.getElementById('icdResultsPanel').style.display = 'none';
   document.getElementById('icdBtnCancelSearch').style.display = 'none';
+  resetCompetitorPanel();
+}
+
+/** Step: Meta Ads competitor intelligence — collapsed/empty state for a fresh search, and stops any in-flight slow poll from a PREVIOUS search. */
+function resetCompetitorPanel() {
+  if (internalCreativeDiscovery.competitorPollTimer) {
+    clearInterval(internalCreativeDiscovery.competitorPollTimer);
+    internalCreativeDiscovery.competitorPollTimer = null;
+  }
+  const panel = document.getElementById('icdCompetitorPanel');
+  const body = document.getElementById('icdCompetitorBody');
+  const hint = document.getElementById('icdCompetitorToggleHint');
+  const content = document.getElementById('icdCompetitorContent');
+  const empty = document.getElementById('icdCompetitorEmpty');
+  if (panel) panel.style.display = 'none';
+  if (body) body.style.display = 'none';
+  if (hint) hint.textContent = 'اضغط للعرض';
+  if (content) content.style.display = 'none';
+  if (empty) empty.style.display = 'none';
 }
 
 // --- Polling / progress ---
@@ -359,6 +381,7 @@ function renderProgress(data) {
   renderOverallProgress(data);
   renderPlatformGrid(data);
   renderSummaryTiles(data);
+  renderCompetitorTabAvailability(data);
 }
 
 /**
@@ -674,6 +697,174 @@ function resultCardHtml(r) {
       </div>
     </div>
   </div>`;
+}
+
+// --- Meta Ads Competitor Intelligence (Part 2) ---
+// Fully lazy: nothing here is fetched until the user opens the panel, and
+// the slow poll (7s) only ever runs while a real analysis batch is still
+// in progress — completely decoupled from the fast 2s progress poll, so
+// this can never regress the page-performance work from the previous
+// session.
+const HOOK_TYPE_LABEL_AR = {
+  Problem: 'مشكلة', Pain: 'ألم/معاناة', Curiosity: 'فضول', Benefit: 'فايدة', Price: 'سعر', Discount: 'خصم',
+  Demonstration: 'عرض توضيحي', 'Before/After': 'قبل/بعد', 'Social Proof': 'دليل اجتماعي', Fear: 'خوف',
+  Convenience: 'سهولة', Lifestyle: 'أسلوب حياة', Gift: 'هدية', Urgency: 'إلحاح', 'Product Reveal': 'كشف المنتج',
+  Educational: 'تعليمي', Story: 'قصة', Other: 'أخرى',
+};
+const OFFER_KEY_LABEL_AR = { cod: 'الدفع عند الاستلام', freeShipping: 'شحن مجاني', bundle: 'باقة/عرض', warranty: 'ضمان', limitedQuantity: 'كمية محدودة' };
+
+/** Idempotent — wired once ever, reads currentSearchId at CLICK time (never closes over one search's id) so it keeps working correctly across multiple searches without accumulating duplicate listeners. */
+function wireCompetitorToggle() {
+  const toggle = document.getElementById('icdCompetitorToggle');
+  if (!toggle || toggle.dataset.wired) return;
+  toggle.dataset.wired = '1';
+  toggle.addEventListener('click', () => {
+    const body = document.getElementById('icdCompetitorBody');
+    const hint = document.getElementById('icdCompetitorToggleHint');
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    if (hint) hint.textContent = isOpen ? 'اضغط للعرض' : 'اضغط للإخفاء';
+    if (!isOpen && internalCreativeDiscovery.currentSearchId) loadCompetitorAnalysis(internalCreativeDiscovery.currentSearchId);
+  });
+}
+
+/** Called from renderProgress() — purely a visibility decision from already-known data (data.platforms), never an extra fetch. */
+function renderCompetitorTabAvailability(data) {
+  const panel = document.getElementById('icdCompetitorPanel');
+  if (!panel) return;
+  const terminal = ['COMPLETED', 'PARTIAL', 'FAILED', 'CANCELLED'].includes(data.status);
+  panel.style.display = (terminal && data.platforms.includes('META_AD_LIBRARY')) ? 'block' : 'none';
+}
+
+function barListHtml(items, limit = 8) {
+  if (!items || items.length === 0) return `<div class="icd-faint">لا توجد بيانات كافية.</div>`;
+  return items.slice(0, limit).map((i) => `
+    <div class="icd-bar-row">
+      <div class="icd-bar-label" title="${escapeHtml(i.value)}">${escapeHtml(i.value)}</div>
+      <div class="icd-bar-track"><div class="icd-bar-fill" style="width:${Math.min(100, i.pct)}%"></div></div>
+      <div class="icd-bar-pct">${i.pct}% (${i.count})</div>
+    </div>`).join('');
+}
+
+function renderCompetitorSummary(data) {
+  const tiles = [
+    { n: data.adsFound, l: 'إعلانات مطابقة تمامًا' },
+    { n: data.adsAnalyzed, l: 'تم تحليلها' },
+    { n: data.pending, l: 'قيد التحليل' },
+    { n: data.failed, l: 'فشل التحليل' },
+    { n: `${data.price.visibilityPct}%`, l: 'إظهار السعر' },
+    { n: `${data.discountUsageRate}%`, l: 'استخدام الخصم' },
+  ];
+  document.getElementById('icdCompetitorSummary').innerHTML = tiles.map((t) => `<div class="icd-summary-tile"><div class="n">${t.n}</div><div class="l">${t.l}</div></div>`).join('');
+}
+
+function renderCompetitorPrice(price) {
+  const el = document.getElementById('icdCompetitorPrice');
+  if (price.adsAnalyzed === 0) { el.textContent = 'لا توجد بيانات لسه.'; return; }
+  const lines = [`إعلانات تم تحليلها: ${price.adsAnalyzed}`, `إعلانات تظهر السعر صراحة: ${price.adsWithPrice} (${price.visibilityPct}%)`];
+  const currencies = Object.keys(price.byCurrency);
+  if (currencies.length === 0) lines.push('مفيش سعر ظاهر بوضوح في أي إعلان اتحلل.');
+  // Never combined across currencies — each reported separately (Step 21).
+  for (const cur of currencies) {
+    const s = price.byCurrency[cur];
+    lines.push(`${cur}: من ${s.min} لـ ${s.max} — المتوسط ${s.average}, الوسيط ${s.median} (${s.count} إعلان)`);
+  }
+  el.innerHTML = lines.map((l) => `<div>${escapeHtml(l)}</div>`).join('');
+}
+
+function renderCompetitorOffers(data) {
+  const items = [
+    ...Object.entries(data.offerUsage).map(([k, v]) => ({ value: OFFER_KEY_LABEL_AR[k] || k, count: v.count, pct: v.pct })),
+    { value: 'إلحاح (Urgency)', count: Math.round((data.urgencyUsageRate / 100) * (data.adsAnalyzed || data.price.adsAnalyzed || 0)), pct: data.urgencyUsageRate },
+  ];
+  document.getElementById('icdCompetitorOffers').innerHTML = barListHtml(items, 10);
+}
+
+function renderCompetitorCreative(data) {
+  const items = [
+    ...data.creativeFormats.map((f) => ({ value: `صيغة: ${f.value}`, count: f.count, pct: f.pct })),
+    ...data.creativeStyles.map((s) => ({ value: `أسلوب: ${s.value}`, count: s.count, pct: s.pct })),
+  ];
+  document.getElementById('icdCompetitorCreative').innerHTML = barListHtml(items, 10);
+}
+
+function renderDecisionIntelligence(di) {
+  const el = document.getElementById('icdCompetitorDecision');
+  if (!di) { el.innerHTML = '<div class="icd-faint">لسه مفيش تحليل كافي لإنشاء توصيات.</div>'; return; }
+  const fallbackNote = di.source === 'AI_ANALYZED' ? '' : '<div class="icd-faint" style="margin-bottom:8px;">⚠️ تحليل مبني على قواعد ثابتة فقط — خدمة الذكاء الاصطناعي غير متاحة حاليًا.</div>';
+  const card = (title, bodyHtml) => `<div class="icd-decision-card"><div class="t">${title}</div>${bodyHtml}</div>`;
+  const listCard = (title, items) => (items && items.length ? card(title, `<ul>${items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul>`) : '');
+  const testOpportunities = (di.testOpportunities || []).map((o) => card(
+    `🧪 ${escapeHtml(o.angle || '')} — ثقة: ${escapeHtml(o.confidence || '')}`,
+    `<div>هوك مقترح: ${escapeHtml(o.suggestedHook || '')}</div><div>ليه تجربها: ${escapeHtml(o.why || '')}</div><div class="icd-faint">الدليل من بيانات المنافسين: ${escapeHtml(o.evidence || '')}</div>`
+  )).join('');
+  el.innerHTML = fallbackNote
+    + listCard('🔥 أكثر الأنماط تكرارًا عند المنافسين', di.topPatterns)
+    + listCard('📈 زوايا مشبعة (مستخدمة بكثرة)', di.saturatedAngles)
+    + listCard('🌱 زوايا أقل استخدامًا (مش بالضرورة أفضل)', di.underusedAngles)
+    + testOpportunities
+    + listCard('🎬 توصيات إبداعية للتجربة', di.creativeRecommendations)
+    + (di.offerPositioning ? card('💡 تموضع العرض', `<div>${escapeHtml(di.offerPositioning)}</div>`) : '');
+}
+
+function renderCompetitorTable(competitors) {
+  const el = document.getElementById('icdCompetitorTable');
+  if (!competitors || competitors.length === 0) { el.innerHTML = ''; return; }
+  const headers = ['المنافس', 'عدد الإعلانات', 'الهوك', 'زاوية البيع', 'السعر', 'الخصم', 'العرض', 'أسلوب الإبداع', 'CTA', 'مدة التشغيل (يوم)', 'مطابقة تامة', ''];
+  el.innerHTML = `<thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${competitors.map((c) => `
+    <tr>
+      <td>${escapeHtml(c.accountName || '—')}</td>
+      <td>${c.adsFound}</td>
+      <td>${escapeHtml(HOOK_TYPE_LABEL_AR[c.hook] || c.hook || '—')}</td>
+      <td>${escapeHtml(c.sellingAngle || '—')}</td>
+      <td>${escapeHtml(c.price || '—')}</td>
+      <td>${escapeHtml(c.discount || '—')}</td>
+      <td>${escapeHtml(c.offer || '—')}</td>
+      <td>${escapeHtml(c.creativeStyle || '—')}</td>
+      <td>${escapeHtml(c.cta || '—')}</td>
+      <td>${c.adLongevityDays ?? '—'}</td>
+      <td>✅</td>
+      <td><a class="icd-btn secondary small" href="${escapeHtml(c.url)}" target="_blank" rel="noopener noreferrer">عرض</a></td>
+    </tr>`).join('')}</tbody>`;
+}
+
+async function loadCompetitorAnalysis(searchId, isPoll = false) {
+  const empty = document.getElementById('icdCompetitorEmpty');
+  const content = document.getElementById('icdCompetitorContent');
+  let data;
+  try {
+    data = await api.get(`${EXP_API}/search/${searchId}/competitor-analysis`);
+  } catch (err) {
+    if (!isPoll) UI.toast(err.message, 'error');
+    return;
+  }
+  if (data.adsFound === 0) {
+    empty.style.display = 'block';
+    empty.textContent = 'لم يتم العثور على إعلانات منافسين مطابقة تمامًا للمنتج في Meta Ads Library لهذا البحث.';
+    content.style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  content.style.display = 'block';
+  renderCompetitorSummary(data);
+  document.getElementById('icdCompetitorHooks').innerHTML = barListHtml(data.hooks.map((h) => ({ ...h, value: HOOK_TYPE_LABEL_AR[h.value] || h.value })));
+  document.getElementById('icdCompetitorAngles').innerHTML = barListHtml(data.sellingAngles);
+  renderCompetitorPrice(data.price);
+  renderCompetitorOffers(data);
+  renderCompetitorCreative(data);
+  renderDecisionIntelligence(data.decisionIntelligence);
+  renderCompetitorTable(data.competitors);
+
+  // Only ever polls while a real batch is genuinely still running —
+  // stops itself the moment it isn't, never a fixed-duration timer.
+  if (data.batchStatus === 'IN_PROGRESS') {
+    if (!internalCreativeDiscovery.competitorPollTimer) {
+      internalCreativeDiscovery.competitorPollTimer = setInterval(() => loadCompetitorAnalysis(searchId, true), 7000);
+    }
+  } else if (internalCreativeDiscovery.competitorPollTimer) {
+    clearInterval(internalCreativeDiscovery.competitorPollTimer);
+    internalCreativeDiscovery.competitorPollTimer = null;
+  }
 }
 
 // --- Init ---

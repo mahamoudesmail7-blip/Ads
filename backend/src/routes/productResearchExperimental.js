@@ -26,6 +26,7 @@ import * as apifyProvider from '../services/searchProviders/apifyMetaAdLibraryPr
 import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibraryProvider.js';
 import { getLocalVisionStats, getWorkerDiagnostics } from '../services/vision/localVisionProvider.js';
 import { warmUpLocalVision } from '../services/vision/productVisionService.js';
+import { analyzeCompetitorAds, aggregateCompetitorAnalysis, generateDecisionIntelligence } from '../services/adAnalysis.js';
 
 const router = Router();
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY', 'google'];
@@ -290,7 +291,17 @@ router.post(
     });
 
     logger.info('[InternalCreativeDiscovery] SEARCH_STARTED', { searchId: search.id, userId: req.user.id, platforms: selectedPlatforms, mode: search.mode });
-    runExperimentalSearchPipeline(search.id).catch((err) => logger.error('[InternalCreativeDiscovery] PIPELINE_UNCAUGHT', { searchId: search.id, message: err.message }));
+    // Step: Meta Ads competitor intelligence — chained AFTER the main
+    // pipeline resolves (any terminal status, including FAILED/PARTIAL —
+    // analyzeCompetitorAds itself just finds 0 qualifying ads and returns
+    // immediately in that case), never awaited by this request, and never
+    // able to affect the product search itself. A failure here is caught
+    // by the SAME catch as the pipeline's own — it can never crash the
+    // process, and analyzeCompetitorAds already isolates each ad's own
+    // failure internally.
+    runExperimentalSearchPipeline(search.id)
+      .then(() => analyzeCompetitorAds(search.id))
+      .catch((err) => logger.error('[InternalCreativeDiscovery] PIPELINE_OR_AD_ANALYSIS_UNCAUGHT', { searchId: search.id, message: err.message }));
 
     res.status(202).json({ searchId: search.id, status: 'PENDING' });
   })
@@ -502,6 +513,26 @@ router.get(
         discoveredByQueries: r.discovered_by_queries_json ? JSON.parse(r.discovered_by_queries_json) : [],
       })),
     });
+  })
+);
+
+// Step: Meta Ads competitor intelligence. Pure read — the analysis batch
+// itself runs fired-and-forget from the pipeline chain above; this route
+// just reports whatever real progress exists so far (batchStatus:
+// NONE|IN_PROGRESS|DONE), never blocking on it. Decision Intelligence is
+// generated (and cached in-memory per searchId, same "no new infra"
+// convention as apifyMetaAdLibraryProvider.js's statusCache) only once
+// real ad analyses exist.
+router.get(
+  '/search/:id/competitor-analysis',
+  asyncRoute(async (req, res) => {
+    const searchId = Number(req.params.id);
+    const search = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId } });
+    if (!search) return res.status(404).json({ error: 'NOT_FOUND', message: 'البحث التجريبي ده مش موجود.' });
+
+    const agg = await aggregateCompetitorAnalysis(searchId);
+    const decisionIntelligence = await generateDecisionIntelligence(searchId, agg);
+    res.json({ ...agg, decisionIntelligence });
   })
 );
 
