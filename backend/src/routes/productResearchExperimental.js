@@ -47,14 +47,24 @@ function isFeatureEnabled() {
 // experimental). See experimentalCreativeDiscovery.js for what this fixes.
 if (isFeatureEnabled()) startStaleSearchWatchdog();
 
-// Step: exact product matching. Fire-and-forget, real model-load warm-up
-// at server boot — moves the local-vision worker's riskiest moment (first
-// cold model load) away from a live user's search and onto a moment with
-// nobody waiting on it. Never blocks server startup, never throws (see
-// warmUpLocalVision's own try/catch); a short random delay avoids this
-// warm-up racing every OTHER route module's own startup work for the same
-// CPU/memory the instant the process boots.
-if (isFeatureEnabled()) setTimeout(() => { warmUpLocalVision(); }, 3000);
+// PRODUCTION INCIDENT (Sept 5, same day this was added): this used to
+// unconditionally fire 3s after every boot. A try/catch around the model
+// load cannot protect against what actually happens on a memory-tight
+// Railway container — an OOM-kill terminates the whole process outright
+// (no JS exception, nothing to catch), and Railway restarting a killed
+// container just re-triggers the same guaranteed warm-up 3s later,
+// producing a genuine crash-loop ("Application failed to respond") on
+// EVERY boot, whether or not the exact-matching feature is ever actually
+// used. The HTTP server must never be endangered by this — app.listen()
+// succeeding is what matters, and a proactive warm-up is a nice-to-have,
+// never worth this trade. Reverted to OFF by default; the local-vision
+// worker still spawns lazily (proven stable pre-Sept-5 behavior) the
+// moment a real search actually needs it. Re-enable only after confirming
+// real headroom on the current Railway plan, via
+// EXPERIMENTAL_WARMUP_LOCAL_VISION=true.
+if (isFeatureEnabled() && (process.env.EXPERIMENTAL_WARMUP_LOCAL_VISION || '').trim().toLowerCase() === 'true') {
+  setTimeout(() => { warmUpLocalVision(); }, 3000);
+}
 
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
 
