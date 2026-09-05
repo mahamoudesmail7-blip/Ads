@@ -349,8 +349,12 @@ router.get(
     // ran, regardless of which path produced the reference embeddings.
     const matchRows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id }, select: { match_decision: true, visual_match_score: true } });
     const visualMatchingActive = matchRows.some((r) => r.visual_match_score !== null);
+    // "exact" mirrors the /results route's EXACT-tab filter exactly
+    // (match_decision:EXACT OR never compared at all) so the tab's count
+    // label always matches what actually appears when it's opened — a
+    // result that was never checked was never disqualified either.
     const matchDecisions = {
-      exact: matchRows.filter((r) => r.match_decision === 'EXACT').length,
+      exact: matchRows.filter((r) => r.match_decision === 'EXACT' || r.match_decision === null).length,
       review: matchRows.filter((r) => r.match_decision === 'REVIEW').length,
       reject: matchRows.filter((r) => r.match_decision === 'REJECT').length,
     };
@@ -430,8 +434,18 @@ router.get(
     // ("مطابق للمنتج" / "محتاج مراجعة") filter on the real stored decision
     // rather than a score threshold. REJECT is never requestable here —
     // those rows are already hidden by `ignored:false` above, by design.
-    if (['EXACT', 'REVIEW'].includes(matchDecision)) {
-      where.match_decision = matchDecision;
+    // EXACT also includes match_decision:null (never compared at all —
+    // beyond MAX_VISUAL_COMPARISONS, no thumbnail, or comparison failed):
+    // a result that was never checked was never DISQUALIFIED either, so
+    // hiding it from every tab would silently make legitimate, simply-
+    // unverified candidates disappear — worse than showing them clearly
+    // labeled "لم يتم التحقق بصريًا" (resultCardHtml already does this).
+    // REVIEW stays strict — only rows a real comparison genuinely placed
+    // in that band.
+    if (matchDecision === 'EXACT') {
+      where.AND = [...(where.AND || []), { OR: [{ match_decision: 'EXACT' }, { match_decision: null }] }];
+    } else if (matchDecision === 'REVIEW') {
+      where.match_decision = 'REVIEW';
     }
 
     // When a reference image exists, the visually-verified final_score
