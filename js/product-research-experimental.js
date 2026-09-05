@@ -692,6 +692,10 @@ function renderMatchTabs(searchId) {
 }
 
 const OFFER_KEY_LABEL_SHORT_AR = { cod: 'الدفع عند الاستلام', freeShipping: 'شحن مجاني', bundle: 'باقة', warranty: 'ضمان', limitedQuantity: 'كمية محدودة' };
+const ANGLE_LABEL_AR = {
+  Security: 'الأمان', Privacy: 'الخصوصية', Convenience: 'السهولة', Portability: 'قابلية الحمل',
+  Technology: 'التكنولوجيا', 'Home Use': 'الاستخدام المنزلي', 'Price/Value': 'السعر/القيمة', UNKNOWN: 'غير محدد',
+};
 
 /** Step: Part 7 — compact per-card analysis, Meta results only, only when analyzeOneAd() actually ran. Every absent value renders "غير مذكور", never a fabricated 0/EGP. */
 function metaAnalysisCompactHtml(r) {
@@ -707,7 +711,7 @@ function metaAnalysisCompactHtml(r) {
   return `<div class="icd-ad-analysis">
     <div class="icd-ad-row"><b>الهوك:</b> ${escapeHtml(a.hook?.text || na)} ${sourceNote}</div>
     <div class="icd-ad-row"><b>نوع الهوك:</b> ${escapeHtml(hookTypesText)}</div>
-    <div class="icd-ad-row"><b>زاوية البيع:</b> ${escapeHtml(a.sellingAngle?.value || na)}</div>
+    <div class="icd-ad-row"><b>زاوية البيع:</b> ${escapeHtml(ANGLE_LABEL_AR[a.sellingAngle?.value] || a.sellingAngle?.value || na)}</div>
     <div class="icd-ad-row"><b>السعر:</b> ${escapeHtml(priceText)}</div>
     <div class="icd-ad-row"><b>الخصم:</b> ${escapeHtml(discountText)}</div>
     <div class="icd-ad-row"><b>العرض:</b> ${escapeHtml(offerText)}</div>
