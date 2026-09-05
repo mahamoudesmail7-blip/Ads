@@ -25,6 +25,7 @@ import * as googleSearchProvider from '../services/searchProviders/googleSearchP
 import * as apifyProvider from '../services/searchProviders/apifyMetaAdLibraryProvider.js';
 import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibraryProvider.js';
 import { getLocalVisionStats, getWorkerDiagnostics } from '../services/vision/localVisionProvider.js';
+import { warmUpLocalVision } from '../services/vision/productVisionService.js';
 
 const router = Router();
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY', 'google'];
@@ -44,6 +45,15 @@ function isFeatureEnabled() {
 // server.js itself (this file is already the sole owner of everything
 // experimental). See experimentalCreativeDiscovery.js for what this fixes.
 if (isFeatureEnabled()) startStaleSearchWatchdog();
+
+// Step: exact product matching. Fire-and-forget, real model-load warm-up
+// at server boot — moves the local-vision worker's riskiest moment (first
+// cold model load) away from a live user's search and onto a moment with
+// nobody waiting on it. Never blocks server startup, never throws (see
+// warmUpLocalVision's own try/catch); a short random delay avoids this
+// warm-up racing every OTHER route module's own startup work for the same
+// CPU/memory the instant the process boots.
+if (isFeatureEnabled()) setTimeout(() => { warmUpLocalVision(); }, 3000);
 
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
 
@@ -327,6 +337,24 @@ router.get(
     const unclassifiedCount = rows.filter((r) => !r.classification || r.classification === 'UNCLASSIFIED').length;
     const analysisAvailable = rows.some((r) => r.classification && r.classification !== 'UNCLASSIFIED');
 
+    // Step: exact product matching — queried WITHOUT the ignored:false
+    // filter (unlike `rows` above) since REJECT results are exactly the
+    // ones `ignored:true` hides, and both the honest "did visual
+    // verification actually run" signal and the REJECT count need to see
+    // them. Deliberately NOT keyed off identity_provider/identityProvider
+    // (that only reflects whether a Product Identity Profile was
+    // generated, which the lightweight manual-name+image path never does
+    // — see productVisionService.js's buildReferenceEmbeddings) — visual_
+    // match_score is the real, direct signal that a comparison genuinely
+    // ran, regardless of which path produced the reference embeddings.
+    const matchRows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id }, select: { match_decision: true, visual_match_score: true } });
+    const visualMatchingActive = matchRows.some((r) => r.visual_match_score !== null);
+    const matchDecisions = {
+      exact: matchRows.filter((r) => r.match_decision === 'EXACT').length,
+      review: matchRows.filter((r) => r.match_decision === 'REVIEW').length,
+      reject: matchRows.filter((r) => r.match_decision === 'REJECT').length,
+    };
+
     res.json({
       id: search.id,
       sourceMode: search.source_mode,
@@ -348,6 +376,10 @@ router.get(
       aiProfile: search.ai_profile_json ? JSON.parse(search.ai_profile_json) : null,
       error: search.error,
       resultCount,
+      // Step: exact product matching — the honest signal for whether real
+      // visual verification ran this search, independent of whether an
+      // identity profile was generated (see comment above matchRows).
+      visualMatchingActive,
       summary: {
         totalResults: rows.length,
         uniqueResults: rows.length, // dedup already applied at write time (deduplicateResults) — no separate raw-vs-unique split needed for the generic 4 platforms; Meta Ads Library's own raw/unique split is reflected in byPlatform + queriesExecuted below
@@ -356,6 +388,7 @@ router.get(
         similar: rows.filter((r) => r.classification === 'SIMILAR').length,
         unclassified: unclassifiedCount,
         analysisAvailable,
+        matchDecisions,
       },
       queriesExecuted: queries.length,
       startedAt: search.started_at,
@@ -369,7 +402,7 @@ router.get(
   '/search/:id/results',
   asyncRoute(async (req, res) => {
     const searchId = Number(req.params.id);
-    const { platform, classification, active, sort, page, pageSize: pageSizeParam, minVisualMatchScore } = req.query;
+    const { platform, classification, active, sort, page, pageSize: pageSizeParam, minVisualMatchScore, matchDecision } = req.query;
     const pageSize = [25, 50, 100].includes(Number(pageSizeParam)) ? Number(pageSizeParam) : 50;
     const pageNum = Math.max(1, Number(page) || 1);
 
@@ -392,6 +425,13 @@ router.get(
     const minScore = Number(minVisualMatchScore);
     if (Number.isFinite(minScore) && minScore > 0) {
       where.visual_match_score = { gte: minScore };
+    }
+    // Step: exact product matching — the new explicit grouping tabs
+    // ("مطابق للمنتج" / "محتاج مراجعة") filter on the real stored decision
+    // rather than a score threshold. REJECT is never requestable here —
+    // those rows are already hidden by `ignored:false` above, by design.
+    if (['EXACT', 'REVIEW'].includes(matchDecision)) {
+      where.match_decision = matchDecision;
     }
 
     // When a reference image exists, the visually-verified final_score
@@ -441,6 +481,8 @@ router.get(
         // ever ran), which the frontend renders as "لم يتم التحقق بصريًا"
         // instead of guessing a tier.
         matchLabel: r.visual_match_score === null ? null : r.visual_match_score >= 85 ? 'مطابقة قوية' : r.visual_match_score >= 75 ? 'مطابقة جيدة' : 'منتج مشابه',
+        exactMatchScore: r.exact_match_score,
+        matchDecision: r.match_decision,
         finalScore: r.final_score,
         aiReason: r.ai_reason,
         discoveredByQueries: r.discovered_by_queries_json ? JSON.parse(r.discovered_by_queries_json) : [],

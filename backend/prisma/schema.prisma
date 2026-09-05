@@ -883,9 +883,14 @@ model ExperimentalCreativeResult {
   final_score       Int?  // the weighted combination (80% visual / 15% text / 5% distinctive attributes) used for image-mode ranking when a reference image exists — null otherwise, text match_score is used as-is
   matched_reference_index Int? // which uploaded reference image (0-based, into product_images_json) produced the BEST visual match for this result — real multi-reference matching (Step: same-exact-product visual matching), null when no reference image or comparison never ran
   match_reasons     String? // JSON array of short, honest strings describing WHY this score was reached (e.g. "تشابه بصري عالي (embedding)", "تطابق لون مميز", "تطابق نص/موديل OCR") — never invented, only set when a real signal actually contributed
+  exact_match_score Int? // 0-100 (Step: exact product matching) — deterministic weighted combination of visual embedding + structural (perceptual hash) + brand/model text + existing text match_score + color, computed only when a real visual comparison ran; never invented, category alone can never reach a high value here
+  match_decision    String? // EXACT | REVIEW | REJECT | null (null = never evaluated, e.g. no reference image) — thresholds are configurable via Settings (icdExactMatchThreshold/icdReviewMatchThreshold), never hardcoded blindly
   ignored           Boolean   @default(false)
   raw_metadata_json String?
   discovered_by_queries_json String?
+  ad_analysis_json   String?   // Step: Meta Ads competitor intelligence — structured per-ad analysis (hook/angle/price/offer/CTA/etc.), only ever populated for platform=META_AD_LIBRARY rows with match_decision=EXACT. Every field inside carries its own source: OBSERVED|AI_INFERRED|AI_ANALYZED tag — never presented as one undifferentiated fact.
+  ad_analysis_status String?   // PENDING | DONE | FAILED | SKIPPED — null until competitor-analysis is attempted for this row
+  ad_analyzed_at     DateTime?
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
 
@@ -893,6 +898,23 @@ model ExperimentalCreativeResult {
   @@index([search_id])
   @@index([platform])
   @@map("experimental_creative_results")
+}
+
+// Step: Meta Ads competitor intelligence — caches one ad's AI analysis by a
+// STABLE ad identifier (metrics.adId when available, else a hash of
+// canonical_url), never by search_id, so the exact same competitor ad
+// surfacing again in a different search is never re-billed to Claude.
+// Mirrors ExperimentalImageIdentityCache's exact (key, model_version)
+// caching idiom used elsewhere in this file.
+model ExperimentalAdAnalysisCache {
+  id            Int      @id @default(autoincrement())
+  ad_key        String   // sha256 of metrics.adId || canonical_url
+  model_version String   // bumped whenever the analysis prompt/output shape changes, invalidating stale cached entries safely
+  analysis_json String
+  created_at    DateTime @default(now())
+
+  @@unique([ad_key, model_version])
+  @@map("experimental_ad_analysis_cache")
 }
 
 // Caches a generated Product Identity Profile by (reference image content

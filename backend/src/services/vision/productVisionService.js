@@ -23,7 +23,7 @@ import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import * as localVision from './localVisionProvider.js';
 import { analyzeProductImage as anthropicAnalyzeImage, compareVisualMatch as anthropicCompareVisual } from '../productIdentityVision.js';
-import { classify as healthClassify, classifyErrorType } from '../providerHealth.js';
+import { classify as healthClassify, classifyErrorType, recordSuccess as healthRecordSuccess, recordError as healthRecordError } from '../providerHealth.js';
 
 const LOG_PREFIX = '[ProductVisionService]';
 const LOCAL_MODEL_VERSION = 'local-v1';
@@ -39,6 +39,49 @@ function anthropicConfigured() {
 function anthropicWorthTrying() {
   if (!anthropicConfigured()) return false;
   return healthClassify('anthropic', true).status !== 'ERROR';
+}
+
+// Step: exact product matching. The local-vision worker (localVisionProvider.js)
+// is always "configured" (no API key/credentials involved) — the only real
+// question is whether it has just proven itself broken in THIS process's
+// lifetime (a hang/crash, exactly the incident documented in
+// experimentalCreativeDiscovery.js's Stage A comments). Mirrors
+// anthropicWorthTrying()'s exact pattern: an ERROR classification here means
+// "it failed and has never succeeded" (providerHealth.js's own rule) — a
+// self-healing circuit breaker, not a one-way kill switch. The very first
+// call in a process's life is always attempted (nothing to distrust yet);
+// see warmUpLocalVision() below for moving that first, riskiest cold-model-
+// load attempt to server boot instead of a live user's search.
+const LOCAL_VISION_HEALTH_KEY = 'local_vision';
+export function localVisionWorthTrying() {
+  return healthClassify(LOCAL_VISION_HEALTH_KEY, true).status !== 'ERROR';
+}
+
+/**
+ * Best-effort warm-up: forces the local-vision worker to load its models
+ * NOW (at server boot, per the caller) rather than on a live user's first
+ * search — the cold model load is the riskiest moment for this worker
+ * (Railway container memory pressure), so this exists purely to move that
+ * risk to a moment with no user waiting on it. Fire-and-forget by design:
+ * never throws, never blocks the caller, always records the real outcome
+ * into the same health tracker localVisionWorthTrying() reads.
+ */
+export async function warmUpLocalVision() {
+  const startedAt = Date.now();
+  try {
+    // A real, tiny, valid 4x4 RGB PNG (color type 2, no alpha — the local
+    // decoder rejects RGBA) — enough to exercise the full model-load +
+    // embed path without a real product image. Verified to decode and
+    // produce a real embedding before being wired in here.
+    const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEElEQVR4nGOoaOqBIwbiOAB40hhhK9FxFgAAAABJRU5ErkJggg==', 'base64');
+    const result = await localVision.analyzeCandidateLocal(tinyPng);
+    if (!result.embedding) throw new Error('warm-up produced no embedding — model load likely did not complete');
+    healthRecordSuccess(LOCAL_VISION_HEALTH_KEY, Date.now() - startedAt);
+    logger.info(`${LOG_PREFIX} WARMUP_SUCCEEDED`, { ms: Date.now() - startedAt });
+  } catch (err) {
+    healthRecordError(LOCAL_VISION_HEALTH_KEY, classifyErrorType(err), Date.now() - startedAt);
+    logger.error(`${LOG_PREFIX} WARMUP_FAILED`, { message: err.message });
+  }
 }
 
 const OCR_TOKEN_PATTERN = /^[A-Z][A-Z0-9]{2,14}$/; // short, upper-case-heavy tokens are brand/model *candidates* only — Step 6/8 explicitly forbids treating this as confirmed
@@ -228,6 +271,45 @@ export async function analyzeProductImages(images, onProgress = () => {}) {
 }
 
 /**
+ * Step: exact product matching — the lightweight sibling of
+ * analyzeProductImages(), for exactly the case that function is NOT safe
+ * for: a manual product name was already typed, so there is no need to
+ * re-derive identity/name/brand from the images at all — only real
+ * reference EMBEDDINGS are needed to power visual verification
+ * (compareVisualMatchMulti). Calls ONLY analyzeCandidateLocal on EVERY
+ * supplied image (never analyzeLocal/analyzeProductImage) — no OCR worker
+ * spawn, no zero-shot-classification pipeline load, roughly half the
+ * memory footprint of the full identity pass (see
+ * experimentalCreativeDiscovery.js's Stage A comments for why that
+ * matters here). One bad image is skipped honestly, exactly like
+ * analyzeProductImages()'s own additional-angle loop — never fails the
+ * whole call. Every real call outcome feeds localVisionWorthTrying()'s
+ * circuit breaker so a real failure here is remembered for the rest of
+ * this process's life, same as warmUpLocalVision().
+ * @param {{imageBase64:string, imageMediaType:string}[]} images 1-4 real uploaded reference images
+ * @returns {Promise<{embedding:number[]|null, perceptualHash:string|null, imageIndex:number}[]>}
+ */
+export async function buildReferenceEmbeddings(images) {
+  const references = [];
+  for (let i = 0; i < images.length; i++) {
+    const startedAt = Date.now();
+    try {
+      const buffer = Buffer.from(images[i].imageBase64, 'base64');
+      const candidate = await localVision.analyzeCandidateLocal(buffer);
+      references.push({ embedding: candidate.embedding, perceptualHash: candidate.perceptualHash, imageIndex: i });
+      healthRecordSuccess(LOCAL_VISION_HEALTH_KEY, Date.now() - startedAt);
+      logger.info(`${LOG_PREFIX} REFERENCE_EMBEDDING_DONE`, { imageIndex: i });
+    } catch (err) {
+      healthRecordError(LOCAL_VISION_HEALTH_KEY, classifyErrorType(err), Date.now() - startedAt);
+      logger.error(`${LOG_PREFIX} REFERENCE_EMBEDDING_FAILED`, { imageIndex: i, message: err.message });
+      // Honest skip — this angle contributes no reference embedding; never
+      // fabricated, never blocks the other angles.
+    }
+  }
+  return references;
+}
+
+/**
  * Real, deterministic, explainable strings describing WHY a score was
  * reached (Step: matchReasons) — every reason maps to a real signal that
  * actually contributed above a real threshold; never invented, never
@@ -235,11 +317,17 @@ export async function analyzeProductImages(images, onProgress = () => {}) {
  */
 function buildMatchReasons({ embSim, hashSim, brandBonus }) {
   const reasons = [];
-  if (embSim !== null && embSim >= 80) reasons.push('تشابه بصري عالي جدًا (embedding)');
-  else if (embSim !== null && embSim >= 60) reasons.push('تشابه بصري ملحوظ (embedding)');
-  if (hashSim !== null && hashSim >= 80) reasons.push('تطابق شكل/تكوين عام قوي');
-  if (brandBonus >= 15) reasons.push('تطابق اسم العلامة التجارية في النص');
-  if (brandBonus >= 10 && brandBonus < 15) reasons.push('تطابق الموديل في النص');
+  // Positive signals (✓) — same convention the user asked for explicitly.
+  if (embSim !== null && embSim >= 80) reasons.push('✓ تشابه بصري عالي جدًا (embedding)');
+  else if (embSim !== null && embSim >= 60) reasons.push('✓ تشابه بصري ملحوظ (embedding)');
+  if (hashSim !== null && hashSim >= 80) reasons.push('✓ تطابق شكل/تكوين عام قوي');
+  if (brandBonus >= 15) reasons.push('✓ تطابق اسم العلامة التجارية في النص');
+  if (brandBonus >= 10 && brandBonus < 15) reasons.push('✓ تطابق الموديل في النص');
+  // Negative signals (✗) — only asserted when a real comparison actually
+  // ran and came back clearly weak; never inferred from a missing signal
+  // (e.g. embSim===null never produces a "different shape" claim).
+  if (embSim !== null && embSim < 50) reasons.push('✗ تشابه بصري ضعيف — قد يكون منتج مختلف');
+  if (hashSim !== null && hashSim < 50) reasons.push('✗ شكل/تكوين عام مختلف');
   return reasons;
 }
 
@@ -258,11 +346,11 @@ function buildMatchReasons({ embSim, hashSim, brandBonus }) {
  * @param {{brand:string|null, model:string|null, imageBase64:string, imageMediaType:string}} primaryMeta brand/model + the primary image, for the text bonus and any Anthropic enhancement
  * @param {string} candidateThumbnailUrl
  * @param {string} candidateText
- * @returns {Promise<{localVisualMatchScore:number|null, visualMatchScore:number|null, visualMatchProvider:string|null, matchedReferenceIndex:number|null, matchReasons:string[], reason:string|null, error?:string}>}
+ * @returns {Promise<{localVisualMatchScore:number|null, visualMatchScore:number|null, visualMatchProvider:string|null, matchedReferenceIndex:number|null, matchReasons:string[], reason:string|null, embSim:number|null, hashSim:number|null, brandBonus:number, error?:string}>}
  */
 export async function compareVisualMatchMulti(references, primaryMeta, candidateThumbnailUrl, candidateText = '') {
   const realReferences = (references || []).filter((r) => r.embedding);
-  if (realReferences.length === 0) return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null };
+  if (realReferences.length === 0) return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null, embSim: null, hashSim: null, brandBonus: 0 };
 
   let candidateBuffer;
   try {
@@ -274,7 +362,7 @@ export async function compareVisualMatchMulti(references, primaryMeta, candidate
     if (buf.length > 5 * 1024 * 1024) throw new Error('صورة المرشح أكبر من الحد المسموح');
     candidateBuffer = buf;
   } catch (err) {
-    return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null, error: err.message };
+    return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null, embSim: null, hashSim: null, brandBonus: 0, error: err.message };
   }
 
   const candidate = await localVision.analyzeCandidateLocal(candidateBuffer);
@@ -293,7 +381,7 @@ export async function compareVisualMatchMulti(references, primaryMeta, candidate
     const score = Math.max(0, Math.min(100, Math.round(base + brandBonus)));
     if (!best || score > best.score) best = { score, imageIndex: ref.imageIndex, embSim, hashSim };
   }
-  if (!best) return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null };
+  if (!best) return { localVisualMatchScore: null, visualMatchScore: null, visualMatchProvider: null, matchedReferenceIndex: null, matchReasons: [], reason: null, embSim: null, hashSim: null, brandBonus };
 
   const localVisualMatchScore = best.score;
   const matchReasons = buildMatchReasons({ embSim: best.embSim, hashSim: best.hashSim, brandBonus });
@@ -313,7 +401,7 @@ export async function compareVisualMatchMulti(references, primaryMeta, candidate
     }
   }
 
-  return { localVisualMatchScore, visualMatchScore, visualMatchProvider, matchedReferenceIndex: best.imageIndex, matchReasons, reason };
+  return { localVisualMatchScore, visualMatchScore, visualMatchProvider, matchedReferenceIndex: best.imageIndex, matchReasons, reason, embSim: best.embSim, hashSim: best.hashSim, brandBonus };
 }
 
 /**

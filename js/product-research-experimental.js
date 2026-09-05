@@ -15,6 +15,8 @@ const EXP_API = '/api/product-research/experimental';
 const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', META_AD_LIBRARY: 'Meta Ads Library', google: 'Google' };
 const CLASS_LABEL = { EXACT_MATCH: 'تطابق تام', VERY_SIMILAR: 'مشابه جدًا', SIMILAR: 'مشابه', RELATED: 'ذو صلة', IRRELEVANT: 'غير مرتبط', UNCLASSIFIED: 'غير مصنف' };
 const CLASS_COLOR = { EXACT_MATCH: 'green', VERY_SIMILAR: 'green', SIMILAR: 'yellow', UNCLASSIFIED: '' };
+const MATCH_DECISION_LABEL = { EXACT: '🎯 مطابق للمنتج', REVIEW: '🔍 محتاج مراجعة', REJECT: 'مرفوض' };
+const MATCH_DECISION_COLOR = { EXACT: 'green', REVIEW: 'yellow', REJECT: 'red' };
 const STATUS_LABEL_AR = {
   PENDING: 'في الانتظار...', ANALYZING: 'جاري تحليل المنتج...', GENERATING_QUERIES: 'جاري إنشاء كلمات البحث...',
   SEARCHING: 'جاري البحث في المنصات...', RANKING: 'جاري تحليل وترتيب النتائج...',
@@ -74,8 +76,9 @@ const internalCreativeDiscovery = {
   pollTimer: null,
   mode: 'quick',
   currentPage: 1,
-  showAllMatches: false, // "توسيع النتائج المشابهة" toggle — false = strict >=75 default view
-  currentSearchVisualMatchingActive: false, // whether the CURRENT search has a REAL visual profile (identityProvider set) — never just "an image was uploaded"
+  matchGroup: 'EXACT', // Step: exact product matching — 'EXACT' | 'REVIEW' tab, only meaningful when currentSearchVisualMatchingActive
+  lastMatchDecisions: null, // {exact, review, reject} counts from the most recent poll's summary — used for the tab labels/counts without a separate request
+  currentSearchVisualMatchingActive: false, // whether the CURRENT search actually ran real visual verification (data.visualMatchingActive) — never just "an image was uploaded"
 };
 
 function escapeHtml(s) { return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? ''); }
@@ -280,7 +283,8 @@ async function cancelSearch() {
 function resetToNewSearch() {
   if (internalCreativeDiscovery.pollTimer) clearInterval(internalCreativeDiscovery.pollTimer);
   internalCreativeDiscovery.currentSearchId = null;
-  internalCreativeDiscovery.showAllMatches = false;
+  internalCreativeDiscovery.matchGroup = 'EXACT';
+  internalCreativeDiscovery.lastMatchDecisions = null;
   document.getElementById('icdProductCard').style.display = 'none';
   document.getElementById('icdPlatformPanel').style.display = 'none';
   document.getElementById('icdSummaryPanel').style.display = 'none';
@@ -316,15 +320,17 @@ function startPolling(searchId) {
 }
 
 function renderProgress(data) {
-  // Real signal, not "an image was uploaded": identityProvider is only
-  // ever set once Stage A's real local-vision pass actually succeeded
-  // (productVisionService.analyzeProductImages). An uploaded image whose
-  // visual analysis was skipped or timed out leaves this null — in that
-  // case every result's visual_match_score stays null too, so applying
-  // the strict >=75 default filter would hide EVERY result instead of
-  // just the weak ones. Only switch into the strict-by-default view when
-  // there's a real visual profile behind it.
-  internalCreativeDiscovery.currentSearchVisualMatchingActive = Boolean(data.productImage) && Boolean(data.identityProvider);
+  // Real signal (Step: exact product matching) — data.visualMatchingActive
+  // comes straight from whether any result actually got a real
+  // visual_match_score, NOT from identityProvider. That distinction
+  // matters now: the common manual-name+image case builds reference
+  // embeddings via the lightweight path (buildReferenceEmbeddings) without
+  // ever generating a Product Identity Profile, so identityProvider stays
+  // null there even though visual verification genuinely ran. Using the
+  // old identityProvider-based check would have silently hidden the exact-
+  // match tabs for exactly the case they matter most for.
+  internalCreativeDiscovery.currentSearchVisualMatchingActive = Boolean(data.visualMatchingActive);
+  internalCreativeDiscovery.lastMatchDecisions = data.summary?.matchDecisions || null;
   document.getElementById('icdProductName2').textContent = data.productName;
   const thumb = document.getElementById('icdProductThumb');
   const placeholder = document.getElementById('icdProductThumbPlaceholder');
@@ -567,13 +573,14 @@ async function loadResults(searchId, page = 1) {
   if (active) params.active = active;
   const sort = document.getElementById('icdSortBy')?.value;
   if (sort && sort !== 'match') params.sort = sort;
-  // Strict same-exact-product default (Step 5): whenever the search has a
-  // reference image and the user hasn't asked to expand, only real
-  // visualMatchScore >= 75 results are requested at all — never mixed
-  // client-side, the backend itself excludes weaker/unverified matches
-  // from this response.
-  if (internalCreativeDiscovery.currentSearchVisualMatchingActive && !internalCreativeDiscovery.showAllMatches) {
-    params.minVisualMatchScore = 75;
+  // Step: exact product matching — whenever real visual verification ran
+  // for this search, results are requested pre-split by the real stored
+  // match_decision (مطابق للمنتج / محتاج مراجعة) rather than a score
+  // slider; REJECT is never requestable (the backend already hides those
+  // via ignored:true). Text-only searches (no image) never set this —
+  // the plain flat list stays exactly as before.
+  if (internalCreativeDiscovery.currentSearchVisualMatchingActive) {
+    params.matchDecision = internalCreativeDiscovery.matchGroup;
   }
 
   let data;
@@ -587,12 +594,14 @@ async function loadResults(searchId, page = 1) {
   const grid = document.getElementById('icdResultGrid');
   const empty = document.getElementById('icdResultsEmpty');
   const rangeEl = document.getElementById('icdResultsRangeText');
-  renderExpandToggle(searchId, data.total);
+  renderMatchTabs(searchId);
   if (data.results.length === 0) {
     grid.innerHTML = '';
     empty.style.display = 'block';
-    empty.textContent = internalCreativeDiscovery.currentSearchVisualMatchingActive && !internalCreativeDiscovery.showAllMatches
-      ? 'مفيش نتايج مطابقة تمامًا للمنتج لسه — جرب "توسيع النتائج المشابهة" فوق.'
+    empty.textContent = internalCreativeDiscovery.currentSearchVisualMatchingActive
+      ? (internalCreativeDiscovery.matchGroup === 'EXACT'
+          ? 'مفيش نتايج مطابقة تمامًا للمنتج لسه — جرب تبويب "محتاج مراجعة" فوق.'
+          : 'مفيش نتايج تحتاج مراجعة.')
       : 'مفيش نتايج.';
     rangeEl.textContent = '';
   } else {
@@ -611,22 +620,34 @@ async function loadResults(searchId, page = 1) {
   pagEl.querySelectorAll('button').forEach((b) => (b.onclick = () => loadResults(searchId, Number(b.dataset.page))));
 }
 
-/** "توسيع النتائج المشابهة" (Step 5) — only shown at all when this search has a reference image; lets the strict >=75 default view be relaxed on demand without ever silently mixing weak matches into it automatically. */
-function renderExpandToggle(searchId, total) {
+/**
+ * Step: exact product matching — result grouping tabs. Only shown when
+ * this search actually ran real visual verification (currentSearchVisual
+ * MatchingActive); text-only searches never see this, unchanged from
+ * before. Two explicit, honestly-labeled groups (never a score slider):
+ * "🎯 مطابق للمنتج" (match_decision=EXACT, the default) and "🔍 محتاج
+ * مراجعة" (match_decision=REVIEW). REJECT results are never a tab — they
+ * stay hidden (ignored:true on the backend), exactly as the user asked.
+ * Counts come from the most recent poll's summary.matchDecisions, no
+ * extra request needed.
+ */
+function renderMatchTabs(searchId) {
   const row = document.getElementById('icdExpandMatchesRow');
   if (!row) return;
   if (!internalCreativeDiscovery.currentSearchVisualMatchingActive) { row.style.display = 'none'; return; }
-  row.style.display = 'block';
-  row.innerHTML = internalCreativeDiscovery.showAllMatches
-    ? `<button class="icd-btn secondary small" id="icdBtnCollapseMatches">🎯 عرض المطابقات القوية فقط (75%+)</button>`
-    : `<button class="icd-btn secondary small" id="icdBtnExpandMatches">توسيع النتائج المشابهة (عرض كل الدرجات)</button>`;
-  document.getElementById('icdBtnExpandMatches')?.addEventListener('click', () => {
-    internalCreativeDiscovery.showAllMatches = true;
-    loadResults(searchId, 1);
-  });
-  document.getElementById('icdBtnCollapseMatches')?.addEventListener('click', () => {
-    internalCreativeDiscovery.showAllMatches = false;
-    loadResults(searchId, 1);
+  const counts = internalCreativeDiscovery.lastMatchDecisions || { exact: 0, review: 0, reject: 0 };
+  row.style.display = 'flex';
+  row.style.gap = '8px';
+  const tab = (group, label, count) => {
+    const active = internalCreativeDiscovery.matchGroup === group;
+    return `<button class="icd-btn ${active ? '' : 'secondary'} small" data-match-group="${group}"${active ? ' style="border-color:var(--icd-cyan);color:var(--icd-cyan);"' : ''}>${label} (${count})</button>`;
+  };
+  row.innerHTML = tab('EXACT', '🎯 مطابق للمنتج', counts.exact) + tab('REVIEW', '🔍 محتاج مراجعة', counts.review);
+  row.querySelectorAll('[data-match-group]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      internalCreativeDiscovery.matchGroup = btn.dataset.matchGroup;
+      loadResults(searchId, 1);
+    });
   });
 }
 
@@ -641,8 +662,8 @@ function resultCardHtml(r) {
       <div class="icd-result-meta">${r.accountName ? `👤 ${escapeHtml(r.accountName)}` : ''}${r.publishedAt ? ` · ${new Date(r.publishedAt).toLocaleDateString('ar-EG')}` : ''}</div>
       <div class="icd-result-badges">
         <span class="icd-mini-badge ${CLASS_COLOR[classification] || ''}">${CLASS_LABEL[classification] || classification}${r.matchScore !== null && r.matchScore !== undefined ? ` ${r.matchScore}%` : ''}</span>
-        ${r.visualMatchScore !== null && r.visualMatchScore !== undefined
-          ? `<span class="icd-mini-badge ${r.visualMatchScore >= 85 ? 'green' : r.visualMatchScore >= 75 ? 'cyan' : 'yellow'}" title="${escapeHtml((r.matchReasons || []).join('، '))}">🖼️ ${r.visualMatchScore}% — ${escapeHtml(r.matchLabel || '')}</span>`
+        ${r.exactMatchScore !== null && r.exactMatchScore !== undefined
+          ? `<span class="icd-mini-badge ${MATCH_DECISION_COLOR[r.matchDecision] || ''}" title="${escapeHtml((r.matchReasons || []).join(' | '))}">🖼️ ${r.exactMatchScore}% — ${escapeHtml(MATCH_DECISION_LABEL[r.matchDecision] || '')}</span>`
           : (internalCreativeDiscovery.currentSearchVisualMatchingActive ? '<span class="icd-mini-badge">🖼️ لم يتم التحقق بصريًا</span>' : '')}
         ${m.activeStatus === 'ACTIVE' ? '<span class="icd-mini-badge green">🟢 نشط</span>' : ''}
         <span class="icd-mini-badge">${escapeHtml(r.provider || '')}</span>

@@ -37,7 +37,7 @@ import * as apifyProvider from './searchProviders/apifyMetaAdLibraryProvider.js'
 import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 import * as googleSearchProvider from './searchProviders/googleSearchProvider.js';
 import { identityToSearchProfile } from './productIdentityVision.js';
-import { analyzeProductImages, compareVisualMatchMulti } from './vision/productVisionService.js';
+import { analyzeProductImages, compareVisualMatchMulti, buildReferenceEmbeddings, localVisionWorthTrying } from './vision/productVisionService.js';
 
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube']; // META_AD_LIBRARY handled separately (Apify staged); 'google' handled separately (own normalizer, see below)
@@ -304,6 +304,58 @@ function distinctiveAttributeScore(identity, result) {
   return Math.round((hits / features.length) * 100);
 }
 
+// Step: exact product matching. Real Settings row, same access pattern
+// already established in adsIntelligence.js's loadThresholds() — configurable
+// from the Settings page with zero redeploy, never hardcoded blindly.
+async function loadExactMatchThresholds() {
+  const row = await prisma.settings.findUnique({ where: { id: 'default' } }).catch(() => null);
+  const saved = row ? JSON.parse(row.data) : {};
+  return {
+    exactThreshold: Number.isFinite(saved.icdExactMatchThreshold) ? saved.icdExactMatchThreshold : 95,
+    reviewThreshold: Number.isFinite(saved.icdReviewMatchThreshold) ? saved.icdReviewMatchThreshold : 85,
+  };
+}
+
+/**
+ * The explainable Exact Product Match Score (0-100) — a deterministic
+ * weighted combination of every real signal available, never a single
+ * number pretending to be more than it is. Visual identity (embedding) is
+ * weighted strongest, structural/shape (perceptual hash) and brand/model
+ * text match are both weighted strong, existing text/category match is
+ * only a supporting signal, color is a placeholder for a future per-
+ * candidate color signal (not computed today — see report). A component
+ * that genuinely has no signal (e.g. no brand/model known, no candidate
+ * color computed) is EXCLUDED rather than counted as a penalty, and the
+ * remaining weights are redistributed proportionally — category/text
+ * alone can therefore never push a result above the REVIEW band, let
+ * alone EXACT, since it caps out at its own 10% share of the total.
+ * Returns null when no real visual comparison ran at all (embSim and
+ * hashSim both null) — never invented from text alone.
+ */
+function computeExactMatchScore({ embSim, hashSim, brandBonus, hasBrandOrModel, textMatchScore, colorMatch }) {
+  if (embSim === null && hashSim === null) return null;
+  const components = [];
+  if (embSim !== null) components.push({ weight: 0.45, value: embSim });
+  if (hashSim !== null) components.push({ weight: 0.20, value: hashSim });
+  if (hasBrandOrModel) {
+    const modelMatch = brandBonus >= 25 ? 100 : brandBonus >= 15 ? 70 : brandBonus >= 10 ? 45 : 0;
+    components.push({ weight: 0.20, value: modelMatch });
+  }
+  if (typeof textMatchScore === 'number') components.push({ weight: 0.10, value: textMatchScore });
+  if (typeof colorMatch === 'number') components.push({ weight: 0.05, value: colorMatch });
+  const totalWeight = components.reduce((s, c) => s + c.weight, 0);
+  if (totalWeight === 0) return null;
+  const weighted = components.reduce((s, c) => s + c.weight * c.value, 0);
+  return Math.max(0, Math.min(100, Math.round(weighted / totalWeight)));
+}
+
+function decideMatch(exactMatchScore, thresholds) {
+  if (exactMatchScore === null) return null;
+  if (exactMatchScore >= thresholds.exactThreshold) return 'EXACT';
+  if (exactMatchScore >= thresholds.reviewThreshold) return 'REVIEW';
+  return 'REJECT';
+}
+
 /** @param {number} searchId */
 export async function runExperimentalSearchPipeline(searchId) {
   const startedAtMs = Date.now();
@@ -425,13 +477,40 @@ export async function runExperimentalSearchPipeline(searchId) {
         return;
       }
     } else if (hasImage && hadManualName) {
-      // The default, reliable path: a typed name exists, so the
-      // crash-prone local-vision call is skipped entirely rather than
-      // attempted and hoped-to-be-recovered. Real platform search runs on
-      // the real typed name/keywords; no visual identity/verification
-      // this run (explicitly disclosed, never silently pretended active).
-      logger.info(`${LOG_PREFIX} STAGE_A_SKIPPED_FOR_STABILITY`, { searchId });
+      // Step: exact product matching — a typed name exists, so the
+      // crash-prone FULL local-vision pass (analyzeLocal: OCR worker +
+      // 2 CLIP pipelines) is still never attempted here, for the exact
+      // reason documented above. But the name means we don't need Stage A
+      // to re-derive identity at all — only real reference EMBEDDINGS are
+      // needed to power visual verification, and buildReferenceEmbeddings()
+      // calls ONLY the lighter analyzeCandidateLocal() (one CLIP pipeline,
+      // no OCR) on every image, roughly half the memory footprint of the
+      // path that caused the incident. Gated by localVisionWorthTrying()'s
+      // real, self-healing circuit breaker (providerHealth-backed) — skips
+      // automatically for the rest of this process's life the moment it
+      // proves itself broken again, no redeploy required. Wrapped in the
+      // SAME bounded timeout as Stage A so it can never hang the search;
+      // any failure/timeout here silently falls back to exactly today's
+      // behavior (text-only ranking, no visual verification this run) —
+      // never a hard error, never a hang.
       ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
+      if (localVisionWorthTrying()) {
+        const REFERENCE_EMBEDDING_TIMEOUT_MS = 90000;
+        logger.info(`${LOG_PREFIX} REFERENCE_EMBEDDINGS_START`, { searchId, referenceImageCount: referenceInputImages.length });
+        try {
+          referenceImages = await Promise.race([
+            buildReferenceEmbeddings(referenceInputImages),
+            new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('reference embedding timed out'), { code: 'REFERENCE_EMBEDDING_TIMEOUT' })), REFERENCE_EMBEDDING_TIMEOUT_MS)),
+          ]);
+          logger.info(`${LOG_PREFIX} REFERENCE_EMBEDDINGS_DONE`, { searchId, referenceCount: referenceImages.length, requestedCount: referenceInputImages.length });
+        } catch (err) {
+          referenceImages = [];
+          logger.error(`${LOG_PREFIX} REFERENCE_EMBEDDINGS_FAILED`, { searchId, message: err.message, code: err.code || null });
+          // Honest degrade — text-only ranking stands, exactly as before this feature existed.
+        }
+      } else {
+        logger.info(`${LOG_PREFIX} REFERENCE_EMBEDDINGS_SKIPPED_CIRCUIT_OPEN`, { searchId });
+      }
     } else {
       ({ profile, source: aiSource } = await analyzeTextOnly(searchId, search, input));
     }
@@ -722,6 +801,9 @@ export async function runExperimentalSearchPipeline(searchId) {
           take: MAX_VISUAL_COMPARISONS,
         });
         const primaryMeta = { brand: identity?.brand || null, model: identity?.model || null, imageBase64: referenceInputImages[0].imageBase64, imageMediaType: referenceInputImages[0].imageMediaType };
+        const hasBrandOrModel = Boolean(primaryMeta.brand || primaryMeta.model);
+        const matchThresholds = await loadExactMatchThresholds();
+        let exactCount = 0, reviewCount = 0, rejectCount = 0;
         for (const r of rescored) {
           const cmp = await compareVisualMatchMulti(referenceImages, primaryMeta, r.thumbnail, `${r.title || ''} ${r.snippet || ''}`);
           if (cmp.error || cmp.visualMatchScore === null) {
@@ -730,6 +812,19 @@ export async function runExperimentalSearchPipeline(searchId) {
           }
           const distinctScore = distinctiveAttributeScore(identity, r);
           const finalScore = Math.round(0.8 * cmp.visualMatchScore + 0.15 * (r.match_score ?? 0) + 0.05 * (distinctScore ?? 0));
+          // Step: exact product matching — the explainable combined score
+          // + decision, computed from the SAME comparison already run
+          // above (zero extra cost). colorMatch has no real per-candidate
+          // signal computed today (see final report) — omitted rather
+          // than invented; its 5% weight redistributes automatically.
+          const exactMatchScore = computeExactMatchScore({
+            embSim: cmp.embSim, hashSim: cmp.hashSim, brandBonus: cmp.brandBonus, hasBrandOrModel,
+            textMatchScore: typeof r.match_score === 'number' ? r.match_score : null, colorMatch: null,
+          });
+          const matchDecision = decideMatch(exactMatchScore, matchThresholds);
+          if (matchDecision === 'EXACT') exactCount++;
+          else if (matchDecision === 'REVIEW') reviewCount++;
+          else if (matchDecision === 'REJECT') rejectCount++;
           await prisma.experimentalCreativeResult.update({
             where: { id: r.id },
             data: {
@@ -739,11 +834,17 @@ export async function runExperimentalSearchPipeline(searchId) {
               matched_reference_index: cmp.matchedReferenceIndex,
               match_reasons: cmp.matchReasons?.length ? JSON.stringify(cmp.matchReasons) : null,
               final_score: finalScore,
+              exact_match_score: exactMatchScore,
+              match_decision: matchDecision,
+              // REJECT hides the result from every existing customer-facing
+              // view for free — `ignored:false` is already the base filter
+              // on every read in productResearchExperimental.js.
+              ignored: matchDecision === 'REJECT',
               ai_reason: cmp.reason ? `${r.ai_reason ? r.ai_reason + ' | ' : ''}🖼️ ${cmp.reason}` : r.ai_reason,
             },
           });
         }
-        logger.info(`${LOG_PREFIX} VISUAL_VERIFICATION_DONE`, { searchId, compared: rescored.length, referenceImageCount: referenceImages.length });
+        logger.info(`${LOG_PREFIX} VISUAL_VERIFICATION_DONE`, { searchId, compared: rescored.length, referenceImageCount: referenceImages.length, exactCount, reviewCount, rejectCount });
       }
     }
 

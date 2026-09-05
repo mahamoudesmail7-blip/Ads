@@ -148,6 +148,10 @@ export const DEFAULT_SETTINGS = {
   aiOptimizeCpaThreshold: 130,
   aiMinSpendForDecision: 150,
   aiMinOrdersForDecision: 2,
+  // Experimental Product Research — exact product matching thresholds
+  // (Step: exact product matching). Applied to exact_match_score (0-100).
+  icdExactMatchThreshold: 95,
+  icdReviewMatchThreshold: 85,
 };
 
 export const Settings = {
