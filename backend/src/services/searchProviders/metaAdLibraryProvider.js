@@ -221,6 +221,21 @@ function mapApifyItem(item) {
       currency: item.currency || null,
       estimatedAudienceSize: item.reach_estimate || null,
       impressions: null,
+      // Step: real media download. Captured HERE, at parse time, while the
+      // full raw item is still in memory — raw_metadata_json's own 20,000-
+      // char truncation (productResearchNormalize.js) has been confirmed,
+      // on real production data, to already silently cut these exact real
+      // URLs off of larger ad payloads, so they must never be re-derived
+      // from raw_metadata_json later. `thumbnail` above stays a PREVIEW
+      // value only (a poster frame for video) — never treated as the
+      // downloadable file. Real field names confirmed directly against a
+      // live, untruncated production item's snapshot.videos[0]:
+      // video_hd_url/video_sd_url/video_preview_image_url (HD preferred,
+      // SD fallback); snapshot.images[0]: original_image_url (already the
+      // real full-resolution file, not a resized thumbnail).
+      videoUrl: snap.videos?.[0]?.video_hd_url || snap.videos?.[0]?.video_sd_url || null,
+      imageUrl: snap.images?.[0]?.original_image_url || null,
+      hasMultipleMedia: (snap.videos?.length || 0) + (snap.images?.length || 0) > 1,
     },
     raw: item,
   };

@@ -27,6 +27,8 @@ import * as metaAdLibraryProvider from '../services/searchProviders/metaAdLibrar
 import { getLocalVisionStats, getWorkerDiagnostics } from '../services/vision/localVisionProvider.js';
 import { warmUpLocalVision } from '../services/vision/productVisionService.js';
 import { analyzeCompetitorAds, aggregateCompetitorAnalysis, generateDecisionIntelligence } from '../services/adAnalysis.js';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 const router = Router();
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY', 'google'];
@@ -543,6 +545,106 @@ router.get(
     const agg = await aggregateCompetitorAnalysis(searchId);
     const decisionIntelligence = await generateDecisionIntelligence(searchId, agg);
     res.json({ ...agg, decisionIntelligence });
+  })
+);
+
+// Step: real media download. Accepts a RESULT ID only — never an arbitrary
+// user-provided URL — so this can never become an open proxy. The real
+// media URL is looked up server-side from data this app already fetched
+// and stored; the client never gets to choose what gets requested.
+const DOWNLOAD_ALLOWED_HOST_SUFFIXES = ['.fbcdn.net', '.facebook.com', '.serpapi.com'];
+const DOWNLOAD_TIMEOUT_MS = 30000;
+const DOWNLOAD_MAX_REDIRECTS = 5;
+
+function isAllowedDownloadHost(hostname) {
+  return DOWNLOAD_ALLOWED_HOST_SUFFIXES.some((suffix) => hostname === suffix.slice(1) || hostname.endsWith(suffix));
+}
+
+/**
+ * Manually follows redirects (never trusts fetch's automatic follow) so
+ * every hop — not just the initial URL — is validated against the same
+ * allowlist. Real SSRF protection: a legitimate CDN URL that happens to
+ * redirect to an internal/non-allowed host is rejected mid-chain, not
+ * silently followed.
+ */
+async function fetchAllowedMedia(startUrl) {
+  let current = startUrl;
+  for (let hop = 0; hop <= DOWNLOAD_MAX_REDIRECTS; hop++) {
+    const parsed = new URL(current);
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw Object.assign(new Error('بروتوكول غير مسموح'), { code: 'BLOCKED' });
+    if (!isAllowedDownloadHost(parsed.hostname)) throw Object.assign(new Error(`مصدر غير مسموح: ${parsed.hostname}`), { code: 'BLOCKED' });
+    const res = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get('location');
+      if (!location) throw Object.assign(new Error('رد إعادة توجيه بدون وجهة'), { code: 'UPSTREAM_ERROR' });
+      current = new URL(location, current).toString();
+      continue;
+    }
+    if (!res.ok) throw Object.assign(new Error(`فشل تحميل الملف من المصدر (HTTP ${res.status})`), { code: 'UPSTREAM_ERROR' });
+    return res;
+  }
+  throw Object.assign(new Error('عدد كبير جدًا من عمليات إعادة التوجيه'), { code: 'BLOCKED' });
+}
+
+function safeFilenamePart(s) {
+  return String(s || '').replace(/[^\p{L}\p{N}\- _]/gu, '').trim().slice(0, 60) || 'file';
+}
+
+router.get(
+  '/results/:resultId/download',
+  asyncRoute(async (req, res) => {
+    const resultId = Number(req.params.resultId);
+    const type = req.query.type === 'image' ? 'image' : req.query.type === 'video' ? 'video' : null;
+    if (!Number.isFinite(resultId)) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'resultId غير صالح.' });
+
+    const result = await prisma.experimentalCreativeResult.findUnique({ where: { id: resultId } });
+    if (!result) return res.status(404).json({ error: 'NOT_FOUND', message: 'النتيجة دي مش موجودة.' });
+
+    const search = await prisma.experimentalCreativeSearch.findUnique({ where: { id: result.search_id }, select: { id: true, product_name: true } });
+    if (!search) return res.status(404).json({ error: 'NOT_FOUND', message: 'البحث المرتبط بالنتيجة دي مش موجود.' });
+
+    const metrics = result.metrics_json ? JSON.parse(result.metrics_json) : {};
+    const isVideo = type === 'video' || (!type && metrics.mediaType && String(metrics.mediaType).toLowerCase().includes('video'));
+
+    let sourceUrl = null;
+    if (isVideo) {
+      // NEVER falls back to `thumbnail`/a poster frame — a video request
+      // with no real direct video URL must fail honestly, never silently
+      // download the preview image instead (the user's explicit rule).
+      sourceUrl = metrics.videoUrl || null;
+      if (!sourceUrl) {
+        return res.status(404).json({ error: 'NO_DIRECT_VIDEO_URL', message: 'رابط الفيديو المباشر غير متاح لهذا الإعلان' });
+      }
+    } else {
+      sourceUrl = metrics.imageUrl || result.thumbnail || null;
+      if (!sourceUrl) return res.status(404).json({ error: 'NO_DIRECT_MEDIA_URL', message: 'رابط الصورة غير متاح لهذه النتيجة.' });
+    }
+
+    let upstream;
+    try {
+      upstream = await fetchAllowedMedia(sourceUrl);
+    } catch (err) {
+      logger.error('[InternalCreativeDiscovery] DOWNLOAD_FETCH_FAILED', { resultId, code: err.code, message: err.message });
+      const status = err.code === 'BLOCKED' ? 400 : 502;
+      return res.status(status).json({ error: err.code || 'DOWNLOAD_FAILED', message: 'تعذر تحميل الملف.' });
+    }
+    if (!upstream.body) return res.status(502).json({ error: 'DOWNLOAD_FAILED', message: 'تعذر تحميل الملف.' });
+
+    const ext = isVideo ? 'mp4' : (upstream.headers.get('content-type') || '').includes('png') ? 'png' : 'jpg';
+    const filename = `${safeFilenamePart(search.product_name)}-${safeFilenamePart(result.platform)}-${result.id}.${ext}`;
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || (isVideo ? 'video/mp4' : 'image/jpeg'));
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const upstreamLength = upstream.headers.get('content-length');
+    if (upstreamLength) res.setHeader('Content-Length', upstreamLength);
+
+    try {
+      // Streamed straight through — never buffered into a Node Buffer
+      // first, so a large video can never spike process memory.
+      await pipeline(Readable.fromWeb(upstream.body), res);
+    } catch (err) {
+      logger.error('[InternalCreativeDiscovery] DOWNLOAD_STREAM_FAILED', { resultId, message: err.message });
+      if (!res.headersSent) res.status(502).json({ error: 'DOWNLOAD_FAILED', message: 'تعذر تحميل الملف.' });
+    }
   })
 );
 

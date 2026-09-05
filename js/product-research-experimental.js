@@ -693,10 +693,81 @@ function resultCardHtml(r) {
       </div>
       <div class="icd-result-actions">
         <a class="icd-btn secondary small" href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">فتح المصدر</a>
-        <button class="icd-btn secondary small" data-action="save" data-id="${r.id}">حفظ</button>
+        <button class="icd-btn secondary small" data-action="save" data-id="${r.id}" data-media-type="${m.mediaType ? String(m.mediaType).toLowerCase() : ''}" data-has-multi="${m.hasMultipleMedia ? '1' : '0'}">حفظ</button>
       </div>
     </div>
   </div>`;
+}
+
+// --- Real media download ("حفظ") ---
+// Previously a complete no-op (data-action="save" rendered with zero
+// attached behavior). Real backend proxy/stream endpoint, never a plain
+// cross-origin <a href download> (Meta/Instagram/TikTok/YouTube CDNs may
+// ignore or block that attribute entirely) — see productResearchExperimental
+// .js's new GET /results/:id/download route.
+async function downloadResult(resultId, mediaType, btn) {
+  const originalLabel = 'حفظ';
+  btn.disabled = true;
+  btn.textContent = 'جاري التحميل...';
+  try {
+    const res = await fetch(`${EXP_API}/results/${resultId}/download?type=${encodeURIComponent(mediaType)}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'تعذر تحميل الملف');
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : `download-${resultId}`;
+    // A same-origin blob URL — the browser always honors <a download> on
+    // this regardless of what cross-origin restrictions the ORIGINAL media
+    // host would have imposed on a direct link to it.
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+    btn.textContent = 'بدأ التحميل';
+  } catch (err) {
+    btn.textContent = 'تعذر تحميل الملف';
+    UI.toast(err.message, 'error');
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.textContent = originalLabel; }, 2500);
+  }
+}
+
+/** Multi-media Meta ad (video + image both present) — a small inline choice instead of guessing which one the user wants. */
+function showDownloadChoice(btn, resultId) {
+  const row = btn.closest('.icd-result-actions');
+  if (!row || row.querySelector('.icd-download-choice')) return;
+  const choice = document.createElement('span');
+  choice.className = 'icd-download-choice';
+  choice.innerHTML = `<button class="icd-btn secondary small" data-dl="video">تحميل الفيديو</button><button class="icd-btn secondary small" data-dl="image">تحميل الصور</button>`;
+  row.appendChild(choice);
+  choice.querySelectorAll('button').forEach((b) => {
+    b.addEventListener('click', () => {
+      choice.remove();
+      downloadResult(resultId, b.dataset.dl, btn);
+    });
+  });
+}
+
+function wireResultGridDownloads() {
+  const grid = document.getElementById('icdResultGrid');
+  if (!grid || grid.dataset.downloadsWired) return;
+  grid.dataset.downloadsWired = '1';
+  grid.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action="save"]');
+    if (!btn || btn.disabled) return;
+    const resultId = btn.dataset.id;
+    const hasMulti = btn.dataset.hasMulti === '1';
+    const mediaType = btn.dataset.mediaType.includes('video') ? 'video' : 'image';
+    if (hasMulti) { showDownloadChoice(btn, resultId); return; }
+    downloadResult(resultId, mediaType, btn);
+  });
 }
 
 // --- Meta Ads Competitor Intelligence (Part 2) ---
@@ -877,6 +948,7 @@ function init() {
   wireImageUpload();
   updateImagePickerState();
   wireModeToggle();
+  wireResultGridDownloads();
 
   document.getElementById('icdBtnStartSearch')?.addEventListener('click', startSearch);
   document.getElementById('icdBtnCancelSearch')?.addEventListener('click', cancelSearch);
