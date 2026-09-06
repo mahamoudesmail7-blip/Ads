@@ -989,6 +989,10 @@ model AmbProduct {
   target_profit           Float?
   min_profit              Float?
   currency                String   @default("EGP")
+  // Optional direct image URL for the product, shown on the recommendation
+  // cards. Also the cache slot for a resolver: if a product-page URL is ever
+  // added to the data model, a fetch-once og:image lookup would write here.
+  image_url               String?
   active                  Boolean  @default(true)
   created_by_id           Int?
   created_by              User?    @relation(fields: [created_by_id], references: [id], onDelete: SetNull)

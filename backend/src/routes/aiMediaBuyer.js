@@ -91,6 +91,22 @@ router.get('/catalog-products', asyncRoute(async (req, res) => {
   res.json(rows);
 }));
 
+// Preloaded once by the dashboard: { [ambProductId]: {hasImage, source} } — no data URIs, no N+1.
+router.get('/product-images', asyncRoute(async (req, res) => res.json(await products.getProductImageMap())));
+
+// One image per distinct product (browser-cached). Resolves: AmbProduct.image_url
+// → latest ProductResearchSearch.product_image (data URI) → 404 (card shows placeholder).
+router.get('/products/:id/image', asyncRoute(async (req, res) => {
+  const r = await products.resolveProductImage(req.params.id);
+  if (r.redirect) return res.redirect(302, r.redirect);
+  if (r.data) {
+    res.set('Content-Type', r.contentType || 'image/jpeg');
+    res.set('Cache-Control', 'public, max-age=86400');
+    return res.send(r.data);
+  }
+  res.status(404).end();
+}));
+
 router.post('/products', asyncRoute(async (req, res) => res.status(201).json(await products.createProduct(req.body || {}, req.user.id))));
 
 router.post('/products/from-catalog/:productId', asyncRoute(async (req, res) => {

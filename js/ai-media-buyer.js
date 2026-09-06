@@ -94,6 +94,7 @@ const state = {
   filter: 'all',
   search: '',
   pendingCount: 0,
+  productImages: {}, // { [ambProductId]: {hasImage, source} } — preloaded once, no N+1
 };
 
 // ---------------------------------------------------------------------------
@@ -192,13 +193,15 @@ function closeDrawer() { $('ambDrawerOverlay').classList.remove('open'); }
 // HOME — the reference dashboard
 // ---------------------------------------------------------------------------
 async function renderHome(view) {
-  const [ov, recs, hToday, hYest, meta] = await Promise.all([
+  const [ov, recs, hToday, hYest, meta, imgMap] = await Promise.all([
     api.get('/api/ai-media-buyer/overview?window=today'),
     api.get('/api/ai-media-buyer/recommendations'),
     api.get('/api/ai-media-buyer/hierarchy?window=today').catch(() => null),
     api.get('/api/ai-media-buyer/hierarchy?window=yesterday').catch(() => null),
     api.get('/api/meta/status').catch(() => null),
+    api.get('/api/ai-media-buyer/product-images').catch(() => ({})),
   ]);
+  state.productImages = imgMap || {};
 
   const active = recs.active || recs.items || [];
   const resolved = recs.resolved || [];
@@ -386,6 +389,41 @@ function shortReason(r) {
   return r.explain?.why || r.explain?.whatHappened || r.reason || '';
 }
 
+// Neutral product placeholder (used when a product has no image, or an image fails to load).
+const PLACEHOLDER_IMG = 'data:image/svg+xml,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2398a0ad" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>');
+
+/** 56x56 product thumbnail — real image via the preloaded map, else the placeholder. */
+function productThumb(r) {
+  const info = r.ambProductId ? state.productImages[r.ambProductId] : null;
+  if (info && info.hasImage) {
+    return `<img class="amb-r-thumb" src="/api/ai-media-buyer/products/${r.ambProductId}/image" alt="${E(r.productName || '')}" decoding="async" onerror="this.onerror=null;this.src='${PLACEHOLDER_IMG}';this.classList.add('ph')" />`;
+  }
+  return `<img class="amb-r-thumb ph" src="${PLACEHOLDER_IMG}" alt="" />`;
+}
+
+/** Product line + full real Meta hierarchy (Campaign → Ad Set → Ad), with honest fallbacks. */
+function hierarchyLines(r) {
+  const prod = r.productName
+    ? `<div class="pnm">${E(r.productName)}</div>`
+    : `<div class="pnm muted">غير مرتبط بمنتج</div>`;
+  const camp = r.level === 'campaign' ? (r.entityName || r.campaignName) : r.campaignName;
+  const lines = [];
+  if (r.level === 'campaign') {
+    lines.push(`<span>Campaign: <b>${E(camp || 'الحملة غير متاحة')}</b></span>`);
+  } else if (r.level === 'adset') {
+    lines.push(`<span>Campaign: <b>${E(camp || 'الحملة غير متاحة')}</b></span>`);
+    lines.push(`<span>Ad Set: <b>${E(r.entityName || r.adsetName || '—')}</b></span>`);
+  } else if (r.level === 'ad') {
+    lines.push(`<span>Campaign: <b>${E(camp || 'الحملة غير متاحة')}</b></span>`);
+    lines.push(`<span>Ad Set: <b>${E(r.adsetName || '—')}</b></span>`);
+    lines.push(`<span>Ad: <b>${E(r.entityName || r.adName || '—')}</b></span>`);
+  } else {
+    lines.push(`<span>Product: <b>${E(r.entityName || r.productName || '—')}</b></span>`);
+  }
+  return `${prod}<div class="amb-r-hier">${lines.join('')}</div>`;
+}
+
 function recCardV2(r) {
   const m = r.currentMetrics || {};
   const t = r.targetMetrics || {};
@@ -408,10 +446,9 @@ function recCardV2(r) {
     <div class="amb-r-chip ${chip.cls}"><span class="ci">${ic(chip.icon, 'ic')}</span>${E(chip.label)}</div>
     <div class="amb-r-body">
       <div class="amb-r-top">
-        <div class="amb-r-thumb">${r.level === 'ad' ? '📢' : r.level === 'adset' ? '🎯' : '🧩'}</div>
+        ${productThumb(r)}
         <div class="amb-r-id">
-          <div class="nm">${E(r.entityName || '—')}</div>
-          <div class="ty">Meta · ${E(LEVEL_AR[r.level] || r.level)}${r.productName ? ` · ${E(r.productName)}` : ''}</div>
+          ${hierarchyLines(r)}
         </div>
         <div class="amb-r-when">${timeAgo(r.createdAt)}</div>
       </div>
@@ -603,10 +640,12 @@ async function showRecDetails(id) {
   const learning = r.dataSufficiency === 'WEAK';
 
   let econHtml = '';
+  let prodMeta = null;
   if (r.ambProductId) {
     try {
       const d = await api.get(`/api/ai-media-buyer/products/${r.ambProductId}?window=today`);
       const e = d.economics || {}, pm = d.metrics || {};
+      prodMeta = d.product || null;
       econHtml = `
         <div class="section-title">اقتصاديات المنتج</div>
         <div class="amb-derived">
@@ -666,10 +705,19 @@ async function showRecDetails(id) {
       </div>
       ${re.blockers && re.blockers.length ? `<div style="margin-top:8px; color:var(--amb-red); font-size:12.5px;">موانع: ${re.blockers.map(E).join(' / ')}</div>` : ''}
 
-      <div class="section-title">معرّفات Meta</div>
-      <div class="faint" style="font-size:11.5px; line-height:1.9;">
-        العنصر: <span class="mono">${E(r.entityId || '—')}</span><br>
-        الحملة: <span class="mono">${E(r.campaignId || '—')}</span>${r.adsetId ? `<br>المجموعة: <span class="mono">${E(r.adsetId)}</span>` : ''}${r.adId ? `<br>الإعلان: <span class="mono">${E(r.adId)}</span>` : ''}
+      <div class="section-title">المنتج والهيكل الإعلاني</div>
+      <div class="amb-derived">
+        ${r.productName || prodMeta?.productName ? `<div class="amb-derived-row"><span>اسم المنتج</span><b>${E(prodMeta?.productName || r.productName)}</b></div>` : '<div class="amb-derived-row"><span>المنتج</span><b>غير مرتبط بمنتج</b></div>'}
+        ${r.ambProductId ? `<div class="amb-derived-row"><span>معرّف المنتج (AI Media Buyer)</span><b class="mono">${E(r.ambProductId)}</b></div>` : ''}
+        ${prodMeta?.externalProductRef ? `<div class="amb-derived-row"><span>Product ID (الكتالوج)</span><b class="mono">${E(prodMeta.externalProductRef)}</b></div>` : ''}
+        ${prodMeta?.imageUrl ? `<div class="amb-derived-row"><span>رابط صورة المنتج</span><b class="mono" style="max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${E(prodMeta.imageUrl)}</b></div>` : (r.ambProductId && state.productImages[r.ambProductId]?.hasImage ? `<div class="amb-derived-row"><span>صورة المنتج</span><b>من بيانات بحث المنتجات</b></div>` : '')}
+        ${r.campaignName ? `<div class="amb-derived-row"><span>الحملة</span><b>${E(r.campaignName)}</b></div>` : ''}
+        ${r.campaignId ? `<div class="amb-derived-row"><span>معرّف الحملة</span><b class="mono">${E(r.campaignId)}</b></div>` : ''}
+        ${r.adsetName ? `<div class="amb-derived-row"><span>المجموعة الإعلانية</span><b>${E(r.adsetName)}</b></div>` : ''}
+        ${r.adsetId ? `<div class="amb-derived-row"><span>معرّف المجموعة</span><b class="mono">${E(r.adsetId)}</b></div>` : ''}
+        ${r.adName ? `<div class="amb-derived-row"><span>الإعلان</span><b>${E(r.adName)}</b></div>` : ''}
+        ${r.adId ? `<div class="amb-derived-row"><span>معرّف الإعلان</span><b class="mono">${E(r.adId)}</b></div>` : ''}
+        <div class="amb-derived-row"><span>معرّف العنصر المستهدَف</span><b class="mono">${E(r.entityId || '—')}</b></div>
       </div>
 
       ${(r.actions || []).length ? `<div class="section-title">سجل التنفيذ</div>${(r.actions || []).map((a) => `<div class="faint" style="font-size:12px;">#${a.id} — ${E(a.status)} — ${fmtDT(a.at)}${a.metaError ? ` — خطأ: ${E(a.metaError)}` : ''}</div>`).join('')}` : ''}
@@ -741,6 +789,7 @@ function productRow(p) {
 }
 const PFIELDS = [
   ['product_name', 'اسم المنتج', 'text'], ['external_product_ref', 'Product ID (اختياري)', 'text'],
+  ['image_url', 'رابط صورة المنتج (اختياري)', 'text'],
   ['product_cost', 'تكلفة المنتج', 'number'], ['pricing_multiplier', 'مضاعف التسعير', 'number'],
   ['actual_selling_price', 'سعر البيع الفعلي (تجاوز يدوي)', 'number'],
   ['packaging_cost', 'تكلفة التغليف', 'number'], ['shipping_cost', 'تكلفة الشحن', 'number'],
@@ -760,6 +809,7 @@ async function openProductEditor(id) {
     confirmation_rate: r.product.confirmationRate, delivery_rate: r.product.deliveryRate,
     target_cpa: r.product.targetCpa, warning_cpa: r.product.warningCpa, max_cpa: r.product.maxCpa,
     target_profit: r.product.targetProfit, min_profit: r.product.minProfit, currency: r.product.currency,
+    image_url: r.product.imageUrl,
   }));
   openDrawer(`
     <div class="drawer-header"><div class="drawer-title">${id ? 'تعديل منتج' : 'منتج جديد'}</div><button class="drawer-close" id="ambDrawerX">×</button></div>
@@ -1024,7 +1074,11 @@ function labelTable(title, group) {
 
 // ---- Full AI Action Plan (categories + resolved) — logic UNCHANGED ----
 async function renderPlan(panel) {
-  const cur = await api.get('/api/ai-media-buyer/recommendations');
+  const [cur, imgMap] = await Promise.all([
+    api.get('/api/ai-media-buyer/recommendations'),
+    api.get('/api/ai-media-buyer/product-images').catch(() => ({})),
+  ]);
+  state.productImages = imgMap || {};
   const active = cur.active || cur.items || [];
   const resolved = cur.resolved || [];
   state.pendingCount = active.length; renderNav();

@@ -19,7 +19,7 @@ const WRITABLE = [
   'product_name', 'product_id', 'external_product_ref', 'product_cost', 'pricing_multiplier',
   'actual_selling_price', 'packaging_cost', 'shipping_cost', 'other_cost', 'rto_cost',
   'confirmation_rate', 'delivery_rate', 'target_cpa', 'warning_cpa', 'max_cpa',
-  'target_profit', 'min_profit', 'currency', 'active',
+  'target_profit', 'min_profit', 'currency', 'image_url', 'active',
 ];
 
 function pickWritable(body) {
@@ -211,10 +211,67 @@ function serialize(p) {
     targetProfit: p.target_profit,
     minProfit: p.min_profit,
     currency: p.currency,
+    imageUrl: p.image_url || null,
     active: p.active,
     createdAt: p.created_at,
     updatedAt: p.updated_at,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Product image resolution for the recommendation cards.
+//
+// There is NO product-page-URL field anywhere in the data model (checked:
+// `products` has no image/url/link/thumbnail column; the only real product
+// image in the system is `ProductResearchSearch.product_image`, stored as a
+// data URI and linked to a catalog Product via `product_id`). So the resolve
+// order is:
+//   1. AmbProduct.image_url            — a direct URL the owner pasted
+//   2. latest ProductResearchSearch    — the image uploaded when researching
+//      .product_image for the linked      that product (data URI in the DB)
+//      catalog product
+//   3. (no fallback — the card shows a neutral placeholder icon)
+// og:image extraction from a product page is intentionally NOT implemented
+// because no product-page URL exists to extract from; if such a field is
+// added later, a fetch-once resolver can cache its result into image_url.
+// ---------------------------------------------------------------------------
+
+/** Tiny map { [ambProductId]: { hasImage, source } } — one query, no data URIs, safe to preload on the dashboard. */
+export async function getProductImageMap() {
+  const products = await prisma.ambProduct.findMany({ where: { active: true }, select: { id: true, product_id: true, image_url: true } });
+  const catalogIds = [...new Set(products.map((p) => p.product_id).filter(Boolean))];
+  const withResearchImg = catalogIds.length
+    ? await prisma.productResearchSearch.groupBy({ by: ['product_id'], where: { product_id: { in: catalogIds }, product_image: { not: null } } })
+    : [];
+  const researchSet = new Set(withResearchImg.map((r) => r.product_id));
+  const out = {};
+  for (const p of products) {
+    if (p.image_url) out[p.id] = { hasImage: true, source: 'url' };
+    else if (p.product_id && researchSet.has(p.product_id)) out[p.id] = { hasImage: true, source: 'product_research' };
+    else out[p.id] = { hasImage: false, source: null };
+  }
+  return out;
+}
+
+/** Resolve one AMB product's image for GET /products/:id/image. Returns a redirect target, or raw bytes, or {none:true}. */
+export async function resolveProductImage(ambProductId) {
+  const p = await prisma.ambProduct.findUnique({ where: { id: Number(ambProductId) }, select: { id: true, product_id: true, image_url: true } });
+  if (!p) return { none: true };
+  if (p.image_url) return { redirect: p.image_url };
+  if (p.product_id) {
+    const s = await prisma.productResearchSearch.findFirst({
+      where: { product_id: p.product_id, product_image: { not: null } },
+      orderBy: { created_at: 'desc' },
+      select: { product_image: true },
+    });
+    const uri = s?.product_image;
+    if (uri && uri.startsWith('data:')) {
+      const m = /^data:([^;]+);base64,(.*)$/s.exec(uri);
+      if (m) return { data: Buffer.from(m[2], 'base64'), contentType: m[1] };
+    }
+    if (uri && /^https?:\/\//i.test(uri)) return { redirect: uri };
+  }
+  return { none: true };
 }
 
 export { serialize as serializeAmbProduct };
