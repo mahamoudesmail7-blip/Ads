@@ -10,6 +10,7 @@
 import { prisma } from '../../prisma.js';
 import { getConnection } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
+import { getEasyOrdersProducts, easyOrdersImageFor } from './easyOrdersProducts.js';
 import { resolveWindow } from './metricsEngine.js';
 import { buildHierarchy } from './hierarchyAnalysis.js';
 import { economicsSummary, netProfitBundle, effectiveSellingPrice } from './productEconomics.js';
@@ -221,32 +222,45 @@ function serialize(p) {
 // ---------------------------------------------------------------------------
 // Product image resolution for the recommendation cards.
 //
-// There is NO product-page-URL field anywhere in the data model (checked:
-// `products` has no image/url/link/thumbnail column; the only real product
-// image in the system is `ProductResearchSearch.product_image`, stored as a
-// data URI and linked to a catalog Product via `product_id`). So the resolve
-// order is:
-//   1. AmbProduct.image_url            — a direct URL the owner pasted
-//   2. latest ProductResearchSearch    — the image uploaded when researching
-//      .product_image for the linked      that product (data URI in the DB)
-//      catalog product
-//   3. (no fallback — the card shows a neutral placeholder icon)
-// og:image extraction from a product page is intentionally NOT implemented
-// because no product-page URL exists to extract from; if such a field is
-// added later, a fetch-once resolver can cache its result into image_url.
+// There is NO product-page-URL field in the data model (`products` has no
+// image/url/link/thumbnail column). The real image sources are:
+//   • the EasyOrders storefront — its /products API returns a stable CDN
+//     `thumb` URL per product (see easyOrdersProducts.js). This is what the
+//     store link the owner shared (…/products/Heating-Belt) points at.
+//   • `ProductResearchSearch.product_image` — a data URI stored when the
+//     owner researched a linked catalog Product.
+// Resolve order:
+//   1. AmbProduct.image_url          — a URL already resolved/pasted (cache hit)
+//   2. EasyOrders `thumb`            — matched by ref/slug/name; the resolved
+//                                      URL is written back to image_url so it
+//                                      is fetched ONCE and reused thereafter
+//   3. latest ProductResearchSearch  — .product_image for the linked catalog
+//                                      product (data URI → raw bytes)
+//   4. (no fallback — the card shows a neutral placeholder icon)
 // ---------------------------------------------------------------------------
 
 /** Tiny map { [ambProductId]: { hasImage, source } } — one query, no data URIs, safe to preload on the dashboard. */
 export async function getProductImageMap() {
-  const products = await prisma.ambProduct.findMany({ where: { active: true }, select: { id: true, product_id: true, image_url: true } });
+  const products = await prisma.ambProduct.findMany({
+    where: { active: true },
+    select: { id: true, product_id: true, image_url: true, product_name: true, external_product_ref: true, product: { select: { product_name: true } } },
+  });
   const catalogIds = [...new Set(products.map((p) => p.product_id).filter(Boolean))];
   const withResearchImg = catalogIds.length
     ? await prisma.productResearchSearch.groupBy({ by: ['product_id'], where: { product_id: { in: catalogIds }, product_image: { not: null } } })
     : [];
   const researchSet = new Set(withResearchImg.map((r) => r.product_id));
+  const eoList = await getEasyOrdersProducts().catch(() => []);
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  const eoMatch = (p) => eoList.length && eoList.some((e) => {
+    const ref = norm(p.external_product_ref), cn = norm(p.product?.product_name), an = norm(p.product_name);
+    return (ref && norm(e.slug) === ref) || (cn && norm(e.name) === cn) || (an && (norm(e.name) === an || norm(e.slug) === an));
+  });
+
   const out = {};
   for (const p of products) {
     if (p.image_url) out[p.id] = { hasImage: true, source: 'url' };
+    else if (eoMatch(p)) out[p.id] = { hasImage: true, source: 'easyorders' };
     else if (p.product_id && researchSet.has(p.product_id)) out[p.id] = { hasImage: true, source: 'product_research' };
     else out[p.id] = { hasImage: false, source: null };
   }
@@ -255,9 +269,23 @@ export async function getProductImageMap() {
 
 /** Resolve one AMB product's image for GET /products/:id/image. Returns a redirect target, or raw bytes, or {none:true}. */
 export async function resolveProductImage(ambProductId) {
-  const p = await prisma.ambProduct.findUnique({ where: { id: Number(ambProductId) }, select: { id: true, product_id: true, image_url: true } });
+  const p = await prisma.ambProduct.findUnique({
+    where: { id: Number(ambProductId) },
+    select: { id: true, product_id: true, image_url: true, product_name: true, external_product_ref: true, product: { select: { id: true, product_name: true } } },
+  });
   if (!p) return { none: true };
   if (p.image_url) return { redirect: p.image_url };
+
+  // EasyOrders storefront image (real CDN URL). On a hit, cache it onto
+  // AmbProduct.image_url so it's instant next time and survives an outage.
+  try {
+    const eo = await easyOrdersImageFor({ ambProduct: p, catalogProduct: p.product });
+    if (eo?.url) {
+      prisma.ambProduct.update({ where: { id: p.id }, data: { image_url: eo.url } }).catch(() => {});
+      return { redirect: eo.url };
+    }
+  } catch { /* non-fatal — fall through */ }
+
   if (p.product_id) {
     const s = await prisma.productResearchSearch.findFirst({
       where: { product_id: p.product_id, product_image: { not: null } },
