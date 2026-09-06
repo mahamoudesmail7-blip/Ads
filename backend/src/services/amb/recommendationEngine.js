@@ -16,6 +16,7 @@ import { codCountsForProduct } from './codOrders.js';
 import { computeScaleRecommendation, evaluateStopSignals, validateAction } from './ruleEngine.js';
 import { narrateRecommendations, buildOutcomeContext } from './claudeAnalyst.js';
 import { raiseAlert } from './alerts.js';
+import { reconcilePendingRecommendations } from './reconcile.js';
 
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
 const suff2conf = { STRONG: 'HIGH', MODERATE: 'MEDIUM', WEAK: 'LOW' };
@@ -128,6 +129,24 @@ function decideForNode(ctx, settings, trend, fatigue, productNetProfit) {
   return null; // healthy / no-op
 }
 
+/** True when the candidate would change nothing / makes no sense given the entity's current Meta state. */
+function isNoOpGivenLiveState(cand, metaStatus) {
+  if (!metaStatus) return false; // unknown status — let it through, reconciler/executor will guard
+  const active = metaStatus === 'ACTIVE';
+  if (['PAUSE', 'PAUSE_LOSER'].includes(cand.decision) || cand.action_type === 'PAUSE') return !active;
+  if (cand.decision === 'RESUME' || cand.action_type === 'RESUME') return active;
+  if (['INCREASE_BUDGET', 'DECREASE_BUDGET'].includes(cand.action_type)) {
+    if (!active) return true; // can't (and shouldn't) change budget on a stopped entity
+    const cur = n(cand.current_budget);
+    const tgt = n(cand.recommended_budget);
+    if (cur != null && tgt != null && cur > 0 && Math.abs(cur - tgt) / cur <= 0.02) return true;
+  }
+  // A monitor / draft-test / duplicate on an entity that is NOT active is
+  // moot — nothing to monitor, nothing to duplicate from a stopped entity.
+  if (!active) return true;
+  return false;
+}
+
 /**
  * Run a full analysis + recommendation cycle for the connected ad account
  * and window. Persists one batch of AmbRecommendation rows (supersedes the
@@ -141,6 +160,12 @@ export async function generateRecommendations({ windowName = null, triggeredById
   const adAccountId = connection.selected_ad_account_id;
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName || (settings.ambAnalysisLookbackDays >= 7 ? 'last7' : 'last3'));
+
+  // Reconcile any still-PENDING recs from the previous batch against current
+  // Meta state BEFORE regenerating — so an out-of-band pause/resume/budget
+  // change is recorded as RESOLVED_EXTERNALLY (kept for audit) rather than
+  // silently vanishing into SUPERSEDED.
+  await reconcilePendingRecommendations({ adAccountId }).catch((err) => logger.warn('AMB reconcile before generate failed', { message: err.message }));
 
   const tree = await buildHierarchy({ adAccountId, window, settings });
 
@@ -170,7 +195,11 @@ export async function generateRecommendations({ windowName = null, triggeredById
       fatigue = assessCreativeFatigue(trend, { frequency: m.frequency, freqCeiling: n(settings.ambCreativeFatigueFreqThreshold) ?? 3.5 });
     }
     const decided = decideForNode(ctx, settings, trend, fatigue, ctx.ambProductId ? netProfitByProduct.get(ctx.ambProductId) : null);
-    if (decided) candidates.push(decided);
+    // Never generate a recommendation that is already a no-op given the
+    // CURRENT Meta state (e.g. "pause" an already-paused campaign, or set a
+    // budget to a value it already has). The status/budget come from the
+    // latest snapshot, refreshed by the sync that precedes generation.
+    if (decided && !isNoOpGivenLiveState(decided, m.metaStatus)) candidates.push(decided);
   }
 
   // Parent-child dedup: analysis runs at every level (spec), but a PAUSE at
@@ -286,21 +315,51 @@ export async function generateRecommendations({ windowName = null, triggeredById
   return { ok: true, batchId, count: rows.length, executiveSummary: narration.executiveSummary, source: narration.source, window };
 }
 
-/** The current open batch (PENDING/APPROVED/EXECUTED rows from the newest batch_id) for the connected account. */
-export async function getCurrentRecommendations() {
+// Statuses that still need the owner's attention in the Action Plan.
+const ACTIVE_STATUSES = new Set(['PENDING']);
+// Statuses shown only in the "resolved / no longer applicable" history strip.
+const RESOLVED_STATUSES = new Set(['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE', 'EXECUTED', 'REJECTED', 'NEEDS_REANALYSIS']);
+
+/**
+ * The current recommendation set for the connected account. Reconciles
+ * against live Meta state first, then returns:
+ *   active   — only actionable (PENDING) recs
+ *   resolved — externally-resolved / executed / rejected / not-applicable /
+ *              needs-reanalysis recs from the same batch (audit trail)
+ * `items` (= active) is kept for backward compatibility.
+ */
+export async function getCurrentRecommendations({ reconcile = true } = {}) {
   const connection = await getConnection();
   if (!connection?.selected_ad_account_id) return { ok: false, error: 'NOT_CONNECTED' };
+  const adAccountId = connection.selected_ad_account_id;
+
+  if (reconcile) {
+    await reconcilePendingRecommendations({ adAccountId }).catch((err) => logger.warn('AMB reconcile in getCurrentRecommendations failed', { message: err.message }));
+  }
+
   const newest = await prisma.ambRecommendation.findFirst({
-    where: { ad_account_id: connection.selected_ad_account_id },
+    where: { ad_account_id: adAccountId },
     orderBy: { created_at: 'desc' },
     select: { batch_id: true, created_at: true },
   });
-  if (!newest) return { ok: true, batchId: null, items: [] };
-  const items = await prisma.ambRecommendation.findMany({
+  if (!newest) return { ok: true, batchId: null, active: [], resolved: [], items: [] };
+
+  // Self-heal: any PENDING rec that is NOT in the newest batch is stale by
+  // definition (a newer analysis exists) — collapse it to SUPERSEDED so it
+  // can never leak into an active count or a stale UI. Guards against a
+  // generate() whose supersede step didn't fully commit (Neon pooler hiccup).
+  await prisma.ambRecommendation.updateMany({
+    where: { ad_account_id: adAccountId, status: 'PENDING', batch_id: { not: newest.batch_id } },
+    data: { status: 'SUPERSEDED' },
+  }).catch((err) => logger.warn('AMB stale-batch supersede failed', { message: err.message }));
+
+  const rows = await prisma.ambRecommendation.findMany({
     where: { batch_id: newest.batch_id },
     orderBy: [{ priority: 'asc' }, { created_at: 'asc' }],
   });
-  return { ok: true, batchId: newest.batch_id, generatedAt: newest.created_at, items: items.map(serializeRec) };
+  const active = rows.filter((r) => ACTIVE_STATUSES.has(r.status)).map(serializeRec);
+  const resolved = rows.filter((r) => RESOLVED_STATUSES.has(r.status) || r.status === 'SUPERSEDED').map(serializeRec);
+  return { ok: true, batchId: newest.batch_id, generatedAt: newest.created_at, active, resolved, items: active };
 }
 
 /** Groups the decision into the spec's Action Plan categories. */
@@ -316,10 +375,12 @@ export function recCategory(decision) {
 export function serializeRec(r) {
   const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
   const facts = parse(r.reason_facts_json, {});
+  const cm = parse(r.current_metrics_json, {});
   return {
     id: r.id,
     batchId: r.batch_id,
     level: r.level,
+    currentStatus: cm.metaStatus || null, // Meta effective_status captured at generation time
     productName: r.product_name,
     ambProductId: r.amb_product_id,
     entityId: r.entity_id,
@@ -348,6 +409,8 @@ export function serializeRec(r) {
     timeWindow: { from: r.time_window_from, to: r.time_window_to, label: r.time_window_label },
     source: r.source,
     status: r.status,
+    resolutionNote: r.resolution_note || null,
+    resolvedAt: r.resolved_at || null,
     reviewedAt: r.reviewed_at,
     editedJson: parse(r.edited_json, null),
     createdAt: r.created_at,

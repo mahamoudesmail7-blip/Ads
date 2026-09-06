@@ -204,6 +204,18 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
       data: { status: 'SUCCESS', finished_at: new Date(), snapshot_rows: snapshotRows.length, adsdaily_refreshed: adsDailyRefreshed, account_currency: currency },
     });
 
+    // Reconcile PENDING recommendations against the state we JUST synced —
+    // resolve any that an owner already satisfied out-of-band in Meta Ads
+    // Manager (paused a campaign, hit the target budget, ...) so the active
+    // Action Plan only ever shows still-actionable items. Non-fatal.
+    try {
+      const { reconcilePendingRecommendations } = await import('./reconcile.js');
+      const rec = await reconcilePendingRecommendations({ adAccountId });
+      if (rec.ok && (rec.resolvedExternally || rec.noLongerApplicable)) logger.info('AMB post-sync reconciliation', rec);
+    } catch (err) {
+      logger.warn('AMB post-sync reconciliation (non-fatal) failed', { message: err.message });
+    }
+
     // Opportunistic creative analysis (cache-first, bounded, non-fatal) so
     // the Winners hook/angle/offer intelligence has real labels to work with.
     try {

@@ -675,7 +675,8 @@ function labelTable(title, group) {
 // ---------------------------------------------------------------------------
 async function renderPlan(panel) {
   const cur = await api.get('/api/ai-media-buyer/recommendations');
-  const items = cur.items || [];
+  const active = cur.active || cur.items || [];
+  const resolved = cur.resolved || [];
   const CATS = [
     { key: 'SCALE', label: '🚀 توسّع (SCALE)' },
     { key: 'HOLD', label: '🟢 تثبيت (HOLD)' },
@@ -684,19 +685,36 @@ async function renderPlan(panel) {
     { key: 'NEW_CREATIVE_NEEDED', label: '🎨 كرييتف جديد مطلوب' },
   ];
   const byCat = {};
-  for (const it of items) (byCat[it.category] = byCat[it.category] || []).push(it);
+  for (const it of active) (byCat[it.category] = byCat[it.category] || []).push(it);
+  const extResolved = resolved.filter((r) => ['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'].includes(r.status));
 
   panel.innerHTML = `
     <div class="toolbar" style="margin-bottom:14px;">
       <button class="btn" id="ambGenPlan">🔄 توليد خطة جديدة</button>
+      <button class="btn secondary" id="ambReconcile">↻ طابق مع حالة Meta</button>
       ${cur.generatedAt ? `<span class="faint" style="font-size:12px;">آخر توليد: ${fmtDT(cur.generatedAt)}</span>` : ''}
     </div>
-    ${items.length === 0 ? '<div class="empty-state">مفيش توصيات لسه — اضغط "توليد خطة جديدة".</div>' : CATS.map((c) => {
+    ${active.length === 0 ? `<div class="empty-state">مفيش توصيات نشطة محتاجة إجراء دلوقتي.${resolved.length ? ' (فيه توصيات محلولة تحت)' : ' اضغط "توليد خطة جديدة".'}</div>` : CATS.map((c) => {
       const list = (byCat[c.key] || []).sort((a, b) => a.priority.localeCompare(b.priority));
       if (!list.length) return '';
       return `<div style="margin-bottom:20px;"><div class="section-title">${E(c.label)} <span class="faint" style="font-weight:400;font-size:12px;">(${list.length})</span></div>${list.map(recCard).join('')}</div>`;
     }).join('')}
+    ${extResolved.length ? `<div style="margin-top:8px;">
+      <button class="btn secondary small" id="ambToggleResolved">توصيات محلولة / خارج النطاق (${extResolved.length}) ▾</button>
+      <div id="ambResolvedList" hidden style="margin-top:10px;">${extResolved.map(resolvedCard).join('')}</div>
+    </div>` : ''}
   `;
+  const rc = $('ambReconcile');
+  if (rc) rc.onclick = async () => {
+    rc.disabled = true; rc.textContent = '… بيطابق';
+    try {
+      const r = await api.post('/api/ai-media-buyer/recommendations/reconcile', {});
+      UI.toast(r.resolvedExternally + r.noLongerApplicable > 0 ? `✅ اتحلّت ${r.resolvedExternally} + ${r.noLongerApplicable} خارج النطاق` : 'كل التوصيات لسه منطبقة');
+      route();
+    } catch (err) { UI.toast(err.message, 'error'); rc.disabled = false; rc.textContent = '↻ طابق مع حالة Meta'; }
+  };
+  const tr = $('ambToggleResolved');
+  if (tr) tr.onclick = () => { const el = $('ambResolvedList'); el.hidden = !el.hidden; };
   $('ambGenPlan').onclick = async () => {
     const btn = $('ambGenPlan'); btn.disabled = true; btn.textContent = '… بيحلل';
     try {
@@ -720,18 +738,41 @@ const DECISION_AR = {
   REDUCE_BUDGET: 'تقليل ميزانية', INCREASE_BUDGET: 'زيادة ميزانية', DUPLICATE_WINNER: 'تكرار البطل',
   TEST_NEW_CREATIVE: 'اختبار كرييتف جديد', TEST_NEW_HOOK: 'اختبار هوك جديد', TEST_NEW_AUDIENCE: 'اختبار جمهور جديد',
 };
+const STATUS_AR = {
+  PENDING: '', APPROVED: 'موافَق عليها', REJECTED: 'مرفوضة', EXECUTED: '✅ اتنفّذت',
+  SUPERSEDED: 'محدّثة', NEEDS_REANALYSIS: '⚠️ محتاجة إعادة تحليل', EXPIRED: 'منتهية',
+  RESOLVED_EXTERNALLY: '✔ اتحلّت من Meta', NO_LONGER_APPLICABLE: 'خارج النطاق',
+};
+const STATUS_BADGE = { EXECUTED: 'green', RESOLVED_EXTERNALLY: 'green', NEEDS_REANALYSIS: 'red', NO_LONGER_APPLICABLE: 'gray' };
+const META_STATUS_AR = { ACTIVE: 'شغّال', PAUSED: 'متوقف', CAMPAIGN_PAUSED: 'الحملة متوقفة', ADSET_PAUSED: 'المجموعة متوقفة', ARCHIVED: 'مؤرشف', DELETED: 'محذوف', DISAPPROVED: 'مرفوض', PENDING_REVIEW: 'تحت المراجعة', IN_PROCESS: 'قيد التجهيز', WITH_ISSUES: 'به مشاكل' };
+
+function resolvedCard(r) {
+  return `<div class="amb-rec" style="border-inline-start-color:var(--gray); opacity:.9;">
+    <div class="amb-rec-head">
+      <span class="amb-pri ${r.priority}">${r.priority}</span>
+      <span class="amb-rec-title">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</span>
+      <span class="badge ${STATUS_BADGE[r.status] || 'gray'}">${E(STATUS_AR[r.status] || r.status)}</span>
+      ${r.currentStatus ? `<span class="faint" style="font-size:12px;">حالة Meta: ${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
+    </div>
+    <div style="font-size:12.5px; margin-top:6px;">${E(r.resolutionNote || 'اتحلّت خارج النظام.')}</div>
+    <div class="amb-rec-actions"><button class="btn secondary small" data-rec="${r.id}" data-act="details">التفاصيل</button></div>
+  </div>`;
+}
+
 function recCard(r) {
   const m = r.currentMetrics || {};
   const t = r.targetMetrics || {};
-  const canExec = r.executable && ['PENDING'].includes(r.status);
-  const statusAr = { PENDING: '', APPROVED: 'موافَق عليها', REJECTED: 'مرفوضة', EXECUTED: '✅ اتنفّذت', SUPERSEDED: 'محدّثة', NEEDS_REANALYSIS: '⚠️ محتاجة إعادة تحليل', EXPIRED: 'منتهية' }[r.status] || r.status;
+  const canExec = r.executable && r.status === 'PENDING';
+  const statusAr = STATUS_AR[r.status] ?? r.status;
+  const metaOk = !r.currentStatus || r.currentStatus === 'ACTIVE';
   return `<div class="amb-rec ${r.priority}">
     <div class="amb-rec-head">
       <span class="amb-pri ${r.priority}">${r.priority}</span>
       <span class="amb-rec-title">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</span>
       <span class="badge gray">${E({ product: 'منتج', campaign: 'حملة', adset: 'مجموعة', ad: 'إعلان' }[r.level] || r.level)}</span>
       ${r.productName ? `<span class="faint" style="font-size:12px;">📦 ${E(r.productName)}</span>` : ''}
-      ${statusAr ? `<span class="badge ${r.status === 'EXECUTED' ? 'green' : r.status === 'NEEDS_REANALYSIS' ? 'red' : 'gray'}">${E(statusAr)}</span>` : ''}
+      ${r.currentStatus ? `<span class="badge ${metaOk ? 'blue' : 'yellow'}" title="حالة العنصر الحالية في Meta">Meta: ${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
+      ${statusAr ? `<span class="badge ${STATUS_BADGE[r.status] || 'gray'}">${E(statusAr)}</span>` : ''}
     </div>
     <div class="amb-rec-metrics">
       <span>CPA حالي <b>${fmtEGP(m.cpa)}</b></span>
@@ -833,9 +874,14 @@ async function showRecDetails(id) {
     <div class="drawer-header"><div class="drawer-title">تفاصيل التوصية</div><button class="drawer-close" id="ambDrawerX">×</button></div>
     <div class="drawer-section">
       <div style="font-weight:700; margin-bottom:6px;">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</div>
-      <div class="faint" style="font-size:12px; margin-bottom:12px;">
+      <div class="faint" style="font-size:12px; margin-bottom:8px;">
         ${E(r.campaignName ? 'حملة: ' + r.campaignName : '')} ${E(r.adsetName ? '· مجموعة: ' + r.adsetName : '')} ${E(r.adName ? '· إعلان: ' + r.adName : '')}
       </div>
+      <div style="font-size:12.5px; margin-bottom:8px;">
+        الحالة: <span class="badge ${STATUS_BADGE[r.status] || 'gray'}">${E(STATUS_AR[r.status] || r.status || 'PENDING')}</span>
+        ${r.currentStatus ? ` · حالة العنصر في Meta وقت التوليد: <b>${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</b>` : ''}
+      </div>
+      ${r.resolutionNote ? `<div class="amb-derived" style="margin-bottom:10px;">📌 ${E(r.resolutionNote)}${r.resolvedAt ? ` <span class="faint">(${fmtDT(r.resolvedAt)})</span>` : ''}</div>` : ''}
       <div class="amb-rec-reason">💬 ${E(r.reason || '—')}</div>
       <div class="section-title">فحص القواعد (Rule Engine)</div>
       <div class="amb-rec-checks">

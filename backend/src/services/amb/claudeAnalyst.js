@@ -11,6 +11,7 @@ const SYSTEM_PROMPT = `أنت "AI Media Buyer" — محلل شراء إعلان�
 هتستلم:
 1. "recommendations": قائمة توصيات، كل واحدة معاها decision و action_type و priority و confidence و risk و data_sufficiency و metrics و target_metrics و rule_engine — كلها نهائية ومحسوبة مسبقًا. ممنوع تغيّر أي رقم أو تصنيف أو تخترع أكشن.
 2. "history": ملخص نتائج قرارات سابقة (اختياري) — استخدمه عشان تكون أكثر تحفظًا لو قرار زيّه فشل قبل كده.
+مهم: كل توصية معاها "current_status" = حالة العنصر الحالية في Meta (ACTIVE / PAUSED / ...). دي الحقيقة — التزم بيها. ممنوع تقول "لازم يتوقف فورًا" أو "أوقفه" لعنصر مش ACTIVE، وممنوع تقول "شغّله" لعنصر ACTIVE بالفعل. لو الحالة مش متوافقة مع الأكشن، وضّح كده في الشرح.
 لكل توصية اكتب شرح منظّم بالعربي المصري البسيط، كل حقل جملة قصيرة مبنية على الأرقام المعطاة فعليًا فقط (ممنوع كلام عام زي "راقب الأداء"):
 - "whatHappened": إيه اللي حصل بالأرقام.
 - "why": ليه ده بيحصل / السبب المحتمل.
@@ -35,10 +36,20 @@ function parseJsonLoose(raw) {
   try { return JSON.parse(s.slice(start, end + 1)); } catch { return null; }
 }
 
+/** Meta effective_status other than ACTIVE means the entity is not delivering. */
+function notActive(r) {
+  const s = r.current_metrics?.metaStatus;
+  return s && s !== 'ACTIVE';
+}
+
 function deterministicReason(r) {
   const m = r.current_metrics || {};
   const cpa = n(m.cpa);
   const spend = Math.round(m.spend || 0);
+  // Never tell the owner to "stop it now" for something already stopped in Meta.
+  if (notActive(r) && (['PAUSE', 'PAUSE_LOSER'].includes(r.decision) || r.action_type === 'PAUSE')) {
+    return 'العنصر متوقف بالفعل في Meta — لا يوجد إجراء مطلوب.';
+  }
   switch (r.decision) {
     case 'PAUSE':
     case 'PAUSE_LOSER':
@@ -69,6 +80,16 @@ function deterministicExplain(r) {
   const target = n(r.target_metrics?.targetCpa);
   const cur = n(r.current_budget);
   const next = n(r.recommended_budget);
+  if (notActive(r) && (['PAUSE', 'PAUSE_LOSER'].includes(r.decision) || r.action_type === 'PAUSE')) {
+    return {
+      whatHappened: `${r.entity_name}: الحالة في Meta دلوقتي "${m.metaStatus}" — العنصر مش شغّال.`,
+      why: 'اتوقف من Meta Ads Manager أو توقف تلقائيًا.',
+      whatToDo: 'مفيش إجراء مطلوب — التوصية دي اتحلّت من برّه النظام.',
+      expectedBenefit: '—',
+      risk: '—',
+      dataSupport: `الحالة الحالية "${m.metaStatus}" هي المرجع.`,
+    };
+  }
   const dsAr = { STRONG: 'قوية', MODERATE: 'كافية', WEAK: 'ضعيفة' }[r.data_sufficiency] || r.data_sufficiency;
   const base = {
     whatHappened: `${r.entity_name}: صرف ${spend} ج، ${m.purchases ?? 0} شراء${cpa != null ? `، CPA ${cpa.toFixed(1)} ج` : ''}${m.roas != null ? `، ROAS ${m.roas.toFixed(1)}×` : ''}.`,
@@ -194,6 +215,7 @@ export async function narrateRecommendations(recs, { history = [] } = {}) {
       recommendations: recs.slice(0, 12).map((r) => ({
         key: r.key, decision: r.decision, action_type: r.action_type, priority: r.priority,
         confidence: r.confidence, risk: r.risk_level, data_sufficiency: r.data_sufficiency,
+        current_status: r.current_metrics?.metaStatus || 'UNKNOWN',
         metrics: compact(r.current_metrics), target_metrics: r.target_metrics,
         budget: r.current_budget != null ? { current: r.current_budget, recommended: r.recommended_budget, changePct: r.budget_change_pct } : null,
         rule_engine: r.rule_engine ? { passed: r.rule_engine.passed, blockers: (r.rule_engine.blockers || []).slice(0, 2) } : null,

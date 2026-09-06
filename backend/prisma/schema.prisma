@@ -1151,10 +1151,18 @@ model AmbRecommendation {
   time_window_label String?
   source            String  @default("AI") // AI | FALLBACK
 
-  status         String    @default("PENDING") // PENDING | APPROVED | REJECTED | EXECUTED | EXPIRED | SUPERSEDED | NEEDS_REANALYSIS
+  // PENDING | APPROVED | EXECUTED | REJECTED | SUPERSEDED | NEEDS_REANALYSIS
+  // | RESOLVED_EXTERNALLY (the entity reached the recommended state in Meta
+  //   Ads Manager on its own — e.g. an owner paused it manually) | NO_LONGER_APPLICABLE
+  //   (the target entity no longer exists / has no recent data). The last
+  //   two are set by the post-sync reconciler and drop the rec from the
+  //   active Action Plan while keeping it for audit.
+  status         String    @default("PENDING")
   reviewed_by_id Int?
   reviewed_by    User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
   reviewed_at    DateTime?
+  resolution_note String?  // human-readable reason a rec was auto-resolved (shown in history/details)
+  resolved_at    DateTime? // when the reconciler resolved it externally / marked it not applicable
   edited_json    String? // owner "Edit Action" overrides applied before execution
 
   created_at DateTime @default(now())

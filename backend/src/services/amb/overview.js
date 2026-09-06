@@ -12,16 +12,24 @@ import { netProfitBundle } from './productEconomics.js';
 import { codCountsForProduct } from './codOrders.js';
 import { getSyncStatus } from './snapshotSync.js';
 
+// `all` counts every node (for the tree's own colour legend); `actionable`
+// counts only nodes that are still ACTIVE in Meta — a paused RED campaign is
+// historical context, not something that "needs immediate action" today.
 function countByColor(tree) {
-  const c = { GREEN: 0, YELLOW: 0, RED: 0, BLUE: 0, GRAY: 0 };
+  const all = { GREEN: 0, YELLOW: 0, RED: 0, BLUE: 0, GRAY: 0 };
+  const actionable = { GREEN: 0, YELLOW: 0, RED: 0, BLUE: 0, GRAY: 0 };
   const visit = (node) => {
-    if (node.status?.color) c[node.status.color] = (c[node.status.color] || 0) + 1;
+    const col = node.status?.color;
+    if (col) {
+      all[col] = (all[col] || 0) + 1;
+      if (node.metrics?.metaStatus === 'ACTIVE') actionable[col] = (actionable[col] || 0) + 1;
+    }
     for (const ch of node.children || []) visit(ch);
     for (const cr of node.creatives || []) visit(cr);
   };
   for (const p of tree.products || []) for (const ch of p.children || []) visit(ch);
   for (const ch of tree.unmappedCampaigns || []) visit(ch);
-  return c;
+  return { all, actionable };
 }
 
 export async function getOverview({ windowName } = {}) {
@@ -72,16 +80,19 @@ export async function getOverview({ windowName } = {}) {
     for (const as of c.children || []) for (const ad of as.children || []) if ((ad.metrics?.spend || 0) > 0) activeAds.add(ad.id);
   }
 
-  const colors = countByColor(tree);
-  const p0 = await prisma.ambRecommendation.count({ where: { ad_account_id: adAccountId, status: 'PENDING', priority: 'P0' } });
+  const { all: colors, actionable } = countByColor(tree);
+  // Scope the "critical PENDING recs" count to the newest batch only — older
+  // batches are stale by definition once a newer analysis exists.
+  const p0 = latestBatch
+    ? await prisma.ambRecommendation.count({ where: { batch_id: latestBatch.batch_id, status: 'PENDING', priority: 'P0' } })
+    : 0;
 
   let aiSays = null;
   if (latestBatch) {
     const fresh = Date.now() - new Date(latestBatch.created_at).getTime() < 6 * 3600 * 1000;
     if (fresh) {
-      const anyRec = await prisma.ambRecommendation.findFirst({ where: { batch_id: latestBatch.batch_id }, select: { source: true } });
-      // executive summary isn't stored per-row; recompute a short deterministic line from the batch
-      const recs = await prisma.ambRecommendation.findMany({ where: { batch_id: latestBatch.batch_id }, select: { decision: true, priority: true, entity_name: true, reason: true } });
+      // Only PENDING recs count toward "AI Media Buyer says" — reconciled/executed ones are done.
+      const recs = await prisma.ambRecommendation.findMany({ where: { batch_id: latestBatch.batch_id, status: 'PENDING' }, select: { decision: true, priority: true, entity_name: true, reason: true } });
       const scale = recs.filter((r) => ['INCREASE_BUDGET', 'SCALE', 'DUPLICATE_WINNER'].includes(r.decision)).length;
       const stop = recs.filter((r) => ['PAUSE', 'PAUSE_LOSER', 'REDUCE_BUDGET'].includes(r.decision)).length;
       aiSays = [
@@ -108,10 +119,13 @@ export async function getOverview({ windowName } = {}) {
       activeAds: activeAds.size,
     },
     status: {
-      winners: colors.GREEN + colors.BLUE,
-      needsMonitoring: colors.YELLOW + colors.GRAY,
-      needsImmediateAction: colors.RED,
-      scaleOpportunities: colors.BLUE,
+      // "winners" and "monitoring" reflect the whole account; "immediate
+      // action" and "scale opportunities" only count entities still ACTIVE
+      // in Meta — you can't act on a paused one.
+      winners: actionable.GREEN + actionable.BLUE,
+      needsMonitoring: actionable.YELLOW + actionable.GRAY,
+      needsImmediateAction: actionable.RED,
+      scaleOpportunities: actionable.BLUE,
       pendingCriticalRecs: p0,
     },
     aiSays,

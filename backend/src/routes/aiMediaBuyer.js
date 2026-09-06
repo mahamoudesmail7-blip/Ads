@@ -143,6 +143,15 @@ router.get('/winners', asyncRoute(async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/recommendations', asyncRoute(async (req, res) => res.json(await getCurrentRecommendations())));
 
+// Reconcile PENDING recs against current Meta state on demand (also runs
+// automatically after every sync). Resolves the ones already satisfied
+// out-of-band (e.g. an owner paused the campaign in Ads Manager).
+router.post('/recommendations/reconcile', asyncRoute(async (req, res) => {
+  const adAccountId = await requireAdAccount();
+  const { reconcilePendingRecommendations } = await import('../services/amb/reconcile.js');
+  res.json(await reconcilePendingRecommendations({ adAccountId }));
+}));
+
 router.post('/recommendations/generate', asyncRoute(async (req, res) => {
   await requireAdAccount();
   const result = await generateRecommendations({ windowName: req.body?.window || null, triggeredById: req.user.id });
