@@ -41,27 +41,28 @@ export async function getOverview({ windowName } = {}) {
     return { connected: false, syncStatus, message: 'اربط حساب Meta Ads واختار Ad Account عشان تشغّل AI Media Buyer.' };
   }
   const adAccountId = connection.selected_ad_account_id;
-  const todayW = resolveWindow('today');
+  // Every KPI, count and net-profit figure below is computed for the SELECTED
+  // period (windowName). resolveWindow already supports today | yesterday |
+  // last7 — this just makes getOverview honour it end-to-end.
   const window = resolveWindow(windowName || 'today');
 
-  const [treeToday, tree, ambProducts, latestBatch] = await Promise.all([
-    buildHierarchy({ adAccountId, window: todayW, settings }),
+  const [tree, ambProducts, latestBatch] = await Promise.all([
     buildHierarchy({ adAccountId, window, settings }),
     prisma.ambProduct.findMany({ where: { active: true } }),
     prisma.ambRecommendation.findFirst({ where: { ad_account_id: adAccountId }, orderBy: { created_at: 'desc' }, select: { batch_id: true, created_at: true } }),
   ]);
 
-  // Today KPIs.
-  let spend = 0, revenue = 0, purchases = 0, deliveredNet = 0, deliveredOrders = 0, netProfit = 0, hasNet = false;
+  // Period KPIs — all from the window-scoped hierarchy + window-scoped COD.
+  let spend = 0, revenue = 0, purchases = 0, deliveredOrders = 0, netProfit = 0, hasNet = false;
   const activeCampaigns = new Set();
   const activeAds = new Set();
-  for (const p of treeToday.products || []) {
+  for (const p of tree.products || []) {
     spend += p.metrics?.spend || 0;
     purchases += p.metrics?.purchases || 0;
     revenue += p.metrics?.revenue || 0;
     const prod = ambProducts.find((x) => String(x.id) === String(p.id));
     if (prod?.product_id) {
-      const cod = await codCountsForProduct({ productId: prod.product_id, from: todayW.from, to: todayW.to });
+      const cod = await codCountsForProduct({ productId: prod.product_id, from: window.from, to: window.to });
       const bundle = netProfitBundle(prod, { adSpend: p.metrics?.spend || 0, deliveredOrders: cod.delivered, returnedOrders: cod.returned });
       if (bundle.netProfit !== null) { netProfit += bundle.netProfit; hasNet = true; deliveredOrders += cod.delivered || 0; }
     }
@@ -72,7 +73,7 @@ export async function getOverview({ windowName } = {}) {
       }
     }
   }
-  for (const c of treeToday.unmappedCampaigns || []) {
+  for (const c of tree.unmappedCampaigns || []) {
     spend += c.metrics?.spend || 0;
     purchases += c.metrics?.purchases || 0;
     revenue += c.metrics?.revenue || 0;
@@ -107,16 +108,23 @@ export async function getOverview({ windowName } = {}) {
     connected: true,
     syncStatus,
     executionMode: settings.ambExecutionMode,
-    window,
+    window, // { from, to, label } for the selected period
     kpis: {
-      spendToday: spend,
-      revenueToday: revenue,
-      netProfitToday: hasNet ? netProfit : null,
+      // Keys keep their historical names for backward-compat, but every value
+      // is now for the SELECTED period (window), not necessarily "today".
+      spend,
+      orders: purchases,
+      netProfit: hasNet ? netProfit : null,
       avgCpa: purchases ? spend / purchases : null,
       deliveredCpa: deliveredOrders ? spend / deliveredOrders : null,
       roas: spend > 0 && revenue ? revenue / spend : null,
+      revenue,
       activeCampaigns: activeCampaigns.size,
       activeAds: activeAds.size,
+      // legacy aliases
+      spendToday: spend,
+      revenueToday: revenue,
+      netProfitToday: hasNet ? netProfit : null,
     },
     status: {
       // "winners" and "monitoring" reflect the whole account; "immediate

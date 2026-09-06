@@ -127,7 +127,28 @@ body { background: var(--amb-bg); }
 .amb-wrap { max-width: 1360px; margin: 0 auto; }
 
 /* ---- header ---- */
-.amb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 22px; }
+.amb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; }
+
+/* ---- period segmented control ---- */
+.amb-period { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+.amb-seg { display: inline-flex; background: var(--amb-surface-2); border: 1px solid var(--amb-border); border-radius: 12px; padding: 3px; gap: 2px; }
+.amb-seg-btn {
+  border: none; background: none; font-family: inherit;
+  font-size: 12.5px; font-weight: 700; color: var(--amb-text-dim);
+  padding: 7px 16px; border-radius: 9px; cursor: pointer; white-space: nowrap;
+  transition: background .12s, color .12s, box-shadow .12s;
+}
+.amb-seg-btn:hover { color: var(--amb-text); }
+.amb-seg-btn.active { background: var(--amb-surface); color: var(--amb-text); box-shadow: 0 1px 2px rgba(18,24,40,.06), 0 1px 4px rgba(18,24,40,.04); }
+.amb-period-date { font-size: 12.5px; font-weight: 600; color: var(--amb-text-faint); }
+
+.amb-batchnote {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--amb-amber-bg); border: 1px solid transparent;
+  border-radius: 12px; padding: 10px 14px; margin-bottom: 14px;
+  font-size: 12.5px; color: var(--amb-amber);
+}
+.amb-batchnote span { flex: 1; min-width: 200px; }
 .amb-head h1 { font-size: 24px; font-weight: 800; letter-spacing: -.5px; margin: 0 0 4px; }
 .amb-head .sub { font-size: 13px; color: var(--amb-text-dim); max-width: 540px; line-height: 1.6; }
 .amb-head-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

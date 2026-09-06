@@ -78,12 +78,27 @@ const NAV = [
 const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, history: renderHistory, settings: renderSettings };
 const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
 
+// Exactly the 3 periods the dashboard supports. All map to the backend's
+// existing resolveWindow() keys, so every window-aware endpoint honours them.
 const WINDOWS = [
   { key: 'today', label: 'اليوم' },
   { key: 'yesterday', label: 'أمس' },
-  { key: 'last3', label: 'آخر 3 أيام' },
   { key: 'last7', label: 'آخر 7 أيام' },
 ];
+const AR_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+function fmtDateAr(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  return `${d.getDate()} ${AR_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+/** "6 سبتمبر 2026" for a single day, "31 أغسطس — 6 سبتمبر 2026" for a range. */
+function windowDateText(w) {
+  if (!w || !w.from) return '';
+  if (!w.to || w.to === w.from) return fmtDateAr(w.from);
+  const a = new Date(w.from + 'T00:00:00'), b = new Date(w.to + 'T00:00:00');
+  const left = b.getFullYear() === a.getFullYear() ? `${a.getDate()} ${AR_MONTHS[a.getMonth()]}` : fmtDateAr(w.from);
+  return `${left} — ${fmtDateAr(w.to)}`;
+}
 
 const state = {
   tab: 'home',
@@ -193,42 +208,49 @@ function closeDrawer() { $('ambDrawerOverlay').classList.remove('open'); }
 // HOME — the reference dashboard
 // ---------------------------------------------------------------------------
 async function renderHome(view) {
-  const [ov, recs, hToday, hYest, meta, imgMap] = await Promise.all([
-    api.get('/api/ai-media-buyer/overview?window=today'),
+  const win = state.window;
+  const calls = [
+    api.get(`/api/ai-media-buyer/overview?window=${win}`),
     api.get('/api/ai-media-buyer/recommendations'),
-    api.get('/api/ai-media-buyer/hierarchy?window=today').catch(() => null),
-    api.get('/api/ai-media-buyer/hierarchy?window=yesterday').catch(() => null),
+    api.get(`/api/ai-media-buyer/hierarchy?window=${win}`).catch(() => null),
     api.get('/api/meta/status').catch(() => null),
     api.get('/api/ai-media-buyer/product-images').catch(() => ({})),
-  ]);
+    // Only "today" has a well-defined "previous period" (yesterday) for a trend.
+    win === 'today' ? api.get('/api/ai-media-buyer/hierarchy?window=yesterday').catch(() => null) : Promise.resolve(null),
+  ];
+  const [ov, recs, hWin, meta, imgMap, hPrev] = await Promise.all(calls);
   state.productImages = imgMap || {};
 
   const active = recs.active || recs.items || [];
   const resolved = recs.resolved || [];
   state.pendingCount = active.length;
-  state.home = { ov, active, resolved, hToday, meta };
+  state.home = { ov, active, resolved, hWin, meta };
   renderNav();
 
+  const w = ov.window || hWin?.window || { label: WINDOWS.find((x) => x.key === win)?.label };
+
   if (!ov.connected) {
-    view.innerHTML = `${homeHeader(ov, meta)}<div class="amb-panel amb-empty">${E(ov.message || 'اربط حساب Meta Ads من صفحة AI Intelligence الأول.')}</div>`;
+    view.innerHTML = `${homeHeader(ov, meta)}${windowBar(w)}<div class="amb-panel amb-empty">${E(ov.message || 'اربط حساب Meta Ads من صفحة AI Intelligence الأول.')}</div>`;
     wireHeader();
     return;
   }
 
-  const aT = hToday?.accountAvg || {};
-  const aY = hYest?.accountAvg || {};
+  const aW = hWin?.accountAvg || {};
+  const aP = hPrev?.accountAvg || {};
   const k = ov.kpis || {};
-  const spend = aT.spend ?? k.spendToday;
-  const cpa = aT.cpa ?? k.avgCpa;
-  const orders = aT.purchases ?? (k.avgCpa ? Math.round((k.spendToday || 0) / k.avgCpa) : null);
-  const net = k.netProfitToday;
+  const spend = k.spend ?? aW.spend;
+  const cpa = k.avgCpa ?? aW.cpa;
+  const orders = k.orders ?? aW.purchases;
+  const net = k.netProfit ?? null;
+  const showTrend = win === 'today';
 
   view.innerHTML = `
     ${homeHeader(ov, meta)}
+    ${windowBar(w)}
     <div class="amb-kpis">
-      ${kpiCard('إجمالي الإنفاق', fmtEGP(spend), 'money', 'red', trend(spend, aY.spend, false))}
-      ${kpiCard('متوسط CPA', fmtEGP(cpa), 'target', 'purple', trend(cpa, aY.cpa, true))}
-      ${kpiCard('الطلبات', fmtNum(orders), 'cart', 'blue', trend(orders, aY.purchases, false))}
+      ${kpiCard('إجمالي الإنفاق', fmtEGP(spend), 'money', 'red', showTrend ? trend(spend, aP.spend, false) : '')}
+      ${kpiCard('متوسط CPA', fmtEGP(cpa), 'target', 'purple', showTrend ? trend(cpa, aP.cpa, true) : '')}
+      ${kpiCard('الطلبات', fmtNum(orders), 'cart', 'blue', showTrend ? trend(orders, aP.purchases, false) : '')}
       ${kpiCard('صافي الربح', net == null ? '—' : fmtEGP(net), 'wallet', 'green', '')}
     </div>
 
@@ -240,6 +262,7 @@ async function renderHome(view) {
           <div class="t">${ic('bulb', 'ic')} القرارات المقترحة من الذكاء الاصطناعي</div>
           <span class="amb-sort">${resolved.length ? `${resolved.filter((r) => ['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'].includes(r.status)).length} توصية اتحلّت` : ''}</span>
         </div>
+        <div id="ambRecBatchNote"></div>
         <div id="ambRecList"></div>
       </div>
       <div class="amb-col-side" id="ambSide"></div>
@@ -247,8 +270,33 @@ async function renderHome(view) {
 
   wireHeader();
   renderFilters(active);
+  renderRecBatchNote(active, w);
   renderRecList(active);
-  renderSide(ov, meta, hToday, active);
+  renderSide(ov, meta, hWin, active);
+}
+
+/**
+ * The recommendation batch is generated for one period. When the selected
+ * period differs, tell the owner and offer to re-run the AI on THIS period.
+ * (Regeneration is analysis-only — it never executes / approves anything.)
+ */
+function renderRecBatchNote(active, w) {
+  const el = $('ambRecBatchNote');
+  if (!el) return;
+  const batchLabel = active[0]?.timeWindow?.label || null;
+  if (!batchLabel || batchLabel === w.label) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="amb-batchnote">
+    <span>التوصيات الحالية محسوبة على فترة «${E(batchLabel)}». لتحليل الذكاء الاصطناعي على «${E(w.label)}»:</span>
+    <button class="amb-btn primary sm" id="ambRegenForWin">توليد على «${E(w.label)}»</button>
+  </div>`;
+  $('ambRegenForWin').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = '… بيحلل الفترة';
+    try {
+      const r = await api.post('/api/ai-media-buyer/recommendations/generate', { window: state.window });
+      UI.toast(`✅ ${r.count} توصية على «${w.label}»`);
+      route();
+    } catch (err) { UI.toast(err.message, 'error'); e.target.disabled = false; e.target.textContent = `توليد على «${w.label}»`; }
+  };
 }
 
 function homeHeader(ov, meta) {
@@ -264,15 +312,35 @@ function homeHeader(ov, meta) {
       </div>
       <div class="amb-head-tools">
         <span class="amb-chip ${syncOk ? '' : last?.status === 'FAILED' ? 'err' : 'warn'}"><span class="dot"></span>${last ? `محدّث ${timeAgo(last.at)}` : 'لم تتم مزامنة بعد'}</span>
-        <span class="amb-select" title="نطاق التاريخ">${ic('cal', 'ic')} اليوم</span>
         <span class="amb-select" title="الحساب الإعلاني">${ic('meta', 'ic')} ${E(acctName)}</span>
         <button class="amb-iconbtn" id="ambSync" title="مزامنة الآن">${ic('refresh', 'ic')}</button>
       </div>
     </div>`;
 }
+
+/** Apple-style segmented period control + the real date/range under it. */
+function windowBar(w) {
+  return `
+    <div class="amb-period">
+      <div class="amb-seg" id="ambSeg">
+        ${WINDOWS.map((x) => `<button class="amb-seg-btn ${x.key === state.window ? 'active' : ''}" data-win="${x.key}">${E(x.label)}</button>`).join('')}
+      </div>
+      <div class="amb-period-date">${E(windowDateText(w))}</div>
+    </div>`;
+}
+function wireWindowBar() {
+  document.querySelectorAll('#ambSeg [data-win]').forEach((b) => {
+    b.onclick = () => {
+      if (b.dataset.win === state.window) return;
+      state.window = b.dataset.win;
+      route(); // re-fetches every panel for the new period; never executes anything
+    };
+  });
+}
 function wireHeader() {
   const b = $('ambSync');
   if (b) b.onclick = syncNow;
+  wireWindowBar();
 }
 
 async function syncNow() {
@@ -474,9 +542,10 @@ function recCardV2(r) {
 }
 
 // ---- right column ----
-function renderSide(ov, meta, hToday, active) {
+function renderSide(ov, meta, hWin, active) {
   const el = $('ambSide');
   if (!el) return;
+  const winLabel = WINDOWS.find((x) => x.key === state.window)?.label || '';
 
   // Block 1 — ad account status
   const last = ov.syncStatus?.lastRun;
@@ -493,13 +562,13 @@ function renderSide(ov, meta, hToday, active) {
     ${last ? `<div class="faint" style="font-size:11px; margin-top:8px;">آخر مزامنة ${timeAgo(last.at)} · ${last.snapshotRows ?? 0} صف</div>` : ''}
   </div>`;
 
-  // Block 2 — top products today (by CPA asc)
-  const prods = (hToday?.products || [])
+  // Block 2 — top products for the selected period (by CPA asc)
+  const prods = (hWin?.products || [])
     .filter((p) => p.metrics && p.metrics.cpa != null)
     .sort((a, b) => a.metrics.cpa - b.metrics.cpa)
     .slice(0, 4);
   const prodBlock = `<div class="amb-panel">
-    <h3>أفضل المنتجات اليوم</h3>
+    <h3>أفضل المنتجات — ${E(winLabel)}</h3>
     ${prods.length ? prods.map((p, i) => `<div class="amb-prod-row"><span class="rk">${i + 1}</span><span class="pn">${E(p.name)}</span><span class="pc">CPA ${fmtEGP(p.metrics.cpa)}</span></div>`).join('')
       : `<div class="amb-empty" style="padding:8px 0;">اربط الحملات بالمنتجات لعرض الأفضل أداءً.</div>`}
   </div>`;
