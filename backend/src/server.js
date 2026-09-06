@@ -30,9 +30,12 @@ import lostOrdersRoutes from './routes/lostOrders.js';
 import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
+import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
+import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
+import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = path.resolve(__dirname, '..', '..'); // order-monitor/ (one level above backend/)
@@ -73,6 +76,7 @@ app.use('/api/lost-orders', lostOrdersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
+app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new module INSIDE AI Intelligence (see routes/aiMediaBuyer.js)
 app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
 app.use('/api/product-research', productResearchRoutes);
 
@@ -105,3 +109,10 @@ app.listen(PORT, () => {
 });
 
 startEasyOrdersReconciliation();
+
+// AI Media Buyer background jobs — a 60s interval-gated Meta snapshot sync
+// (default every 15 min; also refreshes the existing AdsDailyMetric when
+// enabled in settings) and a 10-min outcome-evaluation pass for executed
+// actions. Both no-op cleanly when Meta isn't connected.
+startAmbSnapshotScheduler();
+startAmbOutcomeScheduler();

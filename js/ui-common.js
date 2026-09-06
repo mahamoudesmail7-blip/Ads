@@ -34,6 +34,7 @@ const ICON_PATHS = {
   easyorders: '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>',
   lostorders: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M9 9l6 6M15 9l-6 6"/>',
   aiintel: '<path d="M12 2a4 4 0 0 0-4 4c0 1.5.8 2.8 2 3.5V12H8a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h1v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2h1a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-2V9.5c1.2-.7 2-2 2-3.5a4 4 0 0 0-4-4z"/><circle cx="9" cy="14" r="0.5"/><circle cx="15" cy="14" r="0.5"/>',
+  aimediabuyer: '<path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 5-7"/><circle cx="7" cy="15" r="1.4"/><circle cx="21" cy="7" r="1.4"/>',
   productresearch: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
 };
 
@@ -52,6 +53,7 @@ export const NAV_ITEMS = [
   { key: 'easyorders', href: 'easy-orders.html', label: 'Easy Orders', icon: navIcon('easyorders') },
   { key: 'lostorders', href: 'lost-orders.html', label: 'الأوردرات المفقودة', icon: navIcon('lostorders'), badgeId: 'navLostOrdersBadge' },
   { key: 'aiintel', href: 'ai-intelligence.html', label: 'AI Intelligence', icon: navIcon('aiintel') },
+  { key: 'aimediabuyer', href: 'ai-media-buyer.html', label: 'AI Media Buyer', icon: navIcon('aimediabuyer') },
   { key: 'productresearch', href: 'product-research.html', label: 'بحث المنتجات', icon: navIcon('productresearch') },
   { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },
   { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: navIcon('compare') },
@@ -68,6 +70,7 @@ const NAV_ROLE_REQUIREMENT = {
   work: ['ADMIN', 'MANAGER'],
   settings: ['ADMIN'],
   aiintel: ['ADMIN', 'MANAGER'],
+  aimediabuyer: ['ADMIN', 'MANAGER'],
   productresearch: ['ADMIN', 'MANAGER'],
 };
 

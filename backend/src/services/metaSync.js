@@ -17,7 +17,7 @@ import { matchCampaignToProduct } from './adsImport.js';
 // when present; otherwise fall back to whichever action_type has the
 // highest count, honestly labelled via result_indicator either way. Never
 // silently mislabels one action type as another.
-const PURCHASE_ACTION_TYPES = new Set([
+export const PURCHASE_ACTION_TYPES = new Set([
   'omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase', 'onsite_web_app_purchase', 'onsite_conversion.purchase',
 ]);
 
@@ -28,7 +28,7 @@ function toNum(v) {
 }
 
 /** Picks the "results" figure + which action_type it actually came from, from Meta's raw `actions`/`action_values`/`cost_per_action_type` arrays. */
-function extractResults(row) {
+export function extractResults(row) {
   const actions = row.actions || [];
   const purchaseAction = actions.find((a) => PURCHASE_ACTION_TYPES.has(a.action_type));
   const chosen = purchaseAction || [...actions].sort((a, b) => Number(b.value) - Number(a.value))[0] || null;

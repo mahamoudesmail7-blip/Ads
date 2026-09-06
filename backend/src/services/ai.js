@@ -115,7 +115,12 @@ async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
 export async function askClaude({ system, messages, maxTokens = 1024 }) {
   const apiKey = apiKeyOrThrow();
   const data = await withRetry(() => callMessagesApi({ apiKey, system, messages, maxTokens }));
-  return data.content?.[0]?.text ?? '';
+  // Newer models (claude-sonnet-5) can prepend a `thinking` block, so the
+  // first content block is not necessarily the text answer — pick the first
+  // `text` block explicitly, and concatenate if the model split it.
+  const blocks = data.content || [];
+  const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+  return text || blocks?.[0]?.text || '';
 }
 
 /** Read-only snapshot of Anthropic's tracked health — never makes a network call itself (Step 13). */

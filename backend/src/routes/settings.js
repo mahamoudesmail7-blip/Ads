@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { prisma } from '../prisma.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
+import { AMB_DEFAULT_SETTINGS } from '../services/amb/settings.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -39,6 +40,9 @@ export const DEFAULT_SETTINGS = {
   // with no redeploy once real search data shows a better calibration.
   icdExactMatchThreshold: 95,
   icdReviewMatchThreshold: 85,
+  // AI Media Buyer — its settings live in this same blob (one source of
+  // truth). Written via PUT /api/ai-media-buyer/settings, not here.
+  ...AMB_DEFAULT_SETTINGS,
 };
 
 router.get('/', asyncRoute(async (req, res) => {

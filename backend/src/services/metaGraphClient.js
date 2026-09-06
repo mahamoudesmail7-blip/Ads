@@ -168,3 +168,153 @@ export async function searchAdLibrary(token, { searchTerms, countries, limit = 2
   }, token);
   return data.data || [];
 }
+
+// ============================================================================
+// AI Media Buyer additions. Read helpers for multi-level insights + entity
+// metadata/budgets, and a tightly-scoped set of WRITE helpers used only by
+// the AI Media Buyer execution layer (services/amb/executor.js) AFTER owner
+// approval + a deterministic rule-engine pass + a pre-execute revalidation.
+// Nothing here is ever called directly from a Claude response.
+// ============================================================================
+
+/** Real ad-account currency/timezone/name — needed to convert Meta's minor-unit budgets to EGP and back. */
+export async function getAdAccountInfo(token, adAccountId) {
+  return graphFetch(`/${adAccountId}`, { fields: 'id,account_id,name,currency,timezone_name,account_status' }, token);
+}
+
+/**
+ * Daily Insights at an explicit level (campaign | adset | ad) for a date
+ * range — same field set + real pagination as getInsights(), plus the id/
+ * name columns for every level so a snapshot row is self-describing.
+ */
+export async function getInsightsByLevel(token, adAccountId, level, dateFrom, dateTo) {
+  const fields = [
+    'campaign_id', 'campaign_name', 'adset_id', 'adset_name', 'ad_id', 'ad_name',
+    'spend', 'impressions', 'reach', 'frequency', 'clicks', 'ctr', 'cpc', 'cpm',
+    'actions', 'action_values', 'cost_per_action_type', 'purchase_roas', 'date_start', 'date_stop',
+  ].join(',');
+
+  let params = {
+    level,
+    time_increment: 1,
+    time_range: { since: dateFrom, until: dateTo },
+    fields,
+    limit: 500,
+    access_token: token,
+  };
+  const base = `${GRAPH_BASE}/${adAccountId}/insights`;
+
+  const rows = [];
+  let next = null;
+  do {
+    const target = next || (() => {
+      const u = new URL(base);
+      for (const [k, v] of Object.entries(params)) u.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+      return u.toString();
+    })();
+    const res = await fetch(target);
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.error) throwGraphOAuthError(data, res, `insights(level=${level})`);
+    rows.push(...(data.data || []));
+    next = data.paging?.next || null;
+  } while (next);
+
+  return rows;
+}
+
+/** Paginated GET of a node's edge (e.g. /act_x/campaigns) returning every page's `data` concatenated. */
+async function graphList(path, params, token) {
+  const rows = [];
+  let url = new URL(`${GRAPH_BASE}${path}`);
+  for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+  url.searchParams.set('access_token', token);
+  url.searchParams.set('limit', '500');
+  let target = url.toString();
+  do {
+    const res = await fetch(target);
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.error) throwGraphOAuthError(data, res, `list ${path}`);
+    rows.push(...(data.data || []));
+    target = data.paging?.next || null;
+  } while (target);
+  return rows;
+}
+
+/**
+ * Live entity metadata for a level: effective_status (real delivery state),
+ * plus the budget fields that live at that level (campaign CBO budget, or
+ * adset ABO budget). Budgets come back as Meta minor-unit STRINGS — the
+ * caller converts using the account currency.
+ */
+export async function getEntitiesMeta(token, adAccountId, level) {
+  if (level === 'campaign') {
+    return graphList(`/${adAccountId}/campaigns`, { fields: 'id,name,status,effective_status,objective,daily_budget,lifetime_budget,start_time,stop_time' }, token);
+  }
+  if (level === 'adset') {
+    return graphList(`/${adAccountId}/adsets`, { fields: 'id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget,optimization_goal,start_time,end_time' }, token);
+  }
+  if (level === 'ad') {
+    return graphList(`/${adAccountId}/ads`, { fields: 'id,name,status,effective_status,adset_id,campaign_id,creative{id}' }, token);
+  }
+  throw new Error(`getEntitiesMeta: unknown level ${level}`);
+}
+
+/** Single-entity read for the pre-execute revalidation step — the exact current status/budget of the thing we're about to change. */
+export async function getEntity(token, entityId, fields) {
+  return graphFetch(`/${entityId}`, { fields }, token);
+}
+
+/**
+ * Real ad-creative details for AI Media Buyer's creative analysis — body
+ * copy, title, CTA type, link, and the nested object_story_spec where the
+ * real message/headline/description usually live for a link ad. Returns
+ * `null` on a per-creative failure so the caller can mark that creative
+ * NOT_ANALYZED rather than aborting the whole batch.
+ */
+export async function getCreativeDetails(token, creativeId) {
+  try {
+    return await graphFetch(`/${creativeId}`, {
+      fields: [
+        'id', 'name', 'title', 'body', 'call_to_action_type', 'object_type',
+        'link_url', 'image_url', 'video_id', 'thumbnail_url',
+        'object_story_spec', 'asset_feed_spec', 'effective_object_story_id',
+      ].join(','),
+    }, token);
+  } catch (err) {
+    logger.warn('getCreativeDetails failed', { creativeId, message: err.message });
+    return null;
+  }
+}
+
+/** Raw POST to the Graph API (form-encoded, as Meta expects for writes). Returns Meta's parsed JSON response; throws a diagnostic-rich error on failure. */
+export async function graphPost(path, body, token) {
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(body || {})) {
+    if (v === undefined || v === null) continue;
+    form.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+  }
+  form.set('access_token', token);
+  const res = await fetch(`${GRAPH_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data?.error) throwGraphOAuthError(data, res, `POST ${path}`);
+  return data;
+}
+
+/** WRITE — pause/resume. status must be 'ACTIVE' or 'PAUSED'. Works for campaign, adset, or ad ids (Meta's status field is the same on all three). */
+export async function setEntityStatus(token, entityId, status) {
+  if (!['ACTIVE', 'PAUSED'].includes(status)) throw new Error(`setEntityStatus: invalid status ${status}`);
+  return graphPost(`/${entityId}`, { status }, token);
+}
+
+/** WRITE — budget change. Amount is in MINOR units of the account currency (e.g. EGP → piasters, ×100). Pass exactly one of dailyBudgetMinor / lifetimeBudgetMinor, matching the budget type the entity already uses. */
+export async function setEntityBudget(token, entityId, { dailyBudgetMinor, lifetimeBudgetMinor }) {
+  const body = {};
+  if (dailyBudgetMinor != null) body.daily_budget = Math.round(dailyBudgetMinor);
+  if (lifetimeBudgetMinor != null) body.lifetime_budget = Math.round(lifetimeBudgetMinor);
+  if (Object.keys(body).length !== 1) throw new Error('setEntityBudget: pass exactly one of dailyBudgetMinor / lifetimeBudgetMinor');
+  return graphPost(`/${entityId}`, body, token);
+}

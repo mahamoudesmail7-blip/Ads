@@ -37,55 +37,61 @@ model User {
   is_owner      Boolean  @default(false)
   created_at    DateTime @default(now())
 
-  assigned_tasks TaskRecord[] @relation("TaskAssignee")
-  created_tasks  TaskRecord[] @relation("TaskCreator")
-  activity_log   TaskActivityLog[]
-  lost_order_notes   LostOrderNote[]
-  lost_order_actions LostOrderHistory[]
-  ads_uploads        AdsUpload[]
-  ads_decision_reviews AdsDecisionReview[]
-  meta_connections     MetaConnection[]
-  ai_audit_log_entries AiAuditLog[]
-  product_research_searches     ProductResearchSearch[]
-  product_research_competitors  ProductResearchCompetitor[]
+  assigned_tasks                 TaskRecord[]                 @relation("TaskAssignee")
+  created_tasks                  TaskRecord[]                 @relation("TaskCreator")
+  activity_log                   TaskActivityLog[]
+  lost_order_notes               LostOrderNote[]
+  lost_order_actions             LostOrderHistory[]
+  ads_uploads                    AdsUpload[]
+  ads_decision_reviews           AdsDecisionReview[]
+  meta_connections               MetaConnection[]
+  ai_audit_log_entries           AiAuditLog[]
+  product_research_searches      ProductResearchSearch[]
+  product_research_competitors   ProductResearchCompetitor[]
   experimental_creative_searches ExperimentalCreativeSearch[] // Internal Creative Discovery experimental section — fully separate tables from ProductResearch*, see model below
+  // AI Media Buyer — additive back-relations only (no column change on `users`).
+  amb_products_created           AmbProduct[]
+  amb_maps_created               AmbProductCampaignMap[]
+  amb_recommendations_reviewed   AmbRecommendation[]
+  amb_actions_executed           AmbAction[]
 
   @@map("users")
 }
 
 model Product {
-  id                    Int      @id @default(autoincrement())
-  product_name          String
-  sku                   String?
-  product_code          String?  @unique
-  category              String?
-  selling_price         Float    @default(0)
-  product_cost          Float    @default(0)
-  active                Boolean  @default(true)
-  is_demo               Boolean  @default(false)
-  shipping_cost         Float?
-  packaging_cost        Float?
-  other_cost            Float?
-  advertising_cost      Float?
-  expected_return_cost  Float?
-  commission            Float?
-  current_stock         Float?
-  minimum_stock         Float?
-  supplier              String?
-  restock_quantity      Float?
-  last_restock_date     String?
-  created_at            DateTime @default(now())
+  id                   Int      @id @default(autoincrement())
+  product_name         String
+  sku                  String?
+  product_code         String?  @unique
+  category             String?
+  selling_price        Float    @default(0)
+  product_cost         Float    @default(0)
+  active               Boolean  @default(true)
+  is_demo              Boolean  @default(false)
+  shipping_cost        Float?
+  packaging_cost       Float?
+  other_cost           Float?
+  advertising_cost     Float?
+  expected_return_cost Float?
+  commission           Float?
+  current_stock        Float?
+  minimum_stock        Float?
+  supplier             String?
+  restock_quantity     Float?
+  last_restock_date    String?
+  created_at           DateTime @default(now())
 
-  orders             DailyOrder[]
-  notes              ProductNote[]
-  action_logs        ActionLog[]
-  task_records       TaskRecord[]
-  inventory_snapshots InventorySnapshot[]
-  inventory_movement InventoryMovementLog[]
-  easyorders_orders  EasyOrdersOrder[]
-  ads_metrics        AdsDailyMetric[]
+  orders                       DailyOrder[]
+  notes                        ProductNote[]
+  action_logs                  ActionLog[]
+  task_records                 TaskRecord[]
+  inventory_snapshots          InventorySnapshot[]
+  inventory_movement           InventoryMovementLog[]
+  easyorders_orders            EasyOrdersOrder[]
+  ads_metrics                  AdsDailyMetric[]
   product_research_searches    ProductResearchSearch[]
   product_research_competitors ProductResearchCompetitor[]
+  amb_product                  AmbProduct? // AI Media Buyer economics profile for this product (optional 1:1) — additive
 
   @@index([active])
   @@index([product_name])
@@ -122,33 +128,33 @@ model DailyOrder {
 // re-run on a retried/duplicate delivery — same design goal as
 // DailyOrder's own (product_id, date) uniqueness.
 model EasyOrdersOrder {
-  id            Int      @id @default(autoincrement())
-  order_id      String
-  short_id      Int? // EasyOrders' human-friendly order number (e.g. #2167) — the real reference number a customer/employee would actually recognize, not the internal UUID
-  cart_item_id  String
-  product_id    Int?
-  product       Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  sku           String?
-  product_name_raw String? // EasyOrders' own product name, kept even when matched==false so the UI always has a real name to show — never a fabricated placeholder for an unmatched order.
-  date          String
-  status        String // normalized: PENDING | CONFIRMED | DELIVERED | RETURNED | CANCELLED
-  raw_status    String?
-  quantity      Int      @default(1)
-  matched       Boolean  @default(true)
+  id                  Int      @id @default(autoincrement())
+  order_id            String
+  short_id            Int? // EasyOrders' human-friendly order number (e.g. #2167) — the real reference number a customer/employee would actually recognize, not the internal UUID
+  cart_item_id        String
+  product_id          Int?
+  product             Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  sku                 String?
+  product_name_raw    String? // EasyOrders' own product name, kept even when matched==false so the UI always has a real name to show — never a fabricated placeholder for an unmatched order.
+  date                String
+  status              String // normalized: PENDING | CONFIRMED | DELIVERED | RETURNED | CANCELLED
+  raw_status          String?
+  quantity            Int      @default(1)
+  matched             Boolean  @default(true)
   // Customer/order-level fields — the webhook payload always includes these
   // (order.full_name/phone/government/address/cost/shipping_cost) but nothing
   // read them until the Lost Orders feature needed to show a real customer
   // contact for a replacement order. Redundantly stored per cart-item row
   // (same values across every row of one order_id) rather than restructuring
   // the table — simplest fix for a real gap, not a new integration.
-  customer_name    String?
-  customer_phone   String?
-  customer_address String?
+  customer_name       String?
+  customer_phone      String?
+  customer_address    String?
   customer_government String?
-  order_cost       Float?
-  shipping_cost    Float?
-  created_at    DateTime @default(now())
-  updated_at    DateTime @updatedAt
+  order_cost          Float?
+  shipping_cost       Float?
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
 
   @@unique([order_id, cart_item_id])
   @@index([date])
@@ -164,12 +170,12 @@ model EasyOrdersOrder {
 // EasyOrders order_id, created automatically the moment that status is
 // first observed (webhook or reconciliation) — see services/lostOrders.js.
 model LostOrder {
-  id                    Int      @id @default(autoincrement())
-  order_id              String   @unique
-  processing_status     String   @default("NEW") // NEW | PROCESSING | CONTACTED | CUSTOMER_APPROVED | CUSTOMER_REJECTED | REPLACEMENT_CREATED | CLOSED
-  replacement_order_id  String? // set once a real replacement order exists in EasyOrders (feature currently blocked — see conversation)
-  source                String   @default("AUTO") // AUTO (real status == returning_from_delivery) | MANUAL (a human flagged it — e.g. EasyOrders' own "تحت المراجعة" dashboard flag, which their public API never exposes)
-  manual_reason         String? // required when source == MANUAL — why a human is flagging an order the API itself shows no problem with
+  id                           Int      @id @default(autoincrement())
+  order_id                     String   @unique
+  processing_status            String   @default("NEW") // NEW | PROCESSING | CONTACTED | CUSTOMER_APPROVED | CUSTOMER_REJECTED | REPLACEMENT_CREATED | CLOSED
+  replacement_order_id         String? // set once a real replacement order exists in EasyOrders (feature currently blocked — see conversation)
+  source                       String   @default("AUTO") // AUTO (real status == returning_from_delivery) | MANUAL (a human flagged it — e.g. EasyOrders' own "تحت المراجعة" dashboard flag, which their public API never exposes)
+  manual_reason                String? // required when source == MANUAL — why a human is flagging an order the API itself shows no problem with
   // Human correction layer — EasyOrders has no API to push an edited
   // address/phone back to them, so this is a LOCAL override only: the
   // original EasyOrdersOrder customer fields stay untouched (real record of
@@ -179,9 +185,9 @@ model LostOrder {
   override_customer_phone      String?
   override_customer_address    String?
   override_customer_government String?
-  detected_at           DateTime @default(now())
-  created_at            DateTime @default(now())
-  updated_at            DateTime @updatedAt
+  detected_at                  DateTime @default(now())
+  created_at                   DateTime @default(now())
+  updated_at                   DateTime @updatedAt
 
   notes   LostOrderNote[]
   history LostOrderHistory[]
@@ -220,8 +226,8 @@ model LostOrderHistory {
 }
 
 model Settings {
-  id    String @id @default("default")
-  data  String
+  id   String @id @default("default")
+  data String
 
   @@map("settings")
 }
@@ -238,9 +244,9 @@ model ProductNote {
 }
 
 model ActionLog {
-  id                   Int      @id @default(autoincrement())
+  id                   Int       @id @default(autoincrement())
   product_id           Int
-  product              Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product              Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
   date                 String
   status               String
   task_type            String?
@@ -250,8 +256,8 @@ model ActionLog {
   not_completed_reason String?
   not_completed_note   String?
   completed_at         DateTime?
-  created_at           DateTime @default(now())
-  updated_at           DateTime @updatedAt
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
 
   @@unique([product_id, date])
   @@index([date])
@@ -272,11 +278,11 @@ model DailyReport {
 }
 
 model TeamMember {
-  id                 Int      @id @default(autoincrement())
-  name               String   @unique
-  active             Boolean  @default(true)
-  daily_task_target  Int      @default(10)
-  created_at         DateTime @default(now())
+  id                Int      @id @default(autoincrement())
+  name              String   @unique
+  active            Boolean  @default(true)
+  daily_task_target Int      @default(10)
+  created_at        DateTime @default(now())
 
   assignments TaskAssignment[]
 
@@ -307,37 +313,37 @@ model TaskAssignment {
 // on top, satisfying "record who assigned/completed/cancelled it" without
 // breaking any existing field task-store.js/manager.js already reads.
 model TaskRecord {
-  id                   Int       @id @default(autoincrement())
-  date                 String
-  product_id           Int?
-  product              Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  product_name         String?
-  employee_id          Int?
-  employee             User?     @relation("TaskAssignee", fields: [employee_id], references: [id], onDelete: SetNull)
-  created_by_id        Int?
-  created_by           User?     @relation("TaskCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
-  status               String    @default("PENDING")
-  task_type            String?
-  priority             String?
-  title                String?
-  details              String?
-  manager_note         String?
-  related_campaign     String?
-  source               String?
-  assignment_source    String?
-  assigned_by          String?
-  assigned_at          DateTime?
-  today                Float?
-  yesterday            Float?
-  diff                 Float?
-  due_date             String?
-  execution_date       String?
-  completed_at         DateTime?
-  not_completed_reason String?
-  not_completed_note   String?
-  cancelled_at         DateTime?
-  cancelled_by         String?
-  cancel_reason        String?
+  id                         Int       @id @default(autoincrement())
+  date                       String
+  product_id                 Int?
+  product                    Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_name               String?
+  employee_id                Int?
+  employee                   User?     @relation("TaskAssignee", fields: [employee_id], references: [id], onDelete: SetNull)
+  created_by_id              Int?
+  created_by                 User?     @relation("TaskCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  status                     String    @default("PENDING")
+  task_type                  String?
+  priority                   String?
+  title                      String?
+  details                    String?
+  manager_note               String?
+  related_campaign           String?
+  source                     String?
+  assignment_source          String?
+  assigned_by                String?
+  assigned_at                DateTime?
+  today                      Float?
+  yesterday                  Float?
+  diff                       Float?
+  due_date                   String?
+  execution_date             String?
+  completed_at               DateTime?
+  not_completed_reason       String?
+  not_completed_note         String?
+  cancelled_at               DateTime?
+  cancelled_by               String?
+  cancel_reason              String?
   // AI Intelligence -> Manager Control bridge (additive, all nullable —
   // every existing task simply has these as null forever). source_entity_*
   // mirrors AdsDecisionReview's (entity_type, entity_key) idiom: the AI
@@ -351,14 +357,14 @@ model TaskRecord {
   // exactly as before, but also gets review_status='PENDING_REVIEW' until a
   // manager approves it — existing tasks/flows never set this, so they are
   // untouched by its existence.
-  source_entity_type        String?
-  source_entity_key         String?
+  source_entity_type         String?
+  source_entity_key          String?
   ai_recommendation_snapshot String?
   review_status              String?
-  employee_result             String?
-  manager_review_note         String?
-  created_at           DateTime  @default(now())
-  updated_at           DateTime  @updatedAt
+  employee_result            String?
+  manager_review_note        String?
+  created_at                 DateTime  @default(now())
+  updated_at                 DateTime  @updatedAt
 
   activity TaskActivityLog[]
 
@@ -389,22 +395,22 @@ model TaskActivityLog {
 }
 
 model InventorySnapshot {
-  id             Int      @id @default(autoincrement())
-  product_id     Int
-  product        Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  product_name   String
-  date           String
-  opening_stock  Float?
-  closing_stock  Float
-  units_out      Float    @default(0)
-  stock_change   Float?
-  movement_type  String
-  source         String?
-  batch_id       Int?
-  notes          String?
-  updated_by     String?
-  created_at     DateTime @default(now())
-  updated_at     DateTime @updatedAt
+  id            Int      @id @default(autoincrement())
+  product_id    Int
+  product       Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_name  String
+  date          String
+  opening_stock Float?
+  closing_stock Float
+  units_out     Float    @default(0)
+  stock_change  Float?
+  movement_type String
+  source        String?
+  batch_id      Int?
+  notes         String?
+  updated_by    String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
 
   @@unique([product_id, date])
   @@index([date])
@@ -432,23 +438,23 @@ model InventoryMovementLog {
 }
 
 model InventoryColumnMapping {
-  id           String   @id @default("default")
-  productName  String?
-  quantity     String?
-  sku          String?
-  warehouse    String?
-  updated_at   DateTime @updatedAt
+  id          String   @id @default("default")
+  productName String?
+  quantity    String?
+  sku         String?
+  warehouse   String?
+  updated_at  DateTime @updatedAt
 
   @@map("inventory_column_mapping")
 }
 
 model InventoryNameMapping {
-  id                 Int      @id @default(autoincrement())
-  excel_name_key     String   @unique
+  id                  Int      @id @default(autoincrement())
+  excel_name_key      String   @unique
   excel_name_original String
-  product_id         Int
-  created_at         DateTime @default(now())
-  updated_at         DateTime @updatedAt
+  product_id          Int
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
 
   @@map("inventory_name_mapping")
 }
@@ -574,13 +580,13 @@ model AdsDailyMetric {
 // itself. entity_key is a product id (as a string) or a campaign name,
 // matching decisionEngine.js's entityKey.
 model AdsDecisionReview {
-  id            Int       @id @default(autoincrement())
-  entity_type   String // product | campaign
-  entity_key    String
-  status        String // REVIEWED | DISMISSED
+  id             Int      @id @default(autoincrement())
+  entity_type    String // product | campaign
+  entity_key     String
+  status         String // REVIEWED | DISMISSED
   reviewed_by_id Int?
-  reviewed_by   User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
-  reviewed_at   DateTime  @default(now())
+  reviewed_by    User?    @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
+  reviewed_at    DateTime @default(now())
 
   @@unique([entity_type, entity_key])
   @@map("ads_decision_reviews")
@@ -594,12 +600,12 @@ model AdsDecisionReview {
 // the cached plan instead of calling the API again when nothing changed;
 // the "🔄 تحديث الخطة" button forces a fresh call.
 model AdsActionPlan {
-  id          Int      @id @default(autoincrement())
-  window_from String
-  window_to   String
-  input_hash  String
-  plan_json   String // JSON-as-String — {summary, items: [{entityType, entityKey, reason, recommendedAction}, ...]}
-  source      String   @default("AI") // AI | FALLBACK — FALLBACK means the Claude call failed and deterministic templates were used instead
+  id           Int      @id @default(autoincrement())
+  window_from  String
+  window_to    String
+  input_hash   String
+  plan_json    String // JSON-as-String — {summary, items: [{entityType, entityKey, reason, recommendedAction}, ...]}
+  source       String   @default("AI") // AI | FALLBACK — FALLBACK means the Claude call failed and deterministic templates were used instead
   generated_at DateTime @default(now())
 
   @@unique([window_from, window_to])
@@ -613,23 +619,23 @@ model AdsActionPlan {
 // selected-account metadata are. Historical AdsDailyMetric rows synced
 // while connected are never deleted on disconnect.
 model MetaConnection {
-  id                        String    @id @default("default")
-  status                    String    @default("DISCONNECTED") // CONNECTED | DISCONNECTED
-  connected_by_id           Int?
-  connected_by              User?     @relation(fields: [connected_by_id], references: [id], onDelete: SetNull)
-  access_token_enc          String? // AES-256-GCM ciphertext, base64 — see metaCrypto.js
-  token_expires_at          DateTime?
-  meta_user_id              String?
-  meta_user_name            String?
-  selected_business_id      String?
-  selected_business_name    String?
-  selected_ad_account_id    String?
-  selected_ad_account_name  String?
-  last_synced_at            DateTime?
-  connected_at              DateTime?
-  disconnected_at           DateTime?
-  created_at                DateTime  @default(now())
-  updated_at                DateTime  @updatedAt
+  id                       String    @id @default("default")
+  status                   String    @default("DISCONNECTED") // CONNECTED | DISCONNECTED
+  connected_by_id          Int?
+  connected_by             User?     @relation(fields: [connected_by_id], references: [id], onDelete: SetNull)
+  access_token_enc         String? // AES-256-GCM ciphertext, base64 — see metaCrypto.js
+  token_expires_at         DateTime?
+  meta_user_id             String?
+  meta_user_name           String?
+  selected_business_id     String?
+  selected_business_name   String?
+  selected_ad_account_id   String?
+  selected_ad_account_name String?
+  last_synced_at           DateTime?
+  connected_at             DateTime?
+  disconnected_at          DateTime?
+  created_at               DateTime  @default(now())
+  updated_at               DateTime  @updatedAt
 
   @@map("meta_connections")
 }
@@ -643,17 +649,17 @@ model MetaConnection {
 // entries (action="EXECUTE") are additive groundwork for later phases and
 // unused until those tools exist.
 model AiAuditLog {
-  id           Int      @id @default(autoincrement())
-  actor_id     Int? // the logged-in user who triggered this (chat message or quick action) — null for a system-triggered call, none exist yet
-  actor        User?    @relation(fields: [actor_id], references: [id], onDelete: SetNull)
-  kind         String // "TOOL_CALL" | "ASSISTANT_TURN"
-  action       String // "READ" | "EXECUTE" — every Phase 1 tool is READ
-  tool_name    String? // set for kind=TOOL_CALL
-  input_json   String? // JSON-encoded tool input / user message
-  output_json  String? // JSON-encoded tool result (never the raw LLM prose for TOOL_CALL rows)
-  success      Boolean  @default(true)
-  error        String?
-  created_at   DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  actor_id    Int? // the logged-in user who triggered this (chat message or quick action) — null for a system-triggered call, none exist yet
+  actor       User?    @relation(fields: [actor_id], references: [id], onDelete: SetNull)
+  kind        String // "TOOL_CALL" | "ASSISTANT_TURN"
+  action      String // "READ" | "EXECUTE" — every Phase 1 tool is READ
+  tool_name   String? // set for kind=TOOL_CALL
+  input_json  String? // JSON-encoded tool input / user message
+  output_json String? // JSON-encoded tool result (never the raw LLM prose for TOOL_CALL rows)
+  success     Boolean  @default(true)
+  error       String?
+  created_at  DateTime @default(now())
 
   @@index([created_at])
   @@index([kind])
@@ -668,31 +674,31 @@ model AiAuditLog {
 // ============================================================================
 
 model ProductResearchSearch {
-  id              Int       @id @default(autoincrement())
-  user_id         Int
-  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  product_id      Int? // optional link to an existing Product
-  product         Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  product_name    String
-  product_image   String? // stored filename under uploads/product-research/, never the raw client filename
-  country         String    @default("EG")
-  language        String    @default("AR_EN")
-  platforms_json  String // JSON array, e.g. ["instagram","tiktok","facebook","youtube"]
-  results_per_platform Int  @default(25)
-  status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED
+  id                   Int       @id @default(autoincrement())
+  user_id              Int
+  user                 User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  product_id           Int? // optional link to an existing Product
+  product              Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_name         String
+  product_image        String? // stored filename under uploads/product-research/, never the raw client filename
+  country              String    @default("EG")
+  language             String    @default("AR_EN")
+  platforms_json       String // JSON array, e.g. ["instagram","tiktok","facebook","youtube"]
+  results_per_platform Int       @default(25)
+  status               String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED
   platform_status_json String? // {"instagram":"COMPLETE","tiktok":"FAILED",...} — per-platform status for partial-failure UI
-  ai_profile_json String? // Claude's structured product profile (Step 2 schema)
-  input_json      String? // the raw user-entered names/keywords, preserved verbatim — Claude output is merged onto this, never overwrites it
-  error           String?
-  started_at      DateTime?
-  completed_at    DateTime?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
+  ai_profile_json      String? // Claude's structured product profile (Step 2 schema)
+  input_json           String? // the raw user-entered names/keywords, preserved verbatim — Claude output is merged onto this, never overwrites it
+  error                String?
+  started_at           DateTime?
+  completed_at         DateTime?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
 
-  queries         ProductResearchQuery[]
-  results         ProductResearchResult[]
-  competitors     ProductResearchCompetitor[]
-  insight         ProductResearchInsight?
+  queries     ProductResearchQuery[]
+  results     ProductResearchResult[]
+  competitors ProductResearchCompetitor[]
+  insight     ProductResearchInsight?
 
   @@index([user_id])
   @@index([product_id])
@@ -701,49 +707,49 @@ model ProductResearchSearch {
 }
 
 model ProductResearchQuery {
-  id           Int      @id @default(autoincrement())
+  id           Int                   @id @default(autoincrement())
   search_id    Int
   search       ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
   platform     String
   query        String
   query_type   String // EXACT_NAME|ALTERNATIVE_NAME|ARABIC_NAME|ENGLISH_NAME|FEATURE|BENEFIT|PROBLEM|GENERIC|VISUAL_DESCRIPTION
   provider     String // which SearchProvider actually ran this
-  result_count Int      @default(0)
-  status       String   @default("PENDING") // PENDING|RUNNING|COMPLETE|FAILED
+  result_count Int                   @default(0)
+  status       String                @default("PENDING") // PENDING|RUNNING|COMPLETE|FAILED
   error        String?
-  created_at   DateTime @default(now())
+  created_at   DateTime              @default(now())
 
   @@index([search_id])
   @@map("product_research_queries")
 }
 
 model ProductResearchResult {
-  id                Int       @id @default(autoincrement())
-  search_id         Int
-  search            ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
-  platform          String
-  content_type      String    @default("Unknown") // Profile|Page|Post|Reel|Video|Short|Channel|Creator|Unknown
-  canonical_url     String
-  original_url      String
-  title             String?
-  snippet           String?
-  account_name      String?
-  account_url       String?
-  thumbnail         String?
-  published_at      DateTime?
-  metrics_json      String? // {"views":123,"likes":45,...} — only keys actually returned by the provider, never fabricated
-  provider          String
-  classification    String? // EXACT_MATCH|VERY_SIMILAR|SIMILAR|RELATED|IRRELEVANT — null until AI ranking runs
-  match_score       Int?
-  confidence_score  Int?
-  ai_reason         String?
-  ignored           Boolean   @default(false)
-  raw_metadata_json String? // the provider's raw response fields, kept for debugging/re-ranking, never shown raw in the UI
+  id                         Int                   @id @default(autoincrement())
+  search_id                  Int
+  search                     ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  platform                   String
+  content_type               String                @default("Unknown") // Profile|Page|Post|Reel|Video|Short|Channel|Creator|Unknown
+  canonical_url              String
+  original_url               String
+  title                      String?
+  snippet                    String?
+  account_name               String?
+  account_url                String?
+  thumbnail                  String?
+  published_at               DateTime?
+  metrics_json               String? // {"views":123,"likes":45,...} — only keys actually returned by the provider, never fabricated
+  provider                   String
+  classification             String? // EXACT_MATCH|VERY_SIMILAR|SIMILAR|RELATED|IRRELEVANT — null until AI ranking runs
+  match_score                Int?
+  confidence_score           Int?
+  ai_reason                  String?
+  ignored                    Boolean               @default(false)
+  raw_metadata_json          String? // the provider's raw response fields, kept for debugging/re-ranking, never shown raw in the UI
   discovered_by_queries_json String? // which query ids/text found this result
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
+  created_at                 DateTime              @default(now())
+  updated_at                 DateTime              @updatedAt
 
-  competitor        ProductResearchCompetitor?
+  competitor ProductResearchCompetitor?
 
   @@unique([search_id, canonical_url])
   @@index([search_id])
@@ -753,12 +759,12 @@ model ProductResearchResult {
 }
 
 model ProductResearchCompetitor {
-  id             Int       @id @default(autoincrement())
+  id             Int                    @id @default(autoincrement())
   product_id     Int?
-  product        Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product        Product?               @relation(fields: [product_id], references: [id], onDelete: SetNull)
   search_id      Int?
   search         ProductResearchSearch? @relation(fields: [search_id], references: [id], onDelete: SetNull)
-  result_id      Int?      @unique
+  result_id      Int?                   @unique
   result         ProductResearchResult? @relation(fields: [result_id], references: [id], onDelete: SetNull)
   platform       String
   account_name   String?
@@ -767,11 +773,11 @@ model ProductResearchCompetitor {
   follower_count Int? // null (never fabricated) when the provider doesn't return it — UI shows "غير متاح"
   notes          String?
   saved_by_id    Int?
-  saved_by       User?     @relation(fields: [saved_by_id], references: [id], onDelete: SetNull)
-  first_seen     DateTime  @default(now())
-  last_seen      DateTime  @default(now())
-  created_at     DateTime  @default(now())
-  updated_at     DateTime  @updatedAt
+  saved_by       User?                  @relation(fields: [saved_by_id], references: [id], onDelete: SetNull)
+  first_seen     DateTime               @default(now())
+  last_seen      DateTime               @default(now())
+  created_at     DateTime               @default(now())
+  updated_at     DateTime               @updatedAt
 
   @@index([product_id])
   @@index([search_id])
@@ -782,11 +788,11 @@ model ProductResearchCompetitor {
 // Kept separate from ProductResearchSearch so it can be regenerated
 // independently without touching the search row itself.
 model ProductResearchInsight {
-  id            Int      @id @default(autoincrement())
-  search_id     Int      @unique
+  id            Int                   @id @default(autoincrement())
+  search_id     Int                   @unique
   search        ProductResearchSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
   insights_json String // {observedData:{...}, aiInterpretation:{...}} — kept explicitly separate per Step 14's requirement
-  generated_at  DateTime @default(now())
+  generated_at  DateTime              @default(now())
 
   @@map("product_research_ai_insights")
 }
@@ -806,34 +812,34 @@ model ProductResearchInsight {
 // ============================================================
 
 model ExperimentalCreativeSearch {
-  id              Int       @id @default(autoincrement())
-  user_id         Int
-  user            User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  source_mode     String    @default("INTERNAL_EXPERIMENTAL") // the explicit marker requested — never confused with a real ProductResearchSearch row (they're not even in the same table)
-  search_mode     String    @default("TEXT") // TEXT | IMAGE_ONLY — IMAGE_ONLY means product_name was empty at submit time and gets filled in from the generated Product Identity Profile once Stage A finishes
-  product_name    String // for IMAGE_ONLY this starts as a placeholder and is overwritten once Stage A image analysis produces a real mainProductName — never left as the placeholder in a COMPLETED/PARTIAL row
-  product_image   String? // kept as the FIRST reference image for backward compatibility with every existing read path — never removed
-  product_images_json String? // JSON array of 1-4 real uploaded reference image data-URIs (Step: same-exact-product visual matching) — product_image always equals element [0] of this array when present
-  country         String    @default("EG")
-  language        String    @default("AR_EN")
-  platforms_json  String
-  mode            String    @default("quick") // quick|deep
-  status          String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED|CANCELLED
-  platform_status_json String?
+  id                     Int       @id @default(autoincrement())
+  user_id                Int
+  user                   User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  source_mode            String    @default("INTERNAL_EXPERIMENTAL") // the explicit marker requested — never confused with a real ProductResearchSearch row (they're not even in the same table)
+  search_mode            String    @default("TEXT") // TEXT | IMAGE_ONLY — IMAGE_ONLY means product_name was empty at submit time and gets filled in from the generated Product Identity Profile once Stage A finishes
+  product_name           String // for IMAGE_ONLY this starts as a placeholder and is overwritten once Stage A image analysis produces a real mainProductName — never left as the placeholder in a COMPLETED/PARTIAL row
+  product_image          String? // kept as the FIRST reference image for backward compatibility with every existing read path — never removed
+  product_images_json    String? // JSON array of 1-4 real uploaded reference image data-URIs (Step: same-exact-product visual matching) — product_image always equals element [0] of this array when present
+  country                String    @default("EG")
+  language               String    @default("AR_EN")
+  platforms_json         String
+  mode                   String    @default("quick") // quick|deep
+  status                 String    @default("PENDING") // PENDING|ANALYZING|GENERATING_QUERIES|SEARCHING|RANKING|COMPLETED|PARTIAL|FAILED|CANCELLED
+  platform_status_json   String?
   platform_progress_json String? // real per-platform 0-100 progress, JSON map {platform: number} — driven entirely by real execution stages in experimentalCreativeDiscovery.js (job created/provider initialized/queries prepared/per-query progress/results collected/normalized/saved/completed), never a frontend timer; persisted here so it survives a page refresh (Step: real Progress system)
-  ai_profile_json String?
-  identity_profile_json String? // the full Product Identity Profile generated from the image (Stage A + any Stage B enrichment) — see productVisionService.js
+  ai_profile_json        String?
+  identity_profile_json  String? // the full Product Identity Profile generated from the image (Stage A + any Stage B enrichment) — see productVisionService.js
   identity_provider      String? // LOCAL_VISION | LOCAL_VISION+ANTHROPIC | ANTHROPIC_VISION — diagnostic: which real provider(s) actually produced this profile (Step 24)
-  reference_image_hash  String? // sha256 of the uploaded image bytes — cache key alongside model_version
-  input_json      String?
-  error           String?
-  started_at      DateTime?
-  completed_at    DateTime?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
+  reference_image_hash   String? // sha256 of the uploaded image bytes — cache key alongside model_version
+  input_json             String?
+  error                  String?
+  started_at             DateTime?
+  completed_at           DateTime?
+  created_at             DateTime  @default(now())
+  updated_at             DateTime  @updatedAt
 
-  queries         ExperimentalCreativeQuery[]
-  results         ExperimentalCreativeResult[]
+  queries ExperimentalCreativeQuery[]
+  results ExperimentalCreativeResult[]
 
   @@index([user_id])
   @@index([status])
@@ -841,58 +847,58 @@ model ExperimentalCreativeSearch {
 }
 
 model ExperimentalCreativeQuery {
-  id           Int      @id @default(autoincrement())
+  id           Int                        @id @default(autoincrement())
   search_id    Int
   search       ExperimentalCreativeSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
   platform     String
   query        String
   query_type   String
   provider     String // the REAL provider that actually ran this (e.g. serpapi, youtube_data_api, apify_meta_ad_library) — never a fabricated "internal" label; see the report on why
-  result_count Int      @default(0)
-  status       String   @default("PENDING")
+  result_count Int                        @default(0)
+  status       String                     @default("PENDING")
   error        String?
-  created_at   DateTime @default(now())
+  created_at   DateTime                   @default(now())
 
   @@index([search_id])
   @@map("experimental_creative_queries")
 }
 
 model ExperimentalCreativeResult {
-  id                Int       @id @default(autoincrement())
-  search_id         Int
-  search            ExperimentalCreativeSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
-  platform          String
-  content_type      String    @default("Unknown")
-  canonical_url     String
-  original_url      String
-  title             String?
-  snippet           String?
-  account_name      String?
-  account_url       String?
-  thumbnail         String?
-  published_at      DateTime?
-  metrics_json      String?
-  provider          String
-  classification    String?
-  match_score       Int?
-  confidence_score  Int?
-  ai_reason         String?
-  visual_match_score Int? // 0-100, the FINAL visual score used for ranking — local embedding/perceptual-hash/OCR comparison, optionally blended with a real Claude-vision semantic score when Anthropic is healthy. Null when not computed (no reference image, no candidate thumbnail, candidate fetch failed, or beyond the per-search comparison cap) — never guessed.
-  local_visual_match_score Int? // 0-100, the raw LOCAL_VISION-only score (embedding cosine similarity + perceptual hash + OCR brand/model match) — always populated whenever local comparison genuinely ran, independent of Anthropic (Step 10/11)
-  visual_match_provider String? // LOCAL_EMBEDDING | LOCAL_EMBEDDING+ANTHROPIC — diagnostic (Step 24)
-  final_score       Int?  // the weighted combination (80% visual / 15% text / 5% distinctive attributes) used for image-mode ranking when a reference image exists — null otherwise, text match_score is used as-is
-  matched_reference_index Int? // which uploaded reference image (0-based, into product_images_json) produced the BEST visual match for this result — real multi-reference matching (Step: same-exact-product visual matching), null when no reference image or comparison never ran
-  match_reasons     String? // JSON array of short, honest strings describing WHY this score was reached (e.g. "تشابه بصري عالي (embedding)", "تطابق لون مميز", "تطابق نص/موديل OCR") — never invented, only set when a real signal actually contributed
-  exact_match_score Int? // 0-100 (Step: exact product matching) — deterministic weighted combination of visual embedding + structural (perceptual hash) + brand/model text + existing text match_score + color, computed only when a real visual comparison ran; never invented, category alone can never reach a high value here
-  match_decision    String? // EXACT | REVIEW | REJECT | null (null = never evaluated, e.g. no reference image) — thresholds are configurable via Settings (icdExactMatchThreshold/icdReviewMatchThreshold), never hardcoded blindly
-  ignored           Boolean   @default(false)
-  raw_metadata_json String?
+  id                         Int                        @id @default(autoincrement())
+  search_id                  Int
+  search                     ExperimentalCreativeSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  platform                   String
+  content_type               String                     @default("Unknown")
+  canonical_url              String
+  original_url               String
+  title                      String?
+  snippet                    String?
+  account_name               String?
+  account_url                String?
+  thumbnail                  String?
+  published_at               DateTime?
+  metrics_json               String?
+  provider                   String
+  classification             String?
+  match_score                Int?
+  confidence_score           Int?
+  ai_reason                  String?
+  visual_match_score         Int? // 0-100, the FINAL visual score used for ranking — local embedding/perceptual-hash/OCR comparison, optionally blended with a real Claude-vision semantic score when Anthropic is healthy. Null when not computed (no reference image, no candidate thumbnail, candidate fetch failed, or beyond the per-search comparison cap) — never guessed.
+  local_visual_match_score   Int? // 0-100, the raw LOCAL_VISION-only score (embedding cosine similarity + perceptual hash + OCR brand/model match) — always populated whenever local comparison genuinely ran, independent of Anthropic (Step 10/11)
+  visual_match_provider      String? // LOCAL_EMBEDDING | LOCAL_EMBEDDING+ANTHROPIC — diagnostic (Step 24)
+  final_score                Int? // the weighted combination (80% visual / 15% text / 5% distinctive attributes) used for image-mode ranking when a reference image exists — null otherwise, text match_score is used as-is
+  matched_reference_index    Int? // which uploaded reference image (0-based, into product_images_json) produced the BEST visual match for this result — real multi-reference matching (Step: same-exact-product visual matching), null when no reference image or comparison never ran
+  match_reasons              String? // JSON array of short, honest strings describing WHY this score was reached (e.g. "تشابه بصري عالي (embedding)", "تطابق لون مميز", "تطابق نص/موديل OCR") — never invented, only set when a real signal actually contributed
+  exact_match_score          Int? // 0-100 (Step: exact product matching) — deterministic weighted combination of visual embedding + structural (perceptual hash) + brand/model text + existing text match_score + color, computed only when a real visual comparison ran; never invented, category alone can never reach a high value here
+  match_decision             String? // EXACT | REVIEW | REJECT | null (null = never evaluated, e.g. no reference image) — thresholds are configurable via Settings (icdExactMatchThreshold/icdReviewMatchThreshold), never hardcoded blindly
+  ignored                    Boolean                    @default(false)
+  raw_metadata_json          String?
   discovered_by_queries_json String?
-  ad_analysis_json   String?   // Step: Meta Ads competitor intelligence — structured per-ad analysis (hook/angle/price/offer/CTA/etc.), only ever populated for platform=META_AD_LIBRARY rows with match_decision=EXACT. Every field inside carries its own source: OBSERVED|AI_INFERRED|AI_ANALYZED tag — never presented as one undifferentiated fact.
-  ad_analysis_status String?   // PENDING | DONE | FAILED | SKIPPED — null until competitor-analysis is attempted for this row
-  ad_analyzed_at     DateTime?
-  created_at        DateTime  @default(now())
-  updated_at        DateTime  @updatedAt
+  ad_analysis_json           String? // Step: Meta Ads competitor intelligence — structured per-ad analysis (hook/angle/price/offer/CTA/etc.), only ever populated for platform=META_AD_LIBRARY rows with match_decision=EXACT. Every field inside carries its own source: OBSERVED|AI_INFERRED|AI_ANALYZED tag — never presented as one undifferentiated fact.
+  ad_analysis_status         String? // PENDING | DONE | FAILED | SKIPPED — null until competitor-analysis is attempted for this row
+  ad_analyzed_at             DateTime?
+  created_at                 DateTime                   @default(now())
+  updated_at                 DateTime                   @updatedAt
 
   @@unique([search_id, canonical_url])
   @@index([search_id])
@@ -908,8 +914,8 @@ model ExperimentalCreativeResult {
 // caching idiom used elsewhere in this file.
 model ExperimentalAdAnalysisCache {
   id            Int      @id @default(autoincrement())
-  ad_key        String   // sha256 of metrics.adId || canonical_url
-  model_version String   // bumped whenever the analysis prompt/output shape changes, invalidating stale cached entries safely
+  ad_key        String // sha256 of metrics.adId || canonical_url
+  model_version String // bumped whenever the analysis prompt/output shape changes, invalidating stale cached entries safely
   analysis_json String
   created_at    DateTime @default(now())
 
@@ -924,12 +930,377 @@ model ExperimentalAdAnalysisCache {
 // shared across searches/users that happen to upload the identical file.
 model ExperimentalImageIdentityCache {
   id            Int      @id @default(autoincrement())
-  image_hash    String   // sha256 of the raw image bytes
-  model_version String   // bumped whenever a provider's output shape changes, so an old cached profile is never served against a newer expected shape
+  image_hash    String // sha256 of the raw image bytes
+  model_version String // bumped whenever a provider's output shape changes, so an old cached profile is never served against a newer expected shape
   provider      String   @default("ANTHROPIC_VISION") // LOCAL_VISION | ANTHROPIC_VISION — the two providers cache independently under the same image_hash, since LOCAL_VISION is now always attempted and ANTHROPIC_VISION only sometimes
-  profile_json  String   // LOCAL_VISION: {ocr, embedding, perceptualHash, colors, category, ...}. ANTHROPIC_VISION: the full Claude-generated Product Identity Profile (unchanged shape)
+  profile_json  String // LOCAL_VISION: {ocr, embedding, perceptualHash, colors, category, ...}. ANTHROPIC_VISION: the full Claude-generated Product Identity Profile (unchanged shape)
   created_at    DateTime @default(now())
 
   @@unique([image_hash, model_version, provider])
   @@map("experimental_image_identity_cache")
+}
+
+// ============================================================================
+// AI MEDIA BUYER — a new decision-making center inside "🧠 AI Intelligence".
+// Every table here is ADDITIVE. Nothing above is altered. The existing AI
+// Intelligence pipeline (AdsUpload / AdsDailyMetric / AdsActionPlan /
+// AdsDecisionReview / decisionEngine.js / campaignAnalysis.js) keeps working
+// untouched. AI Media Buyer keeps its OWN immutable performance history in
+// meta_performance_snapshots (append-only — never delete/replace, unlike the
+// existing metaSync.runSync which does delete-and-replace on AdsDailyMetric).
+//
+// Mandatory architecture (enforced in services, mirrored by these tables):
+//   Meta API → snapshot → deterministic Metrics Engine → Product Economics →
+//   deterministic Rule Engine → Claude (interpretation/text ONLY, never math)
+//   → structured AmbRecommendation → backend validation → owner approval →
+//   revalidation → Meta write → AmbAction (audit) → AmbActionResult (6/12/24h).
+// Claude can never bypass backend validation / owner approval / safety rules
+// while Approval Mode is on (the default). AI Media Buyer settings live in the
+// existing `settings` JSON blob (keys prefixed `amb…`), not a table here —
+// same "new field needs no migration" convention as the rest of that row.
+// ============================================================================
+
+// One economics profile per advertised product. Optionally linked to an
+// existing Product row (to seed cost/price) but keeps its OWN fields because
+// the COD media-buying math needs multiplier / confirmation-rate /
+// delivery-rate / target-warning-max CPA / target-min profit that `products`
+// does not carry — and linking is optional so a product that only exists in
+// Meta (not yet in the catalog) can still be modelled.
+model AmbProduct {
+  id                      Int      @id @default(autoincrement())
+  product_id              Int?     @unique
+  product                 Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_name            String
+  external_product_ref    String? // free-text "Product ID" from the merchant's own catalog/CRM when there's no Product row
+  // Economics — all deterministic backend inputs. Claude never writes these.
+  product_cost            Float    @default(0) // wholesale / COGS per unit
+  pricing_multiplier      Float    @default(3) // configurable PER product — never a global hardcode
+  suggested_selling_price Float    @default(0) // = product_cost * pricing_multiplier, recomputed on write
+  actual_selling_price    Float? // manual override; when set it wins over suggested for every downstream calc
+  packaging_cost          Float    @default(0)
+  shipping_cost           Float    @default(0)
+  other_cost              Float    @default(0)
+  rto_cost                Float    @default(0) // return / RTO cost per returned order
+  confirmation_rate       Float? // 0..1 — share of Meta purchases that become confirmed orders (from CRM when available)
+  delivery_rate           Float? // 0..1 — share of confirmed orders that get delivered
+  target_cpa              Float?
+  warning_cpa             Float?
+  max_cpa                 Float? // maximum allowed CPA — hard ceiling for the rule engine
+  target_profit           Float?
+  min_profit              Float?
+  currency                String   @default("EGP")
+  active                  Boolean  @default(true)
+  created_by_id           Int?
+  created_by              User?    @relation(fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at              DateTime @default(now())
+  updated_at              DateTime @updatedAt
+
+  campaign_maps   AmbProductCampaignMap[]
+  recommendations AmbRecommendation[]
+
+  @@index([active])
+  @@map("amb_products")
+}
+
+// Links a real Meta campaign to an AmbProduct. status SUGGESTED means an
+// AI-assisted guess awaiting human confirmation (never auto-applied to a
+// wrong product); MAPPED means a human confirmed it or entered it manually.
+// A campaign with no row here is "Unmapped" (surfaced, never blocking).
+model AmbProductCampaignMap {
+  id               Int        @id @default(autoincrement())
+  amb_product_id   Int
+  amb_product      AmbProduct @relation(fields: [amb_product_id], references: [id], onDelete: Cascade)
+  ad_account_id    String
+  campaign_id      String
+  campaign_name    String?
+  status           String     @default("MAPPED") // MAPPED | SUGGESTED
+  match_source     String     @default("MANUAL") // MANUAL | AI_SUGGESTED
+  match_confidence Float?
+  ai_reason        String?
+  created_by_id    Int?
+  created_by       User?      @relation(fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at       DateTime   @default(now())
+  updated_at       DateTime   @updatedAt
+
+  @@unique([ad_account_id, campaign_id])
+  @@index([amb_product_id])
+  @@map("amb_product_campaign_map")
+}
+
+// One backend sync cycle (scheduled every 15 min, or manual). Records what
+// actually happened so the UI can show Last/Next/Status honestly.
+model AmbSyncRun {
+  id                 Int       @id @default(autoincrement())
+  trigger            String    @default("SCHEDULED") // SCHEDULED | MANUAL
+  status             String    @default("RUNNING") // RUNNING | SUCCESS | PARTIAL | FAILED
+  ad_account_id      String?
+  account_currency   String?
+  started_at         DateTime  @default(now())
+  finished_at        DateTime?
+  snapshot_rows      Int       @default(0)
+  adsdaily_refreshed Int       @default(0) // rows written into the EXISTING AdsDailyMetric by the piggy-backed runSync
+  error              String?
+  created_at         DateTime  @default(now())
+
+  snapshots MetaPerformanceSnapshot[]
+
+  @@index([started_at])
+  @@map("amb_sync_runs")
+}
+
+// Append-only. One row per (sync cycle, level, entity, insights-day). NEVER
+// updated or deleted — this is the historical trend store the whole module
+// analyses over. Budgets are stored in MAJOR account-currency units (EGP),
+// already divided from Meta's minor-unit API values.
+model MetaPerformanceSnapshot {
+  id            Int        @id @default(autoincrement())
+  sync_run_id   Int
+  sync_run      AmbSyncRun @relation(fields: [sync_run_id], references: [id], onDelete: Cascade)
+  snapshot_at   DateTime   @default(now())
+  ad_account_id String
+  level         String // campaign | adset | ad
+  date_start    String // the insights day this row covers (YYYY-MM-DD)
+  date_stop     String
+
+  campaign_id          String?
+  campaign_name        String?
+  campaign_status      String? // effective_status from Meta
+  campaign_objective   String?
+  campaign_budget      Float? // CBO daily/lifetime budget in EGP, null for ABO campaigns
+  campaign_budget_type String? // DAILY | LIFETIME | null
+  adset_id             String?
+  adset_name           String?
+  adset_status         String?
+  adset_budget         Float?
+  adset_budget_type    String?
+  ad_id                String?
+  ad_name              String?
+  ad_status            String?
+  creative_id          String?
+
+  spend             Float?
+  impressions       Int?
+  reach             Int?
+  frequency         Float?
+  clicks            Int?
+  ctr               Float?
+  cpc               Float?
+  cpm               Float?
+  meta_purchases    Int?
+  meta_revenue      Float?
+  cost_per_purchase Float?
+  conversion_rate   Float? // purchases / clicks * 100
+  roas              Float?
+  results           Int?
+  result_indicator  String?
+  actions_json      String? // raw Meta actions array (JSON) — kept for later re-derivation, never shown raw
+
+  created_at DateTime @default(now())
+
+  @@index([snapshot_at])
+  @@index([ad_account_id, snapshot_at])
+  @@index([level, campaign_id])
+  @@index([adset_id])
+  @@index([ad_id])
+  @@map("meta_performance_snapshots")
+}
+
+// A structured recommendation. Numbers/classification/priority/confidence/
+// risk/data-sufficiency are all deterministic (Metrics + Economics + Rule
+// engines). `reason` is the ONLY field Claude authors; source=FALLBACK means
+// the Claude call failed and a deterministic template was used instead.
+model AmbRecommendation {
+  id             Int         @id @default(autoincrement())
+  batch_id       String // groups every recommendation from one analysis run
+  ad_account_id  String
+  amb_product_id Int?
+  amb_product    AmbProduct? @relation(fields: [amb_product_id], references: [id], onDelete: SetNull)
+  product_name   String?
+
+  level         String // product | campaign | adset | ad
+  entity_id     String? // Meta id of the entity the action targets (campaign/adset/ad id); null for level=product
+  entity_name   String?
+  campaign_id   String?
+  campaign_name String?
+  adset_id      String?
+  adset_name    String?
+  ad_id         String?
+  ad_name       String?
+
+  decision    String // SCALE|HOLD|MONITOR|PAUSE|REDUCE_BUDGET|INCREASE_BUDGET|DUPLICATE_WINNER|PAUSE_LOSER|TEST_NEW_CREATIVE|TEST_NEW_HOOK|TEST_NEW_AUDIENCE
+  action_type String // PAUSE|RESUME|INCREASE_BUDGET|DECREASE_BUDGET  → executable; anything else stored as DRAFT_* and never auto-executed
+  executable  Boolean @default(false) // action_type in the execution whitelist AND rule engine passed
+
+  current_metrics_json String?
+  target_metrics_json  String?
+  current_budget       Float?
+  recommended_budget   Float?
+  budget_change_pct    Float?
+
+  reason            String? // Claude-authored (or deterministic fallback)
+  reason_facts_json String? // the deterministic facts the reason must be grounded in
+  rule_engine_json  String? // {passed: bool, checks: [{name, ok, detail}], blockers: [...]}
+
+  confidence       String @default("LOW") // HIGH | MEDIUM | LOW
+  risk_level       String @default("MEDIUM") // LOW | MEDIUM | HIGH
+  data_sufficiency String @default("WEAK") // STRONG | MODERATE | WEAK
+  priority         String @default("P3") // P0 | P1 | P2 | P3
+
+  time_window_from  String?
+  time_window_to    String?
+  time_window_label String?
+  source            String  @default("AI") // AI | FALLBACK
+
+  status         String    @default("PENDING") // PENDING | APPROVED | REJECTED | EXECUTED | EXPIRED | SUPERSEDED | NEEDS_REANALYSIS
+  reviewed_by_id Int?
+  reviewed_by    User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
+  reviewed_at    DateTime?
+  edited_json    String? // owner "Edit Action" overrides applied before execution
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  actions AmbAction[]
+
+  @@index([status])
+  @@index([batch_id])
+  @@index([ad_account_id, created_at])
+  @@index([priority])
+  @@map("amb_recommendations")
+}
+
+// One real execution attempt against Meta (post-approval, or by autopilot).
+// Full audit row: exactly what was sent, exactly what Meta returned/errored.
+model AmbAction {
+  id                Int               @id @default(autoincrement())
+  recommendation_id Int
+  recommendation    AmbRecommendation @relation(fields: [recommendation_id], references: [id], onDelete: Cascade)
+  mode              String // ADVISORY | APPROVAL | AUTOPILOT — the mode in effect when this ran
+  action_type       String // PAUSE | RESUME | INCREASE_BUDGET | DECREASE_BUDGET
+  ad_account_id     String
+  level             String
+  entity_id         String
+  entity_name       String?
+  campaign_id       String?
+  adset_id          String?
+  ad_id             String?
+
+  old_value_json      String? // {status} or {budget, budgetType}
+  new_value_json      String?
+  ai_reason           String?
+  ai_confidence       String?
+  metrics_before_json String?
+
+  approval_status    String  @default("APPROVED") // APPROVED (Approval mode) | AUTO (Autopilot)
+  execution_status   String  @default("PENDING") // PENDING | REVALIDATING | EXECUTED | FAILED | ABORTED_REANALYSIS
+  revalidation_json  String? // {ok, reason, metricDrift:{...}} from the pre-execute recheck
+  meta_request_json  String?
+  meta_response_json String?
+  meta_error         String?
+
+  executed_by_id Int?
+  executed_by    User?     @relation(fields: [executed_by_id], references: [id], onDelete: SetNull)
+  created_at     DateTime  @default(now())
+  executed_at    DateTime?
+
+  results AmbActionResult[]
+
+  @@index([execution_status])
+  @@index([recommendation_id])
+  @@index([created_at])
+  @@map("amb_actions")
+}
+
+// Outcome evaluation checkpoints for an executed action (6h / 12h / 24h).
+// A background job fills each in when its due_at passes, comparing a
+// before-snapshot window against an after-snapshot window (all from
+// meta_performance_snapshots — deterministic, never a Claude guess).
+model AmbActionResult {
+  id           Int       @id @default(autoincrement())
+  action_id    Int
+  action       AmbAction @relation(fields: [action_id], references: [id], onDelete: Cascade)
+  checkpoint   String // H6 | H12 | H24
+  due_at       DateTime
+  evaluated_at DateTime?
+
+  cpa_before           Float?
+  cpa_after            Float?
+  roas_before          Float?
+  roas_after           Float?
+  spend_before         Float?
+  spend_after          Float?
+  purchases_before     Int?
+  purchases_after      Int?
+  delivered_cpa_before Float?
+  delivered_cpa_after  Float?
+  profit_before        Float?
+  profit_after         Float?
+
+  result_class String? // SUCCESSFUL | NEUTRAL | FAILED — null until evaluated
+  notes_json   String?
+  created_at   DateTime @default(now())
+
+  @@unique([action_id, checkpoint])
+  @@index([due_at])
+  @@map("amb_action_results")
+}
+
+// In-app notifications for AI Media Buyer.
+model AmbAlert {
+  id                Int      @id @default(autoincrement())
+  severity          String // CRITICAL | OPPORTUNITY | WARNING | INFO
+  category          String // CPA_LIMIT | SCALE_READY | CREATIVE_FATIGUE | WASTED_SPEND | SYNC | EXECUTION | GENERIC
+  title             String
+  message           String
+  ad_account_id     String?
+  level             String?
+  entity_id         String?
+  entity_name       String?
+  campaign_id       String?
+  recommendation_id Int?
+  dedupe_key        String?  @unique // stops the same live condition spamming a new alert every cycle
+  read              Boolean  @default(false)
+  created_at        DateTime @default(now())
+
+  @@index([read, created_at])
+  @@map("amb_alerts")
+}
+
+// Per-creative semantic analysis for AI Media Buyer's Winners / creative
+// intelligence. Populated by services/amb/creativeAnalysis.js, which
+// fetches the REAL creative (body/title/CTA/object_story_spec) from the
+// Graph API and does deterministic-first extraction + a single text-only
+// Claude call for the fields that need judgment — the same
+// deterministic-first, source-tagged approach as the existing
+// services/adAnalysis.js (competitor ads), reused here for OWN creatives.
+// status: ANALYZED (real labels) | INSUFFICIENT_DATA (creative has no usable
+// text) | NOT_ANALYZED (not attempted yet) | FAILED. Labels are NEVER
+// invented — a field is null when nothing in the creative supports it.
+// Cached by (creative_id, model_version); model_version bumps invalidate.
+model AmbCreativeAnalysis {
+  id              Int      @id @default(autoincrement())
+  ad_account_id   String
+  creative_id     String
+  model_version   String   @default("amb-creative-v1")
+  status          String   @default("NOT_ANALYZED")
+  source          String?  // DETERMINISTIC | RULE_BASED | AI_ANALYZED | MIXED
+  hook            String?
+  hook_types_json String?  // JSON array from the shared HOOK_TYPES vocab
+  selling_angle   String?
+  problem         String?
+  main_benefit    String?
+  product_feature String?
+  audience        String?
+  offer           String?
+  cta             String?
+  creative_type   String?
+  raw_text        String?  // the creative text actually analyzed (audit / never re-derive)
+  fields_json     String?  // full structured object with a per-field source tag
+  analyzed_at     DateTime?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([creative_id, model_version])
+  @@index([ad_account_id])
+  @@map("amb_creative_analysis")
 }

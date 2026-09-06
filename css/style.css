@@ -903,3 +903,77 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 @media (max-width: 900px) {
   .eo-bar-label { width: 60px; font-size: 12px; }
 }
+
+/* ============================================================
+   AI Media Buyer — a module inside AI Intelligence. All rules
+   scoped under .amb- so nothing else in the app is affected.
+   ============================================================ */
+.amb-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+.amb-tab { padding: 9px 14px; font-size: 13.5px; font-weight: 600; color: var(--text-dim); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; border-radius: 8px 8px 0 0; }
+.amb-tab:hover { color: var(--text); background: var(--bg-elevated); }
+.amb-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.amb-tab .amb-tab-count { display: inline-block; min-width: 18px; padding: 0 5px; margin-inline-start: 6px; font-size: 11px; line-height: 18px; text-align: center; border-radius: 9px; background: var(--red-bg); color: var(--red); }
+
+.amb-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.amb-dot.GREEN { background: var(--green); } .amb-dot.YELLOW { background: var(--yellow); }
+.amb-dot.RED { background: var(--red); } .amb-dot.BLUE { background: var(--accent); }
+.amb-dot.GRAY { background: var(--gray); }
+
+.badge.blue { background: var(--accent-dim); color: var(--accent); }
+.badge.purple { background: var(--purple-bg); color: var(--purple); }
+
+.amb-pri { font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 6px; }
+.amb-pri.P0 { background: var(--red-bg); color: var(--red); }
+.amb-pri.P1 { background: var(--yellow-bg); color: var(--yellow); }
+.amb-pri.P2 { background: var(--accent-dim); color: var(--accent); }
+.amb-pri.P3 { background: var(--gray-bg); color: var(--gray); }
+
+.amb-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.amb-kpi { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.amb-kpi .amb-kpi-label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+.amb-kpi .amb-kpi-value { font-size: 21px; font-weight: 800; letter-spacing: -0.5px; }
+.amb-kpi .amb-kpi-value.pos { color: var(--green); } .amb-kpi .amb-kpi-value.neg { color: var(--red); }
+
+.amb-status-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.amb-status-card { border-radius: var(--radius); padding: 14px 16px; border: 1px solid var(--border); }
+.amb-status-card .n { font-size: 24px; font-weight: 800; }
+.amb-status-card.win { background: var(--green-bg); border-color: transparent; }
+.amb-status-card.mon { background: var(--yellow-bg); border-color: transparent; }
+.amb-status-card.act { background: var(--red-bg); border-color: transparent; }
+.amb-status-card.scale { background: var(--accent-dim); border-color: transparent; }
+
+.amb-tree-node { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: var(--bg-card); }
+.amb-tree-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; }
+.amb-tree-row:hover { background: var(--bg-elevated); }
+.amb-tree-caret { width: 14px; flex-shrink: 0; color: var(--text-faint); transition: transform .15s; }
+.amb-tree-caret.open { transform: rotate(90deg); }
+.amb-tree-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.amb-tree-metrics { display: flex; gap: 14px; font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
+.amb-tree-metrics b { color: var(--text); }
+.amb-tree-children { padding: 4px 10px 10px 26px; display: none; }
+.amb-tree-children.open { display: block; }
+
+.amb-rec { border: 1px solid var(--border); border-inline-start: 3px solid var(--gray); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; background: var(--bg-card); }
+.amb-rec.P0 { border-inline-start-color: var(--red); }
+.amb-rec.P1 { border-inline-start-color: var(--yellow); }
+.amb-rec.P2 { border-inline-start-color: var(--accent); }
+.amb-rec-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.amb-rec-title { font-weight: 700; font-size: 14px; }
+.amb-rec-metrics { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--text-dim); margin: 8px 0; }
+.amb-rec-metrics b { color: var(--text); }
+.amb-rec-reason { font-size: 13px; line-height: 1.7; margin: 8px 0; }
+.amb-rec-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.amb-rec-checks { margin-top: 8px; font-size: 12px; }
+.amb-rec-checks .ok { color: var(--green); } .amb-rec-checks .bad { color: var(--red); }
+
+.amb-winner-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--green-bg); margin-bottom: 8px; }
+.amb-winner-card .amb-winner-trophy { font-size: 20px; }
+.amb-winner-card .amb-winner-body { flex: 1; min-width: 0; }
+.amb-winner-card .amb-winner-name { font-weight: 700; font-size: 13.5px; }
+.amb-winner-card .amb-winner-meta { font-size: 12px; color: var(--text-dim); }
+
+.amb-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 16px; }
+.amb-field-grid .field { margin: 0; }
+.amb-derived { background: var(--bg-elevated); border: 1px dashed var(--border); border-radius: 10px; padding: 12px 14px; font-size: 13px; }
+.amb-derived .amb-derived-row { display: flex; justify-content: space-between; padding: 4px 0; }
+.amb-derived .amb-derived-row b { font-variant-numeric: tabular-nums; }
