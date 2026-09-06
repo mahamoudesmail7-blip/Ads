@@ -1,9 +1,11 @@
-// ai-media-buyer.js — page controller for ai-media-buyer.html. A new module
-// INSIDE AI Intelligence (the existing ai-intelligence.html is untouched).
-// Every number shown here is computed by the backend's deterministic engines
-// (backend/src/services/amb/*). Claude only ever writes the `reason` text and
-// the executive summary. Nothing reaches the live Meta ad account without an
-// explicit "Approve & Execute" click and a backend revalidation.
+// ai-media-buyer.js — page controller for ai-media-buyer.html.
+//
+// UI redesign only: a clean, premium light dashboard. Every backend call,
+// approval function, Meta action, recommendation-lifecycle rule and data
+// model is UNCHANGED from before — the same endpoints, the same
+// approve/reject/edit/dry-run/execute flow, the same winner hierarchy.
+// Advanced/technical detail now lives inside "التفاصيل" instead of on the
+// main cards.
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 
@@ -16,7 +18,7 @@ function fmtNum(v, d = 0) {
 }
 function fmtEGP(v, d = 0) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
-  return `${fmtNum(v, d)} ج`;
+  return `${fmtNum(v, d)} ج.م`;
 }
 function fmtPct(v, d = 1) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
@@ -24,22 +26,57 @@ function fmtPct(v, d = 1) {
 }
 function fmtX(v, d = 2) {
   if (v === null || v === undefined || Number.isNaN(Number(v))) return '—';
-  return `${fmtNum(v, d)}×`;
+  return `${fmtNum(v, d)}x`;
 }
 function fmtDT(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' });
 }
+function timeAgo(iso) {
+  if (!iso) return '';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'الآن';
+  if (mins < 60) return `منذ ${mins} دقيقة`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `منذ ${hrs} ساعة`;
+  return `منذ ${Math.round(hrs / 24)} يوم`;
+}
 
-const TABS = [
-  { key: 'overview', label: 'نظرة عامة', panel: 'ambTabOverview', render: renderOverview },
-  { key: 'products', label: 'المنتجات', panel: 'ambTabProducts', render: renderProducts },
-  { key: 'campaigns', label: 'تحليل الحملات', panel: 'ambTabCampaigns', render: renderCampaigns },
-  { key: 'winners', label: 'الأبطال', panel: 'ambTabWinners', render: renderWinners },
-  { key: 'plan', label: 'خطة عمل AI', panel: 'ambTabPlan', render: renderPlan, countKey: 'pendingCriticalRecs' },
-  { key: 'history', label: 'سجل التنفيذ', panel: 'ambTabHistory', render: renderHistory },
-  { key: 'settings', label: 'الإعدادات', panel: 'ambTabSettings', render: renderSettings },
+// ---- tiny inline icon set (stroke, currentColor) ----
+const IC = {
+  home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 5-7"/>',
+  box: '<path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/>',
+  bulb: '<path d="M9 18h6"/><path d="M10 21h4"/><path d="M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  doc: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V3a2 2 0 1 1 4 0v.1A1.6 1.6 0 0 0 19.4 7l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4z"/>',
+  money: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
+  cart: '<circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/><path d="M2 3h3l2.4 12.2A2 2 0 0 0 9.4 17h8.5a2 2 0 0 0 2-1.6L21 7H6"/>',
+  wallet: '<path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M16 12h4"/>',
+  rocket: '<path d="M5 15c-1 1-1.5 4-1.5 4s3-.5 4-1.5"/><path d="M9 12a12 12 0 0 1 8-9 12 12 0 0 1-2 11l-4 3-3-3z"/><circle cx="14" cy="9" r="1.5"/>',
+  stop: '<circle cx="12" cy="12" r="9"/><path d="M9 9h6v6H9z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
+  cal: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/>',
+  meta: '<path d="M4 15c2.5-8 6-8 8 0 2-8 5.5-8 8 0"/>',
+};
+function ic(name, cls = 'ic') {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${IC[name] || ''}</svg>`;
+}
+
+const NAV = [
+  { key: 'home', label: 'الرئيسية', icon: 'home' },
+  { key: 'campaigns', label: 'أداء الإعلانات', icon: 'chart' },
+  { key: 'products', label: 'المنتجات', icon: 'box' },
+  { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
+  { key: 'winners', label: 'الكرياتيفات', icon: 'image' },
+  { key: 'history', label: 'التقارير', icon: 'doc' },
+  { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
 
 const WINDOWS = [
   { key: 'today', label: 'اليوم' },
@@ -48,94 +85,97 @@ const WINDOWS = [
   { key: 'last7', label: 'آخر 7 أيام' },
 ];
 
-let state = {
-  tab: 'overview',
+const state = {
+  tab: 'home',
   window: 'today',
-  overview: null,
   isAdmin: false,
+  me: null,
+  home: null,       // cached home payload
+  filter: 'all',
+  search: '',
+  pendingCount: 0,
 };
 
 // ---------------------------------------------------------------------------
 // Shell
 // ---------------------------------------------------------------------------
 async function init() {
-  UI.renderSidebar('aimediabuyer');
   try {
-    const me = await api.get('/api/auth/me');
-    state.isAdmin = me.role === 'ADMIN' || me.is_owner;
+    state.me = await api.get('/api/auth/me');
+    state.isAdmin = state.me.role === 'ADMIN' || state.me.is_owner;
   } catch { /* api-client handles 401 */ }
 
-  $('ambBtnSyncNow').onclick = syncNow;
   $('ambDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'ambDrawerOverlay') closeDrawer(); });
-
   window.addEventListener('hashchange', route);
-  await loadSyncStrip();
+  renderNav();
   route();
 }
 
-function renderTabs() {
-  $('ambTabs').innerHTML = TABS.map((t) => {
-    const count = t.countKey && state.overview?.status?.[t.countKey] ? `<span class="amb-tab-count">${state.overview.status[t.countKey]}</span>` : '';
-    return `<button class="amb-tab ${t.key === state.tab ? 'active' : ''}" data-tab="${t.key}">${E(t.label)}${count}</button>`;
-  }).join('');
-  $('ambTabs').querySelectorAll('[data-tab]').forEach((b) => {
-    b.onclick = () => { location.hash = b.dataset.tab; };
+function renderNav() {
+  const u = state.me || {};
+  const initials = (u.name || 'U').trim().split(/\s+/).map((x) => x[0]).slice(0, 2).join('').toUpperCase();
+  $('ambNav').innerHTML = `
+    <div class="amb-nav-brand">
+      <div class="logo">${ic('bulb', 'ic')}</div>
+      <div><div class="t">AI Media Buyer</div><div class="s">قرارات أذكى. ربح أعلى.</div></div>
+    </div>
+    <div class="amb-nav-list" id="ambNavList">
+      ${NAV.map((n) => `<button class="amb-nav-item ${n.key === state.tab ? 'active' : ''}" data-nav="${n.key}">
+        ${ic(n.icon)}<span>${E(n.label)}</span>
+        ${n.badge && state.pendingCount ? `<span class="amb-nav-count">${state.pendingCount}</span>` : ''}
+      </button>`).join('')}
+    </div>
+    <div class="amb-nav-foot">
+      <div class="amb-nav-user">
+        <div class="av">${E(initials)}</div>
+        <div><div class="nm">${E(u.name || '—')}</div><div class="rl">${E({ ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' }[u.role] || u.role || '')}</div></div>
+      </div>
+      <a class="amb-nav-link" href="ai-intelligence.html">🧠 AI Intelligence</a>
+      <a class="amb-nav-link" href="index.html">↩︎ الرجوع للنظام</a>
+    </div>`;
+  $('ambNavList').querySelectorAll('[data-nav]').forEach((b) => {
+    b.onclick = () => { location.hash = b.dataset.nav; };
   });
 }
 
 function route() {
-  const hash = (location.hash || '#overview').slice(1);
-  const tab = TABS.find((t) => t.key === hash) ? hash : 'overview';
-  state.tab = tab;
-  renderTabs();
-  for (const t of TABS) $(t.panel).hidden = t.key !== tab;
-  const t = TABS.find((x) => x.key === tab);
-  const panel = $(t.panel);
-  panel.innerHTML = '<div class="faint" style="padding:20px;">جارِ التحميل…</div>';
-  t.render(panel).catch((err) => {
-    panel.innerHTML = `<div class="empty-state">⚠️ ${E(err.message || err)}</div>`;
-  });
+  const hash = (location.hash || '#home').slice(1);
+  state.tab = NAV.find((n) => n.key === hash) ? hash : 'home';
+  renderNav();
+  const view = $('ambView');
+  view.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
+  const run = state.tab === 'home' ? renderHome : (panel) => renderSection(panel, state.tab);
+  run(view).catch((err) => { view.innerHTML = `<div class="amb-empty">⚠️ ${E(err.message || err)}</div>`; });
 }
 
-async function loadSyncStrip() {
-  try {
-    const s = await api.get('/api/ai-media-buyer/sync/status');
-    const last = s.lastRun;
-    const statusAr = { SUCCESS: 'تمت بنجاح', RUNNING: 'جارية', PARTIAL: 'جزئية', FAILED: 'فشلت' }[last?.status] || '—';
-    $('ambSyncText').innerHTML = last
-      ? `آخر مزامنة: <b>${fmtDT(last.at)}</b> · الحالة: <b>${E(statusAr)}</b> · المزامنة الجاية: <b>${fmtDT(s.nextSyncAt)}</b> · كل ${s.intervalMinutes} دقيقة${last.snapshotRows != null ? ` · ${last.snapshotRows} صف snapshot` : ''}`
-      : 'لسه مفيش مزامنة — اضغط "مزامنة الآن" أو استنى الجدولة.';
-  } catch (err) {
-    $('ambSyncText').textContent = `⚠️ ${err.message}`;
-  }
+/** Deep section wrapper — light header + the existing renderer (unchanged) into a panel. */
+async function renderSection(view, key) {
+  view.innerHTML = `
+    <div class="amb-head">
+      <div>
+        <h1>${E(SECTION_TITLE[key] || key)}</h1>
+        <div class="sub">جزء من AI Media Buyer — نفس البيانات والمنطق، عرض مبسّط.</div>
+      </div>
+      <div class="amb-head-tools">${key !== 'settings' ? windowChips() : ''}</div>
+    </div>
+    <div id="ambSecPanel"></div>`;
+  if (key !== 'settings') wireWindowChips(() => route());
+  await SECTIONS[key]($('ambSecPanel'));
 }
 
-async function syncNow() {
-  const btn = $('ambBtnSyncNow');
-  btn.disabled = true;
-  btn.textContent = '… بيزامن';
-  try {
-    const r = await api.post('/api/ai-media-buyer/sync/run', {});
-    if (r.skipped) UI.toast(`المزامنة اتخطت: ${r.skipped}`, 'error');
-    else UI.toast(`✅ اتزامن ${r.snapshotRows} صف (+${r.adsDailyRefreshed} في AI Intelligence)`);
-    await loadSyncStrip();
-    route();
-  } catch (err) {
-    UI.toast(err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '🔄 مزامنة الآن';
-  }
+function windowChips() {
+  return `<div class="amb-filters" style="margin:0;">${WINDOWS.map((w) => `<button class="amb-fbtn ${w.key === state.window ? 'active' : ''}" data-w="${w.key}">${E(w.label)}</button>`).join('')}</div>`;
 }
-
+function wireWindowChips(onChange) {
+  document.querySelectorAll('[data-w]').forEach((b) => { b.onclick = () => { state.window = b.dataset.w; onChange(); }; });
+}
+// legacy helper kept for deep renderers that call it
 function windowPicker(onChange) {
   const wrap = document.createElement('div');
-  wrap.className = 'toolbar';
+  wrap.className = 'amb-filters';
   wrap.style.marginBottom = '14px';
-  wrap.innerHTML = WINDOWS.map((w) => `<button class="btn secondary small ${w.key === state.window ? '' : ''}" data-w="${w.key}" style="${w.key === state.window ? 'background:var(--accent);color:#fff;' : ''}">${E(w.label)}</button>`).join('');
-  wrap.querySelectorAll('[data-w]').forEach((b) => {
-    b.onclick = () => { state.window = b.dataset.w; onChange(); };
-  });
+  wrap.innerHTML = WINDOWS.map((w) => `<button class="amb-fbtn ${w.key === state.window ? 'active' : ''}" data-wp="${w.key}">${E(w.label)}</button>`).join('');
+  wrap.querySelectorAll('[data-wp]').forEach((b) => { b.onclick = () => { state.window = b.dataset.wp; onChange(); }; });
   return wrap;
 }
 
@@ -149,154 +189,512 @@ function openDrawer(html) {
 function closeDrawer() { $('ambDrawerOverlay').classList.remove('open'); }
 
 // ---------------------------------------------------------------------------
-// TAB: Overview
+// HOME — the reference dashboard
 // ---------------------------------------------------------------------------
-async function renderOverview(panel) {
-  const ov = await api.get(`/api/ai-media-buyer/overview?window=${state.window}`);
-  state.overview = ov;
-  renderTabs();
-  $('ambModeBadge').textContent = { ADVISORY: 'وضع استشاري', APPROVAL: 'وضع الموافقة', AUTOPILOT: 'أوتوبايلوت' }[ov.executionMode] || ov.executionMode || '—';
-  $('ambModeBadge').className = 'badge ' + (ov.executionMode === 'AUTOPILOT' ? 'red' : ov.executionMode === 'APPROVAL' ? 'blue' : 'gray');
+async function renderHome(view) {
+  const [ov, recs, hToday, hYest, meta] = await Promise.all([
+    api.get('/api/ai-media-buyer/overview?window=today'),
+    api.get('/api/ai-media-buyer/recommendations'),
+    api.get('/api/ai-media-buyer/hierarchy?window=today').catch(() => null),
+    api.get('/api/ai-media-buyer/hierarchy?window=yesterday').catch(() => null),
+    api.get('/api/meta/status').catch(() => null),
+  ]);
+
+  const active = recs.active || recs.items || [];
+  const resolved = recs.resolved || [];
+  state.pendingCount = active.length;
+  state.home = { ov, active, resolved, hToday, meta };
+  renderNav();
 
   if (!ov.connected) {
-    panel.innerHTML = `<div class="empty-state">${E(ov.message || 'اربط حساب Meta Ads من صفحة AI Intelligence الأول.')}</div>`;
+    view.innerHTML = `${homeHeader(ov, meta)}<div class="amb-panel amb-empty">${E(ov.message || 'اربط حساب Meta Ads من صفحة AI Intelligence الأول.')}</div>`;
+    wireHeader();
     return;
   }
-  const k = ov.kpis, st = ov.status;
-  panel.innerHTML = `
-    <div id="ambHealthMount"></div>
-    <div id="ambAttentionMount"></div>
 
-    ${ov.aiSays ? `<div class="card" style="margin-bottom:18px; border-color:var(--accent-dim);">
-      <div class="section-title" style="margin-top:0;">🤖 AI Media Buyer بيقول</div>
-      <div style="font-size:13.5px; line-height:1.8;">${E(ov.aiSays)}</div>
-    </div>` : ''}
+  const aT = hToday?.accountAvg || {};
+  const aY = hYest?.accountAvg || {};
+  const k = ov.kpis || {};
+  const spend = aT.spend ?? k.spendToday;
+  const cpa = aT.cpa ?? k.avgCpa;
+  const orders = aT.purchases ?? (k.avgCpa ? Math.round((k.spendToday || 0) / k.avgCpa) : null);
+  const net = k.netProfitToday;
 
-    <div class="amb-kpi-grid">
-      ${kpi('صرف اليوم', fmtEGP(k.spendToday))}
-      ${kpi('إيراد اليوم', fmtEGP(k.revenueToday))}
-      ${kpi('صافي ربح اليوم', k.netProfitToday === null ? '—' : fmtEGP(k.netProfitToday), k.netProfitToday === null ? '' : k.netProfitToday >= 0 ? 'pos' : 'neg')}
-      ${kpi('متوسط CPA', fmtEGP(k.avgCpa))}
-      ${kpi('CPA المسلّم', k.deliveredCpa === null ? '—' : fmtEGP(k.deliveredCpa))}
-      ${kpi('ROAS', fmtX(k.roas))}
-      ${kpi('حملات نشطة', fmtNum(k.activeCampaigns))}
-      ${kpi('إعلانات نشطة', fmtNum(k.activeAds))}
+  view.innerHTML = `
+    ${homeHeader(ov, meta)}
+    <div class="amb-kpis">
+      ${kpiCard('إجمالي الإنفاق', fmtEGP(spend), 'money', 'red', trend(spend, aY.spend, false))}
+      ${kpiCard('متوسط CPA', fmtEGP(cpa), 'target', 'purple', trend(cpa, aY.cpa, true))}
+      ${kpiCard('الطلبات', fmtNum(orders), 'cart', 'blue', trend(orders, aY.purchases, false))}
+      ${kpiCard('صافي الربح', net == null ? '—' : fmtEGP(net), 'wallet', 'green', '')}
     </div>
 
-    <div class="amb-status-cards">
-      <div class="amb-status-card win"><div class="n">${st.winners}</div><div>🟢 رابحة</div></div>
-      <div class="amb-status-card mon"><div class="n">${st.needsMonitoring}</div><div>🟡 تحتاج متابعة</div></div>
-      <div class="amb-status-card act"><div class="n">${st.needsImmediateAction}</div><div>🔴 تدخل فوري</div></div>
-      <div class="amb-status-card scale"><div class="n">${st.scaleOpportunities}</div><div>🚀 فرص توسّع</div></div>
-    </div>
+    <div class="amb-filters" id="ambFilters"></div>
 
-    <div id="ambReadinessMount"></div>
-
-    <div class="toolbar">
-      <button class="btn" id="ambGoPlan">راجع خطة العمل (${st.pendingCriticalRecs} حرجة)</button>
-      <button class="btn secondary" id="ambGoWinners">الأبطال</button>
-      <button class="btn secondary" id="ambGoCampaigns">تحليل الحملات</button>
-    </div>
-  `;
-  panel.prepend(windowPicker(() => route()));
-  $('ambGoPlan').onclick = () => (location.hash = 'plan');
-  $('ambGoWinners').onclick = () => (location.hash = 'winners');
-  $('ambGoCampaigns').onclick = () => (location.hash = 'campaigns');
-
-  // Command-center widgets load independently so a slow one never blocks the KPIs.
-  loadHealth();
-  loadAttention();
-  loadReadiness();
-}
-
-async function loadHealth() {
-  const mount = $('ambHealthMount');
-  if (!mount) return;
-  try {
-    const h = await api.get(`/api/ai-media-buyer/health?window=${state.window}`);
-    if (!h.connected) return;
-    const cls = h.score >= 80 ? 'pos' : h.score >= 40 ? '' : 'neg';
-    const statusBadge = { HEALTHY: 'green', OK: 'blue', NEEDS_ATTENTION: 'yellow', CRITICAL: 'red' }[h.status] || 'gray';
-    mount.innerHTML = `<div class="card" style="margin-bottom:16px;">
-      <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-        <div style="font-size:30px; font-weight:800; letter-spacing:-1px;" class="${cls === 'pos' ? '' : ''}"><span style="color:var(--${statusBadge === 'green' ? 'green' : statusBadge === 'red' ? 'red' : statusBadge === 'yellow' ? 'yellow' : 'accent'});">${h.score}</span><span class="faint" style="font-size:16px;">/100</span></div>
-        <div>
-          <div style="font-weight:700;">صحة حساب AI Media Buyer</div>
-          <span class="badge ${statusBadge}">${E(h.statusAr)}</span>
+    <div class="amb-grid">
+      <div class="amb-col-main">
+        <div class="amb-section-h">
+          <div class="t">${ic('bulb', 'ic')} القرارات المقترحة من الذكاء الاصطناعي</div>
+          <span class="amb-sort">${resolved.length ? `${resolved.filter((r) => ['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'].includes(r.status)).length} توصية اتحلّت` : ''}</span>
         </div>
-        <div style="flex:1;"></div>
-        <button class="btn secondary small" id="ambHealthToggle">تفاصيل العوامل</button>
+        <div id="ambRecList"></div>
       </div>
-      <div style="margin-top:12px; font-size:12.5px;"><b>أهم أسباب النقص:</b>
-        <ul style="margin:6px 0 0; padding-inline-start:18px; line-height:1.8;">
-          ${h.topReasons.map((t) => `<li>−${t.impact} · ${E(t.label)} — ${E(t.reason)}</li>`).join('')}
-        </ul>
-      </div>
-      <div id="ambHealthFactors" hidden style="margin-top:10px;">
-        <table class="data" style="font-size:12px;"><thead><tr><th>العامل</th><th>الوزن</th><th>النتيجة</th><th>السبب</th></tr></thead>
-        <tbody>${h.factors.map((f) => `<tr><td>${E(f.label)}</td><td>${f.weight}</td><td>${f.scorePct}%</td><td>${E(f.reason)}</td></tr>`).join('')}</tbody></table>
-      </div>
+      <div class="amb-col-side" id="ambSide"></div>
     </div>`;
-    $('ambHealthToggle').onclick = () => { const el = $('ambHealthFactors'); el.hidden = !el.hidden; };
-  } catch { /* non-fatal */ }
+
+  wireHeader();
+  renderFilters(active);
+  renderRecList(active);
+  renderSide(ov, meta, hToday, active);
 }
 
-const PRI_AR = { P0: 'خسارة فلوس', P1: 'فرصة / بطل', P2: 'تحسين', P3: 'بيانات ناقصة' };
-async function loadAttention() {
-  const mount = $('ambAttentionMount');
-  if (!mount) return;
-  try {
-    const na = await api.get(`/api/ai-media-buyer/needs-attention?window=${state.window}`);
-    if (!na.connected || na.count === 0) {
-      mount.innerHTML = `<div class="card" style="margin-bottom:16px;"><div class="section-title" style="margin-top:0;">🎯 محتاج انتباهك</div><div class="faint" style="font-size:12.5px;">مفيش حاجة عاجلة دلوقتي. ✅</div></div>`;
-      return;
-    }
-    mount.innerHTML = `<div class="card" style="margin-bottom:16px; border-color:var(--accent-dim);">
-      <div class="section-title" style="margin-top:0;">🎯 محتاج انتباهك <span class="faint" style="font-weight:400; font-size:12px;">(${na.count})</span></div>
-      ${na.items.map((it) => `
-        <div class="eo-task-row" data-att-tab="${it.cta?.tab || ''}" data-att-rec="${it.cta?.recId || ''}" style="cursor:${it.cta ? 'pointer' : 'default'};">
-          <span class="amb-pri ${it.priority}">${it.priority}</span>
-          <span class="eo-task-text"><b>${E(it.title)}</b> <span class="faint">— ${E(PRI_AR[it.priority])}</span><br><span class="faint" style="font-size:12px;">${E(it.detail || '')}</span></span>
-          <span class="faint" style="font-size:11.5px; white-space:nowrap;">${E(it.action || '')} ›</span>
-        </div>`).join('')}
+function homeHeader(ov, meta) {
+  const name = (state.me?.name || '').split(/\s+/)[0] || '';
+  const last = ov.syncStatus?.lastRun;
+  const syncOk = last?.status === 'SUCCESS';
+  const acctName = meta?.selectedAdAccount?.name || ov.syncStatus?.selectedAdAccount?.name || 'الحساب المتصل';
+  return `
+    <div class="amb-head">
+      <div>
+        <h1>مرحباً ${E(name)} 👋</h1>
+        <div class="sub">هنا ملخص أداء إعلاناتك اليوم والقرارات المقترحة من الذكاء الاصطناعي</div>
+      </div>
+      <div class="amb-head-tools">
+        <span class="amb-chip ${syncOk ? '' : last?.status === 'FAILED' ? 'err' : 'warn'}"><span class="dot"></span>${last ? `محدّث ${timeAgo(last.at)}` : 'لم تتم مزامنة بعد'}</span>
+        <span class="amb-select" title="نطاق التاريخ">${ic('cal', 'ic')} اليوم</span>
+        <span class="amb-select" title="الحساب الإعلاني">${ic('meta', 'ic')} ${E(acctName)}</span>
+        <button class="amb-iconbtn" id="ambSync" title="مزامنة الآن">${ic('refresh', 'ic')}</button>
+      </div>
     </div>`;
-    mount.querySelectorAll('[data-att-tab]').forEach((row) => {
-      row.onclick = () => { if (row.dataset.attTab) location.hash = row.dataset.attTab; };
-    });
-  } catch { /* non-fatal */ }
+}
+function wireHeader() {
+  const b = $('ambSync');
+  if (b) b.onclick = syncNow;
 }
 
-async function loadReadiness() {
-  const mount = $('ambReadinessMount');
-  if (!mount) return;
+async function syncNow() {
+  const b = $('ambSync');
+  if (b) b.classList.add('busy');
   try {
-    const ar = await api.get('/api/ai-media-buyer/autopilot-readiness');
-    if (!ar.connected) return;
-    mount.innerHTML = `<div class="card" style="margin-bottom:16px;">
-      <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
-        <div style="font-weight:700;">جاهزية الأوتوبايلوت</div>
-        <div style="flex:1; min-width:160px; background:var(--bg-elevated); border-radius:8px; height:12px; overflow:hidden;">
-          <div style="height:100%; width:${ar.readinessPct}%; background:var(--accent);"></div>
+    const r = await api.post('/api/ai-media-buyer/sync/run', {});
+    if (r.skipped) UI.toast(`المزامنة اتخطت: ${r.skipped}`, 'error');
+    else UI.toast(`✅ اتزامن ${r.snapshotRows} صف`);
+  } catch (err) {
+    UI.toast(err.message, 'error');
+  } finally {
+    if (b) b.classList.remove('busy');
+    route();
+  }
+}
+
+function kpiCard(label, value, icon, tone, trendHtml) {
+  const m = /(\d[\d.,]*)\s*(ج\.م|x)?/.exec(value);
+  const num = m ? m[1] : value;
+  const cur = m && m[2] ? m[2] : '';
+  return `<div class="amb-kpi">
+    <div class="k-top"><span class="k-label">${E(label)}</span><span class="k-ic ${tone}">${ic(icon, 'ic')}</span></div>
+    <div class="k-val">${E(num)}${cur ? `<span class="cur">${E(cur)}</span>` : ''}</div>
+    ${trendHtml || ''}
+  </div>`;
+}
+/** lowerIsBetter inverts the good/bad colour (e.g. CPA going down is good). */
+function trend(now, prev, lowerIsBetter) {
+  const a = Number(now), b = Number(prev);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return '';
+  const pct = ((a - b) / Math.abs(b)) * 100;
+  if (Math.abs(pct) < 0.5) return `<div class="k-trend"><span class="muted">ثابت عن أمس</span></div>`;
+  const up = pct > 0;
+  const good = lowerIsBetter ? !up : up;
+  return `<div class="k-trend ${good ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(Math.round(pct))}% <span class="muted">عن أمس</span></div>`;
+}
+
+// ---- filters ----
+const CAT_META = {
+  all: { label: 'الكل', dot: '' },
+  need: { label: 'يحتاج قرار', dot: 'red' },
+  SCALE: { label: 'فرص Scaling', dot: 'green' },
+  PAUSE_CANDIDATE: { label: 'إيقاف', dot: 'red' },
+  NEW_CREATIVE_NEEDED: { label: 'كرياتيف جديد', dot: 'blue' },
+};
+function renderFilters(active) {
+  const counts = {
+    all: active.length,
+    need: active.length,
+    SCALE: active.filter((r) => r.category === 'SCALE').length,
+    PAUSE_CANDIDATE: active.filter((r) => r.category === 'PAUSE_CANDIDATE').length,
+    NEW_CREATIVE_NEEDED: active.filter((r) => r.category === 'NEW_CREATIVE_NEEDED').length,
+  };
+  $('ambFilters').innerHTML = `
+    ${Object.entries(CAT_META).map(([key, m]) => `
+      <button class="amb-fbtn ${state.filter === key ? 'active' : ''}" data-f="${key}">
+        ${m.dot ? `<span class="fdot ${m.dot}"></span>` : ''}${E(m.label)} <span class="fcount">(${counts[key] || 0})</span>
+      </button>`).join('')}
+    <div class="amb-search">${ic('search', 's-ic')}<input type="text" id="ambSearch" placeholder="ابحث عن حملة أو منتج..." value="${E(state.search)}" /></div>`;
+  $('ambFilters').querySelectorAll('[data-f]').forEach((b) => {
+    b.onclick = () => { state.filter = b.dataset.f; renderFilters(state.home.active); renderRecList(state.home.active); };
+  });
+  const s = $('ambSearch');
+  s.oninput = () => { state.search = s.value; renderRecList(state.home.active); };
+  s.onkeydown = (e) => { if (e.key === 'Enter') e.preventDefault(); };
+}
+
+function filteredRecs(active) {
+  let list = active;
+  if (state.filter !== 'all' && state.filter !== 'need') list = list.filter((r) => r.category === state.filter);
+  const q = state.search.trim().toLowerCase();
+  if (q) list = list.filter((r) => [r.entityName, r.campaignName, r.adsetName, r.adName, r.productName].some((x) => (x || '').toLowerCase().includes(q)));
+  const order = { P0: 0, P1: 1, P2: 2, P3: 3 };
+  return [...list].sort((a, b) => (order[a.priority] ?? 9) - (order[b.priority] ?? 9) || new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+function renderRecList(active) {
+  const list = filteredRecs(active);
+  const el = $('ambRecList');
+  if (!el) return;
+  el.innerHTML = list.length ? list.map(recCardV2).join('') : `<div class="amb-panel amb-empty">مفيش توصيات في التصنيف ده دلوقتي.</div>`;
+  el.querySelectorAll('[data-rec]').forEach((b) => {
+    const id = Number(b.dataset.rec);
+    const act = b.dataset.act;
+    if (act === 'approve') b.onclick = () => approveRec(id, b);
+    else if (act === 'reject') b.onclick = () => rejectRec(id);
+    else if (act === 'details') b.onclick = () => showRecDetails(id);
+  });
+}
+
+// ---- compact recommendation card (reference style) ----
+const CHIP = {
+  SCALE: { cls: 'scale', label: 'فرصة Scaling', icon: 'rocket' },
+  PAUSE_CANDIDATE: { cls: 'pause', label: 'إيقاف', icon: 'stop' },
+  NEW_CREATIVE_NEEDED: { cls: 'creative', label: 'كرياتيف جديد', icon: 'bulb' },
+  MONITOR: { cls: 'monitor', label: 'مراقبة', icon: 'chart' },
+  HOLD: { cls: 'optimize', label: 'تثبيت', icon: 'target' },
+};
+const LEVEL_AR = { product: 'منتج', campaign: 'حملة', adset: 'مجموعة إعلانية', ad: 'إعلان' };
+const CONF_AR = { HIGH: ['high', 'ثقة عالية'], MEDIUM: ['med', 'ثقة متوسطة'], LOW: ['low', 'ثقة منخفضة'] };
+
+function shortRec(r) {
+  if (r.currentBudget != null && r.recommendedBudget != null) {
+    return `${r.decision === 'REDUCE_BUDGET' ? 'تقليل' : 'زيادة'} الميزانية من ${fmtEGP(r.currentBudget)} إلى ${fmtEGP(r.recommendedBudget)}`;
+  }
+  return { PAUSE: 'إيقاف العنصر الآن', PAUSE_LOSER: 'إيقاف العنصر الآن', RESUME: 'تشغيل العنصر',
+    DUPLICATE_WINNER: 'تكرار هذا العنصر الرابح في استهداف جديد',
+    TEST_NEW_CREATIVE: 'تجهيز كرياتيف جديد حول نفس الزاوية الرابحة',
+    MONITOR: 'المتابعة وجمع بيانات أكثر قبل أي قرار',
+    HOLD: 'تثبيت الأداء الحالي' }[r.decision] || 'مراجعة الأداء';
+}
+function shortReason(r) {
+  return r.explain?.why || r.explain?.whatHappened || r.reason || '';
+}
+
+function recCardV2(r) {
+  const m = r.currentMetrics || {};
+  const t = r.targetMetrics || {};
+  const chip = CHIP[r.category] || CHIP.MONITOR;
+  const conf = CONF_AR[r.confidence] || CONF_AR.LOW;
+  const canExec = r.executable && r.status === 'PENDING';
+  const paused = r.currentStatus && r.currentStatus !== 'ACTIVE';
+
+  let primary = '';
+  if (canExec) {
+    if (r.category === 'PAUSE_CANDIDATE') primary = `<button class="amb-btn danger" data-rec="${r.id}" data-act="approve">إيقاف الآن</button>`;
+    else primary = `<button class="amb-btn primary" data-rec="${r.id}" data-act="approve">موافقة وتنفيذ</button>`;
+  } else if (r.category === 'NEW_CREATIVE_NEEDED') {
+    primary = `<button class="amb-btn blue" data-rec="${r.id}" data-act="details">إنشاء كرياتيف</button>`;
+  } else {
+    primary = `<button class="amb-btn" data-rec="${r.id}" data-act="details">عرض الخطة</button>`;
+  }
+
+  return `<div class="amb-r">
+    <div class="amb-r-chip ${chip.cls}"><span class="ci">${ic(chip.icon, 'ic')}</span>${E(chip.label)}</div>
+    <div class="amb-r-body">
+      <div class="amb-r-top">
+        <div class="amb-r-thumb">${r.level === 'ad' ? '📢' : r.level === 'adset' ? '🎯' : '🧩'}</div>
+        <div class="amb-r-id">
+          <div class="nm">${E(r.entityName || '—')}</div>
+          <div class="ty">Meta · ${E(LEVEL_AR[r.level] || r.level)}${r.productName ? ` · ${E(r.productName)}` : ''}</div>
         </div>
-        <div style="font-weight:800;">${ar.readinessPct}%</div>
-        <span class="badge ${ar.autopilotEnabled ? 'red' : 'gray'}">${ar.autopilotEnabled ? 'مفعّل ⚠️' : 'مقفول'}</span>
-        <button class="btn secondary small" id="ambReadyToggle">المتطلبات</button>
+        <div class="amb-r-when">${timeAgo(r.createdAt)}</div>
       </div>
-      <div class="faint" style="font-size:11.5px; margin-top:6px;">${E(ar.note)}</div>
-      <div id="ambReadyList" hidden style="margin-top:10px; font-size:12.5px;">
-        ${ar.checklist.map((c) => `<div style="padding:3px 0;"><span style="color:var(--${c.met ? 'green' : 'text-faint'});">${c.met ? '✔' : '○'}</span> ${E(c.label)} <span class="faint">(${E(c.detail)})</span></div>`).join('')}
+      <div class="amb-r-metrics">
+        <div class="m"><div class="ml">CPA</div><div class="mv">${fmtEGP(m.cpa)}</div></div>
+        <div class="m"><div class="ml">الطلبات</div><div class="mv">${fmtNum(m.purchases)}</div></div>
+        <div class="m"><div class="ml">ROAS</div><div class="mv">${fmtX(m.roas)}</div></div>
+        <div class="m"><div class="ml">الإنفاق</div><div class="mv">${fmtEGP(m.spend)}</div></div>
       </div>
-    </div>`;
-    $('ambReadyToggle').onclick = () => { const el = $('ambReadyList'); el.hidden = !el.hidden; };
-  } catch { /* non-fatal */ }
-}
-function kpi(label, value, cls = '') {
-  return `<div class="amb-kpi"><div class="amb-kpi-label">${E(label)}</div><div class="amb-kpi-value ${cls}">${value}</div></div>`;
+      <div class="amb-r-rec">${E(shortRec(r))}</div>
+      ${shortReason(r) ? `<div class="amb-r-reason">${E(shortReason(r))}</div>` : ''}
+      <div class="amb-r-foot">
+        <span class="amb-conf ${conf[0]}">● ${E(conf[1])}</span>
+        ${r.currentStatus ? `<span class="amb-metabadge ${paused ? 'paused' : ''}">${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
+        <div class="amb-r-actions">
+          ${primary}
+          ${r.status === 'PENDING' ? `<button class="amb-btn ghost" data-rec="${r.id}" data-act="reject">رفض</button>` : ''}
+          <button class="amb-btn ghost" data-rec="${r.id}" data-act="details">التفاصيل</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
-// ---------------------------------------------------------------------------
-// TAB: Products
-// ---------------------------------------------------------------------------
+// ---- right column ----
+function renderSide(ov, meta, hToday, active) {
+  const el = $('ambSide');
+  if (!el) return;
+
+  // Block 1 — ad account status
+  const last = ov.syncStatus?.lastRun;
+  const connected = !!(meta?.connected ?? ov.connected);
+  const acctName = meta?.selectedAdAccount?.name || 'الحساب المتصل';
+  const st = !connected ? { c: 'err', t: 'منفصل' }
+    : last?.status === 'RUNNING' ? { c: 'sync', t: 'مزامنة' }
+    : last?.status === 'FAILED' ? { c: 'err', t: 'خطأ' }
+    : { c: 'ok', t: 'نشط' };
+  const acctBlock = `<div class="amb-panel">
+    <h3>حالة الحسابات الإعلانية</h3>
+    ${connected ? `<div class="amb-acc-row"><span class="ai">${ic('meta', 'ic')}</span><span class="an">${E(acctName)}</span><span class="as ${st.c}">${st.t}</span></div>`
+      : `<div class="amb-empty" style="padding:8px 0;">اربط حساب Meta Ads من صفحة AI Intelligence.</div>`}
+    ${last ? `<div class="faint" style="font-size:11px; margin-top:8px;">آخر مزامنة ${timeAgo(last.at)} · ${last.snapshotRows ?? 0} صف</div>` : ''}
+  </div>`;
+
+  // Block 2 — top products today (by CPA asc)
+  const prods = (hToday?.products || [])
+    .filter((p) => p.metrics && p.metrics.cpa != null)
+    .sort((a, b) => a.metrics.cpa - b.metrics.cpa)
+    .slice(0, 4);
+  const prodBlock = `<div class="amb-panel">
+    <h3>أفضل المنتجات اليوم</h3>
+    ${prods.length ? prods.map((p, i) => `<div class="amb-prod-row"><span class="rk">${i + 1}</span><span class="pn">${E(p.name)}</span><span class="pc">CPA ${fmtEGP(p.metrics.cpa)}</span></div>`).join('')
+      : `<div class="amb-empty" style="padding:8px 0;">اربط الحملات بالمنتجات لعرض الأفضل أداءً.</div>`}
+  </div>`;
+
+  // Block 3 — decisions donut
+  const dc = {
+    Scaling: active.filter((r) => r.category === 'SCALE').length,
+    Pause: active.filter((r) => r.category === 'PAUSE_CANDIDATE').length,
+    Creative: active.filter((r) => r.category === 'NEW_CREATIVE_NEEDED').length,
+    Other: active.filter((r) => ['MONITOR', 'HOLD'].includes(r.category)).length,
+  };
+  const donutBlock = `<div class="amb-panel">
+    <h3>توزيع القرارات</h3>
+    <div class="amb-donut-wrap">
+      ${donutSvg(dc, active.length)}
+      <div class="amb-donut-legend">
+        <div class="lg"><span class="sw" style="background:var(--amb-green)"></span> Scaling <span class="lv">${dc.Scaling}</span></div>
+        <div class="lg"><span class="sw" style="background:var(--amb-red)"></span> إيقاف <span class="lv">${dc.Pause}</span></div>
+        <div class="lg"><span class="sw" style="background:var(--amb-blue)"></span> كرياتيف جديد <span class="lv">${dc.Creative}</span></div>
+        ${dc.Other ? `<div class="lg"><span class="sw" style="background:var(--amb-text-faint)"></span> متابعة <span class="lv">${dc.Other}</span></div>` : ''}
+      </div>
+    </div>
+  </div>`;
+
+  el.innerHTML = acctBlock + prodBlock + donutBlock;
+}
+
+function donutSvg(counts, total) {
+  const segs = [
+    ['#15924f', counts.Scaling], ['#d33f3f', counts.Pause], ['#2f6bff', counts.Creative], ['#98a0ad', counts.Other],
+  ].filter(([, v]) => v > 0);
+  const sum = segs.reduce((s, [, v]) => s + v, 0) || 1;
+  const R = 42, C = 2 * Math.PI * R;
+  let offset = 0;
+  const rings = segs.map(([col, v]) => {
+    const len = (v / sum) * C;
+    const el = `<circle r="${R}" cx="54" cy="54" fill="none" stroke="${col}" stroke-width="14" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 54 54)"/>`;
+    offset += len;
+    return el;
+  }).join('');
+  return `<svg class="amb-donut" viewBox="0 0 108 108">
+    <circle r="${R}" cx="54" cy="54" fill="none" stroke="#eef0f3" stroke-width="14"/>
+    ${rings}
+    <text x="54" y="50" text-anchor="middle" font-size="22" font-weight="800" fill="#171e2e">${total}</text>
+    <text x="54" y="66" text-anchor="middle" font-size="10" fill="#98a0ad">قرارات</text>
+  </svg>`;
+}
+
+// ===========================================================================
+// Actions — UNCHANGED behaviour, restyled confirm/toasts only.
+// ===========================================================================
+async function approveRec(id, btn) {
+  const ok = await UI.confirmModal({
+    title: 'موافقة وتنفيذ على Meta',
+    message: 'هيتبعت أمر حقيقي لحساب Meta Ads بعد إعادة تحقّق من الأرقام الحالية. متابعة؟',
+    confirmLabel: 'نفّذ الآن', danger: true,
+  });
+  if (!ok) return;
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api.post(`/api/ai-media-buyer/recommendations/${id}/approve`, {});
+    if (r.ok) UI.toast('✅ اتنفّذ على Meta');
+    else if (r.aborted) UI.toast(`⛔ اتوقف: ${r.message}`, 'error');
+    else UI.toast(r.message || 'ماتنفّذش', 'error');
+  } catch (err) {
+    UI.toast(err.message, 'error');
+    if (btn) btn.disabled = false;
+    return;
+  }
+  route();
+}
+async function rejectRec(id) {
+  try { await api.post(`/api/ai-media-buyer/recommendations/${id}/reject`, {}); UI.toast('اترفضت'); }
+  catch (err) { UI.toast(err.message, 'error'); }
+  route();
+}
+async function editRec(id) {
+  const r = await api.get(`/api/ai-media-buyer/recommendations/${id}`);
+  const val = prompt(`الميزانية المقترحة الجديدة (الحالية ${fmtEGP(r.currentBudget)}، مسموح ±20% لكل أكشن):`, r.recommendedBudget);
+  if (val === null) return;
+  try { await api.patch(`/api/ai-media-buyer/recommendations/${id}`, { recommendedBudget: Number(val) }); UI.toast('✅ اتعدّل'); route(); }
+  catch (err) { UI.toast(err.message, 'error'); }
+}
+async function dryRunRec(id) {
+  openDrawer('<div class="drawer-section faint">بيتحقق من مسار التنفيذ على Meta (بدون أي تغيير)…</div>');
+  try {
+    const d = await api.get(`/api/ai-media-buyer/recommendations/${id}/dry-run`);
+    const verdictAr = { READY: '🟢 جاهز للتنفيذ', WOULD_ABORT_REANALYSIS: '⚠️ هيتوقف — محتاج إعادة تحليل', WOULD_BLOCK_RULES: '🔴 فحص القواعد هيرفض', DRAFT_ONLY: 'مسودة فقط', BLOCKED: '🔴 متوقف' }[d.verdict] || d.verdict;
+    openDrawer(`
+      <div class="drawer-header"><div class="drawer-title">تحقّق من مسار التنفيذ</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+      <div class="drawer-section">
+        <div style="font-weight:800; margin-bottom:8px;">${E(verdictAr)}</div>
+        ${d.note ? `<div class="faint" style="font-size:12.5px; margin-bottom:8px;">${E(d.note)}</div>` : ''}
+        <div class="amb-derived">
+          <div class="amb-derived-row"><span>وصول لـ Meta</span><b>${d.canReachMeta ? 'نعم' : 'لا'}</b></div>
+          ${d.live ? `<div class="amb-derived-row"><span>حالة العنصر الحيّة</span><b>${E(d.live.status || '—')}</b></div>` : ''}
+          ${d.live && d.live.budgetMajor != null ? `<div class="amb-derived-row"><span>الميزانية الحيّة</span><b>${fmtEGP(d.live.budgetMajor)}</b></div>` : ''}
+          ${d.materiality ? `<div class="amb-derived-row"><span>تغيّر مؤثر منذ التوصية؟</span><b>${d.materiality.material ? 'نعم — إعادة تحليل' : 'لا'}</b></div>` : ''}
+          ${d.revalidation ? `<div class="amb-derived-row"><span>إعادة التحقّق من القواعد</span><b>${d.revalidation.passed ? 'نجحت' : 'رفضت'}</b></div>` : ''}
+        </div>
+        ${d.plannedRequest ? `<div class="section-title">الطلب اللي هيتبعت لـ Meta (لو وافقت)</div>
+          <pre style="white-space:pre-wrap; font-size:11.5px; background:var(--amb-surface-2); padding:10px; border-radius:8px;">${E(d.plannedRequest.endpoint)}\n${E(JSON.stringify(d.plannedRequest.body, null, 1))}${d.plannedRequest.humanReadable ? '\n// ' + E(d.plannedRequest.humanReadable) : ''}</pre>` : ''}
+        ${d.revalidation ? `<div class="section-title">فحوصات القواعد</div><div class="amb-rec-checks">${(d.revalidation.checks || []).map((c) => `<div class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✔' : '✖'} ${E(c.name)} — ${E(c.detail)}</div>`).join('')}</div>` : ''}
+        <div class="faint" style="font-size:11.5px; margin-top:10px;">مفيش أي حاجة اتبعتت لـ Meta. ده تحقّق فقط.</div>
+        <div class="toolbar" style="margin-top:12px;"><button class="amb-btn" id="ambDrawerX2">إغلاق</button></div>
+      </div>`);
+    $('ambDrawerX').onclick = closeDrawer;
+    $('ambDrawerX2').onclick = closeDrawer;
+  } catch (err) {
+    openDrawer(`<div class="drawer-section"><div class="amb-empty">⚠️ ${E(err.message)}</div><button class="amb-btn" id="ambDrawerX2">إغلاق</button></div>`);
+    $('ambDrawerX2').onclick = closeDrawer;
+  }
+}
+
+const DECISION_AR = {
+  SCALE: 'توسّع', HOLD: 'تثبيت', MONITOR: 'مراقبة', PAUSE: 'إيقاف', PAUSE_LOSER: 'إيقاف خاسر',
+  REDUCE_BUDGET: 'تقليل ميزانية', INCREASE_BUDGET: 'زيادة ميزانية', DUPLICATE_WINNER: 'تكرار البطل',
+  TEST_NEW_CREATIVE: 'اختبار كرياتيف جديد', TEST_NEW_HOOK: 'اختبار هوك جديد', TEST_NEW_AUDIENCE: 'اختبار جمهور جديد',
+};
+const STATUS_AR = {
+  PENDING: 'بانتظار قرارك', APPROVED: 'موافَق عليها', REJECTED: 'مرفوضة', EXECUTED: 'اتنفّذت',
+  SUPERSEDED: 'محدّثة', NEEDS_REANALYSIS: 'محتاجة إعادة تحليل', EXPIRED: 'منتهية',
+  RESOLVED_EXTERNALLY: 'اتحلّت من Meta', NO_LONGER_APPLICABLE: 'خارج النطاق',
+};
+const STATUS_BADGE = { EXECUTED: 'green', RESOLVED_EXTERNALLY: 'green', NEEDS_REANALYSIS: 'red', NO_LONGER_APPLICABLE: 'gray', PENDING: 'blue' };
+const META_STATUS_AR = { ACTIVE: 'شغّال', PAUSED: 'متوقف', CAMPAIGN_PAUSED: 'الحملة متوقفة', ADSET_PAUSED: 'المجموعة متوقفة', ARCHIVED: 'مؤرشف', DELETED: 'محذوف', DISAPPROVED: 'مرفوض', PENDING_REVIEW: 'تحت المراجعة', IN_PROCESS: 'قيد التجهيز', WITH_ISSUES: 'به مشاكل' };
+const CONF_FULL = { HIGH: 'ثقة عالية', MEDIUM: 'ثقة متوسطة', LOW: 'ثقة منخفضة' };
+const RISK_AR = { LOW: 'مخاطرة منخفضة', MEDIUM: 'مخاطرة متوسطة', HIGH: 'مخاطرة عالية' };
+const DS_AR = { STRONG: 'بيانات قوية', MODERATE: 'بيانات كافية', WEAK: 'بيانات قليلة' };
+
+/** Full details drawer — this is where ALL advanced/technical detail lives now. */
+async function showRecDetails(id) {
+  openDrawer('<div class="drawer-section faint">جارِ التحميل…</div>');
+  const r = await api.get(`/api/ai-media-buyer/recommendations/${id}`);
+  const re = r.ruleEngine || {};
+  const ex = r.explain || {};
+  const m = r.currentMetrics || {};
+  const learning = r.dataSufficiency === 'WEAK';
+
+  let econHtml = '';
+  if (r.ambProductId) {
+    try {
+      const d = await api.get(`/api/ai-media-buyer/products/${r.ambProductId}?window=today`);
+      const e = d.economics || {}, pm = d.metrics || {};
+      econHtml = `
+        <div class="section-title">اقتصاديات المنتج</div>
+        <div class="amb-derived">
+          <div class="amb-derived-row"><span>تكلفة المنتج</span><b>${fmtEGP(e.productCost)}</b></div>
+          <div class="amb-derived-row"><span>سعر البيع</span><b>${fmtEGP(e.effectiveSellingPrice)}</b></div>
+          <div class="amb-derived-row"><span>شحن + تغليف + أخرى</span><b>${fmtEGP((e.baseOperationalCost || 0) - (e.productCost || 0))}</b></div>
+          <div class="amb-derived-row"><span>Break-even CPA</span><b>${fmtEGP(e.codBreakEvenCpa ?? e.breakEvenCpa)}</b></div>
+          <div class="amb-derived-row"><span>CPA الحالي</span><b>${fmtEGP(m.cpa)}</b></div>
+          <div class="amb-derived-row"><span>صافي ربح المنتج (اليوم)</span><b>${fmtEGP(pm.netProfit)}</b></div>
+        </div>`;
+    } catch { /* product may not exist — hide the block */ }
+  }
+
+  openDrawer(`
+    <div class="drawer-header"><div class="drawer-title">تفاصيل التوصية</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+    <div class="drawer-section">
+      <div style="font-weight:800; font-size:15px; margin-bottom:4px;">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</div>
+      <div class="faint" style="font-size:12px; margin-bottom:10px;">
+        Meta · ${E(LEVEL_AR[r.level] || r.level)}
+        ${r.campaignName ? ` · حملة: ${E(r.campaignName)}` : ''}${r.adsetName ? ` · مجموعة: ${E(r.adsetName)}` : ''}${r.adName ? ` · إعلان: ${E(r.adName)}` : ''}
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+        <span class="amb-conf ${(CONF_AR[r.confidence] || CONF_AR.LOW)[0]}">${E(CONF_FULL[r.confidence] || r.confidence)}</span>
+        <span class="badge gray">${E(RISK_AR[r.riskLevel] || r.riskLevel)}</span>
+        <span class="badge gray">${E(DS_AR[r.dataSufficiency] || r.dataSufficiency)}</span>
+        <span class="badge ${STATUS_BADGE[r.status] || 'gray'}">${E(STATUS_AR[r.status] || r.status || 'PENDING')}</span>
+        ${r.currentStatus ? `<span class="badge ${r.currentStatus === 'ACTIVE' ? 'blue' : 'yellow'}">Meta: ${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
+      </div>
+      ${learning ? `<div class="amb-derived" style="margin-bottom:10px;">⚠️ الحملة لسه في مرحلة التعلّم — البيانات قليلة، فالقرار مبدئي.</div>` : ''}
+      ${r.resolutionNote ? `<div class="amb-derived" style="margin-bottom:10px;">📌 ${E(r.resolutionNote)}${r.resolvedAt ? ` <span class="faint">(${fmtDT(r.resolvedAt)})</span>` : ''}</div>` : ''}
+
+      <div class="section-title">شرح القرار</div>
+      <div class="amb-drawer-explain">
+        ${ex.whatHappened ? `<div class="row"><b>إيه اللي حصل؟</b><span>${E(ex.whatHappened)}</span></div>` : ''}
+        ${ex.why ? `<div class="row"><b>ليه؟</b><span>${E(ex.why)}</span></div>` : ''}
+        ${ex.whatToDo ? `<div class="row"><b>الإجراء</b><span>${E(ex.whatToDo)}</span></div>` : `<div class="row"><b>الإجراء</b><span>${E(r.reason || '—')}</span></div>`}
+        ${ex.expectedBenefit ? `<div class="row"><b>الفايدة المتوقعة</b><span>${E(ex.expectedBenefit)}</span></div>` : ''}
+        ${ex.risk ? `<div class="row"><b>المخاطرة</b><span>${E(ex.risk)}</span></div>` : ''}
+        ${ex.dataSupport ? `<div class="row"><b>دعم البيانات</b><span>${E(ex.dataSupport)}</span></div>` : ''}
+      </div>
+
+      <div class="section-title">الأرقام الحالية</div>
+      <div class="amb-derived">
+        <div class="amb-derived-row"><span>CPA</span><b>${fmtEGP(m.cpa)}</b></div>
+        <div class="amb-derived-row"><span>الهدف</span><b>${fmtEGP(r.targetMetrics?.targetCpa)}</b></div>
+        <div class="amb-derived-row"><span>الإنفاق</span><b>${fmtEGP(m.spend)}</b></div>
+        <div class="amb-derived-row"><span>الطلبات</span><b>${fmtNum(m.purchases)}</b></div>
+        <div class="amb-derived-row"><span>ROAS</span><b>${fmtX(m.roas)}</b></div>
+        ${r.currentBudget != null ? `<div class="amb-derived-row"><span>الميزانية</span><b>${fmtEGP(r.currentBudget)} ← ${fmtEGP(r.recommendedBudget)} (${r.budgetChangePct > 0 ? '+' : ''}${fmtNum(r.budgetChangePct)}%)</b></div>` : ''}
+      </div>
+
+      ${econHtml}
+
+      <div class="section-title">فحص القواعد</div>
+      <div class="amb-rec-checks">
+        ${(re.checks || []).map((c) => `<div class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✔' : '✖'} ${E(c.name)} — ${E(c.detail)}</div>`).join('') || '<div class="faint">مفيش تفاصيل.</div>'}
+      </div>
+      ${re.blockers && re.blockers.length ? `<div style="margin-top:8px; color:var(--amb-red); font-size:12.5px;">موانع: ${re.blockers.map(E).join(' / ')}</div>` : ''}
+
+      <div class="section-title">معرّفات Meta</div>
+      <div class="faint" style="font-size:11.5px; line-height:1.9;">
+        العنصر: <span class="mono">${E(r.entityId || '—')}</span><br>
+        الحملة: <span class="mono">${E(r.campaignId || '—')}</span>${r.adsetId ? `<br>المجموعة: <span class="mono">${E(r.adsetId)}</span>` : ''}${r.adId ? `<br>الإعلان: <span class="mono">${E(r.adId)}</span>` : ''}
+      </div>
+
+      ${(r.actions || []).length ? `<div class="section-title">سجل التنفيذ</div>${(r.actions || []).map((a) => `<div class="faint" style="font-size:12px;">#${a.id} — ${E(a.status)} — ${fmtDT(a.at)}${a.metaError ? ` — خطأ: ${E(a.metaError)}` : ''}</div>`).join('')}` : ''}
+
+      <div class="toolbar" style="margin-top:16px; gap:8px; flex-wrap:wrap;">
+        ${r.status === 'PENDING' && r.executable ? `<button class="amb-btn" id="ambDrDry">تحقّق من المسار</button>` : ''}
+        ${r.status === 'PENDING' && r.currentBudget != null && r.executable ? `<button class="amb-btn" id="ambDrEdit">تعديل الميزانية</button>` : ''}
+        ${r.status === 'PENDING' ? `<button class="amb-btn ghost" id="ambDrReject">رفض</button>` : ''}
+        <button class="amb-btn" id="ambDrawerX2">إغلاق</button>
+      </div>
+    </div>
+  `);
+  $('ambDrawerX').onclick = closeDrawer;
+  $('ambDrawerX2').onclick = closeDrawer;
+  if ($('ambDrDry')) $('ambDrDry').onclick = () => dryRunRec(id);
+  if ($('ambDrEdit')) $('ambDrEdit').onclick = () => editRec(id);
+  if ($('ambDrReject')) $('ambDrReject').onclick = async () => { closeDrawer(); await rejectRec(id); };
+}
+
+// ===========================================================================
+// DEEP SECTIONS — logic UNCHANGED from before; only the light shell restyles
+// the shared .card / table / tree components around them.
+// ===========================================================================
+
+// ---- Products ----
 async function renderProducts(panel) {
   const [list, catalog] = await Promise.all([
     api.get('/api/ai-media-buyer/products'),
@@ -304,13 +702,13 @@ async function renderProducts(panel) {
   ]);
   panel.innerHTML = `
     <div class="toolbar" style="margin-bottom:14px;">
-      <button class="btn" id="ambNewProduct">+ منتج جديد</button>
-      <select id="ambSeedCatalog" style="max-width:260px;">
+      <button class="amb-btn primary" id="ambNewProduct">+ منتج جديد</button>
+      <select class="amb-select" id="ambSeedCatalog" style="max-width:260px;">
         <option value="">— أنشئ من منتج في الكتالوج —</option>
         ${catalog.map((c) => `<option value="${c.id}">${E(c.product_name)}</option>`).join('')}
       </select>
     </div>
-    ${list.length === 0 ? '<div class="empty-state">مفيش منتجات في AI Media Buyer لسه. اربط كل حملة بمنتج عشان يحسب الربحية الحقيقية.</div>' : `
+    ${list.length === 0 ? '<div class="amb-panel amb-empty">مفيش منتجات في AI Media Buyer لسه. اربط كل حملة بمنتج عشان يحسب الربحية الحقيقية.</div>' : `
       <div class="table-wrap"><table class="data">
         <thead><tr><th>المنتج</th><th>التكلفة</th><th>مضاعف</th><th>سعر البيع</th><th>Break-even CPA</th><th>Target CPA</th><th>حملات</th><th></th></tr></thead>
         <tbody>${list.map(productRow).join('')}</tbody>
@@ -319,11 +717,8 @@ async function renderProducts(panel) {
   $('ambNewProduct').onclick = () => openProductEditor(null);
   $('ambSeedCatalog').onchange = async (e) => {
     if (!e.target.value) return;
-    try {
-      await api.post(`/api/ai-media-buyer/products/from-catalog/${e.target.value}`, {});
-      UI.toast('✅ اتنشأ منتج من الكتالوج');
-      route();
-    } catch (err) { UI.toast(err.message, 'error'); }
+    try { await api.post(`/api/ai-media-buyer/products/from-catalog/${e.target.value}`, {}); UI.toast('✅ اتنشأ منتج من الكتالوج'); route(); }
+    catch (err) { UI.toast(err.message, 'error'); }
   };
   panel.querySelectorAll('[data-prod]').forEach((b) => {
     b.onclick = () => (b.dataset.act === 'edit' ? openProductEditor(Number(b.dataset.prod)) : openProductDashboard(Number(b.dataset.prod)));
@@ -339,12 +734,11 @@ function productRow(p) {
     <td>${fmtEGP(p.targetCpa)}</td>
     <td>${p.mappedCampaignCount}</td>
     <td style="white-space:nowrap;">
-      <button class="btn secondary small" data-prod="${p.id}" data-act="dash">تحليل</button>
-      <button class="btn secondary small" data-prod="${p.id}" data-act="edit">تعديل</button>
+      <button class="amb-btn sm" data-prod="${p.id}" data-act="dash">تحليل</button>
+      <button class="amb-btn sm" data-prod="${p.id}" data-act="edit">تعديل</button>
     </td>
   </tr>`;
 }
-
 const PFIELDS = [
   ['product_name', 'اسم المنتج', 'text'], ['external_product_ref', 'Product ID (اختياري)', 'text'],
   ['product_cost', 'تكلفة المنتج', 'number'], ['pricing_multiplier', 'مضاعف التسعير', 'number'],
@@ -355,12 +749,10 @@ const PFIELDS = [
   ['target_cpa', 'Target CPA', 'number'], ['warning_cpa', 'Warning CPA', 'number'], ['max_cpa', 'أقصى CPA مسموح', 'number'],
   ['target_profit', 'الربح المستهدف', 'number'], ['min_profit', 'أدنى ربح', 'number'], ['currency', 'العملة', 'text'],
 ];
-
 async function openProductEditor(id) {
   let p = { pricing_multiplier: 3, currency: 'EGP' };
   if (id) p = await api.get(`/api/ai-media-buyer/products/${id}`).then((r) => ({
     ...r.product,
-    // map serialized camelCase back to snake for the form
     product_name: r.product.productName, external_product_ref: r.product.externalProductRef,
     product_cost: r.product.productCost, pricing_multiplier: r.product.pricingMultiplier,
     actual_selling_price: r.product.actualSellingPrice, packaging_cost: r.product.packagingCost,
@@ -380,9 +772,9 @@ async function openProductEditor(id) {
       </div>
       <div class="amb-derived" id="ambPricePreview" style="margin-top:14px;"></div>
       <div class="toolbar" style="margin-top:16px;">
-        <button class="btn" id="ambSaveProduct">حفظ</button>
-        ${id && state.isAdmin ? `<button class="btn danger" id="ambDelProduct">حذف</button>` : ''}
-        <button class="btn secondary" id="ambCancelProduct">إلغاء</button>
+        <button class="amb-btn primary" id="ambSaveProduct">حفظ</button>
+        ${id && state.isAdmin ? `<button class="amb-btn danger" id="ambDelProduct">حذف</button>` : ''}
+        <button class="amb-btn" id="ambCancelProduct">إلغاء</button>
       </div>
     </div>
   `);
@@ -421,24 +813,18 @@ async function openProductEditor(id) {
       const body = readForm();
       if (id) await api.patch(`/api/ai-media-buyer/products/${id}`, body);
       else await api.post('/api/ai-media-buyer/products', body);
-      UI.toast('✅ اتحفظ');
-      closeDrawer();
-      route();
+      UI.toast('✅ اتحفظ'); closeDrawer(); route();
     } catch (err) { UI.toast(err.message, 'error'); }
   };
   if ($('ambDelProduct')) $('ambDelProduct').onclick = async () => {
     if (!(await UI.confirmModal({ title: 'حذف المنتج', message: 'هيتحذف من AI Media Buyer (مش من الكتالوج). متابعة؟', danger: true, confirmLabel: 'حذف' }))) return;
-    await api.delete(`/api/ai-media-buyer/products/${id}`);
-    UI.toast('اتحذف');
-    closeDrawer();
-    route();
+    await api.delete(`/api/ai-media-buyer/products/${id}`); UI.toast('اتحذف'); closeDrawer(); route();
   };
 }
-
 async function openProductDashboard(id) {
   openDrawer('<div class="drawer-section faint">جارِ التحميل…</div>');
   const d = await api.get(`/api/ai-media-buyer/products/${id}?window=${state.window}`);
-  const m = d.metrics, e = d.economics, cls = d.classification;
+  const m = d.metrics, cls = d.classification;
   const clsBadge = { WINNING: 'green', PROFITABLE: 'green', BREAK_EVEN: 'gray', AT_RISK: 'yellow', LOSING: 'red', NO_DATA: 'gray' }[cls.label] || 'gray';
   openDrawer(`
     <div class="drawer-header"><div class="drawer-title">${E(d.product.productName)}</div><button class="drawer-close" id="ambDrawerX">×</button></div>
@@ -465,7 +851,7 @@ async function openProductDashboard(id) {
         <div class="amb-derived-row"><span>تغليف</span><b>${fmtEGP(m.pnl.packaging)}</b></div>
         <div class="amb-derived-row"><span>تكلفة المرتجع</span><b>${fmtEGP(m.pnl.rtoCost)}</b></div>
         <div class="amb-derived-row"><span>تكاليف أخرى</span><b>${fmtEGP(m.pnl.otherCost)}</b></div>
-        <div class="amb-derived-row" style="border-top:1px solid var(--border); margin-top:4px; padding-top:8px;"><span><b>صافي الربح</b></span><b class="${(m.netProfit ?? 0) >= 0 ? '' : ''}" style="color:${(m.netProfit ?? 0) >= 0 ? 'var(--green)' : 'var(--red)'};">${fmtEGP(m.netProfit)} (${fmtPct(m.netMarginPct)})</b></div>
+        <div class="amb-derived-row" style="border-top:1px solid var(--amb-border); margin-top:4px; padding-top:8px;"><span><b>صافي الربح</b></span><b style="color:${(m.netProfit ?? 0) >= 0 ? 'var(--amb-green)' : 'var(--amb-red)'};">${fmtEGP(m.netProfit)} (${fmtPct(m.netMarginPct)})</b></div>
       </div>
       <div class="section-title">أفضل عنصر داخل المنتج</div>
       ${['campaign', 'adset', 'ad', 'creative'].map((lvl) => {
@@ -473,34 +859,28 @@ async function openProductDashboard(id) {
         const arLvl = { campaign: 'حملة', adset: 'مجموعة', ad: 'إعلان', creative: 'كرييتف' }[lvl];
         return b ? `<div class="amb-winner-card"><span class="amb-winner-trophy">🏆</span><div class="amb-winner-body"><div class="amb-winner-name">${arLvl}: ${E(b.name)}</div><div class="amb-winner-meta">CPA ${fmtEGP(b.cpa)} · ${fmtNum(b.purchases)} شراء · ROAS ${fmtX(b.roas)}</div></div></div>` : `<div class="faint" style="font-size:12px;">${arLvl}: مفيش بيانات كافية</div>`;
       }).join('')}
-      ${d.observedRates.confirmationRate != null ? `<div class="faint" style="font-size:12px; margin-top:12px;">نِسب مرصودة من البيانات الحقيقية: تأكيد ${fmtPct(d.observedRates.confirmationRate * 100)} · تسليم ${fmtPct(d.observedRates.deliveryRate * 100)} (عيّنة ${d.observedRates.sample})</div>` : ''}
-      <div class="toolbar" style="margin-top:14px;"><button class="btn secondary" id="ambDrawerX2">إغلاق</button></div>
+      ${d.observedRates.confirmationRate != null ? `<div class="faint" style="font-size:12px; margin-top:12px;">نِسب مرصودة: تأكيد ${fmtPct(d.observedRates.confirmationRate * 100)} · تسليم ${fmtPct(d.observedRates.deliveryRate * 100)} (عيّنة ${d.observedRates.sample})</div>` : ''}
+      <div class="toolbar" style="margin-top:14px;"><button class="amb-btn" id="ambDrawerX2">إغلاق</button></div>
     </div>
   `);
   $('ambDrawerX').onclick = closeDrawer;
   $('ambDrawerX2').onclick = closeDrawer;
 }
 
-// ---------------------------------------------------------------------------
-// TAB: Campaign Analysis (hierarchy) + inline mapping
-// ---------------------------------------------------------------------------
+// ---- Campaign hierarchy (winner logic UNCHANGED) ----
 async function renderCampaigns(panel) {
   panel.innerHTML = '';
-  panel.appendChild(windowPicker(() => route()));
   const [tree, mapState, products] = await Promise.all([
     api.get(`/api/ai-media-buyer/hierarchy?window=${state.window}`),
     api.get('/api/ai-media-buyer/mapping').catch(() => null),
     api.get('/api/ai-media-buyer/products').catch(() => []),
   ]);
-
   const acct = tree.accountAvg;
   const head = document.createElement('div');
   head.innerHTML = `<div class="faint" style="font-size:12.5px; margin-bottom:12px;">
     متوسط الحساب — صرف ${fmtEGP(acct?.spend)} · CPA ${fmtEGP(acct?.cpa)} · ROAS ${fmtX(acct?.roas)} · CTR ${fmtPct(acct?.ctr)}
   </div>
-  <div class="faint" style="font-size:12px; margin-bottom:14px;">
-    🟢 رابح/مربح · 🟡 تحسين · 🔴 خسارة/مرشح إيقاف · 🔵 فرصة توسّع · ⚪ محتاج بيانات
-  </div>`;
+  <div class="faint" style="font-size:12px; margin-bottom:14px;">🟢 رابح · 🟡 تحسين · 🔴 مرشح إيقاف · 🔵 فرصة توسّع · ⚪ محتاج بيانات</div>`;
   panel.appendChild(head);
 
   if (mapState && mapState.counts) {
@@ -512,7 +892,7 @@ async function renderCampaigns(panel) {
       ${mapState.unmapped.slice(0, 8).map((c) => `
         <div class="eo-task-row">
           <span class="eo-task-text">${E(c.campaignName || c.campaignId)} <span class="faint">(${fmtEGP(c.spend)})</span>${c.suggestion ? ` — مقترح: <b>${E(c.suggestion.productName || '')}</b>` : ''}</span>
-          <select data-map-campaign="${E(c.campaignId)}" data-map-name="${E(c.campaignName || '')}" style="max-width:180px;">
+          <select class="amb-select" data-map-campaign="${E(c.campaignId)}" data-map-name="${E(c.campaignName || '')}" style="max-width:180px;">
             <option value="">— اختر منتج —</option>
             ${products.map((p) => `<option value="${p.id}" ${c.suggestion && c.suggestion.ambProductId === p.id ? 'selected' : ''}>${E(p.productName)}</option>`).join('')}
           </select>
@@ -521,10 +901,8 @@ async function renderCampaigns(panel) {
     mm.querySelectorAll('[data-map-campaign]').forEach((sel) => {
       sel.onchange = async () => {
         if (!sel.value) return;
-        try {
-          await api.post('/api/ai-media-buyer/mapping', { campaignId: sel.dataset.mapCampaign, campaignName: sel.dataset.mapName, ambProductId: Number(sel.value) });
-          UI.toast('✅ اتربطت'); route();
-        } catch (err) { UI.toast(err.message, 'error'); }
+        try { await api.post('/api/ai-media-buyer/mapping', { campaignId: sel.dataset.mapCampaign, campaignName: sel.dataset.mapName, ambProductId: Number(sel.value) }); UI.toast('✅ اتربطت'); route(); }
+        catch (err) { UI.toast(err.message, 'error'); }
       };
     });
   }
@@ -533,7 +911,6 @@ async function renderCampaigns(panel) {
   const groups = [];
   for (const p of tree.products || []) groups.push({ title: `📦 ${p.name}`, node: p, children: p.children });
   if ((tree.unmappedCampaigns || []).length) groups.push({ title: '— حملات غير مربوطة بمنتج —', node: null, children: tree.unmappedCampaigns });
-
   treeWrap.innerHTML = groups.map((g) => `
     <div style="margin-bottom:18px;">
       <div class="section-title">${E(g.title)} ${g.node ? statusDot(g.node.status) : ''} ${g.node && g.node.metrics ? `<span class="faint" style="font-weight:400;font-size:12px;">CPA ${fmtEGP(g.node.metrics.cpa)} · صرف ${fmtEGP(g.node.metrics.spend)}</span>` : ''}</div>
@@ -542,14 +919,12 @@ async function renderCampaigns(panel) {
   panel.appendChild(treeWrap);
   wireTree(treeWrap);
 }
-
 function statusDot(s) {
   if (!s) return '';
   const ar = { HEALTHY: 'سليم', OPTIMIZE: 'تحسين', LOSS: 'خسارة', STOP_CANDIDATE: 'مرشح إيقاف', WATCH: 'مراقبة', SCALE_OPPORTUNITY: 'فرصة توسّع', NEED_MORE_DATA: 'محتاج بيانات' }[s.verdict] || s.verdict;
   return `<span class="amb-dot ${s.color}" title="${E(ar)}"></span>`;
 }
-
-function treeNode(node, depth) {
+function treeNode(node) {
   const m = node.metrics || {};
   const hasKids = (node.children && node.children.length) || (node.creatives && node.creatives.length);
   const lvlAr = { campaign: 'حملة', adset: 'مجموعة', ad: 'إعلان', creative: 'كرييتف' }[node.level] || node.level;
@@ -567,8 +942,8 @@ function treeNode(node, depth) {
       </span>
     </div>
     ${hasKids ? `<div class="amb-tree-children">
-      ${(node.children || []).map((c) => treeNode(c, depth + 1)).join('')}
-      ${(node.creatives || []).length ? `<div class="faint" style="font-size:11px; margin:6px 0;">كرييتيفز:</div>${node.creatives.map((c) => treeNode(c, depth + 1)).join('')}` : ''}
+      ${(node.children || []).map((c) => treeNode(c)).join('')}
+      ${(node.creatives || []).length ? `<div class="faint" style="font-size:11px; margin:6px 0;">كرييتيفز:</div>${node.creatives.map((c) => treeNode(c)).join('')}` : ''}
     </div>` : ''}
   </div>`;
 }
@@ -578,78 +953,56 @@ function wireTree(root) {
       const kids = row.parentElement.querySelector('.amb-tree-children');
       const caret = row.querySelector('.amb-tree-caret');
       if (!kids) return;
-      const open = kids.classList.toggle('open');
-      caret.classList.toggle('open', open);
+      caret.classList.toggle('open', kids.classList.toggle('open'));
     };
   });
 }
 
-// ---------------------------------------------------------------------------
-// TAB: Winners
-// ---------------------------------------------------------------------------
+// ---- Winners / creatives (logic UNCHANGED) ----
 async function renderWinners(panel) {
   panel.innerHTML = '';
-  panel.appendChild(windowPicker(() => route()));
   const w = await api.get(`/api/ai-media-buyer/winners?window=${state.window}`);
   const wn = w.winners;
   const cov = w.coverage || { analyzed: 0, notAnalyzed: 0, insufficientData: 0, total: 0 };
-
-  // Full-panel winner card (spec section 5).
   const bigCard = (icon, label, node) => node
     ? `<div class="amb-winner-card" style="align-items:flex-start;"><span class="amb-winner-trophy">${icon}</span><div class="amb-winner-body">
         <div class="amb-winner-name">${E(label)}: ${E(node.name || node.label)}</div>
         <div class="amb-rec-metrics" style="margin:6px 0;">
-          <span>صرف <b>${fmtEGP(node.spend)}</b></span>
-          <span>شراء <b>${fmtNum(node.purchases)}</b></span>
-          <span>CPA <b>${fmtEGP(node.cpa)}</b></span>
-          ${node.deliveredCpa != null ? `<span>CPA مسلّم <b>${fmtEGP(node.deliveredCpa)}</b> <span class="faint">(${E(node.deliveredCpaScope || '')})</span></span>` : ''}
-          <span>CTR <b>${fmtPct(node.ctr)}</b></span>
-          <span>CPC <b>${fmtEGP(node.cpc)}</b></span>
-          <span>CVR <b>${fmtPct(node.conversionRate)}</b></span>
-          <span>ROAS <b>${fmtX(node.roas)}</b></span>
-          ${node.netProfit != null ? `<span>صافي ربح <b>${fmtEGP(node.netProfit)}</b> <span class="faint">(${E(node.netProfitScope || '')})</span></span>` : ''}
+          <span>صرف <b>${fmtEGP(node.spend)}</b></span><span>شراء <b>${fmtNum(node.purchases)}</b></span><span>CPA <b>${fmtEGP(node.cpa)}</b></span>
+          ${node.deliveredCpa != null ? `<span>CPA مسلّم <b>${fmtEGP(node.deliveredCpa)}</b></span>` : ''}
+          <span>CTR <b>${fmtPct(node.ctr)}</b></span><span>CPC <b>${fmtEGP(node.cpc)}</b></span><span>CVR <b>${fmtPct(node.conversionRate)}</b></span><span>ROAS <b>${fmtX(node.roas)}</b></span>
+          ${node.netProfit != null ? `<span>صافي ربح <b>${fmtEGP(node.netProfit)}</b></span>` : ''}
           <span>كفاية بيانات <b>${E({ STRONG: 'قوية', MODERATE: 'كافية', WEAK: 'ضعيفة' }[node.dataSufficiency] || node.dataSufficiency)}</b></span>
-          <span>ثقة <b>${E(node.confidence)}</b></span>
+          <span>ثقة <b>${E(CONF_FULL[node.confidence] || node.confidence)}</b></span>
         </div>
         <div style="font-size:12.5px;">✅ <b>ليه هو البطل:</b> ${E(node.why || '—')}</div>
       </div></div>`
-    : `<div class="faint" style="font-size:12.5px; padding:6px 0;">${E(label)}: لسه مفيش عنصر بيحقق شروط "البطل" (صرف كافٍ + حجم + CPA تحت الهدف + كفاية بيانات).</div>`;
-
+    : `<div class="faint" style="font-size:12.5px; padding:6px 0;">${E(label)}: لسه مفيش عنصر بيحقق شروط "البطل".</div>`;
   panel.insertAdjacentHTML('beforeend', `
-    <div class="card" style="margin-bottom:14px; display:flex; gap:18px; flex-wrap:wrap; align-items:center;">
-      <div class="section-title" style="margin:0;">تحليل الكرييتيفات:</div>
+    <div class="card" style="margin-bottom:14px; display:flex; gap:14px; flex-wrap:wrap; align-items:center;">
+      <div class="section-title" style="margin:0;">تحليل الكرياتيفات:</div>
       <span class="badge green">مُحلَّل ${cov.analyzed}</span>
       <span class="badge yellow">بيانات غير كافية ${cov.insufficientData}</span>
       <span class="badge gray">غير مُحلَّل ${cov.notAnalyzed}</span>
-      <span class="faint" style="font-size:12px;">من إجمالي ${cov.total} كرييتف</span>
       <div style="flex:1;"></div>
-      <button class="btn secondary small" id="ambRunCreative">حلّل الكرييتيفات الباقية</button>
+      <button class="amb-btn sm" id="ambRunCreative">حلّل الباقي</button>
     </div>
     <div class="card" style="margin-bottom:16px;">
       <div class="section-title" style="margin-top:0;">🏆 الأبطال — نافذة ${E(w.window.label)}</div>
-      ${bigCard('🥇', 'المنتج', wn.product)}
-      ${bigCard('🚀', 'الحملة', wn.campaign)}
-      ${bigCard('🎯', 'المجموعة الإعلانية', wn.adset)}
-      ${bigCard('📢', 'الإعلان', wn.ad)}
-      ${bigCard('🎨', 'الكرييتف', wn.creative)}
-      ${labelWinnerLine('🪝 الهوك', wn.hook)}
-      ${labelWinnerLine('📐 زاوية البيع', wn.sellingAngle)}
-      ${labelWinnerLine('🎁 العرض', wn.offer)}
-      ${labelWinnerLine('👥 زاوية الجمهور', wn.audienceAngle)}
+      ${bigCard('🥇', 'المنتج', wn.product)}${bigCard('🚀', 'الحملة', wn.campaign)}${bigCard('🎯', 'المجموعة الإعلانية', wn.adset)}
+      ${bigCard('📢', 'الإعلان', wn.ad)}${bigCard('🎨', 'الكرييتف', wn.creative)}
+      ${labelWinnerLine('🪝 الهوك', wn.hook)}${labelWinnerLine('📐 زاوية البيع', wn.sellingAngle)}${labelWinnerLine('🎁 العرض', wn.offer)}${labelWinnerLine('👥 زاوية الجمهور', wn.audienceAngle)}
     </div>
-    ${labelTable('🪝 مقارنة الهوكس', w.hooks)}
-    ${labelTable('📐 مقارنة زوايا البيع', w.angles)}
-    ${labelTable('🎁 مقارنة العروض', w.offers)}
-    ${labelTable('👥 مقارنة زوايا الجمهور', w.audiences)}
+    ${labelTable('🪝 مقارنة الهوكس', w.hooks)}${labelTable('📐 مقارنة زوايا البيع', w.angles)}${labelTable('🎁 مقارنة العروض', w.offers)}${labelTable('👥 مقارنة زوايا الجمهور', w.audiences)}
   `);
   $('ambRunCreative').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = '… بيحلل';
-    try { const r = await api.post('/api/ai-media-buyer/creative-analysis/run', { max: 25 }); UI.toast(`✅ اتحلل ${r.analyzed} كرييتف (${r.insufficient} غير كافٍ)`); route(); }
-    catch (err) { UI.toast(err.message, 'error'); e.target.disabled = false; e.target.textContent = 'حلّل الكرييتيفات الباقية'; }
+    try { const r = await api.post('/api/ai-media-buyer/creative-analysis/run', { max: 25 }); UI.toast(`✅ اتحلل ${r.analyzed} كرييتف`); route(); }
+    catch (err) { UI.toast(err.message, 'error'); e.target.disabled = false; e.target.textContent = 'حلّل الباقي'; }
   };
 }
 function labelWinnerLine(label, w) {
-  if (!w) return `<div class="faint" style="font-size:12.5px; padding:6px 0;">${E(label)}: لسه مفيش بطل واضح (البيانات مش كافية أو الكرييتيفات مش متحللة).</div>`;
+  if (!w) return `<div class="faint" style="font-size:12.5px; padding:6px 0;">${E(label)}: لسه مفيش بطل واضح.</div>`;
   return `<div class="amb-winner-card"><span class="amb-winner-trophy">🏆</span><div class="amb-winner-body">
     <div class="amb-winner-name">${E(label)}: ${E(w.label)}</div>
     <div class="amb-winner-meta">CPA ${fmtEGP(w.cpa)} · ${fmtNum(w.purchases)} شراء · CTR ${fmtPct(w.ctr)} · مصدر: ${w.source === 'CREATIVE_ANALYSIS' ? 'تحليل الكرييتف' : 'اسم الإعلان'}</div>
@@ -658,31 +1011,26 @@ function labelWinnerLine(label, w) {
 }
 function labelTable(title, group) {
   if (!group || !group.table || group.table.length === 0) {
-    return `<div class="card" style="margin-bottom:16px;"><div class="section-title" style="margin-top:0;">${E(title)}</div>
-      <div class="faint" style="font-size:12.5px;">لسه مفيش تصنيفات كفاية للمقارنة — شغّل تحليل الكرييتيفات أو استنى بيانات أكتر.</div></div>`;
+    return `<div class="card" style="margin-bottom:16px;"><div class="section-title" style="margin-top:0;">${E(title)}</div><div class="faint" style="font-size:12.5px;">لسه مفيش تصنيفات كفاية للمقارنة.</div></div>`;
   }
   return `<div class="card" style="margin-bottom:16px;"><div class="section-title" style="margin-top:0;">${E(title)} ${group.winner ? `— البطل: <b>${E(group.winner.label)}</b>` : ''}</div>
     <div class="table-wrap"><table class="data">
       <thead><tr><th>التصنيف</th><th>مصدر</th><th>إعلانات</th><th>صرف</th><th>شراء</th><th>CPA</th><th>CTR</th><th>CVR</th><th>كفاية بيانات</th></tr></thead>
-      <tbody>${group.table.map((r) => `<tr ${group.winner && r.label === group.winner.label ? 'style="background:var(--green-bg);"' : ''}>
+      <tbody>${group.table.map((r) => `<tr ${group.winner && r.label === group.winner.label ? 'style="background:var(--amb-green-bg);"' : ''}>
         <td>${E(r.label)}</td><td class="faint">${r.source === 'CREATIVE_ANALYSIS' ? 'كرييتف' : 'اسم'}</td><td>${fmtNum(r.adCount)}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${fmtEGP(r.cpa)}</td><td>${fmtPct(r.ctr)}</td><td>${fmtPct(r.conversionRate)}</td><td>${E({ STRONG: 'قوية', MODERATE: 'كافية', WEAK: 'ضعيفة' }[r.dataSufficiency] || '')}</td>
       </tr>`).join('')}</tbody>
     </table></div></div>`;
 }
 
-// ---------------------------------------------------------------------------
-// TAB: AI Action Plan
-// ---------------------------------------------------------------------------
+// ---- Full AI Action Plan (categories + resolved) — logic UNCHANGED ----
 async function renderPlan(panel) {
   const cur = await api.get('/api/ai-media-buyer/recommendations');
   const active = cur.active || cur.items || [];
   const resolved = cur.resolved || [];
+  state.pendingCount = active.length; renderNav();
   const CATS = [
-    { key: 'SCALE', label: '🚀 توسّع (SCALE)' },
-    { key: 'HOLD', label: '🟢 تثبيت (HOLD)' },
-    { key: 'MONITOR', label: '🟡 مراقبة (MONITOR)' },
-    { key: 'PAUSE_CANDIDATE', label: '🔴 مرشّح للإيقاف (PAUSE CANDIDATE)' },
-    { key: 'NEW_CREATIVE_NEEDED', label: '🎨 كرييتف جديد مطلوب' },
+    { key: 'SCALE', label: '🚀 توسّع' }, { key: 'HOLD', label: '🟢 تثبيت' }, { key: 'MONITOR', label: '🟡 مراقبة' },
+    { key: 'PAUSE_CANDIDATE', label: '🔴 مرشّح للإيقاف' }, { key: 'NEW_CREATIVE_NEEDED', label: '🎨 كرياتيف جديد' },
   ];
   const byCat = {};
   for (const it of active) (byCat[it.category] = byCat[it.category] || []).push(it);
@@ -690,64 +1038,45 @@ async function renderPlan(panel) {
 
   panel.innerHTML = `
     <div class="toolbar" style="margin-bottom:14px;">
-      <button class="btn" id="ambGenPlan">🔄 توليد خطة جديدة</button>
-      <button class="btn secondary" id="ambReconcile">↻ طابق مع حالة Meta</button>
+      <button class="amb-btn primary" id="ambGenPlan">توليد خطة جديدة</button>
+      <button class="amb-btn" id="ambReconcile">طابق مع حالة Meta</button>
       ${cur.generatedAt ? `<span class="faint" style="font-size:12px;">آخر توليد: ${fmtDT(cur.generatedAt)}</span>` : ''}
     </div>
-    ${active.length === 0 ? `<div class="empty-state">مفيش توصيات نشطة محتاجة إجراء دلوقتي.${resolved.length ? ' (فيه توصيات محلولة تحت)' : ' اضغط "توليد خطة جديدة".'}</div>` : CATS.map((c) => {
+    ${active.length === 0 ? `<div class="amb-panel amb-empty">مفيش توصيات نشطة محتاجة إجراء دلوقتي.${extResolved.length ? ' (فيه توصيات محلولة تحت)' : ''}</div>` : CATS.map((c) => {
       const list = (byCat[c.key] || []).sort((a, b) => a.priority.localeCompare(b.priority));
       if (!list.length) return '';
-      return `<div style="margin-bottom:20px;"><div class="section-title">${E(c.label)} <span class="faint" style="font-weight:400;font-size:12px;">(${list.length})</span></div>${list.map(recCard).join('')}</div>`;
+      return `<div style="margin-bottom:20px;"><div class="section-title">${E(c.label)} <span class="faint" style="font-weight:400;font-size:12px;">(${list.length})</span></div>${list.map(recCardV2).join('')}</div>`;
     }).join('')}
     ${extResolved.length ? `<div style="margin-top:8px;">
-      <button class="btn secondary small" id="ambToggleResolved">توصيات محلولة / خارج النطاق (${extResolved.length}) ▾</button>
+      <button class="amb-btn sm" id="ambToggleResolved">توصيات محلولة / خارج النطاق (${extResolved.length}) ▾</button>
       <div id="ambResolvedList" hidden style="margin-top:10px;">${extResolved.map(resolvedCard).join('')}</div>
-    </div>` : ''}
-  `;
+    </div>` : ''}`;
   const rc = $('ambReconcile');
-  if (rc) rc.onclick = async () => {
+  rc.onclick = async () => {
     rc.disabled = true; rc.textContent = '… بيطابق';
     try {
       const r = await api.post('/api/ai-media-buyer/recommendations/reconcile', {});
-      UI.toast(r.resolvedExternally + r.noLongerApplicable > 0 ? `✅ اتحلّت ${r.resolvedExternally} + ${r.noLongerApplicable} خارج النطاق` : 'كل التوصيات لسه منطبقة');
+      UI.toast((r.resolvedExternally + r.noLongerApplicable) > 0 ? `✅ اتحلّت ${r.resolvedExternally} + ${r.noLongerApplicable} خارج النطاق` : 'كل التوصيات لسه منطبقة');
       route();
-    } catch (err) { UI.toast(err.message, 'error'); rc.disabled = false; rc.textContent = '↻ طابق مع حالة Meta'; }
+    } catch (err) { UI.toast(err.message, 'error'); rc.disabled = false; rc.textContent = 'طابق مع حالة Meta'; }
   };
   const tr = $('ambToggleResolved');
   if (tr) tr.onclick = () => { const el = $('ambResolvedList'); el.hidden = !el.hidden; };
   $('ambGenPlan').onclick = async () => {
     const btn = $('ambGenPlan'); btn.disabled = true; btn.textContent = '… بيحلل';
-    try {
-      const r = await api.post('/api/ai-media-buyer/recommendations/generate', { window: state.window });
-      UI.toast(`✅ ${r.count} توصية (${r.source === 'AI' ? 'تحليل Claude' : 'قوالب احتياطية'})`);
-      route();
-    } catch (err) { UI.toast(err.message, 'error'); btn.disabled = false; btn.textContent = '🔄 توليد خطة جديدة'; }
+    try { const r = await api.post('/api/ai-media-buyer/recommendations/generate', { window: state.window }); UI.toast(`✅ ${r.count} توصية`); route(); }
+    catch (err) { UI.toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'توليد خطة جديدة'; }
   };
   panel.querySelectorAll('[data-rec]').forEach((b) => {
     const id = Number(b.dataset.rec);
-    if (b.dataset.act === 'approve') b.onclick = () => approveRec(id, b);
-    if (b.dataset.act === 'reject') b.onclick = () => rejectRec(id);
-    if (b.dataset.act === 'edit') b.onclick = () => editRec(id);
-    if (b.dataset.act === 'details') b.onclick = () => showRecDetails(id);
-    if (b.dataset.act === 'dryrun') b.onclick = () => dryRunRec(id);
+    const act = b.dataset.act;
+    if (act === 'approve') b.onclick = () => approveRec(id, b);
+    else if (act === 'reject') b.onclick = () => rejectRec(id);
+    else if (act === 'details') b.onclick = () => showRecDetails(id);
   });
 }
-
-const DECISION_AR = {
-  SCALE: 'توسّع', HOLD: 'تثبيت', MONITOR: 'مراقبة', PAUSE: 'إيقاف', PAUSE_LOSER: 'إيقاف خاسر',
-  REDUCE_BUDGET: 'تقليل ميزانية', INCREASE_BUDGET: 'زيادة ميزانية', DUPLICATE_WINNER: 'تكرار البطل',
-  TEST_NEW_CREATIVE: 'اختبار كرييتف جديد', TEST_NEW_HOOK: 'اختبار هوك جديد', TEST_NEW_AUDIENCE: 'اختبار جمهور جديد',
-};
-const STATUS_AR = {
-  PENDING: '', APPROVED: 'موافَق عليها', REJECTED: 'مرفوضة', EXECUTED: '✅ اتنفّذت',
-  SUPERSEDED: 'محدّثة', NEEDS_REANALYSIS: '⚠️ محتاجة إعادة تحليل', EXPIRED: 'منتهية',
-  RESOLVED_EXTERNALLY: '✔ اتحلّت من Meta', NO_LONGER_APPLICABLE: 'خارج النطاق',
-};
-const STATUS_BADGE = { EXECUTED: 'green', RESOLVED_EXTERNALLY: 'green', NEEDS_REANALYSIS: 'red', NO_LONGER_APPLICABLE: 'gray' };
-const META_STATUS_AR = { ACTIVE: 'شغّال', PAUSED: 'متوقف', CAMPAIGN_PAUSED: 'الحملة متوقفة', ADSET_PAUSED: 'المجموعة متوقفة', ARCHIVED: 'مؤرشف', DELETED: 'محذوف', DISAPPROVED: 'مرفوض', PENDING_REVIEW: 'تحت المراجعة', IN_PROCESS: 'قيد التجهيز', WITH_ISSUES: 'به مشاكل' };
-
 function resolvedCard(r) {
-  return `<div class="amb-rec" style="border-inline-start-color:var(--gray); opacity:.9;">
+  return `<div class="amb-rec" style="border-inline-start-color:var(--amb-text-faint); opacity:.9;">
     <div class="amb-rec-head">
       <span class="amb-pri ${r.priority}">${r.priority}</span>
       <span class="amb-rec-title">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</span>
@@ -755,159 +1084,18 @@ function resolvedCard(r) {
       ${r.currentStatus ? `<span class="faint" style="font-size:12px;">حالة Meta: ${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
     </div>
     <div style="font-size:12.5px; margin-top:6px;">${E(r.resolutionNote || 'اتحلّت خارج النظام.')}</div>
-    <div class="amb-rec-actions"><button class="btn secondary small" data-rec="${r.id}" data-act="details">التفاصيل</button></div>
+    <div class="amb-rec-actions"><button class="amb-btn sm" data-rec="${r.id}" data-act="details">التفاصيل</button></div>
   </div>`;
 }
 
-function recCard(r) {
-  const m = r.currentMetrics || {};
-  const t = r.targetMetrics || {};
-  const canExec = r.executable && r.status === 'PENDING';
-  const statusAr = STATUS_AR[r.status] ?? r.status;
-  const metaOk = !r.currentStatus || r.currentStatus === 'ACTIVE';
-  return `<div class="amb-rec ${r.priority}">
-    <div class="amb-rec-head">
-      <span class="amb-pri ${r.priority}">${r.priority}</span>
-      <span class="amb-rec-title">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</span>
-      <span class="badge gray">${E({ product: 'منتج', campaign: 'حملة', adset: 'مجموعة', ad: 'إعلان' }[r.level] || r.level)}</span>
-      ${r.productName ? `<span class="faint" style="font-size:12px;">📦 ${E(r.productName)}</span>` : ''}
-      ${r.currentStatus ? `<span class="badge ${metaOk ? 'blue' : 'yellow'}" title="حالة العنصر الحالية في Meta">Meta: ${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
-      ${statusAr ? `<span class="badge ${STATUS_BADGE[r.status] || 'gray'}">${E(statusAr)}</span>` : ''}
-    </div>
-    <div class="amb-rec-metrics">
-      <span>CPA حالي <b>${fmtEGP(m.cpa)}</b></span>
-      <span>الهدف <b>${fmtEGP(t.targetCpa)}</b></span>
-      <span>صرف <b>${fmtEGP(m.spend)}</b></span>
-      <span>شراء <b>${fmtNum(m.purchases)}</b></span>
-      <span>ROAS <b>${fmtX(m.roas)}</b></span>
-      ${r.currentBudget != null ? `<span>ميزانية <b>${fmtEGP(r.currentBudget)}</b> ← <b>${fmtEGP(r.recommendedBudget)}</b> (${r.budgetChangePct > 0 ? '+' : ''}${fmtNum(r.budgetChangePct)}%)</span>` : ''}
-    </div>
-    ${r.explain ? `<div class="amb-rec-explain" style="margin:8px 0; font-size:12.5px; line-height:1.75;">
-      <div><b>إيه اللي حصل؟</b> ${E(r.explain.whatHappened || r.reason || '—')}</div>
-      ${r.explain.why ? `<div><b>ليه؟</b> ${E(r.explain.why)}</div>` : ''}
-      <div><b>الإجراء المطلوب:</b> ${E(r.explain.whatToDo || '—')}</div>
-      ${r.explain.expectedBenefit ? `<div><b>الفايدة المتوقعة:</b> ${E(r.explain.expectedBenefit)}</div>` : ''}
-      ${r.explain.risk ? `<div><b>المخاطرة:</b> ${E(r.explain.risk)}</div>` : ''}
-      ${r.explain.dataSupport ? `<div><b>دعم البيانات:</b> ${E(r.explain.dataSupport)}</div>` : ''}
-    </div>` : `<div class="amb-rec-reason">💬 ${E(r.reason || '—')}</div>`}
-    <div class="faint" style="font-size:11.5px;">ثقة: ${E(r.confidence)} · مخاطرة: ${E(r.riskLevel)} · كفاية بيانات: ${E(r.dataSufficiency)} · نافذة: ${E(r.timeWindow?.label || '')} · مصدر: ${r.source === 'AI' ? 'Claude' : 'قالب'}</div>
-    <div class="amb-rec-actions">
-      ${canExec ? `<button class="btn small" data-rec="${r.id}" data-act="approve">موافقة وتنفيذ</button>` : ''}
-      ${canExec ? `<button class="btn secondary small" data-rec="${r.id}" data-act="dryrun">تحقّق من المسار (بدون تنفيذ)</button>` : ''}
-      ${r.status === 'PENDING' ? `<button class="btn secondary small" data-rec="${r.id}" data-act="reject">رفض</button>` : ''}
-      ${r.status === 'PENDING' && r.currentBudget != null && r.executable ? `<button class="btn secondary small" data-rec="${r.id}" data-act="edit">تعديل الأكشن</button>` : ''}
-      <button class="btn secondary small" data-rec="${r.id}" data-act="details">التفاصيل</button>
-      ${!r.executable ? `<span class="faint" style="font-size:11.5px; align-self:center;">أكشن مسودة — لازم موافقة يدوية وتنفيذ خارج النظام</span>` : ''}
-    </div>
-  </div>`;
-}
-
-async function dryRunRec(id) {
-  openDrawer('<div class="drawer-section faint">بيتحقق من مسار التنفيذ على Meta (بدون أي تغيير)…</div>');
-  try {
-    const d = await api.get(`/api/ai-media-buyer/recommendations/${id}/dry-run`);
-    const verdictAr = { READY: '🟢 جاهز للتنفيذ', WOULD_ABORT_REANALYSIS: '⚠️ هيتوقف — محتاج إعادة تحليل', WOULD_BLOCK_RULES: '🔴 فحص القواعد هيرفض', DRAFT_ONLY: 'مسودة فقط', BLOCKED: '🔴 متوقف' }[d.verdict] || d.verdict;
-    openDrawer(`
-      <div class="drawer-header"><div class="drawer-title">تحقّق من مسار التنفيذ (Dry Run)</div><button class="drawer-close" id="ambDrawerX">×</button></div>
-      <div class="drawer-section">
-        <div style="font-weight:700; margin-bottom:8px;">${E(verdictAr)}</div>
-        ${d.note ? `<div class="faint" style="font-size:12.5px; margin-bottom:8px;">${E(d.note)}</div>` : ''}
-        <div class="amb-derived">
-          <div class="amb-derived-row"><span>وصول لـ Meta</span><b>${d.canReachMeta ? 'نعم ✅' : 'لا'}</b></div>
-          ${d.live ? `<div class="amb-derived-row"><span>حالة العنصر الحيّة</span><b>${E(d.live.status || '—')}</b></div>` : ''}
-          ${d.live && d.live.budgetMajor != null ? `<div class="amb-derived-row"><span>الميزانية الحيّة</span><b>${fmtEGP(d.live.budgetMajor)} (${E(d.live.budgetType || '')})</b></div>` : ''}
-          ${d.materiality ? `<div class="amb-derived-row"><span>تغيّر مؤثر منذ التوصية؟</span><b>${d.materiality.material ? 'نعم — إعادة تحليل' : 'لا'}</b></div>` : ''}
-          ${d.revalidation ? `<div class="amb-derived-row"><span>إعادة التحقّق من القواعد</span><b>${d.revalidation.passed ? 'نجحت ✅' : 'رفضت ❌'}</b></div>` : ''}
-        </div>
-        ${d.plannedRequest ? `<div class="section-title">الطلب اللي هيتبعت لـ Meta (لو وافقت)</div>
-          <pre style="white-space:pre-wrap; font-size:11.5px; background:var(--bg-elevated); padding:10px; border-radius:8px;">${E(d.plannedRequest.endpoint)}\n${E(JSON.stringify(d.plannedRequest.body, null, 1))}${d.plannedRequest.humanReadable ? '\n// ' + E(d.plannedRequest.humanReadable) : ''}</pre>` : ''}
-        ${d.revalidation ? `<div class="section-title">فحوصات القواعد</div><div class="amb-rec-checks">${(d.revalidation.checks || []).map((c) => `<div class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✔' : '✖'} ${E(c.name)} — ${E(c.detail)}</div>`).join('')}</div>` : ''}
-        <div class="faint" style="font-size:11.5px; margin-top:10px;">مفيش أي حاجة اتبعتت لـ Meta. ده تحقّق فقط.</div>
-        <div class="toolbar" style="margin-top:12px;"><button class="btn secondary" id="ambDrawerX2">إغلاق</button></div>
-      </div>`);
-    $('ambDrawerX').onclick = closeDrawer;
-    $('ambDrawerX2').onclick = closeDrawer;
-  } catch (err) {
-    openDrawer(`<div class="drawer-section"><div class="empty-state">⚠️ ${E(err.message)}</div><button class="btn secondary" id="ambDrawerX2">إغلاق</button></div>`);
-    $('ambDrawerX2').onclick = closeDrawer;
-  }
-}
-
-async function approveRec(id, btn) {
-  const ok = await UI.confirmModal({
-    title: 'موافقة وتنفيذ على Meta',
-    message: 'هيتبعت أمر حقيقي لحساب Meta Ads بعد إعادة تحقّق من الأرقام الحالية. متابعة؟',
-    confirmLabel: 'نفّذ الآن', danger: true,
-  });
-  if (!ok) return;
-  btn.disabled = true;
-  try {
-    const r = await api.post(`/api/ai-media-buyer/recommendations/${id}/approve`, {});
-    if (r.ok) UI.toast('✅ اتنفّذ على Meta');
-    else if (r.aborted) UI.toast(`⛔ اتوقف: ${r.message}`, 'error');
-    else UI.toast(r.message || 'ماتنفّذش', 'error');
-    route();
-  } catch (err) {
-    UI.toast(err.message, 'error');
-    btn.disabled = false;
-  }
-}
-async function rejectRec(id) {
-  await api.post(`/api/ai-media-buyer/recommendations/${id}/reject`, {});
-  UI.toast('اترفضت');
-  route();
-}
-async function editRec(id) {
-  const r = await api.get(`/api/ai-media-buyer/recommendations/${id}`);
-  const val = prompt(`الميزانية المقترحة الجديدة (الحالية ${fmtEGP(r.currentBudget)}، مسموح ±${20}% لكل أكشن):`, r.recommendedBudget);
-  if (val === null) return;
-  try {
-    await api.patch(`/api/ai-media-buyer/recommendations/${id}`, { recommendedBudget: Number(val) });
-    UI.toast('✅ اتعدّل');
-    route();
-  } catch (err) { UI.toast(err.message, 'error'); }
-}
-async function showRecDetails(id) {
-  const r = await api.get(`/api/ai-media-buyer/recommendations/${id}`);
-  const re = r.ruleEngine || {};
-  openDrawer(`
-    <div class="drawer-header"><div class="drawer-title">تفاصيل التوصية</div><button class="drawer-close" id="ambDrawerX">×</button></div>
-    <div class="drawer-section">
-      <div style="font-weight:700; margin-bottom:6px;">${E(DECISION_AR[r.decision] || r.decision)} — ${E(r.entityName || '')}</div>
-      <div class="faint" style="font-size:12px; margin-bottom:8px;">
-        ${E(r.campaignName ? 'حملة: ' + r.campaignName : '')} ${E(r.adsetName ? '· مجموعة: ' + r.adsetName : '')} ${E(r.adName ? '· إعلان: ' + r.adName : '')}
-      </div>
-      <div style="font-size:12.5px; margin-bottom:8px;">
-        الحالة: <span class="badge ${STATUS_BADGE[r.status] || 'gray'}">${E(STATUS_AR[r.status] || r.status || 'PENDING')}</span>
-        ${r.currentStatus ? ` · حالة العنصر في Meta وقت التوليد: <b>${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</b>` : ''}
-      </div>
-      ${r.resolutionNote ? `<div class="amb-derived" style="margin-bottom:10px;">📌 ${E(r.resolutionNote)}${r.resolvedAt ? ` <span class="faint">(${fmtDT(r.resolvedAt)})</span>` : ''}</div>` : ''}
-      <div class="amb-rec-reason">💬 ${E(r.reason || '—')}</div>
-      <div class="section-title">فحص القواعد (Rule Engine)</div>
-      <div class="amb-rec-checks">
-        ${(re.checks || []).map((c) => `<div class="${c.ok ? 'ok' : 'bad'}">${c.ok ? '✔' : '✖'} ${E(c.name)} — ${E(c.detail)}</div>`).join('') || '<div class="faint">مفيش تفاصيل.</div>'}
-      </div>
-      ${re.blockers && re.blockers.length ? `<div style="margin-top:8px; color:var(--red); font-size:12.5px;">موانع: ${re.blockers.map(E).join(' / ')}</div>` : ''}
-      <div class="section-title">الأكشنز</div>
-      ${(r.actions || []).map((a) => `<div class="faint" style="font-size:12px;">#${a.id} — ${E(a.status)} — ${fmtDT(a.at)}${a.metaError ? ` — خطأ: ${E(a.metaError)}` : ''}</div>`).join('') || '<div class="faint" style="font-size:12px;">لسه مفيش تنفيذ.</div>'}
-      <div class="toolbar" style="margin-top:14px;"><button class="btn secondary" id="ambDrawerX2">إغلاق</button></div>
-    </div>
-  `);
-  $('ambDrawerX').onclick = closeDrawer;
-  $('ambDrawerX2').onclick = closeDrawer;
-}
-
-// ---------------------------------------------------------------------------
-// TAB: Execution History
-// ---------------------------------------------------------------------------
+// ---- Execution history / reports — logic UNCHANGED ----
 async function renderHistory(panel) {
   const rows = await api.get('/api/ai-media-buyer/execution-history?limit=80');
   panel.innerHTML = rows.length === 0
-    ? '<div class="empty-state">مفيش أكشنز اتنفّذت لسه.</div>'
+    ? '<div class="amb-panel amb-empty">مفيش أكشنز اتنفّذت لسه.</div>'
     : `<div class="table-wrap"><table class="data">
         <thead><tr><th>الوقت</th><th>العنصر</th><th>الأكشن</th><th>قبل ← بعد</th><th>الحالة</th><th>النتيجة (24س)</th><th>وافق</th></tr></thead>
-        <tbody>${rows.map(histRow).join('')}</tbody>
-      </table></div>`;
+        <tbody>${rows.map(histRow).join('')}</tbody></table></div>`;
   panel.querySelectorAll('[data-hist]').forEach((b) => b.onclick = () => showHistDetails(rows.find((x) => x.id === Number(b.dataset.hist))));
 }
 function histRow(a) {
@@ -921,9 +1109,9 @@ function histRow(a) {
     <td>${E(a.entityName || '')}${a.productName ? `<div class="faint" style="font-size:11px;">${E(a.productName)}</div>` : ''}</td>
     <td>${E(DECISION_AR[a.actionType] || a.actionType)} <span class="faint">(${E(a.mode)})</span></td>
     <td>${change}</td>
-    <td>${E(ex)}${a.metaError ? `<div class="faint" style="font-size:11px; color:var(--red);">${E(a.metaError.slice(0, 60))}</div>` : ''}</td>
+    <td>${E(ex)}${a.metaError ? `<div class="faint" style="font-size:11px; color:var(--amb-red);">${E(a.metaError.slice(0, 60))}</div>` : ''}</td>
     <td>${resAr}</td>
-    <td>${E(a.approvedBy || '')} <button class="btn secondary small" data-hist="${a.id}">تفاصيل</button></td>
+    <td>${E(a.approvedBy || '')} <button class="amb-btn sm" data-hist="${a.id}">تفاصيل</button></td>
   </tr>`;
 }
 function showHistDetails(a) {
@@ -941,27 +1129,26 @@ function showHistDetails(a) {
       </div>
       <div class="section-title">سبب الـ AI</div>
       <div class="amb-rec-reason">${E(a.aiReason || '—')}</div>
-      ${a.revalidation ? `<div class="section-title">إعادة التحقّق قبل التنفيذ</div><pre style="white-space:pre-wrap; font-size:11px; background:var(--bg-elevated); padding:10px; border-radius:8px;">${E(JSON.stringify(a.revalidation, null, 1))}</pre>` : ''}
-      ${a.metaError ? `<div style="color:var(--red); font-size:12.5px; margin-top:8px;">خطأ Meta: ${E(a.metaError)}</div>` : ''}
-      <div class="section-title">تقييم النتيجة</div>
+      ${a.revalidation ? `<div class="section-title">إعادة التحقّق قبل التنفيذ</div><pre style="white-space:pre-wrap; font-size:11px; background:var(--amb-surface-2); padding:10px; border-radius:8px;">${E(JSON.stringify(a.revalidation, null, 1))}</pre>` : ''}
+      ${a.metaError ? `<div style="color:var(--amb-red); font-size:12.5px; margin-top:8px;">خطأ Meta: ${E(a.metaError)}</div>` : ''}
+      <div class="section-title">تقييم النتيجة (H6 / H12 / H24)</div>
       ${(a.results || []).map((r) => `<div class="amb-derived" style="margin-bottom:8px;">
         <div class="amb-derived-row"><span>نقطة</span><b>${r.checkpoint} — ${r.evaluatedAt ? fmtDT(r.evaluatedAt) : 'مستني ' + fmtDT(r.dueAt)}</b></div>
         ${r.resultClass ? `<div class="amb-derived-row"><span>التصنيف</span><b>${E({ SUCCESSFUL: 'ناجح', NEUTRAL: 'محايد', FAILED: 'فاشل' }[r.resultClass])}</b></div>` : ''}
         <div class="amb-derived-row"><span>CPA قبل ← بعد</span><b>${fmtEGP(r.cpaBefore)} ← ${fmtEGP(r.cpaAfter)}</b></div>
+        <div class="amb-derived-row"><span>ROAS قبل ← بعد</span><b>${fmtX(r.roasBefore)} ← ${fmtX(r.roasAfter)}</b></div>
         <div class="amb-derived-row"><span>شراء قبل ← بعد</span><b>${fmtNum(r.purchasesBefore)} ← ${fmtNum(r.purchasesAfter)}</b></div>
         <div class="amb-derived-row"><span>ربح قبل ← بعد</span><b>${fmtEGP(r.profitBefore)} ← ${fmtEGP(r.profitAfter)}</b></div>
         ${r.notes && r.notes.note ? `<div class="faint" style="font-size:11.5px; margin-top:4px;">${E(r.notes.note)}</div>` : ''}
       </div>`).join('') || '<div class="faint" style="font-size:12px;">مفيش نقاط تقييم.</div>'}
-      <div class="toolbar" style="margin-top:14px;"><button class="btn secondary" id="ambDrawerX2">إغلاق</button></div>
+      <div class="toolbar" style="margin-top:14px;"><button class="amb-btn" id="ambDrawerX2">إغلاق</button></div>
     </div>
   `);
   $('ambDrawerX').onclick = closeDrawer;
   $('ambDrawerX2').onclick = closeDrawer;
 }
 
-// ---------------------------------------------------------------------------
-// TAB: Settings
-// ---------------------------------------------------------------------------
+// ---- Settings — logic UNCHANGED ----
 const SETTING_FIELDS = [
   ['ambExecutionMode', 'وضع التشغيل', 'select', ['ADVISORY', 'APPROVAL', 'AUTOPILOT']],
   ['ambSyncIntervalMinutes', 'كل كام دقيقة تتم المزامنة', 'number'],
@@ -1000,10 +1187,9 @@ async function renderSettings(panel) {
         }).join('')}
       </div>
       <div class="toolbar" style="margin-top:16px;">
-        ${state.isAdmin ? '<button class="btn" id="ambSaveSettings">حفظ الإعدادات</button>' : '<span class="faint">الحفظ متاح للـ ADMIN فقط.</span>'}
+        ${state.isAdmin ? '<button class="amb-btn primary" id="ambSaveSettings">حفظ الإعدادات</button>' : '<span class="faint">الحفظ متاح للـ ADMIN فقط.</span>'}
       </div>
-    </div>
-  `;
+    </div>`;
   if ($('ambSaveSettings')) $('ambSaveSettings').onclick = async () => {
     const body = {};
     panel.querySelectorAll('[data-s]').forEach((el) => {
@@ -1011,12 +1197,8 @@ async function renderSettings(panel) {
       else if (el.type === 'number') body[el.dataset.s] = el.value === '' ? null : Number(el.value);
       else body[el.dataset.s] = el.value;
     });
-    try {
-      await api.put('/api/ai-media-buyer/settings', body);
-      UI.toast('✅ اتحفظت الإعدادات');
-      await loadSyncStrip();
-      route();
-    } catch (err) { UI.toast(err.message, 'error'); }
+    try { await api.put('/api/ai-media-buyer/settings', body); UI.toast('✅ اتحفظت الإعدادات'); route(); }
+    catch (err) { UI.toast(err.message, 'error'); }
   };
 }
 

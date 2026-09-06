@@ -3,42 +3,21 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AI Media Buyer — AI Intelligence</title>
-<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
+<title>AI Media Buyer</title>
 <link rel="stylesheet" href="css/style.css" />
+<link rel="stylesheet" href="css/amb.css" />
 </head>
 <body>
-  <div class="app-shell">
-    <div id="sidebar" class="sidebar"></div>
-    <div class="main">
-      <div class="page-header">
-        <div>
-          <h1>🧠 AI Intelligence · <span style="color:var(--accent);">AI Media Buyer</span></h1>
-          <div class="subtitle">مركز قرار شراء الإعلانات — البيانات ← التحليل ← القرار ← خطة العمل ← موافقتك ← التنفيذ ← تتبّع النتيجة</div>
-        </div>
+  <div class="app-shell amb-app">
+    <aside id="ambNav" class="amb-nav"></aside>
+    <div class="amb-main">
+      <div class="amb-wrap" id="ambView">
+        <div class="amb-loading">جارِ التحميل…</div>
       </div>
-
-      <!-- Sync status strip -->
-      <div class="card" id="ambSyncStrip" style="margin-bottom:16px; display:flex; align-items:center; gap:18px; flex-wrap:wrap;">
-        <div class="faint" id="ambSyncText" style="font-size:12.5px;">جارِ تحميل حالة المزامنة…</div>
-        <div style="flex:1;"></div>
-        <span class="badge" id="ambModeBadge" title="وضع التشغيل الحالي">—</span>
-        <button class="btn secondary small" id="ambBtnSyncNow">🔄 مزامنة الآن</button>
-      </div>
-
-      <div class="amb-tabs" id="ambTabs"></div>
-
-      <div id="ambTabOverview" class="amb-tab-panel"></div>
-      <div id="ambTabProducts" class="amb-tab-panel" hidden></div>
-      <div id="ambTabCampaigns" class="amb-tab-panel" hidden></div>
-      <div id="ambTabWinners" class="amb-tab-panel" hidden></div>
-      <div id="ambTabPlan" class="amb-tab-panel" hidden></div>
-      <div id="ambTabHistory" class="amb-tab-panel" hidden></div>
-      <div id="ambTabSettings" class="amb-tab-panel" hidden></div>
     </div>
   </div>
 
-  <!-- Generic drawer (product editor / rec details) -->
+  <!-- Generic drawer (recommendation / product details) -->
   <div class="drawer-overlay" id="ambDrawerOverlay">
     <div class="drawer-panel" id="ambDrawerPanel"></div>
   </div>
