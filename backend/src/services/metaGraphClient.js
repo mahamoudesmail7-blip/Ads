@@ -484,7 +484,10 @@ export async function getAdNodes(token, campaignId) {
   }, token);
 }
 
-/** Full ad-creative spec for the deep clone. */
+/** Full ad-creative spec for the deep clone. Includes object_story_id /
+ * effective_object_story_id / actor_id so a "flat" creative (a boosted
+ * organic post, or an Advantage+ creative with no object_story_spec) can be
+ * detected and reconstructed correctly. */
 export async function getCreativeNode(token, creativeId) {
   return graphFetch(`/${creativeId}`, {
     fields: [
@@ -492,6 +495,7 @@ export async function getCreativeNode(token, creativeId) {
       'title', 'body', 'image_hash', 'image_url', 'video_id', 'thumbnail_url', 'call_to_action_type',
       'link_url', 'url_tags', 'template_url_spec', 'product_set_id', 'instagram_user_id',
       'instagram_permalink_url', 'effective_instagram_media_id', 'contextual_multi_ads', 'authorization_category',
+      'object_story_id', 'effective_object_story_id', 'actor_id', 'template_url',
     ].join(','),
   }, token);
 }

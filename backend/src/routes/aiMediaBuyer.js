@@ -238,8 +238,22 @@ router.get('/clone/campaigns', asyncRoute(async (req, res) => {
 
 router.post('/clone/preview', asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  const { sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime } = req.body || {};
-  res.json(await clone.buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime }));
+  const { sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted } = req.body || {};
+  res.json(await clone.buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted }));
+}));
+
+// Facebook pages the connected user can see (for the destination-page override on a clone).
+router.get('/clone/pages', asyncRoute(async (req, res) => {
+  const { getDecryptedToken } = await import('../services/metaAuth.js');
+  const { graphGetQuiet, graphListQuiet } = await import('../services/metaGraphClient.js');
+  let token;
+  try { token = await getDecryptedToken(); } catch (e) { return res.status(400).json({ error: 'NOT_CONNECTED', message: e.message }); }
+  const own = (await graphGetQuiet('/me/accounts', { fields: 'id,name,username', limit: 200 }, token))?.data || [];
+  const acct = req.query.accountId ? await graphGetQuiet(`/${req.query.accountId}`, { fields: 'business{owned_pages.limit(200){id,name},client_pages.limit(200){id,name}}' }, token) : null;
+  const viaBiz = [...(acct?.business?.owned_pages?.data || []), ...(acct?.business?.client_pages?.data || [])];
+  const byId = new Map();
+  for (const p of [...own, ...viaBiz]) byId.set(p.id, { id: p.id, name: p.name || p.username || p.id });
+  res.json({ pages: [...byId.values()] });
 }));
 
 router.get('/clone/batches', asyncRoute(async (req, res) => {
@@ -254,8 +268,8 @@ router.get('/clone/batches/:batchId', asyncRoute(async (req, res) => {
 
 router.post('/clone/batches', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime } = req.body || {};
-  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, userId: req.user.id }));
+  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted } = req.body || {};
+  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted, userId: req.user.id }));
 }));
 
 router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
@@ -271,6 +285,17 @@ router.post('/clone/batches/:batchId/resume', requireRole('ADMIN'), asyncRoute(a
 router.post('/clone/batches/:batchId/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
   res.json(await clone.cancelBatch({ batchId: req.params.batchId, userId: req.user.id }));
+}));
+
+// Re-fetch every created object from Meta and diff it against the source
+// (never trusts the POST response). MATCH / WARNING / MISMATCH per field.
+router.get('/clone/batches/:batchId/verify', asyncRoute(async (req, res) => {
+  const { verifyBatch } = await import('../services/amb/cloneVerify.js');
+  res.json(await verifyBatch(req.params.batchId));
+}));
+router.get('/clone/jobs/:jobId/verify', asyncRoute(async (req, res) => {
+  const { verifyJob } = await import('../services/amb/cloneVerify.js');
+  res.json(await verifyJob(req.params.jobId));
 }));
 
 // ---------------------------------------------------------------------------
@@ -315,8 +340,8 @@ router.post('/media-library/scan', asyncRoute(async (req, res) => {
 
 router.post('/media-library/assets/:id/scaling-plan', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const { buildScalingPlan } = await import('../services/amb/mediaLibraryIntel.js');
-  const { destinationAccountIds, scheduleLocalTime, window } = req.body || {};
-  res.status(201).json(await buildScalingPlan({ assetId: req.params.id, destinationAccountIds, scheduleLocalTime, windowName: window, userId: req.user.id }));
+  const { destinationAccountIds, scheduleLocalTime, destinationPageId, recreateBoosted, window } = req.body || {};
+  res.status(201).json(await buildScalingPlan({ assetId: req.params.id, destinationAccountIds, scheduleLocalTime, destinationPageId, recreateBoosted, windowName: window, userId: req.user.id }));
 }));
 
 // ---------------------------------------------------------------------------

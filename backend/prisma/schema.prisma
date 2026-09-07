@@ -1344,6 +1344,15 @@ model AmbCloneBatch {
   destination_account_ids_json String // JSON string[] — destination act_ ids (the source id can never be in here)
   campaign_ids_json            String // JSON string[] — the source campaign ids the user explicitly picked
   schedule_local_time          String    @default("00:00") // HH:MM, interpreted in each destination account's timezone
+  // Optional: post every cloned ad as THIS page in the destination account.
+  // Needed when the source creatives carry no page_id (Advantage+ creatives)
+  // or are boosted organic posts, and to satisfy a destination account that
+  // has its own page. Null ⇒ use whatever page_id the source creative carries.
+  destination_page_id          String?
+  // Opt-in: recreate a boosted-organic-post ad (object_story_id, no spec) as a
+  // fresh ad on destination_page_id. Off ⇒ such creatives are BLOCKED (a
+  // boosted post cannot be faithfully cloned to another page).
+  recreate_boosted             Boolean   @default(false)
   total_copies                 Int       @default(0) // selected campaigns × destination accounts
   // DRAFT | PENDING_APPROVAL | APPROVED | CLONING | SCHEDULED | PARTIALLY_FAILED
   // | COMPLETED | CANCELLED | FAILED
@@ -1379,6 +1388,7 @@ model AmbCloneJob {
   source_campaign_id        String
   source_campaign_name      String?
   destination_campaign_id   String? // set once the campaign shell is created in the destination
+  destination_page_id       String? // denormalized from the batch for the worker (post cloned ads as this page)
   // PENDING | PREFLIGHT_BLOCKED | CLONING | CLONED_PAUSED | ACTIVATION_PENDING
   // | ACTIVATED | ACTIVATION_FAILED | FAILED | CANCELLED
   status                    String        @default("PENDING")

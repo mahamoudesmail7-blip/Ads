@@ -38,6 +38,26 @@ const running = new Set(); // batch_ids with an in-flight runBatch()
 
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
 function isoOrNull(d) { return d ? new Date(d).toISOString() : null; }
+
+/** Full, un-generalised Meta error string (message + code/subcode/type/fbtrace) for the audit + job error. */
+function metaErr(e) {
+  const bits = [e?.message || String(e)];
+  const tags = [];
+  if (e?.graphCode != null) tags.push(`code=${e.graphCode}`);
+  if (e?.graphSubcode != null) tags.push(`subcode=${e.graphSubcode}`);
+  if (e?.graphType) tags.push(`type=${e.graphType}`);
+  if (e?.fbtraceId) tags.push(`fbtrace_id=${e.fbtraceId}`);
+  return tags.length ? `${bits[0]} [${tags.join(', ')}]` : bits[0];
+}
+function metaErrData(e) {
+  return { message: e?.message || String(e), code: e?.graphCode ?? null, subcode: e?.graphSubcode ?? null, type: e?.graphType ?? null, fbtraceId: e?.fbtraceId ?? null };
+}
+/** Does this Meta error look like "the referenced image/video/creative asset isn't usable here"? (⇒ try a re-upload fallback) */
+function isAssetRefError(e) {
+  if (!e) return false;
+  if (e.graphCode === 100 || e.graphCode === 190 || e.graphCode === 200 || e.graphCode === 2635) return true;
+  return /video|image_hash|image hash|creative|asset|not (be )?found|does not exist|cannot (be )?access|no permission|permission|invalid parameter/i.test(e.message || '');
+}
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function daysAgoISO(n) { const d = new Date(); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); }
 
@@ -150,7 +170,7 @@ export async function listSourceCampaigns({ accountId }) {
  * Build the full REVIEW payload: resolves every (campaign × destination)
  * pre-flight and the per-destination scheduled activation instant. Pure read.
  */
-export async function buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime }) {
+export async function buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, recreateBoosted = false }) {
   if (!sourceAccountId) { const e = new Error('لازم تختار حساب مصدر واحد.'); e.status = 400; throw e; }
   const dests = [...new Set((destinationAccountIds || []).filter((x) => x && x !== sourceAccountId))];
   const camps = [...new Set((campaignIds || []).filter(Boolean))];
@@ -194,7 +214,12 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
         rows.push({ campaignId: cid, campaignName: campName, destinationAccountId: d, destinationAccountName: destAcct.name, destinationTimezone: destAcct.timezoneName || null, scheduledActivationAt: schedAt.toISOString(), status: 'BLOCKED', checks: [{ name: 'قراءة الحملة المصدر', status: 'BLOCK', detail: tree.__error }], required: {}, currencyMismatch: false });
         continue;
       }
-      const pf = preflightCampaignForDestination({ tree, sourceAssets: srcAssets.get(cid), destAssets: destInv.get(d) });
+      const libHints = new Map();
+      for (const [crId, crNode] of tree.creatives) {
+        if (!crNode || crNode.__error) continue;
+        libHints.set(crId, await libraryDestHints(crNode, d).catch(() => ({ reuseImageHashes: new Set(), videoBySrc: new Map(), assetId: null })));
+      }
+      const pf = preflightCampaignForDestination({ tree, sourceAssets: srcAssets.get(cid), destAssets: destInv.get(d), libraryHintsByCreative: libHints, pageIdOverride: destinationPageId, recreateBoosted });
       const currencyMismatch = !!(sourceAccount.currency && destAcct.currency && sourceAccount.currency !== destAcct.currency);
       if (currencyMismatch) pf.checks.push({ name: 'العملة', status: 'WARN', detail: `عملة المصدر (${sourceAccount.currency}) تختلف عن الوجهة (${destAcct.currency}) — سيتم نسخ قيمة الميزانية كما هي، راجعها.` });
       const status = pf.checks.some((c) => c.status === 'BLOCK') ? 'BLOCKED' : pf.checks.some((c) => c.status === 'WARN') ? 'WARNING' : 'READY';
@@ -228,7 +253,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, recreateBoosted = false, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
@@ -237,7 +262,8 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
   // One read-only pass computes the pre-flight matrix + per-destination
   // schedule. The engine re-runs a fresh pre-flight per job at clone time, so
   // we only persist the API-safe rows here (no server-only `_resolved`).
-  const preview = await buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime });
+  const destPage = destinationPageId && /^\d{5,}$/.test(String(destinationPageId)) ? String(destinationPageId) : null;
+  const preview = await buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId: destPage, recreateBoosted: !!recreateBoosted && !!destPage });
   const dests = preview.destinations.map((d) => d.id);
   const camps = preview.campaigns.map((c) => c.id);
 
@@ -249,6 +275,8 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
       destination_account_ids_json: JSON.stringify(dests),
       campaign_ids_json: JSON.stringify(camps),
       schedule_local_time: preview.scheduleLocalTime,
+      destination_page_id: destPage,
+      recreate_boosted: !!recreateBoosted && !!destPage,
       total_copies: preview.totalCopies,
       status: 'PENDING_APPROVAL',
       preflight_json: JSON.stringify(preview.matrix),
@@ -270,6 +298,7 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
           destination_timezone: row?.destinationTimezone || null,
           source_campaign_id: cid,
           source_campaign_name: preview.campaigns.find((c) => c.id === cid)?.name || null,
+          destination_page_id: destPage,
           status: row?.status === 'BLOCKED' ? 'PREFLIGHT_BLOCKED' : 'PENDING',
           preflight_status: row?.status || 'READY',
           preflight_json: JSON.stringify(row || {}),
@@ -394,12 +423,14 @@ async function objRow(jobId, batchId, level, sourceId, extra = {}) {
 async function markObj(id, data) { return prisma.ambCloneObjectMap.update({ where: { id }, data }); }
 
 async function cloneJob(jobId, token) {
-  const job = await prisma.ambCloneJob.findUnique({ where: { id: jobId } });
+  const job = await prisma.ambCloneJob.findUnique({ where: { id: jobId }, include: { batch: true } });
   if (!job || TERMINAL_JOB.has(job.status) || job.status === 'PREFLIGHT_BLOCKED') return;
   const batchId = job.batch_id;
   const dest = job.destination_ad_account_id;
   const src = job.source_ad_account_id;
   if (dest === src) throw new Error('حساب الوجهة لا يمكن أن يكون نفس المصدر.'); // hard guard — never write to source
+  const destPageId = job.destination_page_id || job.batch?.destination_page_id || null;
+  const recreateBoosted = !!job.batch?.recreate_boosted;
 
   await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'CLONING', attempts: { increment: 1 }, last_attempt_at: new Date(), error: null } });
   await audit(batchId, jobId, 'CLONE_START', { detail: `${job.source_campaign_name || job.source_campaign_id} → ${job.destination_account_name || dest}` });
@@ -411,7 +442,12 @@ async function cloneJob(jobId, token) {
   const tree = await readCampaignTree(token, job.source_campaign_id);
   const sourceAssets = await resolveSourceAssets(token, src, tree);
   const destAssets = await getAccountAssetsForClone(token, dest);
-  const freshPf = preflightCampaignForDestination({ tree, sourceAssets, destAssets });
+  const libHints = new Map();
+  for (const [crId, crNode] of tree.creatives) {
+    if (!crNode || crNode.__error) continue;
+    libHints.set(crId, await libraryDestHints(crNode, dest).catch(() => ({ reuseImageHashes: new Set(), videoBySrc: new Map(), assetId: null })));
+  }
+  const freshPf = preflightCampaignForDestination({ tree, sourceAssets, destAssets, libraryHintsByCreative: libHints, pageIdOverride: destPageId, recreateBoosted });
   if (freshPf.status === 'BLOCKED') {
     await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'PREFLIGHT_BLOCKED', preflight_status: 'BLOCKED', preflight_json: JSON.stringify({ ...pf, checks: freshPf.checks }), error: 'محجوب في إعادة فحص ما قبل الاستنساخ.' } });
     await audit(batchId, jobId, 'JOB_FAILED', { detail: 'إعادة فحص ما قبل الاستنساخ رجعت BLOCKED: ' + (freshPf.checks.find((c) => c.status === 'BLOCK')?.detail || '') });
@@ -449,9 +485,9 @@ async function cloneJob(jobId, token) {
         await markObj(row.id, { status: 'CREATED', destination_id: newCampaignId, payload_json: JSON.stringify(payload) });
         await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CAMPAIGN', source_id: job.source_campaign_id, destination_id: newCampaignId });
       } catch (err) {
-        await markObj(row.id, { status: 'FAILED', error: err.message?.slice(0, 500), payload_json: JSON.stringify(payload) });
-        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'CAMPAIGN', source_id: job.source_campaign_id, detail: err.message });
-        await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'FAILED', error: `فشل إنشاء الحملة: ${err.message}`.slice(0, 800) } });
+        await markObj(row.id, { status: 'FAILED', error: metaErr(err).slice(0, 500), payload_json: JSON.stringify(payload) });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'CAMPAIGN', source_id: job.source_campaign_id, detail: metaErr(err), data: metaErrData(err) });
+        await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'FAILED', error: `فشل إنشاء الحملة: ${metaErr(err)}`.slice(0, 800) } });
         return; // no campaign ⇒ nothing else can be created
       }
     }
@@ -459,55 +495,111 @@ async function cloneJob(jobId, token) {
     await prisma.ambCloneJob.update({ where: { id: jobId }, data: { destination_campaign_id: newCampaignId } });
   }
 
-  // ---- helper: get the destination-account asset for a source asset, cached per job ----
-  // Priority (spec item 6): 1) reuse an asset already accessible in the
-  // destination (Media Library says its hash/id is present there) → no
-  // re-upload; 2) otherwise re-upload the original from the Media Library /
-  // resolved source URL and remap the id; 3) BLOCK only when neither is
-  // possible.
-  async function destImageHash(srcHash, hints) {
+  // ---- destination-asset resolver (cached per job), reuse-first ----
+  // Order (spec Phase 2): 1) an asset already in the destination (Media
+  // Library dest ref) → no work; 2) a SHARED Meta asset referenced directly
+  // (same image hash / same video_id — works across a Business Portfolio) →
+  // provisional, confirmed when the creative create succeeds; 3) re-upload the
+  // original; 4) only then the object FAILS. `assetTrace` records every
+  // strategy tried per source id for the debug report.
+  const assetTrace = { images: {}, videos: {} };
+  async function destImageHash(srcHash, hints, { forceReupload } = {}) {
     if (!srcHash) return null;
     if (idMap.images[srcHash]) return idMap.images[srcHash];
+    const tr = (assetTrace.images[srcHash] = assetTrace.images[srcHash] || { tried: [] });
     const row = await objRow(jobId, batchId, 'IMAGE', srcHash);
     if (row.status === 'CREATED' && row.destination_id) { idMap.images[srcHash] = row.destination_id; return row.destination_id; }
-    // 1) already usable in the destination (image hashes are content-derived → identical across accounts)
-    if (hints?.reuseImageHashes?.has(srcHash)) {
+    if (!forceReupload) {
+      // 1) already in the destination (library ref)
+      if (hints?.reuseImageHashes?.has(srcHash)) {
+        tr.tried.push('DEST_LIBRARY_REF'); tr.strategy = 'DEST_LIBRARY_REF';
+        idMap.images[srcHash] = srcHash;
+        await markObj(row.id, { status: 'CREATED', destination_id: srcHash, payload_json: JSON.stringify({ strategy: 'DEST_LIBRARY_REF' }) });
+        await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'IMAGE', source_id: srcHash, destination_id: srcHash, detail: 'الصورة متاحة بالفعل في الحساب الوجهة (المكتبة)' });
+        return srcHash;
+      }
+      // 2) shared reference — image_hash is content-derived, so the source hash
+      //    is valid in the destination if the bytes ever landed there. Provisional.
+      tr.tried.push('SHARED_HASH'); tr.strategy = 'SHARED_HASH';
+      await markObj(row.id, { status: 'PENDING', payload_json: JSON.stringify({ strategy: 'SHARED_HASH', provisional: true }) });
       idMap.images[srcHash] = srcHash;
-      await markObj(row.id, { status: 'CREATED', destination_id: srcHash, payload_json: JSON.stringify({ reused: 'MEDIA_LIBRARY_SHARED' }) });
-      await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'IMAGE', source_id: srcHash, destination_id: srcHash, detail: 'أُعيد استخدام أصل متاح في الحساب الوجهة' });
       return srcHash;
     }
-    // 2) re-upload the original
+    // 3) re-upload
+    tr.tried.push('REUPLOAD');
     const url = R.imageUrls[srcHash];
-    if (!url) { await markObj(row.id, { status: 'FAILED', error: 'لا يوجد رابط مصدر للصورة.' }); throw new Error(`لا يمكن إعادة رفع الصورة (${srcHash.slice(0, 12)}…)`); }
+    if (!url) {
+      tr.strategy = 'FAILED';
+      await markObj(row.id, { status: 'FAILED', error: 'كل طرق إعادة الاستخدام فشلت ولا يوجد ملف/رابط مصدر لإعادة رفع الصورة.' });
+      throw new Error(`صورة (${srcHash.slice(0, 12)}…) — تعذّرت إعادة الاستخدام وإعادة الرفع`);
+    }
     const up = await uploadAdImageFromUrl(token, dest, url);
+    tr.strategy = 'REUPLOAD';
     idMap.images[srcHash] = up.hash;
-    await markObj(row.id, { status: 'CREATED', destination_id: up.hash, payload_json: JSON.stringify({ from: url }) });
-    await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'IMAGE', source_id: srcHash, destination_id: up.hash });
+    await markObj(row.id, { status: 'CREATED', destination_id: up.hash, payload_json: JSON.stringify({ strategy: 'REUPLOAD', from: url }) });
+    await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'IMAGE', source_id: srcHash, destination_id: up.hash, detail: 'إعادة رفع الصورة الأصلية' });
     return up.hash;
   }
-  async function destVideoId(srcId, hints) {
+  async function destVideoId(srcId, hints, { forceReupload } = {}) {
     if (!srcId) return null;
     srcId = String(srcId);
     if (idMap.videos[srcId]) return idMap.videos[srcId];
+    const tr = (assetTrace.videos[srcId] = assetTrace.videos[srcId] || { tried: [], libraryAssetId: hints?.assetId || null, knownDestVideoIds: hints?.videoBySrc ? [...hints.videoBySrc.values()] : [] });
     const row = await objRow(jobId, batchId, 'VIDEO', srcId);
     if (row.status === 'CREATED' && row.destination_id) { idMap.videos[srcId] = row.destination_id; return row.destination_id; }
-    // 1) the destination account already has this underlying video (from a prior clone / organic discovery)
-    const reuse = hints?.videoBySrc?.get(srcId);
-    if (reuse) {
-      idMap.videos[srcId] = reuse;
-      await markObj(row.id, { status: 'CREATED', destination_id: reuse, payload_json: JSON.stringify({ reused: 'MEDIA_LIBRARY' }) });
-      await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'VIDEO', source_id: srcId, destination_id: reuse, detail: 'أُعيد استخدام فيديو متاح في الحساب الوجهة' });
-      return reuse;
+    if (!forceReupload) {
+      // 1) a copy already in the destination (Media Library dest ref)
+      const reuse = hints?.videoBySrc?.get(srcId);
+      if (reuse) {
+        tr.tried.push('DEST_LIBRARY_REF'); tr.strategy = 'DEST_LIBRARY_REF';
+        idMap.videos[srcId] = reuse;
+        await markObj(row.id, { status: 'CREATED', destination_id: reuse, payload_json: JSON.stringify({ strategy: 'DEST_LIBRARY_REF' }) });
+        await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'VIDEO', source_id: srcId, destination_id: reuse, detail: 'فيديو له نسخة بالفعل في الحساب الوجهة (المكتبة)' });
+        return reuse;
+      }
+      // 2) shared reference — try the SOURCE video_id directly (Page-owned /
+      //    Business-Portfolio-shared videos are usable across accounts).
+      //    Provisional: confirmed only if the creative create accepts it.
+      tr.tried.push('SHARED_REFERENCE'); tr.strategy = 'SHARED_REFERENCE';
+      await markObj(row.id, { status: 'PENDING', payload_json: JSON.stringify({ strategy: 'SHARED_REFERENCE', tried: 'source_video_id', provisional: true }) });
+      idMap.videos[srcId] = srcId;
+      return srcId;
     }
-    // 2) re-upload the original
+    // 3) re-upload from a real source file
+    tr.tried.push('REUPLOAD');
     const url = R.videoSources[srcId];
-    if (!url) { await markObj(row.id, { status: 'FAILED', error: 'لا يوجد ملف مصدر للفيديو.' }); throw new Error(`لا يمكن إعادة رفع الفيديو (${srcId})`); }
+    if (!url) {
+      tr.strategy = 'FAILED';
+      await markObj(row.id, { status: 'FAILED', error: metaTrace(tr, 'كل طرق إعادة الاستخدام فشلت (نسخة بالوجهة / مرجع مشترك / المكتبة) ولا يوجد ملف مصدر لإعادة الرفع.') });
+      throw new Error(`فيديو (${srcId}) — تعذّرت كل طرق إعادة الاستخدام وإعادة الرفع`);
+    }
     const up = await uploadAdVideoFromUrl(token, dest, url, `clone-${srcId}`);
+    tr.strategy = 'REUPLOAD';
     idMap.videos[srcId] = up.id;
-    await markObj(row.id, { status: 'CREATED', destination_id: up.id, payload_json: JSON.stringify({ from: url }) });
-    await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'VIDEO', source_id: srcId, destination_id: up.id });
+    await markObj(row.id, { status: 'CREATED', destination_id: up.id, payload_json: JSON.stringify({ strategy: 'REUPLOAD', from: url }) });
+    await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'VIDEO', source_id: srcId, destination_id: up.id, detail: 'إعادة رفع الفيديو الأصلي' });
     return up.id;
+  }
+  function metaTrace(tr, msg) { return `${msg} [tried=${(tr.tried || []).join('>')}]`; }
+  /** Confirm every still-provisional shared reference as CREATED once the creative it feeds has been accepted by Meta. */
+  async function confirmProvisionalAssets() {
+    for (const [s, d] of Object.entries(idMap.images)) {
+      if (String(s) !== String(d)) continue;
+      const r = await objRow(jobId, batchId, 'IMAGE', s);
+      if (r.status !== 'CREATED') { await markObj(r.id, { status: 'CREATED', destination_id: s, payload_json: JSON.stringify({ strategy: 'SHARED_HASH' }) }); await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'IMAGE', source_id: s, destination_id: s, detail: 'مرجع مشترك — نفس image_hash' }); }
+    }
+    for (const [s, d] of Object.entries(idMap.videos)) {
+      if (String(s) !== String(d)) continue;
+      const r = await objRow(jobId, batchId, 'VIDEO', s);
+      if (r.status !== 'CREATED') { await markObj(r.id, { status: 'CREATED', destination_id: s, payload_json: JSON.stringify({ strategy: 'SHARED_REFERENCE' }) }); await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'VIDEO', source_id: s, destination_id: s, detail: 'مرجع مشترك — نفس video_id عبر Business Portfolio' }); }
+    }
+  }
+  /** Drop the job cache + reset object rows for the still-provisional shared references (so a forced re-upload runs). */
+  async function dropProvisionalAssets() {
+    const dropped = { images: [], videos: [] };
+    for (const [s, d] of Object.entries(idMap.images)) if (String(s) === String(d)) { dropped.images.push(s); delete idMap.images[s]; const r = await objRow(jobId, batchId, 'IMAGE', s); await markObj(r.id, { status: 'PENDING', error: null }); }
+    for (const [s, d] of Object.entries(idMap.videos)) if (String(s) === String(d)) { dropped.videos.push(s); delete idMap.videos[s]; const r = await objRow(jobId, batchId, 'VIDEO', s); await markObj(r.id, { status: 'PENDING', error: null }); }
+    return dropped;
   }
 
   // ---- 2) Ad sets ----
@@ -534,8 +626,8 @@ async function cloneJob(jobId, token) {
         await markObj(row.id, { status: 'CREATED', destination_id: newAdsetId, payload_json: JSON.stringify(payload).slice(0, 6000) });
         await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'ADSET', source_id: as.id, destination_id: newAdsetId });
       } catch (err) {
-        await markObj(row.id, { status: 'FAILED', error: err.message?.slice(0, 500) });
-        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'ADSET', source_id: as.id, detail: err.message });
+        await markObj(row.id, { status: 'FAILED', error: metaErr(err).slice(0, 500) });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'ADSET', source_id: as.id, detail: metaErr(err), data: metaErrData(err) });
         continue; // skip this ad set's ads; other ad sets still try
       }
     }
@@ -550,23 +642,64 @@ async function cloneJob(jobId, token) {
           newCreativeId = crow.destination_id;
           idMap.creatives[srcCreative.id] = newCreativeId;
         } else {
+          // Media Library: what does the destination account already have for this asset?
+          const hints = await libraryDestHints(srcCreative, dest).catch(() => null);
+          let payload = null; let res = null; let finalErr = null;
           try {
-            // Media Library: what does the destination account already have for this creative's underlying asset?
-            const hints = await libraryDestHints(srcCreative, dest).catch(() => null);
-            const payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints });
-            const res = await createAdCreative(token, dest, payload);
+            payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints, pageId: destPageId, recreateBoosted });
+            res = await createAdCreative(token, dest, payload);
+          } catch (err1) {
+            // A shared reference (same image_hash / video_id) was rejected —
+            // fall back to re-uploading exactly those assets, then retry once.
+            const provisionalV = Object.entries(idMap.videos).filter(([s, d]) => String(s) === String(d)).map(([s]) => s);
+            const provisionalI = Object.entries(idMap.images).filter(([s, d]) => String(s) === String(d)).map(([s]) => s);
+            if (isAssetRefError(err1) && (provisionalV.length || provisionalI.length)) {
+              await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `المرجع المشترك اترفض (${metaErr(err1)}) — إعادة رفع ${provisionalV.length} فيديو / ${provisionalI.length} صورة`, data: { metaError: metaErrData(err1), provisionalVideos: provisionalV, provisionalImages: provisionalI } });
+              await dropProvisionalAssets();
+              try {
+                payload = await buildCreativePayload(srcCreative, {
+                  destImageHash: (h, hh, o) => destImageHash(h, hh, { ...o, forceReupload: true }),
+                  destVideoId: (v, hh, o) => destVideoId(v, hh, { ...o, forceReupload: true }),
+                  hints, pageId: destPageId, recreateBoosted,
+                });
+                res = await createAdCreative(token, dest, payload);
+              } catch (err2) { finalErr = err2; }
+            } else {
+              finalErr = err1;
+            }
+          }
+
+          if (res && !finalErr) {
             newCreativeId = res.id;
             idMap.creatives[srcCreative.id] = newCreativeId;
             counts.creatives++;
+            await confirmProvisionalAssets();
             await markObj(crow.id, { status: 'CREATED', destination_id: newCreativeId, payload_json: JSON.stringify(payload).slice(0, 6000) });
-            await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CREATIVE', source_id: srcCreative.id, destination_id: newCreativeId });
-            // Register the new creative in the Media Library so the next clone to
-            // this account reuses it and the cross-account map grows.
+            await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CREATIVE', source_id: srcCreative.id, destination_id: newCreativeId, data: { assetTrace } });
             const used = collectAssetIds(payload);
             registerClonedCreativeRef({ srcNode: srcCreative, destAccountId: dest, destCreativeId: newCreativeId, destImageHashes: used.imageHashes, destVideoIds: used.videoIds, cloneJobId: jobId }).catch(() => {});
-          } catch (err) {
-            await markObj(crow.id, { status: 'FAILED', error: err.message?.slice(0, 500) });
-            await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'CREATIVE', source_id: srcCreative.id, detail: err.message });
+          } else {
+            // Every reuse + re-upload path failed — record the EXACT Meta error
+            // + the full attempt chain (Phase 4 debug requirement).
+            const detail = metaErr(finalErr);
+            const vFirst = Object.keys(assetTrace.videos)[0];
+            await markObj(crow.id, { status: 'FAILED', error: detail.slice(0, 500) });
+            await audit(batchId, jobId, 'OBJECT_FAILED', {
+              level: 'CREATIVE', source_id: srcCreative.id, detail,
+              data: {
+                sourceCreativeId: srcCreative.id,
+                destinationAccount: dest,
+                libraryAssetId: hints?.assetId || null,
+                assetTrace,
+                sourceVideoIds: Object.keys(assetTrace.videos),
+                sourceVideoId: vFirst || null,
+                knownDestVideoIds: hints?.videoBySrc ? [...hints.videoBySrc.values()] : [],
+                triedSharedReference: Object.values(assetTrace.videos).some((t) => (t.tried || []).includes('SHARED_REFERENCE')) || Object.values(assetTrace.images).some((t) => (t.tried || []).includes('SHARED_HASH')),
+                triedLibraryReuse: Object.values(assetTrace.videos).some((t) => (t.tried || []).includes('DEST_LIBRARY_REF')) || Object.values(assetTrace.images).some((t) => (t.tried || []).includes('DEST_LIBRARY_REF')),
+                triedReupload: Object.values(assetTrace.videos).some((t) => (t.tried || []).includes('REUPLOAD')) || Object.values(assetTrace.images).some((t) => (t.tried || []).includes('REUPLOAD')),
+                metaError: metaErrData(finalErr),
+              },
+            });
           }
         }
       }
@@ -588,8 +721,8 @@ async function cloneJob(jobId, token) {
         await markObj(arow.id, { status: 'CREATED', destination_id: res.id, payload_json: JSON.stringify(payload).slice(0, 4000) });
         await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'AD', source_id: ad.id, destination_id: res.id });
       } catch (err) {
-        await markObj(arow.id, { status: 'FAILED', error: err.message?.slice(0, 500) });
-        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'AD', source_id: ad.id, detail: err.message });
+        await markObj(arow.id, { status: 'FAILED', error: metaErr(err).slice(0, 500) });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'AD', source_id: ad.id, detail: metaErr(err), data: metaErrData(err) });
       }
     }
   }
@@ -670,21 +803,28 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved }) {
   return payload;
 }
 
-async function buildCreativePayload(cr, { destImageHash, destVideoId, hints }) {
-  if (cr.object_story_id && !cr.object_story_spec) {
-    throw new Error('الكرياتيف يعتمد على منشور صفحة موجود (object_story_id) — لا يمكن نسخه لحساب/صفحة أخرى تلقائيًا.');
-  }
-  const img = (h) => destImageHash(h, hints);
-  const vid = (v) => destVideoId(v, hints);
+const URL_RE = /(https?:\/\/[^\s"'<>)]+)/;
+
+async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pageId = null, recreateBoosted = false }) {
+  const img = (h, opt) => destImageHash(h, hints, opt);
+  const vid = (v, opt) => destVideoId(v, hints, opt);
   const payload = {};
   if (cr.name) payload.name = cr.name;
   if (cr.url_tags) payload.url_tags = cr.url_tags;
   if (cr.product_set_id) payload.product_set_id = cr.product_set_id;
   if (cr.degrees_of_freedom_spec) payload.degrees_of_freedom_spec = cr.degrees_of_freedom_spec;
+  if (cr.contextual_multi_ads) payload.contextual_multi_ads = cr.contextual_multi_ads;
   if (cr.authorization_category && cr.authorization_category !== 'NONE') payload.authorization_category = cr.authorization_category;
 
+  const boosted = !!cr.object_story_id && !cr.object_story_spec && !cr.asset_feed_spec;
+  if (boosted && !(recreateBoosted && pageId)) {
+    throw new Error('الكرياتيف يعتمد على منشور صفحة موجود (object_story_id) بدون object_story_spec — لا يمكن نسخه لحساب/صفحة أخرى إلا بتفعيل "إعادة إنشاء المنشورات المروّجة" وتحديد صفحة وجهة.');
+  }
+
+  // ---- has a real object_story_spec ----
   if (cr.object_story_spec) {
     const oss = deepClone(cr.object_story_spec);
+    if (pageId) oss.page_id = pageId; // destination page override (portfolio/own page)
     if (oss.link_data) {
       if (oss.link_data.image_hash) oss.link_data.image_hash = await img(oss.link_data.image_hash);
       for (const ch of oss.link_data.child_attachments || []) {
@@ -695,12 +835,12 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints }) {
     if (oss.video_data) {
       if (oss.video_data.video_id) oss.video_data.video_id = await vid(oss.video_data.video_id);
       if (oss.video_data.image_hash) oss.video_data.image_hash = await img(oss.video_data.image_hash);
-      // If the thumbnail was only an image_url, Meta will re-fetch it — leave as-is.
     }
     if (oss.photo_data && oss.photo_data.image_hash) oss.photo_data.image_hash = await img(oss.photo_data.image_hash);
     payload.object_story_spec = oss;
   }
 
+  // ---- Advantage+ asset_feed_spec (needs a page via object_story_spec) ----
   if (cr.asset_feed_spec) {
     const afs = deepClone(cr.asset_feed_spec);
     for (const im of afs.images || []) if (im.hash) im.hash = await img(im.hash);
@@ -709,11 +849,40 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints }) {
       if (v.thumbnail_hash) v.thumbnail_hash = await img(v.thumbnail_hash);
     }
     payload.asset_feed_spec = afs;
+    if (!payload.object_story_spec) {
+      const pg = pageId || cr.object_story_spec?.page_id;
+      if (!pg) throw new Error('كرياتيف Advantage+ (asset_feed_spec) بدون page_id — حدّد صفحة وجهة (destination_page_id) لهذه الدفعة.');
+      payload.object_story_spec = { page_id: pg };
+      if (cr.instagram_user_id) payload.object_story_spec.instagram_user_id = cr.instagram_user_id;
+    }
   }
 
+  // ---- reconstruct from a FLAT creative (boosted post or bare video/image) ----
   if (!payload.object_story_spec && !payload.asset_feed_spec) {
-    throw new Error('الكرياتيف بدون object_story_spec أو asset_feed_spec قابلة للنسخ.');
+    const pg = pageId || (cr.object_story_id ? String(cr.object_story_id).split('_')[0] : null) || cr.actor_id || null;
+    if (!pg) throw new Error('الكرياتيف بدون object_story_spec/asset_feed_spec ولا يمكن تحديد صفحة — حدّد صفحة وجهة.');
+    const link = (cr.body && (cr.body.match(URL_RE) || [])[1]) || cr.link_url || cr.template_url || null;
+    const oss = { page_id: pg };
+    if (cr.instagram_user_id) oss.instagram_user_id = cr.instagram_user_id;
+    const ctaType = cr.call_to_action_type || 'LEARN_MORE';
+    if (cr.video_id) {
+      const dv = await vid(cr.video_id);
+      oss.video_data = { video_id: dv, title: cr.title || undefined, message: cr.body || undefined };
+      if (cr.image_hash) oss.video_data.image_hash = await img(cr.image_hash);
+      else if (cr.thumbnail_url) oss.video_data.image_url = cr.thumbnail_url;
+      if (link) oss.video_data.call_to_action = { type: ctaType, value: { link } };
+      else if (ctaType !== 'LEARN_MORE') throw new Error(`الكرياتيف (فيديو) نوع CTA "${ctaType}" يحتاج رابطًا ولا يوجد رابط قابل للاستخراج من النص — حدّد رابطًا يدويًا.`);
+    } else if (cr.image_hash || cr.image_url) {
+      if (!link) throw new Error('الكرياتيف (صورة) بدون رابط وجهة قابل للاستخراج — حدّد رابطًا يدويًا.');
+      oss.link_data = { link, message: cr.body || undefined, name: cr.title || undefined, call_to_action: { type: ctaType, value: { link } } };
+      if (cr.image_hash) oss.link_data.image_hash = await img(cr.image_hash);
+      else oss.link_data.picture = cr.image_url;
+    } else {
+      throw new Error('الكرياتيف بلا وسائط (فيديو/صورة) يمكن إعادة بنائها.');
+    }
+    payload.object_story_spec = oss;
   }
+
   return payload;
 }
 
@@ -856,6 +1025,8 @@ export async function getBatch(batchId) {
     destinationAccountIds: j(b.destination_account_ids_json, []),
     campaignIds: j(b.campaign_ids_json, []),
     scheduleLocalTime: b.schedule_local_time,
+    destinationPageId: b.destination_page_id || null,
+    recreateBoosted: b.recreate_boosted,
     totalCopies: b.total_copies,
     sourceUnchanged: true,
     preflight: j(b.preflight_json, []),

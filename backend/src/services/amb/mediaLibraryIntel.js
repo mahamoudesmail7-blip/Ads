@@ -174,7 +174,7 @@ export async function mediaLibraryIntel({ windowName } = {}) {
  * Clone & Schedule batch to the chosen destination accounts. Nothing is sent
  * to Meta — the owner reviews + approves that batch through the existing flow.
  */
-export async function buildScalingPlan({ assetId, destinationAccountIds, scheduleLocalTime, windowName, userId }) {
+export async function buildScalingPlan({ assetId, destinationAccountIds, scheduleLocalTime, destinationPageId = null, recreateBoosted = false, windowName, userId }) {
   const dests = [...new Set((destinationAccountIds || []).filter(Boolean))];
   if (!dests.length) { const e = new Error('اختر حساب وجهة واحد على الأقل.'); e.status = 400; throw e; }
 
@@ -207,6 +207,8 @@ export async function buildScalingPlan({ assetId, destinationAccountIds, schedul
     destinationAccountIds: dests,
     campaignIds,
     scheduleLocalTime,
+    destinationPageId,
+    recreateBoosted,
     userId,
   });
 
