@@ -987,6 +987,19 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
 
 const URL_RE = /(https?:\/\/[^\s"'<>)]+)/;
 
+/** Drop the deprecated `standard_enhancements` toggle from a degrees_of_freedom_spec (Meta rejects it on AdCreative create). Returns a cleaned copy, or undefined when nothing usable is left. */
+function stripStandardEnhancements(dof) {
+  if (!dof || typeof dof !== 'object') return undefined;
+  const d = JSON.parse(JSON.stringify(dof));
+  const cfs = d.creative_features_spec;
+  if (cfs && typeof cfs === 'object') {
+    delete cfs.standard_enhancements;
+    delete cfs.standard_enhancements_catalog;
+    if (!Object.keys(cfs).length) delete d.creative_features_spec;
+  }
+  return Object.keys(d).length ? d : undefined;
+}
+
 async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pageId = null, igId = null, identityMap = {}, allowPageOnlyIg = true, recreateBoosted = false, adUrlOverride = null }) {
   void recreateBoosted; // reconstruction is now the default when a destination identity is resolvable
   const pc = cr.__postContent || null; // recovered underlying Page-post copy fields (SHARE creatives)
@@ -1010,7 +1023,13 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pag
   if (cr.name) payload.name = cr.name;
   if (cr.url_tags) payload.url_tags = cr.url_tags;
   if (cr.product_set_id) payload.product_set_id = cr.product_set_id;
-  if (cr.degrees_of_freedom_spec) payload.degrees_of_freedom_spec = cr.degrees_of_freedom_spec;
+  // degrees_of_freedom_spec: Meta now REJECTS `standard_enhancements` on
+  // creative create ("(#100) 3858504 Creative should not include standard
+  // enhancements" — deprecated). Strip only that toggle; keep everything else
+  // (text_optimizations, image_*, etc.). This is a forced Meta deprecation,
+  // not a content change — the copied ad just doesn't carry that one flag.
+  const dof = stripStandardEnhancements(cr.degrees_of_freedom_spec);
+  if (dof) payload.degrees_of_freedom_spec = dof;
   if (cr.contextual_multi_ads) payload.contextual_multi_ads = cr.contextual_multi_ads;
   if (cr.authorization_category && cr.authorization_category !== 'NONE') payload.authorization_category = cr.authorization_category;
 
