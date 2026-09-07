@@ -57,7 +57,14 @@ async function loadBusinesses() {
   const line = (label, arr) => arr && arr.length
     ? `<div style="font-size:12px; margin-top:4px;"><span class="faint">${label}:</span> ${arr.map((x) => esc(x.name || x.username || x.id)).join('، ')}</div>`
     : '';
-  el.innerHTML = (data.businesses || []).map((b) => {
+  const up = data.userPages || [];
+  const ui = data.userInstagram || [];
+  const userBlock = `<div style="border:1px solid var(--accent-dim,#2a5); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:rgba(40,160,90,.06);">
+    <b style="font-size:13px;">📘 صفحاتك على فيسبوك / انستجرام (من حسابك نفسه)</b>
+    ${up.length ? `<div style="font-size:12px; margin-top:6px;"><span class="faint">Pages (${up.length}):</span> ${up.map((p) => esc(p.name)).join('، ')}</div>` : '<div class="faint" style="font-size:12px; margin-top:6px;">مفيش صفحات ظاهرة — لازم توافق على صلاحية <b>pages_show_list</b> في إعادة الربط.</div>'}
+    ${ui.length ? `<div style="font-size:12px; margin-top:3px;"><span class="faint">Instagram (${ui.length}):</span> ${ui.map((g) => esc(g.name)).join('، ')}</div>` : ''}
+  </div>`;
+  el.innerHTML = userBlock + (data.businesses || []).map((b) => {
     const [txt, color] = BIZ_STATUS[b.status] || [b.status, '#888'];
     const accts = (b.adAccounts || []).map((a) => `<span class="mono" style="font-size:11px;">${esc(a.name || a.id)}</span>`).join('، ');
     return `<div style="border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:10px 12px; margin-bottom:8px;">
@@ -164,10 +171,10 @@ async function init() {
   if (reauthBtn) reauthBtn.onclick = async () => {
     const ok = await UI.confirmModal({
       title: 'إعادة ربط Meta',
-      message: 'هتفتح شاشة فيسبوك تاني عشان تضيف Business Portfolios أو صلاحيات ناقصة. <b>مهم:</b> سجّل دخول بنفس حساب Meta الحالي، وفي شاشة اختيار الأصول اختار <b>كل الـ Business Portfolios</b> (مش واحد بس). الاتصال الحالي مش هيتقطع.',
+      message: 'هتفتح شاشة فيسبوك تاني عشان نجيب صلاحيات الصفحات + كل الـ Business Portfolios.<br><b>مهم:</b><br>• سجّل دخول بنفس حساب Meta الحالي.<br>• وافق على صلاحية <b>عرض صفحاتك (pages_show_list)</b> و<b>Instagram</b> — بكده النظام هيسحب صفحات فيسبوك وانستجرام من حسابك نفسه.<br>• لو ظهرت شاشة اختيار Business اختار <b>كل الـ Businesses</b> (مش واحد بس).<br>الاتصال الحالي مش هيتقطع.',
       confirmLabel: 'فتح شاشة فيسبوك',
     });
-    if (ok) location.href = '/api/meta/connect?reauth=1';
+    if (ok) location.href = '/api/meta/connect?reauth=1&mode=classic';
   };
   const refreshBizBtn = document.getElementById('btnMetaRefreshBiz');
   if (refreshBizBtn) refreshBizBtn.onclick = () => loadBusinesses();

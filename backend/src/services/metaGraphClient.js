@@ -154,6 +154,12 @@ export async function getBusinessPortfolios(token) {
     businesses = (await graphFetch('/me/businesses', { fields: 'id,name,verification_status', limit: 100 }, token)).data || [];
   } catch { /* none */ }
 
+  // The Facebook Pages the connected USER personally manages (from the FB
+  // account itself, not any Business Portfolio) + their linked Instagram.
+  const userIdent = await getUserPagesAndIg(token).catch(() => ({ pages: [], instagram: [], readable: false }));
+  const userPages = (userIdent.pages || []).map((p) => ({ id: p.id, name: p.name }));
+  const userInstagram = (userIdent.instagram || []).map((g) => ({ id: g.id, name: g.username || g.id }));
+
   // Every ad account reachable + which have an enumerable business parent.
   let allAccts = [];
   try {
@@ -203,9 +209,11 @@ export async function getBusinessPortfolios(token) {
         timezoneName: a.timezone_name || a.timezoneName || null, businessId: b.id, businessName: b.name,
       });
     }
-    const pages = dedupById(assets.pages);
+    // Pages/Instagram shown for a portfolio = the user's OWN FB/IG accounts
+    // first, then whatever the Business Portfolio owns.
+    const pages = dedupById([...userPages, ...assets.pages]);
     const pixels = dedupById(assets.pixels);
-    const ig = dedupById((assets.ig || []).map((g) => ({ id: g.id, name: g.username || g.id })));
+    const ig = dedupById([...userInstagram, ...(assets.ig || []).map((g) => ({ id: g.id, name: g.username || g.id }))]);
     const status = notInGrant ? 'NEEDS_RECONNECT'
       : (!pages.length && !pixels.length && !acctMap.size) ? 'MISSING_PERMISSIONS'
       : 'CONNECTED';
@@ -224,8 +232,8 @@ export async function getBusinessPortfolios(token) {
       verificationStatus: null, inTokenGrant: true,
       status: 'CONNECTED',
       adAccounts: orphanAccts,
-      pages: [], instagram: [], pixels: [],
-      note: 'حسابات إعلانية اتشاركت مع المستخدم كأفراد — الـ Business المالك مش ظاهر للتوكن الحالي. الصفحات/البيكسلات بتاعتها هتظهر بعد إعادة الربط بصلاحية الـ Business المالك.',
+      pages: dedupById(userPages), instagram: dedupById(userInstagram), pixels: [],
+      note: 'الحسابات دي اتشاركت مع المستخدم كأفراد. الصفحات وحسابات انستجرام هنا مسحوبة من حساب فيسبوك نفسه (اللي بتديره)، مش من Business Portfolio.',
     });
   }
 
@@ -236,7 +244,12 @@ export async function getBusinessPortfolios(token) {
       businessManagementTargets: bmTargets === undefined ? 'NOT_GRANTED' : (bmTargets === null ? 'ALL' : bmTargets),
       expiresAt: dbg.expiresAt,
       dataAccessExpiresAt: dbg.dataAccessExpiresAt,
+      canListUserPages: !!userIdent.readable && userPages.length > 0,
     },
+    // Pages/Instagram pulled from the connected Facebook account itself
+    // (/me/accounts) — independent of any Business Portfolio.
+    userPages,
+    userInstagram,
     businesses: out,
   };
 }
@@ -703,13 +716,39 @@ export async function getAccountAssetsForClone(token, adAccountId) {
 }
 
 /**
+ * The Facebook Pages the CONNECTED USER personally manages (from /me/accounts,
+ * i.e. the Facebook account itself — NOT scoped to any Business Portfolio) and
+ * the Instagram professional account linked to each. Needs `pages_show_list`
+ * (+ `instagram_basic` for the IG usernames). Returns `[]` cleanly when the
+ * scope isn't granted — the caller reports the gap.
+ */
+export async function getUserPagesAndIg(token) {
+  const rows = await graphListQuiet('/me/accounts', {
+    fields: 'id,name,instagram_business_account{id,username},connected_instagram_account{id,username}',
+  }, token);
+  const pages = [];
+  const igMap = new Map();
+  for (const p of rows || []) {
+    pages.push({ id: String(p.id), name: p.name || p.id, source: 'user_account', verified: true });
+    const ig = p.instagram_business_account || p.connected_instagram_account;
+    if (ig?.id) igMap.set(String(ig.id), { id: String(ig.id), username: ig.username || ig.id, source: 'user_account', pageId: String(p.id) });
+  }
+  return { pages, instagram: [...igMap.values()], readable: pages.length > 0 };
+}
+
+/**
  * Facebook Pages + Instagram professional accounts an ad account can post as.
- * Best-effort across several edges (the connected token may lack pages_* /
- * instagram_basic scopes — each source is tried and a gap is reported, never
- * silently assumed). Used by the clone identity-mapping step.
+ * Sources, in priority order:
+ *   1. the connected user's OWN Pages (/me/accounts — the Facebook account
+ *      itself) + their linked Instagram accounts  ← preferred
+ *   2. the ad account's promote_pages
+ *   3. the owning Business Portfolio's owned/client pages
+ * Best-effort per edge (the token may lack pages_* / instagram_basic — a gap
+ * is reported, never silently assumed). Used by the clone identity step.
  */
 export async function getAccountIdentities(token, adAccountId) {
-  const [promotePages, bizPages, igA, igB, bizIg] = await Promise.all([
+  const [userIdent, promotePages, bizPages, igA, igB, bizIg] = await Promise.all([
+    getUserPagesAndIg(token),
     graphListQuiet(`/${adAccountId}/promote_pages`, { fields: 'id,name' }, token),
     graphGetQuiet(`/${adAccountId}`, { fields: 'business{id,name,owned_pages.limit(200){id,name,is_published},client_pages.limit(200){id,name}}' }, token),
     graphListQuiet(`/${adAccountId}/instagram_accounts`, { fields: 'id,username' }, token),
@@ -717,21 +756,24 @@ export async function getAccountIdentities(token, adAccountId) {
     graphGetQuiet(`/${adAccountId}`, { fields: 'business{instagram_business_accounts.limit(100){id,username}}' }, token),
   ]);
   const pageMap = new Map();
-  for (const p of promotePages || []) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'promote_pages', verified: true });
+  // 1) the user's own Facebook Pages first
+  for (const p of userIdent.pages || []) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'user_account', verified: true });
+  // 2) pages the ad account can already promote
+  for (const p of promotePages || []) if (!pageMap.has(String(p.id))) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'promote_pages', verified: true });
+  // 3) pages owned by the ad account's Business Portfolio
   for (const p of [...(bizPages?.business?.owned_pages?.data || []), ...(bizPages?.business?.client_pages?.data || [])]) {
     if (!pageMap.has(String(p.id))) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'business_portfolio', verified: false });
   }
   const igMap = new Map();
+  for (const g of userIdent.instagram || []) igMap.set(String(g.id), { id: String(g.id), username: g.username || g.id });
   for (const g of [...(igA || []), ...(igB || []), ...(bizIg?.business?.instagram_business_accounts?.data || [])]) {
-    igMap.set(String(g.id), { id: String(g.id), username: g.username || g.id });
+    if (!igMap.has(String(g.id))) igMap.set(String(g.id), { id: String(g.id), username: g.username || g.id });
   }
   return {
     pages: [...pageMap.values()],
     instagram: [...igMap.values()],
-    // If promote_pages was readable at all, page availability is trustworthy;
-    // otherwise the caller only has Business-portfolio ownership as a signal.
-    pagesVerified: (promotePages || []).length > 0 || Array.isArray(promotePages),
-    instagramReadable: (igA || []).length > 0 || (igB || []).length > 0 || !!(bizIg?.business),
+    pagesVerified: (userIdent.pages || []).length > 0 || (promotePages || []).length > 0 || Array.isArray(promotePages),
+    instagramReadable: (userIdent.instagram || []).length > 0 || (igA || []).length > 0 || (igB || []).length > 0 || !!(bizIg?.business),
   };
 }
 

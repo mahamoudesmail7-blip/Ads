@@ -2060,7 +2060,7 @@ function renderCloneRebuildPanel() {
           <div class="field"><label>صفحة فيسبوك للوجهة (بدل ${E(sp)})</label>
             <select data-pagemap="${E(sp)}">
               <option value="">— اختر صفحة —</option>
-              ${destPages.map((p) => `<option value="${E(p.id)}" ${cloneState.pageMap[sp] === p.id ? 'selected' : ''}>${E(p.label)} (${E(p.id)})${p.verified ? '' : ' — Portfolio'}</option>`).join('')}
+              ${destPages.map((p) => `<option value="${E(p.id)}" ${cloneState.pageMap[sp] === p.id ? 'selected' : ''}>${E(p.name || p.label || p.id)} (${E(p.id)})${p.source === 'user_account' ? ' — صفحتك' : p.source === 'promote_pages' ? '' : ' — Portfolio'}</option>`).join('')}
             </select>
           </div>`).join('')}
         ${igNeeded ? `
