@@ -649,11 +649,12 @@ async function cloneJob(jobId, token) {
             payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints, pageId: destPageId, recreateBoosted });
             res = await createAdCreative(token, dest, payload);
           } catch (err1) {
-            // A shared reference (same image_hash / video_id) was rejected —
-            // fall back to re-uploading exactly those assets, then retry once.
             const provisionalV = Object.entries(idMap.videos).filter(([s, d]) => String(s) === String(d)).map(([s]) => s);
             const provisionalI = Object.entries(idMap.images).filter(([s, d]) => String(s) === String(d)).map(([s]) => s);
+            const stubAfs = payload && payload.asset_feed_spec && payload.object_story_spec && isStubAssetFeedSpec(payload.asset_feed_spec);
             if (isAssetRefError(err1) && (provisionalV.length || provisionalI.length)) {
+              // A shared reference (same image_hash / video_id) was rejected —
+              // re-upload exactly those assets and retry once.
               await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `المرجع المشترك اترفض (${metaErr(err1)}) — إعادة رفع ${provisionalV.length} فيديو / ${provisionalI.length} صورة`, data: { metaError: metaErrData(err1), provisionalVideos: provisionalV, provisionalImages: provisionalI } });
               await dropProvisionalAssets();
               try {
@@ -664,6 +665,15 @@ async function cloneJob(jobId, token) {
                 });
                 res = await createAdCreative(token, dest, payload);
               } catch (err2) { finalErr = err2; }
+            } else if (stubAfs) {
+              // Meta rejected a full object_story_spec + a content-less
+              // asset_feed_spec stub together — retry with the stub dropped.
+              // (message_extensions is a Messenger-destination toggle, not
+              // conversion/CTA/media — safe to omit; recorded, not silent.)
+              await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `فشل مع asset_feed_spec مختصر (${metaErr(err1)}) — إعادة المحاولة بدونه`, data: { metaError: metaErrData(err1), droppedAssetFeedSpec: payload.asset_feed_spec } });
+              const p2 = { ...payload }; delete p2.asset_feed_spec;
+              try { res = await createAdCreative(token, dest, p2); payload = p2; }
+              catch (err2) { finalErr = err2; }
             } else {
               finalErr = err1;
             }
@@ -884,6 +894,13 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pag
   }
 
   return payload;
+}
+
+/** An asset_feed_spec with no bodies/titles/descriptions/images/videos/link_urls/CTAs of its own — carries only a Messenger toggle or similar. */
+function isStubAssetFeedSpec(afs) {
+  if (!afs || typeof afs !== 'object') return true;
+  const content = ['bodies', 'titles', 'descriptions', 'images', 'videos', 'link_urls', 'call_to_action_types', 'ad_formats'];
+  return !content.some((k) => Array.isArray(afs[k]) && afs[k].length);
 }
 
 /** Collect the destination image_hash / video_id values actually present in a built creative payload (for Media Library registration). */
