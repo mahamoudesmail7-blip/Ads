@@ -20,19 +20,32 @@ const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
  */
 function throwGraphOAuthError(data, res, context) {
   const e = data?.error || {};
+  // error_user_title / error_user_msg carry Meta's human-facing reason for a
+  // generic "Invalid parameter"; error_data.blame_field_specs names the exact
+  // field. All are public diagnostics, not secrets.
+  const userTitle = e.error_user_title ?? null;
+  const userMsg = e.error_user_msg ?? null;
+  const blameFields = e.error_data?.blame_field_specs ?? e.error_data?.blame_fields ?? null;
   logger.error(`Meta OAuth ${context} failed`, {
     status: res.status,
     errorType: e.type ?? null,
     errorCode: e.code ?? null,
     errorSubcode: e.error_subcode ?? null,
     message: e.message ?? null,
+    userTitle,
+    userMsg,
+    blameFields,
     fbtraceId: e.fbtrace_id ?? null,
   });
-  const err = new Error(e.message || `Graph API error ${res.status}`);
+  const detail = userMsg || userTitle ? ` — ${[userTitle, userMsg].filter(Boolean).join(': ')}` : '';
+  const err = new Error((e.message || `Graph API error ${res.status}`) + detail);
   err.graphStatus = res.status;
   err.graphType = e.type ?? null;
   err.graphCode = e.code ?? null;
   err.graphSubcode = e.error_subcode ?? null;
+  err.graphUserTitle = userTitle;
+  err.graphUserMsg = userMsg;
+  err.graphBlameFields = blameFields;
   err.fbtraceId = e.fbtrace_id ?? null;
   throw err;
 }
@@ -460,7 +473,7 @@ export async function getCampaignNode(token, campaignId) {
     fields: [
       'id', 'name', 'objective', 'buying_type', 'status', 'bid_strategy', 'daily_budget', 'lifetime_budget',
       'spend_cap', 'special_ad_categories', 'special_ad_category_country', 'pacing_type', 'start_time', 'stop_time',
-      'campaign_group_active_time', 'is_skadnetwork_attribution',
+      'campaign_group_active_time', 'is_skadnetwork_attribution', 'is_adset_budget_sharing_enabled',
     ].join(','),
   }, token);
 }

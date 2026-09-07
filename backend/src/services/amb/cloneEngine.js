@@ -39,24 +39,33 @@ const running = new Set(); // batch_ids with an in-flight runBatch()
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
 function isoOrNull(d) { return d ? new Date(d).toISOString() : null; }
 
-/** Full, un-generalised Meta error string (message + code/subcode/type/fbtrace) for the audit + job error. */
+/** Full, un-generalised Meta error string (message + code/subcode/type/fbtrace + Meta's user-facing reason + blamed field) for the audit + job error. */
 function metaErr(e) {
   const bits = [e?.message || String(e)];
   const tags = [];
   if (e?.graphCode != null) tags.push(`code=${e.graphCode}`);
   if (e?.graphSubcode != null) tags.push(`subcode=${e.graphSubcode}`);
   if (e?.graphType) tags.push(`type=${e.graphType}`);
+  if (e?.graphBlameFields) tags.push(`blame=${JSON.stringify(e.graphBlameFields)}`);
   if (e?.fbtraceId) tags.push(`fbtrace_id=${e.fbtraceId}`);
   return tags.length ? `${bits[0]} [${tags.join(', ')}]` : bits[0];
 }
 function metaErrData(e) {
-  return { message: e?.message || String(e), code: e?.graphCode ?? null, subcode: e?.graphSubcode ?? null, type: e?.graphType ?? null, fbtraceId: e?.fbtraceId ?? null };
+  return {
+    message: e?.message || String(e), code: e?.graphCode ?? null, subcode: e?.graphSubcode ?? null,
+    type: e?.graphType ?? null, userTitle: e?.graphUserTitle ?? null, userMsg: e?.graphUserMsg ?? null,
+    blameFields: e?.graphBlameFields ?? null, fbtraceId: e?.fbtraceId ?? null,
+  };
 }
-/** Does this Meta error look like "the referenced image/video/creative asset isn't usable here"? (⇒ try a re-upload fallback) */
+// Meta error subcodes that are PAYLOAD-STRUCTURE problems, not "asset not
+// usable" — re-uploading would not help, so the re-upload retry must NOT fire.
+const STRUCTURE_ERROR_SUBCODES = new Set([1443051, 1487472, 2446385, 1885183]);
+/** Does this Meta error look like "the referenced image/video/creative asset isn't usable in this account"? (⇒ try a re-upload fallback) */
 function isAssetRefError(e) {
   if (!e) return false;
-  if (e.graphCode === 100 || e.graphCode === 190 || e.graphCode === 200 || e.graphCode === 2635) return true;
-  return /video|image_hash|image hash|creative|asset|not (be )?found|does not exist|cannot (be )?access|no permission|permission|invalid parameter/i.test(e.message || '');
+  if (e.graphSubcode && STRUCTURE_ERROR_SUBCODES.has(Number(e.graphSubcode))) return false;
+  const msg = (e.message || '') + ' ' + (e.graphUserMsg || '') + ' ' + (e.graphUserTitle || '');
+  return /video|image_hash|image hash|not (be )?found|does not exist|cannot (be )?access|no permission|unsupported|invalid video|invalid image|media|being processed|not ready/i.test(msg);
 }
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function daysAgoISO(n) { const d = new Date(); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); }
@@ -336,9 +345,11 @@ export async function resumeBatch({ batchId, userId }) {
   const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId } });
   if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
   if (batch.status === 'CANCELLED') { const e = new Error('الدفعة ملغاة.'); e.status = 409; throw e; }
-  if (!['APPROVED', 'CLONING', 'PARTIALLY_FAILED', 'SCHEDULED'].includes(batch.status)) {
-    const e = new Error(`الدفعة في حالة ${batch.status} — لا يوجد ما يُستأنف.`); e.status = 409; throw e;
-  }
+  if (batch.status === 'COMPLETED') { const e = new Error('الدفعة مكتملة — لا يوجد ما يُستأنف.'); e.status = 409; throw e; }
+  // APPROVED / CLONING / PARTIALLY_FAILED / SCHEDULED / FAILED are all
+  // resumable — the object map + AmbCloneJob status make it idempotent, so a
+  // retry re-attempts only PENDING/FAILED objects and never re-creates a
+  // CREATED one.
   await audit(batchId, null, 'RETRY', { detail: 'إعادة تشغيل العناصر الفاشلة/الناقصة.', actorId: userId });
   kickRun(batchId);
   return getBatch(batchId);
@@ -466,12 +477,15 @@ async function cloneJob(jobId, token) {
       newCampaignId = row.destination_id;
     } else {
       const c = tree.campaign;
+      // Meta deprecated "NONE": the "no special category" value is an EMPTY
+      // ARRAY. The param is still required on campaign create.
+      const srcSac = Array.isArray(c.special_ad_categories) ? c.special_ad_categories.filter((x) => x && x !== 'NONE') : [];
       const payload = {
         name: c.name,
         objective: c.objective,
         status: 'PAUSED',
         buying_type: c.buying_type || 'AUCTION',
-        special_ad_categories: Array.isArray(c.special_ad_categories) && c.special_ad_categories.length ? c.special_ad_categories : ['NONE'],
+        special_ad_categories: srcSac,
       };
       if (c.special_ad_category_country) payload.special_ad_category_country = c.special_ad_category_country;
       if (c.bid_strategy) payload.bid_strategy = c.bid_strategy;
@@ -479,6 +493,11 @@ async function cloneJob(jobId, token) {
       if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
       if (c.spend_cap && Number(c.spend_cap) > 0) payload.spend_cap = Number(c.spend_cap);
       if (c.pacing_type) payload.pacing_type = c.pacing_type;
+      // ABO campaigns (no campaign-level budget): Meta requires this field
+      // explicitly on create. Copy the source value; default false (standard
+      // ABO — no cross-ad-set budget sharing).
+      const cboBudget = !!(c.daily_budget || c.lifetime_budget);
+      if (!cboBudget) payload.is_adset_budget_sharing_enabled = c.is_adset_budget_sharing_enabled === true;
       try {
         const res = await createCampaign(token, dest, payload);
         newCampaignId = res.id;
@@ -835,18 +854,25 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pag
   if (cr.object_story_spec) {
     const oss = deepClone(cr.object_story_spec);
     if (pageId) oss.page_id = pageId; // destination page override (portfolio/own page)
+    // Meta returns BOTH image_hash and image_url on read, but a creative CREATE
+    // rejects "only one of image_url and image_hash should be specified". Keep
+    // the (remapped) hash, drop the URL.
+    const dedupeThumb = (obj) => { if (obj && obj.image_hash && obj.image_url) delete obj.image_url; };
     if (oss.link_data) {
       if (oss.link_data.image_hash) oss.link_data.image_hash = await img(oss.link_data.image_hash);
+      dedupeThumb(oss.link_data);
       for (const ch of oss.link_data.child_attachments || []) {
         if (ch.image_hash) ch.image_hash = await img(ch.image_hash);
         if (ch.video_id) ch.video_id = await vid(ch.video_id);
+        dedupeThumb(ch);
       }
     }
     if (oss.video_data) {
       if (oss.video_data.video_id) oss.video_data.video_id = await vid(oss.video_data.video_id);
       if (oss.video_data.image_hash) oss.video_data.image_hash = await img(oss.video_data.image_hash);
+      dedupeThumb(oss.video_data);
     }
-    if (oss.photo_data && oss.photo_data.image_hash) oss.photo_data.image_hash = await img(oss.photo_data.image_hash);
+    if (oss.photo_data && oss.photo_data.image_hash) { oss.photo_data.image_hash = await img(oss.photo_data.image_hash); dedupeThumb(oss.photo_data); }
     payload.object_story_spec = oss;
   }
 
