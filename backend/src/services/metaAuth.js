@@ -12,20 +12,28 @@ import { exchangeCodeForToken, exchangeForLongLivedToken, getMe } from './metaGr
 const CONFIG_ID = process.env.META_CONFIG_ID || '2166183033951878';
 const AUTH_DIALOG_VERSION = 'v21.0';
 
-// The permissions the CURRENT system actually uses:
+// The permissions the CURRENT system actually uses AND that this Meta App
+// (id 2174047330127283, "Ads", a standard app_type=0 — NOT a Business app,
+// no Instagram product added) actually supports:
 //   ads_read / ads_management  — read + (approved) write of campaigns/ad sets/ads
 //   business_management         — see Business Portfolios + their owned assets
-//   pages_show_list / pages_read_engagement — list the Pages a destination
-//                                 account can post as (Campaign Clone identity)
+//   pages_show_list / pages_read_engagement — list the Pages the connected
+//                                 Facebook account manages (Campaign Clone identity)
 //   pages_manage_ads           — create ad creatives that post as a Page
-//   instagram_basic            — resolve Instagram identities for the clone
-// Used ONLY by the classic-dialog fallback (`?mode=classic`); the default
+//
+// `instagram_basic` was REMOVED: Facebook rejected it with "Invalid Scopes:
+// instagram_basic" — it needs the Instagram product configured on the app,
+// which this one doesn't have (and Meta is retiring it). Instagram discovery
+// is done WITHOUT any instagram_* scope, via the ad-account / Business /
+// Page edges (see getUserPagesAndIg + getAccountIdentities). Do NOT re-add an
+// instagram_* scope here unless the App config is changed first.
+//
+// Used ONLY by the classic-dialog flow (`?mode=classic`); the default
 // Business-Login (config_id) flow takes its permission set from the App's
-// Login configuration, and the user picks which Businesses/Pages to share on
-// Facebook's own screen.
+// Login configuration.
 export const DEFAULT_OAUTH_SCOPES = [
   'ads_read', 'ads_management', 'business_management',
-  'pages_show_list', 'pages_read_engagement', 'pages_manage_ads', 'instagram_basic',
+  'pages_show_list', 'pages_read_engagement', 'pages_manage_ads',
 ];
 
 // .env.example documents every Meta var wrapped in double quotes

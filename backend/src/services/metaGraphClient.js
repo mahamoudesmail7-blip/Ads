@@ -717,22 +717,28 @@ export async function getAccountAssetsForClone(token, adAccountId) {
 
 /**
  * The Facebook Pages the CONNECTED USER personally manages (from /me/accounts,
- * i.e. the Facebook account itself — NOT scoped to any Business Portfolio) and
- * the Instagram professional account linked to each. Needs `pages_show_list`
- * (+ `instagram_basic` for the IG usernames). Returns `[]` cleanly when the
- * scope isn't granted — the caller reports the gap.
+ * i.e. the Facebook account itself — NOT scoped to any Business Portfolio),
+ * and, best-effort, the Instagram professional account linked to each.
+ *
+ * Pages need only `pages_show_list`. Instagram is discovered WITHOUT any
+ * instagram_* OAuth scope — this app can't request one — by reading each
+ * Page's `connected_instagram_account` / `instagram_business_account` edge
+ * with a QUIET per-Page GET that returns null on a permission gap. So a
+ * missing IG never blocks Page discovery. Returns `{pages:[], instagram:[]}`
+ * cleanly when `pages_show_list` isn't granted.
  */
 export async function getUserPagesAndIg(token) {
-  const rows = await graphListQuiet('/me/accounts', {
-    fields: 'id,name,instagram_business_account{id,username},connected_instagram_account{id,username}',
-  }, token);
-  const pages = [];
+  const rows = await graphListQuiet('/me/accounts', { fields: 'id,name' }, token);
+  const pages = (rows || []).map((p) => ({ id: String(p.id), name: p.name || p.id, source: 'user_account', verified: true }));
+
   const igMap = new Map();
-  for (const p of rows || []) {
-    pages.push({ id: String(p.id), name: p.name || p.id, source: 'user_account', verified: true });
-    const ig = p.instagram_business_account || p.connected_instagram_account;
-    if (ig?.id) igMap.set(String(ig.id), { id: String(ig.id), username: ig.username || ig.id, source: 'user_account', pageId: String(p.id) });
-  }
+  // Bounded per-Page IG probe (quiet — a permission gap yields null, not an error).
+  await Promise.all(pages.slice(0, 30).map(async (pg) => {
+    const d = await graphGetQuiet(`/${pg.id}`, { fields: 'connected_instagram_account{id,username},instagram_business_account{id,username}' }, token);
+    const ig = d?.connected_instagram_account || d?.instagram_business_account;
+    if (ig?.id) igMap.set(String(ig.id), { id: String(ig.id), username: ig.username || ig.id, source: 'user_account', pageId: pg.id });
+  }));
+
   return { pages, instagram: [...igMap.values()], readable: pages.length > 0 };
 }
 
