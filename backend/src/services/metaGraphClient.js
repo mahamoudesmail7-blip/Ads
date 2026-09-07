@@ -778,6 +778,56 @@ export async function getPageInstagram(token, pageId) {
 }
 
 /**
+ * Recover the copy fields of a SHARE / boosted Page-post creative — one that
+ * has an `object_story_id` but NO `object_story_spec`. For these the
+ * destination URL, headline, description and CTA live on the underlying Page
+ * POST, not on the AdCreative object.
+ *
+ * Mints a Page access token from `/me/accounts` (the connected user manages
+ * the Page) and reads the post's `call_to_action` + `attachments`. The tracked
+ * URL (with utm params) comes from `attachments.unshimmed_url` or the
+ * url-encoded `u` param inside the l.facebook.com shim; the clean URL from
+ * `call_to_action.value.link`.
+ *
+ * Returns `null` when the post genuinely can't be read (Page not managed by
+ * this user, post deleted) so the caller can mark that ONE ad
+ * NEEDS_USER_INPUT instead of failing the whole campaign.
+ */
+export async function getPagePostContent(token, objectStoryId) {
+  const osid = String(objectStoryId || '');
+  if (!osid.includes('_')) return null;
+  const pageId = osid.split('_')[0];
+  const accts = await graphGetQuiet('/me/accounts', { fields: 'id,access_token', limit: 200 }, token);
+  const pageTok = (accts?.data || []).find((p) => String(p.id) === pageId)?.access_token;
+  if (!pageTok) return null;
+
+  const [postNode, attachNode] = await Promise.all([
+    graphGetQuiet(`/${osid}`, { fields: 'call_to_action,message,permalink_url' }, pageTok),
+    graphGetQuiet(`/${osid}/attachments`, {}, pageTok),
+  ]);
+  const att = attachNode?.data?.[0] || null;
+  const cta = postNode?.call_to_action || null;
+  if (!att && !cta && !postNode) return null;
+
+  const deShim = (u) => { try { return new URL(u).searchParams.get('u') || null; } catch { return null; } };
+  const tracked = att?.unshimmed_url || deShim(att?.target?.url) || deShim(att?.url) || null;
+  const ctaLink = cta?.value?.link || cta?.value?.link_url || null;
+  const link = tracked || ctaLink || null;
+
+  return {
+    pageId,
+    link,                                   // tracked (utm) URL preferred, else clean CTA link
+    cleanLink: ctaLink || (link ? link.split('?')[0] : null),
+    ctaType: cta?.type || null,
+    title: att?.title || null,              // headline
+    description: att?.description || null,  // body / description (Meta may truncate long text)
+    message: postNode?.message || null,
+    imageUrl: att?.media?.image?.src || null,
+    permalink: postNode?.permalink_url || null,
+  };
+}
+
+/**
  * Facebook Pages + Instagram professional accounts an ad account can post as.
  * Sources, in priority order:
  *   1. the connected user's OWN Pages (/me/accounts — the Facebook account

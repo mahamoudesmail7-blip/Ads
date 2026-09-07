@@ -296,6 +296,14 @@ router.post('/clone/batches/:batchId/copy-valid-only', requireRole('ADMIN'), asy
   res.json(await clone.setBatchCopyValidOnly({ batchId: req.params.batchId, copyValidAdsOnly: req.body?.copyValidAdsOnly !== false, userId: req.user.id }));
 }));
 
+// Supply a destination URL for one ad that came back NEEDS_INPUT (URL not
+// recoverable from Meta). Reuses the existing Campaign/Ad Set; retries only
+// that creative + ad. { sourceAdId, url, resume? }
+router.post('/clone/batches/:batchId/ad-url', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.setBatchAdUrl({ batchId: req.params.batchId, sourceAdId: req.body?.sourceAdId, url: req.body?.url, resume: req.body?.resume !== false, userId: req.user.id }));
+}));
+
 router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
   res.json(await clone.approveBatch({ batchId: req.params.batchId, userId: req.user.id }));

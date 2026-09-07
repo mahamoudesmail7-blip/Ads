@@ -24,7 +24,7 @@ import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import {
   getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
-  getCreativeNode, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone,
+  getCreativeNode, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
   uploadAdImageFromUrl, uploadAdVideoFromUrl, createCampaign, createAdSet, createAdCreative, createAd,
   setEntityStatus,
 } from '../metaGraphClient.js';
@@ -135,6 +135,18 @@ async function readCampaignTree(token, campaignId) {
   const creatives = new Map();
   for (const cid of creativeIds) {
     try { creatives.set(cid, await getCreativeNode(token, cid)); } catch (e) { creatives.set(cid, { id: cid, __error: e.message }); }
+  }
+  // SHARE / boosted Page-post creatives (object_story_id, no object_story_spec):
+  // the URL / headline / description / CTA live on the underlying Page POST,
+  // not the AdCreative. Recover them here so the reconstruction has real data.
+  for (const cr of creatives.values()) {
+    if (cr.__error) continue;
+    const osid = cr.object_story_id || cr.effective_object_story_id;
+    const hasSpec = !!cr.object_story_spec;
+    const hasAfs = !!cr.asset_feed_spec && !!Object.keys(cr.asset_feed_spec).length;
+    if (osid && !hasSpec && !hasAfs) {
+      try { cr.__postContent = await getPagePostContent(token, osid); } catch { cr.__postContent = null; }
+    }
   }
   return { campaign, adsets, ads, creatives };
 }
@@ -396,6 +408,37 @@ export async function setBatchCopyValidOnly({ batchId, copyValidAdsOnly = true, 
   return getBatch(batchId);
 }
 
+/**
+ * Supply a destination URL for one ad that came back NEEDS_INPUT (its URL
+ * couldn't be recovered from any Meta field or the underlying Page post).
+ * Stores it in identity_map_json.adUrlOverrides, resets that ad's + its
+ * creative's NEEDS_INPUT object rows to PENDING, and (optionally) re-runs so
+ * the creative + ad are created. Reuses the existing Campaign / Ad Set.
+ */
+export async function setBatchAdUrl({ batchId, sourceAdId, url, resume = true, userId }) {
+  const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId } });
+  if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
+  if (['CANCELLED', 'COMPLETED'].includes(batch.status)) { const e = new Error(`الدفعة في حالة ${batch.status}.`); e.status = 409; throw e; }
+  const u = String(url || '').trim();
+  if (!/^https?:\/\/.+/i.test(u)) { const e = new Error('رابط غير صالح — لازم يبدأ بـ http(s)://'); e.status = 400; throw e; }
+  const sid = String(sourceAdId || '');
+  if (!sid) { const e = new Error('sourceAdId مطلوب.'); e.status = 400; throw e; }
+
+  const blob = j(batch.identity_map_json, {}) || {};
+  blob.adUrlOverrides = { ...(blob.adUrlOverrides || {}), [sid]: u };
+  await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { identity_map_json: JSON.stringify(blob) } });
+
+  // Reset the NEEDS_INPUT rows for that ad (and its creative — parent_source_id = ad id) so resume retries them.
+  await prisma.ambCloneObjectMap.updateMany({
+    where: { batch_id: batchId, status: 'NEEDS_INPUT', OR: [{ level: 'AD', source_id: sid }, { level: 'CREATIVE', parent_source_id: sid }] },
+    data: { status: 'PENDING', error: null },
+  });
+  await prisma.ambCloneJob.updateMany({ where: { batch_id: batchId, status: 'NEEDS_INPUT' }, data: { status: 'PENDING', error: null } });
+  await audit(batchId, null, 'AD_URL_SET', { detail: `رابط الوجهة للإعلان ${sid}: ${u}`, actorId: userId, source_id: sid });
+  if (resume) kickRun(batchId);
+  return getBatch(batchId);
+}
+
 export async function cancelBatch({ batchId, userId }) {
   const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, include: { jobs: true } });
   if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
@@ -454,17 +497,19 @@ async function runBatch(batchId) {
 
 async function recomputeBatchStatus(batchId) {
   const jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId } });
-  const relevant = jobs.filter((jb) => !['CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY', 'NEEDS_DECISION'].includes(jb.status) && jb.preflight_status !== 'BLOCKED');
+  const relevant = jobs.filter((jb) => !['CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY', 'NEEDS_DECISION', 'NEEDS_INPUT'].includes(jb.status) && jb.preflight_status !== 'BLOCKED');
   const failed = relevant.filter((jb) => jb.status === 'FAILED' || jb.status === 'ACTIVATION_FAILED');
   const cloned = relevant.filter((jb) => ['CLONED_PAUSED', 'ACTIVATION_PENDING', 'ACTIVATED'].includes(jb.status));
   const activated = relevant.filter((jb) => jb.status === 'ACTIVATED');
   const needsDecision = jobs.some((jb) => jb.status === 'NEEDS_DECISION');
+  const needsInput = jobs.some((jb) => jb.status === 'NEEDS_INPUT');
   let status;
-  if (!relevant.length) status = needsDecision ? 'NEEDS_DECISION' : jobs.some((jb) => jb.status === 'CANNOT_COPY') ? 'FAILED' : 'FAILED';
+  if (!relevant.length) status = needsInput ? 'NEEDS_INPUT' : needsDecision ? 'NEEDS_DECISION' : 'FAILED';
   else if (activated.length === relevant.length) status = 'COMPLETED';
   else if (failed.length && cloned.length) status = 'PARTIALLY_FAILED';
   else if (failed.length && !cloned.length) status = 'FAILED';
-  else if (needsDecision && cloned.length) status = 'PARTIALLY_FAILED';
+  else if ((needsDecision || needsInput) && cloned.length) status = 'PARTIALLY_FAILED';
+  else if (needsInput) status = 'NEEDS_INPUT';
   else status = 'SCHEDULED'; // everything copyable is copied & PAUSED
   await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status } });
 }
@@ -727,9 +772,12 @@ async function cloneJob(jobId, token) {
     }
 
     // ---- 3) Creatives + Ads under this ad set ----
+    const adUrlOverrides = (identityMap && identityMap.adUrlOverrides) || {};
     for (const ad of adsBySource.get(as.id) || []) {
       const srcCreative = ad.creative?.id ? tree.creatives.get(ad.creative.id) : null;
+      const adUrlOverride = adUrlOverrides[String(ad.id)] || null;
       let newCreativeId = null;
+      let creativeNeedsInput = false;
       if (srcCreative && !srcCreative.__error) {
         const crow = await objRow(jobId, batchId, 'CREATIVE', srcCreative.id, { source_name: srcCreative.name, parent_source_id: ad.id });
         if (crow.status === 'CREATED' && crow.destination_id) {
@@ -740,7 +788,7 @@ async function cloneJob(jobId, token) {
           const hints = await libraryDestHints(srcCreative, dest).catch(() => null);
           let payload = null; let res = null; let finalErr = null;
           try {
-            payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted });
+            payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted, adUrlOverride });
             res = await createAdCreative(token, dest, payload);
           } catch (err1) {
             const provisionalV = Object.entries(idMap.videos).filter(([s, d]) => String(s) === String(d)).map(([s]) => s);
@@ -755,7 +803,7 @@ async function cloneJob(jobId, token) {
                 payload = await buildCreativePayload(srcCreative, {
                   destImageHash: (h, hh, o) => destImageHash(h, hh, { ...o, forceReupload: true }),
                   destVideoId: (v, hh, o) => destVideoId(v, hh, { ...o, forceReupload: true }),
-                  hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted,
+                  hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted, adUrlOverride,
                 });
                 res = await createAdCreative(token, dest, payload);
               } catch (err2) { finalErr = err2; }
@@ -782,6 +830,13 @@ async function cloneJob(jobId, token) {
             await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CREATIVE', source_id: srcCreative.id, destination_id: newCreativeId, data: { assetTrace } });
             const used = collectAssetIds(payload);
             registerClonedCreativeRef({ srcNode: srcCreative, destAccountId: dest, destCreativeId: newCreativeId, destImageHashes: used.imageHashes, destVideoIds: used.videoIds, cloneJobId: jobId }).catch(() => {});
+          } else if (finalErr?.needsUserInput) {
+            // The ONE ad needs a destination URL we couldn't recover from any
+            // Meta field or the underlying Page post. Isolate it — do NOT fail
+            // the campaign / ad set / other ads.
+            creativeNeedsInput = true;
+            await markObj(crow.id, { status: 'NEEDS_INPUT', error: (finalErr.message || '').slice(0, 400) });
+            await audit(batchId, jobId, 'OBJECT_NEEDS_INPUT', { level: 'CREATIVE', source_id: srcCreative.id, detail: finalErr.message, data: { sourceAdId: ad.id } });
           } else {
             // Every reuse + re-upload path failed — record the EXACT Meta error
             // + the full attempt chain (Phase 4 debug requirement).
@@ -811,8 +866,13 @@ async function cloneJob(jobId, token) {
       const arow = await objRow(jobId, batchId, 'AD', ad.id, { source_name: ad.name, parent_source_id: as.id });
       if (arow.status === 'CREATED') continue;
       if (!newCreativeId) {
-        await markObj(arow.id, { status: 'FAILED', error: 'لا يوجد كرياتيف صالح للإعلان.' });
-        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'AD', source_id: ad.id, detail: 'creative missing' });
+        if (creativeNeedsInput) {
+          await markObj(arow.id, { status: 'NEEDS_INPUT', error: 'هذا الإعلان يحتاج رابط وجهة — أدخِله ثم استأنف. باقي الحملة تم نسخه.' });
+          await audit(batchId, jobId, 'OBJECT_NEEDS_INPUT', { level: 'AD', source_id: ad.id, detail: 'destination URL required' });
+        } else {
+          await markObj(arow.id, { status: 'FAILED', error: 'لا يوجد كرياتيف صالح للإعلان.' });
+          await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'AD', source_id: ad.id, detail: 'creative missing' });
+        }
         continue;
       }
       try {
@@ -838,22 +898,31 @@ async function cloneJob(jobId, token) {
   const madeAdsets = objs.filter((o) => o.level === 'ADSET' && o.status === 'CREATED').length;
   const expectedAds = tree.ads.length;
   const madeAds = objs.filter((o) => o.level === 'AD' && o.status === 'CREATED').length;
-  const complete = madeAdsets >= expectedAdsets && madeAds >= expectedAds && !anyFail;
+  const needsInputAds = objs.filter((o) => o.level === 'AD' && o.status === 'NEEDS_INPUT').length;
+  // NEEDS_INPUT ads are neither made nor failed — the campaign + ad sets + the
+  // other ads are done; only those ads await a URL.
+  const structureOk = madeAdsets >= expectedAdsets && (madeAds + needsInputAds) >= expectedAds && !anyFail;
+  const complete = structureOk && needsInputAds === 0;
+  const status = complete ? 'CLONED_PAUSED' : structureOk ? 'NEEDS_INPUT' : 'FAILED';
 
   await prisma.ambCloneJob.update({
     where: { id: jobId },
     data: {
-      status: complete ? 'CLONED_PAUSED' : 'FAILED',
+      status,
       id_map_json: JSON.stringify(idMap),
       copies_created_json: JSON.stringify(counts),
-      error: complete ? null : `اكتمل جزئيًا: ${madeAdsets}/${expectedAdsets} مجموعات، ${madeAds}/${expectedAds} إعلانات.`,
+      error: complete ? null
+        : structureOk ? `تم نسخ الحملة والمجموعات و${madeAds}/${expectedAds} إعلان. ${needsInputAds} إعلان يحتاج رابط وجهة — أدخِله ثم استأنف.`
+        : `اكتمل جزئيًا: ${madeAdsets}/${expectedAdsets} مجموعات، ${madeAds}/${expectedAds} إعلانات.`,
     },
   });
-  await audit(batchId, jobId, complete ? 'JOB_DONE' : 'JOB_FAILED', {
+  await audit(batchId, jobId, complete ? 'JOB_DONE' : structureOk ? 'JOB_NEEDS_INPUT' : 'JOB_FAILED', {
     detail: complete
-      ? `تم إنشاء الحملة كاملة (PAUSED): ${counts.adsets} مجموعة، ${counts.ads} إعلان. مجدولة للتفعيل ${isoOrNull(job.scheduled_activation_at)}.`
-      : `اكتمل جزئيًا — قابل للاستئناف.`,
-    data: { counts, idMap },
+      ? `تم إنشاء الحملة كاملة (PAUSED): ${counts.adsets} مجموعة، ${counts.ads} إعلان.`
+      : structureOk
+        ? `تم نسخ الحملة + المجموعات + ${madeAds}/${expectedAds} إعلان (PAUSED). ${needsInputAds} إعلان بانتظار رابط الوجهة.`
+        : `اكتمل جزئيًا — قابل للاستئناف.`,
+    data: { counts, idMap, needsInputAds },
   });
 }
 
@@ -918,8 +987,9 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
 
 const URL_RE = /(https?:\/\/[^\s"'<>)]+)/;
 
-async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pageId = null, igId = null, identityMap = {}, allowPageOnlyIg = true, recreateBoosted = false }) {
+async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pageId = null, igId = null, identityMap = {}, allowPageOnlyIg = true, recreateBoosted = false, adUrlOverride = null }) {
   void recreateBoosted; // reconstruction is now the default when a destination identity is resolvable
+  const pc = cr.__postContent || null; // recovered underlying Page-post copy fields (SHARE creatives)
   const img = (h, opt) => destImageHash(h, hints, opt);
   const vid = (v, opt) => destVideoId(v, hints, opt);
   const pageMap = identityMap?.pages || {};
@@ -989,23 +1059,28 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pag
   //      text / media when there's no re-usable object_story_spec (a boosted
   //      organic post — object_story_id only — or a bare flat creative).
   if (!payload.object_story_spec && !payload.asset_feed_spec) {
-    const pg = resolvePage((cr.object_story_id ? String(cr.object_story_id).split('_')[0] : null) || cr.actor_id);
+    const pg = resolvePage((cr.object_story_id ? String(cr.object_story_id).split('_')[0] : null) || pc?.pageId || cr.actor_id);
     if (!pg) throw new Error('لا يمكن تحديد صفحة وجهة لإعادة بناء الكرياتيف — اختر صفحة في خطوة ربط الهوية (identity mapping).');
-    const link = cr.link_url || (cr.body && (cr.body.match(URL_RE) || [])[1]) || cr.template_url || null;
+    // URL priority: an explicit per-ad override → the recovered Page-post link
+    // (with utm) → a URL embedded in the body text → the flat creative fields.
+    const link = adUrlOverride || cr.link_url || pc?.link || (cr.body && (cr.body.match(URL_RE) || [])[1]) || cr.template_url || null;
     const oss = applyIdentity({ page_id: pg, instagram_user_id: cr.instagram_user_id });
-    const ctaType = cr.call_to_action_type || 'LEARN_MORE';
+    const ctaType = cr.call_to_action_type || pc?.ctaType || 'LEARN_MORE';
+    const body = cr.body || pc?.description || undefined;      // primary text
+    const headline = cr.title || pc?.title || undefined;       // headline
+    const descr = cr.link_description || pc?.description || undefined;
     if (cr.video_id) {
       const dv = await vid(cr.video_id);
-      oss.video_data = { video_id: dv, title: cr.title || undefined, message: cr.body || undefined, link_description: cr.link_description || undefined };
+      oss.video_data = { video_id: dv, title: headline, message: body, link_description: descr };
       if (cr.image_hash) oss.video_data.image_hash = await img(cr.image_hash);
-      else if (cr.thumbnail_url) oss.video_data.image_url = cr.thumbnail_url;
+      else if (cr.thumbnail_url || pc?.imageUrl) oss.video_data.image_url = cr.thumbnail_url || pc.imageUrl;
       if (link) oss.video_data.call_to_action = { type: ctaType, value: { link } };
-      else if (ctaType !== 'LEARN_MORE') throw new Error(`إعادة بناء كرياتيف الفيديو: نوع الـ CTA "${ctaType}" يحتاج رابطًا ولا يوجد رابط قابل للاستخراج — أدخله في المراجعة.`);
-    } else if (cr.image_hash || cr.image_url) {
-      if (!link) throw new Error('إعادة بناء كرياتيف الصورة: لا يوجد رابط وجهة قابل للاستخراج — أدخله في المراجعة.');
-      oss.link_data = { link, message: cr.body || undefined, name: cr.title || undefined, description: cr.link_description || undefined, call_to_action: { type: ctaType, value: { link } } };
+      else if (ctaType !== 'LEARN_MORE') { const e = new Error(`لا يوجد رابط وجهة قابل للاستخراج لهذا الإعلان (CTA ${ctaType}) — أدخله يدويًا.`); e.needsUserInput = true; throw e; }
+    } else if (cr.image_hash || cr.image_url || pc?.imageUrl) {
+      if (!link) { const e = new Error('لا يوجد رابط وجهة قابل للاستخراج لهذا الإعلان — أدخله يدويًا.'); e.needsUserInput = true; throw e; }
+      oss.link_data = { link, message: body, name: headline, description: descr, call_to_action: { type: ctaType, value: { link } } };
       if (cr.image_hash) oss.link_data.image_hash = await img(cr.image_hash);
-      else oss.link_data.picture = cr.image_url;
+      else oss.link_data.picture = cr.image_url || pc?.imageUrl;
     } else {
       throw new Error('الكرياتيف بلا وسائط (فيديو/صورة) يمكن إعادة بنائها — يلزم رفع ميديا يدويًا (NEEDS_MANUAL_MEDIA).');
     }
@@ -1133,11 +1208,12 @@ export async function listBatches({ limit = 25 } = {}) {
 }
 
 function summarizeJobs(jobs) {
-  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, activated: 0, failed: 0, cancelled: 0, cannotCopy: 0, needsDecision: 0 };
+  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, activated: 0, failed: 0, cancelled: 0, cannotCopy: 0, needsDecision: 0, needsInput: 0 };
   for (const jb of jobs) {
     if (jb.preflight_status === 'BLOCKED' || jb.status === 'PREFLIGHT_BLOCKED') s.blocked++;
     else if (jb.status === 'CANNOT_COPY') s.cannotCopy++;
     else if (jb.status === 'NEEDS_DECISION') s.needsDecision++;
+    else if (jb.status === 'NEEDS_INPUT') s.needsInput++;
     else if (jb.status === 'PENDING') s.pending++;
     else if (jb.status === 'CLONING') s.cloning++;
     else if (jb.status === 'CLONED_PAUSED' || jb.status === 'ACTIVATION_PENDING') s.clonedPaused++;

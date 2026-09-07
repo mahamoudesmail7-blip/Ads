@@ -1623,10 +1623,11 @@ const CLONE_BATCH_AR = {
   APPROVED: ['موافَق — يجهّز', 'blue'], CLONING: ['جارِ الاستنساخ', 'blue'],
   SCHEDULED: ['اتنسخت — متوقفة', 'green'], PARTIALLY_FAILED: ['اكتمل جزئيًا', 'yellow'],
   COMPLETED: ['اكتملت', 'green'], CANCELLED: ['ملغاة', 'gray'], FAILED: ['فشلت', 'red'],
-  NEEDS_DECISION: ['محتاجة قرار', 'yellow'],
+  NEEDS_DECISION: ['محتاجة قرار', 'yellow'], NEEDS_INPUT: ['محتاجة رابط وجهة', 'yellow'],
 };
 const CLONE_JOB_AR = {
   PENDING: ['بالانتظار', 'gray'], PREFLIGHT_BLOCKED: ['محجوبة', 'red'], CLONING: ['جارِ النسخ', 'blue'],
+  NEEDS_INPUT: ['محتاجة رابط وجهة', 'yellow'],
   CLONED_PAUSED: ['اتنسخت — متوقفة', 'green'], ACTIVATION_PENDING: ['جارِ التفعيل', 'blue'],
   ACTIVATED: ['مُفعّلة', 'green'], ACTIVATION_FAILED: ['فشل التفعيل', 'red'], FAILED: ['فشلت', 'red'], CANCELLED: ['ملغاة', 'gray'],
   CANNOT_COPY: ['لا يمكن نسخها', 'red'], NEEDS_DECISION: ['محتاجة قرار', 'yellow'],
@@ -2191,7 +2192,7 @@ async function renderCloneResult(body) {
       </details>
 
       <div class="toolbar" style="margin-top:16px; flex-wrap:wrap; gap:8px;">
-        ${state.isAdmin && ['PARTIALLY_FAILED', 'FAILED', 'SCHEDULED'].includes(b.status) ? `<button class="amb-btn" id="ambCloneResume">استئناف الفاشل/الناقص</button>` : ''}
+        ${state.isAdmin && ['PARTIALLY_FAILED', 'FAILED', 'SCHEDULED', 'NEEDS_INPUT'].includes(b.status) ? `<button class="amb-btn" id="ambCloneResume">استئناف الفاشل/الناقص</button>` : ''}
         ${state.isAdmin && !['COMPLETED', 'CANCELLED'].includes(b.status) ? `<button class="amb-btn danger" id="ambCloneCancelBatch">إلغاء الجدولة</button>` : ''}
         <button class="amb-btn ghost" id="ambCloneRefresh">تحديث</button>
         <button class="amb-btn" id="ambCloneNew">دفعة جديدة</button>
@@ -2201,6 +2202,20 @@ async function renderCloneResult(body) {
 
   body.querySelectorAll('[data-jobtoggle]').forEach((s) => {
     s.onclick = () => { const d = s.nextElementSibling; if (d) d.hidden = !d.hidden; };
+  });
+  body.querySelectorAll('[data-adurl-save]').forEach((btn) => {
+    btn.onclick = async () => {
+      const sourceAdId = btn.dataset.adurlSave;
+      const inp = body.querySelector(`[data-adurl="${sourceAdId}"]`);
+      const url = (inp?.value || '').trim();
+      if (!/^https?:\/\/.+/i.test(url)) { UI.toast('أدخل رابطًا صحيحًا يبدأ بـ https://', 'error'); return; }
+      btn.disabled = true;
+      try {
+        await api.post(`/api/ai-media-buyer/clone/batches/${b.batchId}/ad-url`, { sourceAdId, url, resume: true });
+        UI.toast('✅ اتحفظ الرابط — جارِ استئناف الإعلان');
+        renderCloneStep();
+      } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; }
+    };
   });
   if ($('ambCloneSchedules')) renderCloneSchedules($('ambCloneSchedules'), b).catch(() => {});
   const rs = $('ambCloneResume');
@@ -2246,8 +2261,12 @@ function cloneJobCard(jb) {
   const objs = jb.objects || [];
   const objLine = (o) => `<div class="amb-obj-row ${o.status === 'FAILED' ? 'bad' : o.status === 'CREATED' ? 'ok' : ''}">
     <span>${E(o.level)}</span><span class="faint">${E(o.sourceName || o.sourceId)}</span>
-    <span>${o.status === 'CREATED' ? `→ ${E(o.destinationId || '')}` : E({ PENDING: 'بالانتظار', FAILED: 'فشل', SKIPPED: 'تخطّي' }[o.status] || o.status)}</span>
-    ${o.error ? `<span class="bad" style="flex-basis:100%; font-size:11px;">${E(o.error)}</span>` : ''}
+    <span>${o.status === 'CREATED' ? `→ ${E(o.destinationId || '')}` : E({ PENDING: 'بالانتظار', FAILED: 'فشل', SKIPPED: 'تخطّي', NEEDS_INPUT: 'محتاج رابط' }[o.status] || o.status)}</span>
+    ${o.error ? `<span class="${o.status === 'NEEDS_INPUT' ? 'warn' : 'bad'}" style="flex-basis:100%; font-size:11px;">${E(o.error)}</span>` : ''}
+    ${o.status === 'NEEDS_INPUT' && o.level === 'AD' ? `<span style="flex-basis:100%; display:flex; gap:6px; margin-top:4px;">
+      <input type="url" placeholder="https://…" data-adurl="${E(o.sourceId)}" style="flex:1; font-size:12px; padding:4px 6px;" />
+      <button class="amb-btn sm" data-adurl-save="${E(o.sourceId)}">حفظ الرابط واستئناف</button>
+    </span>` : ''}
   </div>`;
   return `<div class="amb-clone-job">
     <div class="amb-clone-job-h" data-jobtoggle="1">

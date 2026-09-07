@@ -21,7 +21,7 @@
 import { getDecryptedToken, getConnection } from '../metaAuth.js';
 import {
   getAllAccessibleAdAccounts, getCampaignNode, getAdSetNodes, getAdNodes, getCreativeNode,
-  getAccountAssetsForClone, getAccountIdentities, getAdImagesByHash, getVideoSourceUrl,
+  getAccountAssetsForClone, getAccountIdentities, getAdImagesByHash, getVideoSourceUrl, getPagePostContent,
 } from '../metaGraphClient.js';
 
 const URL_RE = /(https?:\/\/[^\s"'<>)]+)/;
@@ -40,18 +40,22 @@ export function normalizeCreative(cr) {
   const afs = cr.asset_feed_spec || {};
   const children = link.child_attachments || [];
 
-  const bodies = [link.message, video.message, cr.body, ...(afs.bodies || []).map((b) => b.text)].filter(Boolean);
-  const titles = [link.name, video.title, cr.title, ...(afs.titles || []).map((t) => t.text)].filter(Boolean);
-  const descriptions = [link.description, video.link_description, cr.link_description, ...(afs.descriptions || []).map((d) => d.text)].filter(Boolean);
-  const ctaType = link.call_to_action?.type || video.call_to_action?.type || cr.call_to_action_type || (afs.call_to_action_types || [])[0] || null;
+  // Recovered copy fields from the underlying Page post (SHARE / boosted-post
+  // creatives: object_story_id, no object_story_spec). Attached by the caller.
+  const pc = cr.__postContent || {};
+
+  const bodies = [link.message, video.message, cr.body, pc.description, ...(afs.bodies || []).map((b) => b.text)].filter(Boolean);
+  const titles = [link.name, video.title, cr.title, pc.title, ...(afs.titles || []).map((t) => t.text)].filter(Boolean);
+  const descriptions = [link.description, video.link_description, cr.link_description, pc.description, ...(afs.descriptions || []).map((d) => d.text)].filter(Boolean);
+  const ctaType = link.call_to_action?.type || video.call_to_action?.type || cr.call_to_action_type || pc.ctaType || (afs.call_to_action_types || [])[0] || null;
   const ctaLink = link.call_to_action?.value?.link || video.call_to_action?.value?.link || link.link || cr.link_url
-    || (afs.link_urls || [])[0]?.website_url || firstUrlIn(bodies[0]) || null;
+    || (afs.link_urls || [])[0]?.website_url || pc.link || firstUrlIn(bodies[0]) || null;
   const displayLink = link.caption || video.caption || (afs.link_urls || [])[0]?.display_url || (ctaLink ? hostOf(ctaLink) : null);
 
   const images = [];
   for (const h of [link.image_hash, video.image_hash, photo.image_hash, cr.image_hash]) if (h) images.push({ hash: h, url: null });
   for (const im of afs.images || []) if (im.hash) images.push({ hash: im.hash, url: im.url || null });
-  const rootImageUrl = video.image_url || link.picture || cr.image_url || cr.thumbnail_url || null;
+  const rootImageUrl = video.image_url || link.picture || cr.image_url || cr.thumbnail_url || pc.imageUrl || null;
   if (!images.length && rootImageUrl) images.push({ hash: null, url: rootImageUrl });
   else if (images.length && !images[0].url && rootImageUrl) images[0].url = rootImageUrl;
 
@@ -258,6 +262,18 @@ export async function analyzeClone({ sourceAccountId, destinationAccountIds, cam
       const creativeIds = [...new Set(ads.map((a) => a.creative?.id).filter(Boolean))];
       const creatives = new Map();
       for (const crid of creativeIds) creatives.set(crid, await getCreativeNode(token, crid).catch((e) => ({ id: crid, __error: e.message })));
+
+      // SHARE / boosted Page-post creatives: recover the real URL / headline /
+      // description / CTA from the underlying Page post (same as the engine).
+      for (const c of creatives.values()) {
+        if (c.__error) continue;
+        const osid = c.object_story_id || c.effective_object_story_id;
+        const hasSpec = !!c.object_story_spec;
+        const hasAfs = !!c.asset_feed_spec && !!Object.keys(c.asset_feed_spec).length;
+        if (osid && !hasSpec && !hasAfs) {
+          try { c.__postContent = await getPagePostContent(token, osid); } catch { c.__postContent = null; }
+        }
+      }
 
       // resolve image hashes → source URLs + which videos have a downloadable source
       const allHashes = new Set(); const allVideos = new Set();
