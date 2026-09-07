@@ -826,7 +826,7 @@ async function cloneJob(jobId, token) {
             idMap.creatives[srcCreative.id] = newCreativeId;
             counts.creatives++;
             await confirmProvisionalAssets();
-            await markObj(crow.id, { status: 'CREATED', destination_id: newCreativeId, payload_json: JSON.stringify(payload).slice(0, 6000) });
+            await markObj(crow.id, { status: 'CREATED', destination_id: newCreativeId, payload_json: JSON.stringify(payload).slice(0, 6000), error: null });
             await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CREATIVE', source_id: srcCreative.id, destination_id: newCreativeId, data: { assetTrace } });
             const used = collectAssetIds(payload);
             registerClonedCreativeRef({ srcNode: srcCreative, destAccountId: dest, destCreativeId: newCreativeId, destImageHashes: used.imageHashes, destVideoIds: used.videoIds, cloneJobId: jobId }).catch(() => {});
@@ -882,7 +882,7 @@ async function cloneJob(jobId, token) {
         const res = await createAd(token, dest, payload);
         idMap.ads[ad.id] = res.id;
         counts.ads++;
-        await markObj(arow.id, { status: 'CREATED', destination_id: res.id, payload_json: JSON.stringify(payload).slice(0, 4000) });
+        await markObj(arow.id, { status: 'CREATED', destination_id: res.id, payload_json: JSON.stringify(payload).slice(0, 4000), error: null });
         await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'AD', source_id: ad.id, destination_id: res.id });
       } catch (err) {
         await markObj(arow.id, { status: 'FAILED', error: metaErr(err).slice(0, 500) });
