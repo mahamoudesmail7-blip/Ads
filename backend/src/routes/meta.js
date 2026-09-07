@@ -125,28 +125,43 @@ router.get(
   '/businesses',
   metaRoute(async (req, res) => {
     const token = await metaAuth.getDecryptedToken();
-    res.json(await metaGraph.getBusinessPortfolios(token));
+    const data = await metaGraph.getBusinessPortfolios(token, { force: req.query.force === '1' });
+    res.json({ ...data, stale: !!data.__stale });
   })
 );
 
-/** Real businesses + every ad account reachable (personally-owned and business-owned), de-duplicated by id. */
+/**
+ * Businesses + every reachable ad account, de-duplicated. Now served from the
+ * SAME cached portfolio tree as /businesses (one Meta fan-out per 5 min, not
+ * a fresh per-business loop on every render). ?force=1 refreshes.
+ */
 router.get(
   '/ad-accounts',
   metaRoute(async (req, res) => {
     const token = await metaAuth.getDecryptedToken();
-    const businesses = await metaGraph.getBusinesses(token);
-
+    const tree = await metaGraph.getBusinessPortfolios(token, { force: req.query.force === '1' });
     const byId = new Map();
-    for (const a of await metaGraph.getAdAccounts(token)) {
-      byId.set(a.id, { id: a.id, accountId: a.account_id, name: a.name, currency: a.currency, status: a.account_status, businessId: null, businessName: null });
-    }
-    for (const b of businesses) {
-      for (const a of await metaGraph.getAdAccounts(token, b.id)) {
-        byId.set(a.id, { id: a.id, accountId: a.account_id, name: a.name, currency: a.currency, status: a.account_status, businessId: b.id, businessName: b.name });
+    for (const b of tree.businesses || []) {
+      for (const a of b.adAccounts || []) {
+        byId.set(a.id, {
+          id: a.id, accountId: a.accountId, name: a.name, currency: a.currency,
+          status: a.accountStatus, businessId: b.id, businessName: b.id ? b.name : null,
+        });
       }
     }
+    const businesses = (tree.businesses || []).filter((b) => b.id).map((b) => ({ id: b.id, name: b.name }));
+    res.json({ businesses, adAccounts: [...byId.values()], stale: !!tree.__stale });
+  })
+);
 
-    res.json({ businesses, adAccounts: [...byId.values()] });
+/** LAZY Instagram resolution for one Page (used only when a Page is picked). */
+router.get(
+  '/page-instagram',
+  metaRoute(async (req, res) => {
+    const pageId = String(req.query.pageId || '');
+    if (!/^\d{5,}$/.test(pageId)) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'pageId مطلوب.' });
+    const token = await metaAuth.getDecryptedToken();
+    res.json({ instagram: await metaGraph.getPageInstagram(token, pageId) });
   })
 );
 

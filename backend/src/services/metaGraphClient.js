@@ -4,8 +4,13 @@
 // function here makes a real network call; nothing in this file ever
 // fabricates a response.
 import { logger } from '../logger.js';
+import { cachedMetaFetch, fingerprintToken, invalidateForToken } from './metaAssetCache.js';
 
 const GRAPH_VERSION = 'v21.0';
+const ASSET_TTL_MS = 5 * 60 * 1000;
+
+/** Force-refresh every cached Meta asset list for this token (wired to the "تحديث" buttons + disconnect). */
+export function refreshMetaAssetCache(token) { invalidateForToken(token); }
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 
 /**
@@ -43,6 +48,11 @@ function throwGraphOAuthError(data, res, context) {
   err.graphType = e.type ?? null;
   err.graphCode = e.code ?? null;
   err.graphSubcode = e.error_subcode ?? null;
+  // App/user throttle — "Application request limit reached (#4)" and friends.
+  // Tagged so the asset cache can serve stale data + back off instead of retrying.
+  if ([4, 17, 32, 613, 80004].includes(Number(e.code)) || /request limit reached|rate limit|too many calls/i.test(e.message || '')) {
+    err.isMetaRateLimit = true;
+  }
   err.graphUserTitle = userTitle;
   err.graphUserMsg = userMsg;
   err.graphBlameFields = blameFields;
@@ -143,7 +153,10 @@ export async function getTokenDebug(token) {
  *                         portfolio itself can't be read
  * READ ONLY. Best-effort per edge — a gap is reported, never silently assumed.
  */
-export async function getBusinessPortfolios(token) {
+export async function getBusinessPortfolios(token, { force = false } = {}) {
+  return cachedMetaFetch(`businesses:${fingerprintToken(token)}`, () => _getBusinessPortfoliosUncached(token), { ttlMs: ASSET_TTL_MS, force });
+}
+async function _getBusinessPortfoliosUncached(token) {
   const me = await graphFetch('/me', { fields: 'id,name' }, token);
   const dbg = await getTokenDebug(token);
   const bmTargets = dbg.granular.business_management; // array of biz ids, or null = all, or undefined = not granular
@@ -156,7 +169,7 @@ export async function getBusinessPortfolios(token) {
 
   // The Facebook Pages the connected USER personally manages (from the FB
   // account itself, not any Business Portfolio) + their linked Instagram.
-  const userIdent = await getUserPagesAndIg(token).catch(() => ({ pages: [], instagram: [], readable: false }));
+  const userIdent = await getUserPages(token).catch(() => ({ pages: [], instagram: [], readable: false }));
   const userPages = (userIdent.pages || []).map((p) => ({ id: p.id, name: p.name }));
   const userInstagram = (userIdent.instagram || []).map((g) => ({ id: g.id, name: g.username || g.id }));
 
@@ -546,8 +559,11 @@ export async function setEntityBudget(token, entityId, { dailyBudgetMinor, lifet
 // helper here ever writes to a SOURCE entity.
 // ============================================================================
 
-/** Every ad account the token can reach (personal + each business), de-duplicated, with currency + timezone + status. */
-export async function getAllAccessibleAdAccounts(token) {
+/** Every ad account the token can reach (personal + each business), de-duplicated, with currency + timezone + status. CACHED (5 min) + in-flight de-duplicated — pass {force:true} to refresh. */
+export async function getAllAccessibleAdAccounts(token, { force = false } = {}) {
+  return cachedMetaFetch(`adaccounts:${fingerprintToken(token)}`, () => _getAllAccessibleAdAccountsUncached(token), { ttlMs: ASSET_TTL_MS, force });
+}
+async function _getAllAccessibleAdAccountsUncached(token) {
   const fields = 'id,account_id,name,currency,account_status,timezone_name,timezone_offset_hours_utc,business{id,name}';
   const byId = new Map();
   for (const a of (await graphFetch('/me/adaccounts', { fields, limit: 200 }, token)).data || []) byId.set(a.id, a);
@@ -687,8 +703,11 @@ export async function getAdImagesByHash(token, adAccountId, hashes) {
   return out;
 }
 
-/** Destination-account asset inventory used by the clone pre-flight. Every list is best-effort (low-noise) — a permission gap yields [] and is surfaced as a WARNING upstream, never a silent pass. */
-export async function getAccountAssetsForClone(token, adAccountId) {
+/** Destination-account asset inventory used by the clone pre-flight. Every list is best-effort (low-noise) — a permission gap yields [] and is surfaced as a WARNING upstream, never a silent pass. CACHED (5 min) per (token, account). */
+export async function getAccountAssetsForClone(token, adAccountId, { force = false } = {}) {
+  return cachedMetaFetch(`assets:${fingerprintToken(token)}:${adAccountId}`, () => _getAccountAssetsForCloneUncached(token, adAccountId), { ttlMs: ASSET_TTL_MS, force });
+}
+async function _getAccountAssetsForCloneUncached(token, adAccountId) {
   const [account, pages, igA, igB, pixels, audiences, catViaBiz] = await Promise.all([
     graphGetQuiet(`/${adAccountId}`, { fields: 'id,name,account_status,timezone_name,currency' }, token),
     graphListQuiet(`/${adAccountId}/promote_pages`, { fields: 'id,name' }, token),
@@ -727,19 +746,35 @@ export async function getAccountAssetsForClone(token, adAccountId) {
  * missing IG never blocks Page discovery. Returns `{pages:[], instagram:[]}`
  * cleanly when `pages_show_list` isn't granted.
  */
-export async function getUserPagesAndIg(token) {
+export async function getUserPagesAndIg(token, { probeInstagram = false, maxProbe = 8 } = {}) {
   const rows = await graphListQuiet('/me/accounts', { fields: 'id,name' }, token);
   const pages = (rows || []).map((p) => ({ id: String(p.id), name: p.name || p.id, source: 'user_account', verified: true }));
 
   const igMap = new Map();
-  // Bounded per-Page IG probe (quiet — a permission gap yields null, not an error).
-  await Promise.all(pages.slice(0, 30).map(async (pg) => {
-    const d = await graphGetQuiet(`/${pg.id}`, { fields: 'connected_instagram_account{id,username},instagram_business_account{id,username}' }, token);
-    const ig = d?.connected_instagram_account || d?.instagram_business_account;
-    if (ig?.id) igMap.set(String(ig.id), { id: String(ig.id), username: ig.username || ig.id, source: 'user_account', pageId: pg.id });
-  }));
+  // IG discovery is OFF by default — probing every Page one-by-one on each UI
+  // render is what tripped Meta error #4. IG identities for a clone DESTINATION
+  // come from the ad-account edges (getAccountIdentities); a single Page's IG
+  // is resolved lazily via getPageInstagram() only when that Page is chosen.
+  if (probeInstagram) {
+    await Promise.all(pages.slice(0, maxProbe).map(async (pg) => {
+      const ig = await getPageInstagram(token, pg.id);
+      if (ig?.id) igMap.set(String(ig.id), { ...ig, source: 'user_account', pageId: pg.id });
+    }));
+  }
 
   return { pages, instagram: [...igMap.values()], readable: pages.length > 0 };
+}
+
+/** The connected user's own FB Pages (from /me/accounts) — CACHED (5 min) so a page load / clone step / identity lookup all share ONE /me/accounts call. */
+export async function getUserPages(token, { force = false } = {}) {
+  return cachedMetaFetch(`userpages:${fingerprintToken(token)}`, () => getUserPagesAndIg(token, { probeInstagram: false }), { ttlMs: ASSET_TTL_MS, force });
+}
+
+/** LAZY: the Instagram professional account linked to ONE Facebook Page. Quiet (null on a permission gap). No instagram_* scope needed — reads the Page's connected/business IG edge. */
+export async function getPageInstagram(token, pageId) {
+  const d = await graphGetQuiet(`/${pageId}`, { fields: 'connected_instagram_account{id,username},instagram_business_account{id,username}' }, token);
+  const ig = d?.connected_instagram_account || d?.instagram_business_account;
+  return ig?.id ? { id: String(ig.id), username: ig.username || ig.id } : null;
 }
 
 /**
@@ -749,12 +784,17 @@ export async function getUserPagesAndIg(token) {
  *      itself) + their linked Instagram accounts  ← preferred
  *   2. the ad account's promote_pages
  *   3. the owning Business Portfolio's owned/client pages
- * Best-effort per edge (the token may lack pages_* / instagram_basic — a gap
- * is reported, never silently assumed). Used by the clone identity step.
+ * Best-effort per edge (the token may lack pages_* — a gap is reported, never
+ * silently assumed). Used by the clone identity step. CACHED (5 min) per
+ * (token, account); the user's own Pages come from a shared cached call so
+ * they aren't re-fetched per destination account.
  */
-export async function getAccountIdentities(token, adAccountId) {
+export async function getAccountIdentities(token, adAccountId, { force = false } = {}) {
+  return cachedMetaFetch(`identities:${fingerprintToken(token)}:${adAccountId}`, () => _getAccountIdentitiesUncached(token, adAccountId), { ttlMs: ASSET_TTL_MS, force });
+}
+async function _getAccountIdentitiesUncached(token, adAccountId) {
   const [userIdent, promotePages, bizPages, igA, igB, bizIg] = await Promise.all([
-    getUserPagesAndIg(token),
+    getUserPages(token),
     graphListQuiet(`/${adAccountId}/promote_pages`, { fields: 'id,name' }, token),
     graphGetQuiet(`/${adAccountId}`, { fields: 'business{id,name,owned_pages.limit(200){id,name,is_published},client_pages.limit(200){id,name}}' }, token),
     graphListQuiet(`/${adAccountId}/instagram_accounts`, { fields: 'id,username' }, token),

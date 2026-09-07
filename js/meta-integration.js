@@ -41,19 +41,29 @@ const BIZ_STATUS = {
   NEEDS_RECONNECT: ['يحتاج إعادة ربط', '#d33f3f'],
 };
 
-async function loadBusinesses() {
+function isMetaRateLimitMsg(m) {
+  return /request limit reached|#4\b|rate limit|طلبات Meta/i.test(String(m || ''));
+}
+
+async function loadBusinesses(force = false) {
   const el = document.getElementById('metaBizList');
   const noteEl = document.getElementById('metaScopeNote');
   if (!el) return;
   el.innerHTML = '<span class="faint" style="font-size:12px;">جارِ التحميل…</span>';
   let data;
   try {
-    data = await api.get('/api/meta/businesses');
+    data = await api.get('/api/meta/businesses' + (force ? '?force=1' : ''));
   } catch (err) {
-    el.innerHTML = `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
+    if (isMetaRateLimitMsg(err.message)) {
+      el.innerHTML = '<div class="empty-state">تم الوصول مؤقتًا لحد طلبات Meta — سيتم استخدام آخر بيانات محفوظة. جرّب «تحديث» بعد دقيقتين.</div>';
+      UI.toast('تم الوصول مؤقتًا لحد طلبات Meta — سيتم استخدام آخر بيانات محفوظة.', 'error');
+    } else {
+      el.innerHTML = `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
+    }
     return;
   }
   const esc = UI.escapeHtml;
+  if (data.stale) UI.toast('تم الوصول مؤقتًا لحد طلبات Meta — دي آخر بيانات محفوظة.', 'error');
   const line = (label, arr) => arr && arr.length
     ? `<div style="font-size:12px; margin-top:4px;"><span class="faint">${label}:</span> ${arr.map((x) => esc(x.name || x.username || x.id)).join('، ')}</div>`
     : '';
@@ -120,7 +130,9 @@ async function openAdAccountPicker() {
   overlay.style.display = 'flex';
 
   try {
-    const { adAccounts } = await api.get('/api/meta/ad-accounts');
+    const resp = await api.get('/api/meta/ad-accounts');
+    const adAccounts = resp.adAccounts || [];
+    if (resp.stale) UI.toast('تم الوصول مؤقتًا لحد طلبات Meta — دي آخر بيانات محفوظة.', 'error');
     if (adAccounts.length === 0) {
       list.innerHTML = '<div class="empty-state">مفيش Ad Accounts متاحة على الحساب ده.</div>';
       return;
@@ -156,7 +168,9 @@ async function openAdAccountPicker() {
       };
     });
   } catch (err) {
-    list.innerHTML = `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
+    list.innerHTML = isMetaRateLimitMsg(err.message)
+      ? '<div class="empty-state">تم الوصول مؤقتًا لحد طلبات Meta — سيتم استخدام آخر بيانات محفوظة. جرّب تاني بعد دقيقتين.</div>'
+      : `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -177,7 +191,7 @@ async function init() {
     if (ok) location.href = '/api/meta/connect?reauth=1&mode=classic';
   };
   const refreshBizBtn = document.getElementById('btnMetaRefreshBiz');
-  if (refreshBizBtn) refreshBizBtn.onclick = () => loadBusinesses();
+  if (refreshBizBtn) refreshBizBtn.onclick = () => loadBusinesses(true);
   document.getElementById('btnMetaPickAccount').onclick = openAdAccountPicker;
   document.getElementById('btnMetaAccountCancel').onclick = () => (document.getElementById('metaAdAccountOverlay').style.display = 'none');
   document.getElementById('metaAdAccountOverlay').addEventListener('click', (e) => {
