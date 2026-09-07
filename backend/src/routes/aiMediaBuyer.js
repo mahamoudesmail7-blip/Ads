@@ -287,8 +287,13 @@ router.get('/clone/batches/:batchId', asyncRoute(async (req, res) => {
 
 router.post('/clone/batches', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, recreateBoosted } = req.body || {};
-  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, recreateBoosted, userId: req.user.id }));
+  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted } = req.body || {};
+  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted, userId: req.user.id }));
+}));
+
+router.post('/clone/batches/:batchId/copy-valid-only', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.setBatchCopyValidOnly({ batchId: req.params.batchId, copyValidAdsOnly: req.body?.copyValidAdsOnly !== false, userId: req.user.id }));
 }));
 
 router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
@@ -315,6 +320,61 @@ router.get('/clone/batches/:batchId/verify', asyncRoute(async (req, res) => {
 router.get('/clone/jobs/:jobId/verify', asyncRoute(async (req, res) => {
   const { verifyJob } = await import('../services/amb/cloneVerify.js');
   res.json(await verifyJob(req.params.jobId));
+}));
+
+// ---------------------------------------------------------------------------
+// ADVANCED CAMPAIGN SCHEDULING — per copied campaign. Reads: ADMIN|MANAGER.
+// Anything that arms or triggers a Meta write (create / approve / edit /
+// cancel / run-now / pause-now): ADMIN. The server-side scheduler executes at
+// the approved times with a live Meta revalidation; the browser is never in
+// the loop.
+// ---------------------------------------------------------------------------
+router.get('/schedules', asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  res.json(await s.listSchedules({
+    batchId: req.query.batchId || undefined,
+    status: req.query.status || undefined,
+    cloneJobId: req.query.cloneJobId || undefined,
+    includeTerminal: req.query.includeTerminal !== 'false',
+    limit: Number(req.query.limit) || 100,
+  }));
+}));
+
+router.get('/schedules/:id', asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  res.json(await s.getSchedule(req.params.id));
+}));
+
+router.post('/schedules', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  const { cloneJobId, mode, timezone, startDate, startTime, endDate, endTime } = req.body || {};
+  res.status(201).json(await s.createSchedule({ cloneJobId, mode, timezone, startDate, startTime, endDate, endTime, userId: req.user.id }));
+}));
+
+router.post('/schedules/:id/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  res.json(await s.approveSchedule({ id: req.params.id, userId: req.user.id }));
+}));
+
+router.patch('/schedules/:id', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  const { mode, timezone, startDate, startTime, endDate, endTime, removeEnd } = req.body || {};
+  res.json(await s.editSchedule({ id: req.params.id, mode, timezone, startDate, startTime, endDate, endTime, removeEnd, userId: req.user.id }));
+}));
+
+router.post('/schedules/:id/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  res.json(await s.cancelSchedule({ id: req.params.id, userId: req.user.id }));
+}));
+
+router.post('/schedules/:id/run-now', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  res.json(await s.runNowSchedule({ id: req.params.id, userId: req.user.id }));
+}));
+
+router.post('/schedules/:id/pause-now', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const s = await import('../services/amb/campaignSchedule.js');
+  res.json(await s.pauseNowSchedule({ id: req.params.id, userId: req.user.id }));
 }));
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,26 @@ import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
 import { preflightCampaignForDestination } from './clonePreflight.js';
 import { libraryDestHints, registerClonedCreativeRef } from './mediaLibrary.js';
+import { normalizeCreative } from './cloneAnalysis.js';
+import { jobHasActiveSchedule, cancelSchedulesForBatch } from './campaignSchedule.js';
+
+/** Lightweight "can this ad be copied at all?" check — no network. An ad is
+ * NOT copyable only when its creative genuinely has nothing to reproduce (a
+ * boosted post with no text/media) or needs a destination Page and none is
+ * resolvable. A video with no downloadable source is still "copyable" — the
+ * engine tries the shared reference first. */
+function adCopyable(cr, { destPageId, identityMap }) {
+  if (!cr || cr.__error) return false;
+  let norm;
+  try { norm = normalizeCreative(cr); } catch { return false; }
+  if (norm.objectStoryId && !norm.hasObjectStorySpec && !(norm.body || norm.title || norm.images.length || norm.videos.length || norm.carouselCards.length)) return false;
+  if (!norm.hasObjectStorySpec) {
+    const src = norm.sourcePageId;
+    const pg = (src && identityMap?.pages?.[String(src)]) || destPageId || null;
+    if (!pg) return false;
+  }
+  return true;
+}
 
 const TERMINAL_JOB = new Set(['ACTIVATED', 'CANCELLED']);
 const running = new Set(); // batch_ids with an in-flight runBatch()
@@ -262,7 +282,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, recreateBoosted = false, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
@@ -289,7 +309,7 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
       schedule_local_time: preview.scheduleLocalTime,
       destination_page_id: destPage,
       destination_instagram_id: destIg,
-      identity_map_json: idMap ? JSON.stringify({ ...idMap, allowPageOnlyIg: allowPageOnlyIg !== false }) : JSON.stringify({ allowPageOnlyIg: allowPageOnlyIg !== false }),
+      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true }),
       pixel_map_json: pxMap ? JSON.stringify(pxMap) : null,
       recreate_boosted: !!recreateBoosted && !!destPage,
       total_copies: preview.totalCopies,
@@ -361,6 +381,21 @@ export async function resumeBatch({ batchId, userId }) {
   return getBatch(batchId);
 }
 
+/** Flip "copy valid ads only" on a pending/decision batch and re-run — copies the copyable ads, skips the rest, and never leaves an empty campaign. */
+export async function setBatchCopyValidOnly({ batchId, copyValidAdsOnly = true, userId }) {
+  const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId } });
+  if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
+  if (['CANCELLED', 'COMPLETED'].includes(batch.status)) { const e = new Error(`الدفعة في حالة ${batch.status}.`); e.status = 409; throw e; }
+  const blob = j(batch.identity_map_json, {}) || {};
+  blob.copyValidAdsOnly = copyValidAdsOnly === true;
+  await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { identity_map_json: JSON.stringify(blob) } });
+  // NEEDS_DECISION jobs go back to PENDING so the worker re-evaluates them.
+  await prisma.ambCloneJob.updateMany({ where: { batch_id: batchId, status: 'NEEDS_DECISION' }, data: { status: 'PENDING', error: null } });
+  await audit(batchId, null, 'RETRY', { detail: `«نسخ الإعلانات الصالحة فقط» = ${blob.copyValidAdsOnly}`, actorId: userId });
+  if (copyValidAdsOnly) kickRun(batchId);
+  return getBatch(batchId);
+}
+
 export async function cancelBatch({ batchId, userId }) {
   const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, include: { jobs: true } });
   if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
@@ -373,7 +408,8 @@ export async function cancelBatch({ batchId, userId }) {
     data: { status: 'CANCELLED' },
   });
   await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'CANCELLED' } });
-  await audit(batchId, null, 'CANCELLED', { detail: 'أُلغيت الدفعة — النسخ المُنشأة تبقى متوقفة (PAUSED) ولن تُفعَّل.', actorId: userId });
+  const nSched = await cancelSchedulesForBatch(batchId, userId).catch(() => 0);
+  await audit(batchId, null, 'CANCELLED', { detail: `أُلغيت الدفعة — النسخ المُنشأة تبقى متوقفة (PAUSED) ولن تُفعَّل.${nSched ? ` أُلغيت ${nSched} جدولة مرتبطة.` : ''}`, actorId: userId });
   return getBatch(batchId);
 }
 
@@ -401,7 +437,7 @@ async function runBatch(batchId) {
   await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'CLONING' } });
   const token = await getDecryptedToken();
 
-  const jobs = batch.jobs.filter((jb) => !TERMINAL_JOB.has(jb.status) && jb.preflight_status !== 'BLOCKED' && jb.status !== 'PREFLIGHT_BLOCKED');
+  const jobs = batch.jobs.filter((jb) => !TERMINAL_JOB.has(jb.status) && jb.preflight_status !== 'BLOCKED' && !['PREFLIGHT_BLOCKED', 'CANNOT_COPY'].includes(jb.status));
   for (const job of jobs) {
     if (['CLONED_PAUSED', 'ACTIVATION_PENDING'].includes(job.status)) continue; // done cloning, waiting for schedule
     try {
@@ -418,16 +454,18 @@ async function runBatch(batchId) {
 
 async function recomputeBatchStatus(batchId) {
   const jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId } });
-  const relevant = jobs.filter((jb) => jb.status !== 'CANCELLED' && jb.preflight_status !== 'BLOCKED' && jb.status !== 'PREFLIGHT_BLOCKED');
+  const relevant = jobs.filter((jb) => !['CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY', 'NEEDS_DECISION'].includes(jb.status) && jb.preflight_status !== 'BLOCKED');
   const failed = relevant.filter((jb) => jb.status === 'FAILED' || jb.status === 'ACTIVATION_FAILED');
   const cloned = relevant.filter((jb) => ['CLONED_PAUSED', 'ACTIVATION_PENDING', 'ACTIVATED'].includes(jb.status));
   const activated = relevant.filter((jb) => jb.status === 'ACTIVATED');
+  const needsDecision = jobs.some((jb) => jb.status === 'NEEDS_DECISION');
   let status;
-  if (!relevant.length) status = 'FAILED';
+  if (!relevant.length) status = needsDecision ? 'NEEDS_DECISION' : jobs.some((jb) => jb.status === 'CANNOT_COPY') ? 'FAILED' : 'FAILED';
   else if (activated.length === relevant.length) status = 'COMPLETED';
   else if (failed.length && cloned.length) status = 'PARTIALLY_FAILED';
   else if (failed.length && !cloned.length) status = 'FAILED';
-  else status = 'SCHEDULED'; // everything clonable is cloned & PAUSED, waiting for the activation time
+  else if (needsDecision && cloned.length) status = 'PARTIALLY_FAILED';
+  else status = 'SCHEDULED'; // everything copyable is copied & PAUSED
   await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status } });
 }
 
@@ -475,6 +513,33 @@ async function cloneJob(jobId, token) {
     return;
   }
   const R = freshPf.resolved;
+
+  // ---- EMPTY-CAMPAIGN GUARD ----
+  // Never create a destination Campaign/AdSet and then find its ads can't be
+  // copied. Classify every ad first; if none can be copied, write NOTHING.
+  const copyValidAdsOnly = identityMap.copyValidAdsOnly === true;
+  const adOk = new Map();
+  for (const ad of tree.ads) {
+    const cr = ad.creative?.id ? tree.creatives.get(ad.creative.id) : null;
+    adOk.set(ad.id, adCopyable(cr, { destPageId, identityMap }));
+  }
+  const copyableAdIds = tree.ads.filter((ad) => adOk.get(ad.id)).map((ad) => ad.id);
+  if (copyableAdIds.length === 0) {
+    await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'CANNOT_COPY', error: 'مافيش أي إعلان قابل للنسخ في هذه الحملة — لم يُنشأ أي كائن في الحساب الوجهة.' } });
+    await audit(batchId, jobId, 'JOB_FAILED', { detail: 'CANNOT_COPY: 0 إعلان قابل للنسخ — لم يُكتب أي شيء على Meta.' });
+    return;
+  }
+  if (copyableAdIds.length < tree.ads.length && !copyValidAdsOnly) {
+    await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'NEEDS_DECISION', error: `${tree.ads.length - copyableAdIds.length} إعلان مش قابل للنسخ. فعّل «نسخ الإعلانات الصالحة فقط» أو ألغِ — لم يُكتب أي شيء على Meta.` } });
+    await audit(batchId, jobId, 'JOB_FAILED', { detail: `NEEDS_DECISION: ${copyableAdIds.length}/${tree.ads.length} قابل للنسخ — في انتظار قرارك.` });
+    return;
+  }
+  // From here on the engine only builds the copyable ads (and skips ad sets
+  // that would end up empty).
+  const copyable = new Set(copyableAdIds);
+  tree.ads = tree.ads.filter((ad) => copyable.has(ad.id));
+  const keptAdsetIds = new Set(tree.ads.map((ad) => ad.adset_id));
+  tree.adsets = tree.adsets.filter((as) => keptAdsetIds.has(as.id));
 
   const counts = { adsets: 0, ads: 0, creatives: 0 };
   const idMap = { campaigns: {}, adsets: {}, ads: {}, creatives: {}, images: {}, videos: {} };
@@ -998,6 +1063,9 @@ export async function activateDueJobs() {
   let activated = 0;
 
   for (const job of due) {
+    // A copied campaign that now has its own per-campaign schedule is owned by
+    // campaignSchedule.js — the legacy batch-wide time must never race it.
+    if (await jobHasActiveSchedule(job.id)) continue;
     await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATION_PENDING' } });
     const idMap = j(job.id_map_json, {}) || {};
     // Activate top-down: campaign → ad sets → ads, so a child is never set
@@ -1065,9 +1133,11 @@ export async function listBatches({ limit = 25 } = {}) {
 }
 
 function summarizeJobs(jobs) {
-  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, activated: 0, failed: 0, cancelled: 0 };
+  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, activated: 0, failed: 0, cancelled: 0, cannotCopy: 0, needsDecision: 0 };
   for (const jb of jobs) {
     if (jb.preflight_status === 'BLOCKED' || jb.status === 'PREFLIGHT_BLOCKED') s.blocked++;
+    else if (jb.status === 'CANNOT_COPY') s.cannotCopy++;
+    else if (jb.status === 'NEEDS_DECISION') s.needsDecision++;
     else if (jb.status === 'PENDING') s.pending++;
     else if (jb.status === 'CLONING') s.cloning++;
     else if (jb.status === 'CLONED_PAUSED' || jb.status === 'ACTIVATION_PENDING') s.clonedPaused++;

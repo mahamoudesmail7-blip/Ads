@@ -107,6 +107,146 @@ export async function getAdAccounts(token, businessId) {
   return data.data || [];
 }
 
+/**
+ * The token's real granted scopes + granular targeting. Meta's Business Login
+ * lets a user grant `business_management` (and other business-scoped perms)
+ * for a CHOSEN SUBSET of their Business Portfolios — `granular_scopes[].
+ * target_ids` lists exactly which. This is why one token can see Business A
+ * but not Business B even though the user admins both: the grant was narrowed
+ * at consent time. Returns `{ scopes:[], granular:{scope:[target_ids]}, appId }`.
+ */
+export async function getTokenDebug(token) {
+  const d = await graphGetQuiet('/debug_token', { input_token: token }, token);
+  const data = d?.data || {};
+  const granular = {};
+  for (const g of data.granular_scopes || []) granular[g.scope] = g.target_ids || null; // null ⇒ all
+  return {
+    appId: data.app_id || null,
+    type: data.type || null,
+    isValid: !!data.is_valid,
+    expiresAt: data.expires_at ? new Date(data.expires_at * 1000).toISOString() : null,
+    dataAccessExpiresAt: data.data_access_expires_at ? new Date(data.data_access_expires_at * 1000).toISOString() : null,
+    scopes: data.scopes || [],
+    granular, // { business_management: ['<biz id>', ...] | null, ... }
+  };
+}
+
+/**
+ * Every Business Portfolio the token can actually see, each with its
+ * accessible ad accounts / Pages / Instagram identities / Pixels, plus a
+ * synthetic bucket for ad accounts shared with the user individually (no
+ * enumerable parent Business). Per-portfolio status:
+ *   CONNECTED           — assets readable
+ *   MISSING_PERMISSIONS — a page/pixel edge returned a permission error
+ *   NEEDS_RECONNECT     — business_management was granted but NOT for this
+ *                         portfolio (granular target list excludes it), or the
+ *                         portfolio itself can't be read
+ * READ ONLY. Best-effort per edge — a gap is reported, never silently assumed.
+ */
+export async function getBusinessPortfolios(token) {
+  const me = await graphFetch('/me', { fields: 'id,name' }, token);
+  const dbg = await getTokenDebug(token);
+  const bmTargets = dbg.granular.business_management; // array of biz ids, or null = all, or undefined = not granular
+
+  // Businesses the user is a member of.
+  let businesses = [];
+  try {
+    businesses = (await graphFetch('/me/businesses', { fields: 'id,name,verification_status', limit: 100 }, token)).data || [];
+  } catch { /* none */ }
+
+  // Every ad account reachable + which have an enumerable business parent.
+  let allAccts = [];
+  try {
+    allAccts = (await graphFetch('/me/adaccounts', {
+      fields: 'id,account_id,name,currency,account_status,timezone_name,business{id,name}', limit: 300,
+    }, token)).data || [];
+  } catch { /* none */ }
+
+  const acctByBiz = new Map(); // bizId -> [acct]
+  const orphanAccts = [];
+  for (const a of allAccts) {
+    const row = {
+      id: a.id, accountId: a.account_id, name: a.name || a.id, currency: a.currency || null,
+      accountStatus: a.account_status ?? null, timezoneName: a.timezone_name || null,
+      businessId: a.business?.id || null, businessName: a.business?.name || null,
+    };
+    if (a.business?.id) {
+      if (!acctByBiz.has(a.business.id)) acctByBiz.set(a.business.id, []);
+      acctByBiz.get(a.business.id).push(row);
+    } else {
+      orphanAccts.push(row);
+    }
+  }
+
+  async function bizAssets(bizId) {
+    const [ownedAcc, clientAcc, pages, clientPages, pixels, ig] = await Promise.all([
+      graphListQuiet(`/${bizId}/owned_ad_accounts`, { fields: 'id,account_id,name,currency,account_status,timezone_name' }, token),
+      graphListQuiet(`/${bizId}/client_ad_accounts`, { fields: 'id,account_id,name,currency,account_status,timezone_name' }, token),
+      graphListQuiet(`/${bizId}/owned_pages`, { fields: 'id,name' }, token),
+      graphListQuiet(`/${bizId}/client_pages`, { fields: 'id,name' }, token),
+      graphListQuiet(`/${bizId}/adspixels`, { fields: 'id,name' }, token),
+      graphListQuiet(`/${bizId}/instagram_accounts`, { fields: 'id,username' }, token),
+    ]);
+    return { ownedAcc, clientAcc, pages: [...(pages || []), ...(clientPages || [])], pixels: pixels || [], ig: ig || [] };
+  }
+
+  const out = [];
+  for (const b of businesses) {
+    const notInGrant = Array.isArray(bmTargets) && !bmTargets.includes(String(b.id));
+    let assets = { ownedAcc: [], clientAcc: [], pages: [], pixels: [], ig: [] };
+    if (!notInGrant) { try { assets = await bizAssets(b.id); } catch { /* keep empty */ } }
+    const acctMap = new Map();
+    for (const a of [...(acctByBiz.get(b.id) || []), ...(assets.ownedAcc || []), ...(assets.clientAcc || [])]) {
+      acctMap.set(a.id, {
+        id: a.id, accountId: a.account_id || a.accountId, name: a.name || a.id,
+        currency: a.currency || null, accountStatus: a.account_status ?? a.accountStatus ?? null,
+        timezoneName: a.timezone_name || a.timezoneName || null, businessId: b.id, businessName: b.name,
+      });
+    }
+    const pages = dedupById(assets.pages);
+    const pixels = dedupById(assets.pixels);
+    const ig = dedupById((assets.ig || []).map((g) => ({ id: g.id, name: g.username || g.id })));
+    const status = notInGrant ? 'NEEDS_RECONNECT'
+      : (!pages.length && !pixels.length && !acctMap.size) ? 'MISSING_PERMISSIONS'
+      : 'CONNECTED';
+    out.push({
+      id: b.id, name: (b.name || '').trim() || b.id, verificationStatus: b.verification_status || null,
+      inTokenGrant: !notInGrant,
+      status,
+      adAccounts: [...acctMap.values()],
+      pages, instagram: ig, pixels,
+    });
+  }
+
+  if (orphanAccts.length) {
+    out.push({
+      id: null, name: 'حسابات مشارَكة بشكل فردي (خارج Business Portfolio)',
+      verificationStatus: null, inTokenGrant: true,
+      status: 'CONNECTED',
+      adAccounts: orphanAccts,
+      pages: [], instagram: [], pixels: [],
+      note: 'حسابات إعلانية اتشاركت مع المستخدم كأفراد — الـ Business المالك مش ظاهر للتوكن الحالي. الصفحات/البيكسلات بتاعتها هتظهر بعد إعادة الربط بصلاحية الـ Business المالك.',
+    });
+  }
+
+  return {
+    connectedUser: { id: me.id, name: me.name },
+    token: {
+      scopes: dbg.scopes,
+      businessManagementTargets: bmTargets === undefined ? 'NOT_GRANTED' : (bmTargets === null ? 'ALL' : bmTargets),
+      expiresAt: dbg.expiresAt,
+      dataAccessExpiresAt: dbg.dataAccessExpiresAt,
+    },
+    businesses: out,
+  };
+}
+
+function dedupById(arr) {
+  const m = new Map();
+  for (const x of arr || []) if (x && x.id && !m.has(x.id)) m.set(x.id, { id: x.id, name: x.name || x.username || x.id });
+  return [...m.values()];
+}
+
 /** Real campaign objectives — needed to interpret which `actions` entry actually represents this campaign's "Results" (Meta's UI concept, not a single fixed field in the API). */
 export async function getCampaignObjectives(token, adAccountId) {
   const data = await graphFetch(`/${adAccountId}/campaigns`, { fields: 'id,objective', limit: 500 }, token);
@@ -361,6 +501,18 @@ export async function graphPost(path, body, token) {
 export async function setEntityStatus(token, entityId, status) {
   if (!['ACTIVE', 'PAUSED'].includes(status)) throw new Error(`setEntityStatus: invalid status ${status}`);
   return graphPost(`/${entityId}`, { status }, token);
+}
+
+/**
+ * READ (quiet) — the live state of one campaign / ad set / ad. Returns
+ * `{ id, name, status, effectiveStatus }` or `null` if the id can't be read
+ * (deleted, no permission). Used by the schedule executor to revalidate the
+ * DESTINATION campaign right before it activates / pauses it.
+ */
+export async function getEntityLive(token, entityId) {
+  const d = await graphGetQuiet(`/${entityId}`, { fields: 'id,name,status,effective_status' }, token);
+  if (!d || !d.id) return null;
+  return { id: d.id, name: d.name || null, status: d.status || null, effectiveStatus: d.effective_status || null };
 }
 
 /** WRITE — budget change. Amount is in MINOR units of the account currency (e.g. EGP → piasters, ×100). Pass exactly one of dailyBudgetMinor / lifetimeBudgetMinor, matching the budget type the entity already uses. */

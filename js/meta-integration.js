@@ -32,6 +32,57 @@ async function loadStatus() {
     : 'مفيش Ad Account مختار';
   document.getElementById('metaTokenExpiry').textContent = fmtDate(status.tokenExpiresAt);
   document.getElementById('metaLastSync').textContent = status.lastSyncedAt ? fmtDate(status.lastSyncedAt) : 'لسه ماحصلتش';
+  loadBusinesses();
+}
+
+const BIZ_STATUS = {
+  CONNECTED: ['متصل', '#15924f'],
+  MISSING_PERMISSIONS: ['صلاحيات ناقصة', '#c9761a'],
+  NEEDS_RECONNECT: ['يحتاج إعادة ربط', '#d33f3f'],
+};
+
+async function loadBusinesses() {
+  const el = document.getElementById('metaBizList');
+  const noteEl = document.getElementById('metaScopeNote');
+  if (!el) return;
+  el.innerHTML = '<span class="faint" style="font-size:12px;">جارِ التحميل…</span>';
+  let data;
+  try {
+    data = await api.get('/api/meta/businesses');
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state">⚠️ ${UI.escapeHtml(err.message)}</div>`;
+    return;
+  }
+  const esc = UI.escapeHtml;
+  const line = (label, arr) => arr && arr.length
+    ? `<div style="font-size:12px; margin-top:4px;"><span class="faint">${label}:</span> ${arr.map((x) => esc(x.name || x.username || x.id)).join('، ')}</div>`
+    : '';
+  el.innerHTML = (data.businesses || []).map((b) => {
+    const [txt, color] = BIZ_STATUS[b.status] || [b.status, '#888'];
+    const accts = (b.adAccounts || []).map((a) => `<span class="mono" style="font-size:11px;">${esc(a.name || a.id)}</span>`).join('، ');
+    return `<div style="border:1px solid var(--border,#2a2a2a); border-radius:10px; padding:10px 12px; margin-bottom:8px;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <b style="font-size:13px;">${b.id ? '🏢 ' : '👤 '}${esc(b.name)}</b>
+        <span style="font-size:11px; font-weight:700; color:${color};">● ${esc(txt)}</span>
+        ${b.verificationStatus ? `<span class="faint" style="font-size:10.5px;">${esc(b.verificationStatus)}</span>` : ''}
+      </div>
+      <div style="font-size:12px; margin-top:6px;"><span class="faint">Ad Accounts (${(b.adAccounts || []).length}):</span> ${accts || '<span class="faint">—</span>'}</div>
+      ${line('Pages', b.pages)}
+      ${line('Instagram', b.instagram)}
+      ${line('Pixels', b.pixels)}
+      ${b.note ? `<div class="faint" style="font-size:11px; margin-top:6px;">ℹ️ ${esc(b.note)}</div>` : ''}
+    </div>`;
+  }).join('') || '<div class="faint" style="font-size:12px;">مفيش Business Portfolios ظاهرة.</div>';
+
+  if (noteEl) {
+    const t = data.token || {};
+    const bm = t.businessManagementTargets;
+    const bmTxt = bm === 'ALL' ? 'كل الـ Businesses'
+      : bm === 'NOT_GRANTED' ? 'غير ممنوحة'
+      : Array.isArray(bm) ? `${bm.length} Business فقط` : '—';
+    noteEl.innerHTML = `الصلاحيات: <span class="mono">${esc((t.scopes || []).join(' '))}</span> · business_management ممنوحة لـ: <b>${esc(bmTxt)}</b>`
+      + (Array.isArray(bm) ? ` — لو عايز Business تاني يظهر، اضغط <b>إعادة ربط Meta</b> واختار كل الـ Businesses في شاشة فيسبوك.` : '');
+  }
 }
 
 function handleRedirectParams() {
@@ -39,8 +90,13 @@ function handleRedirectParams() {
   const meta = params.get('meta');
   if (!meta) return;
   if (meta === 'connected') {
-    UI.toast('✅ اتربط حساب Meta Ads بنجاح — اختار Ad Account دلوقتي');
-    openAdAccountPicker();
+    if (params.get('userChanged') === '1') {
+      UI.toast(`⚠️ اتربط بحساب Meta مختلف${params.get('prev') ? ` (كان: ${params.get('prev')})` : ''} — الاتصال القديم اتبدّل. لو كنت عايز تضيف Business بس، أعد الربط بنفس حساب Meta الأصلي.`, 'error');
+      loadStatus();
+    } else {
+      UI.toast('✅ اتربط حساب Meta Ads بنجاح — اختار Ad Account دلوقتي');
+      openAdAccountPicker();
+    }
   } else if (meta === 'error') {
     UI.toast(`⚠️ فشل ربط Meta Ads: ${params.get('reason') || 'حاول تاني'}`, 'error');
   }
@@ -104,6 +160,17 @@ async function init() {
   document.getElementById('btnMetaConnect').onclick = () => {
     location.href = '/api/meta/connect';
   };
+  const reauthBtn = document.getElementById('btnMetaReauth');
+  if (reauthBtn) reauthBtn.onclick = async () => {
+    const ok = await UI.confirmModal({
+      title: 'إعادة ربط Meta',
+      message: 'هتفتح شاشة فيسبوك تاني عشان تضيف Business Portfolios أو صلاحيات ناقصة. <b>مهم:</b> سجّل دخول بنفس حساب Meta الحالي، وفي شاشة اختيار الأصول اختار <b>كل الـ Business Portfolios</b> (مش واحد بس). الاتصال الحالي مش هيتقطع.',
+      confirmLabel: 'فتح شاشة فيسبوك',
+    });
+    if (ok) location.href = '/api/meta/connect?reauth=1';
+  };
+  const refreshBizBtn = document.getElementById('btnMetaRefreshBiz');
+  if (refreshBizBtn) refreshBizBtn.onclick = () => loadBusinesses();
   document.getElementById('btnMetaPickAccount').onclick = openAdAccountPicker;
   document.getElementById('btnMetaAccountCancel').onclick = () => (document.getElementById('metaAdAccountOverlay').style.display = 'none');
   document.getElementById('metaAdAccountOverlay').addEventListener('click', (e) => {

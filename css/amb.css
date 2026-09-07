@@ -440,6 +440,24 @@ body { background: var(--amb-bg); }
 
 .amb-app .amb-clone-tally { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 4px; }
 
+/* ---- Advanced Campaign Scheduling ---- */
+.amb-app .amb-sched-list { display: flex; flex-direction: column; gap: 12px; }
+.amb-app .amb-sched-slot { }
+.amb-app .amb-sched-editor { border: 1px solid var(--amb-border); border-radius: 12px; padding: 14px; background: var(--amb-surface); }
+.amb-app .amb-sched-modes { display: flex; flex-direction: column; gap: 6px; }
+.amb-app .amb-sched-mode { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 8px; border: 1px solid var(--amb-border); border-radius: 8px; }
+.amb-app .amb-sched-mode:has(input:checked) { border-color: var(--amb-blue); background: var(--amb-blue-bg); }
+.amb-app .amb-sched-card { border: 1px solid var(--amb-border); border-radius: 12px; padding: 14px; background: var(--amb-surface); }
+.amb-app .amb-sched-card-h { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.amb-app .amb-sched-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 16px; }
+.amb-app .amb-sched-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.amb-app .amb-sched-grid .rl { font-size: 11px; color: var(--amb-text-faint); font-weight: 600; }
+.amb-app .amb-sched-grid .rv { font-size: 13.5px; font-weight: 700; }
+.amb-app .amb-sched-cd { display: inline-block; font-size: 12.5px; font-weight: 800; color: var(--amb-blue); background: var(--amb-blue-bg); border-radius: 8px; padding: 6px 10px; font-variant-numeric: tabular-nums; }
+.amb-app .amb-sched-pending { border: 1px solid var(--amb-amber); background: var(--amb-amber-bg); border-radius: 12px; padding: 10px 12px; }
+.amb-app .amb-sched-pending .amb-sched-card { background: var(--amb-surface); margin-top: 8px; }
+.amb-app .amb-sched-history { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+
 /* ---- responsive ---- */
 @media (max-width: 1280px) {
   .amb-grid { grid-template-columns: 1fr; }

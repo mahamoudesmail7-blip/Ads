@@ -60,9 +60,14 @@ router.get(
     logger.info('Meta OAuth /connect — env snapshot', metaAuth.debugEnvSnapshot());
     const frontendBase = process.env.FRONTEND_URL || '';
     const state = metaAuth.generateState();
+    // ?reauth=1 → re-show Facebook's consent/asset screen (to ADD a Business
+    // Portfolio or extra permissions to an existing grant, not replace it).
+    // ?mode=classic → plain OAuth dialog with explicit Page scopes.
+    const rerequest = req.query.reauth === '1' || req.query.reauth === 'true';
+    const mode = req.query.mode === 'classic' ? 'classic' : 'config';
     let authUrl;
     try {
-      authUrl = metaAuth.buildAuthUrl(state); // throws if META_APP_ID isn't configured yet
+      authUrl = metaAuth.buildAuthUrl(state, { mode, rerequest }); // throws if META_APP_ID isn't configured yet
     } catch (err) {
       return res.redirect(`${frontendBase}/ai-intelligence.html?${new URLSearchParams({ meta: 'error', reason: err.message }).toString()}`);
     }
@@ -89,7 +94,11 @@ router.get(
 
     logger.info('Meta OAuth /callback — env snapshot before token exchange', metaAuth.debugEnvSnapshot());
     try {
-      await metaAuth.completeOAuth({ code, connectedById: req.user.id });
+      const r = await metaAuth.completeOAuth({ code, connectedById: req.user.id });
+      if (r.userChanged) {
+        logger.warn('Meta OAuth: connected Meta user changed', { previous: r.previousUserName, now: r.metaUserName });
+        return redirectTo({ meta: 'connected', userChanged: '1', prev: r.previousUserName || '' });
+      }
       return redirectTo({ meta: 'connected' });
     } catch (err) {
       logger.error('Meta OAuth /callback failed', { message: err.message, graphType: err.graphType, graphCode: err.graphCode, graphSubcode: err.graphSubcode, fbtraceId: err.fbtraceId });
@@ -102,6 +111,21 @@ router.get(
   '/status',
   metaRoute(async (req, res) => {
     res.json(await metaAuth.getStatus());
+  })
+);
+
+/**
+ * Every Business Portfolio the current token can see, each with its accessible
+ * ad accounts / Pages / Instagram / Pixels + a per-portfolio status, plus the
+ * token's real scopes and which Businesses `business_management` was granted
+ * for. This is the "refresh" — discovery is always live (no asset cache), so
+ * hitting this endpoint re-reads everything from Meta. READ ONLY.
+ */
+router.get(
+  '/businesses',
+  metaRoute(async (req, res) => {
+    const token = await metaAuth.getDecryptedToken();
+    res.json(await metaGraph.getBusinessPortfolios(token));
   })
 );
 

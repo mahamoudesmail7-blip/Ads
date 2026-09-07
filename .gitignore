@@ -12,3 +12,6 @@ backend/prisma/migrations_sqlite_backup/
 start-server.bat
 backend/.vision-cache/
 backend/*.traineddata
+
+# local agent / IDE tooling (not app code)
+.claude/

@@ -12,6 +12,22 @@ import { exchangeCodeForToken, exchangeForLongLivedToken, getMe } from './metaGr
 const CONFIG_ID = process.env.META_CONFIG_ID || '2166183033951878';
 const AUTH_DIALOG_VERSION = 'v21.0';
 
+// The permissions the CURRENT system actually uses:
+//   ads_read / ads_management  — read + (approved) write of campaigns/ad sets/ads
+//   business_management         — see Business Portfolios + their owned assets
+//   pages_show_list / pages_read_engagement — list the Pages a destination
+//                                 account can post as (Campaign Clone identity)
+//   pages_manage_ads           — create ad creatives that post as a Page
+//   instagram_basic            — resolve Instagram identities for the clone
+// Used ONLY by the classic-dialog fallback (`?mode=classic`); the default
+// Business-Login (config_id) flow takes its permission set from the App's
+// Login configuration, and the user picks which Businesses/Pages to share on
+// Facebook's own screen.
+export const DEFAULT_OAUTH_SCOPES = [
+  'ads_read', 'ads_management', 'business_management',
+  'pages_show_list', 'pages_read_engagement', 'pages_manage_ads', 'instagram_basic',
+];
+
 // .env.example documents every Meta var wrapped in double quotes
 // (META_APP_ID="", META_CONFIG_ID="2166183033951878", ...) — correct .env
 // file syntax, but Railway's Variables UI is a plain text field with no
@@ -65,15 +81,34 @@ export function debugEnvSnapshot() {
   };
 }
 
-/** The real Facebook OAuth dialog URL for this app's Facebook Login for Business configuration — a genuine navigation target, not an API call. */
-export function buildAuthUrl(state) {
+/**
+ * The real Facebook OAuth dialog URL. Two modes, both genuine navigation
+ * targets:
+ *   default  — Facebook Login for Business (config_id). Permissions + asset
+ *              types come from the App's Login configuration; the user picks
+ *              which Business Portfolios / Pages / ad accounts to share on
+ *              Facebook's screen.
+ *   classic  — a plain OAuth dialog with an explicit `scope` list. Use this to
+ *              request Page scopes the config_id flow doesn't include, without
+ *              editing the App dashboard.
+ * `rerequest` forces Facebook to re-show the consent/asset screen even when
+ * the user already granted something (needed to ADD a second Business
+ * Portfolio or extra permissions to an existing grant).
+ */
+export function buildAuthUrl(state, { mode = 'config', rerequest = false } = {}) {
   const appId = requiredEnv('META_APP_ID');
   const url = new URL(`https://www.facebook.com/${AUTH_DIALOG_VERSION}/dialog/oauth`);
   url.searchParams.set('client_id', appId);
   url.searchParams.set('redirect_uri', getRedirectUri());
-  url.searchParams.set('config_id', CONFIG_ID);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', state);
+  if (mode === 'classic') {
+    const scopes = (cleanEnvValue(process.env.META_OAUTH_SCOPES) || DEFAULT_OAUTH_SCOPES.join(',')).replace(/\s+/g, '');
+    url.searchParams.set('scope', scopes);
+  } else {
+    url.searchParams.set('config_id', CONFIG_ID);
+  }
+  if (rerequest) url.searchParams.set('auth_type', 'rerequest');
   return url.toString();
 }
 
@@ -124,6 +159,14 @@ export async function completeOAuth({ code, connectedById }) {
   const me = await getMe(longLived.access_token);
   const expiresAt = longLived.expires_in ? new Date(Date.now() + longLived.expires_in * 1000) : null;
 
+  // Re-auth by the SAME Meta user (adding a Business Portfolio / extra
+  // permissions to the grant) just refreshes the token in place — the
+  // existing selected account + all mappings are preserved. A DIFFERENT Meta
+  // user is a deliberate account switch; today the system holds one
+  // connection, so surface it clearly rather than swap tokens silently.
+  const existing = await prisma.metaConnection.findUnique({ where: { id: 'default' } });
+  const userChanged = existing?.status === 'CONNECTED' && existing.meta_user_id && existing.meta_user_id !== me.id;
+
   await prisma.metaConnection.upsert({
     where: { id: 'default' },
     create: {
@@ -148,7 +191,7 @@ export async function completeOAuth({ code, connectedById }) {
     },
   });
 
-  return { metaUserName: me.name, tokenExpiresAt: expiresAt };
+  return { metaUserName: me.name, tokenExpiresAt: expiresAt, userChanged, previousUserName: userChanged ? existing.meta_user_name : null };
 }
 
 export async function selectAdAccount({ adAccountId, adAccountName, businessId, businessName }) {

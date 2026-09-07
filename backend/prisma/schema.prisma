@@ -54,10 +54,10 @@ model User {
   amb_maps_created               AmbProductCampaignMap[]
   amb_recommendations_reviewed   AmbRecommendation[]
   amb_actions_executed           AmbAction[]
-  amb_clone_batches_created      AmbCloneBatch[]             @relation("AmbCloneCreator")
-  amb_clone_batches_approved     AmbCloneBatch[]             @relation("AmbCloneApprover")
-  amb_clone_audit_entries        AmbCloneAudit[]             @relation("AmbCloneAuditActor")
-  media_scalings_created         MediaLibraryScaling[]       @relation("MediaScalingCreator")
+  amb_clone_batches_created      AmbCloneBatch[]              @relation("AmbCloneCreator")
+  amb_clone_batches_approved     AmbCloneBatch[]              @relation("AmbCloneApprover")
+  amb_clone_audit_entries        AmbCloneAudit[]              @relation("AmbCloneAuditActor")
+  media_scalings_created         MediaLibraryScaling[]        @relation("MediaScalingCreator")
 
   @@map("users")
 }
@@ -1166,13 +1166,13 @@ model AmbRecommendation {
   //   (the target entity no longer exists / has no recent data). The last
   //   two are set by the post-sync reconciler and drop the rec from the
   //   active Action Plan while keeping it for audit.
-  status         String    @default("PENDING")
-  reviewed_by_id Int?
-  reviewed_by    User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
-  reviewed_at    DateTime?
-  resolution_note String?  // human-readable reason a rec was auto-resolved (shown in history/details)
-  resolved_at    DateTime? // when the reconciler resolved it externally / marked it not applicable
-  edited_json    String? // owner "Edit Action" overrides applied before execution
+  status          String    @default("PENDING")
+  reviewed_by_id  Int?
+  reviewed_by     User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
+  reviewed_at     DateTime?
+  resolution_note String? // human-readable reason a rec was auto-resolved (shown in history/details)
+  resolved_at     DateTime? // when the reconciler resolved it externally / marked it not applicable
+  edited_json     String? // owner "Edit Action" overrides applied before execution
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -1295,14 +1295,14 @@ model AmbAlert {
 // invented — a field is null when nothing in the creative supports it.
 // Cached by (creative_id, model_version); model_version bumps invalidate.
 model AmbCreativeAnalysis {
-  id              Int      @id @default(autoincrement())
+  id              Int       @id @default(autoincrement())
   ad_account_id   String
   creative_id     String
-  model_version   String   @default("amb-creative-v1")
-  status          String   @default("NOT_ANALYZED")
-  source          String?  // DETERMINISTIC | RULE_BASED | AI_ANALYZED | MIXED
+  model_version   String    @default("amb-creative-v1")
+  status          String    @default("NOT_ANALYZED")
+  source          String? // DETERMINISTIC | RULE_BASED | AI_ANALYZED | MIXED
   hook            String?
-  hook_types_json String?  // JSON array from the shared HOOK_TYPES vocab
+  hook_types_json String? // JSON array from the shared HOOK_TYPES vocab
   selling_angle   String?
   problem         String?
   main_benefit    String?
@@ -1311,11 +1311,11 @@ model AmbCreativeAnalysis {
   offer           String?
   cta             String?
   creative_type   String?
-  raw_text        String?  // the creative text actually analyzed (audit / never re-derive)
-  fields_json     String?  // full structured object with a per-field source tag
+  raw_text        String? // the creative text actually analyzed (audit / never re-derive)
+  fields_json     String? // full structured object with a per-field source tag
   analyzed_at     DateTime?
-  created_at      DateTime @default(now())
-  updated_at      DateTime @updatedAt
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
 
   @@unique([creative_id, model_version])
   @@index([ad_account_id])
@@ -1416,12 +1416,77 @@ model AmbCloneJob {
   created_at                DateTime      @default(now())
   updated_at                DateTime      @updatedAt
 
-  objects AmbCloneObjectMap[]
+  objects   AmbCloneObjectMap[]
+  schedules AmbCampaignSchedule[]
 
   @@unique([batch_id, destination_ad_account_id, source_campaign_id])
   @@index([status])
   @@index([scheduled_activation_at])
   @@map("amb_clone_jobs")
+}
+
+// ADVANCED CAMPAIGN SCHEDULING — one row per (copied campaign) scheduling
+// window. A copied campaign (an AmbCloneJob that reached CLONED_PAUSED /
+// ACTIVATED) can have at most one non-terminal schedule at a time; ended /
+// cancelled / failed rows are kept as history.
+//
+// Times are stored as UTC instants (start_at / end_at). The wall-clock the
+// owner entered + the IANA timezone are kept alongside for display and for
+// re-deriving on a DST boundary. The server-side scheduler (cloneScheduler.js
+// 60s tick) is the ONLY thing that acts on these — never the browser.
+//
+// The owner's approval of the schedule authorizes BOTH the future start and
+// the future end action; the executor still revalidates the live Meta state
+// at execution time and refuses (status NEEDS_INTERVENTION) if the copied
+// campaign changed, disappeared, or is unsafe to touch.
+model AmbCampaignSchedule {
+  id                        Int         @id @default(autoincrement())
+  clone_job_id              Int
+  clone_job                 AmbCloneJob @relation(fields: [clone_job_id], references: [id], onDelete: Cascade)
+  batch_id                  String // denormalized for listing without a join
+  // Denormalized display context (so a dashboard card needs no extra fetch).
+  destination_ad_account_id String
+  destination_account_name  String?
+  source_account_name       String?
+  destination_campaign_id   String?
+  campaign_name             String?
+
+  // RUN_NOW | START_AT | START_NO_END | START_AND_END
+  mode        String
+  timezone    String    @default("Africa/Cairo")
+  start_at    DateTime // UTC instant of the scheduled (or immediate) start
+  end_at      DateTime? // UTC instant of the scheduled pause; null ⇒ runs until manually stopped
+  start_local String? // "YYYY-MM-DD HH:mm" as the owner entered it (display only)
+  end_local   String?
+
+  // PENDING_APPROVAL | SCHEDULED | RUNNING | ENDED | PAUSED | CANCELLED
+  // | FAILED | NEEDS_INTERVENTION
+  // (STARTING_SOON / ENDING_SOON are display-only, derived from the clock.)
+  status            String    @default("PENDING_APPROVAL")
+  approval_required Boolean   @default(true) // set true again on any material edit; cleared on approve
+  created_by_id     Int?
+  approved_by_id    Int?
+  approved_at       DateTime?
+  cancelled_by_id   Int?
+  cancelled_at      DateTime?
+
+  actual_start_at          DateTime? // when the scheduler actually activated it
+  actual_end_at            DateTime? // when the scheduler (or a manual pause) actually paused it
+  start_meta_response_json String?
+  end_meta_response_json   String?
+  intervention_reason      String? // why status = NEEDS_INTERVENTION
+  last_error               String?
+  edits_json               String? // append-only JSON array: [{ at, byId, field, from, to }]
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([status])
+  @@index([start_at])
+  @@index([end_at])
+  @@index([clone_job_id])
+  @@index([batch_id])
+  @@map("amb_campaign_schedules")
 }
 
 // Per-object source->destination id mapping. The @@unique key makes every
@@ -1538,21 +1603,21 @@ model MediaLibraryAsset {
 }
 
 model MediaLibraryCreativeRef {
-  id              Int               @id @default(autoincrement())
-  asset_id        Int
-  asset           MediaLibraryAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
-  ad_account_id   String
-  creative_id     String
-  creative_name   String?
-  format          String? // VIDEO | IMAGE | CAROUSEL | OTHER (this ref's own format)
+  id                Int               @id @default(autoincrement())
+  asset_id          Int
+  asset             MediaLibraryAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  ad_account_id     String
+  creative_id       String
+  creative_name     String?
+  format            String? // VIDEO | IMAGE | CAROUSEL | OTHER (this ref's own format)
   image_hashes_json String? // JSON string[] — this account's image hashes for the creative
-  video_ids_json  String? // JSON string[] — this account's video ids for the creative
-  origin          String            @default("DISCOVERED") // DISCOVERED (found in a sync) | CLONED (created by Clone & Schedule)
-  clone_job_id    Int? // AmbCloneJob.id when origin=CLONED
-  first_seen_at   DateTime          @default(now())
-  last_seen_at    DateTime          @default(now())
-  created_at      DateTime          @default(now())
-  updated_at      DateTime          @updatedAt
+  video_ids_json    String? // JSON string[] — this account's video ids for the creative
+  origin            String            @default("DISCOVERED") // DISCOVERED (found in a sync) | CLONED (created by Clone & Schedule)
+  clone_job_id      Int? // AmbCloneJob.id when origin=CLONED
+  first_seen_at     DateTime          @default(now())
+  last_seen_at      DateTime          @default(now())
+  created_at        DateTime          @default(now())
+  updated_at        DateTime          @updatedAt
 
   @@unique([ad_account_id, creative_id])
   @@index([asset_id])

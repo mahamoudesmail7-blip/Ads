@@ -194,6 +194,47 @@ function overallReadiness({ creativePlan, identity, pixel }) {
   return 'READY_WITH_REBUILD'; // PAGE_ONLY / ASSUMED_PORTFOLIO are OK to proceed (surfaced as WARN checks)
 }
 
+/**
+ * Plain "Duplicate to another ad account" view for one ad:
+ *   READY         — Meta lets us copy the exact ad now (assets reused or
+ *                   re-uploaded verbatim; identity + pixel resolved)
+ *   NEEDS_MAPPING — one destination-specific choice is missing (Page / IG /
+ *                   Pixel) — a dropdown in the review screen
+ *   CANNOT_COPY   — an asset genuinely can't be reached by the destination
+ *                   and can't be re-uploaded (e.g. a video with no source
+ *                   file and no shared reference), or a boosted post with no
+ *                   recoverable content
+ * `assetAction` is the honest description of what Meta will do with the media:
+ *   REUSE (same id/hash works in the destination) · REUPLOAD (Meta requires
+ *   destination ownership — same file, uploaded again) · MANUAL (you provide
+ *   the file) · NONE.
+ */
+function simplifyCopy({ readiness, creativePlan, identity, pixel, convDomain }) {
+  const reasons = [];
+  let status = 'READY';
+  if (readiness === 'UNSUPPORTED') { status = 'CANNOT_COPY'; reasons.push('إعلان يعتمد على منشور صفحة موجود بدون نص/عنوان/وسائط يمكن نسخها.'); }
+  if (identity.pageStatus === 'MISSING' || identity.pageStatus === 'INVALID') { status = status === 'CANNOT_COPY' ? status : 'NEEDS_MAPPING'; reasons.push('اختر صفحة فيسبوك للوجهة.'); }
+  if (identity.igStatus === 'NEEDS_CHOICE' || identity.igStatus === 'INVALID') { status = status === 'CANNOT_COPY' ? status : 'NEEDS_MAPPING'; reasons.push('اختر حساب انستجرام للوجهة أو "هوية الصفحة فقط".'); }
+  if (pixel.status === 'NEEDS_PIXEL_MAPPING') { status = status === 'CANNOT_COPY' ? status : 'NEEDS_MAPPING'; reasons.push(`اربط Pixel/Dataset المصدر (${pixel.sourcePixelId}) بواحد في الوجهة.`); }
+
+  const badVideo = creativePlan.media.videos.find((m) => m.plan === 'SHARED_REFERENCE_THEN_MANUAL' && !m.sourceFile);
+  const badImage = creativePlan.media.images.find((m) => m.plan === 'SHARED_HASH_THEN_MANUAL');
+  let assetAction = 'REUSE';
+  if (creativePlan.media.videos.some((m) => m.plan === 'REUPLOAD_VIDEO') || creativePlan.media.images.some((m) => m.plan === 'REUPLOAD_IMAGE')) assetAction = 'REUPLOAD';
+  if (badVideo || badImage) {
+    // Not an immediate CANNOT_COPY — the same video_id / image_hash may be
+    // usable across the Business Portfolio. Only if that reuse is rejected at
+    // copy time does the ad become "provide the file manually".
+    assetAction = 'REUSE_OR_MANUAL';
+    reasons.push(badVideo
+      ? `الفيديو (${badVideo.sourceVideoId}) — Meta لا تتيح تنزيله. سيُجرَّب نفس المعرف عبر Business Portfolio؛ لو رفضته Meta، هذا الإعلان يحتاج رفع الفيديو يدويًا (باقي الحملة تُنسخ عادي).`
+      : `صورة بدون رابط مصدر — سيُجرَّب نفس الـ hash؛ لو فشل يلزم رفع الصورة يدويًا.`);
+  }
+  if (convDomain?.status === 'REQUIRED_MANUAL') reasons.push('إعلان مبيعات بدون رابط وجهة — حدّد نطاق التحويل قبل التفعيل.');
+
+  return { copyStatus: status, assetAction, copyReasons: reasons };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -258,7 +299,16 @@ export async function analyzeClone({ sourceAccountId, destinationAccountIds, cam
     for (const d of dests) {
       const destAcct = acctById.get(d) || { id: d, name: d };
       if (cd?.__error) {
-        results.push({ campaignId: cid, campaignName: `حملة ${cid}`, destinationAccountId: d, destinationAccountName: destAcct.name, error: cd.__error, readiness: 'UNSUPPORTED', ads: [] });
+        results.push({
+          campaignId: cid, campaignName: `حملة ${cid}`, destinationAccountId: d, destinationAccountName: destAcct.name,
+          error: cd.__error, readiness: 'UNSUPPORTED',
+          adSetCount: 0, adCount: 0,
+          copySummary: { totalAds: 0, ready: 0, needsMapping: 0, cannotCopy: 0 },
+          copyableAds: 0, canCopyCompletely: false, copyStatus: 'CANNOT_COPY',
+          identityRequired: { pages: [], instagram: [] }, pixelRequired: [],
+          destinationIdentities: { pages: [], instagram: [], pagesVerified: false, instagramReadable: false },
+          destinationPixels: [], tally: {}, transferModes: {}, ads: [],
+        });
         continue;
       }
       const di = destInfo.get(d);
@@ -268,7 +318,13 @@ export async function analyzeClone({ sourceAccountId, destinationAccountIds, cam
         const cr = ad.creative?.id ? cd.creatives.get(ad.creative.id) : null;
         const adset = cd.adsetById.get(ad.adset_id) || {};
         if (!cr || cr.__error) {
-          adPlans.push({ adId: ad.id, adName: ad.name, readiness: 'UNSUPPORTED', transferMode: 'UNSUPPORTED', reason: cr?.__error || 'لا يمكن قراءة الكرياتيف', checks: [{ level: 'BLOCK', field: 'creative', detail: cr?.__error || 'creative unreadable' }] });
+          adPlans.push({
+            adId: ad.id, adName: ad.name, readiness: 'UNSUPPORTED', transferMode: 'UNSUPPORTED',
+            copyStatus: 'CANNOT_COPY', assetAction: 'NONE',
+            copyReasons: [`تعذّرت قراءة كرياتيف الإعلان من Meta${cr?.__error ? ` (${cr.__error})` : ''} — جرّب تحديث المعاينة.`],
+            reason: cr?.__error || 'لا يمكن قراءة الكرياتيف',
+            checks: [{ level: 'BLOCK', field: 'creative', detail: cr?.__error || 'creative unreadable' }],
+          });
           continue;
         }
         const norm = normalizeCreative(cr);
@@ -287,9 +343,13 @@ export async function analyzeClone({ sourceAccountId, destinationAccountIds, cam
           return { status: 'REQUIRED_MANUAL', domain: null, note: 'إعلان مبيعات بدون رابط وجهة — لازم تحدد نطاق التحويل قبل التفعيل.' };
         })();
         const readiness = overallReadiness({ creativePlan, identity, pixel });
+        const simple = simplifyCopy({ readiness, creativePlan, identity, pixel, convDomain });
         adPlans.push({
           adId: ad.id, adName: ad.name, adStatus: ad.status,
           transferMode: creativePlan.mode,
+          copyStatus: simple.copyStatus,     // READY | NEEDS_MAPPING | CANNOT_COPY
+          assetAction: simple.assetAction,   // REUSE | REUPLOAD | REUSE_OR_MANUAL | NONE
+          copyReasons: simple.copyReasons,
           normalized: {
             format: norm.format, body: norm.body?.slice(0, 220) || null, title: norm.title, description: norm.description,
             ctaType: norm.ctaType, destinationUrl: norm.destinationUrl, displayLink: norm.displayLink,
@@ -305,16 +365,26 @@ export async function analyzeClone({ sourceAccountId, destinationAccountIds, cam
       }
       const tally = adPlans.reduce((a, p) => { a[p.readiness] = (a[p.readiness] || 0) + 1; return a; }, {});
       const modes = adPlans.reduce((a, p) => { a[p.transferMode] = (a[p.transferMode] || 0) + 1; return a; }, {});
-      const anyUnsupported = adPlans.some((p) => p.readiness === 'UNSUPPORTED');
-      const anyNeedsInput = adPlans.some((p) => ['NEEDS_IDENTITY_MAPPING', 'NEEDS_PIXEL_MAPPING', 'NEEDS_MANUAL_MEDIA'].includes(p.readiness));
+      // Plain 3-state roll-up (the "Duplicate to another account" view).
+      const copySummary = {
+        totalAds: adPlans.length,
+        ready: adPlans.filter((p) => p.copyStatus === 'READY').length,
+        needsMapping: adPlans.filter((p) => p.copyStatus === 'NEEDS_MAPPING').length,
+        cannotCopy: adPlans.filter((p) => p.copyStatus === 'CANNOT_COPY').length,
+      };
+      const copyableAds = copySummary.ready + copySummary.needsMapping;
       results.push({
         campaignId: cid, campaignName: cd.campaign.name,
         objective: cd.campaign.objective, buyingType: cd.campaign.buying_type,
         budgetMode: (cd.campaign.daily_budget || cd.campaign.lifetime_budget) ? 'CBO' : 'ABO',
         destinationAccountId: d, destinationAccountName: destAcct.name,
         adSetCount: cd.adsets.length, adCount: cd.ads.length,
-        readiness: anyUnsupported && adPlans.every((p) => p.readiness === 'UNSUPPORTED') ? 'UNSUPPORTED'
-          : anyNeedsInput || anyUnsupported ? 'NEEDS_INPUT' : 'READY_WITH_REBUILD',
+        copySummary,
+        copyableAds,
+        canCopyCompletely: copySummary.cannotCopy === 0 && copySummary.needsMapping === 0,
+        copyStatus: copyableAds === 0 ? 'CANNOT_COPY' : copySummary.needsMapping || copySummary.cannotCopy ? 'NEEDS_MAPPING' : 'READY',
+        readiness: adPlans.every((p) => p.readiness === 'UNSUPPORTED') ? 'UNSUPPORTED'
+          : adPlans.some((p) => ['NEEDS_IDENTITY_MAPPING', 'NEEDS_PIXEL_MAPPING', 'NEEDS_MANUAL_MEDIA', 'UNSUPPORTED'].includes(p.readiness)) ? 'NEEDS_INPUT' : 'READY_WITH_REBUILD',
         tally, transferModes: modes,
         identityRequired: {
           pages: [...new Set(adPlans.map((p) => p.identity?.sourcePageId).filter(Boolean))],
@@ -328,10 +398,20 @@ export async function analyzeClone({ sourceAccountId, destinationAccountIds, cam
     }
   }
 
+  const totals = results.reduce((a, c) => {
+    const cs = c.copySummary || { ready: 0, needsMapping: 0, cannotCopy: 0 };
+    a.campaigns++; a.adSets += c.adSetCount || 0; a.ads += c.adCount || 0;
+    a.ready += cs.ready || 0; a.needsMapping += cs.needsMapping || 0; a.cannotCopy += cs.cannotCopy || 0;
+    if (c.copyStatus === 'CANNOT_COPY') a.campaignsCannotCopy++;
+    return a;
+  }, { campaigns: 0, adSets: 0, ads: 0, ready: 0, needsMapping: 0, cannotCopy: 0, campaignsCannotCopy: 0 });
+
   return {
     source: { id: sourceAccountId, name: acctById.get(sourceAccountId)?.name || sourceAccountId },
     destinations: dests.map((d) => ({ id: d, name: acctById.get(d)?.name || d })),
-    appModeWarning: 'إنشاء الكرياتيفات على Meta يتطلب أن يكون تطبيق Meta في وضع Live مع Advanced Access لـ ads_management. هذا التحليل قراءة فقط ولا يتأثر بذلك.',
+    overallCopySummary: totals,
+    metaDuplicationNote: 'Meta Marketing API لا توفر endpoint لنسخ حملة من حساب إعلاني لآخر (زر Duplicate في Ads Manager ينسخ داخل نفس الحساب فقط). النسخ عبر الحسابات يتم بإعادة إنشاء الحملة/المجموعات/الإعلانات بنفس الإعدادات، وإنشاء كائن AdCreative في الحساب الوجهة يحمل نفس النص/العنوان/الوسائط/الرابط/الـ CTA — نسخة حرفية، بلا أي تعديل أو ذكاء اصطناعي.',
+    appModeWarning: 'إنشاء الإعلانات على Meta يتطلب أن يكون تطبيق Meta في وضع Live مع Advanced Access لـ ads_management. هذا التحليل قراءة فقط ولا يتأثر بذلك.',
     campaigns: results,
   };
 }
