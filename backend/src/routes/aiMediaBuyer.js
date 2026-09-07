@@ -274,6 +274,52 @@ router.post('/clone/batches/:batchId/cancel', requireRole('ADMIN'), asyncRoute(a
 }));
 
 // ---------------------------------------------------------------------------
+// Media Asset Library — one deduplicated catalogue of every creative running
+// across the connected Meta ad accounts. Discovery is automatic (piggy-backs
+// the sync) + on-demand per account. Reads / corrections / scan:
+// ADMIN|MANAGER. Winner-scaling (creates an unapproved Clone & Schedule
+// batch): ADMIN, same tier as clone creation.
+// ---------------------------------------------------------------------------
+router.get('/media-library', asyncRoute(async (req, res) => {
+  const ml = await import('../services/amb/mediaLibrary.js');
+  res.json(await ml.listAssets({
+    productId: req.query.productId, accountId: req.query.accountId, format: req.query.format,
+    q: req.query.q, windowName: req.query.window,
+  }));
+}));
+
+router.get('/media-library/intel', asyncRoute(async (req, res) => {
+  const { mediaLibraryIntel } = await import('../services/amb/mediaLibraryIntel.js');
+  res.json(await mediaLibraryIntel({ windowName: req.query.window }));
+}));
+
+router.get('/media-library/assets/:id', asyncRoute(async (req, res) => {
+  const ml = await import('../services/amb/mediaLibrary.js');
+  res.json(await ml.getAssetDetail({ assetId: req.params.id, windowName: req.query.window }));
+}));
+
+router.patch('/media-library/assets/:id', asyncRoute(async (req, res) => {
+  const ml = await import('../services/amb/mediaLibrary.js');
+  res.json(await ml.updateAsset({ assetId: req.params.id, patch: req.body || {}, userId: req.user.id }));
+}));
+
+router.post('/media-library/scan', asyncRoute(async (req, res) => {
+  const ml = await import('../services/amb/mediaLibrary.js');
+  const { getDecryptedToken } = await import('../services/metaAuth.js');
+  const accountId = String(req.body?.accountId || '');
+  if (!accountId) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'accountId مطلوب.' });
+  let token;
+  try { token = await getDecryptedToken(); } catch (e) { return res.status(400).json({ error: 'NOT_CONNECTED', message: e.message }); }
+  res.json(await ml.syncMediaLibraryForAccount({ adAccountId: accountId, token, maxNew: Number(req.body?.max) || 60 }));
+}));
+
+router.post('/media-library/assets/:id/scaling-plan', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { buildScalingPlan } = await import('../services/amb/mediaLibraryIntel.js');
+  const { destinationAccountIds, scheduleLocalTime, window } = req.body || {};
+  res.status(201).json(await buildScalingPlan({ assetId: req.params.id, destinationAccountIds, scheduleLocalTime, windowName: window, userId: req.user.id }));
+}));
+
+// ---------------------------------------------------------------------------
 // Settings — ADMIN only for writes.
 // ---------------------------------------------------------------------------
 router.get('/settings', asyncRoute(async (req, res) => res.json({ settings: await getAmbSettings(), defaults: AMB_DEFAULT_SETTINGS })));

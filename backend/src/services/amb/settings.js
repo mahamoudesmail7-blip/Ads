@@ -35,6 +35,9 @@ export const AMB_DEFAULT_SETTINGS = {
   ambCloneDefaultActivationTime: '00:00',   // HH:MM in each destination account's timezone
   ambCloneAutoActivate: true,               // scheduler flips cloned (PAUSED) campaigns ACTIVE at the scheduled time; set false to hold them
   ambCloneMaxCampaignsPerBatch: 20,         // guard on one clone batch
+  // Media Asset Library
+  ambMediaLibraryAutoDiscover: true,        // fold new creatives into the library on every sync
+  ambMediaLibraryScanDays: 30,              // how far back a discovery pass looks for creatives
 };
 
 /** Merged AMB settings — DEFAULTS <- whatever the owner saved. Only the `amb…` keys are returned. */

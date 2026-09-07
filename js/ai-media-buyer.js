@@ -63,6 +63,8 @@ const IC = {
   meta: '<path d="M4 15c2.5-8 6-8 8 0 2-8 5.5-8 8 0"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  play: '<circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4z"/>',
 };
 function ic(name, cls = 'ic') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${IC[name] || ''}</svg>`;
@@ -73,13 +75,14 @@ const NAV = [
   { key: 'campaigns', label: 'أداء الإعلانات', icon: 'chart' },
   { key: 'products', label: 'المنتجات', icon: 'box' },
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
-  { key: 'winners', label: 'الكرياتيفات', icon: 'image' },
+  { key: 'winners', label: 'الأبطال', icon: 'image' },
+  { key: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'grid' },
   { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, clone: renderClone, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', clone: 'استنساخ وجدولة الحملات', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
 const NO_WINDOW_SECTIONS = new Set(['settings', 'clone']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
@@ -1277,6 +1280,301 @@ function showHistDetails(a) {
 }
 
 // ===========================================================================
+// MEDIA ASSET LIBRARY — one deduplicated catalogue of every creative running
+// across the connected Meta ad accounts: Product → Creative → Hook/Angle →
+// Campaign → Ad Set → Ad → Ad Account → Performance → Winner/Loser. Discovery
+// is automatic (piggy-backs the sync) + on-demand per account. Winner scaling
+// reuses the existing Campaign Clone & Schedule flow — nothing is created on
+// Meta before APPROVE & SCHEDULE.
+// ===========================================================================
+const mlState = { view: 'grid', format: '', productId: '', q: '', accountId: '', accounts: null, products: null };
+const ML_FORMAT_AR = { VIDEO: 'فيديو', IMAGE: 'صورة', CAROUSEL: 'كاروسيل', OTHER: 'أخرى' };
+const ML_LINK_AR = { MANUAL: 'ربط يدوي', AUTO_CAMPAIGN_MAP: 'ربط تلقائي', NONE: 'غير مربوط' };
+
+async function renderMediaLib(panel) {
+  if (!mlState.products) mlState.products = await api.get('/api/ai-media-buyer/products').catch(() => []);
+  if (!mlState.accounts) mlState.accounts = (await api.get('/api/ai-media-buyer/clone/accounts').catch(() => ({ accounts: [] }))).accounts || [];
+  panel.innerHTML = `<div id="ambMlBar"></div><div id="ambMlBody"><div class="amb-loading">جارِ التحميل…</div></div>`;
+  renderMlBar();
+  await renderMlBody();
+}
+
+function renderMlBar() {
+  const el = $('ambMlBar');
+  const prods = mlState.products || [];
+  const accts = mlState.accounts || [];
+  el.innerHTML = `
+    <div class="amb-ml-bar">
+      <div class="amb-seg" id="ambMlView">
+        <button class="amb-seg-btn ${mlState.view === 'grid' ? 'active' : ''}" data-mlv="grid">المكتبة</button>
+        <button class="amb-seg-btn ${mlState.view === 'intel' ? 'active' : ''}" data-mlv="intel">تحليل الأبطال</button>
+      </div>
+      ${mlState.view === 'grid' ? `
+        <select class="amb-select" id="ambMlFormat">
+          <option value="">كل الأنواع</option>
+          ${['VIDEO', 'IMAGE', 'CAROUSEL', 'OTHER'].map((f) => `<option value="${f}" ${mlState.format === f ? 'selected' : ''}>${E(ML_FORMAT_AR[f])}</option>`).join('')}
+        </select>
+        <select class="amb-select" id="ambMlProduct">
+          <option value="">كل المنتجات</option>
+          <option value="none" ${mlState.productId === 'none' ? 'selected' : ''}>— غير مربوط —</option>
+          ${prods.map((p) => `<option value="${p.id}" ${String(mlState.productId) === String(p.id) ? 'selected' : ''}>${E(p.productName)}</option>`).join('')}
+        </select>
+        <select class="amb-select" id="ambMlAccount">
+          <option value="">كل الحسابات</option>
+          ${accts.map((a) => `<option value="${E(a.id)}" ${mlState.accountId === a.id ? 'selected' : ''}>${E(a.name || a.id)}</option>`).join('')}
+        </select>
+        <div class="amb-search">${ic('search', 's-ic')}<input type="text" id="ambMlSearch" placeholder="ابحث بالاسم / الهوك / النص..." value="${E(mlState.q)}" /></div>
+        <select class="amb-select" id="ambMlScan"><option value="">— فحص حساب الآن —</option>${accts.map((a) => `<option value="${E(a.id)}">${E(a.name || a.id)}</option>`).join('')}</select>
+      ` : ''}
+    </div>`;
+  el.querySelectorAll('[data-mlv]').forEach((b) => { b.onclick = () => { mlState.view = b.dataset.mlv; renderMlBar(); renderMlBody(); }; });
+  if (mlState.view === 'grid') {
+    $('ambMlFormat').onchange = (e) => { mlState.format = e.target.value; renderMlBody(); };
+    $('ambMlProduct').onchange = (e) => { mlState.productId = e.target.value; renderMlBody(); };
+    $('ambMlAccount').onchange = (e) => { mlState.accountId = e.target.value; renderMlBody(); };
+    const s = $('ambMlSearch');
+    let t;
+    s.oninput = () => { clearTimeout(t); t = setTimeout(() => { mlState.q = s.value.trim(); renderMlBody(); }, 350); };
+    $('ambMlScan').onchange = async (e) => {
+      const id = e.target.value; e.target.value = '';
+      if (!id) return;
+      UI.toast('… بيفحص الحساب');
+      try { const r = await api.post('/api/ai-media-buyer/media-library/scan', { accountId: id }); UI.toast(`✅ ${r.newAssets} كرياتيف جديد · ${r.newRefs} ربط`); renderMlBody(); }
+      catch (err) { UI.toast(err.message, 'error'); }
+    };
+  }
+}
+
+async function renderMlBody() {
+  const body = $('ambMlBody');
+  if (!body) return;
+  body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
+  try {
+    if (mlState.view === 'intel') return renderMlIntel(body);
+    const data = await api.get('/api/ai-media-buyer/media-library', {
+      window: state.window, format: mlState.format || undefined, productId: mlState.productId || undefined,
+      accountId: mlState.accountId || undefined, q: mlState.q || undefined,
+    });
+    const list = data.assets || [];
+    body.innerHTML = `
+      <div class="faint" style="font-size:12px; margin-bottom:12px;">${list.length} كرياتيف · الأداء لنافذة «${E(data.window.label)}» · الاكتشاف تلقائي مع كل مزامنة</div>
+      ${list.length ? `<div class="amb-ml-grid">${list.map(mlCard).join('')}</div>` : '<div class="amb-panel amb-empty">لسه مفيش كرياتيفات في المكتبة. هتتعبّى تلقائيًا مع المزامنة، أو استخدم «فحص حساب الآن».</div>'}`;
+    body.querySelectorAll('[data-asset]').forEach((c) => { c.onclick = () => showAssetDetail(Number(c.dataset.asset)); });
+  } catch (err) {
+    body.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(err.message || err)}</div>`;
+  }
+}
+
+function mlThumb(a) {
+  if (a.thumbnailUrl) return `<img class="amb-ml-thumb" src="${E(a.thumbnailUrl)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><div class="amb-ml-thumb ph" style="display:none;">${ic(a.format === 'VIDEO' ? 'play' : 'image', 'ic')}</div>`;
+  return `<div class="amb-ml-thumb ph">${ic(a.format === 'VIDEO' ? 'play' : 'image', 'ic')}</div>`;
+}
+function mlCard(a) {
+  const p = a.performance || {};
+  return `<div class="amb-ml-card" data-asset="${a.id}">
+    ${mlThumb(a)}
+    <div class="amb-ml-body">
+      <div class="amb-ml-name">${E(a.name)}</div>
+      <div class="amb-ml-tags">
+        <span class="badge gray">${E(ML_FORMAT_AR[a.format] || a.format)}</span>
+        ${a.productName ? `<span class="badge blue">${E(a.productName)}</span>` : `<span class="badge gray">غير مربوط</span>`}
+        ${a.hook ? `<span class="amb-ml-hook" title="${E(a.hook)}">🪝 ${E(a.hook.slice(0, 28))}</span>` : ''}
+      </div>
+      <div class="amb-ml-metrics">
+        <span>صرف <b>${fmtEGP(p.spend)}</b></span>
+        <span>شراء <b>${fmtNum(p.purchases)}</b></span>
+        <span>CPA <b>${fmtEGP(p.cpa)}</b></span>
+        <span>ROAS <b>${fmtX(p.roas)}</b></span>
+        <span>حسابات <b>${fmtNum(a.accountCount)}</b></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function showAssetDetail(id) {
+  openDrawer('<div class="drawer-section faint">جارِ التحميل…</div>');
+  let d;
+  try { d = await api.get(`/api/ai-media-buyer/media-library/assets/${id}`, { window: state.window }); }
+  catch (err) { openDrawer(`<div class="drawer-section"><div class="amb-empty">⚠️ ${E(err.message)}</div><button class="amb-btn" id="ambDrawerX2">إغلاق</button></div>`); $('ambDrawerX2').onclick = closeDrawer; return; }
+  const a = d.asset, t = d.performance.total || {}, pr = d.performance.profit || {};
+  const prods = mlState.products || [];
+  openDrawer(`
+    <div class="drawer-header"><div class="drawer-title">تفاصيل الكرياتيف</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+    <div class="drawer-section">
+      ${a.thumbnailUrl ? `<img src="${E(a.thumbnailUrl)}" alt="" style="width:100%; max-height:220px; object-fit:contain; background:var(--amb-surface-2); border-radius:10px; margin-bottom:12px;" onerror="this.style.display='none'" />` : ''}
+      <div class="field"><label>اسم الكرياتيف</label><input type="text" id="ambAsName" value="${E(a.name)}" /></div>
+      <div class="amb-field-grid" style="margin-top:10px;">
+        <div class="field"><label>المنتج</label>
+          <select id="ambAsProduct">
+            <option value="">— غير مربوط —</option>
+            ${prods.map((p) => `<option value="${p.id}" ${String(a.ambProductId) === String(p.id) ? 'selected' : ''}>${E(p.productName)}</option>`).join('')}
+          </select>
+          <div class="faint" style="font-size:11px; margin-top:2px;">${E(ML_LINK_AR[a.linkSource] || a.linkSource)}</div>
+        </div>
+        <div class="field"><label>الهوك</label><input type="text" id="ambAsHook" value="${E(a.hook || '')}" /></div>
+        <div class="field"><label>زاوية البيع</label><input type="text" id="ambAsAngle" value="${E(a.sellingAngle || '')}" /></div>
+      </div>
+      <div class="toolbar" style="margin:10px 0 6px;"><button class="amb-btn primary sm" id="ambAsSave">حفظ التعديلات</button></div>
+
+      <div class="section-title">الأداء الكلي — نافذة ${E(d.window.label)}</div>
+      <div class="amb-derived">
+        <div class="amb-derived-row"><span>الإنفاق</span><b>${fmtEGP(t.spend)}</b></div>
+        <div class="amb-derived-row"><span>الطلبات (Meta)</span><b>${fmtNum(t.purchases)}</b></div>
+        <div class="amb-derived-row"><span>CPA</span><b>${fmtEGP(t.cpa)}</b></div>
+        <div class="amb-derived-row"><span>الإيراد</span><b>${fmtEGP(t.revenue)}</b></div>
+        <div class="amb-derived-row"><span>ROAS</span><b>${fmtX(t.roas)}</b></div>
+        <div class="amb-derived-row"><span>CTR</span><b>${fmtPct(t.ctr)}</b></div>
+        <div class="amb-derived-row"><span>CPC</span><b>${fmtEGP(t.cpc)}</b></div>
+        <div class="amb-derived-row"><span>صافي الربح</span><b>${pr.netProfit == null ? '—' : fmtEGP(pr.netProfit)}</b></div>
+        <div class="amb-derived-row"><span>CPA مسلّم</span><b>${pr.deliveredCpa == null ? '—' : fmtEGP(pr.deliveredCpa)}</b></div>
+      </div>
+      ${pr.scopeNote ? `<div class="faint" style="font-size:11px; margin-top:4px;">${E(pr.scopeNote)}</div>` : ''}
+
+      <div class="section-title">الأداء لكل حساب</div>
+      ${(d.performance.byAccount || []).length ? `<div class="table-wrap"><table class="data">
+        <thead><tr><th>الحساب</th><th>صرف</th><th>شراء</th><th>CPA</th><th>ROAS</th></tr></thead>
+        <tbody>${d.performance.byAccount.map((x) => `<tr><td class="mono" style="font-size:11px;">${E(mlAcctName(x.adAccountId))}</td><td>${fmtEGP(x.spend)}</td><td>${fmtNum(x.purchases)}</td><td>${fmtEGP(x.cpa)}</td><td>${fmtX(x.roas)}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<div class="faint" style="font-size:12px;">لا يوجد أداء مُسجَّل في هذه النافذة (الحساب قد يحتاج مزامنة).</div>'}
+
+      <div class="section-title">مستخدَم في</div>
+      <div class="amb-derived">
+        <div class="amb-derived-row"><span>حسابات إعلانية</span><b>${d.usage.accounts.length}</b></div>
+        <div class="amb-derived-row"><span>حملات</span><b>${d.usage.campaigns.length}</b></div>
+        <div class="amb-derived-row"><span>مجموعات إعلانية</span><b>${d.usage.adsets.length}</b></div>
+        <div class="amb-derived-row"><span>إعلانات</span><b>${d.usage.ads.length}</b></div>
+      </div>
+      ${d.usage.campaigns.length ? `<div class="faint" style="font-size:11.5px; margin-top:6px;">${d.usage.campaigns.slice(0, 8).map((c) => E(c.name)).join(' · ')}</div>` : ''}
+
+      <div class="section-title">الخريطة عبر الحسابات (نفس الأصل)</div>
+      <div class="table-wrap"><table class="data">
+        <thead><tr><th>الحساب</th><th>creative_id</th><th>نوع</th><th>image_hash / video_id</th><th>مصدر</th></tr></thead>
+        <tbody>${d.crossAccountMap.map((r) => `<tr>
+          <td class="mono" style="font-size:11px;">${E(mlAcctName(r.adAccountId))}</td>
+          <td class="mono" style="font-size:11px;">${E(r.creativeId)}</td>
+          <td>${E(ML_FORMAT_AR[r.format] || r.format || '—')}</td>
+          <td class="mono" style="font-size:10.5px;">${E([...(r.imageHashes || []), ...(r.videoIds || [])].join(', ').slice(0, 60) || '—')}</td>
+          <td>${r.origin === 'CLONED' ? '<span class="badge blue">استنساخ</span>' : '<span class="badge gray">مكتشَف</span>'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>
+
+      ${d.scalingHistory.length ? `<div class="section-title">سجل التوسيع</div>
+        ${d.scalingHistory.map((s) => `<div class="faint" style="font-size:12px;">${fmtDT(s.createdAt)} → ${s.destinationAccountIds.length} حساب · <b>${E(CLONE_BATCH_AR[s.status]?.[0] || s.status)}</b>${s.cloneBatchId ? ` · <button class="amb-btn sm ghost" data-openbatch="${E(s.cloneBatchId)}">فتح الدفعة</button>` : ''}</div>`).join('')}` : ''}
+
+      <div class="section-title">توسيع الكرياتيف الرابح</div>
+      <div class="faint" style="font-size:12px; margin-bottom:8px;">هيبني خطة استنساخ من الحملات اللي بتشغّل الكرياتيف ده → للحسابات اللي تختارها. مفيش أي حاجة بتتنفّذ قبل «موافقة وجدولة».</div>
+      <div class="amb-check-list" id="ambAsScaleDests">
+        ${(mlState.accounts || []).map((ac) => `<label class="amb-check-row"><input type="checkbox" data-scaledest="${E(ac.id)}" /><span class="rr-main">${E(ac.name || ac.id)}</span><span class="rr-sub">${E(ac.id)}${ac.timezoneName ? ` · ${E(ac.timezoneName)}` : ''}</span></label>`).join('')}
+      </div>
+      <div class="toolbar" style="margin-top:10px; gap:8px;">
+        <input type="time" id="ambAsScaleTime" value="00:00" style="max-width:130px;" />
+        <button class="amb-btn primary" id="ambAsScale" ${state.isAdmin ? '' : 'disabled'}>${state.isAdmin ? 'مراجعة خطة التوسيع' : 'التوسيع للـ ADMIN فقط'}</button>
+      </div>
+
+      <div class="toolbar" style="margin-top:14px;"><button class="amb-btn" id="ambDrawerX2">إغلاق</button></div>
+    </div>`);
+  $('ambDrawerX').onclick = closeDrawer;
+  $('ambDrawerX2').onclick = closeDrawer;
+  $('ambAsSave').onclick = async () => {
+    try {
+      await api.patch(`/api/ai-media-buyer/media-library/assets/${id}`, {
+        assetName: $('ambAsName').value, ambProductId: $('ambAsProduct').value || null,
+        hook: $('ambAsHook').value, sellingAngle: $('ambAsAngle').value,
+      });
+      UI.toast('✅ اتحفظ'); renderMlBody();
+    } catch (err) { UI.toast(err.message, 'error'); }
+  };
+  document.querySelectorAll('[data-openbatch]').forEach((b) => {
+    b.onclick = () => { closeDrawer(); cloneState.batchId = b.dataset.openbatch; cloneState.step = 6; location.hash = 'clone'; };
+  });
+  $('ambAsScale').onclick = async () => {
+    const dests = [...document.querySelectorAll('[data-scaledest]:checked')].map((x) => x.dataset.scaledest);
+    if (!dests.length) { UI.toast('اختر حساب وجهة واحد على الأقل', 'error'); return; }
+    const btn = $('ambAsScale'); btn.disabled = true; btn.textContent = '… بيجهّز الخطة';
+    try {
+      const r = await api.post(`/api/ai-media-buyer/media-library/assets/${id}/scaling-plan`, { destinationAccountIds: dests, scheduleLocalTime: $('ambAsScaleTime').value || '00:00', window: state.window });
+      UI.toast('✅ اتجهزت خطة التوسيع — راجع ووافق');
+      closeDrawer();
+      cloneState.batchId = r.batch.batchId; cloneState.step = 6; location.hash = 'clone';
+    } catch (err) { UI.toast(err.message, 'error'); btn.disabled = false; btn.textContent = 'مراجعة خطة التوسيع'; }
+  };
+}
+function mlAcctName(id) {
+  return (mlState.accounts || []).find((a) => a.id === id)?.name || id;
+}
+
+async function renderMlIntel(body) {
+  const d = await api.get('/api/ai-media-buyer/media-library/intel', { window: state.window });
+  const th = d.thresholds || {};
+  const winCard = (w, withScale) => `
+    <div class="amb-ml-win">
+      ${mlThumb(w)}
+      <div class="amb-ml-win-body">
+        <div class="amb-ml-name">${E(w.name)}</div>
+        <div class="amb-ml-tags">
+          ${w.productName ? `<span class="badge blue">${E(w.productName)}</span>` : '<span class="badge gray">غير مربوط</span>'}
+          ${w.hook ? `<span class="amb-ml-hook">🪝 ${E(w.hook.slice(0, 26))}</span>` : ''}
+          <span class="badge ${w.confidence === 'HIGH' ? 'green' : 'yellow'}">${E({ HIGH: 'ثقة عالية', MEDIUM: 'ثقة متوسطة', LOW: 'ثقة منخفضة' }[w.confidence] || w.confidence)}</span>
+        </div>
+        <div class="amb-ml-metrics">
+          <span>CPA <b>${fmtEGP(w.performance.cpa)}</b></span>
+          <span>شراء <b>${fmtNum(w.performance.purchases)}</b></span>
+          <span>صرف <b>${fmtEGP(w.performance.spend)}</b></span>
+          <span>ROAS <b>${fmtX(w.performance.roas)}</b></span>
+          ${w.profit && w.profit.netProfit != null ? `<span>ربح <b>${fmtEGP(w.profit.netProfit)}</b></span>` : ''}
+          <span>حسابات <b>${w.accountCount}</b></span>
+        </div>
+        ${w.reason ? `<div class="amb-r-reason" style="margin-top:6px;">${E(w.reason)}</div>` : ''}
+        <div class="toolbar" style="margin-top:8px;">
+          <button class="amb-btn sm" data-asset="${w.assetId}">تفاصيل</button>
+          ${withScale && state.isAdmin ? `<button class="amb-btn sm primary" data-scale="${w.assetId}">مراجعة خطة التوسيع</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+
+  body.innerHTML = `
+    <div class="faint" style="font-size:12px; margin-bottom:12px;">
+      نافذة «${E(d.window.label)}» · ${d.counts.scored} كرياتيف له أداء · هدف CPA ${fmtEGP(th.targetCpa)} · حد التوسّع ${fmtEGP(th.scaleCpa)} · أدنى صرف ${fmtEGP(th.minSpend)} · أدنى شراء ${th.minPurchases}
+      <br/>البطل لا يُحدَّد من الـ CPA وحده — لازم يعدّي حدود كفاية البيانات والربحية.
+    </div>
+
+    <div class="section-title">🏆 الكرياتيفات الرابحة (${d.winners.length})</div>
+    ${d.winners.length ? d.winners.map((w) => winCard(w, true)).join('') : '<div class="amb-panel amb-empty">لسه مفيش كرياتيف عدّى كل شروط «الرابح» في الفترة دي.</div>'}
+
+    ${d.crossAccount.length ? `<div class="section-title">🌍 أفضل كرياتيف عبر أكثر من حساب</div>${d.crossAccount.map((w) => winCard(w, true)).join('')}` : ''}
+
+    ${d.bestPerProduct.length ? `<div class="section-title">📦 أفضل كرياتيف لكل منتج</div>
+      <div class="amb-ml-grid">${d.bestPerProduct.map((w) => `<div class="amb-ml-card" data-asset="${w.assetId}">${mlThumb(w)}<div class="amb-ml-body"><div class="amb-ml-name">${E(w.productName || '—')}</div><div class="faint" style="font-size:11.5px;">${E(w.name.slice(0, 40))}</div><div class="amb-ml-metrics"><span>CPA <b>${fmtEGP(w.performance.cpa)}</b></span><span>شراء <b>${fmtNum(w.performance.purchases)}</b></span>${w.isWinner ? '<span class="badge green">رابح</span>' : ''}</div></div></div>`).join('')}</div>` : ''}
+
+    <div class="amb-grid" style="margin-top:16px;">
+      <div class="amb-col-main">
+        <div class="section-title">🪝 الهوك الرابح</div>
+        ${mlLabelPanel(d.winningHook)}
+        <div class="section-title">📐 زاوية البيع الرابحة</div>
+        ${mlLabelPanel(d.winningAngle)}
+      </div>
+      <div class="amb-col-side">
+        <div class="amb-panel">
+          <h3>الكرياتيفات الخاسرة (${d.losers.length})</h3>
+          ${d.losers.length ? d.losers.map((l) => `<div class="amb-prod-row"><span class="pn">${E(l.name.slice(0, 34))}</span><span class="pc">${E(l.reason || '')}</span></div>`).join('') : '<div class="amb-empty" style="padding:8px 0;">مفيش كرياتيف خاسر واضح.</div>'}
+        </div>
+      </div>
+    </div>`;
+
+  body.querySelectorAll('[data-asset]').forEach((b) => { b.onclick = () => showAssetDetail(Number(b.dataset.asset)); });
+  body.querySelectorAll('[data-scale]').forEach((b) => { b.onclick = () => showAssetDetail(Number(b.dataset.scale)); });
+}
+function mlLabelPanel(g) {
+  if (!g || !g.table || !g.table.length) return '<div class="amb-panel amb-empty">مفيش تصنيفات كفاية للمقارنة.</div>';
+  return `<div class="amb-panel"><div class="table-wrap"><table class="data">
+    <thead><tr><th>التصنيف</th><th>كرياتيفات</th><th>صرف</th><th>شراء</th><th>CPA</th><th>CTR</th><th>كفاية</th></tr></thead>
+    <tbody>${g.table.map((r) => `<tr ${g.winner && r.label === g.winner.label ? 'style="background:var(--amb-green-bg);"' : ''}>
+      <td>${E(r.label)}</td><td>${fmtNum(r.assets)}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${fmtEGP(r.cpa)}</td><td>${fmtPct(r.ctr)}</td>
+      <td>${E({ STRONG: 'قوية', MODERATE: 'كافية', WEAK: 'ضعيفة' }[r.dataSufficiency] || '')}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>${g.winner ? `<div class="faint" style="font-size:12px; margin-top:6px;">البطل: <b>${E(g.winner.label)}</b> — ${E(g.winner.why || '')}</div>` : ''}</div>`;
+}
+
+// ===========================================================================
 // CAMPAIGN CLONE & SCHEDULE — a new additive workflow. Copies user-selected
 // campaigns from ONE source ad account into one or more destination accounts
 // as PAUSED, then the backend scheduler activates them at the chosen time
@@ -1527,6 +1825,25 @@ async function renderCloneSchedule(body) {
 }
 
 // ---- Step 5 · REVIEW ----
+/** Shared preflight-matrix renderer (grouped by campaign) — used by the wizard review + the pending-batch review. */
+function cloneMatrixHtml(matrix) {
+  const byCamp = {};
+  for (const r of matrix) (byCamp[r.campaignName || r.campaignId] = byCamp[r.campaignName || r.campaignId] || []).push(r);
+  return Object.entries(byCamp).map(([cname, rows]) => `
+    <div class="amb-pf-camp">
+      <div class="amb-pf-camp-h">${E(cname)}</div>
+      ${rows.map((r) => {
+        const [t, tone] = PF_AR[r.status] || [r.status, 'gray'];
+        const bad = (r.checks || []).filter((c) => c.status !== 'INFO');
+        return `<div class="amb-pf-row">
+          <span class="amb-pf-dest">${E(r.destinationAccountName || r.destinationAccountId)}</span>
+          ${badge(t, tone)}
+          <div class="amb-pf-reasons">${bad.length ? bad.map((c) => `<div class="pf-reason ${c.status.toLowerCase()}">${PF_CHECK_ICON[c.status] || '•'} ${E(c.detail)}</div>`).join('') : '<span class="faint" style="font-size:12px;">كل الفحوصات سليمة.</span>'}</div>
+        </div>`;
+      }).join('')}
+    </div>`).join('');
+}
+
 async function renderCloneReview(body) {
   const preview = await api.post('/api/ai-media-buyer/clone/preview', {
     sourceAccountId: cloneState.sourceId,
@@ -1654,6 +1971,15 @@ async function renderCloneResult(body) {
       <div style="color:var(--amb-green); font-size:12.5px; font-weight:700; margin-top:6px;">حملات المصدر: بدون أي تغيير</div>
       ${b.error ? `<div style="color:var(--amb-red); font-size:12.5px; margin-top:6px;">${E(b.error)}</div>` : ''}
 
+      ${b.status === 'PENDING_APPROVAL' ? `
+        <div class="section-title">فحص ما قبل الاستنساخ</div>
+        <div class="amb-pf-list">${cloneMatrixHtml(b.preflight || [])}</div>
+        <div class="amb-wizard-nav" style="margin-top:16px;">
+          <button class="amb-btn ghost" id="ambCloneCancelBatch2">إلغاء</button>
+          <button class="amb-btn primary" id="ambCloneApprovePending" ${state.isAdmin ? '' : 'disabled'}>${state.isAdmin ? 'موافقة وجدولة' : 'الموافقة للـ ADMIN فقط'}</button>
+        </div>
+      ` : ''}
+
       ${Object.entries(jobsByDest).map(([did, jobs]) => `
         <div class="amb-clone-dest">
           <div class="amb-clone-dest-h">${E(jobs[0].destinationAccountName || did)} <span class="faint">${E(jobs[0].destinationTimezone || '')}</span></div>
@@ -1688,6 +2014,19 @@ async function renderCloneResult(body) {
   };
   $('ambCloneRefresh').onclick = () => renderCloneStep();
   $('ambCloneNew').onclick = () => { resetCloneWizard(); renderCloneRecent(); renderCloneStep(); };
+  const ap = $('ambCloneApprovePending');
+  if (ap) ap.onclick = async () => {
+    const ok = await UI.confirmModal({ title: 'موافقة وجدولة الاستنساخ', message: `هيتم إنشاء النسخ المتوقفة (PAUSED) وجدولة تفعيلها. حملات المصدر مش هتتغير. متابعة؟`, confirmLabel: 'موافقة وجدولة', danger: true });
+    if (!ok) return;
+    ap.disabled = true; ap.textContent = '… بيجهّز';
+    try { await api.post(`/api/ai-media-buyer/clone/batches/${b.batchId}/approve`, {}); UI.toast('✅ تمت الموافقة — بدأ الاستنساخ'); renderCloneStep(); }
+    catch (e) { UI.toast(e.message, 'error'); ap.disabled = false; ap.textContent = 'موافقة وجدولة'; }
+  };
+  const cb2 = $('ambCloneCancelBatch2');
+  if (cb2) cb2.onclick = async () => {
+    if (!(await UI.confirmModal({ title: 'إلغاء الدفعة', message: 'هتتلغي خطة الاستنساخ دي. متابعة؟', danger: true, confirmLabel: 'إلغاء' }))) return;
+    try { await api.post(`/api/ai-media-buyer/clone/batches/${b.batchId}/cancel`, {}); UI.toast('أُلغيت'); resetCloneWizard(); renderCloneRecent(); renderCloneStep(); } catch (e) { UI.toast(e.message, 'error'); }
+  };
 
   if (cloneState.poll) { clearInterval(cloneState.poll); cloneState.poll = null; }
   if (live) {

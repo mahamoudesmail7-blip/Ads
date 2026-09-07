@@ -57,6 +57,7 @@ model User {
   amb_clone_batches_created      AmbCloneBatch[]             @relation("AmbCloneCreator")
   amb_clone_batches_approved     AmbCloneBatch[]             @relation("AmbCloneApprover")
   amb_clone_audit_entries        AmbCloneAudit[]             @relation("AmbCloneAuditActor")
+  media_scalings_created         MediaLibraryScaling[]       @relation("MediaScalingCreator")
 
   @@map("users")
 }
@@ -1002,8 +1003,9 @@ model AmbProduct {
   created_at              DateTime @default(now())
   updated_at              DateTime @updatedAt
 
-  campaign_maps   AmbProductCampaignMap[]
-  recommendations AmbRecommendation[]
+  campaign_maps        AmbProductCampaignMap[]
+  recommendations      AmbRecommendation[]
+  media_library_assets MediaLibraryAsset[]
 
   @@index([active])
   @@map("amb_products")
@@ -1450,4 +1452,108 @@ model AmbCloneAudit {
   @@index([batch_id])
   @@index([created_at])
   @@map("amb_clone_audit")
+}
+
+// ============================================================================
+// AI Media Buyer — MEDIA ASSET LIBRARY. One central, deduplicated catalogue of
+// every advertising creative used across the connected Meta ad accounts.
+// Every table here is ADDITIVE. It does NOT store performance (that stays in
+// the append-only meta_performance_snapshots and is aggregated on read by
+// creative_id) and it never writes to Meta.
+//
+//   MediaLibraryAsset      — one row per distinct underlying creative
+//                            (content fingerprint), with product link + the
+//                            hook/angle labels reused from AmbCreativeAnalysis.
+//   MediaLibraryCreativeRef — the cross-account map: one row per
+//                            (ad_account_id, Meta creative_id) that resolves to
+//                            an asset, plus that account's own image_hash /
+//                            video_id for it. This is what lets the cloner
+//                            reuse an asset already present in a destination
+//                            account instead of re-uploading.
+//   MediaLibraryScaling    — "AI found a winning creative → scale it to other
+//                            accounts": links an asset to the Clone & Schedule
+//                            batch created for it (nothing runs before the
+//                            owner's APPROVE & SCHEDULE on that batch).
+// ============================================================================
+
+model MediaLibraryAsset {
+  id              Int         @id @default(autoincrement())
+  // sha1 of a normalized content tuple (page + link + CTA + body + title +
+  // sorted image_hashes). Image hashes are content-derived so they're stable
+  // across accounts; the same creative re-used or re-uploaded elsewhere lands
+  // on the same fingerprint. A creative with no shared content at all gets a
+  // per-creative fingerprint instead (never falsely merged).
+  fingerprint     String      @unique
+  primary_format  String      @default("OTHER") // VIDEO | IMAGE | CAROUSEL | OTHER
+  asset_name      String?
+  amb_product_id  Int?
+  amb_product     AmbProduct? @relation(fields: [amb_product_id], references: [id], onDelete: SetNull)
+  link_source     String      @default("NONE") // AUTO_CAMPAIGN_MAP | MANUAL | NONE — MANUAL is sticky, auto never overwrites it
+  // Labels mirrored from AmbCreativeAnalysis (kept here so the library is
+  // self-contained + correctable); refreshed opportunistically, never invented.
+  hook            String?
+  hook_types_json String?
+  selling_angle   String?
+  creative_type   String?
+  // A representative sample of the copy + a thumbnail, for the library card.
+  sample_body     String?
+  sample_title    String?
+  sample_cta      String?
+  sample_link_url String?
+  thumbnail_url   String?
+  page_id         String?
+  first_seen_at   DateTime    @default(now())
+  last_seen_at    DateTime    @default(now())
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  refs     MediaLibraryCreativeRef[]
+  scalings MediaLibraryScaling[]
+
+  @@index([amb_product_id])
+  @@index([primary_format])
+  @@map("media_library_assets")
+}
+
+model MediaLibraryCreativeRef {
+  id              Int               @id @default(autoincrement())
+  asset_id        Int
+  asset           MediaLibraryAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  ad_account_id   String
+  creative_id     String
+  creative_name   String?
+  format          String? // VIDEO | IMAGE | CAROUSEL | OTHER (this ref's own format)
+  image_hashes_json String? // JSON string[] — this account's image hashes for the creative
+  video_ids_json  String? // JSON string[] — this account's video ids for the creative
+  origin          String            @default("DISCOVERED") // DISCOVERED (found in a sync) | CLONED (created by Clone & Schedule)
+  clone_job_id    Int? // AmbCloneJob.id when origin=CLONED
+  first_seen_at   DateTime          @default(now())
+  last_seen_at    DateTime          @default(now())
+  created_at      DateTime          @default(now())
+  updated_at      DateTime          @updatedAt
+
+  @@unique([ad_account_id, creative_id])
+  @@index([asset_id])
+  @@index([asset_id, ad_account_id])
+  @@map("media_library_creative_refs")
+}
+
+model MediaLibraryScaling {
+  id                           Int               @id @default(autoincrement())
+  asset_id                     Int
+  asset                        MediaLibraryAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  source_ad_account_id         String
+  source_campaign_ids_json     String // JSON string[] — the campaigns running this winning asset that get cloned
+  destination_account_ids_json String // JSON string[]
+  clone_batch_id               String? // AmbCloneBatch.batch_id — set once the scaling plan becomes a real (unapproved) batch
+  status                       String            @default("PLANNED") // PLANNED | BATCH_CREATED | APPROVED | SCHEDULED | COMPLETED | CANCELLED
+  reason                       String? // why the AI flagged this asset as a winner (deterministic sentence)
+  created_by_id                Int?
+  created_by                   User?             @relation("MediaScalingCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at                   DateTime          @default(now())
+  updated_at                   DateTime          @updatedAt
+
+  @@index([asset_id])
+  @@index([clone_batch_id])
+  @@map("media_library_scalings")
 }

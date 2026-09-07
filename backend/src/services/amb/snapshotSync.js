@@ -226,6 +226,19 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
       logger.warn('AMB creative analysis (non-fatal) failed', { message: err.message });
     }
 
+    // Opportunistic Media Asset Library discovery (cache-first, bounded,
+    // non-fatal): fold every newly-seen creative for this account into the
+    // deduplicated library so it's browsable + reusable by Clone & Schedule.
+    if (settings.ambMediaLibraryAutoDiscover !== false) {
+      try {
+        const { syncMediaLibraryForAccount } = await import('./mediaLibrary.js');
+        const ml = await syncMediaLibraryForAccount({ adAccountId, token, sinceDays: Number(settings.ambMediaLibraryScanDays) || 30, maxNew: 30 });
+        if (ml.ok && (ml.newAssets || ml.newRefs)) logger.info('AMB media library discovery', ml);
+      } catch (err) {
+        logger.warn('AMB media library discovery (non-fatal) failed', { message: err.message });
+      }
+    }
+
     logger.info('AMB snapshot sync OK', { syncRunId: syncRun.id, snapshotRows: snapshotRows.length, adsDailyRefreshed });
     return { ok: true, syncRunId: syncRun.id, snapshotRows: snapshotRows.length, adsDailyRefreshed };
   } catch (err) {

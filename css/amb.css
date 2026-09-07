@@ -419,6 +419,25 @@ body { background: var(--amb-bg); }
 .amb-app .amb-audit-list { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow: auto; }
 .amb-app .amb-audit-row { font-size: 11px; }
 
+/* ---- Media Asset Library ---- */
+.amb-app .amb-ml-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+.amb-app .amb-ml-bar .amb-select { max-width: 200px; }
+.amb-app .amb-ml-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.amb-app .amb-ml-card { display: flex; flex-direction: column; border: 1px solid var(--amb-border); border-radius: 12px; overflow: hidden; background: var(--amb-surface); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.amb-app .amb-ml-card:hover { border-color: var(--amb-border-strong); box-shadow: var(--amb-shadow); }
+.amb-app .amb-ml-thumb { width: 100%; height: 150px; object-fit: cover; background: var(--amb-surface-2); display: block; }
+.amb-app .amb-ml-thumb.ph { display: flex; align-items: center; justify-content: center; color: var(--amb-text-faint); }
+.amb-app .amb-ml-thumb.ph svg.ic { width: 34px; height: 34px; }
+.amb-app .amb-ml-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.amb-app .amb-ml-name { font-weight: 700; font-size: 12.5px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.amb-app .amb-ml-tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.amb-app .amb-ml-hook { font-size: 10.5px; color: var(--amb-text-dim); background: var(--amb-surface-2); border-radius: 6px; padding: 2px 6px; }
+.amb-app .amb-ml-metrics { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--amb-text-dim); }
+.amb-app .amb-ml-metrics b { color: var(--amb-text); font-variant-numeric: tabular-nums; }
+.amb-app .amb-ml-win { display: flex; gap: 12px; border: 1px solid var(--amb-border); border-radius: 12px; padding: 12px; margin-bottom: 10px; background: var(--amb-surface); }
+.amb-app .amb-ml-win .amb-ml-thumb { width: 120px; height: 120px; border-radius: 8px; flex-shrink: 0; }
+.amb-app .amb-ml-win-body { flex: 1; min-width: 0; }
+
 /* ---- responsive ---- */
 @media (max-width: 1280px) {
   .amb-grid { grid-template-columns: 1fr; }
