@@ -1349,9 +1349,21 @@ model AmbCloneBatch {
   // or are boosted organic posts, and to satisfy a destination account that
   // has its own page. Null ⇒ use whatever page_id the source creative carries.
   destination_page_id          String?
+  // The Instagram actor every reconstructed creative posts as in the
+  // destination account (a professional IG account the destination Page /
+  // Business owns). Null ⇒ Page-identity-only where the format allows it.
+  destination_instagram_id     String?
+  // Fine-grained overrides (optional). Fall back to destination_page_id /
+  // destination_instagram_id when a specific source id has no entry.
+  //   { pages: {srcPageId: dstPageId}, instagram: {srcIgId: dstIgId} }
+  identity_map_json            String?
+  //   { srcPixelId: dstPixelId } — source Pixel/Dataset → a Pixel the
+  //   destination account can actually use. Never copy an inaccessible id.
+  pixel_map_json               String?
   // Opt-in: recreate a boosted-organic-post ad (object_story_id, no spec) as a
-  // fresh ad on destination_page_id. Off ⇒ such creatives are BLOCKED (a
-  // boosted post cannot be faithfully cloned to another page).
+  // fresh ad on the destination identity. Off ⇒ the underlying text/media are
+  // still reconstructed when available; only a bare object_story_id with no
+  // recoverable content is UNSUPPORTED.
   recreate_boosted             Boolean   @default(false)
   total_copies                 Int       @default(0) // selected campaigns × destination accounts
   // DRAFT | PENDING_APPROVAL | APPROVED | CLONING | SCHEDULED | PARTIALLY_FAILED

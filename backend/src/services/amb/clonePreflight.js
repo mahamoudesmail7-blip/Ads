@@ -142,8 +142,13 @@ export function preflightCampaignForDestination({ tree, sourceAssets, destAssets
     const boosted = !!cr.object_story_id && !cr.object_story_spec && !cr.asset_feed_spec;
     const hasMedia = !!(cr.video_id || cr.image_hash || cr.image_url);
     if (boosted) {
-      if (recreateBoosted && pageIdOverride) add('كرياتيف', 'WARN', `الكرياتيف (${cid}) منشور مروّج (object_story_id) — هيُعاد إنشاؤه كإعلان جديد على الصفحة الوجهة ${pageIdOverride} (فقدان التفاعل العضوي للمنشور الأصلي).`);
-      else add('كرياتيف', 'BLOCK', `الكرياتيف (${cid}) منشور صفحة مروّج (object_story_id بدون spec) — لا يُنسخ لحساب/صفحة أخرى إلا بتفعيل «إعادة إنشاء المنشورات المروّجة» + تحديد صفحة وجهة.`);
+      // A boosted organic post is REBUILD_FROM_SPEC: the underlying text /
+      // media are reconstructed onto a destination identity. This is never a
+      // global BLOCK — it's a per-ad "needs a destination page/identity" that
+      // the identity-mapping step resolves.
+      if (pageIdOverride) add('كرياتيف', 'WARN', `الكرياتيف (${cid}) منشور مروّج (object_story_id) — هيُعاد بناؤه ككرياتيف جديد على الهوية الوجهة (فقدان التفاعل العضوي للمنشور الأصلي).`);
+      else if (hasMedia || cr.body || cr.title) add('كرياتيف', 'WARN', `الكرياتيف (${cid}) منشور مروّج (object_story_id) — قابل لإعادة البناء؛ اختر صفحة وجهة في خطوة ربط الهوية.`);
+      else add('كرياتيف', 'BLOCK', `الكرياتيف (${cid}) منشور مروّج بدون نص/عنوان/وسائط يمكن استخراجها — غير مدعوم.`);
     } else if (!cr.object_story_spec && cr.asset_feed_spec) {
       const pg = pageIdOverride || cr.object_story_spec?.page_id;
       if (!pg) add('كرياتيف', 'WARN', `الكرياتيف (${cid}) من نوع Advantage+ (asset_feed_spec) بدون page_id — لازم تحدّد صفحة وجهة (destination_page_id) وإلا هيفشل إنشاء الكرياتيف.`);

@@ -550,6 +550,58 @@ export async function getAccountAssetsForClone(token, adAccountId) {
   };
 }
 
+/**
+ * Facebook Pages + Instagram professional accounts an ad account can post as.
+ * Best-effort across several edges (the connected token may lack pages_* /
+ * instagram_basic scopes — each source is tried and a gap is reported, never
+ * silently assumed). Used by the clone identity-mapping step.
+ */
+export async function getAccountIdentities(token, adAccountId) {
+  const [promotePages, bizPages, igA, igB, bizIg] = await Promise.all([
+    graphListQuiet(`/${adAccountId}/promote_pages`, { fields: 'id,name' }, token),
+    graphGetQuiet(`/${adAccountId}`, { fields: 'business{id,name,owned_pages.limit(200){id,name,is_published},client_pages.limit(200){id,name}}' }, token),
+    graphListQuiet(`/${adAccountId}/instagram_accounts`, { fields: 'id,username' }, token),
+    graphListQuiet(`/${adAccountId}/connected_instagram_accounts`, { fields: 'id,username' }, token),
+    graphGetQuiet(`/${adAccountId}`, { fields: 'business{instagram_business_accounts.limit(100){id,username}}' }, token),
+  ]);
+  const pageMap = new Map();
+  for (const p of promotePages || []) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'promote_pages', verified: true });
+  for (const p of [...(bizPages?.business?.owned_pages?.data || []), ...(bizPages?.business?.client_pages?.data || [])]) {
+    if (!pageMap.has(String(p.id))) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'business_portfolio', verified: false });
+  }
+  const igMap = new Map();
+  for (const g of [...(igA || []), ...(igB || []), ...(bizIg?.business?.instagram_business_accounts?.data || [])]) {
+    igMap.set(String(g.id), { id: String(g.id), username: g.username || g.id });
+  }
+  return {
+    pages: [...pageMap.values()],
+    instagram: [...igMap.values()],
+    // If promote_pages was readable at all, page availability is trustworthy;
+    // otherwise the caller only has Business-portfolio ownership as a signal.
+    pagesVerified: (promotePages || []).length > 0 || Array.isArray(promotePages),
+    instagramReadable: (igA || []).length > 0 || (igB || []).length > 0 || !!(bizIg?.business),
+  };
+}
+
+/** Best-effort downloadable URL for one image_hash in an account (for re-upload elsewhere). */
+export async function resolveImageUrlByHash(token, adAccountId, hash) {
+  const rows = await graphListQuiet(`/${adAccountId}/adimages`, { fields: 'hash,url,permalink_url', hashes: [hash] }, token);
+  const r = rows[0];
+  return r?.url || r?.permalink_url || null;
+}
+
+/** Poll a video's processing status until READY (or timeout). Returns 'ready' | 'processing' | 'error' | 'unknown'. */
+export async function pollVideoReady(token, videoId, { tries = 12, intervalMs = 5000 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    const v = await graphGetQuiet(`/${videoId}`, { fields: 'status' }, token);
+    const s = v?.status?.video_status || v?.status;
+    if (s === 'ready') return 'ready';
+    if (s === 'error') return 'error';
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return 'processing';
+}
+
 /** Re-upload one image into a destination ad account from a URL; returns the new image_hash. */
 export async function uploadAdImageFromUrl(token, adAccountId, imageUrl) {
   const resp = await fetch(imageUrl);

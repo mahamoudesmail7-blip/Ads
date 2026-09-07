@@ -262,7 +262,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, recreateBoosted = false, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, recreateBoosted = false, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
@@ -272,6 +272,9 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
   // schedule. The engine re-runs a fresh pre-flight per job at clone time, so
   // we only persist the API-safe rows here (no server-only `_resolved`).
   const destPage = destinationPageId && /^\d{5,}$/.test(String(destinationPageId)) ? String(destinationPageId) : null;
+  const destIg = destinationInstagramId && /^\d{5,}$/.test(String(destinationInstagramId)) ? String(destinationInstagramId) : null;
+  const idMap = identityMap && typeof identityMap === 'object' ? identityMap : null;
+  const pxMap = pixelMap && typeof pixelMap === 'object' ? pixelMap : null;
   const preview = await buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId: destPage, recreateBoosted: !!recreateBoosted && !!destPage });
   const dests = preview.destinations.map((d) => d.id);
   const camps = preview.campaigns.map((c) => c.id);
@@ -285,6 +288,9 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
       campaign_ids_json: JSON.stringify(camps),
       schedule_local_time: preview.scheduleLocalTime,
       destination_page_id: destPage,
+      destination_instagram_id: destIg,
+      identity_map_json: idMap ? JSON.stringify({ ...idMap, allowPageOnlyIg: allowPageOnlyIg !== false }) : JSON.stringify({ allowPageOnlyIg: allowPageOnlyIg !== false }),
+      pixel_map_json: pxMap ? JSON.stringify(pxMap) : null,
       recreate_boosted: !!recreateBoosted && !!destPage,
       total_copies: preview.totalCopies,
       status: 'PENDING_APPROVAL',
@@ -441,6 +447,10 @@ async function cloneJob(jobId, token) {
   const src = job.source_ad_account_id;
   if (dest === src) throw new Error('حساب الوجهة لا يمكن أن يكون نفس المصدر.'); // hard guard — never write to source
   const destPageId = job.destination_page_id || job.batch?.destination_page_id || null;
+  const destIgId = job.batch?.destination_instagram_id || null;
+  const identityMap = j(job.batch?.identity_map_json, {}) || {};
+  const pixelMap = j(job.batch?.pixel_map_json, {}) || {};
+  const allowPageOnlyIg = identityMap.allowPageOnlyIg !== false;
   const recreateBoosted = !!job.batch?.recreate_boosted;
 
   await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'CLONING', attempts: { increment: 1 }, last_attempt_at: new Date(), error: null } });
@@ -637,7 +647,7 @@ async function cloneJob(jobId, token) {
       idMap.adsets[as.id] = newAdsetId;
     } else {
       try {
-        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R });
+        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap });
         const res = await createAdSet(token, dest, payload);
         newAdsetId = res.id;
         idMap.adsets[as.id] = newAdsetId;
@@ -665,7 +675,7 @@ async function cloneJob(jobId, token) {
           const hints = await libraryDestHints(srcCreative, dest).catch(() => null);
           let payload = null; let res = null; let finalErr = null;
           try {
-            payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints, pageId: destPageId, recreateBoosted });
+            payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId, hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted });
             res = await createAdCreative(token, dest, payload);
           } catch (err1) {
             const provisionalV = Object.entries(idMap.videos).filter(([s, d]) => String(s) === String(d)).map(([s]) => s);
@@ -680,7 +690,7 @@ async function cloneJob(jobId, token) {
                 payload = await buildCreativePayload(srcCreative, {
                   destImageHash: (h, hh, o) => destImageHash(h, hh, { ...o, forceReupload: true }),
                   destVideoId: (v, hh, o) => destVideoId(v, hh, { ...o, forceReupload: true }),
-                  hints, pageId: destPageId, recreateBoosted,
+                  hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted,
                 });
                 res = await createAdCreative(token, dest, payload);
               } catch (err2) { finalErr = err2; }
@@ -796,7 +806,7 @@ function transformTargeting(targeting, resolved) {
   return t;
 }
 
-function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved }) {
+function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {} }) {
   const payload = {
     name: as.name,
     campaign_id: newCampaignId,
@@ -811,7 +821,16 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved }) {
     if (as.daily_budget) payload.daily_budget = Number(as.daily_budget);
     else if (as.lifetime_budget) payload.lifetime_budget = Number(as.lifetime_budget);
   }
-  if (as.promoted_object) payload.promoted_object = as.promoted_object; // pixel/catalog already validated present in dest
+  if (as.promoted_object) {
+    // Remap the source Pixel/Dataset id to one the destination account can
+    // actually use, when a mapping was supplied. Never copy an inaccessible id
+    // blindly — but if there's no map entry we keep the source id (the create
+    // fails loudly if it's inaccessible, per "never silently drop").
+    const po = { ...as.promoted_object };
+    if (po.pixel_id && pixelMap[String(po.pixel_id)]) po.pixel_id = String(pixelMap[String(po.pixel_id)]);
+    if (po.product_catalog_id && pixelMap[String(po.product_catalog_id)]) po.product_catalog_id = String(pixelMap[String(po.product_catalog_id)]);
+    payload.promoted_object = po;
+  }
   if (as.attribution_spec) payload.attribution_spec = as.attribution_spec;
   if (as.destination_type) payload.destination_type = as.destination_type;
   if (as.pacing_type) payload.pacing_type = as.pacing_type;
@@ -834,9 +853,24 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved }) {
 
 const URL_RE = /(https?:\/\/[^\s"'<>)]+)/;
 
-async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pageId = null, recreateBoosted = false }) {
+async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pageId = null, igId = null, identityMap = {}, allowPageOnlyIg = true, recreateBoosted = false }) {
+  void recreateBoosted; // reconstruction is now the default when a destination identity is resolvable
   const img = (h, opt) => destImageHash(h, hints, opt);
   const vid = (v, opt) => destVideoId(v, hints, opt);
+  const pageMap = identityMap?.pages || {};
+  const igMap = identityMap?.instagram || {};
+  const resolvePage = (src) => (src && pageMap[String(src)]) || pageId || src || null;
+  // null result ⇒ post as the Page identity only (Meta-supported for video/image link ads).
+  const resolveIg = (src) => (src && igMap[String(src)]) || igId || (allowPageOnlyIg ? null : src) || null;
+  const applyIdentity = (oss) => {
+    const pg = resolvePage(oss.page_id);
+    if (pg) oss.page_id = pg;
+    const ig = resolveIg(oss.instagram_user_id || oss.instagram_actor_id);
+    if (ig) { oss.instagram_user_id = ig; delete oss.instagram_actor_id; }
+    else { delete oss.instagram_user_id; delete oss.instagram_actor_id; }
+    return oss;
+  };
+
   const payload = {};
   if (cr.name) payload.name = cr.name;
   if (cr.url_tags) payload.url_tags = cr.url_tags;
@@ -845,15 +879,9 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pag
   if (cr.contextual_multi_ads) payload.contextual_multi_ads = cr.contextual_multi_ads;
   if (cr.authorization_category && cr.authorization_category !== 'NONE') payload.authorization_category = cr.authorization_category;
 
-  const boosted = !!cr.object_story_id && !cr.object_story_spec && !cr.asset_feed_spec;
-  if (boosted && !(recreateBoosted && pageId)) {
-    throw new Error('الكرياتيف يعتمد على منشور صفحة موجود (object_story_id) بدون object_story_spec — لا يمكن نسخه لحساب/صفحة أخرى إلا بتفعيل "إعادة إنشاء المنشورات المروّجة" وتحديد صفحة وجهة.');
-  }
-
   // ---- has a real object_story_spec ----
   if (cr.object_story_spec) {
-    const oss = deepClone(cr.object_story_spec);
-    if (pageId) oss.page_id = pageId; // destination page override (portfolio/own page)
+    const oss = applyIdentity(deepClone(cr.object_story_spec));
     // Meta returns BOTH image_hash and image_url on read, but a creative CREATE
     // rejects "only one of image_url and image_hash should be specified". Keep
     // the (remapped) hash, drop the URL.
@@ -886,35 +914,35 @@ async function buildCreativePayload(cr, { destImageHash, destVideoId, hints, pag
     }
     payload.asset_feed_spec = afs;
     if (!payload.object_story_spec) {
-      const pg = pageId || cr.object_story_spec?.page_id;
-      if (!pg) throw new Error('كرياتيف Advantage+ (asset_feed_spec) بدون page_id — حدّد صفحة وجهة (destination_page_id) لهذه الدفعة.');
-      payload.object_story_spec = { page_id: pg };
-      if (cr.instagram_user_id) payload.object_story_spec.instagram_user_id = cr.instagram_user_id;
+      const pg = resolvePage(cr.object_story_spec?.page_id || (cr.object_story_id ? String(cr.object_story_id).split('_')[0] : null) || cr.actor_id);
+      if (!pg) throw new Error('كرياتيف Advantage+ (asset_feed_spec) بدون page_id — حدّد صفحة وجهة (identity mapping).');
+      payload.object_story_spec = applyIdentity({ page_id: pg, instagram_user_id: cr.instagram_user_id });
     }
   }
 
-  // ---- reconstruct from a FLAT creative (boosted post or bare video/image) ----
+  // ---- REBUILD_FROM_SPEC: reconstruct a NEW creative from the underlying
+  //      text / media when there's no re-usable object_story_spec (a boosted
+  //      organic post — object_story_id only — or a bare flat creative).
   if (!payload.object_story_spec && !payload.asset_feed_spec) {
-    const pg = pageId || (cr.object_story_id ? String(cr.object_story_id).split('_')[0] : null) || cr.actor_id || null;
-    if (!pg) throw new Error('الكرياتيف بدون object_story_spec/asset_feed_spec ولا يمكن تحديد صفحة — حدّد صفحة وجهة.');
-    const link = (cr.body && (cr.body.match(URL_RE) || [])[1]) || cr.link_url || cr.template_url || null;
-    const oss = { page_id: pg };
-    if (cr.instagram_user_id) oss.instagram_user_id = cr.instagram_user_id;
+    const pg = resolvePage((cr.object_story_id ? String(cr.object_story_id).split('_')[0] : null) || cr.actor_id);
+    if (!pg) throw new Error('لا يمكن تحديد صفحة وجهة لإعادة بناء الكرياتيف — اختر صفحة في خطوة ربط الهوية (identity mapping).');
+    const link = cr.link_url || (cr.body && (cr.body.match(URL_RE) || [])[1]) || cr.template_url || null;
+    const oss = applyIdentity({ page_id: pg, instagram_user_id: cr.instagram_user_id });
     const ctaType = cr.call_to_action_type || 'LEARN_MORE';
     if (cr.video_id) {
       const dv = await vid(cr.video_id);
-      oss.video_data = { video_id: dv, title: cr.title || undefined, message: cr.body || undefined };
+      oss.video_data = { video_id: dv, title: cr.title || undefined, message: cr.body || undefined, link_description: cr.link_description || undefined };
       if (cr.image_hash) oss.video_data.image_hash = await img(cr.image_hash);
       else if (cr.thumbnail_url) oss.video_data.image_url = cr.thumbnail_url;
       if (link) oss.video_data.call_to_action = { type: ctaType, value: { link } };
-      else if (ctaType !== 'LEARN_MORE') throw new Error(`الكرياتيف (فيديو) نوع CTA "${ctaType}" يحتاج رابطًا ولا يوجد رابط قابل للاستخراج من النص — حدّد رابطًا يدويًا.`);
+      else if (ctaType !== 'LEARN_MORE') throw new Error(`إعادة بناء كرياتيف الفيديو: نوع الـ CTA "${ctaType}" يحتاج رابطًا ولا يوجد رابط قابل للاستخراج — أدخله في المراجعة.`);
     } else if (cr.image_hash || cr.image_url) {
-      if (!link) throw new Error('الكرياتيف (صورة) بدون رابط وجهة قابل للاستخراج — حدّد رابطًا يدويًا.');
-      oss.link_data = { link, message: cr.body || undefined, name: cr.title || undefined, call_to_action: { type: ctaType, value: { link } } };
+      if (!link) throw new Error('إعادة بناء كرياتيف الصورة: لا يوجد رابط وجهة قابل للاستخراج — أدخله في المراجعة.');
+      oss.link_data = { link, message: cr.body || undefined, name: cr.title || undefined, description: cr.link_description || undefined, call_to_action: { type: ctaType, value: { link } } };
       if (cr.image_hash) oss.link_data.image_hash = await img(cr.image_hash);
       else oss.link_data.picture = cr.image_url;
     } else {
-      throw new Error('الكرياتيف بلا وسائط (فيديو/صورة) يمكن إعادة بنائها.');
+      throw new Error('الكرياتيف بلا وسائط (فيديو/صورة) يمكن إعادة بنائها — يلزم رفع ميديا يدويًا (NEEDS_MANUAL_MEDIA).');
     }
     payload.object_story_spec = oss;
   }
@@ -1069,6 +1097,9 @@ export async function getBatch(batchId) {
     campaignIds: j(b.campaign_ids_json, []),
     scheduleLocalTime: b.schedule_local_time,
     destinationPageId: b.destination_page_id || null,
+    destinationInstagramId: b.destination_instagram_id || null,
+    identityMap: j(b.identity_map_json, null),
+    pixelMap: j(b.pixel_map_json, null),
     recreateBoosted: b.recreate_boosted,
     totalCopies: b.total_copies,
     sourceUnchanged: true,

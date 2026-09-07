@@ -242,6 +242,25 @@ router.post('/clone/preview', asyncRoute(async (req, res) => {
   res.json(await clone.buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted }));
 }));
 
+// READ-ONLY creative reconstruction analysis (dry run) — per-ad transfer
+// mode + identity/pixel mapping needs + media plan + readiness. No writes.
+router.post('/clone/analyze', asyncRoute(async (req, res) => {
+  const { analyzeClone } = await import('../services/amb/cloneAnalysis.js');
+  const { sourceAccountId, destinationAccountIds, campaignIds, destinationPageId, destinationInstagramId, identityMap, pixelMap } = req.body || {};
+  res.json(await analyzeClone({ sourceAccountId, destinationAccountIds, campaignIds, destinationPageId, destinationInstagramId, identityMap, pixelMap }));
+}));
+
+// Facebook Pages + Instagram professional accounts a destination ad account can post as.
+router.get('/clone/identities', asyncRoute(async (req, res) => {
+  const { getDecryptedToken } = await import('../services/metaAuth.js');
+  const { getAccountIdentities } = await import('../services/metaGraphClient.js');
+  const accountId = String(req.query.accountId || '');
+  if (!accountId) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'accountId مطلوب.' });
+  let token;
+  try { token = await getDecryptedToken(); } catch (e) { return res.status(400).json({ error: 'NOT_CONNECTED', message: e.message }); }
+  res.json(await getAccountIdentities(token, accountId));
+}));
+
 // Facebook pages the connected user can see (for the destination-page override on a clone).
 router.get('/clone/pages', asyncRoute(async (req, res) => {
   const { getDecryptedToken } = await import('../services/metaAuth.js');
@@ -268,8 +287,8 @@ router.get('/clone/batches/:batchId', asyncRoute(async (req, res) => {
 
 router.post('/clone/batches', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted } = req.body || {};
-  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, recreateBoosted, userId: req.user.id }));
+  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, recreateBoosted } = req.body || {};
+  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, recreateBoosted, userId: req.user.id }));
 }));
 
 router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
