@@ -438,6 +438,8 @@ body { background: var(--amb-bg); }
 .amb-app .amb-ml-win .amb-ml-thumb { width: 120px; height: 120px; border-radius: 8px; flex-shrink: 0; }
 .amb-app .amb-ml-win-body { flex: 1; min-width: 0; }
 
+.amb-app .amb-clone-tally { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 4px; }
+
 /* ---- responsive ---- */
 @media (max-width: 1280px) {
   .amb-grid { grid-template-columns: 1fr; }

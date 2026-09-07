@@ -1591,10 +1591,25 @@ const cloneState = {
   dests: new Set(),
   scheduleTime: '00:00',
   preview: null,
+  analysis: null,           // POST /clone/analyze result
+  pageMap: {},               // { sourcePageId: destPageId }
+  igChoice: 'PAGE_ONLY',     // a destination IG id, or 'PAGE_ONLY'
+  pixelMap: {},              // { sourcePixelId: destPixelId }
   batchId: null,
   batch: null,
   poll: null,
   busy: false,
+};
+
+const CLONE_MODE_AR = {
+  REUSE_SAFE: ['إعادة استخدام آمنة', 'green'], REBUILD_FROM_SPEC: ['إعادة بناء من المواصفات', 'blue'],
+  REUPLOAD_IMAGE: ['إعادة رفع صورة', 'blue'], REUPLOAD_VIDEO: ['إعادة رفع فيديو', 'blue'],
+  REBUILD_CAROUSEL: ['إعادة بناء كاروسيل', 'blue'], UNSUPPORTED: ['غير مدعوم', 'red'],
+};
+const CLONE_READY_AR = {
+  READY: ['✅ جاهز', 'green'], READY_WITH_REBUILD: ['🔄 سيتم إعادة البناء', 'blue'],
+  NEEDS_IDENTITY_MAPPING: ['⚠️ يحتاج اختيار هوية', 'yellow'], NEEDS_PIXEL_MAPPING: ['⚠️ يحتاج ربط Pixel', 'yellow'],
+  NEEDS_MANUAL_MEDIA: ['⬆️ يحتاج رفع ميديا يدوي', 'yellow'], UNSUPPORTED: ['❌ غير مدعوم', 'red'],
 };
 
 const CLONE_BATCH_AR = {
@@ -1844,14 +1859,48 @@ function cloneMatrixHtml(matrix) {
     </div>`).join('');
 }
 
-async function renderCloneReview(body) {
-  const preview = await api.post('/api/ai-media-buyer/clone/preview', {
+function cloneIdentityMapPayload() {
+  // Single-destination wizard: one dest page for all source pages, one IG choice.
+  const pages = {};
+  for (const [src, dst] of Object.entries(cloneState.pageMap)) if (dst) pages[src] = dst;
+  const anyDest = Object.values(pages)[0] || null;
+  const igIsAccount = cloneState.igChoice && cloneState.igChoice !== 'PAGE_ONLY';
+  return {
+    destinationPageId: anyDest,
+    destinationInstagramId: igIsAccount ? cloneState.igChoice : null,
+    identityMap: { pages, instagram: {} },
+    allowPageOnlyIg: !igIsAccount,
+    pixelMap: Object.fromEntries(Object.entries(cloneState.pixelMap).filter(([, v]) => v)),
+  };
+}
+
+async function runCloneAnalysis() {
+  const idp = cloneIdentityMapPayload();
+  cloneState.analysis = await api.post('/api/ai-media-buyer/clone/analyze', {
     sourceAccountId: cloneState.sourceId,
     destinationAccountIds: [...cloneState.dests],
     campaignIds: [...cloneState.selected],
-    scheduleLocalTime: cloneState.scheduleTime,
+    destinationPageId: idp.destinationPageId,
+    destinationInstagramId: idp.destinationInstagramId,
+    identityMap: idp.identityMap,
+    pixelMap: idp.pixelMap,
+    allowPageOnlyIg: idp.allowPageOnlyIg,
   });
+  return cloneState.analysis;
+}
+
+async function renderCloneReview(body) {
+  const [preview, analysis] = await Promise.all([
+    api.post('/api/ai-media-buyer/clone/preview', {
+      sourceAccountId: cloneState.sourceId,
+      destinationAccountIds: [...cloneState.dests],
+      campaignIds: [...cloneState.selected],
+      scheduleLocalTime: cloneState.scheduleTime,
+    }),
+    runCloneAnalysis().catch((e) => ({ __error: e.message })),
+  ]);
   cloneState.preview = preview;
+  if (!analysis.__error) cloneState.analysis = analysis;
   const rowsByCamp = {};
   for (const r of preview.matrix) (rowsByCamp[r.campaignId] = rowsByCamp[r.campaignId] || []).push(r);
 
@@ -1898,6 +1947,8 @@ async function renderCloneReview(body) {
       </div>
       ${preview.blockedCopies ? `<div class="amb-batchnote" style="margin-top:12px;"><span>${preview.blockedCopies} نسخة محجوبة ومش هتتنسخ — النسخ الجاهزة/التحذير بس هي اللي هتتجدول.</span></div>` : ''}
 
+      <div id="ambCloneRebuild"></div>
+
       <div class="amb-wizard-nav" style="margin-top:18px;">
         <div style="display:flex; gap:8px;">
           <button class="amb-btn ghost" id="ambCloneBack">رجوع وتعديل</button>
@@ -1908,6 +1959,7 @@ async function renderCloneReview(body) {
         </button>
       </div>
     </div>`;
+  renderCloneRebuildPanel();
   $('ambCloneBack').onclick = () => { cloneState.step = 4; renderCloneStep(); };
   $('ambCloneCancel').onclick = () => { resetCloneWizard(); renderCloneRecent(); renderCloneStep(); };
   const ap = $('ambCloneApprove');
@@ -1921,12 +1973,18 @@ async function renderCloneReview(body) {
     ap.disabled = true; ap.textContent = '… بيجهّز الدفعة';
     try {
       if (!cloneState.batchId) cloneState.batchId = cloneUUID();
+      const idp = cloneIdentityMapPayload();
       await api.post('/api/ai-media-buyer/clone/batches', {
         batchId: cloneState.batchId,
         sourceAccountId: cloneState.sourceId,
         destinationAccountIds: [...cloneState.dests],
         campaignIds: [...cloneState.selected],
         scheduleLocalTime: cloneState.scheduleTime,
+        destinationPageId: idp.destinationPageId,
+        destinationInstagramId: idp.destinationInstagramId,
+        identityMap: idp.identityMap,
+        pixelMap: idp.pixelMap,
+        allowPageOnlyIg: idp.allowPageOnlyIg,
       });
       await api.post(`/api/ai-media-buyer/clone/batches/${cloneState.batchId}/approve`, {});
       UI.toast('✅ تمت الموافقة — بدأ الاستنساخ');
@@ -1939,8 +1997,97 @@ async function renderCloneReview(body) {
   };
 }
 
+/** Identity + Pixel mapping selectors + the per-ad reconstruction plan table. */
+function renderCloneRebuildPanel() {
+  const el = $('ambCloneRebuild');
+  if (!el) return;
+  const a = cloneState.analysis;
+  if (!a || a.__error) { el.innerHTML = a?.__error ? `<div class="amb-batchnote"><span>تعذّر تحليل إعادة البناء: ${E(a.__error)}</span></div>` : ''; return; }
+
+  // distinct source pages / pixels across all campaigns (single-dest wizard)
+  const srcPages = [...new Set(a.campaigns.flatMap((c) => c.identityRequired.pages))];
+  const srcPixels = [...new Set(a.campaigns.flatMap((c) => c.pixelRequired))];
+  const c0 = a.campaigns[0] || {};
+  const destPages = c0.destinationIdentities?.pages || [];
+  const destIg = c0.destinationIdentities?.instagram || [];
+  const destPixels = c0.destinationPixels || [];
+
+  // roll-up readiness
+  const tally = {};
+  let totalAds = 0;
+  for (const c of a.campaigns) for (const [k, v] of Object.entries(c.tally || {})) { tally[k] = (tally[k] || 0) + v; totalAds += v; }
+
+  el.innerHTML = `
+    <div class="section-title">ربط الهوية (Page / Instagram)</div>
+    <div class="faint" style="font-size:12px; margin-bottom:8px;">لا يُفترض وجود نفس الصفحة/الانستجرام في الوجهة. اختر هوية الوجهة اللي هتُنشأ عليها الكرياتيفات الجديدة.</div>
+    <div class="amb-field-grid">
+      ${srcPages.map((sp) => `
+        <div class="field"><label>صفحة المصدر ${E(sp)} →</label>
+          <select data-pagemap="${E(sp)}">
+            <option value="">— اختر صفحة وجهة —</option>
+            ${destPages.map((p) => `<option value="${E(p.id)}" ${cloneState.pageMap[sp] === p.id ? 'selected' : ''}>${E(p.label)} (${E(p.id)})${p.verified ? '' : ' — Portfolio'}</option>`).join('')}
+          </select>
+        </div>`).join('') || '<div class="faint" style="font-size:12px;">مفيش صفحات مطلوبة.</div>'}
+      <div class="field"><label>هوية انستجرام للوجهة</label>
+        <select data-igchoice>
+          ${destIg.map((g) => `<option value="${E(g.id)}" ${cloneState.igChoice === g.id ? 'selected' : ''}>@${E(g.username)}</option>`).join('')}
+          <option value="PAGE_ONLY" ${cloneState.igChoice === 'PAGE_ONLY' ? 'selected' : ''}>هوية الصفحة فقط (لا يوجد حساب انستجرام في الوجهة)</option>
+        </select>
+      </div>
+    </div>
+
+    ${srcPixels.length ? `
+    <div class="section-title">ربط Pixel / Dataset</div>
+    <div class="amb-field-grid">
+      ${srcPixels.map((sx) => `
+        <div class="field"><label>Pixel المصدر ${E(sx)} →</label>
+          <select data-pixelmap="${E(sx)}">
+            <option value="">— نفس الـ id (لو مشترك في الوجهة) —</option>
+            ${destPixels.map((p) => `<option value="${E(p.id)}" ${cloneState.pixelMap[sx] === p.id ? 'selected' : ''}>${E(p.name)} (${E(p.id)})</option>`).join('')}
+          </select>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <div class="section-title">خطة إعادة بناء الإعلانات — ${totalAds} إعلان</div>
+    <div class="amb-clone-tally">
+      ${Object.entries(tally).map(([k, v]) => { const [t, tone] = CLONE_READY_AR[k] || [k, 'gray']; return `<span class="badge ${tone}">${E(t)}: ${v}</span>`; }).join('')}
+    </div>
+    ${a.campaigns.map((c) => `
+      <div class="amb-pf-camp" style="margin-top:10px;">
+        <div class="amb-pf-camp-h">${E(c.campaignName)} → ${E(c.destinationAccountName)} · ${E(c.readiness)}</div>
+        <div class="table-wrap"><table class="data">
+          <thead><tr><th>الإعلان</th><th>الوضع</th><th>الجاهزية</th><th>Page</th><th>Instagram</th><th>Pixel</th><th>صورة</th><th>فيديو</th><th>نطاق التحويل</th></tr></thead>
+          <tbody>${c.ads.map((ad) => {
+            const [mt, mtone] = CLONE_MODE_AR[ad.transferMode] || [ad.transferMode, 'gray'];
+            const [rt, rtone] = CLONE_READY_AR[ad.readiness] || [ad.readiness, 'gray'];
+            const im = (ad.media?.images || []).map((x) => x.plan).join(', ') || '—';
+            const vd = (ad.media?.videos || []).map((x) => x.plan).join(', ') || '—';
+            return `<tr>
+              <td>${E(ad.adName || ad.adId)}</td>
+              <td>${badge(mt, mtone)}</td>
+              <td>${badge(rt, rtone)}</td>
+              <td class="mono" style="font-size:10.5px;">${E(ad.identity?.destPageId || '—')} [${E(ad.identity?.pageStatus || '')}]</td>
+              <td class="mono" style="font-size:10.5px;">${E(ad.identity?.destInstagramId || (ad.identity?.igStatus === 'PAGE_ONLY' ? 'صفحة فقط' : '—'))}</td>
+              <td class="mono" style="font-size:10.5px;">${E(ad.pixel?.destPixelId || '—')} [${E(ad.pixel?.status || '')}]</td>
+              <td style="font-size:10.5px;">${E(im)}</td>
+              <td style="font-size:10.5px;">${E(vd)}</td>
+              <td style="font-size:10.5px;">${E(ad.conversionDomain?.status || '')} ${E(ad.conversionDomain?.domain || '')}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      </div>`).join('')}
+    <div class="faint" style="font-size:11.5px; margin-top:8px;">${E(a.appModeWarning || '')}</div>
+  `;
+
+  const reAnalyze = async () => { el.querySelectorAll('select').forEach((s) => (s.disabled = true)); try { await runCloneAnalysis(); } catch (e) { UI.toast(e.message, 'error'); } renderCloneRebuildPanel(); };
+  el.querySelectorAll('[data-pagemap]').forEach((s) => { s.onchange = () => { cloneState.pageMap[s.dataset.pagemap] = s.value || null; reAnalyze(); }; });
+  el.querySelectorAll('[data-pixelmap]').forEach((s) => { s.onchange = () => { cloneState.pixelMap[s.dataset.pixelmap] = s.value || null; reAnalyze(); }; });
+  const ig = el.querySelector('[data-igchoice]');
+  if (ig) ig.onchange = () => { cloneState.igChoice = ig.value; reAnalyze(); };
+}
+
 function resetCloneWizard() {
-  Object.assign(cloneState, { step: 1, campaigns: null, campaignsForAccount: null, selected: new Set(), dests: new Set(), scheduleTime: '00:00', preview: null, batchId: null, batch: null });
+  Object.assign(cloneState, { step: 1, campaigns: null, campaignsForAccount: null, selected: new Set(), dests: new Set(), scheduleTime: '00:00', preview: null, analysis: null, pageMap: {}, igChoice: 'PAGE_ONLY', pixelMap: {}, batchId: null, batch: null });
 }
 
 // ---- Step 6 · RESULT / progress ----
