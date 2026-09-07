@@ -31,6 +31,10 @@ export const AMB_DEFAULT_SETTINGS = {
   ambAllowAutoBudgetIncrease: false,
   ambAllowAutoBudgetDecrease: false,
   ambAllowDuplicationActions: false,
+  // Campaign Clone & Schedule
+  ambCloneDefaultActivationTime: '00:00',   // HH:MM in each destination account's timezone
+  ambCloneAutoActivate: true,               // scheduler flips cloned (PAUSED) campaigns ACTIVE at the scheduled time; set false to hold them
+  ambCloneMaxCampaignsPerBatch: 20,         // guard on one clone batch
 };
 
 /** Merged AMB settings — DEFAULTS <- whatever the owner saved. Only the `amb…` keys are returned. */

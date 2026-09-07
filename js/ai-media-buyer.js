@@ -61,6 +61,8 @@ const IC = {
   refresh: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>',
   cal: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18M8 2v4M16 2v4"/>',
   meta: '<path d="M4 15c2.5-8 6-8 8 0 2-8 5.5-8 8 0"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 function ic(name, cls = 'ic') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${IC[name] || ''}</svg>`;
@@ -72,11 +74,13 @@ const NAV = [
   { key: 'products', label: 'المنتجات', icon: 'box' },
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
   { key: 'winners', label: 'الكرياتيفات', icon: 'image' },
+  { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, clone: renderClone, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', clone: 'استنساخ وجدولة الحملات', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const NO_WINDOW_SECTIONS = new Set(['settings', 'clone']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
 // existing resolveWindow() keys, so every window-aware endpoint honours them.
@@ -155,6 +159,7 @@ function renderNav() {
 }
 
 function route() {
+  if (cloneState.poll) { clearInterval(cloneState.poll); cloneState.poll = null; }
   const hash = (location.hash || '#home').slice(1);
   state.tab = NAV.find((n) => n.key === hash) ? hash : 'home';
   renderNav();
@@ -172,10 +177,10 @@ async function renderSection(view, key) {
         <h1>${E(SECTION_TITLE[key] || key)}</h1>
         <div class="sub">جزء من AI Media Buyer — نفس البيانات والمنطق، عرض مبسّط.</div>
       </div>
-      <div class="amb-head-tools">${key !== 'settings' ? windowChips() : ''}</div>
+      <div class="amb-head-tools">${NO_WINDOW_SECTIONS.has(key) ? '' : windowChips()}</div>
     </div>
     <div id="ambSecPanel"></div>`;
-  if (key !== 'settings') wireWindowChips(() => route());
+  if (!NO_WINDOW_SECTIONS.has(key)) wireWindowChips(() => route());
   await SECTIONS[key]($('ambSecPanel'));
 }
 
@@ -1269,6 +1274,456 @@ function showHistDetails(a) {
   `);
   $('ambDrawerX').onclick = closeDrawer;
   $('ambDrawerX2').onclick = closeDrawer;
+}
+
+// ===========================================================================
+// CAMPAIGN CLONE & SCHEDULE — a new additive workflow. Copies user-selected
+// campaigns from ONE source ad account into one or more destination accounts
+// as PAUSED, then the backend scheduler activates them at the chosen time
+// (default 00:00 in each destination account's timezone). Nothing is created
+// on Meta before "APPROVE & SCHEDULE". The source campaigns are never touched.
+// ===========================================================================
+const cloneState = {
+  step: 1, // 1 FROM · 2 CAMPAIGNS · 3 TO · 4 SCHEDULE · 5 REVIEW · 6 RESULT
+  accounts: null,
+  sourceId: null,
+  campaigns: null,
+  campaignsForAccount: null,
+  selected: new Set(),
+  dests: new Set(),
+  scheduleTime: '00:00',
+  preview: null,
+  batchId: null,
+  batch: null,
+  poll: null,
+  busy: false,
+};
+
+const CLONE_BATCH_AR = {
+  PENDING_APPROVAL: ['بانتظار الموافقة', 'blue'], DRAFT: ['مسودة', 'gray'],
+  APPROVED: ['موافَق — يجهّز', 'blue'], CLONING: ['جارِ الاستنساخ', 'blue'],
+  SCHEDULED: ['مجدولة للتفعيل', 'green'], PARTIALLY_FAILED: ['اكتمل جزئيًا', 'yellow'],
+  COMPLETED: ['اكتملت', 'green'], CANCELLED: ['ملغاة', 'gray'], FAILED: ['فشلت', 'red'],
+};
+const CLONE_JOB_AR = {
+  PENDING: ['بالانتظار', 'gray'], PREFLIGHT_BLOCKED: ['محجوبة', 'red'], CLONING: ['جارِ الاستنساخ', 'blue'],
+  CLONED_PAUSED: ['اتنسخت — متوقفة', 'green'], ACTIVATION_PENDING: ['جارِ التفعيل', 'blue'],
+  ACTIVATED: ['مُفعّلة', 'green'], ACTIVATION_FAILED: ['فشل التفعيل', 'red'], FAILED: ['فشلت', 'red'], CANCELLED: ['ملغاة', 'gray'],
+};
+const PF_AR = { READY: ['جاهزة', 'green'], WARNING: ['تحذير', 'yellow'], BLOCKED: ['محجوبة', 'red'] };
+const PF_CHECK_ICON = { INFO: '•', WARN: '⚠', BLOCK: '✖' };
+
+function cloneUUID() {
+  try { return crypto.randomUUID(); } catch { return 'b-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10); }
+}
+function badge(text, tone) { return `<span class="badge ${tone || 'gray'}">${E(text)}</span>`; }
+function acctLabel(a) { return `${a.name || a.id}${a.currency ? ` · ${a.currency}` : ''}${a.timezoneName ? ` · ${a.timezoneName}` : ''}`; }
+
+async function renderClone(panel) {
+  if (cloneState.poll) { clearInterval(cloneState.poll); cloneState.poll = null; }
+  panel.innerHTML = `<div id="ambCloneRecent"></div><div id="ambCloneBody"><div class="amb-loading">جارِ التحميل…</div></div>`;
+  renderCloneRecent();
+  await renderCloneStep();
+}
+
+async function renderCloneRecent() {
+  const el = $('ambCloneRecent');
+  if (!el) return;
+  let list = [];
+  try { list = await api.get('/api/ai-media-buyer/clone/batches?limit=8'); } catch { /* ignore */ }
+  if (!list.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="amb-panel" style="margin-bottom:16px;">
+      <div class="section-title" style="margin-top:0;">دفعات الاستنساخ الأخيرة</div>
+      <div class="amb-clone-recent">
+        ${list.map((b) => {
+          const [t, tone] = CLONE_BATCH_AR[b.status] || [b.status, 'gray'];
+          return `<button class="amb-clone-recent-row" data-batch="${E(b.batchId)}">
+            <span class="r-main">${E(b.sourceAccountName || b.sourceAccountId)} → ${b.destinationCount} حساب</span>
+            <span class="r-sub">${b.campaignCount} حملة · ${b.totalCopies} نسخة · ${fmtDT(b.createdAt)}</span>
+            ${badge(t, tone)}
+            <span class="r-jobs">${b.jobs.activated}/${b.jobs.total} مُفعّلة${b.jobs.failed ? ` · ${b.jobs.failed} فشل` : ''}${b.jobs.blocked ? ` · ${b.jobs.blocked} محجوب` : ''}</span>
+          </button>`;
+        }).join('')}
+      </div>
+    </div>`;
+  el.querySelectorAll('[data-batch]').forEach((b) => {
+    b.onclick = () => { cloneState.batchId = b.dataset.batch; cloneState.step = 6; renderCloneStep(); };
+  });
+}
+
+function cloneStepper() {
+  const steps = ['الحساب المصدر', 'اختيار الحملات', 'حسابات الوجهة', 'الجدولة', 'المراجعة'];
+  return `<div class="amb-steps">${steps.map((s, i) => `
+    <div class="amb-step ${cloneState.step === i + 1 ? 'active' : cloneState.step > i + 1 ? 'done' : ''}">
+      <span class="n">${cloneState.step > i + 1 ? '✓' : i + 1}</span><span class="l">${E(s)}</span>
+    </div>`).join('<span class="amb-step-sep"></span>')}</div>`;
+}
+
+async function renderCloneStep() {
+  const body = $('ambCloneBody');
+  if (!body) return;
+  body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
+  try {
+    if (cloneState.step === 6) return renderCloneResult(body);
+    if (cloneState.step === 1) return renderCloneFrom(body);
+    if (cloneState.step === 2) return renderCloneCampaigns(body);
+    if (cloneState.step === 3) return renderCloneTo(body);
+    if (cloneState.step === 4) return renderCloneSchedule(body);
+    if (cloneState.step === 5) return renderCloneReview(body);
+  } catch (err) {
+    body.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(err.message || err)}</div>
+      <div class="toolbar" style="margin-top:12px;"><button class="amb-btn" id="ambCloneRetry">إعادة المحاولة</button></div>`;
+    const r = $('ambCloneRetry'); if (r) r.onclick = () => renderCloneStep();
+  }
+}
+
+function cloneNav(backStep, nextStep, nextLabel, nextEnabled) {
+  return `<div class="amb-wizard-nav">
+    ${backStep ? `<button class="amb-btn ghost" id="ambCloneBack">رجوع</button>` : '<span></span>'}
+    <button class="amb-btn primary" id="ambCloneNext" ${nextEnabled ? '' : 'disabled'}>${E(nextLabel)}</button>
+  </div>`;
+}
+function wireCloneNav(backStep, onNext) {
+  const b = $('ambCloneBack'); if (b) b.onclick = () => { cloneState.step = backStep; renderCloneStep(); };
+  const n = $('ambCloneNext'); if (n) n.onclick = onNext;
+}
+
+// ---- Step 1 · FROM ACCOUNT ----
+async function renderCloneFrom(body) {
+  if (!cloneState.accounts) {
+    const r = await api.get('/api/ai-media-buyer/clone/accounts');
+    cloneState.accounts = r.accounts || [];
+    if (!cloneState.sourceId && r.selectedAdAccountId) cloneState.sourceId = r.selectedAdAccountId;
+  }
+  const accts = cloneState.accounts;
+  body.innerHTML = `
+    ${cloneStepper()}
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0;">من أي حساب إعلاني تنسخ؟</div>
+      <div class="faint" style="font-size:12px; margin-bottom:12px;">اختر حساب مصدر واحد فقط. لن يتم تعديل أي حاجة في هذا الحساب.</div>
+      ${accts.length ? `<div class="amb-radio-list">${accts.map((a) => `
+        <label class="amb-radio-row ${cloneState.sourceId === a.id ? 'sel' : ''}">
+          <input type="radio" name="ambCloneSrc" value="${E(a.id)}" ${cloneState.sourceId === a.id ? 'checked' : ''} />
+          <span class="rr-main">${E(a.name || a.id)}</span>
+          <span class="rr-sub">${E(a.id)}${a.currency ? ` · ${E(a.currency)}` : ''}${a.timezoneName ? ` · ${E(a.timezoneName)}` : ''}${Number(a.accountStatus) !== 1 ? ' · <b style="color:var(--amb-red)">غير نشط</b>' : ''}</span>
+        </label>`).join('')}</div>` : '<div class="amb-empty">مفيش حسابات إعلانية متاحة على الاتصال الحالي.</div>'}
+    </div>
+    ${cloneNav(0, 2, 'التالي: اختيار الحملات', !!cloneState.sourceId)}`;
+  body.querySelectorAll('input[name="ambCloneSrc"]').forEach((r) => {
+    r.onchange = () => {
+      if (cloneState.sourceId !== r.value) { cloneState.campaignsForAccount = null; cloneState.selected = new Set(); }
+      cloneState.sourceId = r.value;
+      cloneState.dests = new Set([...cloneState.dests].filter((d) => d !== r.value));
+      renderCloneStep();
+    };
+  });
+  wireCloneNav(0, () => { if (cloneState.sourceId) { cloneState.step = 2; renderCloneStep(); } });
+}
+
+// ---- Step 2 · SELECT CAMPAIGNS ----
+async function renderCloneCampaigns(body) {
+  if (cloneState.campaignsForAccount !== cloneState.sourceId) {
+    const r = await api.get(`/api/ai-media-buyer/clone/campaigns?accountId=${encodeURIComponent(cloneState.sourceId)}`);
+    cloneState.campaigns = r.campaigns || [];
+    cloneState.campaignsForAccount = cloneState.sourceId;
+  }
+  const list = cloneState.campaigns;
+  const srcName = cloneState.accounts?.find((a) => a.id === cloneState.sourceId)?.name || cloneState.sourceId;
+  body.innerHTML = `
+    ${cloneStepper()}
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0;">اختر الحملات من «${E(srcName)}»</div>
+      <div class="faint" style="font-size:12px; margin-bottom:10px;">اختر يدويًا الحملات اللي عايز تنسخها — مفيش أي حاجة بتتنسخ تلقائيًا. <b>للاختبار ابدأ بحملات متوقفة (Paused).</b></div>
+      <div class="toolbar" style="margin-bottom:10px;">
+        <button class="amb-btn sm" id="ambCloneSelAll">تحديد الكل</button>
+        <button class="amb-btn sm ghost" id="ambCloneSelNone">إلغاء التحديد</button>
+        <span class="faint" style="font-size:12px;">${cloneState.selected.size} / ${list.length} محددة</span>
+      </div>
+      ${list.length ? `<div class="table-wrap"><table class="data">
+        <thead><tr><th></th><th>الحملة</th><th>ID</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>الصرف (7ي)</th><th>شراء</th><th>CPA</th><th>مجموعات</th><th>إعلانات</th></tr></thead>
+        <tbody>${list.map((c) => `<tr class="${cloneState.selected.has(c.id) ? 'amb-row-sel' : ''}">
+          <td><input type="checkbox" data-camp="${E(c.id)}" ${cloneState.selected.has(c.id) ? 'checked' : ''} /></td>
+          <td><b>${E(c.name)}</b></td>
+          <td class="mono faint" style="font-size:11px;">${E(c.id)}</td>
+          <td>${badge(META_STATUS_AR[c.status] || c.status || '—', c.status === 'ACTIVE' ? 'blue' : 'gray')}</td>
+          <td class="faint" style="font-size:12px;">${E(c.objective || '—')}</td>
+          <td>${c.dailyBudgetMinor ? fmtEGP(c.dailyBudgetMinor / 100) + '/يوم' : c.lifetimeBudgetMinor ? fmtEGP(c.lifetimeBudgetMinor / 100) : `<span class="faint">${E(c.budgetMode)}</span>`}</td>
+          <td>${c.spend == null ? '—' : fmtEGP(c.spend)}</td>
+          <td>${fmtNum(c.purchases)}</td>
+          <td>${c.cpa == null ? '—' : fmtEGP(c.cpa)}</td>
+          <td>${fmtNum(c.adsetCount)}</td>
+          <td>${fmtNum(c.adCount)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : '<div class="amb-empty">مفيش حملات في الحساب ده.</div>'}
+    </div>
+    ${cloneNav(1, 3, 'التالي: حسابات الوجهة', cloneState.selected.size > 0)}`;
+  const refresh = () => renderCloneStep();
+  $('ambCloneSelAll').onclick = () => { cloneState.selected = new Set(list.map((c) => c.id)); refresh(); };
+  $('ambCloneSelNone').onclick = () => { cloneState.selected = new Set(); refresh(); };
+  body.querySelectorAll('[data-camp]').forEach((cb) => {
+    cb.onchange = () => {
+      if (cb.checked) cloneState.selected.add(cb.dataset.camp); else cloneState.selected.delete(cb.dataset.camp);
+      cb.closest('tr').classList.toggle('amb-row-sel', cb.checked);
+      const n = $('ambCloneNext'); if (n) n.disabled = cloneState.selected.size === 0;
+      const cnt = body.querySelector('.toolbar .faint'); if (cnt) cnt.textContent = `${cloneState.selected.size} / ${list.length} محددة`;
+    };
+  });
+  wireCloneNav(1, () => { if (cloneState.selected.size) { cloneState.step = 3; renderCloneStep(); } });
+}
+
+// ---- Step 3 · TO ACCOUNT(S) ----
+async function renderCloneTo(body) {
+  const others = (cloneState.accounts || []).filter((a) => a.id !== cloneState.sourceId);
+  const srcCur = cloneState.accounts?.find((a) => a.id === cloneState.sourceId)?.currency || null;
+  body.innerHTML = `
+    ${cloneStepper()}
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0;">لأي حسابات تنسخ؟</div>
+      <div class="faint" style="font-size:12px; margin-bottom:12px;">اختر حساب وجهة واحد أو أكثر. حساب المصدر مستبعد تلقائيًا.</div>
+      ${others.length ? `<div class="amb-check-list">${others.map((a) => {
+        const mism = srcCur && a.currency && srcCur !== a.currency;
+        return `<label class="amb-check-row ${cloneState.dests.has(a.id) ? 'sel' : ''}">
+          <input type="checkbox" data-dest="${E(a.id)}" ${cloneState.dests.has(a.id) ? 'checked' : ''} />
+          <span class="rr-main">${E(a.name || a.id)}</span>
+          <span class="rr-sub">${E(a.id)}${a.currency ? ` · ${E(a.currency)}` : ''}${a.timezoneName ? ` · ${E(a.timezoneName)}` : ''}${Number(a.accountStatus) !== 1 ? ' · <b style="color:var(--amb-red)">غير نشط</b>' : ''}${mism ? ` · <b style="color:var(--amb-amber)">عملة مختلفة</b>` : ''}</span>
+        </label>`;
+      }).join('')}</div>` : '<div class="amb-empty">مفيش حسابات تانية متاحة للنسخ إليها.</div>'}
+    </div>
+    ${cloneNav(2, 4, 'التالي: الجدولة', cloneState.dests.size > 0)}`;
+  body.querySelectorAll('[data-dest]').forEach((cb) => {
+    cb.onchange = () => {
+      if (cb.checked) cloneState.dests.add(cb.dataset.dest); else cloneState.dests.delete(cb.dataset.dest);
+      cb.closest('label').classList.toggle('sel', cb.checked);
+      const n = $('ambCloneNext'); if (n) n.disabled = cloneState.dests.size === 0;
+    };
+  });
+  wireCloneNav(2, () => { if (cloneState.dests.size) { cloneState.step = 4; renderCloneStep(); } });
+}
+
+// ---- Step 4 · SCHEDULE ----
+async function renderCloneSchedule(body) {
+  const destAccts = (cloneState.accounts || []).filter((a) => cloneState.dests.has(a.id));
+  body.innerHTML = `
+    ${cloneStepper()}
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0;">وقت التفعيل المجدول</div>
+      <div class="faint" style="font-size:12px; margin-bottom:14px;">هتتنسخ الحملات <b>متوقفة (PAUSED)</b> أول حاجة، وبعدين تتفعّل تلقائيًا في الوقت ده — <b>بتوقيت كل حساب وجهة</b>. الافتراضي 12:00 صباحًا.</div>
+      <div class="field" style="max-width:200px;">
+        <label>وقت التفعيل (HH:MM)</label>
+        <input type="time" id="ambCloneTime" value="${E(cloneState.scheduleTime)}" />
+      </div>
+      <div class="amb-derived" style="margin-top:14px;">
+        ${destAccts.map((a) => `<div class="amb-derived-row"><span>${E(a.name || a.id)}</span><b>${E(a.timezoneName || 'توقيت غير معروف')} — ${E(cloneState.scheduleTime)}</b></div>`).join('')}
+      </div>
+      <div class="faint" style="font-size:11.5px; margin-top:8px;">الوقت واليوم الدقيقين لكل حساب هيظهروا في شاشة المراجعة.</div>
+    </div>
+    ${cloneNav(3, 5, 'التالي: المراجعة', true)}`;
+  $('ambCloneTime').onchange = (e) => {
+    cloneState.scheduleTime = /^\d{1,2}:\d{2}$/.test(e.target.value) ? e.target.value : '00:00';
+    renderCloneStep();
+  };
+  wireCloneNav(3, () => { cloneState.step = 5; renderCloneStep(); });
+}
+
+// ---- Step 5 · REVIEW ----
+async function renderCloneReview(body) {
+  const preview = await api.post('/api/ai-media-buyer/clone/preview', {
+    sourceAccountId: cloneState.sourceId,
+    destinationAccountIds: [...cloneState.dests],
+    campaignIds: [...cloneState.selected],
+    scheduleLocalTime: cloneState.scheduleTime,
+  });
+  cloneState.preview = preview;
+  const rowsByCamp = {};
+  for (const r of preview.matrix) (rowsByCamp[r.campaignId] = rowsByCamp[r.campaignId] || []).push(r);
+
+  body.innerHTML = `
+    ${cloneStepper()}
+    <div class="amb-panel amb-review">
+      <div class="amb-review-grid">
+        <div><span class="rl">المصدر</span><span class="rv">${E(preview.source.name)}</span></div>
+        <div><span class="rl">الحملات المختارة</span><span class="rv">${preview.campaigns.length}</span></div>
+        <div><span class="rl">حسابات الوجهة</span><span class="rv">${preview.destinations.length}</span></div>
+        <div><span class="rl">إجمالي النسخ</span><span class="rv">${preview.totalCopies}${preview.blockedCopies ? ` <span class="faint" style="font-size:12px;">(${preview.cloneableCopies} قابلة · ${preview.blockedCopies} محجوبة)</span>` : ''}</span></div>
+        <div><span class="rl">الجدولة</span><span class="rv">${E(preview.scheduleLocalTime)} <span class="faint" style="font-size:12px;">بتوقيت كل حساب وجهة</span></span></div>
+        <div><span class="rl">حملات المصدر</span><span class="rv" style="color:var(--amb-green); font-weight:800;">بدون أي تغيير</span></div>
+      </div>
+
+      <div class="section-title">الحملات</div>
+      <div class="faint" style="font-size:12.5px; margin-bottom:10px;">${preview.campaigns.map((c) => E(c.name)).join(' · ')}</div>
+
+      <div class="section-title">حسابات الوجهة ووقت التفعيل</div>
+      <div class="amb-derived" style="margin-bottom:12px;">
+        ${preview.destinations.map((d) => {
+          const anyRow = preview.matrix.find((r) => r.destinationAccountId === d.id);
+          return `<div class="amb-derived-row"><span>${E(d.name)} <span class="faint">${E(d.timezoneName || '')}</span></span><b>${anyRow ? fmtDT(anyRow.scheduledActivationAt) : '—'}</b></div>`;
+        }).join('')}
+      </div>
+
+      <div class="section-title">فحص ما قبل الاستنساخ</div>
+      <div class="amb-pf-list">
+        ${Object.entries(rowsByCamp).map(([cid, rows]) => {
+          const cname = rows[0]?.campaignName || cid;
+          return `<div class="amb-pf-camp">
+            <div class="amb-pf-camp-h">${E(cname)}</div>
+            ${rows.map((r) => {
+              const [t, tone] = PF_AR[r.status] || [r.status, 'gray'];
+              const bad = (r.checks || []).filter((c) => c.status !== 'INFO');
+              return `<div class="amb-pf-row">
+                <span class="amb-pf-dest">${E(r.destinationAccountName)}</span>
+                ${badge(t, tone)}
+                <div class="amb-pf-reasons">${bad.length ? bad.map((c) => `<div class="pf-reason ${c.status.toLowerCase()}">${PF_CHECK_ICON[c.status] || '•'} ${E(c.detail)}</div>`).join('') : '<span class="faint" style="font-size:12px;">كل الفحوصات سليمة.</span>'}</div>
+              </div>`;
+            }).join('')}
+          </div>`;
+        }).join('')}
+      </div>
+      ${preview.blockedCopies ? `<div class="amb-batchnote" style="margin-top:12px;"><span>${preview.blockedCopies} نسخة محجوبة ومش هتتنسخ — النسخ الجاهزة/التحذير بس هي اللي هتتجدول.</span></div>` : ''}
+
+      <div class="amb-wizard-nav" style="margin-top:18px;">
+        <div style="display:flex; gap:8px;">
+          <button class="amb-btn ghost" id="ambCloneBack">رجوع وتعديل</button>
+          <button class="amb-btn ghost" id="ambCloneCancel">إلغاء</button>
+        </div>
+        <button class="amb-btn primary" id="ambCloneApprove" ${preview.cloneableCopies > 0 && state.isAdmin ? '' : 'disabled'}>
+          ${state.isAdmin ? `موافقة وجدولة (${preview.cloneableCopies} نسخة)` : 'الموافقة متاحة للـ ADMIN فقط'}
+        </button>
+      </div>
+    </div>`;
+  $('ambCloneBack').onclick = () => { cloneState.step = 4; renderCloneStep(); };
+  $('ambCloneCancel').onclick = () => { resetCloneWizard(); renderCloneRecent(); renderCloneStep(); };
+  const ap = $('ambCloneApprove');
+  if (ap) ap.onclick = async () => {
+    const ok = await UI.confirmModal({
+      title: 'موافقة وجدولة الاستنساخ',
+      message: `هيتم إنشاء ${preview.cloneableCopies} حملة مستنسخة (متوقفة) في ${preview.destinations.length} حساب، وتتفعّل تلقائيًا في وقت الجدولة. حملات المصدر مش هتتغير. متابعة؟`,
+      confirmLabel: 'موافقة وجدولة', danger: true,
+    });
+    if (!ok) return;
+    ap.disabled = true; ap.textContent = '… بيجهّز الدفعة';
+    try {
+      if (!cloneState.batchId) cloneState.batchId = cloneUUID();
+      await api.post('/api/ai-media-buyer/clone/batches', {
+        batchId: cloneState.batchId,
+        sourceAccountId: cloneState.sourceId,
+        destinationAccountIds: [...cloneState.dests],
+        campaignIds: [...cloneState.selected],
+        scheduleLocalTime: cloneState.scheduleTime,
+      });
+      await api.post(`/api/ai-media-buyer/clone/batches/${cloneState.batchId}/approve`, {});
+      UI.toast('✅ تمت الموافقة — بدأ الاستنساخ');
+      cloneState.step = 6;
+      renderCloneStep();
+    } catch (err) {
+      UI.toast(err.message, 'error');
+      ap.disabled = false; ap.textContent = `موافقة وجدولة (${preview.cloneableCopies} نسخة)`;
+    }
+  };
+}
+
+function resetCloneWizard() {
+  Object.assign(cloneState, { step: 1, campaigns: null, campaignsForAccount: null, selected: new Set(), dests: new Set(), scheduleTime: '00:00', preview: null, batchId: null, batch: null });
+}
+
+// ---- Step 6 · RESULT / progress ----
+async function renderCloneResult(body) {
+  const b = await api.get(`/api/ai-media-buyer/clone/batches/${cloneState.batchId}`);
+  cloneState.batch = b;
+  const [bt, btone] = CLONE_BATCH_AR[b.status] || [b.status, 'gray'];
+  const jobsByDest = {};
+  for (const jb of b.jobs) (jobsByDest[jb.destinationAccountId] = jobsByDest[jb.destinationAccountId] || []).push(jb);
+  const live = ['APPROVED', 'CLONING'].includes(b.status);
+
+  body.innerHTML = `
+    <div class="amb-panel">
+      <div class="amb-clone-result-h">
+        <div>
+          <div style="font-weight:800; font-size:15px;">${E(b.source.name || b.source.id)} → ${b.destinationAccountIds.length} حساب</div>
+          <div class="faint" style="font-size:12px;">${b.campaignIds.length} حملة · ${b.totalCopies} نسخة · جدولة ${E(b.scheduleLocalTime)} بتوقيت كل حساب · أنشأها ${E(b.createdBy || '—')}${b.approvedBy ? ` · وافق ${E(b.approvedBy)}` : ''}</div>
+        </div>
+        ${badge(bt, btone)}
+      </div>
+      <div class="amb-clone-summary">
+        <span>${b.jobsSummary.clonedPaused} اتنسخت</span>
+        <span>${b.jobsSummary.activated} مُفعّلة</span>
+        ${b.jobsSummary.failed ? `<span class="bad">${b.jobsSummary.failed} فشل</span>` : ''}
+        ${b.jobsSummary.blocked ? `<span class="bad">${b.jobsSummary.blocked} محجوب</span>` : ''}
+        ${b.jobsSummary.cloning ? `<span class="busy">${b.jobsSummary.cloning} جارٍ</span>` : ''}
+      </div>
+      <div style="color:var(--amb-green); font-size:12.5px; font-weight:700; margin-top:6px;">حملات المصدر: بدون أي تغيير</div>
+      ${b.error ? `<div style="color:var(--amb-red); font-size:12.5px; margin-top:6px;">${E(b.error)}</div>` : ''}
+
+      ${Object.entries(jobsByDest).map(([did, jobs]) => `
+        <div class="amb-clone-dest">
+          <div class="amb-clone-dest-h">${E(jobs[0].destinationAccountName || did)} <span class="faint">${E(jobs[0].destinationTimezone || '')}</span></div>
+          ${jobs.map(cloneJobCard).join('')}
+        </div>`).join('')}
+
+      <details class="amb-clone-audit" style="margin-top:14px;">
+        <summary>سجل التدقيق (${b.audit.length})</summary>
+        <div class="amb-audit-list">
+          ${b.audit.map((a) => `<div class="amb-audit-row"><span class="faint">${fmtDT(a.at)}</span> <b>${E(a.event)}</b>${a.level ? ` · ${E(a.level)}` : ''}${a.detail ? ` — ${E(a.detail)}` : ''}</div>`).join('') || '<div class="faint">—</div>'}
+        </div>
+      </details>
+
+      <div class="toolbar" style="margin-top:16px; flex-wrap:wrap; gap:8px;">
+        ${state.isAdmin && ['PARTIALLY_FAILED', 'FAILED', 'SCHEDULED'].includes(b.status) ? `<button class="amb-btn" id="ambCloneResume">استئناف الفاشل/الناقص</button>` : ''}
+        ${state.isAdmin && !['COMPLETED', 'CANCELLED'].includes(b.status) ? `<button class="amb-btn danger" id="ambCloneCancelBatch">إلغاء الجدولة</button>` : ''}
+        <button class="amb-btn ghost" id="ambCloneRefresh">تحديث</button>
+        <button class="amb-btn" id="ambCloneNew">دفعة جديدة</button>
+      </div>
+      ${live ? `<div class="faint" style="font-size:11.5px; margin-top:8px;">بيحدّث تلقائيًا…</div>` : ''}
+    </div>`;
+
+  body.querySelectorAll('[data-jobtoggle]').forEach((s) => {
+    s.onclick = () => { const d = s.nextElementSibling; if (d) d.hidden = !d.hidden; };
+  });
+  const rs = $('ambCloneResume');
+  if (rs) rs.onclick = async () => { rs.disabled = true; try { await api.post(`/api/ai-media-buyer/clone/batches/${b.batchId}/resume`, {}); UI.toast('↻ استئناف'); renderCloneStep(); } catch (e) { UI.toast(e.message, 'error'); rs.disabled = false; } };
+  const cb = $('ambCloneCancelBatch');
+  if (cb) cb.onclick = async () => {
+    if (!(await UI.confirmModal({ title: 'إلغاء جدولة الدفعة', message: 'النسخ اللي اتعملت هتفضل متوقفة (PAUSED) ومش هتتفعّل. متابعة؟', danger: true, confirmLabel: 'إلغاء الجدولة' }))) return;
+    try { await api.post(`/api/ai-media-buyer/clone/batches/${b.batchId}/cancel`, {}); UI.toast('أُلغيت الجدولة'); renderCloneStep(); } catch (e) { UI.toast(e.message, 'error'); }
+  };
+  $('ambCloneRefresh').onclick = () => renderCloneStep();
+  $('ambCloneNew').onclick = () => { resetCloneWizard(); renderCloneRecent(); renderCloneStep(); };
+
+  if (cloneState.poll) { clearInterval(cloneState.poll); cloneState.poll = null; }
+  if (live) {
+    cloneState.poll = setInterval(async () => {
+      if (state.tab !== 'clone' || cloneState.step !== 6) { clearInterval(cloneState.poll); cloneState.poll = null; return; }
+      try {
+        const fresh = await api.get(`/api/ai-media-buyer/clone/batches/${cloneState.batchId}`);
+        if (!['APPROVED', 'CLONING'].includes(fresh.status)) { clearInterval(cloneState.poll); cloneState.poll = null; }
+        renderCloneResult(body);
+      } catch { /* keep polling */ }
+    }, 4000);
+  }
+}
+
+function cloneJobCard(jb) {
+  const [t, tone] = CLONE_JOB_AR[jb.status] || [jb.status, 'gray'];
+  const cc = jb.copiesCreated || {};
+  const bad = (jb.preflightChecks || []).filter((c) => c.status === 'BLOCK');
+  const objs = jb.objects || [];
+  const objLine = (o) => `<div class="amb-obj-row ${o.status === 'FAILED' ? 'bad' : o.status === 'CREATED' ? 'ok' : ''}">
+    <span>${E(o.level)}</span><span class="faint">${E(o.sourceName || o.sourceId)}</span>
+    <span>${o.status === 'CREATED' ? `→ ${E(o.destinationId || '')}` : E({ PENDING: 'بالانتظار', FAILED: 'فشل', SKIPPED: 'تخطّي' }[o.status] || o.status)}</span>
+    ${o.error ? `<span class="bad" style="flex-basis:100%; font-size:11px;">${E(o.error)}</span>` : ''}
+  </div>`;
+  return `<div class="amb-clone-job">
+    <div class="amb-clone-job-h" data-jobtoggle="1">
+      <span class="j-name">${E(jb.sourceCampaignName || jb.sourceCampaignId)}</span>
+      ${badge(t, tone)}
+      <span class="j-meta faint">${cc.adsets != null ? `${cc.adsets} مجموعة · ${cc.ads} إعلان · ` : ''}تفعيل ${fmtDT(jb.scheduledActivationAt)}${jb.destinationCampaignId ? ` · <span class="mono">${E(jb.destinationCampaignId)}</span>` : ''}</span>
+    </div>
+    <div class="amb-clone-job-d" hidden>
+      ${jb.error ? `<div class="bad" style="font-size:12px; margin-bottom:6px;">${E(jb.error)}</div>` : ''}
+      ${bad.length ? `<div style="font-size:12px; margin-bottom:6px;">${bad.map((c) => `<div class="pf-reason block">✖ ${E(c.detail)}</div>`).join('')}</div>` : ''}
+      ${objs.length ? `<div class="amb-obj-list">${objs.map(objLine).join('')}</div>` : '<div class="faint" style="font-size:12px;">مفيش عناصر متسجلة بعد.</div>'}
+    </div>
+  </div>`;
 }
 
 // ---- Settings — logic UNCHANGED ----

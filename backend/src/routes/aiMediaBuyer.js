@@ -220,6 +220,60 @@ router.post('/alerts/read', asyncRoute(async (req, res) => res.json(await markAl
 router.post('/alerts/read-all', asyncRoute(async (req, res) => res.json(await markAllAlertsRead())));
 
 // ---------------------------------------------------------------------------
+// Campaign Clone & Schedule — copy user-selected campaigns from ONE source ad
+// account into one or more destination accounts (PAUSED), then a scheduler
+// activates them at the chosen time. Reads/preview: ADMIN|MANAGER. Anything
+// that creates on Meta (batch create / approve / resume / cancel): ADMIN,
+// same tier as recommendation execution.
+// ---------------------------------------------------------------------------
+router.get('/clone/accounts', asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.listCloneAccounts());
+}));
+
+router.get('/clone/campaigns', asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.listSourceCampaigns({ accountId: String(req.query.accountId || '') }));
+}));
+
+router.post('/clone/preview', asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  const { sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime } = req.body || {};
+  res.json(await clone.buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime }));
+}));
+
+router.get('/clone/batches', asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.listBatches({ limit: Number(req.query.limit) || 25 }));
+}));
+
+router.get('/clone/batches/:batchId', asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.getBatch(req.params.batchId));
+}));
+
+router.post('/clone/batches', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime } = req.body || {};
+  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, userId: req.user.id }));
+}));
+
+router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.approveBatch({ batchId: req.params.batchId, userId: req.user.id }));
+}));
+
+router.post('/clone/batches/:batchId/resume', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.resumeBatch({ batchId: req.params.batchId, userId: req.user.id }));
+}));
+
+router.post('/clone/batches/:batchId/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.cancelBatch({ batchId: req.params.batchId, userId: req.user.id }));
+}));
+
+// ---------------------------------------------------------------------------
 // Settings — ADMIN only for writes.
 // ---------------------------------------------------------------------------
 router.get('/settings', asyncRoute(async (req, res) => res.json({ settings: await getAmbSettings(), defaults: AMB_DEFAULT_SETTINGS })));

@@ -222,8 +222,48 @@ export async function getInsightsByLevel(token, adAccountId, level, dateFrom, da
   return rows;
 }
 
+/**
+ * Low-noise GET — a plain fetch that returns `null` on any error instead of
+ * logging at ERROR + throwing. For best-effort probes (clone pre-flight asset
+ * checks, "is this video downloadable") where a permission/existence failure
+ * is an EXPECTED, information-carrying outcome, not a fault.
+ */
+export async function graphGetQuiet(path, params, token) {
+  try {
+    const url = new URL(`${GRAPH_BASE}${path}`);
+    for (const [k, v] of Object.entries(params || {})) {
+      if (v !== undefined && v !== null) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }
+    url.searchParams.set('access_token', token);
+    const res = await fetch(url.toString());
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.error) return null;
+    return data;
+  } catch { return null; }
+}
+
+/** Like graphGetQuiet but follows paging.next and concatenates `data`. Returns [] on any error. */
+async function graphListQuiet(path, params, token) {
+  const rows = [];
+  const first = await graphGetQuiet(path, { ...params, limit: 200 }, token);
+  if (!first) return [];
+  rows.push(...(first.data || []));
+  let next = first.paging?.next || null;
+  let guard = 0;
+  while (next && guard++ < 20) {
+    try {
+      const res = await fetch(next);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) break;
+      rows.push(...(data.data || []));
+      next = data.paging?.next || null;
+    } catch { break; }
+  }
+  return rows;
+}
+
 /** Paginated GET of a node's edge (e.g. /act_x/campaigns) returning every page's `data` concatenated. */
-async function graphList(path, params, token) {
+export async function graphList(path, params, token) {
   const rows = [];
   let url = new URL(`${GRAPH_BASE}${path}`);
   for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
@@ -317,4 +357,217 @@ export async function setEntityBudget(token, entityId, { dailyBudgetMinor, lifet
   if (lifetimeBudgetMinor != null) body.lifetime_budget = Math.round(lifetimeBudgetMinor);
   if (Object.keys(body).length !== 1) throw new Error('setEntityBudget: pass exactly one of dailyBudgetMinor / lifetimeBudgetMinor');
   return graphPost(`/${entityId}`, body, token);
+}
+
+// ============================================================================
+// CAMPAIGN CLONE & SCHEDULE — deep READ helpers (any ad account the connected
+// user can access, not just the selected one) + a tightly-scoped set of
+// CREATE helpers used only by services/amb/cloneEngine.js AFTER owner
+// approval + a pre-flight validation. Every create here forces status:PAUSED
+// at the call site; nothing in this file ever activates anything, and no
+// helper here ever writes to a SOURCE entity.
+// ============================================================================
+
+/** Every ad account the token can reach (personal + each business), de-duplicated, with currency + timezone + status. */
+export async function getAllAccessibleAdAccounts(token) {
+  const fields = 'id,account_id,name,currency,account_status,timezone_name,timezone_offset_hours_utc,business{id,name}';
+  const byId = new Map();
+  for (const a of (await graphFetch('/me/adaccounts', { fields, limit: 200 }, token)).data || []) byId.set(a.id, a);
+  let businesses = [];
+  try { businesses = (await graphFetch('/me/businesses', { fields: 'id,name', limit: 100 }, token)).data || []; } catch { /* personal only */ }
+  for (const b of businesses) {
+    try {
+      for (const a of await graphList(`/${b.id}/owned_ad_accounts`, { fields }, token)) byId.set(a.id, a);
+      for (const a of await graphList(`/${b.id}/client_ad_accounts`, { fields }, token)) byId.set(a.id, a);
+    } catch { /* skip a business we can't enumerate */ }
+  }
+  return [...byId.values()].map((a) => ({
+    id: a.id,
+    accountId: a.account_id,
+    name: a.name || a.id,
+    currency: a.currency || null,
+    accountStatus: a.account_status ?? null,
+    timezoneName: a.timezone_name || null,
+    timezoneOffsetHours: a.timezone_offset_hours_utc ?? null,
+    businessId: a.business?.id || null,
+    businessName: a.business?.name || null,
+  }));
+}
+
+/** Campaigns of ONE ad account with the full transferable config + a live insights slice (spend/purchases/CPA) for the picker. */
+export async function listCampaignsForClone(token, adAccountId, { since, until } = {}) {
+  const campaigns = await graphList(`/${adAccountId}/campaigns`, {
+    fields: [
+      'id', 'name', 'status', 'effective_status', 'objective', 'buying_type', 'bid_strategy',
+      'daily_budget', 'lifetime_budget', 'budget_remaining', 'spend_cap', 'special_ad_categories',
+      'special_ad_category_country', 'pacing_type', 'start_time', 'stop_time', 'created_time',
+    ].join(','),
+  }, token);
+
+  // Ad set + ad counts (one cheap call each, summary only).
+  const [adsetRows, adRows] = await Promise.all([
+    graphList(`/${adAccountId}/adsets`, { fields: 'id,campaign_id' }, token).catch(() => []),
+    graphList(`/${adAccountId}/ads`, { fields: 'id,campaign_id' }, token).catch(() => []),
+  ]);
+  const adsetCount = new Map();
+  const adCount = new Map();
+  for (const r of adsetRows) adsetCount.set(r.campaign_id, (adsetCount.get(r.campaign_id) || 0) + 1);
+  for (const r of adRows) adCount.set(r.campaign_id, (adCount.get(r.campaign_id) || 0) + 1);
+
+  // Insights per campaign for the requested window (best-effort — an account
+  // with zero delivery just returns nothing, which is fine).
+  let insightsById = new Map();
+  if (since && until) {
+    try {
+      const rows = await graphList(`/${adAccountId}/insights`, {
+        level: 'campaign', time_range: { since, until },
+        fields: 'campaign_id,spend,actions,cost_per_action_type', limit: 500,
+      }, token);
+      insightsById = new Map(rows.map((r) => [r.campaign_id, r]));
+    } catch { /* leave metrics null */ }
+  }
+
+  const PURCHASE = new Set(['omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase', 'onsite_conversion.purchase']);
+  return campaigns.map((c) => {
+    const ins = insightsById.get(c.id);
+    const spend = ins ? Number(ins.spend) || 0 : null;
+    const pAction = ins?.actions?.find((a) => PURCHASE.has(a.action_type));
+    const purchases = pAction ? Math.round(Number(pAction.value) || 0) : null;
+    return {
+      id: c.id,
+      name: c.name || c.id,
+      status: c.effective_status || c.status || null,
+      configuredStatus: c.status || null,
+      objective: c.objective || null,
+      buyingType: c.buying_type || null,
+      bidStrategy: c.bid_strategy || null,
+      dailyBudgetMinor: c.daily_budget ? Number(c.daily_budget) : null,
+      lifetimeBudgetMinor: c.lifetime_budget ? Number(c.lifetime_budget) : null,
+      budgetMode: c.daily_budget || c.lifetime_budget ? 'CBO' : 'ABO',
+      specialAdCategories: c.special_ad_categories || [],
+      adsetCount: adsetCount.get(c.id) || 0,
+      adCount: adCount.get(c.id) || 0,
+      spend,
+      purchases,
+      cpa: spend != null && purchases ? spend / purchases : null,
+    };
+  });
+}
+
+/** Full campaign node (every transferable field) for the deep clone. */
+export async function getCampaignNode(token, campaignId) {
+  return graphFetch(`/${campaignId}`, {
+    fields: [
+      'id', 'name', 'objective', 'buying_type', 'status', 'bid_strategy', 'daily_budget', 'lifetime_budget',
+      'spend_cap', 'special_ad_categories', 'special_ad_category_country', 'pacing_type', 'start_time', 'stop_time',
+      'campaign_group_active_time', 'is_skadnetwork_attribution',
+    ].join(','),
+  }, token);
+}
+
+/** Ad sets of one campaign, full config. */
+export async function getAdSetNodes(token, campaignId) {
+  return graphList(`/${campaignId}/adsets`, {
+    fields: [
+      'id', 'name', 'status', 'campaign_id', 'daily_budget', 'lifetime_budget', 'billing_event', 'optimization_goal',
+      'bid_amount', 'bid_strategy', 'targeting', 'promoted_object', 'attribution_spec', 'start_time', 'end_time',
+      'destination_type', 'pacing_type', 'is_dynamic_creative', 'use_new_app_click', 'dsa_beneficiary', 'dsa_payor',
+      'optimization_sub_event', 'multi_optimization_goal_weight', 'frequency_control_specs',
+    ].join(','),
+  }, token);
+}
+
+/** Ads of one campaign, with the linked creative id. */
+export async function getAdNodes(token, campaignId) {
+  return graphList(`/${campaignId}/ads`, {
+    fields: 'id,name,status,adset_id,campaign_id,creative{id},tracking_specs,conversion_domain,display_sequence',
+  }, token);
+}
+
+/** Full ad-creative spec for the deep clone. */
+export async function getCreativeNode(token, creativeId) {
+  return graphFetch(`/${creativeId}`, {
+    fields: [
+      'id', 'name', 'object_story_spec', 'asset_feed_spec', 'degrees_of_freedom_spec', 'object_type',
+      'title', 'body', 'image_hash', 'image_url', 'video_id', 'thumbnail_url', 'call_to_action_type',
+      'link_url', 'url_tags', 'template_url_spec', 'product_set_id', 'instagram_user_id',
+      'instagram_permalink_url', 'effective_instagram_media_id', 'contextual_multi_ads', 'authorization_category',
+    ].join(','),
+  }, token);
+}
+
+/** Resolve a source account's image hashes to downloadable URLs (for re-upload into a destination account). */
+export async function getAdImagesByHash(token, adAccountId, hashes) {
+  if (!hashes?.length) return {};
+  const rows = await graphListQuiet(`/${adAccountId}/adimages`, { fields: 'hash,url,permalink_url,width,height,name', hashes }, token);
+  const out = {};
+  for (const r of rows) out[r.hash] = r;
+  return out;
+}
+
+/** Destination-account asset inventory used by the clone pre-flight. Every list is best-effort (low-noise) — a permission gap yields [] and is surfaced as a WARNING upstream, never a silent pass. */
+export async function getAccountAssetsForClone(token, adAccountId) {
+  const [account, pages, igA, igB, pixels, audiences, catViaBiz] = await Promise.all([
+    graphGetQuiet(`/${adAccountId}`, { fields: 'id,name,account_status,timezone_name,currency' }, token),
+    graphListQuiet(`/${adAccountId}/promote_pages`, { fields: 'id,name' }, token),
+    graphListQuiet(`/${adAccountId}/instagram_accounts`, { fields: 'id,username' }, token),
+    graphListQuiet(`/${adAccountId}/connected_instagram_accounts`, { fields: 'id,username' }, token),
+    graphListQuiet(`/${adAccountId}/adspixels`, { fields: 'id,name' }, token),
+    graphListQuiet(`/${adAccountId}/customaudiences`, { fields: 'id,name' }, token),
+    // Catalogs are Business-owned — reach them through the ad account's business.
+    graphGetQuiet(`/${adAccountId}`, { fields: 'business{owned_product_catalogs.limit(200){id,name},client_product_catalogs.limit(200){id,name}}' }, token),
+  ]);
+  const igMap = new Map();
+  for (const g of [...(igA || []), ...(igB || [])]) igMap.set(g.id, g.username || g.id);
+  const catalogs = [
+    ...(catViaBiz?.business?.owned_product_catalogs?.data || []),
+    ...(catViaBiz?.business?.client_product_catalogs?.data || []),
+  ];
+  return {
+    account: account && account.id ? { id: account.id, name: account.name, status: account.account_status, timezoneName: account.timezone_name, currency: account.currency } : null,
+    pages: (pages || []).map((p) => ({ id: p.id, name: p.name })),
+    instagram: [...igMap.entries()].map(([id, username]) => ({ id, username })),
+    pixels: (pixels || []).map((p) => ({ id: p.id, name: p.name })),
+    customAudiences: (audiences || []).map((a) => ({ id: a.id, name: a.name })),
+    catalogs: catalogs.map((c) => ({ id: c.id, name: c.name })),
+  };
+}
+
+/** Re-upload one image into a destination ad account from a URL; returns the new image_hash. */
+export async function uploadAdImageFromUrl(token, adAccountId, imageUrl) {
+  const resp = await fetch(imageUrl);
+  if (!resp.ok) throw new Error(`تعذّر تحميل الصورة المصدر (${resp.status})`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+  if (buf.length > 8 * 1024 * 1024) throw new Error('حجم الصورة أكبر من 8MB — لا يمكن رفعها تلقائيًا.');
+  const data = await graphPost(`/${adAccountId}/adimages`, { bytes: buf.toString('base64') }, token);
+  const first = data?.images ? Object.values(data.images)[0] : null;
+  if (!first?.hash) throw new Error('Meta لم تُرجع hash للصورة المرفوعة.');
+  return { hash: first.hash, url: first.url || null };
+}
+
+/** Re-upload one video into a destination ad account by URL (Meta fetches it). Returns the new video id (may still be processing — fine for a PAUSED clone). */
+export async function uploadAdVideoFromUrl(token, adAccountId, fileUrl, name) {
+  const data = await graphPost(`/${adAccountId}/advideos`, { file_url: fileUrl, name: name || undefined }, token);
+  if (!data?.id) throw new Error('Meta لم تُرجع id للفيديو المرفوع.');
+  return { id: data.id };
+}
+
+/** Best-effort downloadable source URL for a video. Low-noise: Meta returns `source` only for videos the connected user/app owns — a null here is expected, not an error. */
+export async function getVideoSourceUrl(token, videoId) {
+  const v = await graphGetQuiet(`/${videoId}`, { fields: 'source,permalink_url,title' }, token);
+  return v?.source || null;
+}
+
+/** CREATE (destination account only). Caller always passes status:'PAUSED'. */
+export async function createCampaign(token, adAccountId, payload) {
+  return graphPost(`/${adAccountId}/campaigns`, payload, token);
+}
+export async function createAdSet(token, adAccountId, payload) {
+  return graphPost(`/${adAccountId}/adsets`, payload, token);
+}
+export async function createAdCreative(token, adAccountId, payload) {
+  return graphPost(`/${adAccountId}/adcreatives`, payload, token);
+}
+export async function createAd(token, adAccountId, payload) {
+  return graphPost(`/${adAccountId}/ads`, payload, token);
 }

@@ -54,6 +54,9 @@ model User {
   amb_maps_created               AmbProductCampaignMap[]
   amb_recommendations_reviewed   AmbRecommendation[]
   amb_actions_executed           AmbAction[]
+  amb_clone_batches_created      AmbCloneBatch[]             @relation("AmbCloneCreator")
+  amb_clone_batches_approved     AmbCloneBatch[]             @relation("AmbCloneApprover")
+  amb_clone_audit_entries        AmbCloneAudit[]             @relation("AmbCloneAuditActor")
 
   @@map("users")
 }
@@ -1315,4 +1318,136 @@ model AmbCreativeAnalysis {
   @@unique([creative_id, model_version])
   @@index([ad_account_id])
   @@map("amb_creative_analysis")
+}
+
+// ============================================================================
+// AI Media Buyer — CAMPAIGN CLONE & SCHEDULE. Every table here is ADDITIVE.
+// Copies user-selected campaigns from ONE source ad account into one or more
+// destination ad accounts (exact-as-possible: campaign -> ad sets -> ads ->
+// creatives, re-uploading account-scoped image/video assets), ALWAYS created
+// PAUSED, then a background job flips them ACTIVE at a scheduled time
+// (default 00:00 in each destination account's own timezone) — only after an
+// explicit owner "APPROVE & SCHEDULE". The source campaigns are NEVER
+// modified (this layer only ever GETs from the source and POSTs to the
+// destination). Idempotent by batch_id + per-object unique keys, so a
+// refresh / retry / worker restart never creates a duplicate; a failed batch
+// resumes only the missing / failed objects.
+// ============================================================================
+
+model AmbCloneBatch {
+  id                           Int       @id @default(autoincrement())
+  batch_id                     String    @unique // client-generated UUID — the idempotency key for the whole operation
+  source_ad_account_id         String
+  source_ad_account_name       String?
+  destination_account_ids_json String // JSON string[] — destination act_ ids (the source id can never be in here)
+  campaign_ids_json            String // JSON string[] — the source campaign ids the user explicitly picked
+  schedule_local_time          String    @default("00:00") // HH:MM, interpreted in each destination account's timezone
+  total_copies                 Int       @default(0) // selected campaigns × destination accounts
+  // DRAFT | PENDING_APPROVAL | APPROVED | CLONING | SCHEDULED | PARTIALLY_FAILED
+  // | COMPLETED | CANCELLED | FAILED
+  status                       String    @default("PENDING_APPROVAL")
+  preflight_json               String? // JSON — per (campaign,destination) READY/WARNING/BLOCKED + reasons, snapshot at review time
+  error                        String?
+  approved_by_id               Int?
+  approved_by                  User?     @relation("AmbCloneApprover", fields: [approved_by_id], references: [id], onDelete: SetNull)
+  approved_at                  DateTime?
+  created_by_id                Int?
+  created_by                   User?     @relation("AmbCloneCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at                   DateTime  @default(now())
+  updated_at                   DateTime  @updatedAt
+
+  jobs   AmbCloneJob[]
+  audits AmbCloneAudit[]
+
+  @@index([status])
+  @@index([created_at])
+  @@map("amb_clone_batches")
+}
+
+// One (source campaign -> one destination account) clone unit. This is the
+// resumable unit: a batch of 6 campaigns into 2 destinations creates 12 jobs.
+model AmbCloneJob {
+  id                        Int           @id @default(autoincrement())
+  batch_id                  String
+  batch                     AmbCloneBatch @relation(fields: [batch_id], references: [batch_id], onDelete: Cascade)
+  source_ad_account_id      String
+  destination_ad_account_id String
+  destination_account_name  String?
+  destination_timezone      String? // IANA tz of the destination account, resolved from the Graph API at review time
+  source_campaign_id        String
+  source_campaign_name      String?
+  destination_campaign_id   String? // set once the campaign shell is created in the destination
+  // PENDING | PREFLIGHT_BLOCKED | CLONING | CLONED_PAUSED | ACTIVATION_PENDING
+  // | ACTIVATED | ACTIVATION_FAILED | FAILED | CANCELLED
+  status                    String        @default("PENDING")
+  preflight_status          String        @default("READY") // READY | WARNING | BLOCKED
+  preflight_json            String?
+  scheduled_activation_at   DateTime? // UTC instant = schedule_local_time resolved against destination_timezone
+  activated_at              DateTime?
+  id_map_json               String? // JSON { campaigns:{src:dst}, adsets:{src:dst}, ads:{src:dst}, creatives:{src:dst}, images:{srcHash:dstHash}, videos:{srcId:dstId} }
+  copies_created_json       String? // JSON { adsets:n, ads:n, creatives:n }
+  error                     String?
+  attempts                  Int           @default(0)
+  last_attempt_at           DateTime?
+  created_at                DateTime      @default(now())
+  updated_at                DateTime      @updatedAt
+
+  objects AmbCloneObjectMap[]
+
+  @@unique([batch_id, destination_ad_account_id, source_campaign_id])
+  @@index([status])
+  @@index([scheduled_activation_at])
+  @@map("amb_clone_jobs")
+}
+
+// Per-object source->destination id mapping. The @@unique key makes every
+// create idempotent: on resume/retry the engine finds the CREATED row and
+// skips it, so a successful campaign / ad set / ad / creative is never
+// recreated. IMAGE / VIDEO rows record the re-uploaded asset in the
+// destination account (Meta stores those per ad account).
+model AmbCloneObjectMap {
+  id               Int         @id @default(autoincrement())
+  job_id           Int
+  job              AmbCloneJob @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  batch_id         String
+  level            String // CAMPAIGN | ADSET | AD | CREATIVE | IMAGE | VIDEO
+  source_id        String // source object id (IMAGE: source image_hash, VIDEO: source video_id)
+  source_name      String?
+  parent_source_id String? // adset -> source campaign id, ad -> source adset id, creative -> source ad id
+  destination_id   String? // created object id in the destination account — null until status=CREATED
+  status           String      @default("PENDING") // PENDING | CREATED | FAILED | SKIPPED
+  payload_json     String? // the exact transformed create payload sent to Meta (audit / debugging)
+  error            String?
+  created_at       DateTime    @default(now())
+  updated_at       DateTime    @updatedAt
+
+  @@unique([job_id, level, source_id])
+  @@index([job_id])
+  @@map("amb_clone_object_map")
+}
+
+// Append-only audit of everything that happened to a clone batch: the
+// approval, every object created / failed, retries, scheduling, and the
+// eventual activation. Never backfilled — one row at the moment it happens.
+model AmbCloneAudit {
+  id             Int           @id @default(autoincrement())
+  batch_id       String
+  batch          AmbCloneBatch @relation(fields: [batch_id], references: [batch_id], onDelete: Cascade)
+  job_id         Int?
+  // APPROVAL | PREFLIGHT | CLONE_START | OBJECT_CREATED | OBJECT_FAILED
+  // | JOB_DONE | JOB_FAILED | RETRY | SCHEDULED | ACTIVATION | ACTIVATION_FAILED
+  // | CANCELLED
+  event          String
+  level          String?
+  source_id      String?
+  destination_id String?
+  detail         String?
+  data_json      String?
+  actor_id       Int?
+  actor          User?         @relation("AmbCloneAuditActor", fields: [actor_id], references: [id], onDelete: SetNull)
+  created_at     DateTime      @default(now())
+
+  @@index([batch_id])
+  @@index([created_at])
+  @@map("amb_clone_audit")
 }

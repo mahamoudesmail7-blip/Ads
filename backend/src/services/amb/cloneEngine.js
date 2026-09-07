@@ -1,0 +1,841 @@
+// AI Media Buyer — CAMPAIGN CLONE & SCHEDULE engine.
+//
+// Flow (mirrors the spec exactly):
+//   FROM one source account → pick campaigns → pick destination accounts →
+//   schedule (default 00:00 in each destination account's own timezone) →
+//   REVIEW (source / campaigns / destinations / #copies / schedule / pre-flight)
+//   → APPROVE & SCHEDULE → clone every campaign→adsets→ads→creatives into each
+//   destination as PAUSED → a background job flips the good ones ACTIVE at the
+//   scheduled time.
+//
+// Guarantees:
+//   • The source campaigns are NEVER modified — this file only GETs from the
+//     source account and POSTs to the destination account(s).
+//   • Idempotent: batch_id is the operation key; every created object is
+//     recorded in AmbCloneObjectMap with a UNIQUE (job,level,source_id) key,
+//     so a refresh / retry / worker restart re-attaches instead of
+//     re-creating. resume() only re-runs the PENDING/FAILED objects.
+//   • Nothing is created before the owner's APPROVE & SCHEDULE.
+//   • Only READY/WARNING jobs are cloned & scheduled; BLOCKED jobs are not
+//     touched and show the exact blocking reason.
+import crypto from 'node:crypto';
+import { prisma } from '../../prisma.js';
+import { logger } from '../../logger.js';
+import { getConnection, getDecryptedToken } from '../metaAuth.js';
+import {
+  getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
+  getCreativeNode, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone,
+  uploadAdImageFromUrl, uploadAdVideoFromUrl, createCampaign, createAdSet, createAdCreative, createAd,
+  setEntityStatus,
+} from '../metaGraphClient.js';
+import { getAmbSettings } from './settings.js';
+import { raiseAlert } from './alerts.js';
+import { preflightCampaignForDestination } from './clonePreflight.js';
+
+const TERMINAL_JOB = new Set(['ACTIVATED', 'CANCELLED']);
+const running = new Set(); // batch_ids with an in-flight runBatch()
+
+function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
+function isoOrNull(d) { return d ? new Date(d).toISOString() : null; }
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function daysAgoISO(n) { const d = new Date(); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); }
+
+// ---------------------------------------------------------------------------
+// Timezone: next occurrence of HH:MM in an IANA timezone, as a UTC instant.
+// ---------------------------------------------------------------------------
+function tzOffsetMs(instant, timeZone) {
+  // How far `timeZone` wall-clock is ahead of UTC at `instant`.
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const p = Object.fromEntries(dtf.formatToParts(instant).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value]));
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour === 24 ? 0 : +p.hour, +p.minute, +p.second);
+  return asUTC - instant.getTime();
+}
+/** UTC Date for the next `hh:mm` in `timeZone` strictly after `from`. Falls back to a fixed offset if the tz is unknown. */
+export function nextLocalTimeInTz(hhmm, timeZone, from = new Date()) {
+  const [hh, mm] = String(hhmm || '00:00').split(':').map((x) => parseInt(x, 10) || 0);
+  let tz = timeZone;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { tz = 'Etc/UTC'; }
+  const offset = tzOffsetMs(from, tz);
+  // Wall-clock "now" in tz:
+  const wall = new Date(from.getTime() + offset);
+  const target = new Date(Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate(), hh, mm, 0));
+  let utc = new Date(target.getTime() - offset);
+  if (utc.getTime() <= from.getTime()) utc = new Date(utc.getTime() + 24 * 3600 * 1000);
+  // Re-resolve the offset at the target instant (handles a DST jump between now and then).
+  const offset2 = tzOffsetMs(utc, tz);
+  if (offset2 !== offset) {
+    utc = new Date(target.getTime() - offset2);
+    if (utc.getTime() <= from.getTime()) utc = new Date(utc.getTime() + 24 * 3600 * 1000);
+  }
+  return utc;
+}
+
+// ---------------------------------------------------------------------------
+// Source reads
+// ---------------------------------------------------------------------------
+async function readCampaignTree(token, campaignId) {
+  const [campaign, adsets, ads] = await Promise.all([
+    getCampaignNode(token, campaignId),
+    getAdSetNodes(token, campaignId),
+    getAdNodes(token, campaignId),
+  ]);
+  const creativeIds = [...new Set(ads.map((a) => a.creative?.id).filter(Boolean))];
+  const creatives = new Map();
+  for (const cid of creativeIds) {
+    try { creatives.set(cid, await getCreativeNode(token, cid)); } catch (e) { creatives.set(cid, { id: cid, __error: e.message }); }
+  }
+  return { campaign, adsets, ads, creatives };
+}
+
+/** Resolve every source image_hash → a downloadable URL and every source video_id → a source URL (for re-upload into a destination account). */
+async function resolveSourceAssets(token, sourceAccountId, tree) {
+  const hashes = new Set();
+  const videoIds = new Set();
+  for (const cr of tree.creatives.values()) {
+    const oss = cr.object_story_spec || {};
+    const link = oss.link_data || {};
+    const vid = oss.video_data || {};
+    for (const h of [cr.image_hash, link.image_hash, vid.image_hash]) if (h) hashes.add(h);
+    for (const ch of link.child_attachments || []) if (ch.image_hash) hashes.add(ch.image_hash);
+    for (const im of cr.asset_feed_spec?.images || []) if (im.hash) hashes.add(im.hash);
+    for (const v of [cr.video_id, vid.video_id]) if (v) videoIds.add(String(v));
+    for (const v of cr.asset_feed_spec?.videos || []) if (v.video_id) videoIds.add(String(v.video_id));
+  }
+  const imageUrls = {};
+  if (hashes.size) {
+    const byHash = await getAdImagesByHash(token, sourceAccountId, [...hashes]);
+    for (const h of hashes) {
+      const fromApi = byHash[h]?.url || byHash[h]?.permalink_url || null;
+      // Fall back to a creative-level image_url when the adimages lookup is empty.
+      let url = fromApi;
+      if (!url) {
+        for (const cr of tree.creatives.values()) {
+          if (cr.image_hash === h && cr.image_url) { url = cr.image_url; break; }
+        }
+      }
+      if (url) imageUrls[h] = url;
+    }
+  }
+  const videoSources = {};
+  for (const v of videoIds) videoSources[v] = await getVideoSourceUrl(token, v);
+  return { imageUrls, videoSources };
+}
+
+// ---------------------------------------------------------------------------
+// Preview (NO writes) — powers the wizard + REVIEW screen.
+// ---------------------------------------------------------------------------
+async function requireConnectedToken() {
+  const connection = await getConnection();
+  if (!connection || connection.status !== 'CONNECTED') { const e = new Error('اربط حساب Meta Ads الأول.'); e.status = 400; throw e; }
+  return { connection, token: await getDecryptedToken() };
+}
+
+export async function listCloneAccounts() {
+  const { connection, token } = await requireConnectedToken();
+  const accounts = await getAllAccessibleAdAccounts(token);
+  return { accounts, selectedAdAccountId: connection.selected_ad_account_id || null };
+}
+
+export async function listSourceCampaigns({ accountId }) {
+  if (!accountId) { const e = new Error('accountId مطلوب.'); e.status = 400; throw e; }
+  const { token } = await requireConnectedToken();
+  const campaigns = await listCampaignsForClone(token, accountId, { since: daysAgoISO(7), until: todayISO() });
+  return { accountId, campaigns };
+}
+
+/**
+ * Build the full REVIEW payload: resolves every (campaign × destination)
+ * pre-flight and the per-destination scheduled activation instant. Pure read.
+ */
+export async function buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime }) {
+  if (!sourceAccountId) { const e = new Error('لازم تختار حساب مصدر واحد.'); e.status = 400; throw e; }
+  const dests = [...new Set((destinationAccountIds || []).filter((x) => x && x !== sourceAccountId))];
+  const camps = [...new Set((campaignIds || []).filter(Boolean))];
+  if (!camps.length) { const e = new Error('لازم تختار حملة واحدة على الأقل.'); e.status = 400; throw e; }
+  if (!dests.length) { const e = new Error('لازم تختار حساب وجهة واحد على الأقل (غير حساب المصدر).'); e.status = 400; throw e; }
+  const settings = await getAmbSettings();
+  const scheduleTime = /^\d{1,2}:\d{2}$/.test(scheduleLocalTime || '') ? scheduleLocalTime : (settings.ambCloneDefaultActivationTime || '00:00');
+  const maxCamps = Number(settings.ambCloneMaxCampaignsPerBatch) || 20;
+  if (camps.length > maxCamps) { const e = new Error(`أقصى عدد حملات في الدفعة الواحدة ${maxCamps}.`); e.status = 400; throw e; }
+
+  const { token } = await requireConnectedToken();
+  const allAccounts = await getAllAccessibleAdAccounts(token);
+  const acctById = new Map(allAccounts.map((a) => [a.id, a]));
+  const sourceAccount = acctById.get(sourceAccountId) || { id: sourceAccountId, name: sourceAccountId };
+
+  // Read each source campaign tree + resolve its assets ONCE.
+  const trees = new Map();
+  const srcAssets = new Map();
+  for (const cid of camps) {
+    try {
+      const tree = await readCampaignTree(token, cid);
+      trees.set(cid, tree);
+      srcAssets.set(cid, await resolveSourceAssets(token, sourceAccountId, tree));
+    } catch (e) {
+      trees.set(cid, { __error: e.message });
+    }
+  }
+
+  // List each destination account's asset inventory ONCE.
+  const destInv = new Map();
+  for (const d of dests) destInv.set(d, await getAccountAssetsForClone(token, d));
+
+  const rows = [];
+  for (const cid of camps) {
+    const tree = trees.get(cid);
+    const campName = tree?.campaign?.name || `حملة ${cid}`;
+    for (const d of dests) {
+      const destAcct = acctById.get(d) || { id: d, name: d };
+      const schedAt = nextLocalTimeInTz(scheduleTime, destAcct.timezoneName, new Date());
+      if (tree?.__error) {
+        rows.push({ campaignId: cid, campaignName: campName, destinationAccountId: d, destinationAccountName: destAcct.name, destinationTimezone: destAcct.timezoneName || null, scheduledActivationAt: schedAt.toISOString(), status: 'BLOCKED', checks: [{ name: 'قراءة الحملة المصدر', status: 'BLOCK', detail: tree.__error }], required: {}, currencyMismatch: false });
+        continue;
+      }
+      const pf = preflightCampaignForDestination({ tree, sourceAssets: srcAssets.get(cid), destAssets: destInv.get(d) });
+      const currencyMismatch = !!(sourceAccount.currency && destAcct.currency && sourceAccount.currency !== destAcct.currency);
+      if (currencyMismatch) pf.checks.push({ name: 'العملة', status: 'WARN', detail: `عملة المصدر (${sourceAccount.currency}) تختلف عن الوجهة (${destAcct.currency}) — سيتم نسخ قيمة الميزانية كما هي، راجعها.` });
+      const status = pf.checks.some((c) => c.status === 'BLOCK') ? 'BLOCKED' : pf.checks.some((c) => c.status === 'WARN') ? 'WARNING' : 'READY';
+      rows.push({
+        campaignId: cid, campaignName: campName,
+        adsetCount: (tree.adsets || []).length, adCount: (tree.ads || []).length,
+        destinationAccountId: d, destinationAccountName: destAcct.name,
+        destinationTimezone: destAcct.timezoneName || null,
+        scheduledActivationAt: schedAt.toISOString(),
+        status, checks: pf.checks, required: pf.required, currencyMismatch,
+        _resolved: pf.resolved, // kept server-side only; stripped before the API response
+      });
+    }
+  }
+
+  const totalCopies = camps.length * dests.length;
+  const blocked = rows.filter((r) => r.status === 'BLOCKED').length;
+  return {
+    source: { id: sourceAccount.id, name: sourceAccount.name, currency: sourceAccount.currency || null },
+    destinations: dests.map((d) => { const a = acctById.get(d) || { id: d, name: d }; return { id: d, name: a.name, currency: a.currency || null, timezoneName: a.timezoneName || null }; }),
+    campaigns: camps.map((cid) => { const t = trees.get(cid); return { id: cid, name: t?.campaign?.name || `حملة ${cid}`, error: t?.__error || null, adsetCount: (t?.adsets || []).length, adCount: (t?.ads || []).length }; }),
+    scheduleLocalTime: scheduleTime,
+    totalCopies,
+    cloneableCopies: totalCopies - blocked,
+    blockedCopies: blocked,
+    sourceUnchanged: true,
+    matrix: rows.map(({ _resolved, ...r }) => r),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Batch lifecycle
+// ---------------------------------------------------------------------------
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, userId }) {
+  const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
+
+  const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
+  if (existing) return getBatch(bid); // idempotent — a retried submit returns the same batch
+
+  // One read-only pass computes the pre-flight matrix + per-destination
+  // schedule. The engine re-runs a fresh pre-flight per job at clone time, so
+  // we only persist the API-safe rows here (no server-only `_resolved`).
+  const preview = await buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime });
+  const dests = preview.destinations.map((d) => d.id);
+  const camps = preview.campaigns.map((c) => c.id);
+
+  const batch = await prisma.ambCloneBatch.create({
+    data: {
+      batch_id: bid,
+      source_ad_account_id: preview.source.id,
+      source_ad_account_name: preview.source.name,
+      destination_account_ids_json: JSON.stringify(dests),
+      campaign_ids_json: JSON.stringify(camps),
+      schedule_local_time: preview.scheduleLocalTime,
+      total_copies: preview.totalCopies,
+      status: 'PENDING_APPROVAL',
+      preflight_json: JSON.stringify(preview.matrix),
+      created_by_id: userId || null,
+    },
+  });
+
+  // One job per (campaign, destination): pre-flight snapshot + the scheduled
+  // activation instant (resolved against the destination account's timezone).
+  for (const cid of camps) {
+    for (const d of dests) {
+      const row = preview.matrix.find((r) => r.campaignId === cid && r.destinationAccountId === d);
+      await prisma.ambCloneJob.create({
+        data: {
+          batch_id: bid,
+          source_ad_account_id: preview.source.id,
+          destination_ad_account_id: d,
+          destination_account_name: row?.destinationAccountName || null,
+          destination_timezone: row?.destinationTimezone || null,
+          source_campaign_id: cid,
+          source_campaign_name: preview.campaigns.find((c) => c.id === cid)?.name || null,
+          status: row?.status === 'BLOCKED' ? 'PREFLIGHT_BLOCKED' : 'PENDING',
+          preflight_status: row?.status || 'READY',
+          preflight_json: JSON.stringify(row || {}),
+          scheduled_activation_at: row?.scheduledActivationAt ? new Date(row.scheduledActivationAt) : null,
+        },
+      });
+    }
+  }
+
+  await audit(bid, null, 'PREFLIGHT', { detail: `دفعة اتجهزت: ${camps.length} حملة × ${dests.length} حساب = ${preview.totalCopies} نسخة (${preview.blockedCopies} محجوبة).`, actorId: userId });
+  logger.info('AMB clone batch created', { batchId: bid, copies: preview.totalCopies, blocked: preview.blockedCopies });
+  return getBatch(bid);
+}
+
+export async function approveBatch({ batchId, userId }) {
+  const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId } });
+  if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
+  if (batch.status === 'CANCELLED') { const e = new Error('الدفعة ملغاة.'); e.status = 409; throw e; }
+  if (!['PENDING_APPROVAL', 'DRAFT'].includes(batch.status)) {
+    // Already approved / running — treat approve as "make sure it's progressing".
+    if (['APPROVED', 'CLONING'].includes(batch.status)) { kickRun(batchId); return getBatch(batchId); }
+    const e = new Error(`الدفعة في حالة ${batch.status} — مش قابلة للموافقة.`); e.status = 409; throw e;
+  }
+  const settings = await getAmbSettings();
+  if (settings.ambExecutionMode === 'ADVISORY') {
+    const e = new Error('النظام في وضع "استشاري فقط" — غيّر الوضع من الإعدادات قبل الاستنساخ.'); e.status = 403; throw e;
+  }
+  await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'APPROVED', approved_by_id: userId || null, approved_at: new Date() } });
+  await audit(batchId, null, 'APPROVAL', { detail: 'تمت الموافقة على الاستنساخ والجدولة.', actorId: userId });
+  kickRun(batchId);
+  return getBatch(batchId);
+}
+
+export async function resumeBatch({ batchId, userId }) {
+  const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId } });
+  if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
+  if (batch.status === 'CANCELLED') { const e = new Error('الدفعة ملغاة.'); e.status = 409; throw e; }
+  if (!['APPROVED', 'CLONING', 'PARTIALLY_FAILED', 'SCHEDULED'].includes(batch.status)) {
+    const e = new Error(`الدفعة في حالة ${batch.status} — لا يوجد ما يُستأنف.`); e.status = 409; throw e;
+  }
+  await audit(batchId, null, 'RETRY', { detail: 'إعادة تشغيل العناصر الفاشلة/الناقصة.', actorId: userId });
+  kickRun(batchId);
+  return getBatch(batchId);
+}
+
+export async function cancelBatch({ batchId, userId }) {
+  const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, include: { jobs: true } });
+  if (!batch) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
+  if (['COMPLETED', 'CANCELLED'].includes(batch.status)) return getBatch(batchId);
+  // Cancel scheduling for anything not already ACTIVATED. Already-cloned
+  // campaigns stay in the destination account as PAUSED (harmless) — we just
+  // guarantee the scheduler never activates them.
+  await prisma.ambCloneJob.updateMany({
+    where: { batch_id: batchId, status: { notIn: ['ACTIVATED'] } },
+    data: { status: 'CANCELLED' },
+  });
+  await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'CANCELLED' } });
+  await audit(batchId, null, 'CANCELLED', { detail: 'أُلغيت الدفعة — النسخ المُنشأة تبقى متوقفة (PAUSED) ولن تُفعَّل.', actorId: userId });
+  return getBatch(batchId);
+}
+
+// ---------------------------------------------------------------------------
+// The clone worker
+// ---------------------------------------------------------------------------
+function kickRun(batchId) {
+  if (running.has(batchId)) return;
+  running.add(batchId);
+  setImmediate(async () => {
+    try { await runBatch(batchId); }
+    catch (err) { logger.error('AMB clone runBatch crashed', { batchId, message: err.message }); }
+    finally { running.delete(batchId); }
+  });
+}
+
+async function runBatch(batchId) {
+  const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, include: { jobs: true } });
+  if (!batch || batch.status === 'CANCELLED') return;
+  const connection = await getConnection();
+  if (!connection || connection.status !== 'CONNECTED') {
+    await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'FAILED', error: 'مفيش اتصال Meta Ads.' } });
+    return;
+  }
+  await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'CLONING' } });
+  const token = await getDecryptedToken();
+
+  const jobs = batch.jobs.filter((jb) => !TERMINAL_JOB.has(jb.status) && jb.preflight_status !== 'BLOCKED' && jb.status !== 'PREFLIGHT_BLOCKED');
+  for (const job of jobs) {
+    if (['CLONED_PAUSED', 'ACTIVATION_PENDING'].includes(job.status)) continue; // done cloning, waiting for schedule
+    try {
+      await cloneJob(job.id, token);
+    } catch (err) {
+      logger.error('AMB clone job failed hard', { jobId: job.id, message: err.message });
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800) } });
+      await audit(batchId, job.id, 'JOB_FAILED', { detail: err.message });
+    }
+  }
+
+  await recomputeBatchStatus(batchId);
+}
+
+async function recomputeBatchStatus(batchId) {
+  const jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId } });
+  const relevant = jobs.filter((jb) => jb.status !== 'CANCELLED' && jb.preflight_status !== 'BLOCKED' && jb.status !== 'PREFLIGHT_BLOCKED');
+  const failed = relevant.filter((jb) => jb.status === 'FAILED' || jb.status === 'ACTIVATION_FAILED');
+  const cloned = relevant.filter((jb) => ['CLONED_PAUSED', 'ACTIVATION_PENDING', 'ACTIVATED'].includes(jb.status));
+  const activated = relevant.filter((jb) => jb.status === 'ACTIVATED');
+  let status;
+  if (!relevant.length) status = 'FAILED';
+  else if (activated.length === relevant.length) status = 'COMPLETED';
+  else if (failed.length && cloned.length) status = 'PARTIALLY_FAILED';
+  else if (failed.length && !cloned.length) status = 'FAILED';
+  else status = 'SCHEDULED'; // everything clonable is cloned & PAUSED, waiting for the activation time
+  await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status } });
+}
+
+/** Find (or create) the object-map row for a given source object, honouring the resume rule. */
+async function objRow(jobId, batchId, level, sourceId, extra = {}) {
+  const found = await prisma.ambCloneObjectMap.findUnique({ where: { job_id_level_source_id: { job_id: jobId, level, source_id: String(sourceId) } } });
+  if (found) return found;
+  return prisma.ambCloneObjectMap.create({ data: { job_id: jobId, batch_id: batchId, level, source_id: String(sourceId), ...extra } });
+}
+async function markObj(id, data) { return prisma.ambCloneObjectMap.update({ where: { id }, data }); }
+
+async function cloneJob(jobId, token) {
+  const job = await prisma.ambCloneJob.findUnique({ where: { id: jobId } });
+  if (!job || TERMINAL_JOB.has(job.status) || job.status === 'PREFLIGHT_BLOCKED') return;
+  const batchId = job.batch_id;
+  const dest = job.destination_ad_account_id;
+  const src = job.source_ad_account_id;
+  if (dest === src) throw new Error('حساب الوجهة لا يمكن أن يكون نفس المصدر.'); // hard guard — never write to source
+
+  await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'CLONING', attempts: { increment: 1 }, last_attempt_at: new Date(), error: null } });
+  await audit(batchId, jobId, 'CLONE_START', { detail: `${job.source_campaign_name || job.source_campaign_id} → ${job.destination_account_name || dest}` });
+
+  // Fresh pre-flight at clone time (state may have moved since REVIEW). This
+  // also produces the `resolved` asset map — audience id remap + the source
+  // image/video URLs needed for re-upload.
+  const pf = j(job.preflight_json, {}) || {};
+  const tree = await readCampaignTree(token, job.source_campaign_id);
+  const sourceAssets = await resolveSourceAssets(token, src, tree);
+  const destAssets = await getAccountAssetsForClone(token, dest);
+  const freshPf = preflightCampaignForDestination({ tree, sourceAssets, destAssets });
+  if (freshPf.status === 'BLOCKED') {
+    await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'PREFLIGHT_BLOCKED', preflight_status: 'BLOCKED', preflight_json: JSON.stringify({ ...pf, checks: freshPf.checks }), error: 'محجوب في إعادة فحص ما قبل الاستنساخ.' } });
+    await audit(batchId, jobId, 'JOB_FAILED', { detail: 'إعادة فحص ما قبل الاستنساخ رجعت BLOCKED: ' + (freshPf.checks.find((c) => c.status === 'BLOCK')?.detail || '') });
+    return;
+  }
+  const R = freshPf.resolved;
+
+  const counts = { adsets: 0, ads: 0, creatives: 0 };
+  const idMap = { campaigns: {}, adsets: {}, ads: {}, creatives: {}, images: {}, videos: {} };
+
+  // ---- 1) Campaign shell (PAUSED) ----
+  let newCampaignId;
+  {
+    const row = await objRow(jobId, batchId, 'CAMPAIGN', job.source_campaign_id, { source_name: tree.campaign?.name, parent_source_id: null });
+    if (row.status === 'CREATED' && row.destination_id) {
+      newCampaignId = row.destination_id;
+    } else {
+      const c = tree.campaign;
+      const payload = {
+        name: c.name,
+        objective: c.objective,
+        status: 'PAUSED',
+        buying_type: c.buying_type || 'AUCTION',
+        special_ad_categories: Array.isArray(c.special_ad_categories) && c.special_ad_categories.length ? c.special_ad_categories : ['NONE'],
+      };
+      if (c.special_ad_category_country) payload.special_ad_category_country = c.special_ad_category_country;
+      if (c.bid_strategy) payload.bid_strategy = c.bid_strategy;
+      if (c.daily_budget) payload.daily_budget = Number(c.daily_budget);
+      if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
+      if (c.spend_cap && Number(c.spend_cap) > 0) payload.spend_cap = Number(c.spend_cap);
+      if (c.pacing_type) payload.pacing_type = c.pacing_type;
+      try {
+        const res = await createCampaign(token, dest, payload);
+        newCampaignId = res.id;
+        await markObj(row.id, { status: 'CREATED', destination_id: newCampaignId, payload_json: JSON.stringify(payload) });
+        await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CAMPAIGN', source_id: job.source_campaign_id, destination_id: newCampaignId });
+      } catch (err) {
+        await markObj(row.id, { status: 'FAILED', error: err.message?.slice(0, 500), payload_json: JSON.stringify(payload) });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'CAMPAIGN', source_id: job.source_campaign_id, detail: err.message });
+        await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'FAILED', error: `فشل إنشاء الحملة: ${err.message}`.slice(0, 800) } });
+        return; // no campaign ⇒ nothing else can be created
+      }
+    }
+    idMap.campaigns[job.source_campaign_id] = newCampaignId;
+    await prisma.ambCloneJob.update({ where: { id: jobId }, data: { destination_campaign_id: newCampaignId } });
+  }
+
+  // ---- helper: re-upload an image / video into the destination account (cached per job) ----
+  async function destImageHash(srcHash) {
+    if (!srcHash) return null;
+    if (idMap.images[srcHash]) return idMap.images[srcHash];
+    const row = await objRow(jobId, batchId, 'IMAGE', srcHash);
+    if (row.status === 'CREATED' && row.destination_id) { idMap.images[srcHash] = row.destination_id; return row.destination_id; }
+    const url = R.imageUrls[srcHash];
+    if (!url) { await markObj(row.id, { status: 'FAILED', error: 'لا يوجد رابط مصدر للصورة.' }); throw new Error(`لا يمكن إعادة رفع الصورة (${srcHash.slice(0, 12)}…)`); }
+    const up = await uploadAdImageFromUrl(token, dest, url);
+    idMap.images[srcHash] = up.hash;
+    await markObj(row.id, { status: 'CREATED', destination_id: up.hash, payload_json: JSON.stringify({ from: url }) });
+    await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'IMAGE', source_id: srcHash, destination_id: up.hash });
+    return up.hash;
+  }
+  async function destVideoId(srcId) {
+    if (!srcId) return null;
+    srcId = String(srcId);
+    if (idMap.videos[srcId]) return idMap.videos[srcId];
+    const row = await objRow(jobId, batchId, 'VIDEO', srcId);
+    if (row.status === 'CREATED' && row.destination_id) { idMap.videos[srcId] = row.destination_id; return row.destination_id; }
+    const url = R.videoSources[srcId];
+    if (!url) { await markObj(row.id, { status: 'FAILED', error: 'لا يوجد ملف مصدر للفيديو.' }); throw new Error(`لا يمكن إعادة رفع الفيديو (${srcId})`); }
+    const up = await uploadAdVideoFromUrl(token, dest, url, `clone-${srcId}`);
+    idMap.videos[srcId] = up.id;
+    await markObj(row.id, { status: 'CREATED', destination_id: up.id, payload_json: JSON.stringify({ from: url }) });
+    await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'VIDEO', source_id: srcId, destination_id: up.id });
+    return up.id;
+  }
+
+  // ---- 2) Ad sets ----
+  const adsBySource = new Map();
+  for (const ad of tree.ads) {
+    if (!adsBySource.has(ad.adset_id)) adsBySource.set(ad.adset_id, []);
+    adsBySource.get(ad.adset_id).push(ad);
+  }
+  const campaignHasBudget = !!(tree.campaign.daily_budget || tree.campaign.lifetime_budget);
+
+  for (const as of tree.adsets) {
+    let newAdsetId;
+    const row = await objRow(jobId, batchId, 'ADSET', as.id, { source_name: as.name, parent_source_id: job.source_campaign_id });
+    if (row.status === 'CREATED' && row.destination_id) {
+      newAdsetId = row.destination_id;
+      idMap.adsets[as.id] = newAdsetId;
+    } else {
+      try {
+        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R });
+        const res = await createAdSet(token, dest, payload);
+        newAdsetId = res.id;
+        idMap.adsets[as.id] = newAdsetId;
+        counts.adsets++;
+        await markObj(row.id, { status: 'CREATED', destination_id: newAdsetId, payload_json: JSON.stringify(payload).slice(0, 6000) });
+        await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'ADSET', source_id: as.id, destination_id: newAdsetId });
+      } catch (err) {
+        await markObj(row.id, { status: 'FAILED', error: err.message?.slice(0, 500) });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'ADSET', source_id: as.id, detail: err.message });
+        continue; // skip this ad set's ads; other ad sets still try
+      }
+    }
+
+    // ---- 3) Creatives + Ads under this ad set ----
+    for (const ad of adsBySource.get(as.id) || []) {
+      const srcCreative = ad.creative?.id ? tree.creatives.get(ad.creative.id) : null;
+      let newCreativeId = null;
+      if (srcCreative && !srcCreative.__error) {
+        const crow = await objRow(jobId, batchId, 'CREATIVE', srcCreative.id, { source_name: srcCreative.name, parent_source_id: ad.id });
+        if (crow.status === 'CREATED' && crow.destination_id) {
+          newCreativeId = crow.destination_id;
+          idMap.creatives[srcCreative.id] = newCreativeId;
+        } else {
+          try {
+            const payload = await buildCreativePayload(srcCreative, { destImageHash, destVideoId });
+            const res = await createAdCreative(token, dest, payload);
+            newCreativeId = res.id;
+            idMap.creatives[srcCreative.id] = newCreativeId;
+            counts.creatives++;
+            await markObj(crow.id, { status: 'CREATED', destination_id: newCreativeId, payload_json: JSON.stringify(payload).slice(0, 6000) });
+            await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CREATIVE', source_id: srcCreative.id, destination_id: newCreativeId });
+          } catch (err) {
+            await markObj(crow.id, { status: 'FAILED', error: err.message?.slice(0, 500) });
+            await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'CREATIVE', source_id: srcCreative.id, detail: err.message });
+          }
+        }
+      }
+
+      const arow = await objRow(jobId, batchId, 'AD', ad.id, { source_name: ad.name, parent_source_id: as.id });
+      if (arow.status === 'CREATED') continue;
+      if (!newCreativeId) {
+        await markObj(arow.id, { status: 'FAILED', error: 'لا يوجد كرياتيف صالح للإعلان.' });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'AD', source_id: ad.id, detail: 'creative missing' });
+        continue;
+      }
+      try {
+        const payload = { name: ad.name, adset_id: newAdsetId, creative: { creative_id: newCreativeId }, status: 'PAUSED' };
+        if (ad.tracking_specs) payload.tracking_specs = ad.tracking_specs;
+        if (ad.conversion_domain) payload.conversion_domain = ad.conversion_domain;
+        const res = await createAd(token, dest, payload);
+        idMap.ads[ad.id] = res.id;
+        counts.ads++;
+        await markObj(arow.id, { status: 'CREATED', destination_id: res.id, payload_json: JSON.stringify(payload).slice(0, 4000) });
+        await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'AD', source_id: ad.id, destination_id: res.id });
+      } catch (err) {
+        await markObj(arow.id, { status: 'FAILED', error: err.message?.slice(0, 500) });
+        await audit(batchId, jobId, 'OBJECT_FAILED', { level: 'AD', source_id: ad.id, detail: err.message });
+      }
+    }
+  }
+
+  // ---- job verdict ----
+  const objs = await prisma.ambCloneObjectMap.findMany({ where: { job_id: jobId } });
+  const anyFail = objs.some((o) => o.status === 'FAILED');
+  const expectedAdsets = tree.adsets.length;
+  const madeAdsets = objs.filter((o) => o.level === 'ADSET' && o.status === 'CREATED').length;
+  const expectedAds = tree.ads.length;
+  const madeAds = objs.filter((o) => o.level === 'AD' && o.status === 'CREATED').length;
+  const complete = madeAdsets >= expectedAdsets && madeAds >= expectedAds && !anyFail;
+
+  await prisma.ambCloneJob.update({
+    where: { id: jobId },
+    data: {
+      status: complete ? 'CLONED_PAUSED' : 'FAILED',
+      id_map_json: JSON.stringify(idMap),
+      copies_created_json: JSON.stringify(counts),
+      error: complete ? null : `اكتمل جزئيًا: ${madeAdsets}/${expectedAdsets} مجموعات، ${madeAds}/${expectedAds} إعلانات.`,
+    },
+  });
+  await audit(batchId, jobId, complete ? 'JOB_DONE' : 'JOB_FAILED', {
+    detail: complete
+      ? `تم إنشاء الحملة كاملة (PAUSED): ${counts.adsets} مجموعة، ${counts.ads} إعلان. مجدولة للتفعيل ${isoOrNull(job.scheduled_activation_at)}.`
+      : `اكتمل جزئيًا — قابل للاستئناف.`,
+    data: { counts, idMap },
+  });
+}
+
+// ---- payload builders ----
+function deepClone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)); }
+
+function transformTargeting(targeting, resolved) {
+  const t = deepClone(targeting) || {};
+  const remap = resolved?.audienceRemap || {};
+  const fix = (arr) => (arr || []).map((a) => (a && a.id != null ? { id: String(remap[a.id] || a.id) } : a)).filter(Boolean);
+  if (t.custom_audiences) t.custom_audiences = fix(t.custom_audiences);
+  if (t.excluded_custom_audiences) t.excluded_custom_audiences = fix(t.excluded_custom_audiences);
+  // Meta rejects these read-only/annotation fields on create.
+  delete t.targeting_optimization_types;
+  return t;
+}
+
+function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved }) {
+  const payload = {
+    name: as.name,
+    campaign_id: newCampaignId,
+    status: 'PAUSED',
+    billing_event: as.billing_event,
+    optimization_goal: as.optimization_goal,
+    targeting: transformTargeting(as.targeting, resolved),
+  };
+  if (as.bid_amount != null && Number(as.bid_amount) > 0) payload.bid_amount = Number(as.bid_amount);
+  if (as.bid_strategy) payload.bid_strategy = as.bid_strategy;
+  if (!campaignHasBudget) {
+    if (as.daily_budget) payload.daily_budget = Number(as.daily_budget);
+    else if (as.lifetime_budget) payload.lifetime_budget = Number(as.lifetime_budget);
+  }
+  if (as.promoted_object) payload.promoted_object = as.promoted_object; // pixel/catalog already validated present in dest
+  if (as.attribution_spec) payload.attribution_spec = as.attribution_spec;
+  if (as.destination_type) payload.destination_type = as.destination_type;
+  if (as.pacing_type) payload.pacing_type = as.pacing_type;
+  if (as.is_dynamic_creative) payload.is_dynamic_creative = true;
+  if (as.use_new_app_click != null) payload.use_new_app_click = as.use_new_app_click;
+  if (as.dsa_beneficiary) payload.dsa_beneficiary = as.dsa_beneficiary;
+  if (as.dsa_payor) payload.dsa_payor = as.dsa_payor;
+  if (as.frequency_control_specs) payload.frequency_control_specs = as.frequency_control_specs;
+
+  // Time: only keep a start/end that is still in the future. A lifetime-budget
+  // ad set REQUIRES an end_time — if the source one has passed, push it out so
+  // the clone is valid (it's PAUSED and won't spend until activated anyway).
+  const now = Date.now();
+  if (as.start_time && new Date(as.start_time).getTime() > now) payload.start_time = as.start_time;
+  const usesLifetime = payload.lifetime_budget || (!campaignHasBudget && as.lifetime_budget);
+  if (as.end_time && new Date(as.end_time).getTime() > now) payload.end_time = as.end_time;
+  else if (usesLifetime) payload.end_time = new Date(now + 14 * 24 * 3600 * 1000).toISOString();
+  return payload;
+}
+
+async function buildCreativePayload(cr, { destImageHash, destVideoId }) {
+  if (cr.object_story_id && !cr.object_story_spec) {
+    throw new Error('الكرياتيف يعتمد على منشور صفحة موجود (object_story_id) — لا يمكن نسخه لحساب/صفحة أخرى تلقائيًا.');
+  }
+  const payload = {};
+  if (cr.name) payload.name = cr.name;
+  if (cr.url_tags) payload.url_tags = cr.url_tags;
+  if (cr.product_set_id) payload.product_set_id = cr.product_set_id;
+  if (cr.degrees_of_freedom_spec) payload.degrees_of_freedom_spec = cr.degrees_of_freedom_spec;
+  if (cr.authorization_category && cr.authorization_category !== 'NONE') payload.authorization_category = cr.authorization_category;
+
+  if (cr.object_story_spec) {
+    const oss = deepClone(cr.object_story_spec);
+    if (oss.link_data) {
+      if (oss.link_data.image_hash) oss.link_data.image_hash = await destImageHash(oss.link_data.image_hash);
+      for (const ch of oss.link_data.child_attachments || []) {
+        if (ch.image_hash) ch.image_hash = await destImageHash(ch.image_hash);
+        if (ch.video_id) ch.video_id = await destVideoId(ch.video_id);
+      }
+    }
+    if (oss.video_data) {
+      if (oss.video_data.video_id) oss.video_data.video_id = await destVideoId(oss.video_data.video_id);
+      if (oss.video_data.image_hash) oss.video_data.image_hash = await destImageHash(oss.video_data.image_hash);
+      // If the thumbnail was only an image_url, Meta will re-fetch it — leave as-is.
+    }
+    if (oss.photo_data && oss.photo_data.image_hash) oss.photo_data.image_hash = await destImageHash(oss.photo_data.image_hash);
+    payload.object_story_spec = oss;
+  }
+
+  if (cr.asset_feed_spec) {
+    const afs = deepClone(cr.asset_feed_spec);
+    for (const im of afs.images || []) if (im.hash) im.hash = await destImageHash(im.hash);
+    for (const v of afs.videos || []) {
+      if (v.video_id) v.video_id = await destVideoId(v.video_id);
+      if (v.thumbnail_hash) v.thumbnail_hash = await destImageHash(v.thumbnail_hash);
+    }
+    payload.asset_feed_spec = afs;
+  }
+
+  if (!payload.object_story_spec && !payload.asset_feed_spec) {
+    throw new Error('الكرياتيف بدون object_story_spec أو asset_feed_spec قابلة للنسخ.');
+  }
+  return payload;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled activation (called from cloneScheduler.js)
+// ---------------------------------------------------------------------------
+export async function activateDueJobs() {
+  const settings = await getAmbSettings();
+  if (settings.ambCloneAutoActivate === false) return { activated: 0, skipped: 'AUTO_ACTIVATE_OFF' };
+  if (settings.ambExecutionMode === 'ADVISORY') return { activated: 0, skipped: 'ADVISORY' };
+
+  const due = await prisma.ambCloneJob.findMany({
+    where: {
+      status: 'CLONED_PAUSED',
+      scheduled_activation_at: { lte: new Date() },
+      batch: { status: { in: ['SCHEDULED', 'APPROVED', 'CLONING', 'PARTIALLY_FAILED'] } },
+    },
+    take: 50,
+    include: { batch: true },
+  });
+  if (!due.length) return { activated: 0 };
+
+  let token;
+  try { token = await getDecryptedToken(); } catch { return { activated: 0, skipped: 'NO_TOKEN' }; }
+  let activated = 0;
+
+  for (const job of due) {
+    await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATION_PENDING' } });
+    const idMap = j(job.id_map_json, {}) || {};
+    // Activate top-down: campaign → ad sets → ads, so a child is never set
+    // ACTIVE under a still-PAUSED parent. Every id here was created by THIS job
+    // in the DESTINATION account (never a source id).
+    const ids = [
+      ...(job.destination_campaign_id ? [job.destination_campaign_id] : []),
+      ...Object.values(idMap.adsets || {}),
+      ...Object.values(idMap.ads || {}),
+    ];
+    const errors = [];
+    for (const id of ids) {
+      try { await setEntityStatus(token, id, 'ACTIVE'); }
+      catch (err) { errors.push(`${id}: ${err.message}`); }
+    }
+    if (errors.length) {
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATION_FAILED', error: errors.join(' | ').slice(0, 800) } });
+      await audit(job.batch_id, job.id, 'ACTIVATION_FAILED', { detail: errors.join(' | ') });
+      await raiseAlert({
+        severity: 'WARNING', category: 'EXECUTION',
+        title: `تفعيل مجدول فشل جزئيًا: ${job.source_campaign_name || job.source_campaign_id}`,
+        message: `في الحساب ${job.destination_account_name || job.destination_ad_account_id}: ${errors[0]}`,
+        dedupeKey: `clone-activate-fail:${job.id}`,
+      }).catch(() => {});
+    } else {
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATED', activated_at: new Date() } });
+      await audit(job.batch_id, job.id, 'ACTIVATION', { detail: `تم تفعيل الحملة المستنسخة في ${job.destination_account_name || job.destination_ad_account_id}.` });
+      activated++;
+    }
+    await recomputeBatchStatus(job.batch_id);
+  }
+  if (activated) logger.info('AMB clone scheduled activation', { activated });
+  return { activated, due: due.length };
+}
+
+// ---------------------------------------------------------------------------
+// Serialization for the API
+// ---------------------------------------------------------------------------
+async function audit(batchId, jobId, event, { level, source_id, destination_id, detail, data, actorId } = {}) {
+  try {
+    await prisma.ambCloneAudit.create({
+      data: { batch_id: batchId, job_id: jobId || null, event, level: level || null, source_id: source_id ? String(source_id) : null, destination_id: destination_id ? String(destination_id) : null, detail: detail ? String(detail).slice(0, 900) : null, data_json: data ? JSON.stringify(data).slice(0, 4000) : null, actor_id: actorId || null },
+    });
+  } catch (e) { logger.warn('AMB clone audit write failed', { message: e.message }); }
+}
+
+export async function listBatches({ limit = 25 } = {}) {
+  const rows = await prisma.ambCloneBatch.findMany({
+    orderBy: { created_at: 'desc' }, take: Math.min(limit, 100),
+    include: { _count: { select: { jobs: true } }, jobs: { select: { status: true, preflight_status: true } } },
+  });
+  return rows.map((b) => ({
+    batchId: b.batch_id,
+    sourceAccountId: b.source_ad_account_id,
+    sourceAccountName: b.source_ad_account_name,
+    destinationCount: (j(b.destination_account_ids_json, []) || []).length,
+    campaignCount: (j(b.campaign_ids_json, []) || []).length,
+    totalCopies: b.total_copies,
+    scheduleLocalTime: b.schedule_local_time,
+    status: b.status,
+    jobs: summarizeJobs(b.jobs),
+    createdAt: b.created_at,
+    approvedAt: b.approved_at,
+  }));
+}
+
+function summarizeJobs(jobs) {
+  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, activated: 0, failed: 0, cancelled: 0 };
+  for (const jb of jobs) {
+    if (jb.preflight_status === 'BLOCKED' || jb.status === 'PREFLIGHT_BLOCKED') s.blocked++;
+    else if (jb.status === 'PENDING') s.pending++;
+    else if (jb.status === 'CLONING') s.cloning++;
+    else if (jb.status === 'CLONED_PAUSED' || jb.status === 'ACTIVATION_PENDING') s.clonedPaused++;
+    else if (jb.status === 'ACTIVATED') s.activated++;
+    else if (jb.status === 'FAILED' || jb.status === 'ACTIVATION_FAILED') s.failed++;
+    else if (jb.status === 'CANCELLED') s.cancelled++;
+  }
+  return s;
+}
+
+export async function getBatch(batchId) {
+  const b = await prisma.ambCloneBatch.findUnique({
+    where: { batch_id: batchId },
+    include: {
+      jobs: { orderBy: { id: 'asc' }, include: { objects: { orderBy: { id: 'asc' } } } },
+      audits: { orderBy: { id: 'desc' }, take: 200 },
+      created_by: { select: { name: true } },
+      approved_by: { select: { name: true } },
+    },
+  });
+  if (!b) { const e = new Error('الدفعة مش موجودة.'); e.status = 404; throw e; }
+  return {
+    batchId: b.batch_id,
+    status: b.status,
+    source: { id: b.source_ad_account_id, name: b.source_ad_account_name },
+    destinationAccountIds: j(b.destination_account_ids_json, []),
+    campaignIds: j(b.campaign_ids_json, []),
+    scheduleLocalTime: b.schedule_local_time,
+    totalCopies: b.total_copies,
+    sourceUnchanged: true,
+    preflight: j(b.preflight_json, []),
+    error: b.error,
+    createdBy: b.created_by?.name || null,
+    approvedBy: b.approved_by?.name || null,
+    createdAt: b.created_at,
+    approvedAt: b.approved_at,
+    jobsSummary: summarizeJobs(b.jobs),
+    jobs: b.jobs.map((jb) => ({
+      id: jb.id,
+      destinationAccountId: jb.destination_ad_account_id,
+      destinationAccountName: jb.destination_account_name,
+      destinationTimezone: jb.destination_timezone,
+      sourceCampaignId: jb.source_campaign_id,
+      sourceCampaignName: jb.source_campaign_name,
+      destinationCampaignId: jb.destination_campaign_id,
+      status: jb.status,
+      preflightStatus: jb.preflight_status,
+      preflightChecks: (j(jb.preflight_json, {}) || {}).checks || [],
+      scheduledActivationAt: isoOrNull(jb.scheduled_activation_at),
+      activatedAt: isoOrNull(jb.activated_at),
+      attempts: jb.attempts,
+      error: jb.error,
+      copiesCreated: j(jb.copies_created_json, null),
+      idMap: j(jb.id_map_json, null),
+      objects: jb.objects.map((o) => ({ level: o.level, sourceId: o.source_id, sourceName: o.source_name, destinationId: o.destination_id, status: o.status, error: o.error })),
+    })),
+    audit: b.audits.map((a) => ({ at: a.created_at, event: a.event, level: a.level, sourceId: a.source_id, destinationId: a.destination_id, detail: a.detail })),
+  };
+}
