@@ -161,6 +161,56 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
   };
 }
 
+const JOB_TERMINAL = new Set(['CLONED_PAUSED', 'ACTIVATED', 'FAILED', 'ACTIVATION_FAILED', 'NEEDS_INPUT', 'NEEDS_DECISION', 'CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY']);
+
+/**
+ * Wait for the clone worker to finish the batch, then PROVE the whole scale
+ * tree was built (spec §6/§10): destination Campaign + one destination Ad Set
+ * per required source Ad Set + one destination Ad per selected source Ad, with
+ * no FAILED object-map rows. Returns { ok, error, counts, destinationCampaignId }.
+ * Never trusts "createBatch/approveBatch didn't throw".
+ */
+export async function waitAndVerifyScale({ batchId, requiredAdSetIds, selectedAdIds, timeoutMs = 120_000, pollMs = 2500 }) {
+  const deadline = Date.now() + timeoutMs;
+  let jobs = [];
+  while (Date.now() < deadline) {
+    jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId } });
+    if (jobs.length && jobs.every((j) => JOB_TERMINAL.has(j.status))) break;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  const job = jobs[0];
+  if (!job) return { ok: false, error: 'لم يُنشأ أي job للاستنساخ.', counts: { adSetsCreated: 0, adsCreated: 0 } };
+  if (!JOB_TERMINAL.has(job.status)) return { ok: false, error: `انتهت المهلة والـ job لسه في حالة ${job.status}.`, counts: { adSetsCreated: 0, adsCreated: 0 } };
+
+  const objs = await prisma.ambCloneObjectMap.findMany({ where: { job_id: job.id } });
+  const created = (level) => objs.filter((o) => o.level === level && o.status === 'CREATED' && o.destination_id);
+  const failed = objs.filter((o) => o.status === 'FAILED');
+
+  const campRow = created('CAMPAIGN')[0] || null;
+  const destAdsetSrcIds = new Set(created('ADSET').map((o) => String(o.source_id)));
+  const destAdSrcIds = new Set(created('AD').map((o) => String(o.source_id)));
+  const missingAdsets = requiredAdSetIds.filter((id) => !destAdsetSrcIds.has(String(id)));
+  const missingAds = selectedAdIds.filter((id) => !destAdSrcIds.has(String(id)));
+
+  const counts = {
+    adSetsCreated: created('ADSET').length,
+    adsCreated: created('AD').length,
+    creativesCreated: created('CREATIVE').length,
+  };
+
+  if (!campRow) return { ok: false, error: firstErr(job, failed, 'لم تُنشأ حملة الوجهة.'), counts };
+  if (missingAdsets.length || missingAds.length || failed.length || ['FAILED', 'ACTIVATION_FAILED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY', 'NEEDS_DECISION', 'NEEDS_INPUT'].includes(job.status)) {
+    const bits = [];
+    if (missingAdsets.length) bits.push(`مجموعات إعلانية ناقصة: ${missingAdsets.length}/${requiredAdSetIds.length}`);
+    if (missingAds.length) bits.push(`إعلانات ناقصة: ${missingAds.length}/${selectedAdIds.length}`);
+    return { ok: false, error: firstErr(job, failed, bits.join(' · ') || `job status ${job.status}`), counts, destinationCampaignId: campRow.destination_id };
+  }
+  return { ok: true, counts, destinationCampaignId: campRow.destination_id };
+}
+function firstErr(job, failed, fallback) {
+  return (failed.find((o) => o.error)?.error) || job?.error || fallback;
+}
+
 /** Mark a winner campaign's scale suggestion as REJECTED so it is not re-surfaced. */
 export async function rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId }) {
   const conn = await getConnection();
@@ -234,8 +284,10 @@ export async function executeScale({
 
   const m = entry.camp.metrics || {};
   const nameOverride = `${entry.camp.name} - Scale`;
+  // Ancestors of the selected ads that MUST be cloned (spec §3/§4).
+  const requiredAdSetIds = [...new Set(sourceAds.filter((a) => picked.includes(String(a.id))).map((a) => String(a.adsetId)).filter(Boolean))];
 
-  // ---- pending decision row ----
+  // ---- pending decision row (APPROVED, not EXECUTED — success is proven below) ----
   const decision = await prisma.ambScaleDecision.create({
     data: {
       ad_account_id: adAccountId,
@@ -258,7 +310,8 @@ export async function executeScale({
     },
   });
 
-  // ---- run the EXISTING clone engine ----
+  // ---- run the EXISTING clone engine, then PROVE it finished the whole tree ----
+  let batchId = null;
   try {
     const batch = await createBatch({
       sourceAccountId: adAccountId,
@@ -273,16 +326,29 @@ export async function executeScale({
       allowPageOnlyIg: true,
       userId,
     });
-    await approveBatch({ batchId: batch.batchId, userId });
-    await prisma.ambScaleDecision.update({
-      where: { id: decision.id },
-      data: { status: 'EXECUTED', clone_batch_id: batch.batchId },
-    });
-    return { decisionId: decision.id, batchId: batch.batchId, status: 'EXECUTED', scaleCampaignName: nameOverride };
+    batchId = batch.batchId;
+    await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { clone_batch_id: batchId } });
+    await approveBatch({ batchId, userId }); // kicks the async clone worker
+
+    const verdict = await waitAndVerifyScale({ batchId, requiredAdSetIds, selectedAdIds: picked });
+    if (!verdict.ok) {
+      await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: 'FAILED', error: verdict.error.slice(0, 800) } });
+      const e = new Error(`فشل إنشاء حملة الاسكيل: ${verdict.error}`);
+      e.status = 502; e.scale = { decisionId: decision.id, batchId, ...verdict.counts };
+      throw e;
+    }
+    await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: 'EXECUTED' } });
+    return {
+      decisionId: decision.id, batchId, status: 'EXECUTED', scaleCampaignName: nameOverride,
+      destinationCampaignId: verdict.destinationCampaignId,
+      adSetsCreated: verdict.counts.adSetsCreated,
+      adsCreated: verdict.counts.adsCreated,
+    };
   } catch (err) {
+    if (err.scale) throw err; // already recorded FAILED above
     await prisma.ambScaleDecision.update({
       where: { id: decision.id },
-      data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800) },
+      data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800), clone_batch_id: batchId },
     });
     throw err;
   }

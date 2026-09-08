@@ -707,6 +707,17 @@ async function cloneJob(jobId, token) {
       if (scaleBudgetEgp) {
         // Owner-set scale budget wins — one campaign-level daily budget (CBO).
         payload.daily_budget = Math.round(scaleBudgetEgp * 100);
+        // A CBO campaign REQUIRES a campaign-level bid_strategy. An ABO source
+        // has none, and Meta then defaults to LOWEST_COST_WITH_BID_CAP which
+        // demands a bid cap nothing supplies -> ad-set create fails "Bid Amount
+        // Required". Take the source ad sets' strategy when they all agree on
+        // one that needs no cap; otherwise LOWEST_COST_WITHOUT_CAP. No bidding
+        // change beyond what the ABO->CBO move forces.
+        const NO_CAP = new Set(['LOWEST_COST_WITHOUT_CAP']);
+        const srcStrats = [...new Set((tree.adsets || []).map((a) => a.bid_strategy).filter(Boolean))];
+        payload.bid_strategy = (c.bid_strategy && NO_CAP.has(c.bid_strategy)) ? c.bid_strategy
+          : (srcStrats.length === 1 && NO_CAP.has(srcStrats[0])) ? srcStrats[0]
+          : 'LOWEST_COST_WITHOUT_CAP';
       } else {
         if (c.daily_budget) payload.daily_budget = Number(c.daily_budget);
         if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
@@ -860,7 +871,7 @@ async function cloneJob(jobId, token) {
       idMap.adsets[as.id] = newAdsetId;
     } else {
       try {
-        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap });
+        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap, scaleBudgetForced });
         const res = await createAdSet(token, dest, payload);
         newAdsetId = res.id;
         idMap.adsets[as.id] = newAdsetId;
@@ -1043,7 +1054,7 @@ function transformTargeting(targeting, resolved) {
   return t;
 }
 
-function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {} }) {
+function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {}, scaleBudgetForced = false }) {
   const payload = {
     name: as.name,
     campaign_id: newCampaignId,
@@ -1052,8 +1063,14 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
     optimization_goal: as.optimization_goal,
     targeting: transformTargeting(as.targeting, resolved),
   };
-  if (as.bid_amount != null && Number(as.bid_amount) > 0) payload.bid_amount = Number(as.bid_amount);
-  if (as.bid_strategy) payload.bid_strategy = as.bid_strategy;
+  // Winner → Scale forced a campaign (CBO) budget: bidding is governed at the
+  // campaign level now, so the ad set must NOT carry its own bid_strategy /
+  // bid_amount (Meta rejects an ad-set strategy that differs from the CBO
+  // campaign's). Every OTHER clone keeps the source bid fields exactly.
+  if (!scaleBudgetForced) {
+    if (as.bid_amount != null && Number(as.bid_amount) > 0) payload.bid_amount = Number(as.bid_amount);
+    if (as.bid_strategy) payload.bid_strategy = as.bid_strategy;
+  }
   if (!campaignHasBudget) {
     if (as.daily_budget) payload.daily_budget = Number(as.daily_budget);
     else if (as.lifetime_budget) payload.lifetime_budget = Number(as.lifetime_budget);

@@ -452,7 +452,9 @@ function wireScaleCards(root, data) {
           confirmLabel: sched ? 'موافق وجدولة' : 'موافق وتشغيل', danger: true,
         });
         if (!ok) return;
-        btn.disabled = true; btn.textContent = '… بيجهّز';
+        // The backend BLOCKS until the clone tree is fully built (or fails) —
+        // no "success" until Campaign + required Ad Sets + selected Ads exist.
+        btn.disabled = true; btn.textContent = 'جاري إنشاء حملة الاسكيل...';
         try {
           const r = await api.post('/api/ai-media-buyer/scale/execute', {
             sourceCampaignId: card.sourceCampaignId,
@@ -462,10 +464,13 @@ function wireScaleCards(root, data) {
             startAt: sched ? `${s.date}T${s.time}` : null,
             window: state.window,
           });
-          UI.toast(`✅ اتعمل الاسكيل — ${E(r.scaleCampaignName)} (متوقفة)`);
+          UI.toast(`✅ تم إنشاء حملة الاسكيل بنجاح — ${E(r.scaleCampaignName)} · ${fmtNum(r.adSetsCreated)} مجموعة · ${fmtNum(r.adsCreated)} إعلان (متوقفة)`);
           scaleUi.delete(card.sourceCampaignId);
           route();
-        } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'موافق على الاسكيل'; }
+        } catch (e) {
+          UI.toast(`فشل إنشاء حملة الاسكيل: ${e.message}`, 'error');
+          btn.disabled = false; btn.textContent = 'موافق على الاسكيل';
+        }
         return;
       }
     };
