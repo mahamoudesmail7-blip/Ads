@@ -509,3 +509,16 @@ body { background: var(--amb-bg); }
 .amb-scale-sum span { color: var(--amb-text-faint); }
 .amb-scale-actions { display: flex; gap: 8px; padding-top: 14px; }
 @media (max-width: 560px) { .amb-scale-nums { margin-inline-start: 0; } .amb-scale-sum { grid-template-columns: 1fr; } }
+
+/* Winner → Scale — CBO/ABO budget control */
+.amb-scale-seg { display: inline-flex; border: 1px solid var(--amb-border-strong); border-radius: 10px; overflow: hidden; }
+.amb-scale-seg button { border: 0; background: var(--amb-surface); color: var(--amb-text-dim); font-size: 12px; font-weight: 700; padding: 7px 14px; cursor: pointer; }
+.amb-scale-seg button + button { border-inline-start: 1px solid var(--amb-border-strong); }
+.amb-scale-seg button.on { background: var(--amb-green); color: #fff; }
+.amb-scale-step { display: inline-flex; align-items: center; gap: 10px; }
+.amb-scale-step button { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--amb-border-strong); background: var(--amb-surface); font-size: 15px; font-weight: 800; cursor: pointer; color: var(--amb-text); }
+.amb-scale-step button:disabled { opacity: .4; cursor: not-allowed; }
+.amb-scale-slot { border: 1px solid var(--amb-border); border-radius: 10px; padding: 10px 12px; margin: 8px 0; background: var(--amb-surface); }
+.amb-scale-slot .sh { font-size: 12px; font-weight: 800; color: var(--amb-text); margin-bottom: 6px; }
+.amb-scale-slot .slot-ads { margin-top: 6px; }
+.amb-scale-sumline { font-size: 12px; color: var(--amb-text-dim); padding: 2px 0; }

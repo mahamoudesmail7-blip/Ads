@@ -172,8 +172,11 @@ router.post('/scale/reject', asyncRoute(async (req, res) => {
 // only after the owner approved the exact config in the UI.
 router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const { executeScale } = await import('../services/amb/scaleWinners.js');
-  const { sourceCampaignId, selectedAdIds, budgetEgp, startMode, startAt, window } = req.body || {};
-  res.status(201).json(await executeScale({ sourceCampaignId, selectedAdIds, budgetEgp, startMode, startAt, windowName: window || 'today', userId: req.user.id }));
+  const { sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets, budgetEgp, startMode, startAt, window } = req.body || {};
+  res.status(201).json(await executeScale({
+    sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets, budgetEgp,
+    startMode, startAt, windowName: window || 'today', userId: req.user.id,
+  }));
 }));
 
 // ---------------------------------------------------------------------------

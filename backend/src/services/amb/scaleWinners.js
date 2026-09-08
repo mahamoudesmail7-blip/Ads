@@ -17,6 +17,11 @@ import { resolveWindow } from './metricsEngine.js';
 import { buildHierarchy } from './hierarchyAnalysis.js';
 import { creativeLabelIndex } from './creativeAnalysis.js';
 import { createBatch, approveBatch, cairoLocalToUtc } from './cloneEngine.js';
+import { getDecryptedToken } from '../metaAuth.js';
+import { getAdSetNodes } from '../metaGraphClient.js';
+
+// Bid strategies that REQUIRE a bid_amount / cost cap / ROAS target.
+const CAP_BID_STRATEGIES = new Set(['LOWEST_COST_WITH_BID_CAP', 'COST_CAP', 'LOWEST_COST_WITH_MIN_ROAS', 'TARGET_COST']);
 
 // ONLY this section uses this threshold. No other AMB threshold changes.
 export const WINNER_CPA_EGP = 80;
@@ -98,6 +103,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
         adId: a.id,
         adName: a.name,
         adsetId: a.adsetId,
+        adsetName: a.adsetName || null,
         creativeId: a.creativeId || null,
         creativeType: (a.creativeId && labelIdx.get(a.creativeId)?.creative_type) || null,
         orders: o,
@@ -127,6 +133,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
       productName,                              // AmbProduct name when mapped, else null (never invented)
       displayName: productName || camp.name,
       proposedScaleCampaignName: `${camp.name} - Scale`, // exact source name + existing suffix
+      sourceBudgetType: camp.budget != null ? 'CBO' : 'ABO', // preselect in the UI; the owner is authoritative
       window: { from: window.from, to: window.to, label: window.label },
       orders,
       cpa: round1(cpa),
@@ -170,7 +177,17 @@ const JOB_TERMINAL = new Set(['CLONED_PAUSED', 'ACTIVATED', 'FAILED', 'ACTIVATIO
  * no FAILED object-map rows. Returns { ok, error, counts, destinationCampaignId }.
  * Never trusts "createBatch/approveBatch didn't throw".
  */
-export async function waitAndVerifyScale({ batchId, requiredAdSetIds, selectedAdIds, timeoutMs = 120_000, pollMs = 2500 }) {
+export async function waitAndVerifyScale({
+  batchId,
+  // exact object-map source_id strings the engine will use:
+  //   CBO -> raw source ids;  ABO -> "<sourceId>#<slotIndex>" instance keys
+  expectedAdSetSourceIds, expectedAdSourceIds,
+  // legacy aliases (CBO callers / repair script)
+  requiredAdSetIds, selectedAdIds,
+  timeoutMs = 120_000, pollMs = 2500,
+}) {
+  const wantAdSets = (expectedAdSetSourceIds || requiredAdSetIds || []).map(String);
+  const wantAds = (expectedAdSourceIds || selectedAdIds || []).map(String);
   const deadline = Date.now() + timeoutMs;
   let jobs = [];
   while (Date.now() < deadline) {
@@ -189,8 +206,8 @@ export async function waitAndVerifyScale({ batchId, requiredAdSetIds, selectedAd
   const campRow = created('CAMPAIGN')[0] || null;
   const destAdsetSrcIds = new Set(created('ADSET').map((o) => String(o.source_id)));
   const destAdSrcIds = new Set(created('AD').map((o) => String(o.source_id)));
-  const missingAdsets = requiredAdSetIds.filter((id) => !destAdsetSrcIds.has(String(id)));
-  const missingAds = selectedAdIds.filter((id) => !destAdSrcIds.has(String(id)));
+  const missingAdsets = wantAdSets.filter((id) => !destAdsetSrcIds.has(id));
+  const missingAds = wantAds.filter((id) => !destAdSrcIds.has(id));
 
   const counts = {
     adSetsCreated: created('ADSET').length,
@@ -201,8 +218,8 @@ export async function waitAndVerifyScale({ batchId, requiredAdSetIds, selectedAd
   if (!campRow) return { ok: false, error: firstErr(job, failed, 'لم تُنشأ حملة الوجهة.'), counts };
   if (missingAdsets.length || missingAds.length || failed.length || ['FAILED', 'ACTIVATION_FAILED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY', 'NEEDS_DECISION', 'NEEDS_INPUT'].includes(job.status)) {
     const bits = [];
-    if (missingAdsets.length) bits.push(`مجموعات إعلانية ناقصة: ${missingAdsets.length}/${requiredAdSetIds.length}`);
-    if (missingAds.length) bits.push(`إعلانات ناقصة: ${missingAds.length}/${selectedAdIds.length}`);
+    if (missingAdsets.length) bits.push(`مجموعات إعلانية ناقصة: ${missingAdsets.length}/${wantAdSets.length}`);
+    if (missingAds.length) bits.push(`إعلانات ناقصة: ${missingAds.length}/${wantAds.length}`);
     return { ok: false, error: firstErr(job, failed, bits.join(' · ') || `job status ${job.status}`), counts, destinationCampaignId: campRow.destination_id };
   }
   return { ok: true, counts, destinationCampaignId: campRow.destination_id };
@@ -231,63 +248,111 @@ export async function rejectScaleWinner({ sourceCampaignId, sourceCampaignName, 
   return { id: row.id, status: row.status };
 }
 
+function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
+
 /**
- * Approve + execute a scale. Validates, then runs the EXISTING clone engine
- * in same-account mode restricted to the selected winning ads, with the
- * owner's budget and Run Now / Schedule Start choice. Nothing is created
- * before this call; the source hierarchy is never written.
+ * Approve + execute a scale. The owner's explicit budgetMode (CBO | ABO) is
+ * authoritative — the system NEVER silently converts. Validates everything
+ * against the current source hierarchy, then runs the EXISTING clone engine
+ * (same-account) with the appropriate additive knobs, and only marks the
+ * decision EXECUTED after waitAndVerifyScale proves the full tree exists.
+ *
+ * CBO: { budgetMode:'CBO', campaignBudgetEgp, selectedAdIds }
+ * ABO: { budgetMode:'ABO', adSets:[{ dailyBudgetEgp, selectedAdIds }] }
  */
 export async function executeScale({
-  sourceCampaignId, selectedAdIds, budgetEgp, startMode, startAt,
-  windowName = 'today', userId,
+  sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets,
+  budgetEgp, // legacy alias for campaignBudgetEgp
+  startMode, startAt, windowName = 'today', userId,
 }) {
   const conn = await getConnection();
-  if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) {
-    const e = new Error('اربط حساب Meta Ads الأول.'); e.status = 400; throw e;
-  }
+  if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) throw bad('اربط حساب Meta Ads الأول.');
   const adAccountId = conn.selected_ad_account_id;
   const settings = await getAmbSettings();
 
-  // ---- validation (spec §22) ----
-  if (!sourceCampaignId) { const e = new Error('sourceCampaignId مطلوب.'); e.status = 400; throw e; }
-  const picked = [...new Set((selectedAdIds || []).map(String).filter(Boolean))];
-  if (!picked.length) { const e = new Error('اختر إعلانًا رابحًا واحدًا على الأقل.'); e.status = 400; throw e; }
-  const budget = Number(budgetEgp);
-  if (!(budget > 0)) { const e = new Error('ميزانية الاسكيل لازم تكون رقم أكبر من صفر.'); e.status = 400; throw e; }
+  if (!sourceCampaignId) throw bad('sourceCampaignId مطلوب.');
   const mode = startMode === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW';
   if (mode === 'SCHEDULE') {
     const [dp, tp] = String(startAt || '').split('T');
     const at = cairoLocalToUtc(dp, tp || '00:00');
-    if (!at) { const e = new Error('تاريخ/وقت البداية غير صالح.'); e.status = 400; throw e; }
-    if (at.getTime() <= Date.now()) {
-      const e = new Error('لازم يكون تاريخ ووقت البداية في المستقبل. — The selected start date and time must be in the future.');
-      e.status = 400; throw e;
-    }
+    if (!at) throw bad('تاريخ/وقت البداية غير صالح.');
+    if (at.getTime() <= Date.now()) throw bad('لازم يكون تاريخ ووقت البداية في المستقبل. — The selected start date and time must be in the future.');
   }
+  const bm = budgetMode === 'CBO' || budgetMode === 'ABO' ? budgetMode : null;
+  if (!bm) throw bad('اختر نوع توزيع الميزانية: CBO أو ABO.');
 
-  // Re-detect winners on the CURRENT window to confirm the campaign + ads still exist
-  // in the source hierarchy and to snapshot the panel.
+  // ---- current source hierarchy (confirm campaign + ads still exist) ----
   const window = resolveWindow(windowName);
   const tree = await buildHierarchy({ adAccountId, window, settings });
   const campEntries = [];
   for (const p of tree.products || []) for (const c of p.children || []) campEntries.push({ camp: c, productName: p.name || null });
   for (const c of tree.unmappedCampaigns || []) campEntries.push({ camp: c, productName: null });
   const entry = campEntries.find((e) => String(e.camp.id) === String(sourceCampaignId));
-  if (!entry) { const e = new Error('حملة المصدر مش موجودة في بيانات الحساب الحالية.'); e.status = 404; throw e; }
+  if (!entry) throw bad('حملة المصدر مش موجودة في بيانات الحساب الحالية.', 404);
 
   const sourceAds = flattenAds(entry.camp);
-  const sourceAdIds = new Set(sourceAds.map((a) => String(a.id)));
-  const notInHierarchy = picked.filter((id) => !sourceAdIds.has(id));
-  if (notInHierarchy.length) { const e = new Error(`إعلانات مش تابعة لحملة المصدر: ${notInHierarchy.join(', ')}`); e.status = 400; throw e; }
-  const missingCreative = picked.filter((id) => { const a = sourceAds.find((x) => String(x.id) === id); return !a || !a.creativeId; });
-  if (missingCreative.length) { const e = new Error(`إعلانات بدون كرياتيف صالح: ${missingCreative.join(', ')}`); e.status = 400; throw e; }
+  const adById = new Map(sourceAds.map((a) => [String(a.id), a]));
+  const sourceAdSetIds = new Set(sourceAds.map((a) => String(a.adsetId)));
+  const requireAdsValid = (ids, ctx) => {
+    const notIn = ids.filter((id) => !adById.has(id));
+    if (notIn.length) throw bad(`${ctx}: إعلانات مش تابعة لحملة المصدر: ${notIn.join(', ')}`);
+    const noCr = ids.filter((id) => !adById.get(id)?.creativeId);
+    if (noCr.length) throw bad(`${ctx}: إعلانات بدون كرياتيف صالح: ${noCr.join(', ')}`);
+  };
 
   const m = entry.camp.metrics || {};
   const nameOverride = `${entry.camp.name} - Scale`;
-  // Ancestors of the selected ads that MUST be cloned (spec §3/§4).
-  const requiredAdSetIds = [...new Set(sourceAds.filter((a) => picked.includes(String(a.id))).map((a) => String(a.adsetId)).filter(Boolean))];
 
-  // ---- pending decision row (APPROVED, not EXECUTED — success is proven below) ----
+  // ---- build the engine call + the exact expected object-map keys ----
+  let batchArgs; let expectedAdSetSourceIds; let expectedAdSourceIds;
+  let planForRow = null; let allPickedForSnapshot = [];
+
+  if (bm === 'CBO') {
+    const picked = [...new Set((selectedAdIds || []).map(String).filter(Boolean))];
+    if (!picked.length) throw bad('اختر إعلانًا رابحًا واحدًا على الأقل.');
+    const campBudget = Number(campaignBudgetEgp ?? budgetEgp);
+    if (!(campBudget > 0)) throw bad('ميزانية الحملة لازم تكون رقم أكبر من صفر.');
+    requireAdsValid(picked, 'CBO');
+    // spec §7 — required parent ad sets = unique parents of the selected ads.
+    const requiredAdSetIds = [...new Set(picked.map((id) => String(adById.get(id).adsetId)))];
+    batchArgs = { adAllowlist: picked, campaignBudgetOverrideEgp: campBudget, budgetMode: 'CBO' };
+    expectedAdSetSourceIds = requiredAdSetIds;
+    expectedAdSourceIds = picked;
+    allPickedForSnapshot = picked;
+  } else {
+    // ABO
+    const slotsIn = Array.isArray(adSets) ? adSets : [];
+    if (!slotsIn.length) throw bad('لازم مجموعة إعلانية واحدة على الأقل.');
+    const slotPlan = [];
+    slotsIn.forEach((slot, i) => {
+      const b = Number(slot?.dailyBudgetEgp);
+      if (!(b > 0)) throw bad(`Ad Set ${i + 1}: الميزانية اليومية لازم تكون رقم أكبر من صفر.`);
+      const picks = [...new Set((slot?.selectedAdIds || []).map(String).filter(Boolean))];
+      if (!picks.length) throw bad(`Ad Set ${i + 1}: اختر إعلانًا واحدًا على الأقل.`);
+      requireAdsValid(picks, `Ad Set ${i + 1}`);
+      // Template = the parent source ad set of this slot's FIRST selected ad (spec §6).
+      const sourceAdSetId = String(adById.get(picks[0]).adsetId);
+      if (!sourceAdSetIds.has(sourceAdSetId)) throw bad(`Ad Set ${i + 1}: مجموعة المصدر غير صالحة.`);
+      slotPlan.push({ sourceAdSetId, dailyBudgetMinor: Math.round(b * 100), ads: picks, dailyBudgetEgp: b });
+    });
+    // §13 bid-strategy safety: a source ad set with a cap strategy but no bid_amount can't be cloned into ABO.
+    const token = await getDecryptedToken();
+    const srcAdSetNodes = await getAdSetNodes(token, String(sourceCampaignId)).catch(() => []);
+    const nodeById = new Map((srcAdSetNodes || []).map((a) => [String(a.id), a]));
+    for (const s of slotPlan) {
+      const node = nodeById.get(s.sourceAdSetId);
+      if (node && CAP_BID_STRATEGIES.has(node.bid_strategy) && !(Number(node.bid_amount) > 0)) {
+        throw bad(`مجموعة المصدر «${node.name || s.sourceAdSetId}» تستخدم استراتيجية مزايدة (${node.bid_strategy}) تتطلب حد مزايدة (bid_amount) غير متوفر — لا يمكن نسخها في وضع ABO دون تعديل الاستراتيجية.`);
+      }
+    }
+    batchArgs = { slotPlan: slotPlan.map(({ dailyBudgetEgp, ...s }) => s), budgetMode: 'ABO' };
+    expectedAdSetSourceIds = slotPlan.map((s, i) => `${s.sourceAdSetId}#${i}`);
+    expectedAdSourceIds = slotPlan.flatMap((s, i) => s.ads.map((a) => `${a}#${i}`));
+    planForRow = slotPlan.map((s) => ({ sourceAdSetId: s.sourceAdSetId, dailyBudgetEgp: s.dailyBudgetEgp, selectedAdIds: s.ads }));
+    allPickedForSnapshot = [...new Set(slotPlan.flatMap((s) => s.ads))];
+  }
+
+  // ---- pending decision row (never EXECUTED before proof) ----
   const decision = await prisma.ambScaleDecision.create({
     data: {
       ad_account_id: adAccountId,
@@ -296,13 +361,16 @@ export async function executeScale({
       product_name: entry.productName || null,
       window_label: window.label,
       status: 'APPROVED',
+      budget_mode: bm,
       orders: Math.round(n(m.purchases) || 0),
       cpa: round1(n(m.cpa)),
       spend: round1(n(m.spend) || 0),
-      winner_ads_json: JSON.stringify(sourceAds.filter((a) => picked.includes(String(a.id))).map((a) => ({
-        adId: a.id, adName: a.name, orders: Math.round(n(a.metrics?.purchases) || 0), cpa: round1(n(a.metrics?.cpa)),
-      }))),
-      budget_egp: budget,
+      winner_ads_json: JSON.stringify(allPickedForSnapshot.map((id) => {
+        const a = adById.get(id);
+        return { adId: id, adName: a?.name, orders: Math.round(n(a?.metrics?.purchases) || 0), cpa: round1(n(a?.metrics?.cpa)) };
+      })),
+      budget_egp: bm === 'CBO' ? Number(campaignBudgetEgp ?? budgetEgp) : null,
+      plan_json: planForRow ? JSON.stringify(planForRow) : null,
       exec_mode: mode,
       start_at_cairo: mode === 'SCHEDULE' ? String(startAt || '') : null,
       reviewed_by_id: userId || null,
@@ -310,7 +378,7 @@ export async function executeScale({
     },
   });
 
-  // ---- run the EXISTING clone engine, then PROVE it finished the whole tree ----
+  // ---- run the EXISTING clone engine, then PROVE the full tree exists ----
   let batchId = null;
   try {
     const batch = await createBatch({
@@ -318,19 +386,18 @@ export async function executeScale({
       destinationAccountIds: [adAccountId],
       allowSameAccount: true,
       campaignIds: [String(sourceCampaignId)],
-      adAllowlist: picked,
-      campaignBudgetOverrideEgp: budget,
       campaignNameOverride: nameOverride,
       executionMode: mode,
       startAt: mode === 'SCHEDULE' ? startAt : null,
       allowPageOnlyIg: true,
       userId,
+      ...batchArgs,
     });
     batchId = batch.batchId;
     await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { clone_batch_id: batchId } });
     await approveBatch({ batchId, userId }); // kicks the async clone worker
 
-    const verdict = await waitAndVerifyScale({ batchId, requiredAdSetIds, selectedAdIds: picked });
+    const verdict = await waitAndVerifyScale({ batchId, expectedAdSetSourceIds, expectedAdSourceIds });
     if (!verdict.ok) {
       await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: 'FAILED', error: verdict.error.slice(0, 800) } });
       const e = new Error(`فشل إنشاء حملة الاسكيل: ${verdict.error}`);
@@ -339,13 +406,13 @@ export async function executeScale({
     }
     await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: 'EXECUTED' } });
     return {
-      decisionId: decision.id, batchId, status: 'EXECUTED', scaleCampaignName: nameOverride,
+      decisionId: decision.id, batchId, status: 'EXECUTED', budgetMode: bm, scaleCampaignName: nameOverride,
       destinationCampaignId: verdict.destinationCampaignId,
       adSetsCreated: verdict.counts.adSetsCreated,
       adsCreated: verdict.counts.adsCreated,
     };
   } catch (err) {
-    if (err.scale) throw err; // already recorded FAILED above
+    if (err.scale) throw err;
     await prisma.ambScaleDecision.update({
       where: { id: decision.id },
       data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800), clone_batch_id: batchId },

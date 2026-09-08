@@ -327,7 +327,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, adAllowlist = null, campaignBudgetOverrideEgp = null, campaignNameOverride = null, allowSameAccount = false, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, adAllowlist = null, campaignBudgetOverrideEgp = null, campaignNameOverride = null, allowSameAccount = false, slotPlan = null, budgetMode = null, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
@@ -372,6 +372,11 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
     adAllowlist: Array.isArray(adAllowlist) && adAllowlist.length ? adAllowlist.map(String) : null,
     campaignBudgetOverrideEgp: Number(campaignBudgetOverrideEgp) > 0 ? Number(campaignBudgetOverrideEgp) : null,
     campaignNameOverride: typeof campaignNameOverride === 'string' && campaignNameOverride.trim() ? campaignNameOverride.trim().slice(0, 400) : null,
+    budgetMode: budgetMode === 'CBO' || budgetMode === 'ABO' ? budgetMode : null,
+    // ABO: [{ sourceAdSetId, dailyBudgetMinor, ads:[sourceAdId,...] }] — already validated by scaleWinners.executeScale.
+    slotPlan: Array.isArray(slotPlan) && slotPlan.length
+      ? slotPlan.map((s) => ({ sourceAdSetId: String(s.sourceAdSetId), dailyBudgetMinor: Math.round(Number(s.dailyBudgetMinor) || 0), ads: (s.ads || []).map(String) }))
+      : null,
   };
 
   const batch = await prisma.ambCloneBatch.create({
@@ -609,6 +614,9 @@ async function cloneJob(jobId, token) {
   const pixelMap = j(job.batch?.pixel_map_json, {}) || {};
   const allowPageOnlyIg = identityMap.allowPageOnlyIg !== false;
   const recreateBoosted = !!job.batch?.recreate_boosted;
+  // Winner → Scale budget mode (hoisted so the campaign-payload assertions can see it).
+  const scaleBudgetForced = Number(identityMap.campaignBudgetOverrideEgp) > 0;
+  const hasSlotPlan = Array.isArray(identityMap.slotPlan) && identityMap.slotPlan.length > 0;
 
   await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'CLONING', attempts: { increment: 1 }, last_attempt_at: new Date(), error: null } });
   await audit(batchId, jobId, 'CLONE_START', { detail: `${job.source_campaign_name || job.source_campaign_id} → ${job.destination_account_name || dest}` });
@@ -642,6 +650,38 @@ async function cloneJob(jobId, token) {
   if (adAllowlist && adAllowlist.length) {
     const allow = new Set(adAllowlist);
     tree.ads = tree.ads.filter((ad) => allow.has(String(ad.id)));
+  }
+
+  // ---- ABO SLOT PLAN (Winner → Scale, budgetMode ABO) ----
+  // The owner configured N destination ad sets, each with its own daily budget
+  // and its own set of winning ads (the same source ad may be assigned to
+  // several slots — intentional). Rewrite the tree into ONE synthetic ad set
+  // per slot + one synthetic ad per assigned instance, keyed
+  // "<realSourceId>#<slotIndex>" so every instance is a distinct, idempotent
+  // object-map row. The normal 1:1 build loop + verdict then work unchanged.
+  const slotPlan = Array.isArray(identityMap.slotPlan) && identityMap.slotPlan.length ? identityMap.slotPlan : null;
+  if (slotPlan) {
+    const asById = new Map(tree.adsets.map((a) => [String(a.id), a]));
+    const adById = new Map(tree.ads.map((a) => [String(a.id), a]));
+    const synthAdsets = [];
+    const synthAds = [];
+    slotPlan.forEach((slot, i) => {
+      const realAs = asById.get(String(slot.sourceAdSetId));
+      if (!realAs) return; // validated server-side; skip defensively
+      synthAdsets.push({
+        ...realAs,
+        id: `${slot.sourceAdSetId}#${i}`,
+        source_name: realAs.name,
+        __slotDailyBudgetMinor: Number(slot.dailyBudgetMinor) > 0 ? Math.round(Number(slot.dailyBudgetMinor)) : 0,
+      });
+      for (const rawAdId of slot.ads || []) {
+        const realAd = adById.get(String(rawAdId));
+        if (!realAd) continue;
+        synthAds.push({ ...realAd, id: `${rawAdId}#${i}`, adset_id: `${slot.sourceAdSetId}#${i}` });
+      }
+    });
+    tree.adsets = synthAdsets;
+    tree.ads = synthAds;
   }
 
   // ---- EMPTY-CAMPAIGN GUARD ----
@@ -729,6 +769,9 @@ async function cloneJob(jobId, token) {
       // ABO — no cross-ad-set budget sharing).
       const cboBudget = !!(payload.daily_budget || payload.lifetime_budget);
       if (!cboBudget) payload.is_adset_budget_sharing_enabled = c.is_adset_budget_sharing_enabled === true;
+      // §12 assertion — never send a budget on the wrong level.
+      if (hasSlotPlan && cboBudget) throw new Error('ABO scale: destination campaign payload must not carry daily_budget/lifetime_budget.');
+      if (scaleBudgetForced && !payload.daily_budget) throw new Error('CBO scale: destination campaign payload is missing daily_budget.');
       try {
         const res = await createCampaign(token, dest, payload);
         newCampaignId = res.id;
@@ -858,10 +901,9 @@ async function cloneJob(jobId, token) {
     if (!adsBySource.has(ad.adset_id)) adsBySource.set(ad.adset_id, []);
     adsBySource.get(ad.adset_id).push(ad);
   }
-  // A forced scale budget makes the new campaign CBO — ad sets must NOT also
-  // carry a budget (Meta rejects budget at both levels).
-  const scaleBudgetForced = Number(identityMap.campaignBudgetOverrideEgp) > 0;
-  const campaignHasBudget = scaleBudgetForced || !!(tree.campaign.daily_budget || tree.campaign.lifetime_budget);
+  // CBO scale (campaignBudgetOverrideEgp) OR ABO slot plan (per-slot budgets):
+  // either way the ad set must not ALSO copy the source ad-set budget.
+  const campaignHasBudget = scaleBudgetForced || hasSlotPlan || !!(tree.campaign.daily_budget || tree.campaign.lifetime_budget);
 
   for (const as of tree.adsets) {
     let newAdsetId;
@@ -872,6 +914,9 @@ async function cloneJob(jobId, token) {
     } else {
       try {
         const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap, scaleBudgetForced });
+        // §12 assertion — ABO: this ad set MUST carry the owner's budget; CBO: it must NOT.
+        if (hasSlotPlan && !(payload.daily_budget > 0)) throw new Error(`ABO scale: ad set "${as.name}" payload is missing daily_budget.`);
+        if (scaleBudgetForced && (payload.daily_budget || payload.lifetime_budget)) throw new Error(`CBO scale: ad set "${as.name}" payload must not carry a budget.`);
         const res = await createAdSet(token, dest, payload);
         newAdsetId = res.id;
         idMap.adsets[as.id] = newAdsetId;
@@ -1074,7 +1119,11 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
     if (as.bid_amount != null && Number(as.bid_amount) > 0) payload.bid_amount = Number(as.bid_amount);
     if (as.bid_strategy) payload.bid_strategy = as.bid_strategy;
   }
-  if (!campaignHasBudget) {
+  if (as.__slotDailyBudgetMinor > 0) {
+    // ABO scale: the owner's per-slot daily budget lives HERE (campaign carries none).
+    payload.daily_budget = Math.round(as.__slotDailyBudgetMinor);
+    delete payload.lifetime_budget;
+  } else if (!campaignHasBudget) {
     if (as.daily_budget) payload.daily_budget = Number(as.daily_budget);
     else if (as.lifetime_budget) payload.lifetime_budget = Number(as.lifetime_budget);
   }

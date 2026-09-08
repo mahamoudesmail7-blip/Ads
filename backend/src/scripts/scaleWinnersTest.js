@@ -109,5 +109,153 @@ try {
   await cleanup();
 }
 
+// ---------------------------------------------------------------------------
+// ABO slot synthesis — the exact logic from cloneJob (§4/§5/§15). Keys must be
+// "<sourceId>#<slotIndex>" so replicated ads/ad sets are distinct object rows.
+// ---------------------------------------------------------------------------
+function synthAboTree(sourceAdsets, sourceAds, slotPlan) {
+  const asById = new Map(sourceAdsets.map((a) => [String(a.id), a]));
+  const adById = new Map(sourceAds.map((a) => [String(a.id), a]));
+  const synthAdsets = [];
+  const synthAds = [];
+  slotPlan.forEach((slot, i) => {
+    const realAs = asById.get(String(slot.sourceAdSetId));
+    if (!realAs) return;
+    synthAdsets.push({ ...realAs, id: `${slot.sourceAdSetId}#${i}`, __slotDailyBudgetMinor: Math.round(Number(slot.dailyBudgetMinor) || 0) });
+    for (const rawAdId of slot.ads || []) {
+      const realAd = adById.get(String(rawAdId));
+      if (!realAd) continue;
+      synthAds.push({ ...realAd, id: `${rawAdId}#${i}`, adset_id: `${slot.sourceAdSetId}#${i}` });
+    }
+  });
+  return { synthAdsets, synthAds };
+}
+
+console.log('\nABO slot synthesis:');
+{
+  const sAdsets = [{ id: 'as1', name: 'A' }, { id: 'as2', name: 'B' }];
+  const sAds = [{ id: 'A', adset_id: 'as1', creative: { id: 'crA' } }, { id: 'B', adset_id: 'as1', creative: { id: 'crB' } }];
+
+  // D) 1 configured ad set, 1 ad → 1 / 1 / 1
+  let t = synthAboTree(sAdsets, sAds, [{ sourceAdSetId: 'as1', dailyBudgetMinor: 30000, ads: ['A'] }]);
+  ok('D: 1 slot / 1 ad → 1 ad set, 1 ad', t.synthAdsets.length === 1 && t.synthAds.length === 1 && t.synthAdsets[0].id === 'as1#0' && t.synthAds[0].id === 'A#0' && t.synthAds[0].adset_id === 'as1#0' && t.synthAdsets[0].__slotDailyBudgetMinor === 30000);
+
+  // E) 3 slots, one unique ad each → 3 / 3
+  t = synthAboTree(sAdsets, sAds, [
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 30000, ads: ['A'] },
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 50000, ads: ['B'] },
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 70000, ads: ['A'] },
+  ]);
+  ok('E: 3 slots / 1 ad each → 3 ad sets, 3 ads', t.synthAdsets.length === 3 && t.synthAds.length === 3 && new Set(t.synthAdsets.map((x) => x.id)).size === 3 && new Set(t.synthAds.map((x) => x.id)).size === 3);
+
+  // F) same source ad in all 3 slots → 3 ad sets, 3 ad INSTANCES (distinct keys)
+  t = synthAboTree(sAdsets, sAds, [
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 30000, ads: ['A'] },
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 30000, ads: ['A'] },
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 30000, ads: ['A'] },
+  ]);
+  ok('F: same ad × 3 slots → 3 ad sets, 3 distinct ad instances', t.synthAds.length === 3 && new Set(t.synthAds.map((x) => x.id)).size === 3 && t.synthAds.map((x) => x.id).sort().join(',') === 'A#0,A#1,A#2');
+
+  // G) Ad Set 1 = A+B, Ad Set 2 = A → 2 ad sets, 3 instances
+  t = synthAboTree(sAdsets, sAds, [
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 30000, ads: ['A', 'B'] },
+    { sourceAdSetId: 'as1', dailyBudgetMinor: 50000, ads: ['A'] },
+  ]);
+  ok('G: [A,B] + [A] → 2 ad sets, 3 ad instances', t.synthAdsets.length === 2 && t.synthAds.length === 3 && t.synthAds.map((x) => x.id).sort().join(',') === 'A#0,A#1,B#0' && t.synthAds.filter((x) => x.adset_id === 'as1#0').length === 2 && t.synthAds.filter((x) => x.adset_id === 'as1#1').length === 1);
+}
+
+// ---------------------------------------------------------------------------
+// waitAndVerifyScale with ABO instance keys (§14).
+// ---------------------------------------------------------------------------
+console.log('\nwaitAndVerifyScale — ABO instance keys:');
+try {
+  await cleanup();
+
+  // G-shape complete: ADSET as1#0, as1#1 ; AD A#0, B#0, A#1
+  await seed([
+    { level: 'CAMPAIGN', source_id: 'c1', destination_id: 'dc1', status: 'CREATED' },
+    { level: 'ADSET', source_id: 'as1#0', destination_id: 'das0', status: 'CREATED' },
+    { level: 'ADSET', source_id: 'as1#1', destination_id: 'das1', status: 'CREATED' },
+    { level: 'AD', source_id: 'A#0', destination_id: 'da0', status: 'CREATED' },
+    { level: 'AD', source_id: 'B#0', destination_id: 'db0', status: 'CREATED' },
+    { level: 'AD', source_id: 'A#1', destination_id: 'da1', status: 'CREATED' },
+  ]);
+  let v = await waitAndVerifyScale({
+    batchId: BID,
+    expectedAdSetSourceIds: ['as1#0', 'as1#1'],
+    expectedAdSourceIds: ['A#0', 'B#0', 'A#1'],
+    timeoutMs: 4000, pollMs: 500,
+  });
+  ok('ABO G complete → ok, 2 ad sets, 3 ad instances', v.ok && v.counts.adSetsCreated === 2 && v.counts.adsCreated === 3);
+  await cleanup();
+
+  // H) one ABO ad set fails → NOT ok
+  await seed([
+    { level: 'CAMPAIGN', source_id: 'c1', destination_id: 'dc1', status: 'CREATED' },
+    { level: 'ADSET', source_id: 'as1#0', destination_id: 'das0', status: 'CREATED' },
+    { level: 'ADSET', source_id: 'as1#1', destination_id: null, status: 'FAILED', error: 'targeting invalid' },
+    { level: 'AD', source_id: 'A#0', destination_id: 'da0', status: 'CREATED' },
+  ]);
+  await prisma.ambCloneJob.updateMany({ where: { batch_id: BID }, data: { status: 'FAILED' } });
+  v = await waitAndVerifyScale({ batchId: BID, expectedAdSetSourceIds: ['as1#0', 'as1#1'], expectedAdSourceIds: ['A#0', 'A#1'], timeoutMs: 4000, pollMs: 500 });
+  ok('H: one ABO ad set fails → NOT ok, real error', !v.ok && /targeting invalid/.test(v.error), v.error);
+  await cleanup();
+
+  // I) one ABO ad instance fails → NOT ok
+  await seed([
+    { level: 'CAMPAIGN', source_id: 'c1', destination_id: 'dc1', status: 'CREATED' },
+    { level: 'ADSET', source_id: 'as1#0', destination_id: 'das0', status: 'CREATED' },
+    { level: 'AD', source_id: 'A#0', destination_id: 'da0', status: 'CREATED' },
+    { level: 'AD', source_id: 'A#1', destination_id: null, status: 'FAILED', error: 'ad create failed' },
+  ]);
+  await prisma.ambCloneJob.updateMany({ where: { batch_id: BID }, data: { status: 'FAILED' } });
+  v = await waitAndVerifyScale({ batchId: BID, expectedAdSetSourceIds: ['as1#0'], expectedAdSourceIds: ['A#0', 'A#1'], timeoutMs: 4000, pollMs: 500 });
+  ok('I: one ABO ad instance fails → NOT ok', !v.ok && /ad create failed/.test(v.error), v.error);
+  await cleanup();
+
+  // K) resume: existing campaign + as1#0/A#0 already CREATED, as1#1/A#1 missing then created
+  const job = await seed([
+    { level: 'CAMPAIGN', source_id: 'c1', destination_id: 'dc1', status: 'CREATED' },
+    { level: 'ADSET', source_id: 'as1#0', destination_id: 'das0', status: 'CREATED' },
+    { level: 'AD', source_id: 'A#0', destination_id: 'da0', status: 'CREATED' },
+  ]);
+  v = await waitAndVerifyScale({ batchId: BID, expectedAdSetSourceIds: ['as1#0', 'as1#1'], expectedAdSourceIds: ['A#0', 'A#1'], timeoutMs: 3000, pollMs: 500 });
+  ok('K1: partial ABO → NOT ok (missing as1#1 / A#1)', !v.ok && v.counts.adSetsCreated === 1);
+  // "resume" creates the missing instances against the SAME job (no new campaign row)
+  await prisma.ambCloneObjectMap.create({ data: { job_id: job.id, batch_id: BID, level: 'ADSET', source_id: 'as1#1', destination_id: 'das1', status: 'CREATED' } });
+  await prisma.ambCloneObjectMap.create({ data: { job_id: job.id, batch_id: BID, level: 'AD', source_id: 'A#1', destination_id: 'da1', status: 'CREATED' } });
+  const campRows = await prisma.ambCloneObjectMap.count({ where: { batch_id: BID, level: 'CAMPAIGN' } });
+  v = await waitAndVerifyScale({ batchId: BID, expectedAdSetSourceIds: ['as1#0', 'as1#1'], expectedAdSourceIds: ['A#0', 'A#1'], timeoutMs: 3000, pollMs: 500 });
+  ok('K2: after resume → ok, 2 ad sets, 2 ads, still ONE campaign row', v.ok && v.counts.adSetsCreated === 2 && v.counts.adsCreated === 2 && campRows === 1);
+  await cleanup();
+} finally {
+  await cleanup();
+}
+
+// ---------------------------------------------------------------------------
+// executeScale — reject invalid inputs BEFORE any Meta write (§11 / §J).
+// ---------------------------------------------------------------------------
+console.log('\nexecuteScale rejects (no Meta writes):');
+{
+  const { executeScale } = await import('../services/amb/scaleWinners.js');
+  const rows0 = await prisma.ambScaleDecision.count();
+  const cases = [
+    ['no budgetMode', { sourceCampaignId: 'x', selectedAdIds: ['a'], campaignBudgetEgp: 100 }],
+    ['bad budgetMode', { sourceCampaignId: 'x', budgetMode: 'FOO', selectedAdIds: ['a'], campaignBudgetEgp: 100 }],
+    ['CBO no ads', { sourceCampaignId: 'x', budgetMode: 'CBO', selectedAdIds: [], campaignBudgetEgp: 100 }],
+    ['CBO zero budget', { sourceCampaignId: 'x', budgetMode: 'CBO', selectedAdIds: ['a'], campaignBudgetEgp: 0 }],
+    ['ABO no slots', { sourceCampaignId: 'x', budgetMode: 'ABO', adSets: [] }],
+    ['ABO slot zero budget', { sourceCampaignId: 'x', budgetMode: 'ABO', adSets: [{ dailyBudgetEgp: 0, selectedAdIds: ['a'] }] }],
+    ['ABO slot no ads', { sourceCampaignId: 'x', budgetMode: 'ABO', adSets: [{ dailyBudgetEgp: 300, selectedAdIds: [] }] }],
+    ['schedule in the past', { sourceCampaignId: 'x', budgetMode: 'CBO', selectedAdIds: ['a'], campaignBudgetEgp: 100, startMode: 'SCHEDULE', startAt: '2020-01-01T10:00' }],
+  ];
+  for (const [name, args] of cases) {
+    try { await executeScale({ ...args, windowName: 'today', userId: null }); ok(name + ' → rejected', false, 'did NOT throw'); }
+    catch (e) { ok(name + ' → rejected', !!e.message, e.message.slice(0, 70)); }
+  }
+  const rows1 = await prisma.ambScaleDecision.count();
+  ok('no AmbScaleDecision rows leaked by rejected inputs', rows1 === rows0, `${rows0} -> ${rows1}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

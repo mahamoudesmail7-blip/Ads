@@ -291,15 +291,18 @@ async function renderHome(view) {
 // ===========================================================================
 // AI Suggested Decisions — Winner → Scale  (this section only)
 // ===========================================================================
-const scaleUi = new Map(); // sourceCampaignId -> { open, sel:Set, budget, mode, date, time }
+const scaleUi = new Map(); // sourceCampaignId -> { open, budgetMode, sel, cboBudget, abo:[{budget,sel}], mode, date, time }
 
 function scaleState(card) {
   let s = scaleUi.get(card.sourceCampaignId);
   if (!s) {
+    const firstSel = card.bestWinnerAdId ? new Set([card.bestWinnerAdId]) : new Set(card.defaults.selectedAdIds || []);
     s = {
       open: false,
-      sel: new Set(card.defaults.selectedAdIds || []),
-      budget: '',
+      budgetMode: card.sourceBudgetType === 'ABO' ? 'ABO' : 'CBO', // preselect source type; owner is authoritative
+      sel: new Set(card.defaults.selectedAdIds || []),             // CBO ad selection
+      cboBudget: '',
+      abo: [{ budget: '', sel: new Set(firstSel) }],               // ABO slots
       mode: 'RUN_NOW',
       date: card.defaults.startDate || cairoDateStr(1),
       time: card.defaults.startTime || '00:00',
@@ -307,6 +310,19 @@ function scaleState(card) {
     scaleUi.set(card.sourceCampaignId, s);
   }
   return s;
+}
+/** ABO config is submittable: ≥1 slot, and every slot has a budget>0 and ≥1 ad. */
+function scaleAboValid(s) {
+  return s.abo.length >= 1 && s.abo.every((sl) => Number(sl.budget) > 0 && sl.sel.size >= 1);
+}
+/** Compact winner-ad row (checkbox). `attr` is the data-* wiring attribute string. */
+function scaleAdRow(a, checked, attr) {
+  return `<label class="amb-scale-ad ${checked ? 'sel' : ''} ${a.qualifies ? '' : 'dim'}">
+    <input type="checkbox" ${attr} ${checked ? 'checked' : ''} />
+    <span class="an">${E(a.adName)}${a.bestWinner ? ` <span class="amb-badge best">🏆 BEST WINNER</span>` : ''}</span>
+    <span class="am faint">${a.orders} طلب · CPA ${a.cpa == null ? '—' : fmtEGP(a.cpa)} · صرف ${fmtEGP(a.spend)}${a.creativeType ? ` · ${E(a.creativeType)}` : ''}</span>
+    <span class="aid faint mono">${E(a.adId)}</span>
+  </label>`;
 }
 
 let _scaleData = null; // last /scale/winners payload (re-rendered locally on card interaction)
@@ -356,8 +372,21 @@ function scaleCardHtml(card) {
 function scaleExpandedHtml(card, s) {
   const sched = s.mode === 'SCHEDULE';
   const futureOk = !sched || cloneStartInFuture(s.date, s.time);
-  const selCount = card.ads.filter((a) => s.sel.has(a.adId)).length;
-  const budgetOk = Number(s.budget) > 0;
+  const cid = E(card.sourceCampaignId);
+  const isAbo = s.budgetMode === 'ABO';
+
+  // --- CBO derived ---
+  const cboSel = card.ads.filter((a) => s.sel.has(a.adId));
+  const cboBudgetOk = Number(s.cboBudget) > 0;
+  const cboReqAdSets = new Set(cboSel.map((a) => a.adsetId)).size;
+
+  // --- ABO derived ---
+  const aboOk = scaleAboValid(s);
+  const aboTotalDaily = s.abo.reduce((t, sl) => t + (Number(sl.budget) || 0), 0);
+  const aboInstances = s.abo.reduce((t, sl) => t + sl.sel.size, 0);
+
+  const canApprove = state.isAdmin && futureOk && (isAbo ? aboOk : (cboSel.length > 0 && cboBudgetOk));
+
   return `<div class="amb-scale-exp">
     <div class="amb-scale-sec">
       <div class="t">الأداء</div>
@@ -370,37 +399,63 @@ function scaleExpandedHtml(card, s) {
     </div>
 
     <div class="amb-scale-sec">
-      <div class="t">الإعلانات الرابحة — اختَر ما تريد اسكيله</div>
-      ${card.ads.map((a) => `
-        <label class="amb-scale-ad ${s.sel.has(a.adId) ? 'sel' : ''} ${a.qualifies ? '' : 'dim'}">
-          <input type="checkbox" data-scw-ad="${E(a.adId)}" ${s.sel.has(a.adId) ? 'checked' : ''} />
-          <span class="an">${E(a.adName)}${a.bestWinner ? ` <span class="amb-badge best">🏆 BEST WINNER</span>` : ''}</span>
-          <span class="am faint">${a.orders} طلب · CPA ${a.cpa == null ? '—' : fmtEGP(a.cpa)} · صرف ${fmtEGP(a.spend)}${a.creativeType ? ` · ${E(a.creativeType)}` : ''}</span>
-          <span class="aid faint mono">${E(a.adId)}</span>
-        </label>`).join('')}
+      <div class="t">نوع توزيع الميزانية</div>
+      <div class="amb-scale-seg">
+        <button class="${!isAbo ? 'on' : ''}" data-scw-bmode="CBO" data-scw="${cid}">CBO — ميزانية الحملة</button>
+        <button class="${isAbo ? 'on' : ''}" data-scw-bmode="ABO" data-scw="${cid}">ABO — ميزانية مجموعات الإعلانات</button>
+      </div>
+      <div class="faint" style="font-size:11.5px; margin-top:4px;">المصدر: ${card.sourceBudgetType === 'ABO' ? 'ABO' : 'CBO'} — تقدر تغيّر قبل الموافقة.</div>
     </div>
 
+    ${isAbo ? `
     <div class="amb-scale-sec">
-      <div class="t">إعدادات الاسكيل</div>
-      <div class="amb-field-grid">
-        <div class="field" style="max-width:200px;">
-          <label>ميزانية الاسكيل (ج.م / يوم)</label>
-          <input type="number" min="1" step="1" placeholder="مثال: 1000" value="${E(s.budget)}" data-scw-budget />
-        </div>
+      <div class="t" style="display:flex; align-items:center; justify-content:space-between;">
+        <span>عدد الـ Ad Sets</span>
+        <span class="amb-scale-step">
+          <button data-scw-abo-dec data-scw="${cid}" ${s.abo.length <= 1 ? 'disabled' : ''}>−</button>
+          <b>${s.abo.length}</b>
+          <button data-scw-abo-inc data-scw="${cid}">+</button>
+        </span>
       </div>
-      <div class="amb-field-grid" style="margin-top:6px;">
+      ${s.abo.map((sl, i) => `
+        <div class="amb-scale-slot">
+          <div class="sh">Ad Set ${i + 1}</div>
+          <div class="field" style="max-width:190px;">
+            <label>الميزانية اليومية (ج.م)</label>
+            <input type="number" min="1" step="1" placeholder="مثال: 300" value="${E(sl.budget)}" data-scw-abo-budget="${i}" data-scw="${cid}" />
+          </div>
+          <div class="slot-ads">
+            ${card.ads.map((a) => scaleAdRow(a, sl.sel.has(a.adId), `data-scw-abo-ad="${i}:${E(a.adId)}" data-scw="${cid}"`)).join('')}
+          </div>
+        </div>`).join('')}
+      <div class="faint" style="font-size:11.5px;">نفس الإعلان في أكثر من Ad Set = نُسخ مقصودة (يُنشأ إعلان لكل تعيين).</div>
+    </div>
+    ` : `
+    <div class="amb-scale-sec">
+      <div class="t">الإعلانات الرابحة — اختَر ما تريد اسكيله</div>
+      ${card.ads.map((a) => scaleAdRow(a, s.sel.has(a.adId), `data-scw-ad="${E(a.adId)}" data-scw="${cid}"`)).join('')}
+      <div class="field" style="max-width:210px; margin-top:8px;">
+        <label>ميزانية الحملة اليومية (ج.م / يوم)</label>
+        <input type="number" min="1" step="1" placeholder="مثال: 500" value="${E(s.cboBudget)}" data-scw-cbo-budget data-scw="${cid}" />
+      </div>
+    </div>
+    `}
+
+    <div class="amb-scale-sec">
+      <div class="t">تشغيل الحملة</div>
+      <div class="amb-field-grid">
         <label class="amb-radio-row ${!sched ? 'sel' : ''}" style="cursor:pointer;">
-          <input type="radio" name="scwmode-${E(card.sourceCampaignId)}" value="RUN_NOW" ${!sched ? 'checked' : ''} data-scw-mode />
+          <input type="radio" name="scwmode-${cid}" value="RUN_NOW" ${!sched ? 'checked' : ''} data-scw-mode data-scw="${cid}" />
           <span class="rr-main">تشغيل الآن — Run Now</span>
         </label>
         <label class="amb-radio-row ${sched ? 'sel' : ''}" style="cursor:pointer;">
-          <input type="radio" name="scwmode-${E(card.sourceCampaignId)}" value="SCHEDULE" ${sched ? 'checked' : ''} data-scw-mode />
+          <input type="radio" name="scwmode-${cid}" value="SCHEDULE" ${sched ? 'checked' : ''} data-scw-mode data-scw="${cid}" />
           <span class="rr-main">جدولة البداية — Schedule Start</span>
         </label>
       </div>
       ${sched ? `<div class="amb-field-grid" style="margin-top:6px;">
-        <div class="field" style="max-width:180px;"><label>Start Date</label><input type="date" value="${E(s.date)}" min="${E(cairoDateStr(0))}" data-scw-date /></div>
-        <div class="field" style="max-width:150px;"><label>Start Time</label><input type="time" value="${E(s.time)}" data-scw-time /></div>
+        <div class="field" style="max-width:180px;"><label>Start Date</label><input type="date" value="${E(s.date)}" min="${E(cairoDateStr(0))}" data-scw-date data-scw="${cid}" /></div>
+        <div class="field" style="max-width:150px;"><label>Start Time</label><input type="time" value="${E(s.time)}" data-scw-time data-scw="${cid}" /></div>
         <div class="field" style="max-width:160px;"><label>Timezone</label><input type="text" value="Africa/Cairo" disabled readonly /></div>
       </div>
       ${futureOk ? '' : `<div class="faint" style="font-size:12px; color:var(--amb-red); margin-top:4px;">The selected start date and time must be in the future.</div>`}` : ''}
@@ -408,17 +463,32 @@ function scaleExpandedHtml(card, s) {
 
     <div class="amb-scale-sec summary">
       <div class="t">الملخص النهائي</div>
-      <div class="amb-scale-sum">
-        <div><span>الحملة الجديدة</span><b>${E(card.proposedScaleCampaignName)}</b></div>
-        <div><span>إعلانات مختارة</span><b>${selCount}</b></div>
-        <div><span>الميزانية</span><b>${budgetOk ? fmtEGP(Number(s.budget)) + ' / يوم' : '—'}</b></div>
-        <div><span>التشغيل</span><b>${sched ? `${fmtDMY(s.date)} ${fmt12h(s.time)} — Africa/Cairo` : 'تشغيل الآن'}</b></div>
-      </div>
+      ${isAbo ? `
+        <div class="amb-scale-sum">
+          <div><span>الحملة الجديدة</span><b>${E(card.proposedScaleCampaignName)}</b></div>
+          <div><span>نوع الميزانية</span><b>ABO</b></div>
+        </div>
+        ${s.abo.map((sl, i) => `<div class="amb-scale-sumline">Ad Set ${i + 1}: <b>${Number(sl.budget) > 0 ? fmtEGP(Number(sl.budget)) + '/يوم' : '—'}</b> · ${sl.sel.size} إعلان</div>`).join('')}
+        <div class="amb-scale-sum" style="margin-top:6px;">
+          <div><span>إجمالي الميزانية اليومية</span><b>${fmtEGP(aboTotalDaily)}/يوم</b></div>
+          <div><span>Ad instances</span><b>${aboInstances}</b></div>
+          <div><span>التشغيل</span><b>${sched ? `${fmtDMY(s.date)} ${fmt12h(s.time)} — القاهرة` : 'الآن'}</b></div>
+        </div>
+      ` : `
+        <div class="amb-scale-sum">
+          <div><span>الحملة الجديدة</span><b>${E(card.proposedScaleCampaignName)}</b></div>
+          <div><span>نوع الميزانية</span><b>CBO</b></div>
+          <div><span>ميزانية الحملة</span><b>${cboBudgetOk ? fmtEGP(Number(s.cboBudget)) + '/يوم' : '—'}</b></div>
+          <div><span>Ad Sets</span><b>${cboReqAdSets}</b></div>
+          <div><span>Ads</span><b>${cboSel.length}</b></div>
+          <div><span>التشغيل</span><b>${sched ? `${fmtDMY(s.date)} ${fmt12h(s.time)} — القاهرة` : 'الآن'}</b></div>
+        </div>
+      `}
     </div>
 
     <div class="amb-scale-actions">
-      <button class="amb-btn primary" data-scw-act="approve" data-scw="${E(card.sourceCampaignId)}" ${(!state.isAdmin || selCount === 0 || !budgetOk || !futureOk) ? 'disabled' : ''}>${state.isAdmin ? 'موافق على الاسكيل' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
-      <button class="amb-btn ghost" data-scw-act="cancel" data-scw="${E(card.sourceCampaignId)}">إلغاء</button>
+      <button class="amb-btn primary" data-scw-act="approve" data-scw="${cid}" ${canApprove ? '' : 'disabled'}>${state.isAdmin ? 'موافق على الاسكيل' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
+      <button class="amb-btn ghost" data-scw-act="cancel" data-scw="${cid}">إلغاء</button>
     </div>
   </div>`;
 }
@@ -441,30 +511,34 @@ function wireScaleCards(root, data) {
         return;
       }
       if (btn.dataset.scwAct === 'approve') {
-        const selectedAdIds = card.ads.filter((a) => s.sel.has(a.adId)).map((a) => a.adId);
         const sched = s.mode === 'SCHEDULE';
-        if (!selectedAdIds.length) { UI.toast('اختر إعلانًا واحدًا على الأقل.', 'error'); return; }
-        if (!(Number(s.budget) > 0)) { UI.toast('أدخل ميزانية صحيحة.', 'error'); return; }
         if (sched && !cloneStartInFuture(s.date, s.time)) { UI.toast('The selected start date and time must be in the future.', 'error'); return; }
+        let body; let summary;
+        if (s.budgetMode === 'ABO') {
+          if (!scaleAboValid(s)) { UI.toast('كل Ad Set لازم ميزانية أكبر من صفر وإعلان واحد على الأقل.', 'error'); return; }
+          const adSets = s.abo.map((sl) => ({ dailyBudgetEgp: Number(sl.budget), selectedAdIds: [...sl.sel] }));
+          body = { budgetMode: 'ABO', sourceCampaignId: card.sourceCampaignId, adSets, startMode: s.mode, startAt: sched ? `${s.date}T${s.time}` : null, window: state.window };
+          const total = adSets.reduce((t, x) => t + x.dailyBudgetEgp, 0);
+          const inst = adSets.reduce((t, x) => t + x.selectedAdIds.length, 0);
+          summary = `ABO — ${adSets.length} Ad Set، إجمالي ${fmtEGP(total)}/يوم، ${inst} إعلان.`;
+        } else {
+          const selectedAdIds = card.ads.filter((a) => s.sel.has(a.adId)).map((a) => a.adId);
+          if (!selectedAdIds.length) { UI.toast('اختر إعلانًا واحدًا على الأقل.', 'error'); return; }
+          if (!(Number(s.cboBudget) > 0)) { UI.toast('أدخل ميزانية الحملة.', 'error'); return; }
+          body = { budgetMode: 'CBO', sourceCampaignId: card.sourceCampaignId, selectedAdIds, campaignBudgetEgp: Number(s.cboBudget), startMode: s.mode, startAt: sched ? `${s.date}T${s.time}` : null, window: state.window };
+          summary = `CBO — ميزانية الحملة ${fmtEGP(Number(s.cboBudget))}/يوم، ${selectedAdIds.length} إعلان.`;
+        }
         const ok = await UI.confirmModal({
           title: 'تأكيد الاسكيل',
-          message: `هيتم إنشاء حملة <b>${E(card.proposedScaleCampaignName)}</b> (متوقفة) بنسخة مطابقة لـ ${selectedAdIds.length} إعلان رابح، ميزانية ${fmtEGP(Number(s.budget))}/يوم.<br>${sched ? `التشغيل: ${fmtDMY(s.date)} — ${fmt12h(s.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال النسخ.'}<br>حملة المصدر مش هتتغير. متابعة؟`,
+          message: `هيتم إنشاء حملة <b>${E(card.proposedScaleCampaignName)}</b> (متوقفة) بنسخة مطابقة للمصدر.<br>${E(summary)}<br>${sched ? `التشغيل: ${fmtDMY(s.date)} — ${fmt12h(s.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال النسخ.'}<br>حملة المصدر مش هتتغير. متابعة؟`,
           confirmLabel: sched ? 'موافق وجدولة' : 'موافق وتشغيل', danger: true,
         });
         if (!ok) return;
-        // The backend BLOCKS until the clone tree is fully built (or fails) —
-        // no "success" until Campaign + required Ad Sets + selected Ads exist.
+        // The backend BLOCKS until the clone tree is fully built (or fails).
         btn.disabled = true; btn.textContent = 'جاري إنشاء حملة الاسكيل...';
         try {
-          const r = await api.post('/api/ai-media-buyer/scale/execute', {
-            sourceCampaignId: card.sourceCampaignId,
-            selectedAdIds,
-            budgetEgp: Number(s.budget),
-            startMode: s.mode,
-            startAt: sched ? `${s.date}T${s.time}` : null,
-            window: state.window,
-          });
-          UI.toast(`✅ تم إنشاء حملة الاسكيل بنجاح — ${E(r.scaleCampaignName)} · ${fmtNum(r.adSetsCreated)} مجموعة · ${fmtNum(r.adsCreated)} إعلان (متوقفة)`);
+          const r = await api.post('/api/ai-media-buyer/scale/execute', body);
+          UI.toast(`✅ تم إنشاء حملة الاسكيل بنجاح — ${E(r.scaleCampaignName)} · ${E(r.budgetMode || '')} · ${fmtNum(r.adSetsCreated)} مجموعة · ${fmtNum(r.adsCreated)} إعلان (متوقفة)`);
           scaleUi.delete(card.sourceCampaignId);
           route();
         } catch (e) {
@@ -476,25 +550,42 @@ function wireScaleCards(root, data) {
     };
   });
 
-  root.querySelectorAll('[data-scw-ad]').forEach((cb) => {
+  const cardOf = (elm) => byId.get(elm.closest('[data-scw]')?.dataset.scw);
+
+  root.querySelectorAll('[data-scw-bmode]').forEach((b) => {
+    b.onclick = () => { const card = cardOf(b); if (card) { scaleState(card).budgetMode = b.dataset.scwBmode === 'ABO' ? 'ABO' : 'CBO'; rerenderScale(); } };
+  });
+  root.querySelectorAll('[data-scw-abo-inc]').forEach((b) => {
+    b.onclick = () => { const card = cardOf(b); if (!card) return; const s = scaleState(card); s.abo.push({ budget: '', sel: new Set() }); rerenderScale(); };
+  });
+  root.querySelectorAll('[data-scw-abo-dec]').forEach((b) => {
+    b.onclick = () => { const card = cardOf(b); if (!card) return; const s = scaleState(card); if (s.abo.length > 1) s.abo.pop(); rerenderScale(); };
+  });
+  root.querySelectorAll('[data-scw-abo-budget]').forEach((inp) => {
+    inp.oninput = () => { const card = cardOf(inp); if (card) scaleState(card).abo[Number(inp.dataset.scwAboBudget)].budget = inp.value; };
+    inp.onchange = () => rerenderScale();
+  });
+  root.querySelectorAll('[data-scw-abo-ad]').forEach((cb) => {
     cb.onclick = () => {
-      const cardEl = cb.closest('[data-scw]');
-      const id = cardEl?.dataset.scw;
-      const card = byId.get(id); if (!card) return;
-      const s = scaleState(card);
-      if (cb.checked) s.sel.add(cb.dataset.scwAd); else s.sel.delete(cb.dataset.scwAd);
+      const card = cardOf(cb); if (!card) return;
+      const [i, adId] = cb.dataset.scwAboAd.split(':');
+      const slot = scaleState(card).abo[Number(i)];
+      if (cb.checked) slot.sel.add(adId); else slot.sel.delete(adId);
       rerenderScale();
     };
   });
-  root.querySelectorAll('[data-scw-budget]').forEach((inp) => {
-    inp.oninput = () => { const card = byId.get(inp.closest('[data-scw]')?.dataset.scw); if (card) scaleState(card).budget = inp.value; };
+  root.querySelectorAll('[data-scw-cbo-budget]').forEach((inp) => {
+    inp.oninput = () => { const card = cardOf(inp); if (card) scaleState(card).cboBudget = inp.value; };
     inp.onchange = () => rerenderScale();
   });
-  root.querySelectorAll('[data-scw-mode]').forEach((r) => {
-    r.onchange = () => { const card = byId.get(r.closest('[data-scw]')?.dataset.scw); if (card) { scaleState(card).mode = r.value === "SCHEDULE" ? "SCHEDULE" : "RUN_NOW"; rerenderScale(); } };
+  root.querySelectorAll('[data-scw-ad]').forEach((cb) => {
+    cb.onclick = () => { const card = cardOf(cb); if (!card) return; const s = scaleState(card); if (cb.checked) s.sel.add(cb.dataset.scwAd); else s.sel.delete(cb.dataset.scwAd); rerenderScale(); };
   });
-  root.querySelectorAll('[data-scw-date]').forEach((d) => { d.onchange = () => { const card = byId.get(d.closest('[data-scw]')?.dataset.scw); if (card) { scaleState(card).date = d.value || cairoDateStr(1); rerenderScale(); } }; });
-  root.querySelectorAll('[data-scw-time]').forEach((t) => { t.onchange = () => { const card = byId.get(t.closest('[data-scw]')?.dataset.scw); if (card) { scaleState(card).time = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; rerenderScale(); } }; });
+  root.querySelectorAll('[data-scw-mode]').forEach((r) => {
+    r.onchange = () => { const card = cardOf(r); if (card) { scaleState(card).mode = r.value === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW'; rerenderScale(); } };
+  });
+  root.querySelectorAll('[data-scw-date]').forEach((d) => { d.onchange = () => { const card = cardOf(d); if (card) { scaleState(card).date = d.value || cairoDateStr(1); rerenderScale(); } }; });
+  root.querySelectorAll('[data-scw-time]').forEach((t) => { t.onchange = () => { const card = cardOf(t); if (card) { scaleState(card).time = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; rerenderScale(); } }; });
 }
 
 /**

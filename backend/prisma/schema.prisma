@@ -1283,7 +1283,9 @@ model AmbScaleDecision {
   spend  Float?
 
   winner_ads_json String? // snapshot of the per-ad winner panel at approval time
-  budget_egp      Float?
+  budget_mode     String? // CBO | ABO — the owner's explicit choice (never guessed)
+  budget_egp      Float? // CBO: the campaign daily budget the owner entered
+  plan_json       String? // ABO: [{ sourceAdSetId, dailyBudgetEgp, selectedAdIds:[...] }] as approved
   exec_mode       String? // RUN_NOW | SCHEDULE
   start_at_cairo  String? // "YYYY-MM-DDTHH:MM" (Africa/Cairo) when SCHEDULE
   clone_batch_id  String?
