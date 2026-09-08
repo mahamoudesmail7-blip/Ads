@@ -155,6 +155,28 @@ router.get('/winners', asyncRoute(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// AI Suggested Decisions — Winner → Scale (this section only)
+// ---------------------------------------------------------------------------
+router.get('/scale/winners', asyncRoute(async (req, res) => {
+  const { listScaleWinners } = await import('../services/amb/scaleWinners.js');
+  res.json(await listScaleWinners({ windowName: String(req.query.window || 'today'), includeResolved: req.query.includeResolved === '1' }));
+}));
+
+router.post('/scale/reject', asyncRoute(async (req, res) => {
+  const { rejectScaleWinner } = await import('../services/amb/scaleWinners.js');
+  const { sourceCampaignId, sourceCampaignName, productName, windowLabel } = req.body || {};
+  res.json(await rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId: req.user.id }));
+}));
+
+// Executes a real (PAUSED) clone via the existing engine — ADMIN only, and
+// only after the owner approved the exact config in the UI.
+router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { executeScale } = await import('../services/amb/scaleWinners.js');
+  const { sourceCampaignId, selectedAdIds, budgetEgp, startMode, startAt, window } = req.body || {};
+  res.status(201).json(await executeScale({ sourceCampaignId, selectedAdIds, budgetEgp, startMode, startAt, windowName: window || 'today', userId: req.user.id }));
+}));
+
+// ---------------------------------------------------------------------------
 // AI Action Plan (recommendations)
 // ---------------------------------------------------------------------------
 router.get('/recommendations', asyncRoute(async (req, res) => res.json(await getCurrentRecommendations())));

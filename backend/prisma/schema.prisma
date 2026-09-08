@@ -58,6 +58,7 @@ model User {
   amb_clone_batches_approved     AmbCloneBatch[]              @relation("AmbCloneApprover")
   amb_clone_audit_entries        AmbCloneAudit[]              @relation("AmbCloneAuditActor")
   media_scalings_created         MediaLibraryScaling[]        @relation("MediaScalingCreator")
+  amb_scale_decisions_reviewed   AmbScaleDecision[]
 
   @@map("users")
 }
@@ -1260,6 +1261,44 @@ model AmbActionResult {
   @@unique([action_id, checkpoint])
   @@index([due_at])
   @@map("amb_action_results")
+}
+
+// AI Suggested Decisions — "Winner → Scale" lifecycle ONLY. Winner cards are
+// computed live from the existing metrics pipeline; this row exists solely so
+// a winner the owner Rejected or already Executed is not re-surfaced as a
+// fresh pending recommendation. Execution reuses the clone engine
+// (AmbCloneBatch) — clone_batch_id links to it.
+model AmbScaleDecision {
+  id                   Int     @id @default(autoincrement())
+  ad_account_id        String
+  source_campaign_id   String
+  source_campaign_name String?
+  product_name         String?
+  window_label         String?
+
+  status String @default("PENDING") // PENDING | APPROVED | EXECUTED | REJECTED | FAILED
+
+  orders Int?
+  cpa    Float?
+  spend  Float?
+
+  winner_ads_json String? // snapshot of the per-ad winner panel at approval time
+  budget_egp      Float?
+  exec_mode       String? // RUN_NOW | SCHEDULE
+  start_at_cairo  String? // "YYYY-MM-DDTHH:MM" (Africa/Cairo) when SCHEDULE
+  clone_batch_id  String?
+
+  reviewed_by_id Int?
+  reviewed_by    User?     @relation(fields: [reviewed_by_id], references: [id], onDelete: SetNull)
+  reviewed_at    DateTime?
+  error          String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([ad_account_id, source_campaign_id])
+  @@index([status])
+  @@map("amb_scale_decisions")
 }
 
 // In-app notifications for AI Media Buyer.

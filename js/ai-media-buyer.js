@@ -271,6 +271,7 @@ async function renderHome(view) {
           <div class="t">${ic('bulb', 'ic')} القرارات المقترحة من الذكاء الاصطناعي</div>
           <span class="amb-sort">${resolved.length ? `${resolved.filter((r) => ['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'].includes(r.status)).length} توصية اتحلّت` : ''}</span>
         </div>
+        <div id="ambScaleWinners"></div>
         <div id="ambRecBatchNote"></div>
         <div id="ambRecList"></div>
       </div>
@@ -283,7 +284,212 @@ async function renderHome(view) {
   renderRecBatchNote(active, w);
   renderRecList(active);
   renderSide(ov, meta, hWin, active);
+  renderScaleWinners().catch(() => {});
   if ($('ambHomeSchedules')) renderHomeSchedules($('ambHomeSchedules')).catch(() => {});
+}
+
+// ===========================================================================
+// AI Suggested Decisions — Winner → Scale  (this section only)
+// ===========================================================================
+const scaleUi = new Map(); // sourceCampaignId -> { open, sel:Set, budget, mode, date, time }
+
+function scaleState(card) {
+  let s = scaleUi.get(card.sourceCampaignId);
+  if (!s) {
+    s = {
+      open: false,
+      sel: new Set(card.defaults.selectedAdIds || []),
+      budget: '',
+      mode: 'RUN_NOW',
+      date: card.defaults.startDate || cairoDateStr(1),
+      time: card.defaults.startTime || '00:00',
+    };
+    scaleUi.set(card.sourceCampaignId, s);
+  }
+  return s;
+}
+
+let _scaleData = null; // last /scale/winners payload (re-rendered locally on card interaction)
+async function renderScaleWinners(cached) {
+  const el = $('ambScaleWinners');
+  if (!el) return;
+  let data = cached || _scaleData;
+  if (!cached) {
+    try { data = await api.get(`/api/ai-media-buyer/scale/winners?window=${state.window}`); }
+    catch { el.innerHTML = ''; return; }
+    _scaleData = data;
+  }
+  const cards = (data.cards || []).filter((c) => c.decisionStatus === 'PENDING' || (scaleUi.get(c.sourceCampaignId)?.open));
+  if (!cards.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="amb-scale-wrap">
+      <div class="amb-scale-h">🚀 جاهزة للاسكيل <span class="faint">— طلب ≥ 1 و CPA ≤ ${data.winnerCpaEgp} ج.م</span></div>
+      ${cards.map(scaleCardHtml).join('')}
+    </div>`;
+  wireScaleCards(el, data);
+}
+const rerenderScale = () => renderScaleWinners(_scaleData);
+
+function scaleCardHtml(card) {
+  const s = scaleState(card);
+  return `<div class="amb-scale-card ${s.open ? 'open' : ''}" data-scw="${E(card.sourceCampaignId)}">
+    <div class="amb-scale-top">
+      <div class="amb-scale-name">
+        <div class="pn">${E(card.displayName)}</div>
+        <div class="cn faint">${E(card.sourceCampaignName)}</div>
+      </div>
+      <div class="amb-scale-nums">
+        <div class="nb"><b>${fmtNum(card.orders)}</b><span>طلب</span></div>
+        <div class="nb"><b>${fmtEGP(card.cpa)}</b><span>CPA</span></div>
+        <div class="nb"><b>${fmtNum(card.winningCreativeCount)}</b><span>كرياتيف رابح</span></div>
+      </div>
+      <div class="amb-scale-cta">
+        <span class="amb-badge scale">Recommended for Scaling</span>
+        <button class="amb-btn ${s.open ? 'ghost' : 'primary'} sm" data-scw-act="toggle" data-scw="${E(card.sourceCampaignId)}">${s.open ? 'إغلاق' : 'Review Scale'}</button>
+        ${!s.open ? `<button class="amb-btn ghost sm" data-scw-act="reject" data-scw="${E(card.sourceCampaignId)}">رفض</button>` : ''}
+      </div>
+    </div>
+    ${s.open ? scaleExpandedHtml(card, s) : ''}
+  </div>`;
+}
+
+function scaleExpandedHtml(card, s) {
+  const sched = s.mode === 'SCHEDULE';
+  const futureOk = !sched || cloneStartInFuture(s.date, s.time);
+  const selCount = card.ads.filter((a) => s.sel.has(a.adId)).length;
+  const budgetOk = Number(s.budget) > 0;
+  return `<div class="amb-scale-exp">
+    <div class="amb-scale-sec">
+      <div class="t">الأداء</div>
+      <div class="amb-scale-perf">
+        <span><b>${fmtNum(card.orders)}</b> طلب</span>
+        <span><b>${fmtEGP(card.cpa)}</b> CPA</span>
+        <span><b>${fmtEGP(card.spend)}</b> صرف</span>
+      </div>
+      <div class="amb-scale-reco">${E(card.recommendation)}</div>
+    </div>
+
+    <div class="amb-scale-sec">
+      <div class="t">الإعلانات الرابحة — اختَر ما تريد اسكيله</div>
+      ${card.ads.map((a) => `
+        <label class="amb-scale-ad ${s.sel.has(a.adId) ? 'sel' : ''} ${a.qualifies ? '' : 'dim'}">
+          <input type="checkbox" data-scw-ad="${E(a.adId)}" ${s.sel.has(a.adId) ? 'checked' : ''} />
+          <span class="an">${E(a.adName)}${a.bestWinner ? ` <span class="amb-badge best">🏆 BEST WINNER</span>` : ''}</span>
+          <span class="am faint">${a.orders} طلب · CPA ${a.cpa == null ? '—' : fmtEGP(a.cpa)} · صرف ${fmtEGP(a.spend)}${a.creativeType ? ` · ${E(a.creativeType)}` : ''}</span>
+          <span class="aid faint mono">${E(a.adId)}</span>
+        </label>`).join('')}
+    </div>
+
+    <div class="amb-scale-sec">
+      <div class="t">إعدادات الاسكيل</div>
+      <div class="amb-field-grid">
+        <div class="field" style="max-width:200px;">
+          <label>ميزانية الاسكيل (ج.م / يوم)</label>
+          <input type="number" min="1" step="1" placeholder="مثال: 1000" value="${E(s.budget)}" data-scw-budget />
+        </div>
+      </div>
+      <div class="amb-field-grid" style="margin-top:6px;">
+        <label class="amb-radio-row ${!sched ? 'sel' : ''}" style="cursor:pointer;">
+          <input type="radio" name="scwmode-${E(card.sourceCampaignId)}" value="RUN_NOW" ${!sched ? 'checked' : ''} data-scw-mode />
+          <span class="rr-main">تشغيل الآن — Run Now</span>
+        </label>
+        <label class="amb-radio-row ${sched ? 'sel' : ''}" style="cursor:pointer;">
+          <input type="radio" name="scwmode-${E(card.sourceCampaignId)}" value="SCHEDULE" ${sched ? 'checked' : ''} data-scw-mode />
+          <span class="rr-main">جدولة البداية — Schedule Start</span>
+        </label>
+      </div>
+      ${sched ? `<div class="amb-field-grid" style="margin-top:6px;">
+        <div class="field" style="max-width:180px;"><label>Start Date</label><input type="date" value="${E(s.date)}" min="${E(cairoDateStr(0))}" data-scw-date /></div>
+        <div class="field" style="max-width:150px;"><label>Start Time</label><input type="time" value="${E(s.time)}" data-scw-time /></div>
+        <div class="field" style="max-width:160px;"><label>Timezone</label><input type="text" value="Africa/Cairo" disabled readonly /></div>
+      </div>
+      ${futureOk ? '' : `<div class="faint" style="font-size:12px; color:var(--amb-red); margin-top:4px;">The selected start date and time must be in the future.</div>`}` : ''}
+    </div>
+
+    <div class="amb-scale-sec summary">
+      <div class="t">الملخص النهائي</div>
+      <div class="amb-scale-sum">
+        <div><span>الحملة الجديدة</span><b>${E(card.proposedScaleCampaignName)}</b></div>
+        <div><span>إعلانات مختارة</span><b>${selCount}</b></div>
+        <div><span>الميزانية</span><b>${budgetOk ? fmtEGP(Number(s.budget)) + ' / يوم' : '—'}</b></div>
+        <div><span>التشغيل</span><b>${sched ? `${fmtDMY(s.date)} ${fmt12h(s.time)} — Africa/Cairo` : 'تشغيل الآن'}</b></div>
+      </div>
+    </div>
+
+    <div class="amb-scale-actions">
+      <button class="amb-btn primary" data-scw-act="approve" data-scw="${E(card.sourceCampaignId)}" ${(!state.isAdmin || selCount === 0 || !budgetOk || !futureOk) ? 'disabled' : ''}>${state.isAdmin ? 'موافق على الاسكيل' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
+      <button class="amb-btn ghost" data-scw-act="cancel" data-scw="${E(card.sourceCampaignId)}">إلغاء</button>
+    </div>
+  </div>`;
+}
+
+function wireScaleCards(root, data) {
+  const byId = new Map((data.cards || []).map((c) => [c.sourceCampaignId, c]));
+  const rerender = rerenderScale;
+
+  root.querySelectorAll('[data-scw-act]').forEach((btn) => {
+    const id = btn.dataset.scw;
+    const card = byId.get(id);
+    const s = card ? scaleState(card) : null;
+    btn.onclick = async () => {
+      if (!card) return;
+      if (btn.dataset.scwAct === 'toggle' || btn.dataset.scwAct === 'cancel') { s.open = btn.dataset.scwAct === 'toggle' ? !s.open : false; rerender(); return; }
+      if (btn.dataset.scwAct === 'reject') {
+        if (!(await UI.confirmModal({ title: 'رفض الاسكيل', message: `مش هتظهر توصية اسكيل جديدة لـ «${E(card.displayName)}» تاني إلا لو ظهر أداء جديد مؤهل.`, confirmLabel: 'رفض', danger: true }))) return;
+        try { await api.post('/api/ai-media-buyer/scale/reject', { sourceCampaignId: card.sourceCampaignId, sourceCampaignName: card.sourceCampaignName, productName: card.productName, windowLabel: card.window.label }); UI.toast('تم الرفض'); scaleUi.delete(card.sourceCampaignId); rerender(); }
+        catch (e) { UI.toast(e.message, 'error'); }
+        return;
+      }
+      if (btn.dataset.scwAct === 'approve') {
+        const selectedAdIds = card.ads.filter((a) => s.sel.has(a.adId)).map((a) => a.adId);
+        const sched = s.mode === 'SCHEDULE';
+        if (!selectedAdIds.length) { UI.toast('اختر إعلانًا واحدًا على الأقل.', 'error'); return; }
+        if (!(Number(s.budget) > 0)) { UI.toast('أدخل ميزانية صحيحة.', 'error'); return; }
+        if (sched && !cloneStartInFuture(s.date, s.time)) { UI.toast('The selected start date and time must be in the future.', 'error'); return; }
+        const ok = await UI.confirmModal({
+          title: 'تأكيد الاسكيل',
+          message: `هيتم إنشاء حملة <b>${E(card.proposedScaleCampaignName)}</b> (متوقفة) بنسخة مطابقة لـ ${selectedAdIds.length} إعلان رابح، ميزانية ${fmtEGP(Number(s.budget))}/يوم.<br>${sched ? `التشغيل: ${fmtDMY(s.date)} — ${fmt12h(s.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال النسخ.'}<br>حملة المصدر مش هتتغير. متابعة؟`,
+          confirmLabel: sched ? 'موافق وجدولة' : 'موافق وتشغيل', danger: true,
+        });
+        if (!ok) return;
+        btn.disabled = true; btn.textContent = '… بيجهّز';
+        try {
+          const r = await api.post('/api/ai-media-buyer/scale/execute', {
+            sourceCampaignId: card.sourceCampaignId,
+            selectedAdIds,
+            budgetEgp: Number(s.budget),
+            startMode: s.mode,
+            startAt: sched ? `${s.date}T${s.time}` : null,
+            window: state.window,
+          });
+          UI.toast(`✅ اتعمل الاسكيل — ${E(r.scaleCampaignName)} (متوقفة)`);
+          scaleUi.delete(card.sourceCampaignId);
+          route();
+        } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'موافق على الاسكيل'; }
+        return;
+      }
+    };
+  });
+
+  root.querySelectorAll('[data-scw-ad]').forEach((cb) => {
+    cb.onclick = () => {
+      const cardEl = cb.closest('[data-scw]');
+      const id = cardEl?.dataset.scw;
+      const card = byId.get(id); if (!card) return;
+      const s = scaleState(card);
+      if (cb.checked) s.sel.add(cb.dataset.scwAd); else s.sel.delete(cb.dataset.scwAd);
+      rerenderScale();
+    };
+  });
+  root.querySelectorAll('[data-scw-budget]').forEach((inp) => {
+    inp.oninput = () => { const card = byId.get(inp.closest('[data-scw]')?.dataset.scw); if (card) scaleState(card).budget = inp.value; };
+    inp.onchange = () => rerenderScale();
+  });
+  root.querySelectorAll('[data-scw-mode]').forEach((r) => {
+    r.onchange = () => { const card = byId.get(r.closest('[data-scw]')?.dataset.scw); if (card) { scaleState(card).mode = r.value === "SCHEDULE" ? "SCHEDULE" : "RUN_NOW"; rerenderScale(); } };
+  });
+  root.querySelectorAll('[data-scw-date]').forEach((d) => { d.onchange = () => { const card = byId.get(d.closest('[data-scw]')?.dataset.scw); if (card) { scaleState(card).date = d.value || cairoDateStr(1); rerenderScale(); } }; });
+  root.querySelectorAll('[data-scw-time]').forEach((t) => { t.onchange = () => { const card = byId.get(t.closest('[data-scw]')?.dataset.scw); if (card) { scaleState(card).time = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; rerenderScale(); } }; });
 }
 
 /**

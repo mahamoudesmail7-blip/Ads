@@ -474,3 +474,38 @@ body { background: var(--amb-bg); }
   .amb-kpis { grid-template-columns: 1fr; }
   .amb-r-actions { margin-inline-start: 0; }
 }
+
+/* ── AI Suggested Decisions → Winner → Scale (this section only) ─────────── */
+.amb-scale-wrap { margin-bottom: 16px; }
+.amb-scale-h { font-size: 13px; font-weight: 800; color: var(--amb-text); margin: 0 0 8px; }
+.amb-scale-card { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); box-shadow: var(--amb-shadow); margin-bottom: 10px; overflow: hidden; }
+.amb-scale-card.open { border-color: var(--amb-green); }
+.amb-scale-top { display: flex; align-items: center; gap: 14px; padding: 14px 16px; flex-wrap: wrap; }
+.amb-scale-name .pn { font-size: 14.5px; font-weight: 800; color: var(--amb-text); }
+.amb-scale-name .cn { font-size: 11.5px; }
+.amb-scale-nums { display: flex; gap: 18px; margin-inline-start: auto; }
+.amb-scale-nums .nb { text-align: center; }
+.amb-scale-nums .nb b { display: block; font-size: 18px; font-weight: 800; color: var(--amb-text); line-height: 1.1; }
+.amb-scale-nums .nb span { font-size: 10.5px; color: var(--amb-text-faint); }
+.amb-scale-cta { display: flex; align-items: center; gap: 8px; }
+.amb-badge { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.amb-badge.scale { background: var(--amb-green-bg); color: var(--amb-green); }
+.amb-badge.best { background: var(--amb-amber-bg); color: var(--amb-amber); margin-inline-start: 6px; }
+.amb-scale-exp { border-top: 1px solid var(--amb-border); padding: 4px 16px 16px; background: var(--amb-surface-2); }
+.amb-scale-sec { padding: 12px 0; border-bottom: 1px solid var(--amb-border); }
+.amb-scale-sec:last-of-type { border-bottom: 0; }
+.amb-scale-sec .t { font-size: 12px; font-weight: 800; color: var(--amb-text-dim); margin-bottom: 8px; }
+.amb-scale-perf { display: flex; gap: 20px; font-size: 13px; }
+.amb-scale-perf b { font-size: 16px; font-weight: 800; }
+.amb-scale-reco { font-size: 12.5px; color: var(--amb-text-dim); margin-top: 8px; background: var(--amb-green-bg); padding: 8px 10px; border-radius: 8px; }
+.amb-scale-ad { display: grid; grid-template-columns: 20px 1fr auto; gap: 4px 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--amb-border); border-radius: 8px; margin-bottom: 6px; cursor: pointer; }
+.amb-scale-ad.sel { border-color: var(--amb-green); background: var(--amb-green-bg); }
+.amb-scale-ad.dim { opacity: .62; }
+.amb-scale-ad .an { font-size: 12.5px; font-weight: 700; color: var(--amb-text); }
+.amb-scale-ad .am { grid-column: 2; font-size: 11px; }
+.amb-scale-ad .aid { grid-column: 3; grid-row: 1 / span 2; font-size: 10px; align-self: center; }
+.amb-scale-sum { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 16px; font-size: 12.5px; }
+.amb-scale-sum > div { display: flex; justify-content: space-between; gap: 10px; }
+.amb-scale-sum span { color: var(--amb-text-faint); }
+.amb-scale-actions { display: flex; gap: 8px; padding-top: 14px; }
+@media (max-width: 560px) { .amb-scale-nums { margin-inline-start: 0; } .amb-scale-sum { grid-template-columns: 1fr; } }

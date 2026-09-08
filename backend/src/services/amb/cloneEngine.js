@@ -40,14 +40,15 @@ import { jobHasActiveSchedule, cancelSchedulesForBatch } from './campaignSchedul
  * boosted post with no text/media) or needs a destination Page and none is
  * resolvable. A video with no downloadable source is still "copyable" — the
  * engine tries the shared reference first. */
-function adCopyable(cr, { destPageId, identityMap }) {
+function adCopyable(cr, { destPageId, identityMap, sameAccount = false }) {
   if (!cr || cr.__error) return false;
   let norm;
   try { norm = normalizeCreative(cr); } catch { return false; }
   if (norm.objectStoryId && !norm.hasObjectStorySpec && !(norm.body || norm.title || norm.images.length || norm.videos.length || norm.carouselCards.length)) return false;
   if (!norm.hasObjectStorySpec) {
     const src = norm.sourcePageId;
-    const pg = (src && identityMap?.pages?.[String(src)]) || destPageId || null;
+    // Same-account scale: the source Page is inherently usable — no mapping needed.
+    const pg = (sameAccount && src) || (src && identityMap?.pages?.[String(src)]) || destPageId || src || null;
     if (!pg) return false;
   }
   return true;
@@ -239,9 +240,13 @@ export async function listSourceCampaigns({ accountId }) {
  * Build the full REVIEW payload: resolves every (campaign × destination)
  * pre-flight and the per-destination scheduled activation instant. Pure read.
  */
-export async function buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, recreateBoosted = false }) {
+export async function buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, recreateBoosted = false, allowSameAccount = false }) {
   if (!sourceAccountId) { const e = new Error('لازم تختار حساب مصدر واحد.'); e.status = 400; throw e; }
-  const dests = [...new Set((destinationAccountIds || []).filter((x) => x && x !== sourceAccountId))];
+  // "Winner → Scale" duplicates in-place, so the source account IS a valid
+  // destination in that one flow (the engine still only CREATEs new objects).
+  const dests = allowSameAccount
+    ? [...new Set((destinationAccountIds || []).filter(Boolean))]
+    : [...new Set((destinationAccountIds || []).filter((x) => x && x !== sourceAccountId))];
   const camps = [...new Set((campaignIds || []).filter(Boolean))];
   if (!camps.length) { const e = new Error('لازم تختار حملة واحدة على الأقل.'); e.status = 400; throw e; }
   if (!dests.length) { const e = new Error('لازم تختار حساب وجهة واحد على الأقل (غير حساب المصدر).'); e.status = 400; throw e; }
@@ -322,7 +327,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, adAllowlist = null, campaignBudgetOverrideEgp = null, campaignNameOverride = null, allowSameAccount = false, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
@@ -357,9 +362,17 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
   const destIg = destinationInstagramId && /^\d{5,}$/.test(String(destinationInstagramId)) ? String(destinationInstagramId) : null;
   const idMap = identityMap && typeof identityMap === 'object' ? identityMap : null;
   const pxMap = pixelMap && typeof pixelMap === 'object' ? pixelMap : null;
-  const preview = await buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId: destPage, recreateBoosted: !!recreateBoosted && !!destPage });
+  const preview = await buildPreview({ sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId: destPage, recreateBoosted: !!recreateBoosted && !!destPage, allowSameAccount: allowSameAccount === true });
   const dests = preview.destinations.map((d) => d.id);
   const camps = preview.campaigns.map((c) => c.id);
+
+  // Winner → Scale extras carried in the identity_map blob (no schema change).
+  const scaleExtra = {
+    allowSameAccount: allowSameAccount === true,
+    adAllowlist: Array.isArray(adAllowlist) && adAllowlist.length ? adAllowlist.map(String) : null,
+    campaignBudgetOverrideEgp: Number(campaignBudgetOverrideEgp) > 0 ? Number(campaignBudgetOverrideEgp) : null,
+    campaignNameOverride: typeof campaignNameOverride === 'string' && campaignNameOverride.trim() ? campaignNameOverride.trim().slice(0, 400) : null,
+  };
 
   const batch = await prisma.ambCloneBatch.create({
     data: {
@@ -371,7 +384,7 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
       schedule_local_time: execMode === 'SCHEDULE' ? String(startAt) : execMode === 'RUN_NOW' ? 'RUN_NOW' : preview.scheduleLocalTime,
       destination_page_id: destPage,
       destination_instagram_id: destIg,
-      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true, autoActivate, executionMode: execMode, startAtCairo: execMode === 'SCHEDULE' ? String(startAt) : null }),
+      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true, autoActivate, executionMode: execMode, startAtCairo: execMode === 'SCHEDULE' ? String(startAt) : null, ...scaleExtra }),
       pixel_map_json: pxMap ? JSON.stringify(pxMap) : null,
       recreate_boosted: !!recreateBoosted && !!destPage,
       total_copies: preview.totalCopies,
@@ -586,10 +599,13 @@ async function cloneJob(jobId, token) {
   const batchId = job.batch_id;
   const dest = job.destination_ad_account_id;
   const src = job.source_ad_account_id;
-  if (dest === src) throw new Error('حساب الوجهة لا يمكن أن يكون نفس المصدر.'); // hard guard — never write to source
+  const identityMap = j(job.batch?.identity_map_json, {}) || {};
+  // Guard: never write to source. Same-account is allowed ONLY for an explicit
+  // in-place "scale" (blob.allowSameAccount) — the engine still only CREATEs
+  // brand-new objects and never touches a source id.
+  if (dest === src && identityMap.allowSameAccount !== true) throw new Error('حساب الوجهة لا يمكن أن يكون نفس المصدر.');
   const destPageId = job.destination_page_id || job.batch?.destination_page_id || null;
   const destIgId = job.batch?.destination_instagram_id || null;
-  const identityMap = j(job.batch?.identity_map_json, {}) || {};
   const pixelMap = j(job.batch?.pixel_map_json, {}) || {};
   const allowPageOnlyIg = identityMap.allowPageOnlyIg !== false;
   const recreateBoosted = !!job.batch?.recreate_boosted;
@@ -617,14 +633,26 @@ async function cloneJob(jobId, token) {
   }
   const R = freshPf.resolved;
 
+  // ---- AD ALLOWLIST (Winner → Scale) ----
+  // When scaling a winner the owner picks WHICH source ads to carry over.
+  // Narrow the tree to exactly those ads before any other logic; empty ad
+  // sets then fall away via the guard below. Purely a subset of the source —
+  // the ads themselves are still copied verbatim.
+  const adAllowlist = Array.isArray(identityMap.adAllowlist) ? identityMap.adAllowlist.map(String) : null;
+  if (adAllowlist && adAllowlist.length) {
+    const allow = new Set(adAllowlist);
+    tree.ads = tree.ads.filter((ad) => allow.has(String(ad.id)));
+  }
+
   // ---- EMPTY-CAMPAIGN GUARD ----
   // Never create a destination Campaign/AdSet and then find its ads can't be
   // copied. Classify every ad first; if none can be copied, write NOTHING.
   const copyValidAdsOnly = identityMap.copyValidAdsOnly === true;
+  const sameAccount = identityMap.allowSameAccount === true;
   const adOk = new Map();
   for (const ad of tree.ads) {
     const cr = ad.creative?.id ? tree.creatives.get(ad.creative.id) : null;
-    adOk.set(ad.id, adCopyable(cr, { destPageId, identityMap }));
+    adOk.set(ad.id, adCopyable(cr, { destPageId, identityMap, sameAccount }));
   }
   const copyableAdIds = tree.ads.filter((ad) => adOk.get(ad.id)).map((ad) => ad.id);
   if (copyableAdIds.length === 0) {
@@ -658,8 +686,17 @@ async function cloneJob(jobId, token) {
       // Meta deprecated "NONE": the "no special category" value is an EMPTY
       // ARRAY. The param is still required on campaign create.
       const srcSac = Array.isArray(c.special_ad_categories) ? c.special_ad_categories.filter((x) => x && x !== 'NONE') : [];
+      // Winner → Scale overrides (NOTHING else about the campaign changes):
+      //   nameOverride  — the owner's scale name (source name is not rewritten,
+      //                   a suffix like " - Scale" is appended in the UI).
+      //   scaleBudgetEgp — the owner-entered scaling budget → set as the new
+      //                   campaign's daily_budget (a budget field the engine
+      //                   already supports); the SOURCE budget is never touched.
+      const nameOverride = typeof identityMap.campaignNameOverride === 'string' && identityMap.campaignNameOverride.trim()
+        ? identityMap.campaignNameOverride.trim().slice(0, 400) : null;
+      const scaleBudgetEgp = Number(identityMap.campaignBudgetOverrideEgp) > 0 ? Number(identityMap.campaignBudgetOverrideEgp) : null;
       const payload = {
-        name: c.name,
+        name: nameOverride || c.name,
         objective: c.objective,
         status: 'PAUSED',
         buying_type: c.buying_type || 'AUCTION',
@@ -667,14 +704,19 @@ async function cloneJob(jobId, token) {
       };
       if (c.special_ad_category_country) payload.special_ad_category_country = c.special_ad_category_country;
       if (c.bid_strategy) payload.bid_strategy = c.bid_strategy;
-      if (c.daily_budget) payload.daily_budget = Number(c.daily_budget);
-      if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
+      if (scaleBudgetEgp) {
+        // Owner-set scale budget wins — one campaign-level daily budget (CBO).
+        payload.daily_budget = Math.round(scaleBudgetEgp * 100);
+      } else {
+        if (c.daily_budget) payload.daily_budget = Number(c.daily_budget);
+        if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
+      }
       if (c.spend_cap && Number(c.spend_cap) > 0) payload.spend_cap = Number(c.spend_cap);
       if (c.pacing_type) payload.pacing_type = c.pacing_type;
       // ABO campaigns (no campaign-level budget): Meta requires this field
       // explicitly on create. Copy the source value; default false (standard
       // ABO — no cross-ad-set budget sharing).
-      const cboBudget = !!(c.daily_budget || c.lifetime_budget);
+      const cboBudget = !!(payload.daily_budget || payload.lifetime_budget);
       if (!cboBudget) payload.is_adset_budget_sharing_enabled = c.is_adset_budget_sharing_enabled === true;
       try {
         const res = await createCampaign(token, dest, payload);
@@ -805,7 +847,10 @@ async function cloneJob(jobId, token) {
     if (!adsBySource.has(ad.adset_id)) adsBySource.set(ad.adset_id, []);
     adsBySource.get(ad.adset_id).push(ad);
   }
-  const campaignHasBudget = !!(tree.campaign.daily_budget || tree.campaign.lifetime_budget);
+  // A forced scale budget makes the new campaign CBO — ad sets must NOT also
+  // carry a budget (Meta rejects budget at both levels).
+  const scaleBudgetForced = Number(identityMap.campaignBudgetOverrideEgp) > 0;
+  const campaignHasBudget = scaleBudgetForced || !!(tree.campaign.daily_budget || tree.campaign.lifetime_budget);
 
   for (const as of tree.adsets) {
     let newAdsetId;
