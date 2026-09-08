@@ -1594,7 +1594,9 @@ const cloneState = {
   campaignsForAccount: null,
   selected: new Set(),
   dests: new Set(),
-  scheduleTime: '00:00',
+  execMode: 'RUN_NOW',       // 'RUN_NOW' | 'SCHEDULE' — the ONLY scheduling control
+  startDate: '',              // Cairo-local 'YYYY-MM-DD' (defaulted to tomorrow on first render)
+  startTime: '00:00',         // Cairo-local 'HH:MM' 24h (default 12:00 AM)
   preview: null,
   analysis: null,           // POST /clone/analyze result
   pageMap: {},               // { sourcePageId: destPageId }
@@ -1662,6 +1664,40 @@ function cloneAcctInBiz(a, biz) {
   if (biz === '__NONE__') return !a.businessId;
   return a.businessId === biz;
 }
+
+// ---- Clone "Run Now / Schedule Start" — timezone is ALWAYS Africa/Cairo ----
+const CLONE_TZ = 'Africa/Cairo';
+/** Cairo-local calendar parts right now: { y, m, d, hh, mm } (numbers). */
+function cairoNowParts() {
+  const f = new Intl.DateTimeFormat('en-CA', { timeZone: CLONE_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  const p = Object.fromEntries(f.formatToParts(new Date()).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value]));
+  return { y: +p.year, m: +p.month, d: +p.day, hh: +p.hour % 24, mm: +p.minute };
+}
+/** Cairo-local date 'YYYY-MM-DD', `offsetDays` from today (Cairo). */
+function cairoDateStr(offsetDays = 0) {
+  const n = cairoNowParts();
+  const dt = new Date(Date.UTC(n.y, n.m - 1, n.d));
+  dt.setUTCDate(dt.getUTCDate() + offsetDays);
+  return dt.toISOString().slice(0, 10);
+}
+/** Is a Cairo-local 'YYYY-MM-DD' + 'HH:MM' strictly in the future? (compared in Cairo wall-clock — no tz math needed for the comparison). */
+function cloneStartInFuture(dateStr, timeStr) {
+  const n = cairoNowParts();
+  const [Y, M, D] = String(dateStr || '').split('-').map(Number);
+  const [h, mi] = String(timeStr || '00:00').split(':').map(Number);
+  const sel = Date.UTC(Y, (M || 1) - 1, D || 1, h || 0, mi || 0);
+  const now = Date.UTC(n.y, n.m - 1, n.d, n.hh, n.mm);
+  return sel > now;
+}
+/** '15:30' -> '03:30 PM' */
+function fmt12h(hhmm) {
+  const [h, m] = String(hhmm || '00:00').split(':').map(Number);
+  const ap = h < 12 ? 'AM' : 'PM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${String(h12).padStart(2, '0')}:${String(m || 0).padStart(2, '0')} ${ap}`;
+}
+/** 'YYYY-MM-DD' -> 'DD/MM/YYYY' */
+function fmtDMY(iso) { const [y, m, d] = String(iso || '').split('-'); return d && m && y ? `${d}/${m}/${y}` : iso; }
 
 function cloneUUID() {
   try { return crypto.randomUUID(); } catch { return 'b-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10); }
@@ -1878,6 +1914,77 @@ function cloneMatrixHtml(matrix) {
     </div>`).join('');
 }
 
+/** The clone "Run Now / Schedule Start" section — the ONLY thing here that the user controls. Timezone is fixed to Africa/Cairo. */
+function cloneScheduleSectionHtml() {
+  if (!cloneState.startDate) cloneState.startDate = cairoDateStr(1); // default: tomorrow (Cairo)
+  const sched = cloneState.execMode === 'SCHEDULE';
+  const summary = sched
+    ? `<b>Scheduled</b> · ${fmtDMY(cloneState.startDate)} · ${fmt12h(cloneState.startTime)} · Africa/Cairo`
+    : `<b>Run Now</b>`;
+  return `
+    <div class="section-title">وقت التشغيل / Execution</div>
+    <div class="amb-field-grid" style="margin-bottom:8px;">
+      <label class="amb-radio-row ${!sched ? 'sel' : ''}" style="cursor:pointer;">
+        <input type="radio" name="ambCloneExec" value="RUN_NOW" ${!sched ? 'checked' : ''} />
+        <span class="rr-main">تشغيل الآن — Run Now</span>
+        <span class="rr-sub">تُنسخ الحملة وتبدأ فورًا حسب منطق التفعيل الحالي.</span>
+      </label>
+      <label class="amb-radio-row ${sched ? 'sel' : ''}" style="cursor:pointer;">
+        <input type="radio" name="ambCloneExec" value="SCHEDULE" ${sched ? 'checked' : ''} />
+        <span class="rr-main">جدولة البداية — Schedule Start</span>
+        <span class="rr-sub">تُنسخ الحملة متوقفة وتبدأ في التاريخ/الوقت المحددين (بتوقيت القاهرة).</span>
+      </label>
+    </div>
+    <div id="ambCloneSchedFields" ${sched ? '' : 'hidden'}>
+      <div class="amb-field-grid">
+        <div class="field" style="max-width:190px;">
+          <label>Start Date</label>
+          <input type="date" id="ambCloneStartDate" value="${E(cloneState.startDate)}" min="${E(cairoDateStr(0))}" />
+        </div>
+        <div class="field" style="max-width:150px;">
+          <label>Start Time</label>
+          <input type="time" id="ambCloneStartTime" value="${E(cloneState.startTime)}" />
+        </div>
+        <div class="field" style="max-width:170px;">
+          <label>Timezone</label>
+          <input type="text" value="Africa/Cairo" disabled readonly />
+        </div>
+      </div>
+      <div id="ambCloneSchedErr" class="faint" style="font-size:12px; color:var(--amb-red); margin-top:4px;"></div>
+    </div>
+    <div class="faint" style="font-size:12.5px; margin-top:6px;">Execution Type: <span id="ambCloneExecSummary">${summary}</span></div>
+  `;
+}
+function wireCloneScheduleSection() {
+  const paint = () => {
+    const sched = cloneState.execMode === 'SCHEDULE';
+    const f = $('ambCloneSchedFields'); if (f) f.hidden = !sched;
+    const s = $('ambCloneExecSummary');
+    if (s) s.innerHTML = sched
+      ? `<b>Scheduled</b> · ${fmtDMY(cloneState.startDate)} · ${fmt12h(cloneState.startTime)} · Africa/Cairo`
+      : `<b>Run Now</b>`;
+    const cell = $('ambCloneExecCell');
+    if (cell) cell.textContent = sched
+      ? `مجدولة — ${fmtDMY(cloneState.startDate)} ${fmt12h(cloneState.startTime)} (القاهرة)`
+      : 'تشغيل الآن';
+    const err = $('ambCloneSchedErr');
+    if (err) err.textContent = (sched && !cloneStartInFuture(cloneState.startDate, cloneState.startTime))
+      ? 'لازم يكون تاريخ ووقت البداية في المستقبل. — The selected start date and time must be in the future.' : '';
+    document.querySelectorAll('input[name="ambCloneExec"]').forEach((r) => r.closest('.amb-radio-row')?.classList.toggle('sel', r.checked));
+    syncCloneApproveButton();
+  };
+  document.querySelectorAll('input[name="ambCloneExec"]').forEach((r) => {
+    r.onchange = () => { cloneState.execMode = r.value === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW'; paint(); };
+  });
+  const d = $('ambCloneStartDate'); if (d) d.onchange = () => { cloneState.startDate = d.value || cairoDateStr(1); paint(); };
+  const t = $('ambCloneStartTime'); if (t) t.onchange = () => { cloneState.startTime = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; paint(); };
+  paint();
+}
+/** True when the scheduling section is in a valid state to submit. */
+function cloneScheduleValid() {
+  return cloneState.execMode !== 'SCHEDULE' || cloneStartInFuture(cloneState.startDate, cloneState.startTime);
+}
+
 function cloneIdentityMapPayload() {
   // Single-destination wizard: one dest page for all source pages, one IG choice.
   const pages = {};
@@ -1915,7 +2022,6 @@ async function renderCloneReview(body) {
       sourceAccountId: cloneState.sourceId,
       destinationAccountIds: [...cloneState.dests],
       campaignIds: [...cloneState.selected],
-      scheduleLocalTime: cloneState.scheduleTime,
     }),
     runCloneAnalysis().catch((e) => ({ __error: e.message })),
   ]);
@@ -1932,7 +2038,7 @@ async function renderCloneReview(body) {
         <div><span class="rl">الحملات المختارة</span><span class="rv">${preview.campaigns.length}</span></div>
         <div><span class="rl">حسابات الوجهة</span><span class="rv">${preview.destinations.length}</span></div>
         <div><span class="rl">إجمالي النسخ</span><span class="rv">${preview.totalCopies}${preview.blockedCopies ? ` <span class="faint" style="font-size:12px;">(${preview.cloneableCopies} قابلة · ${preview.blockedCopies} محجوبة)</span>` : ''}</span></div>
-        <div><span class="rl">الحالة بعد النسخ</span><span class="rv">متوقفة (PAUSED) — تُجدول بعدين</span></div>
+        <div><span class="rl">وقت التشغيل</span><span class="rv" id="ambCloneExecCell">${cloneState.execMode === 'SCHEDULE' ? `مجدولة — ${fmtDMY(cloneState.startDate || cairoDateStr(1))} ${fmt12h(cloneState.startTime)} (القاهرة)` : 'تشغيل الآن'}</span></div>
         <div><span class="rl">حملات المصدر</span><span class="rv" style="color:var(--amb-green); font-weight:800;">بدون أي تغيير</span></div>
       </div>
 
@@ -1962,7 +2068,9 @@ async function renderCloneReview(body) {
           </div>`;
         }).join('')}
       </div>
-      ${preview.blockedCopies ? `<div class="amb-batchnote" style="margin-top:12px;"><span>${preview.blockedCopies} نسخة محجوبة ومش هتتنسخ — النسخ الجاهزة/التحذير بس هي اللي هتتجدول.</span></div>` : ''}
+      ${preview.blockedCopies ? `<div class="amb-batchnote" style="margin-top:12px;"><span>${preview.blockedCopies} نسخة محجوبة ومش هتتنسخ.</span></div>` : ''}
+
+      ${cloneScheduleSectionHtml()}
 
       <div id="ambCloneRebuild"></div>
 
@@ -1977,14 +2085,22 @@ async function renderCloneReview(body) {
       </div>
     </div>`;
   renderCloneRebuildPanel();
+  wireCloneScheduleSection();
   $('ambCloneBack').onclick = () => { cloneState.step = 3; renderCloneStep(); };
   $('ambCloneCancel').onclick = () => { resetCloneWizard(); renderCloneRecent(); renderCloneStep(); };
   const ap = $('ambCloneApprove');
   if (ap) ap.onclick = async () => {
+    if (!cloneScheduleValid()) { UI.toast('لازم يكون تاريخ ووقت البداية في المستقبل. — The selected start date and time must be in the future.', 'error'); return; }
+    const scheduled = cloneState.execMode === 'SCHEDULE';
+    const startAt = scheduled ? `${cloneState.startDate}T${cloneState.startTime}` : null;
     const ok = await UI.confirmModal({
-      title: 'نسخ إلى حساب الوجهة',
-      message: `هيتم إنشاء ${preview.cloneableCopies} حملة (بكل المجموعات والإعلانات) في ${preview.destinations.length} حساب وجهة، وكلها <b>متوقفة (PAUSED)</b>. حملات المصدر مش هتتغير خالص. تقدر تجدول التشغيل بعد اكتمال النسخ. متابعة؟`,
-      confirmLabel: 'نسخ الآن', danger: true,
+      title: scheduled ? 'نسخ وجدولة البداية' : 'نسخ وتشغيل الآن',
+      message: `هيتم إنشاء ${preview.cloneableCopies} حملة (بكل المجموعات والإعلانات) في ${preview.destinations.length} حساب وجهة كنسخة مطابقة للمصدر. حملات المصدر مش هتتغير خالص.<br><br>`
+        + (scheduled
+          ? `<b>وقت التشغيل:</b> ${fmtDMY(cloneState.startDate)} — ${fmt12h(cloneState.startTime)} — Africa/Cairo.<br>تُنسخ متوقفة (PAUSED) وتتفعّل تلقائيًا في الوقت ده.`
+          : `<b>وقت التشغيل:</b> تشغيل الآن — تُنسخ (PAUSED) وتتفعّل فورًا بعد اكتمال النسخ.`)
+        + `<br><br>متابعة؟`,
+      confirmLabel: scheduled ? 'نسخ وجدولة' : 'نسخ وتشغيل', danger: true,
     });
     if (!ok) return;
     ap.disabled = true; ap.textContent = '… بيجهّز الدفعة';
@@ -1996,7 +2112,8 @@ async function renderCloneReview(body) {
         sourceAccountId: cloneState.sourceId,
         destinationAccountIds: [...cloneState.dests],
         campaignIds: [...cloneState.selected],
-        scheduleLocalTime: cloneState.scheduleTime,
+        executionMode: cloneState.execMode,
+        startAt,
         destinationPageId: idp.destinationPageId,
         destinationInstagramId: idp.destinationInstagramId,
         identityMap: idp.identityMap,
@@ -2005,12 +2122,12 @@ async function renderCloneReview(body) {
         copyValidAdsOnly: idp.copyValidAdsOnly,
       });
       await api.post(`/api/ai-media-buyer/clone/batches/${cloneState.batchId}/approve`, {});
-      UI.toast('✅ تمت الموافقة — بدأ الاستنساخ');
+      UI.toast(scheduled ? '✅ تمت الموافقة — نسخ + جدولة البداية' : '✅ تمت الموافقة — نسخ + تشغيل الآن');
       cloneState.step = 6;
       renderCloneStep();
     } catch (err) {
       UI.toast(err.message, 'error');
-      ap.disabled = false; ap.textContent = `نسخ إلى حساب الوجهة (${preview.cloneableCopies})`;
+      ap.disabled = false;
       syncCloneApproveButton();
     }
   };
@@ -2127,16 +2244,20 @@ function syncCloneApproveButton() {
   const a = cloneState.analysis;
   if (!ap || !a || a.__error) return;
   const t = a.overallCopySummary || {};
-  const blocked = (t.needsMapping || 0) > 0 || ((t.cannotCopy || 0) > 0 && !cloneState.copyValidAdsOnly);
+  const schedBad = !cloneScheduleValid();
+  const blocked = (t.needsMapping || 0) > 0 || ((t.cannotCopy || 0) > 0 && !cloneState.copyValidAdsOnly) || schedBad;
   ap.disabled = !state.isAdmin || (cloneState.preview?.cloneableCopies || 0) === 0 || blocked;
+  const n = cloneState.preview?.cloneableCopies || 0;
   ap.textContent = !state.isAdmin ? 'النسخ متاح للـ ADMIN فقط'
     : (t.needsMapping || 0) > 0 ? `أكمل الاختيارات المطلوبة (${t.needsMapping})`
     : ((t.cannotCopy || 0) > 0 && !cloneState.copyValidAdsOnly) ? 'فعّل «نسخ الإعلانات الصالحة فقط» أو ألغِ'
-    : `نسخ إلى حساب الوجهة (${cloneState.preview?.cloneableCopies || 0})`;
+    : schedBad ? 'صحّح تاريخ/وقت البداية'
+    : cloneState.execMode === 'SCHEDULE' ? `نسخ وجدولة البداية (${n})`
+    : `نسخ وتشغيل الآن (${n})`;
 }
 
 function resetCloneWizard() {
-  Object.assign(cloneState, { step: 1, srcBiz: '__ALL__', dstBiz: '__ALL__', sourceId: null, campaigns: null, campaignsForAccount: null, selected: new Set(), dests: new Set(), scheduleTime: '00:00', preview: null, analysis: null, pageMap: {}, igChoice: 'PAGE_ONLY', pixelMap: {}, batchId: null, batch: null });
+  Object.assign(cloneState, { step: 1, srcBiz: '__ALL__', dstBiz: '__ALL__', sourceId: null, campaigns: null, campaignsForAccount: null, selected: new Set(), dests: new Set(), execMode: 'RUN_NOW', startDate: '', startTime: '00:00', preview: null, analysis: null, pageMap: {}, igChoice: 'PAGE_ONLY', pixelMap: {}, batchId: null, batch: null });
 }
 
 // ---- Step 6 · RESULT / progress ----
@@ -2164,7 +2285,8 @@ async function renderCloneResult(body) {
         ${b.jobsSummary.blocked ? `<span class="bad">${b.jobsSummary.blocked} محجوب</span>` : ''}
         ${b.jobsSummary.cloning ? `<span class="busy">${b.jobsSummary.cloning} جارٍ</span>` : ''}
       </div>
-      <div style="color:var(--amb-green); font-size:12.5px; font-weight:700; margin-top:6px;">حملات المصدر: بدون أي تغيير</div>
+      <div style="font-size:12.5px; margin-top:6px;">Execution Type: <b>${b.executionMode === 'SCHEDULE' ? `Scheduled — ${E(fmtDMY((b.startAtCairo || '').split('T')[0]))} ${E(fmt12h((b.startAtCairo || '').split('T')[1] || '00:00'))} — Africa/Cairo` : b.executionMode === 'RUN_NOW' ? 'Run Now' : '—'}</b></div>
+      <div style="color:var(--amb-green); font-size:12.5px; font-weight:700; margin-top:6px;">حملات المصدر: بدون أي تغيير (نسخة مطابقة)</div>
       ${b.error ? `<div style="color:var(--amb-red); font-size:12.5px; margin-top:6px;">${E(b.error)}</div>` : ''}
 
       ${b.status === 'PENDING_APPROVAL' ? `

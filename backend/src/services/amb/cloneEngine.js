@@ -102,6 +102,34 @@ function tzOffsetMs(instant, timeZone) {
   const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour === 24 ? 0 : +p.hour, +p.minute, +p.second);
   return asUTC - instant.getTime();
 }
+// The clone "Schedule Start" section always uses this fixed timezone — the
+// user picks a Cairo-local calendar date + wall-clock time and nothing else.
+export const CLONE_SCHEDULE_TZ = 'Africa/Cairo';
+
+/**
+ * Convert a Cairo-local calendar date ("YYYY-MM-DD") + wall-clock time
+ * ("HH:MM", 24h) into the exact UTC instant, DST-aware. Returns null on a
+ * malformed input. Never uses a hard-coded offset — the offset is resolved
+ * from the tz database at that instant.
+ */
+export function cairoLocalToUtc(dateStr, timeStr) {
+  const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || '').trim());
+  const tm = /^(\d{1,2}):(\d{2})$/.exec(String(timeStr || '00:00').trim());
+  if (!dm) return null;
+  const y = +dm[1]; const mo = +dm[2]; const d = +dm[3];
+  const hh = tm ? +tm[1] : 0; const mm = tm ? +tm[2] : 0;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || hh > 23 || mm > 59) return null;
+  // Treat the wall-clock as if it were UTC, then subtract the real Cairo
+  // offset at that instant; re-resolve once in case the naive guess landed on
+  // the other side of a DST transition.
+  const naive = Date.UTC(y, mo - 1, d, hh, mm, 0);
+  const off1 = tzOffsetMs(new Date(naive), CLONE_SCHEDULE_TZ);
+  let utc = naive - off1;
+  const off2 = tzOffsetMs(new Date(utc), CLONE_SCHEDULE_TZ);
+  if (off2 !== off1) utc = naive - off2;
+  return new Date(utc);
+}
+
 /** UTC Date for the next `hh:mm` in `timeZone` strictly after `from`. Falls back to a fixed offset if the tz is unknown. */
 export function nextLocalTimeInTz(hhmm, timeZone, from = new Date()) {
   const [hh, mm] = String(hhmm || '00:00').split(':').map((x) => parseInt(x, 10) || 0);
@@ -294,11 +322,33 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
   if (existing) return getBatch(bid); // idempotent — a retried submit returns the same batch
+
+  // ---- Scheduling: the ONLY thing the "Run Now / Schedule Start" section
+  // controls. Nothing about the cloned content is affected. ----
+  //   RUN_NOW  -> every job's scheduled_activation_at = now, activated right
+  //               after the (PAUSED) clone finishes via the existing tick.
+  //   SCHEDULE -> startAt is a Cairo-local "YYYY-MM-DDTHH:MM"; convert to the
+  //               exact UTC instant (DST-aware), must be in the future.
+  //   (neither) -> legacy behaviour: per-destination next-occurrence time.
+  let activationAt = null;
+  const execMode = executionMode === 'RUN_NOW' || executionMode === 'SCHEDULE' ? executionMode : null;
+  if (execMode === 'RUN_NOW') {
+    activationAt = new Date(Date.now() - 60_000); // immediately "due"
+  } else if (execMode === 'SCHEDULE') {
+    const [datePart, timePart] = String(startAt || '').split('T');
+    activationAt = cairoLocalToUtc(datePart, timePart || '00:00');
+    if (!activationAt) { const e = new Error('تاريخ/وقت البداية غير صالح.'); e.status = 400; throw e; }
+    if (activationAt.getTime() <= Date.now()) {
+      const e = new Error('لازم يكون تاريخ ووقت البداية في المستقبل. — The selected start date and time must be in the future.');
+      e.status = 400; throw e;
+    }
+  }
+  const autoActivate = execMode === 'RUN_NOW' || execMode === 'SCHEDULE';
 
   // One read-only pass computes the pre-flight matrix + per-destination
   // schedule. The engine re-runs a fresh pre-flight per job at clone time, so
@@ -318,10 +368,10 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
       source_ad_account_name: preview.source.name,
       destination_account_ids_json: JSON.stringify(dests),
       campaign_ids_json: JSON.stringify(camps),
-      schedule_local_time: preview.scheduleLocalTime,
+      schedule_local_time: execMode === 'SCHEDULE' ? String(startAt) : execMode === 'RUN_NOW' ? 'RUN_NOW' : preview.scheduleLocalTime,
       destination_page_id: destPage,
       destination_instagram_id: destIg,
-      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true }),
+      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true, autoActivate, executionMode: execMode, startAtCairo: execMode === 'SCHEDULE' ? String(startAt) : null }),
       pixel_map_json: pxMap ? JSON.stringify(pxMap) : null,
       recreate_boosted: !!recreateBoosted && !!destPage,
       total_copies: preview.totalCopies,
@@ -349,13 +399,14 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
           status: row?.status === 'BLOCKED' ? 'PREFLIGHT_BLOCKED' : 'PENDING',
           preflight_status: row?.status || 'READY',
           preflight_json: JSON.stringify(row || {}),
-          scheduled_activation_at: row?.scheduledActivationAt ? new Date(row.scheduledActivationAt) : null,
+          scheduled_activation_at: activationAt || (row?.scheduledActivationAt ? new Date(row.scheduledActivationAt) : null),
         },
       });
     }
   }
 
-  await audit(bid, null, 'PREFLIGHT', { detail: `دفعة اتجهزت: ${camps.length} حملة × ${dests.length} حساب = ${preview.totalCopies} نسخة (${preview.blockedCopies} محجوبة).`, actorId: userId });
+  const execNote = execMode === 'RUN_NOW' ? ' · تشغيل الآن' : execMode === 'SCHEDULE' ? ` · جدولة البداية ${startAt} (Africa/Cairo)` : '';
+  await audit(bid, null, 'PREFLIGHT', { detail: `دفعة اتجهزت: ${camps.length} حملة × ${dests.length} حساب = ${preview.totalCopies} نسخة (${preview.blockedCopies} محجوبة).${execNote}`, actorId: userId });
   logger.info('AMB clone batch created', { batchId: bid, copies: preview.totalCopies, blocked: preview.blockedCopies });
   return getBatch(bid);
 }
@@ -493,6 +544,13 @@ async function runBatch(batchId) {
   }
 
   await recomputeBatchStatus(batchId);
+
+  // "Run Now": the clone finished (jobs are CLONED_PAUSED) — activate straight
+  // away via the same tick logic instead of waiting up to 60s. Idempotent.
+  const blob = j(batch.identity_map_json, {}) || {};
+  if (blob.autoActivate === true && blob.executionMode === 'RUN_NOW') {
+    activateDueJobs().catch((err) => logger.warn('AMB clone run-now activation failed', { batchId, message: err.message }));
+  }
 }
 
 async function recomputeBatchStatus(batchId) {
@@ -1138,8 +1196,8 @@ function collectAssetIds(payload) {
 // ---------------------------------------------------------------------------
 export async function activateDueJobs() {
   const settings = await getAmbSettings();
-  if (settings.ambCloneAutoActivate === false) return { activated: 0, skipped: 'AUTO_ACTIVATE_OFF' };
   if (settings.ambExecutionMode === 'ADVISORY') return { activated: 0, skipped: 'ADVISORY' };
+  const globalAuto = settings.ambCloneAutoActivate === true;
 
   const due = await prisma.ambCloneJob.findMany({
     where: {
@@ -1157,6 +1215,10 @@ export async function activateDueJobs() {
   let activated = 0;
 
   for (const job of due) {
+    // Activate only when the OWNER opted in — either the batch's own "Run Now /
+    // Schedule Start" choice (blob.autoActivate) or the global setting.
+    const optedIn = (j(job.batch?.identity_map_json, {}) || {}).autoActivate === true || globalAuto;
+    if (!optedIn) continue;
     // A copied campaign that now has its own per-campaign schedule is owned by
     // campaignSchedule.js — the legacy batch-wide time must never race it.
     if (await jobHasActiveSchedule(job.id)) continue;
@@ -1261,6 +1323,9 @@ export async function getBatch(batchId) {
     destinationAccountIds: j(b.destination_account_ids_json, []),
     campaignIds: j(b.campaign_ids_json, []),
     scheduleLocalTime: b.schedule_local_time,
+    executionMode: (j(b.identity_map_json, {}) || {}).executionMode || null,   // 'RUN_NOW' | 'SCHEDULE' | null
+    startAtCairo: (j(b.identity_map_json, {}) || {}).startAtCairo || null,     // Cairo-local "YYYY-MM-DDTHH:MM"
+    autoActivate: (j(b.identity_map_json, {}) || {}).autoActivate === true,
     destinationPageId: b.destination_page_id || null,
     destinationInstagramId: b.destination_instagram_id || null,
     identityMap: j(b.identity_map_json, null),

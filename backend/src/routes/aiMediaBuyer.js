@@ -287,8 +287,8 @@ router.get('/clone/batches/:batchId', asyncRoute(async (req, res) => {
 
 router.post('/clone/batches', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted } = req.body || {};
-  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted, userId: req.user.id }));
+  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode, startAt, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted } = req.body || {};
+  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode, startAt, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted, userId: req.user.id }));
 }));
 
 router.post('/clone/batches/:batchId/copy-valid-only', requireRole('ADMIN'), asyncRoute(async (req, res) => {
