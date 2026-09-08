@@ -315,6 +315,36 @@ function scaleState(card) {
 function scaleAboValid(s) {
   return s.abo.length >= 1 && s.abo.every((sl) => Number(sl.budget) > 0 && sl.sel.size >= 1);
 }
+/** Why "موافق على الاسكيل" is (or isn't) clickable — drives the button + inline hint. */
+function scaleApproveState(card, s) {
+  if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
+  if (s.mode === 'SCHEDULE' && !cloneStartInFuture(s.date, s.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
+  if (s.budgetMode === 'ABO') {
+    const noBudget = s.abo.some((sl) => !(Number(sl.budget) > 0));
+    const noAds = s.abo.some((sl) => sl.sel.size < 1);
+    if (noBudget && noAds) return { ok: false, reason: 'كل Ad Set محتاج ميزانية يومية أكبر من صفر وإعلان واحد على الأقل.' };
+    if (noBudget) return { ok: false, reason: 'أدخل ميزانية يومية (أكبر من صفر) لكل Ad Set.' };
+    if (noAds) return { ok: false, reason: 'اختر إعلانًا واحدًا على الأقل لكل Ad Set.' };
+    return { ok: true, reason: '' };
+  }
+  const sel = card.ads.filter((a) => s.sel.has(a.adId)).length;
+  if (!sel && !(Number(s.cboBudget) > 0)) return { ok: false, reason: 'اختر إعلانًا رابحًا وأدخِل ميزانية الحملة اليومية.' };
+  if (!sel) return { ok: false, reason: 'اختر إعلانًا رابحًا واحدًا على الأقل.' };
+  if (!(Number(s.cboBudget) > 0)) return { ok: false, reason: 'أدخل ميزانية الحملة اليومية (أكبر من صفر).' };
+  return { ok: true, reason: '' };
+}
+/** Patch the approve button + hint in place (no full re-render → input keeps focus). */
+function syncScaleApprove(card) {
+  const s = scaleUi.get(card.sourceCampaignId); if (!s) return;
+  const cid = card.sourceCampaignId;
+  const esc = (window.CSS && CSS.escape) ? CSS.escape(cid) : cid;
+  const btn = document.querySelector(`[data-scw-act="approve"][data-scw="${esc}"]`);
+  if (!btn) return;
+  const { ok, reason } = scaleApproveState(card, s);
+  btn.disabled = !ok;
+  const hint = btn.closest('.amb-scale-exp')?.querySelector('.amb-scale-hint');
+  if (hint) { hint.textContent = ok ? '' : reason; hint.hidden = ok; }
+}
 /** Compact winner-ad row (checkbox). `attr` is the data-* wiring attribute string. */
 function scaleAdRow(a, checked, attr) {
   return `<label class="amb-scale-ad ${checked ? 'sel' : ''} ${a.qualifies ? '' : 'dim'}">
@@ -381,11 +411,11 @@ function scaleExpandedHtml(card, s) {
   const cboReqAdSets = new Set(cboSel.map((a) => a.adsetId)).size;
 
   // --- ABO derived ---
-  const aboOk = scaleAboValid(s);
   const aboTotalDaily = s.abo.reduce((t, sl) => t + (Number(sl.budget) || 0), 0);
   const aboInstances = s.abo.reduce((t, sl) => t + sl.sel.size, 0);
 
-  const canApprove = state.isAdmin && futureOk && (isAbo ? aboOk : (cboSel.length > 0 && cboBudgetOk));
+  const approve = scaleApproveState(card, s);
+  const canApprove = approve.ok;
 
   return `<div class="amb-scale-exp">
     <div class="amb-scale-sec">
@@ -489,6 +519,7 @@ function scaleExpandedHtml(card, s) {
     <div class="amb-scale-actions">
       <button class="amb-btn primary" data-scw-act="approve" data-scw="${cid}" ${canApprove ? '' : 'disabled'}>${state.isAdmin ? 'موافق على الاسكيل' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
       <button class="amb-btn ghost" data-scw-act="cancel" data-scw="${cid}">إلغاء</button>
+      <div class="amb-scale-hint" ${canApprove ? 'hidden' : ''}>${E(approve.reason)}</div>
     </div>
   </div>`;
 }
@@ -562,7 +593,7 @@ function wireScaleCards(root, data) {
     b.onclick = () => { const card = cardOf(b); if (!card) return; const s = scaleState(card); if (s.abo.length > 1) s.abo.pop(); rerenderScale(); };
   });
   root.querySelectorAll('[data-scw-abo-budget]').forEach((inp) => {
-    inp.oninput = () => { const card = cardOf(inp); if (card) scaleState(card).abo[Number(inp.dataset.scwAboBudget)].budget = inp.value; };
+    inp.oninput = () => { const card = cardOf(inp); if (!card) return; scaleState(card).abo[Number(inp.dataset.scwAboBudget)].budget = inp.value; syncScaleApprove(card); };
     inp.onchange = () => rerenderScale();
   });
   root.querySelectorAll('[data-scw-abo-ad]').forEach((cb) => {
@@ -575,7 +606,7 @@ function wireScaleCards(root, data) {
     };
   });
   root.querySelectorAll('[data-scw-cbo-budget]').forEach((inp) => {
-    inp.oninput = () => { const card = cardOf(inp); if (card) scaleState(card).cboBudget = inp.value; };
+    inp.oninput = () => { const card = cardOf(inp); if (!card) return; scaleState(card).cboBudget = inp.value; syncScaleApprove(card); };
     inp.onchange = () => rerenderScale();
   });
   root.querySelectorAll('[data-scw-ad]').forEach((cb) => {

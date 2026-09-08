@@ -507,7 +507,8 @@ body { background: var(--amb-bg); }
 .amb-scale-sum { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 16px; font-size: 12.5px; }
 .amb-scale-sum > div { display: flex; justify-content: space-between; gap: 10px; }
 .amb-scale-sum span { color: var(--amb-text-faint); }
-.amb-scale-actions { display: flex; gap: 8px; padding-top: 14px; }
+.amb-scale-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 14px; }
+.amb-scale-hint { flex-basis: 100%; font-size: 12px; font-weight: 600; color: var(--amb-red); }
 @media (max-width: 560px) { .amb-scale-nums { margin-inline-start: 0; } .amb-scale-sum { grid-template-columns: 1fr; } }
 
 /* Winner → Scale — CBO/ABO budget control */
