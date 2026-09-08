@@ -876,7 +876,7 @@ async function cloneJob(jobId, token) {
         newAdsetId = res.id;
         idMap.adsets[as.id] = newAdsetId;
         counts.adsets++;
-        await markObj(row.id, { status: 'CREATED', destination_id: newAdsetId, payload_json: JSON.stringify(payload).slice(0, 6000) });
+        await markObj(row.id, { status: 'CREATED', destination_id: newAdsetId, payload_json: JSON.stringify(payload).slice(0, 6000), error: null });
         await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'ADSET', source_id: as.id, destination_id: newAdsetId });
       } catch (err) {
         await markObj(row.id, { status: 'FAILED', error: metaErr(err).slice(0, 500) });
@@ -1063,11 +1063,14 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
     optimization_goal: as.optimization_goal,
     targeting: transformTargeting(as.targeting, resolved),
   };
-  // Winner → Scale forced a campaign (CBO) budget: bidding is governed at the
-  // campaign level now, so the ad set must NOT carry its own bid_strategy /
-  // bid_amount (Meta rejects an ad-set strategy that differs from the CBO
-  // campaign's). Every OTHER clone keeps the source bid fields exactly.
-  if (!scaleBudgetForced) {
+  // Winner → Scale forced a campaign (CBO) budget: pin the ad set to the same
+  // no-cap strategy as the campaign and carry NO bid cap (a scale has none).
+  // Omitting bid_strategy lets Meta fall back to the account default, which is
+  // often a cap strategy -> "Bid Amount Required". Every OTHER clone keeps the
+  // source bid fields exactly.
+  if (scaleBudgetForced) {
+    payload.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
+  } else {
     if (as.bid_amount != null && Number(as.bid_amount) > 0) payload.bid_amount = Number(as.bid_amount);
     if (as.bid_strategy) payload.bid_strategy = as.bid_strategy;
   }
