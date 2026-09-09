@@ -56,7 +56,10 @@ function fileFromDataish(img, idx) {
     b64 = img.b64;
   }
   const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png';
-  return new File([Buffer.from(b64, 'base64')], `reference_${idx}.${ext}`, { type: mime });
+  // Blob + explicit filename is portable across Node 18/20/22 (File is only a
+  // stable global from Node 20); undici's FormData reads the 3rd arg as the
+  // filename part the OpenAI multipart endpoint needs.
+  return { blob: new Blob([Buffer.from(b64, 'base64')], { type: mime }), filename: `reference_${idx}.${ext}` };
 }
 
 const openaiProvider = {
@@ -90,7 +93,7 @@ const openaiProvider = {
         form.append('size', size);
         form.append('n', String(n));
         if (quality || imageQualityTier()) form.append('quality', quality || imageQualityTier());
-        referenceImages.slice(0, 10).forEach((img, i) => form.append('image[]', fileFromDataish(img, i)));
+        referenceImages.slice(0, 10).forEach((img, i) => { const p = fileFromDataish(img, i); form.append('image[]', p.blob, p.filename); });
         res = await fetch(OPENAI_EDITS_URL, {
           method: 'POST',
           headers: { Authorization: `Bearer ${key}` },
