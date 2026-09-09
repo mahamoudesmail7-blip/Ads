@@ -31,12 +31,14 @@ import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
 import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
+import creativeFactoryRoutes from './routes/creativeFactory.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startAmbCloneScheduler } from './services/amb/cloneScheduler.js';
+import { startCreativeFactoryScheduler } from './services/creativeFactory/scheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = path.resolve(__dirname, '..', '..'); // order-monitor/ (one level above backend/)
@@ -78,6 +80,7 @@ app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
 app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new module INSIDE AI Intelligence (see routes/aiMediaBuyer.js)
+app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
 app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
 app.use('/api/product-research', productResearchRoutes);
 
@@ -121,3 +124,7 @@ startAmbOutcomeScheduler();
 // campaigns at their per-destination scheduled time. No-ops when Meta isn't
 // connected or ambCloneAutoActivate is off.
 startAmbCloneScheduler();
+// AI Creative Factory — 8s tick that drives the image-generation job worker
+// (and resumes jobs after a restart). No-ops when nothing is queued; never
+// calls the image provider unless a job needs it.
+startCreativeFactoryScheduler();
