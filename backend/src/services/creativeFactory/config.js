@@ -120,6 +120,9 @@ export function getProviderStatus() {
       configured: textConfigured,
       status: textConfigured ? (textHealth.status || 'READY') : 'NOT_CONFIGURED',
       envVar: 'ANTHROPIC_API_KEY',
+      lastErrorType: textHealth?.lastErrorType || null,   // diagnostic only — a category, never a secret
+      lastErrorAt: textHealth?.lastErrorAt || null,
+      lastOkAt: textHealth?.lastSuccessfulRequestAt || null,
     },
     storage: { provider: storageProviderName() },
     costEstimateAvailable: imageUnitCostUsd() !== null,
