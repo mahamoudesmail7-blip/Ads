@@ -1967,7 +1967,6 @@ model CfAsset {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  blob                 CfAssetBlob?
   quality_review       CfQualityReview?
   children             CfAsset[]           @relation("CfAssetLineage")
   variations_as_parent CfVariation[]       @relation("CfVariationParent")
@@ -1980,17 +1979,20 @@ model CfAsset {
   @@map("cf_assets")
 }
 
-// Image bytes for the db storage provider (durable Postgres storage — the
-// mock-safe default that needs no external bucket / secret). Other providers
-// (s3 / cloudinary) leave this null and use storage_key against the bucket.
-model CfAssetBlob {
+// Generic durable blob store for the `db` storage provider (Postgres bytea)
+// — the mock-safe default that needs no external bucket / secret. Used for
+// BOTH reference images and generated assets, addressed by a string
+// storage_key. Other providers (s3 / cloudinary / supabase) store nothing
+// here and resolve storage_key against their bucket instead.
+model CfBlob {
   id         Int      @id @default(autoincrement())
-  asset_id   Int      @unique
-  asset      CfAsset  @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  key        String   @unique
   data       Bytes
+  mime       String   @default("image/png")
+  bytes      Int      @default(0)
   created_at DateTime @default(now())
 
-  @@map("cf_asset_blobs")
+  @@map("cf_blobs")
 }
 
 // Automatic quality evaluation for one asset. Scores 0-100. passed gates
