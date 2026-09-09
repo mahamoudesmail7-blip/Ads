@@ -681,15 +681,24 @@ export async function getFeedbackHints(category = null) {
 
 // ---------------------------------------------------------------------------
 function fullReview(r) {
+  const meta = safeParse(r.failure_reasons_json, {});
+  const isArr = Array.isArray(meta);
   return {
     overall: r.overall_score,
+    realism: isArr ? null : (meta.realism ?? null),
+    failureCode: isArr ? null : (meta.code ?? null),
+    identityMismatch: isArr ? false : !!meta.identityMismatch,
+    looksAi: isArr ? false : !!meta.looksAi,
+    goodEnough: isArr ? false : !!meta.goodEnough,
     scores: {
       product_accuracy_score: r.product_accuracy_score, identity_score: r.identity_score, visual_quality_score: r.visual_quality_score,
       composition_score: r.composition_score, product_visibility_score: r.product_visibility_score, marketing_score: r.marketing_score,
       arabic_text_score: r.arabic_text_score, text_readability_score: r.text_readability_score, claim_score: r.claim_score,
       artifact_score: r.artifact_score, reference_consistency_score: r.reference_consistency_score, plan_compliance_score: r.plan_compliance_score,
     },
-    passed: r.passed, failureReasons: safeParse(r.failure_reasons_json, []), recommendation: r.recommendation, judgeModel: r.judge_model,
+    passed: r.passed,
+    failureReasons: isArr ? meta : (meta.reasons || []),
+    recommendation: r.recommendation, judgeModel: r.judge_model,
   };
 }
 
