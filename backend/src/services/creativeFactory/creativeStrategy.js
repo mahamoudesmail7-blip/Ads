@@ -118,6 +118,7 @@ export async function buildCreativePlan({ project, product, dna, count }) {
     user: `النوع: ${project.project_type}
 عدد الصور المطلوب: ${n}
 نمط التصميم: ${project.style_preset || '—'} | اللهجة: ${project.dialect} | كثافة النص: ${project.text_density} | الأشخاص: ${project.people_rule}${project.hijab_required ? ' (حجاب إلزامي)' : ''}
+${project.plan_notes ? `تفضيلات المالك: ${String(project.plan_notes).slice(0, 300)}` : ''}
 Product DNA: ${JSON.stringify(dnaObj).slice(0, 2500)}
 المنتج: ${product.name} | ${product.category || ''}
 المواصفات: ${(product.specifications || '—').slice(0, 900)}

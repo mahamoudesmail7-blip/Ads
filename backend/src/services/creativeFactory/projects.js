@@ -234,6 +234,47 @@ export async function createProject(body, userId) {
   return serializeProject(row);
 }
 
+const PROJECT_SETTING_FIELDS = {
+  projectType: (v) => (PROJECT_TYPES.includes(v) ? ['project_type', v] : null),
+  quantityMode: (v) => (['MANUAL', 'AI'].includes(v) ? ['quantity_mode', v] : null),
+  aiQuantityReason: (v) => ['ai_quantity_reason', strOrNull(v)],
+  generationMode: (v) => (['FAST', 'PREMIUM'].includes(v) ? ['generation_mode', v] : null),
+  stylePreset: (v) => ['style_preset', strOrNull(v)],
+  market: (v) => ['market', strOrNull(v) || 'EG'],
+  language: (v) => ['language', strOrNull(v) || 'ar'],
+  dialect: (v) => ['dialect', strOrNull(v) || 'egyptian'],
+  aspectRatio: (v) => (ASPECT_RATIOS.includes(v) ? ['aspect_ratio', v] : null),
+  textDensity: (v) => (TEXT_DENSITIES.includes(v) ? ['text_density', v] : null),
+  peopleRule: (v) => (PEOPLE_RULES.includes(v) ? ['people_rule', v] : null),
+  hijabRequired: (v) => ['hijab_required', !!v],
+  productLockMode: (v) => (PRODUCT_LOCK_MODES.includes(v) ? ['product_lock_mode', v] : null),
+  planNotes: (v) => ['plan_notes', strOrNull(v)],
+};
+
+/** Auto-save of the "إنشاء جديد" workspace settings. Never touches an already-
+ *  generating project; harmless no-op for unknown fields. */
+export async function updateProjectSettings(id, body) {
+  const project = await prisma.cfProject.findUnique({ where: { id } });
+  if (!project) throw bad('المشروع غير موجود.', 404);
+  if (['QUEUED', 'GENERATING', 'REVIEWING', 'REGENERATING'].includes(project.status)) {
+    throw bad('المشروع تحت الإنشاء الآن — لا يمكن تعديل إعداداته.', 409);
+  }
+  const th = await getEffectiveThresholds();
+  const data = {};
+  for (const [k, fn] of Object.entries(PROJECT_SETTING_FIELDS)) {
+    if (body[k] === undefined) continue;
+    const pair = fn(body[k]);
+    if (pair) data[pair[0]] = pair[1];
+  }
+  if (body.quantity !== undefined) {
+    data.quantity = clampInt(body.quantity, project.quantity, 1, th.maxImagesPerProject);
+    data.estimated_cost = estimateCostUsd(data.quantity);
+  }
+  if (!Object.keys(data).length) return serializeProject(project);
+  const row = await prisma.cfProject.update({ where: { id }, data });
+  return serializeProject(row);
+}
+
 export async function listProjects(filters = {}) {
   const where = {};
   if (filters.productId) where.product_id = Number(filters.productId);

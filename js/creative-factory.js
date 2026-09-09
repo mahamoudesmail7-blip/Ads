@@ -1,12 +1,17 @@
 // AI Creative Factory — page controller for creative-factory.html.
 // RTL Arabic, premium light. Talks only to /api/creative-factory/* via the
 // shared api-client. Four tabs: إنشاء جديد / مشاريعي / النتائج / تعلّم الـ AI.
+//
+// "إنشاء جديد" is a SINGLE-SCREEN workspace (no forced step pages): the three
+// core cards (صور المنتج / مواصفات المنتج / إعدادات الصور) + the AI
+// recommendation + the suggested sequence + the expected-result preview are
+// all visible at once, and one "⚡ إنشاء الصور الآن" button runs the full
+// existing backend pipeline (DNA → plan → claims → copy → prompts → jobs).
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 
 const E = (s) => UI.escapeHtml(String(s ?? ''));
 const $ = (id) => document.getElementById(id);
-const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 const fmtN = (n) => (n === null || n === undefined || Number.isNaN(Number(n)) ? '—' : Number(n).toLocaleString('en-US'));
 
 const NAV = [
@@ -17,8 +22,8 @@ const NAV = [
 ];
 
 const PROJECT_TYPE_CARDS = [
-  { key: 'PRODUCT_PAGE', ic: '📄', t: 'صفحة منتج', d: 'تسلسل صور مترابط للصفحة' },
-  { key: 'META_ADS', ic: '🎯', t: 'إعلانات Meta', d: 'كرياتيفات متنوعة الزوايا' },
+  { key: 'PRODUCT_PAGE', ic: '📄', t: 'صور صفحة المنتج', d: 'مجموعة صور مترابطة ومتكاملة' },
+  { key: 'META_ADS', ic: '🎯', t: 'صور بوستات / إعلانات', d: 'صور إعلانية مستقلة ومتنوعة' },
   { key: 'SOCIAL', ic: '📱', t: 'بوستات سوشيال', d: 'منشورات جاهزة' },
   { key: 'RETARGETING', ic: '🔁', t: 'إعادة استهداف', d: 'صور للريتارجت' },
   { key: 'VARIATIONS', ic: '🧬', t: 'Variations', d: 'اشتقاقات من فكرة' },
@@ -28,15 +33,22 @@ const LOCK_LABEL = { STRICT: 'صارم', BALANCED: 'متوازن', CREATIVE: 'إ
 const DENSITY_LABEL = { MINIMAL: 'قليل جدًا', LOW: 'قليل', MEDIUM: 'متوسط' };
 const PEOPLE_LABEL = { NONE: 'بدون أشخاص', MEN: 'رجال', WOMEN: 'سيدات', AI_CHOICE: 'حسب فكرة الـ AI' };
 const ITEM_STATUS = {
-  PLANNED: ['في الخطة', 'gray'], QUEUED: ['في الانتظار', 'gray'], GENERATING: ['جاري الإنشاء', 'violet'],
-  REVIEWING: ['فحص الجودة', 'violet'], REGENERATING: ['إعادة المحاولة', 'amber'],
+  PLANNED: ['في الانتظار', 'gray'], QUEUED: ['في الانتظار', 'gray'], GENERATING: ['جاري إنشاء الصورة', 'violet'],
+  REVIEWING: ['جاري فحص الجودة', 'violet'], REGENERATING: ['إعادة المحاولة', 'amber'],
   COMPLETED: ['تم', 'green'], NEEDS_REVIEW: ['يحتاج مراجعة', 'amber'], FAILED: ['فشل', 'red'],
 };
+const AUDIENCE_CHIPS = ['سيدات', 'رجال', 'أطفال', 'العناية بالشعر', 'السيارات', 'المنزل'];
+const STYLE_CHIPS = [
+  { k: 'WHITE_BG', t: 'خلفية بيضاء' }, { k: 'LIFESTYLE', t: 'لايف ستايل' }, { k: 'INFOGRAPHIC', t: 'إنفوجرافيك' },
+  { k: 'BEFORE_AFTER', t: 'قبل / بعد' }, { k: 'FEATURES', t: 'مميزات' }, { k: 'SIZES', t: 'مقاسات' },
+  { k: 'HIJAB', t: 'بنت محجبة' },
+];
 
 const state = {
   tab: 'new', me: null, isAdmin: false, status: null,
-  wiz: null,           // active wizard state
+  ws: null,            // single-screen "إنشاء جديد" workspace state
   poll: null,
+  saveTimers: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -79,8 +91,9 @@ function route() {
   renderNav();
   const view = $('cfView');
   view.innerHTML = '<div class="cf-loading">جارِ التحميل…</div>';
+  const rid = (state.rid = (state.rid || 0) + 1); // guards a slow render from clobbering a newer one
   const run = { new: renderNew, projects: renderProjects, results: renderResults, learn: renderLearn }[state.tab];
-  run(view).catch((err) => { view.innerHTML = `<div class="cf-empty">⚠️ ${E(err.message || err)}</div>`; });
+  run(view, rid).catch((err) => { if (state.rid === rid) view.innerHTML = `<div class="cf-empty">⚠️ ${E(err.message || err)}</div>`; });
 }
 
 function providerBanner() {
@@ -105,175 +118,636 @@ function needAdmin(view) {
 }
 
 // ===========================================================================
-// TAB 1 — إنشاء جديد (wizard)
+// TAB 1 — إنشاء جديد  (single-screen workspace)
 // ===========================================================================
-function newWiz() {
+const LS_KEY = 'cf_ws_v2';
+function newWs() {
+  const s = state.status?.settings || {};
   return {
-    step: 'product',
     productId: null, product: null,
-    projectType: null, projectId: null, project: null,
-    count: 5, countMode: 'MANUAL', aiReason: null,
-    adv: { stylePreset: state.status?.settings?.cfDefaultStylePreset || 'EGY_ECOM', market: 'EG', language: 'ar', dialect: 'egyptian', aspectRatio: '1:1', textDensity: 'MINIMAL', peopleRule: 'NONE', hijabRequired: false, generationMode: state.status?.settings?.cfDefaultGenerationMode || 'FAST', productLockMode: 'STRICT' },
-    plan: null, jobId: null,
+    projectId: null, project: null,
+    imageType: 'PRODUCT_PAGE',
+    count: 5, countMode: 'MANUAL', aiCountReason: null,
+    specsText: '',
+    audience: new Set(), audienceCustom: '',
+    styles: new Set(['WHITE_BG', 'FEATURES']),
+    adv: {
+      productLockMode: s.cfDefaultProductLockMode || 'STRICT',
+      generationMode: s.cfDefaultGenerationMode || 'FAST',
+      textDensity: s.cfDefaultTextDensity || 'MINIMAL',
+      peopleRule: s.cfDefaultPeopleRule || 'NONE',
+      hijabRequired: !!s.cfHijabRequiredDefault,
+      market: s.cfDefaultMarket || 'EG', language: s.cfDefaultLanguage || 'ar', dialect: s.cfDefaultDialect || 'egyptian',
+      stylePreset: s.cfDefaultStylePreset || 'EGY_ECOM', aspectRatio: '1:1',
+    },
+    plan: null, jobId: null, savedAt: null, phase: 'setup', // setup | generating
   };
 }
-const STEP_ORDER = ['product', 'goal', 'count', 'plan', 'generate'];
-const STEP_LABEL = { product: 'المنتج', goal: 'الهدف', count: 'العدد', plan: 'الخطة', generate: 'الإنشاء' };
 
-async function renderNew(view) {
+function wsPersist() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ productId: state.ws.productId, projectId: state.ws.projectId })); } catch { /* ignore */ }
+}
+async function wsResume() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch { /* ignore */ }
+  const ws = newWs();
+  if (saved?.projectId) {
+    try {
+      const p = await api.get(`/api/creative-factory/projects/${saved.projectId}`);
+      if (p && !p.archivedAt && !['COMPLETED', 'CANCELLED'].includes(p.status)) {
+        ws.projectId = p.id; ws.project = p; ws.productId = p.productId;
+        ws.imageType = p.projectType; ws.count = p.quantity; ws.countMode = p.quantityMode;
+        ws.aiCountReason = p.aiQuantityReason || null;
+        ws.adv = { ...ws.adv, productLockMode: p.productLockMode, generationMode: p.generationMode, textDensity: p.textDensity, peopleRule: p.peopleRule, hijabRequired: p.hijabRequired, market: p.market, language: p.language, dialect: p.dialect, stylePreset: p.stylePreset || ws.adv.stylePreset, aspectRatio: p.aspectRatio };
+        ws.styles = new Set(parseStyleNotes(p.planNotes));
+        if (p.items && p.items.length) ws.plan = { items: p.items };
+        if (['QUEUED', 'GENERATING', 'REVIEWING', 'REGENERATING', 'PARTIAL_COMPLETE', 'FAILED'].includes(p.status) && p.jobs?.[0]) { ws.jobId = p.jobs[0].id; if (['QUEUED', 'GENERATING', 'REVIEWING', 'REGENERATING'].includes(p.status)) ws.phase = 'generating'; }
+      }
+    } catch { /* stale — start fresh */ }
+  }
+  if (!ws.productId && saved?.productId) {
+    try { await api.get(`/api/creative-factory/products/${saved.productId}`); ws.productId = saved.productId; } catch { /* ignore */ }
+  }
+  if (ws.productId) {
+    try {
+      ws.product = await api.get(`/api/creative-factory/products/${ws.productId}`);
+      ws.specsText = ws.product.specifications || ws.product.benefits || '';
+      ws.audience = new Set(String(ws.product.targetAudience || '').split(/[،,]+/).map((x) => x.trim()).filter(Boolean).filter((x) => AUDIENCE_CHIPS.includes(x)));
+      ws.audienceCustom = String(ws.product.targetAudience || '').split(/[،,]+/).map((x) => x.trim()).filter((x) => x && !AUDIENCE_CHIPS.includes(x)).join('، ');
+    } catch { ws.productId = null; }
+  }
+  return ws;
+}
+function parseStyleNotes(notes) {
+  if (!notes) return ['WHITE_BG', 'FEATURES'];
+  const found = STYLE_CHIPS.filter((c) => notes.includes(c.t)).map((c) => c.k);
+  return found.length ? found : [];
+}
+function styleNotesString(ws) {
+  const labels = STYLE_CHIPS.filter((c) => ws.styles.has(c.k)).map((c) => c.t);
+  return labels.length ? `أساليب بصرية مفضّلة للمالك: ${labels.join('، ')}. اختر لكل صورة الأنسب منها.` : '';
+}
+
+function wsStage(ws) {
+  const refs = ws.product?.referenceImages?.length || 0;
+  const minRefs = ws.product?.limits?.minReferenceImages || 3;
+  if (ws.phase === 'generating' || ws.jobId) return 5;
+  if (ws.plan?.items?.length) return 4;
+  if (ws.productId && refs >= minRefs && ws.specsText.trim()) return 3;
+  if (ws.productId && refs >= minRefs) return 2;
+  return 1;
+}
+
+async function renderNew(view, rid) {
   if (needAdmin(view)) return;
-  if (!state.wiz) state.wiz = newWiz();
-  const w = state.wiz;
-  const cur = STEP_ORDER.indexOf(w.step);
-  view.innerHTML = head('مصنع الكرياتيفات', 'حوّل صور منتجك إلى كرياتيفات جاهزة للبيع') + providerBanner()
-    + `<div class="cf-steps">${STEP_ORDER.map((s, i) => `<div class="cf-step ${i === cur ? 'on' : i < cur ? 'done' : ''}"><span class="n">${i < cur ? '✓' : i + 1}</span>${E(STEP_LABEL[s])}</div>`).join('')}</div>`
-    + `<div id="cfWizBody"></div>`;
-  const body = $('cfWizBody');
-  if (w.step === 'product') await wizProduct(body);
-  else if (w.step === 'goal') wizGoal(body);
-  else if (w.step === 'count') await wizCount(body);
-  else if (w.step === 'plan') await wizPlan(body);
-  else if (w.step === 'generate') await wizGenerate(body);
-}
-function goStep(s) { state.wiz.step = s; renderNew($('cfView')); }
-
-// ---- STEP: product -------------------------------------------------------
-async function wizProduct(body) {
-  const w = state.wiz;
-  const { products } = await api.get('/api/creative-factory/products');
-  body.innerHTML = `
-    <div class="cf-card">
-      <h2>1) اختر المنتج أو أضِف منتجًا جديدًا</h2>
-      <div class="hint">لازم المنتج يكون فيه 3–6 صور مرجعية قبل بدء أي مشروع.</div>
-      <div class="cf-row">
-        <div class="cf-field"><label>منتج موجود</label>
-          <select id="cfProdSel"><option value="">— اختر —</option>${products.map((p) => `<option value="${p.id}" ${w.productId === p.id ? 'selected' : ''}>${E(p.name)} · ${p.referenceImageCount} صورة · ${p.projectCount} مشروع</option>`).join('')}</select>
-        </div>
-        <div class="cf-field" style="align-self:flex-end;"><button class="cf-btn" id="cfNewProd">+ منتج جديد</button></div>
+  if (!state.ws) state.ws = await wsResume();
+  if (rid !== undefined && state.rid !== rid) return; // a newer tab switch won
+  const ws = state.ws;
+  const stage = wsStage(ws);
+  const STEPS = [
+    ['المنتج', 'أضف صور المنتج والمعلومات'],
+    ['الهدف', 'اختر نوع الصور'],
+    ['العدد', 'حدد عدد الصور'],
+    ['الخطة', 'راجع خطة الصور'],
+    ['الإنشاء', 'توليد الصور ومراجعة النتائج'],
+  ];
+  view.innerHTML = `
+    <div class="cf-head cf-head-hero">
+      <div>
+        <h1>✨ مصنع الكرياتيفات</h1>
+        <div class="sub">حوّل صور منتجك إلى كرياتيفات جاهزة للبيع</div>
       </div>
-      <div id="cfProdPane"></div>
-    </div>`;
-  $('cfProdSel').onchange = async (e) => { w.productId = Number(e.target.value) || null; w.product = null; await loadProdPane(); };
-  $('cfNewProd').onclick = () => openNewProductForm();
-  if (w.productId) await loadProdPane();
+      <div class="cf-hero-badge">📊 صور مصممة خصيصًا لسوقك ومنتجك</div>
+    </div>
+    ${providerBanner()}
+    <div class="cf-stepper">
+      ${STEPS.map((s, i) => `<div class="cf-stepbox ${i + 1 === stage ? 'on' : i + 1 < stage ? 'done' : ''}">
+        <div class="n">${i + 1 < stage ? '✓' : i + 1}</div>
+        <div><div class="t">${E(s[0])}</div><div class="d">${E(s[1])}</div></div>
+      </div>`).join('')}
+    </div>
+    <div id="cfSaveTag" class="cf-savetag" ${ws.savedAt ? '' : 'hidden'}>✓ تم الحفظ تلقائيًا</div>
+    <div id="cfWorkspace"></div>`;
+  await paintWorkspace();
 }
 
-async function loadProdPane() {
-  const w = state.wiz;
-  const pane = $('cfProdPane');
-  if (!w.productId) { pane.innerHTML = ''; return; }
-  pane.innerHTML = '<div class="cf-loading">تحميل المنتج…</div>';
-  const p = await api.get(`/api/creative-factory/products/${w.productId}`);
-  w.product = p;
+async function paintWorkspace() {
+  const ws = state.ws;
+  const zone = $('cfWorkspace');
+  if (ws.phase === 'generating' || (ws.jobId && ws.plan)) { await wsPaintGenerate(zone); return; }
+
+  zone.innerHTML = `
+    <div class="cf-ws-grid">
+      <div class="cf-ws-card" id="cfCardImages"></div>
+      <div class="cf-ws-card" id="cfCardSpecs"></div>
+      <div class="cf-ws-card" id="cfCardSettings"></div>
+    </div>
+    <div class="cf-reco" id="cfReco"></div>
+    <div id="cfPreview"></div>`;
+  await Promise.all([paintCardImages(), paintCardSpecs(), paintCardSettings()]);
+  paintReco();
+  paintPreview();
+}
+
+// ---- CARD A — product images -----------------------------------------
+async function paintCardImages() {
+  const ws = state.ws;
+  const box = $('cfCardImages');
+  if (!box) return;
+  if (!ws.productId) {
+    const { products } = await api.get('/api/creative-factory/products');
+    box.innerHTML = `<h2>صور المنتج</h2><div class="hint">اختر منتجًا موجودًا أو أضِف منتجًا جديدًا لبدء الرفع.</div>
+      <div class="cf-field"><label>منتج موجود</label><select id="cfProdSel"><option value="">— اختر —</option>${products.map((p) => `<option value="${p.id}">${E(p.name)} · ${p.referenceImageCount} صورة</option>`).join('')}</select></div>
+      <button class="cf-btn primary" id="cfNewProd" style="width:100%;">+ منتج جديد</button>`;
+    $('cfProdSel').onchange = async (e) => { const id = Number(e.target.value) || null; if (id) { ws.productId = id; ws.product = await api.get(`/api/creative-factory/products/${id}`); ws.specsText = ws.product.specifications || ws.product.benefits || ''; wsPersist(); paintWorkspace(); renderStepper(); } };
+    $('cfNewProd').onclick = () => openNewProductForm();
+    return;
+  }
+  const p = ws.product || (ws.product = await api.get(`/api/creative-factory/products/${ws.productId}`));
   const refs = p.referenceImages || [];
-  const dna = p.dna;
-  pane.innerHTML = `
-    <div style="margin-top:16px;">
-      <h2 style="font-size:14px;">الصور المرجعية (${refs.length}/${p.limits.maxReferenceImages})</h2>
-      <div class="cf-dropzone" id="cfDrop">اسحب وأفلت الصور هنا أو اضغط للاختيار — jpg / png / webp</div>
-      <input type="file" id="cfFile" accept="image/png,image/jpeg,image/webp" multiple hidden />
-      <div class="cf-refs" id="cfRefs">${refs.map(refCard).join('')}</div>
+  const min = p.limits.minReferenceImages, max = p.limits.maxReferenceImages;
+  const dnaOk = p.dna && p.dna.source !== 'UNAVAILABLE';
+  box.innerHTML = `
+    <div class="cf-ws-cardhead"><h2>صور المنتج</h2><span class="cf-badge ${refs.length >= min ? 'green' : 'amber'}">${refs.length >= min ? refs.length + ' صور' : min + ' صور مطلوبة'}</span></div>
+    <div class="cf-refs">
+      ${refs.map((r, i) => `<div class="cf-ref" data-ref="${r.id}">
+        <img src="/api/creative-factory/products/${ws.productId}/reference-images/${r.id}/image" loading="lazy"/>
+        <div class="meta">
+          <button data-mv="up" ${i === 0 ? 'disabled' : ''} title="لليمين">↑</button>
+          <button data-mv="down" ${i === refs.length - 1 ? 'disabled' : ''} title="لليسار">↓</button>
+          <button data-rep="${r.id}" title="استبدال">⇄</button>
+          <button data-del="${r.id}" class="del" title="حذف">✕</button>
+        </div>
+      </div>`).join('')}
+      ${refs.length < max ? `<button class="cf-addref" id="cfAddRef">+<span>إضافة صورة أخرى</span></button>` : ''}
     </div>
-    <div style="margin-top:18px;">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        <h2 style="font-size:14px;margin:0;">تحليل المنتج (Product DNA)</h2>
-        <button class="cf-btn sm" id="cfAnalyze">${dna ? 'إعادة التحليل' : 'تحليل المنتج'}</button>
-        <span class="cf-muted">${dna ? `الإصدار ${dna.version} · ${dnaSourceLabel(dna.source)} · ثقة ${dna.confidence ?? '—'}` : 'لم يتم بعد'}</span>
-      </div>
-      <div id="cfDna">${dna ? dnaCard(dna) : '<div class="cf-muted" style="margin-top:8px;">اضغط «تحليل المنتج» بعد رفع الصور المرجعية.</div>'}</div>
-    </div>
-    <div class="cf-field" style="margin-top:16px;max-width:280px;">
-      <label>قفل المنتج (Product Lock)</label>
-      <select id="cfLock">${Object.entries(LOCK_LABEL).map(([k, v]) => `<option value="${k}" ${(w.adv.productLockMode) === k ? 'selected' : ''}>${v}${k === 'STRICT' ? ' (افتراضي)' : ''}</option>`).join('')}</select>
-    </div>
-    <div class="cf-actions">
-      <button class="cf-btn primary" id="cfToGoal" ${refs.length < p.limits.minReferenceImages ? 'disabled' : ''}>التالي: الهدف ←</button>
-      ${refs.length < p.limits.minReferenceImages ? `<span class="cf-muted">محتاج ${p.limits.minReferenceImages - refs.length} صورة إضافية على الأقل.</span>` : ''}
+    <input type="file" id="cfFile" accept="image/png,image/jpeg,image/webp" multiple hidden />
+    <input type="file" id="cfFileRep" accept="image/png,image/jpeg,image/webp" hidden />
+    <div class="cf-muted" style="margin-top:8px;">ارفع من ${min} إلى ${max} صور واضحة من زوايا مختلفة للمنتج — JPG / PNG / WEBP</div>
+    <div class="cf-understood ${dnaOk ? 'ok' : ''}" id="cfUnderstood">
+      ${dnaOk ? '✓ تم فهم المنتج — <span class="lnk">عرض التفاصيل</span>' : (refs.length >= min && state.ws.specsText.trim() ? '<span class="lnk">تحليل المنتج الآن</span>' : 'أضِف الصور والمواصفات ليفهم النظام المنتج')}
     </div>`;
-  wireRefUpload();
-  $('cfLock').onchange = (e) => { w.adv.productLockMode = e.target.value; };
-  $('cfAnalyze').onclick = async () => {
-    const btn = $('cfAnalyze'); btn.disabled = true; btn.textContent = 'جاري التحليل…';
-    try { const d = await api.post(`/api/creative-factory/products/${w.productId}/dna/analyze`, {}); $('cfDna').innerHTML = dnaCard(d); UI.toast('تم تحليل المنتج'); await loadProdPane(); }
-    catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'تحليل المنتج'; }
-  };
-  $('cfToGoal').onclick = () => goStep('goal');
-}
-
-function refCard(r) {
-  return `<div class="cf-ref" data-ref="${r.id}">
-    <img src="/api/creative-factory/products/${state.wiz.productId}/reference-images/${r.id}/image" alt="" loading="lazy" />
-    <div class="meta"><input value="${E(r.angleLabel || '')}" placeholder="الزاوية" disabled /><button data-del="${r.id}">حذف</button></div>
-  </div>`;
-}
-function wireRefUpload() {
-  const drop = $('cfDrop'); const file = $('cfFile'); const w = state.wiz;
-  if (!drop) return;
-  drop.onclick = () => file.click();
-  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('drag'); };
-  drop.ondragleave = () => drop.classList.remove('drag');
-  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('drag'); uploadFiles(e.dataTransfer.files); };
-  file.onchange = () => uploadFiles(file.files);
-  $('cfRefs').querySelectorAll('[data-del]').forEach((b) => {
-    b.onclick = async () => {
-      try { await api.delete(`/api/creative-factory/products/${w.productId}/reference-images/${b.dataset.del}`); await loadProdPane(); }
-      catch (e) { UI.toast(e.message, 'error'); }
-    };
+  // wiring
+  const filEl = $('cfFile'); let repId = null;
+  $('cfAddRef') && ($('cfAddRef').onclick = () => filEl.click());
+  filEl.onchange = () => uploadRefs(filEl.files);
+  $('cfFileRep').onchange = () => { if (repId) replaceRef(repId, $('cfFileRep').files[0]); };
+  box.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { try { await api.delete(`/api/creative-factory/products/${ws.productId}/reference-images/${b.dataset.del}`); await reloadProduct(); paintWorkspace(); renderStepper(); } catch (e) { UI.toast(e.message, 'error'); } });
+  box.querySelectorAll('[data-rep]').forEach((b) => b.onclick = () => { repId = Number(b.dataset.rep); $('cfFileRep').click(); });
+  box.querySelectorAll('[data-mv]').forEach((b) => b.onclick = async () => {
+    const ids = refs.map((r) => r.id); const row = b.closest('[data-ref]'); const idx = ids.indexOf(Number(row.dataset.ref));
+    const j = b.dataset.mv === 'up' ? idx - 1 : idx + 1; if (j < 0 || j >= ids.length) return;
+    [ids[idx], ids[j]] = [ids[j], ids[idx]];
+    try { await api.post(`/api/creative-factory/products/${ws.productId}/reference-images/reorder`, { orderIds: ids }); await reloadProduct(); paintCardImages(); } catch (e) { UI.toast(e.message, 'error'); }
   });
+  const uEl = $('cfUnderstood');
+  uEl.querySelector('.lnk') && (uEl.querySelector('.lnk').onclick = () => dnaOk ? openDnaDrawer() : runAnalyze());
 }
-async function uploadFiles(fileList) {
-  const w = state.wiz;
-  const files = [...(fileList || [])].slice(0, 6);
-  for (const f of files) {
+async function reloadProduct() {
+  const ws = state.ws;
+  ws.product = await api.get(`/api/creative-factory/products/${ws.productId}`);
+}
+async function uploadRefs(fileList) {
+  const ws = state.ws;
+  for (const f of [...(fileList || [])].slice(0, 6)) {
     if (!/^image\/(png|jpeg|webp)$/.test(f.type)) { UI.toast(`${f.name}: نوع غير مدعوم`, 'error'); continue; }
     try {
-      const dataUrl = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(f); });
-      await api.post(`/api/creative-factory/products/${w.productId}/reference-images`, { dataUrl, angleLabel: '' });
+      const dataUrl = await readAsDataUrl(f);
+      await api.post(`/api/creative-factory/products/${ws.productId}/reference-images`, { dataUrl, angleLabel: '' });
     } catch (e) { UI.toast(`${f.name}: ${e.message}`, 'error'); }
   }
-  await loadProdPane();
+  await reloadProduct(); paintWorkspace(); renderStepper();
+}
+async function replaceRef(refId, file) {
+  if (!file) return;
+  const ws = state.ws;
+  try {
+    const dataUrl = await readAsDataUrl(file);
+    await api.post(`/api/creative-factory/products/${ws.productId}/reference-images`, { dataUrl, angleLabel: '' });
+    await api.delete(`/api/creative-factory/products/${ws.productId}/reference-images/${refId}`);
+    await reloadProduct(); paintCardImages();
+  } catch (e) { UI.toast(e.message, 'error'); }
+}
+function readAsDataUrl(f) { return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(f); }); }
+
+async function runAnalyze() {
+  const ws = state.ws;
+  const uEl = $('cfUnderstood'); if (uEl) uEl.innerHTML = '⏳ جاري فهم المنتج…';
+  try {
+    // make sure the latest specs are saved so DNA analysis sees them
+    await wsSaveProductNow();
+    await api.post(`/api/creative-factory/products/${ws.productId}/dna/analyze`, {});
+    await reloadProduct();
+    UI.toast('تم فهم المنتج');
+  } catch (e) { UI.toast(e.message, 'error'); }
+  paintCardImages(); paintPreview();
 }
 
-function dnaSourceLabel(s) { return { AI_ANALYZED: 'بالذكاء الاصطناعي', USER_EDITED: 'تعديل يدوي', MIXED: 'مختلط', UNAVAILABLE: 'غير متاح (يدوي)' }[s] || s; }
-function dnaCard(dna) {
-  const d = dna.data || {};
-  const rows = [
-    ['الألوان الأساسية', (d.primary_colors || []).join('، ')],
-    ['الخامات المرئية', (d.visible_materials || []).join('، ')],
-    ['الشكل', d.product_shape], ['الشاشة', d.display_screen], ['المنافذ', d.ports],
-    ['الشعارات/العلامة', (d.logos_branding || []).join('، ')],
-    ['ملحقات', (d.accessories || []).join('، ')],
-    ['مظهر العبوة', d.packaging_appearance],
-    ['تفاصيل مميزة', (d.unique_design_details || []).join('، ')],
-    ['ممنوع اختراعه', (d.never_invent || []).join('، ')],
-  ].filter(([, v]) => v);
-  return `<div class="cf-card" style="margin-top:10px;background:var(--cf-bg);box-shadow:none;">
-    <div style="font-weight:800;font-size:13px;margin-bottom:6px;">فهمنا المنتج كالتالي</div>
-    ${rows.length ? `<div class="kv" style="font-size:12px;line-height:1.9;">${rows.map(([k, v]) => `<div><b>${E(k)}:</b> ${E(v)}</div>`).join('')}</div>` : '<div class="cf-muted">مفيش تفاصيل مستخرجة — الـ AI النصي غالبًا مش متظبط. تقدر تدخل التفاصيل يدويًا لاحقًا.</div>'}
-    <button class="cf-btn sm ghost" style="margin-top:10px;" id="cfEditDna">تعديل يدوي</button>
-  </div>`;
+// ---- CARD B — product info -----------------------------------------
+async function paintCardSpecs() {
+  const ws = state.ws;
+  const box = $('cfCardSpecs'); if (!box) return;
+  const disabled = ws.productId ? '' : 'disabled';
+  box.innerHTML = `
+    <h2>مواصفات المنتج</h2>
+    <div class="hint">اكتب المعلومات ببساطة — النظام يرتّبها داخليًا (Product DNA).</div>
+    <div class="cf-field">
+      <label>اكتب مواصفات ومميزات المنتج</label>
+      <textarea id="cfSpecs" ${disabled} rows="7" placeholder="مثال:
+• فرشاة شعر مع بخاخ ماء مدمج
+• تساعد أثناء التسريح وتقلل الهيشان
+• تصميم عملي خفيف وسهل الحمل
+• مناسبة للاستخدام اليومي والسفر">${E(ws.specsText)}</textarea>
+    </div>
+    <div class="cf-field">
+      <label>الجمهور المستهدف</label>
+      <div class="cf-chips" id="cfAud">
+        ${AUDIENCE_CHIPS.map((a) => `<button class="cf-chip ${ws.audience.has(a) ? 'on' : ''}" data-aud="${E(a)}">${E(a)}</button>`).join('')}
+        <button class="cf-chip ${ws.audienceCustom ? 'on' : ''}" data-aud="__custom">أخرى…</button>
+      </div>
+      <input id="cfAudCustom" class="cf-audcustom" placeholder="جمهور مخصص (افصل بفاصلة)" value="${E(ws.audienceCustom)}" ${ws.audienceCustom ? '' : 'hidden'} ${disabled}/>
+    </div>
+    <div class="cf-muted">السوق الافتراضي: <b>مصر</b> — تقدر تغيّره من «إعدادات متقدمة».</div>
+    ${disabled ? '<div class="cf-muted" style="margin-top:6px;color:var(--cf-amber);">اختر منتجًا أولاً من بطاقة «صور المنتج».</div>' : ''}`;
+  if (disabled) return;
+  const ta = $('cfSpecs');
+  ta.oninput = () => { ws.specsText = ta.value; scheduleSaveProduct(); };
+  $('cfAud').querySelectorAll('[data-aud]').forEach((b) => b.onclick = () => {
+    const v = b.dataset.aud;
+    if (v === '__custom') { const inp = $('cfAudCustom'); inp.hidden = !inp.hidden; b.classList.toggle('on', !inp.hidden || !!inp.value); if (!inp.hidden) inp.focus(); }
+    else { ws.audience.has(v) ? ws.audience.delete(v) : ws.audience.add(v); b.classList.toggle('on'); }
+    scheduleSaveProduct();
+  });
+  $('cfAudCustom').oninput = () => { ws.audienceCustom = $('cfAudCustom').value; scheduleSaveProduct(); };
 }
-// (dna edit handler wired after render)
-document.addEventListener('click', async (e) => {
-  if (e.target && e.target.id === 'cfEditDna') {
-    const w = state.wiz; if (!w?.productId) return;
-    const d = (w.product?.dna?.data) || {};
-    const val = (k) => (Array.isArray(d[k]) ? d[k].join('، ') : (d[k] || ''));
-    openDrawer(`<h2 style="margin-top:0;">تعديل Product DNA</h2>
-      ${['primary_colors', 'secondary_colors', 'visible_materials', 'logos_branding', 'accessories', 'unique_design_details', 'never_invent'].map((k) => `<div class="cf-field"><label>${E(k)}</label><input data-dna="${k}" value="${E(val(k))}" placeholder="افصل بفاصلة"/></div>`).join('')}
-      ${['product_shape', 'display_screen', 'ports', 'packaging_appearance'].map((k) => `<div class="cf-field"><label>${E(k)}</label><input data-dna="${k}" value="${E(val(k))}"/></div>`).join('')}
-      <button class="cf-btn primary" id="cfDnaSave">حفظ</button>`);
-    $('cfDnaSave').onclick = async () => {
-      const patch = {};
-      $('cfDrawer').querySelectorAll('[data-dna]').forEach((inp) => {
-        const k = inp.dataset.dna;
-        patch[k] = ['product_shape', 'display_screen', 'ports', 'packaging_appearance'].includes(k) ? (inp.value.trim() || null) : inp.value.split(/[،,]+/).map((x) => x.trim()).filter(Boolean);
-      });
-      try { await api.patch(`/api/creative-factory/products/${w.productId}/dna`, { data: patch }); closeDrawer(); UI.toast('تم الحفظ'); await loadProdPane(); }
-      catch (err) { UI.toast(err.message, 'error'); }
-    };
+
+// ---- CARD C — creative settings -----------------------------------
+async function paintCardSettings() {
+  const ws = state.ws;
+  const box = $('cfCardSettings'); if (!box) return;
+  const btns = state.status?.options?.imageCountButtons || [1, 2, 3, 4, 5, 10, 20, 50];
+  box.innerHTML = `
+    <h2>نوع الصور</h2>
+    <div class="cf-typecards">
+      ${PROJECT_TYPE_CARDS.slice(0, 2).map((c) => `<button class="cf-typecard ${ws.imageType === c.key ? 'sel' : ''}" data-type="${c.key}">
+        <div class="ic">${c.ic}</div><div class="t">${E(c.t)}</div><div class="d">${E(c.d)}</div>
+        <span class="tick">✓</span>
+      </button>`).join('')}
+    </div>
+
+    <div class="cf-sec-label">عدد الصور المطلوبة</div>
+    <div class="cf-count-btns" id="cfCount">
+      ${btns.map((n) => `<button class="${ws.countMode === 'MANUAL' && ws.count === n ? 'sel' : ''}" data-cnt="${n}">${n}</button>`).join('')}
+    </div>
+    <button class="cf-btn ghost sm" id="cfAiCount" style="margin-top:8px;">✨ اقترح العدد بالذكاء الاصطناعي</button>
+    ${ws.countMode === 'AI' && ws.aiCountReason ? `<div class="cf-muted" style="margin-top:6px;">✨ اقترح ${ws.count} — ${E(ws.aiCountReason)}</div>` : ''}
+
+    <div class="cf-sec-label">أسلوب الصور <span class="cf-muted">(تفضيلات — الـ AI يختار الأنسب لكل صورة)</span></div>
+    <div class="cf-chips" id="cfStyles">
+      ${STYLE_CHIPS.map((c) => `<button class="cf-chip ${ws.styles.has(c.k) ? 'on' : ''}" data-style="${c.k}">${E(c.t)}</button>`).join('')}
+    </div>
+
+    <button class="cf-btn primary cf-gen-btn" id="cfGenNow">⚡ إنشاء الصور الآن</button>
+    <details class="cf-collapse" id="cfAdvBox"><summary>إعدادات متقدمة</summary><div id="cfAdv"></div></details>`;
+
+  box.querySelectorAll('[data-type]').forEach((b) => b.onclick = () => {
+    ws.imageType = b.dataset.type;
+    if (ws.imageType === 'PRODUCT_PAGE' && ws.countMode === 'MANUAL' && ![1, 2, 3, 4, 5, 10, 20, 50].includes(ws.count)) ws.count = 5;
+    ws.plan = null;
+    paintCardSettings(); paintPreview(); renderStepper(); scheduleSaveProject();
+  });
+  $('cfCount').querySelectorAll('[data-cnt]').forEach((b) => b.onclick = () => {
+    ws.countMode = 'MANUAL'; ws.count = Number(b.dataset.cnt); ws.aiCountReason = null; ws.plan = null;
+    paintCardSettings(); paintPreview(); scheduleSaveProject();
+  });
+  $('cfAiCount').onclick = async () => {
+    const btn = $('cfAiCount'); btn.disabled = true; btn.textContent = '… جاري الاقتراح';
+    try {
+      await wsEnsureProject();
+      const rec = await api.post(`/api/creative-factory/projects/${ws.projectId}/recommend-count`, {});
+      ws.countMode = 'AI'; ws.count = rec.count; ws.aiCountReason = rec.reason; ws.plan = null;
+      ws.rec = rec;
+      paintCardSettings(); paintReco(); paintPreview(); scheduleSaveProject();
+    } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = '✨ اقترح العدد بالذكاء الاصطناعي'; }
+  };
+  $('cfStyles').querySelectorAll('[data-style]').forEach((b) => b.onclick = () => {
+    const k = b.dataset.style;
+    ws.styles.has(k) ? ws.styles.delete(k) : ws.styles.add(k);
+    if (k === 'HIJAB') { ws.adv.hijabRequired = ws.styles.has('HIJAB'); if (ws.styles.has('HIJAB') && ws.adv.peopleRule === 'NONE') ws.adv.peopleRule = 'WOMEN'; }
+    b.classList.toggle('on'); ws.plan = null; scheduleSaveProject();
+  });
+  $('cfGenNow').onclick = wsGenerateNow;
+  $('cfAdvBox').ontoggle = () => { if ($('cfAdvBox').open) paintAdv(); };
+}
+
+function paintAdv() {
+  const ws = state.ws;
+  const box = $('cfAdv'); if (!box) return;
+  const presets = state.status?.options?.stylePresets || [];
+  box.innerHTML = `
+    <div class="cf-row">
+      <div class="cf-field"><label>قفل المنتج</label><select data-adv="productLockMode">${Object.entries(LOCK_LABEL).map(([k, v]) => `<option value="${k}" ${ws.adv.productLockMode === k ? 'selected' : ''}>${v}${k === 'STRICT' ? ' (افتراضي)' : ''}</option>`).join('')}</select></div>
+      <div class="cf-field"><label>وضع الإنشاء</label><select data-adv="generationMode"><option value="FAST" ${ws.adv.generationMode === 'FAST' ? 'selected' : ''}>Fast</option><option value="PREMIUM" ${ws.adv.generationMode === 'PREMIUM' ? 'selected' : ''}>Premium</option></select></div>
+      <div class="cf-field"><label>كثافة النص</label><select data-adv="textDensity">${Object.entries(DENSITY_LABEL).map(([k, v]) => `<option value="${k}" ${ws.adv.textDensity === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+    </div>
+    <div class="cf-row">
+      <div class="cf-field"><label>الأشخاص</label><select data-adv="peopleRule">${Object.entries(PEOPLE_LABEL).map(([k, v]) => `<option value="${k}" ${ws.adv.peopleRule === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div class="cf-field"><label>نمط أساسي</label><select data-adv="stylePreset">${presets.map((p) => `<option value="${p.key}" ${ws.adv.stylePreset === p.key ? 'selected' : ''}>${E(p.label)}</option>`).join('')}</select></div>
+      <div class="cf-field"><label>المقاس</label><select data-adv="aspectRatio">${(state.status.options.aspectRatios || ['1:1']).map((r) => `<option ${ws.adv.aspectRatio === r ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
+    </div>
+    <div class="cf-row">
+      <div class="cf-field"><label>السوق</label><input data-adv="market" value="${E(ws.adv.market)}"/></div>
+      <div class="cf-field"><label>اللغة</label><input data-adv="language" value="${E(ws.adv.language)}"/></div>
+      <div class="cf-field"><label>اللهجة</label><input data-adv="dialect" value="${E(ws.adv.dialect)}"/></div>
+    </div>
+    ${state.isAdmin ? `<div class="cf-row"><div class="cf-field"><label>حد الجودة للاعتماد التلقائي</label><input id="cfQt" type="number" min="50" max="100" value="${state.status.settings?.cfQualityThreshold ?? 88}"/></div></div>` : ''}`;
+  box.querySelectorAll('[data-adv]').forEach((el) => el.onchange = () => {
+    const k = el.dataset.adv; ws.adv[k] = el.value; ws.plan = null; scheduleSaveProject();
+  });
+  if ($('cfQt')) $('cfQt').onchange = async () => {
+    const v = Math.max(50, Math.min(100, Number($('cfQt').value) || 88));
+    try { await api.patch('/api/creative-factory/settings', { cfQualityThreshold: v }); state.status.settings.cfQualityThreshold = v; UI.toast('تم حفظ حد الجودة'); } catch (e) { UI.toast(e.message, 'error'); }
+  };
+}
+
+// ---- AI recommendation panel ---------------------------------------
+function recoBullets(ws) {
+  const t = (ws.specsText || '').toLowerCase();
+  const lines = (ws.specsText || '').split(/\n|•|-|•/).map((s) => s.trim()).filter((s) => s.length > 2);
+  const out = [];
+  if (lines.length >= 3) out.push('المنتج يحتوي على عدة مميزات تحتاج شرح بصري');
+  if (/قبل|بعد|before|after|تجعد|فرد|هيشان|نتيج|تحسين/.test(t)) out.push('صورة قبل / بعد قد تساعد في توضيح الفكرة');
+  if (lines.length) out.push('صور المميزات تساعد العميل على فهم المنتج');
+  if (/علب|كرتون|packaging|box|تغليف|صندوق/.test(t)) out.push('صورة المنتج والعبوة تزيد وضوح ما سيستلمه العميل');
+  if (!out.length) out.push('صورة رئيسية واضحة + صورة تفاصيل تكفي لبداية قوية');
+  return out.slice(0, 4);
+}
+function paintReco() {
+  const ws = state.ws;
+  const box = $('cfReco'); if (!box) return;
+  const typeLabel = ws.imageType === 'PRODUCT_PAGE' ? 'صفحة المنتج' : 'إعلانات';
+  const reason = ws.rec?.reason || (ws.countMode === 'AI' ? ws.aiCountReason : null);
+  box.innerHTML = `
+    <div class="cf-reco-main">
+      <div class="cf-reco-head"><span class="bot">🤖</span><h2>اقتراح الذكاء الاصطناعي</h2><span class="cf-badge violet">مناسب ✨</span></div>
+      <p class="cf-reco-lead">بناءً على نوع المنتج ومميزاته، أنصحك بإنشاء <b>${ws.count}</b> ${ws.count > 10 ? 'صورة' : 'صور'} ${typeLabel === 'صفحة المنتج' ? 'لصفحة المنتج' : 'إعلانية'}.</p>
+      ${reason ? `<p class="cf-muted">${E(reason)}</p>` : ''}
+      <ul class="cf-reco-why">${recoBullets(ws).map((b) => `<li>✓ ${E(b)}</li>`).join('')}</ul>
+      <p class="cf-reco-note">هذا العدد يحقق توازن بين الشرح والإقناع.</p>
+    </div>
+    <div class="cf-seq">
+      <h3>التسلسل المقترح للصور</h3>
+      <ol id="cfSeqList">${seqRows(ws)}</ol>
+      ${ws.plan?.items?.length ? '<div class="cf-muted">التسلسل الفعلي من مخطط الـ AI.</div>' : '<button class="cf-btn ghost sm" id="cfShowPlan" style="margin-top:8px;">عرض الخطة الفعلية</button>'}
+    </div>`;
+  if ($('cfShowPlan')) $('cfShowPlan').onclick = wsShowPlan;
+}
+function seqRows(ws) {
+  const items = ws.plan?.items?.length ? ws.plan.items : previewSequence(ws.imageType, ws.count);
+  return items.map((it, i) => `<li><span class="sn">${i + 1}</span><span>${E(it.purpose || it.label || 'صورة')}${it.angle ? ` <span class="cf-muted">(${E(it.angle)})</span>` : ''}</span></li>`).join('');
+}
+function previewSequence(type, count) {
+  const n = Math.max(1, count);
+  if (type === 'PRODUCT_PAGE') {
+    const order = [
+      ['الصورة الرئيسية (هوك قوي)', 'HERO'], ['المشكلة التي يعالجها المنتج', 'PROBLEM'], ['المشكلة والحل', 'PROBLEM_SOLUTION'],
+      ['المنتج أثناء الاستخدام', 'DEMONSTRATION'], ['أهم المميزات', 'BENEFITS'], ['إنفوجرافيك مواصفات', 'FEATURE_INFOGRAPHIC'],
+      ['زوايا متعددة للمنتج', 'MULTI_ANGLE'], ['تفاصيل قريبة', 'MACRO_DETAILS'], ['المنتج في سياق حقيقي', 'LIFESTYLE'],
+      ['طريقة الاستخدام', 'HOW_TO_USE'], ['الرد على اعتراض', 'OBJECTION'], ['المنتج + العبوة', 'PRODUCT_PACKAGING'],
+      ['قبل / بعد', 'BEFORE_AFTER'], ['صورة ختامية للشراء', 'FINAL_CTA'],
+    ].slice(0, n).map(([label, angle]) => ({ label, angle, purpose: label }));
+    if (n > 2 && order[order.length - 1].angle !== 'FINAL_CTA') order[order.length - 1] = { label: 'صورة ختامية للشراء', angle: 'FINAL_CTA', purpose: 'صورة ختامية للشراء' };
+    return order;
   }
-});
+  const angles = ['PROBLEM', 'PROBLEM_SOLUTION', 'CURIOSITY', 'PRODUCT_DEMO', 'BENEFIT', 'FEATURE', 'LIFESTYLE', 'BEFORE_AFTER', 'COMPARISON', 'OFFER'];
+  return Array.from({ length: n }, (_, i) => ({ label: `إعلان — ${angles[i % angles.length]}`, angle: angles[i % angles.length], purpose: `إعلان — ${angles[i % angles.length]}` }));
+}
+
+// ---- expected-result preview strip --------------------------------
+function paintPreview() {
+  const ws = state.ws;
+  const box = $('cfPreview'); if (!box) return;
+  const real = ws.plan?.items?.length ? ws.plan.items : null;
+  const items = real || previewSequence(ws.imageType, ws.count);
+  const anyRealAsset = real && real.some((it) => it.approvedAsset || (it.assets && it.assets.length));
+  box.innerHTML = `
+    <div class="cf-preview-head">
+      <h2>${anyRealAsset ? 'الصور النهائية' : 'مثال للنتيجة المتوقعة'}</h2>
+      <span class="cf-badge ${anyRealAsset ? 'green' : 'gray'}">${anyRealAsset ? 'صور فعلية' : 'معاينة الخطة'}</span>
+    </div>
+    <div class="cf-preview-strip">
+      ${items.map((it, i) => {
+        const a = it.approvedAsset || (it.assets && it.assets[0]);
+        return `<div class="cf-preview-card" ${a ? `data-open-asset="${a.id}"` : ''}>
+          ${a ? `<img src="/api/creative-factory/assets/${a.id}/image" loading="lazy"/>` : `<div class="ph"><span class="pn">${i + 1}</span><span class="pl">معاينة</span></div>`}
+          <div class="pc-body"><span class="idx">${i + 1}</span> ${E(shortAngle(it.angle) || it.purpose || it.label || '')}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    ${!real ? '<div class="cf-muted">دي معاينة تقريبية — التسلسل النهائي يتحدد من مخطط الـ AI حسب منتجك.</div>' : ''}`;
+  box.querySelectorAll('[data-open-asset]').forEach((c) => c.onclick = () => openAssetDrawer(Number(c.dataset.openAsset)));
+}
+function shortAngle(a) {
+  return { HERO: 'Hero — هوك رئيسي', PROBLEM: 'Problem — المشكلة', PROBLEM_SOLUTION: 'Problem/Solution', BEFORE_AFTER: 'Before/After — قبل/بعد', BENEFITS: 'Features — المميزات', FEATURE_INFOGRAPHIC: 'إنفوجرافيك', MULTI_ANGLE: 'زوايا متعددة', MACRO_DETAILS: 'تفاصيل', LIFESTYLE: 'Lifestyle', HOW_TO_USE: 'طريقة الاستخدام', OBJECTION: 'اعتراض', PRODUCT_PACKAGING: 'Product Detail — المنتج والعبوة', FINAL_CTA: 'CTA ختامية', DEMONSTRATION: 'أثناء الاستخدام' }[a] || a || '';
+}
+
+// ---- save (auto) --------------------------------------------------
+function markSaved() {
+  state.ws.savedAt = Date.now();
+  const t = $('cfSaveTag'); if (t) { t.hidden = false; t.classList.add('flash'); setTimeout(() => t && t.classList.remove('flash'), 1200); }
+}
+function scheduleSaveProduct() {
+  clearTimeout(state.saveTimers.prod);
+  state.saveTimers.prod = setTimeout(() => wsSaveProductNow().catch(() => {}), 800);
+}
+async function wsSaveProductNow() {
+  const ws = state.ws; if (!ws.productId) return;
+  const aud = [...ws.audience, ...String(ws.audienceCustom || '').split(/[،,]+/).map((x) => x.trim()).filter(Boolean)].join('، ');
+  await api.patch(`/api/creative-factory/products/${ws.productId}`, {
+    specifications: ws.specsText || null,
+    benefits: ws.specsText || null,          // mirror so downstream feature-counting works
+    targetAudience: aud || null,
+  });
+  markSaved();
+}
+function scheduleSaveProject() {
+  clearTimeout(state.saveTimers.proj);
+  state.saveTimers.proj = setTimeout(() => wsSaveProjectNow().catch(() => {}), 800);
+  renderStepper();
+}
+async function wsEnsureProject() {
+  const ws = state.ws;
+  if (ws.projectId) return ws.projectId;
+  const body = projectBody(ws);
+  const p = await api.post('/api/creative-factory/projects', body);
+  ws.projectId = p.id; ws.project = p; wsPersist();
+  return ws.projectId;
+}
+function projectBody(ws) {
+  return {
+    productId: ws.productId, projectType: ws.imageType, quantity: ws.count, quantityMode: ws.countMode,
+    aiQuantityReason: ws.aiCountReason || undefined,
+    stylePreset: ws.adv.stylePreset, market: ws.adv.market, language: ws.adv.language, dialect: ws.adv.dialect,
+    aspectRatio: ws.adv.aspectRatio, textDensity: ws.adv.textDensity, peopleRule: ws.adv.peopleRule,
+    hijabRequired: ws.adv.hijabRequired, generationMode: ws.adv.generationMode, productLockMode: ws.adv.productLockMode,
+    planNotes: styleNotesString(ws),
+  };
+}
+async function wsSaveProjectNow() {
+  const ws = state.ws;
+  const refs = ws.product?.referenceImages?.length || 0;
+  const min = ws.product?.limits?.minReferenceImages || 3;
+  if (!ws.productId || refs < min) return;               // can't persist a project yet — kept in localStorage
+  if (!ws.projectId) { await wsEnsureProject(); markSaved(); return; }
+  await api.patch(`/api/creative-factory/projects/${ws.projectId}`, projectBody(ws));
+  markSaved();
+}
+
+function renderStepper() {
+  const ws = state.ws; if (!ws) return;
+  const stage = wsStage(ws);
+  document.querySelectorAll('.cf-stepbox').forEach((el, i) => {
+    el.classList.toggle('on', i + 1 === stage);
+    el.classList.toggle('done', i + 1 < stage);
+    const n = el.querySelector('.n'); if (n) n.textContent = i + 1 < stage ? '✓' : String(i + 1);
+  });
+}
+
+// ---- plan preview (real) ----------------------------------------
+async function wsShowPlan() {
+  const ws = state.ws;
+  const btn = $('cfShowPlan'); if (btn) { btn.disabled = true; btn.textContent = '… جاري تصميم الخطة'; }
+  try {
+    await wsSaveProjectNow();
+    await wsEnsureProject();
+    const res = await api.post(`/api/creative-factory/projects/${ws.projectId}/plan`, { count: ws.count });
+    ws.plan = { items: res.items || [] };
+    markSaved();
+    paintReco(); paintPreview(); renderStepper();
+  } catch (e) { UI.toast(e.message, 'error'); if (btn) { btn.disabled = false; btn.textContent = 'عرض الخطة الفعلية'; } }
+}
+
+// ---- GENERATE (full pipeline) ---------------------------------
+async function wsGenerateNow() {
+  const ws = state.ws;
+  const refs = ws.product?.referenceImages?.length || 0;
+  const min = ws.product?.limits?.minReferenceImages || 3;
+  if (!ws.productId) return UI.toast('اختر منتجًا أولاً.', 'error');
+  if (refs < min) return UI.toast(`محتاج ${min} صور مرجعية على الأقل.`, 'error');
+  if (!ws.specsText.trim()) return UI.toast('اكتب مواصفات المنتج.', 'error');
+  if (!ws.imageType) return UI.toast('اختر نوع الصور.', 'error');
+
+  const btn = $('cfGenNow'); btn.disabled = true;
+  const setBtn = (t) => { btn.textContent = t; };
+  try {
+    setBtn('… جاري حفظ المشروع'); await wsSaveProductNow(); await wsSaveProjectNow(); await wsEnsureProject();
+    setBtn('… جاري فهم المنتج');
+    if (!ws.product.dna || ws.product.dna.source === 'UNAVAILABLE') {
+      try { await api.post(`/api/creative-factory/products/${ws.productId}/dna/analyze`, {}); await reloadProduct(); } catch { /* deterministic fallback still works */ }
+    }
+    setBtn('… جاري تصميم الخطة');
+    if (!ws.plan?.items?.length) {
+      const res = await api.post(`/api/creative-factory/projects/${ws.projectId}/plan`, { count: ws.count });
+      ws.plan = { items: res.items || [] };
+    }
+    setBtn('… جاري تجهيز البرومبتات');
+    await api.post(`/api/creative-factory/projects/${ws.projectId}/plan/approve`, {});
+
+    if (!state.status.provider.image.configured) {
+      UI.toast('الخطة جاهزة ومحفوظة. زر التوليد هيشتغل بعد إضافة OPENAI_API_KEY.', 'error');
+      btn.disabled = false; setBtn('⚡ إنشاء الصور الآن'); paintReco(); paintPreview(); return;
+    }
+    setBtn('… بدء التوليد');
+    const job = await api.post(`/api/creative-factory/projects/${ws.projectId}/generate`, {});
+    ws.jobId = job.id; ws.phase = 'generating'; markSaved();
+    renderNew($('cfView'));
+  } catch (e) {
+    UI.toast(`فشل بدء الإنشاء: ${e.message}`, 'error');
+    btn.disabled = false; setBtn('⚡ إنشاء الصور الآن');
+  }
+}
+
+// ---- generation view (live) ----------------------------------
+async function wsPaintGenerate(zone) {
+  await paintGen(zone);
+  if (state.poll) clearInterval(state.poll);
+  state.poll = setInterval(() => paintGen(zone).catch(() => {}), 2500);
+}
+async function paintGen(zone) {
+  const ws = state.ws;
+  const proj = await api.get(`/api/creative-factory/projects/${ws.projectId}`);
+  ws.project = proj; ws.plan = { items: proj.items };
+  const job = proj.jobs[0] || null;
+  const terminal = ['COMPLETED', 'PARTIAL_COMPLETE', 'FAILED', 'CANCELLED'].includes(job?.status);
+  if (terminal && state.poll) { clearInterval(state.poll); state.poll = null; }
+  const done = proj.items.filter((i) => i.status === 'COMPLETED').length;
+  const fail = proj.items.filter((i) => ['FAILED', 'NEEDS_REVIEW'].includes(i.status)).length;
+  zone.innerHTML = `
+    <div class="cf-gen-top">
+      <div>
+        <div class="cf-gen-title">${E(statusText(job?.status || 'QUEUED'))}</div>
+        <div class="cf-muted">${done} / ${proj.items.length} صور جاهزة${fail ? ` · ${fail} تحتاج مراجعة` : ''}</div>
+      </div>
+      <div class="cf-gen-actions">
+        ${terminal && fail ? '<button class="cf-btn sm" id="cfGenRetry">إعادة محاولة الناقص</button>' : ''}
+        <a class="cf-btn ghost sm" href="#results">كل النتائج</a>
+        <button class="cf-btn ghost sm" id="cfGenNew">مشروع جديد</button>
+      </div>
+    </div>
+    <div class="cf-progress" style="margin:10px 0 16px;"><i style="width:${job?.progress || 0}%"></i></div>
+    ${job?.status === 'FAILED' && job.error ? `<div class="cf-banner warn">فشل إنشاء الصور: ${E(job.error)}</div>` : ''}
+    ${job?.status === 'COMPLETED' ? '<div class="cf-banner ok">✅ تم إنشاء كل الصور بنجاح.</div>' : ''}
+    <div class="cf-grid gallery">${proj.items.map(genItemTile).join('')}</div>`;
+  proj.items.forEach((it) => {
+    const t = zone.querySelector(`[data-gi="${it.id}"]`);
+    const a = it.approvedAsset || (it.assets && it.assets[0]);
+    if (t && a) t.onclick = () => openAssetDrawer(a.id);
+  });
+  if ($('cfGenRetry')) $('cfGenRetry').onclick = async () => { try { const j = await api.post(`/api/creative-factory/projects/${ws.projectId}/retry-failed`, {}); ws.jobId = j.id; wsPaintGenerate(zone); } catch (e) { UI.toast(e.message, 'error'); } };
+  if ($('cfGenNew')) $('cfGenNew').onclick = () => { try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ } state.ws = newWs(); renderNew($('cfView')); };
+}
+function genItemTile(it) {
+  const [lbl, cls] = ITEM_STATUS[it.status] || ['—', 'gray'];
+  const a = it.approvedAsset || (it.assets && it.assets[0]);
+  const q = a && a.quality;
+  return `<div class="cf-tile" data-gi="${it.id}">
+    ${a ? `<img class="thumb" src="/api/creative-factory/assets/${a.id}/image" loading="lazy"/>` : `<div class="thumb ph">${it.status === 'GENERATING' ? '⏳ جاري الإنشاء' : it.status === 'REGENERATING' ? '↻ إعادة المحاولة' : it.status === 'REVIEWING' ? '🔍 فحص الجودة' : it.status === 'FAILED' ? '✕ فشل' : 'في الانتظار'}</div>`}
+    <div class="body"><div class="top"><span style="font-weight:800;font-size:12px;">#${it.position}</span><span class="cf-badge ${cls}">${lbl}</span></div>
+    <div class="hook">${E(shortAngle(it.angle) || it.purpose || '')}</div>
+    ${q && q.overall != null ? `<button class="cf-qscore" data-q="${a.id}">${q.overall} / 100</button>` : ''}
+    </div></div>`;
+}
+function statusText(s) {
+  return { QUEUED: 'في قائمة الانتظار…', GENERATING: 'جاري إنشاء الصور…', REVIEWING: 'جاري فحص الجودة…', REGENERATING: 'إعادة المحاولة…', PARTIAL_COMPLETE: 'اكتمل جزئيًا', COMPLETED: 'اكتمل', FAILED: 'فشل', CANCELLED: 'أُلغي' }[s] || s;
+}
+
+// ---- Product DNA drawer + new-product form ----------------------
+async function openDnaDrawer() {
+  const ws = state.ws;
+  const d = ws.product?.dna;
+  const data = d?.data || {};
+  const val = (k) => (Array.isArray(data[k]) ? data[k].join('، ') : (data[k] || ''));
+  openDrawer(`<h2 style="margin-top:0;">فهم المنتج (Product DNA)</h2>
+    <div class="cf-muted">${d ? `${dnaSourceLabel(d.source)} · إصدار ${d.version} · ثقة ${d.confidence ?? '—'}` : 'لم يتم التحليل بعد'}</div>
+    ${['primary_colors', 'secondary_colors', 'visible_materials', 'logos_branding', 'accessories', 'unique_design_details', 'never_invent'].map((k) => `<div class="cf-field"><label>${E(dnaFieldLabel(k))}</label><input data-dna="${k}" value="${E(val(k))}" placeholder="افصل بفاصلة"/></div>`).join('')}
+    ${['product_shape', 'display_screen', 'ports', 'packaging_appearance'].map((k) => `<div class="cf-field"><label>${E(dnaFieldLabel(k))}</label><input data-dna="${k}" value="${E(val(k))}"/></div>`).join('')}
+    <button class="cf-btn primary" id="cfDnaSave">حفظ التعديلات</button>
+    <button class="cf-btn ghost" id="cfDnaRe" style="margin-inline-start:8px;">إعادة التحليل</button>`);
+  $('cfDnaSave').onclick = async () => {
+    const patch = {};
+    $('cfDrawer').querySelectorAll('[data-dna]').forEach((inp) => {
+      const k = inp.dataset.dna;
+      patch[k] = ['product_shape', 'display_screen', 'ports', 'packaging_appearance'].includes(k) ? (inp.value.trim() || null) : inp.value.split(/[،,]+/).map((x) => x.trim()).filter(Boolean);
+    });
+    try { await api.patch(`/api/creative-factory/products/${ws.productId}/dna`, { data: patch }); closeDrawer(); await reloadProduct(); UI.toast('تم الحفظ'); paintCardImages(); }
+    catch (e) { UI.toast(e.message, 'error'); }
+  };
+  $('cfDnaRe').onclick = async () => { closeDrawer(); await runAnalyze(); };
+}
+function dnaFieldLabel(k) {
+  return { primary_colors: 'الألوان الأساسية', secondary_colors: 'ألوان ثانوية', visible_materials: 'الخامات المرئية', logos_branding: 'الشعارات/العلامة', accessories: 'ملحقات', unique_design_details: 'تفاصيل مميزة', never_invent: 'ممنوع اختراعه', product_shape: 'الشكل', display_screen: 'الشاشة', ports: 'المنافذ', packaging_appearance: 'مظهر العبوة' }[k] || k;
+}
+function dnaSourceLabel(s) { return { AI_ANALYZED: 'بالذكاء الاصطناعي', USER_EDITED: 'تعديل يدوي', MIXED: 'مختلط', UNAVAILABLE: 'غير متاح (يدوي)' }[s] || s; }
 
 function openNewProductForm() {
   api.get('/api/creative-factory/products/catalog').then(({ suggestions }) => {
@@ -281,296 +755,38 @@ function openNewProductForm() {
     openDrawer(`<h2 style="margin-top:0;">منتج جديد</h2>
       <div class="cf-field"><label>من الكتالوج (اختياري)</label><select id="npCat"><option value="">— بدون —</option>${opts.map((o) => `<option value="${o.ambProductId}">${E(o.name)}</option>`).join('')}</select></div>
       <div class="cf-field"><label>اسم المنتج *</label><input id="npName"/></div>
-      <div class="cf-field"><label>اسم داخلي / إنجليزي</label><input id="npInternal"/></div>
       <div class="cf-field"><label>التصنيف</label><input id="npCategory"/></div>
-      <div class="cf-field"><label>الوصف</label><textarea id="npDesc"></textarea></div>
-      <div class="cf-field"><label>المواصفات</label><textarea id="npSpecs"></textarea></div>
-      <div class="cf-field"><label>الفوائد الرئيسية</label><textarea id="npBenefits"></textarea></div>
-      <div class="cf-field"><label>حالات الاستخدام</label><textarea id="npUse"></textarea></div>
-      <div class="cf-field"><label>الجمهور المستهدف</label><textarea id="npAud"></textarea></div>
-      <div class="cf-field"><label>مشاكل العميل الأساسية</label><textarea id="npProblems"></textarea></div>
-      <div class="cf-field"><label>ادعاءات مسموح بها</label><textarea id="npAllowed"></textarea></div>
-      <div class="cf-field"><label>ادعاءات ممنوعة</label><textarea id="npForbidden"></textarea></div>
+      <div class="cf-field"><label>مواصفات ومميزات المنتج</label><textarea id="npSpecs" rows="5"></textarea></div>
+      <div class="cf-field"><label>ادعاءات ممنوعة (اختياري)</label><input id="npForbidden" placeholder="عبارات ما ينفعش تظهر"/></div>
       <div class="cf-field"><label>سعر البيع (اختياري)</label><input id="npPrice" type="number"/></div>
-      <div class="cf-field"><label>ملاحظات</label><textarea id="npNotes"></textarea></div>
-      <button class="cf-btn primary" id="npSave">حفظ المنتج</button>`);
+      <button class="cf-btn primary" id="npSave">حفظ وبدء</button>`);
     $('npCat').onchange = (e) => { const o = opts.find((x) => String(x.ambProductId) === e.target.value); if (o && !$('npName').value) $('npName').value = o.name; };
     $('npSave').onclick = async () => {
       const g = (id) => $(id).value.trim();
       if (!g('npName')) return UI.toast('اسم المنتج مطلوب', 'error');
-      const body = {
-        ambProductId: Number($('npCat').value) || undefined,
-        name: g('npName'), internalName: g('npInternal') || undefined, category: g('npCategory') || undefined,
-        description: g('npDesc') || undefined, specifications: g('npSpecs') || undefined, benefits: g('npBenefits') || undefined,
-        useCases: g('npUse') || undefined, targetAudience: g('npAud') || undefined, problems: g('npProblems') || undefined,
-        allowedClaims: g('npAllowed') || undefined, forbiddenClaims: g('npForbidden') || undefined,
-        sellingPrice: g('npPrice') ? Number(g('npPrice')) : undefined, notes: g('npNotes') || undefined,
-      };
       try {
-        const p = await api.post('/api/creative-factory/products', body);
-        state.wiz.productId = p.id; closeDrawer(); UI.toast('تم إنشاء المنتج'); await renderNew($('cfView'));
+        const p = await api.post('/api/creative-factory/products', {
+          ambProductId: Number($('npCat').value) || undefined,
+          name: g('npName'), category: g('npCategory') || undefined,
+          specifications: g('npSpecs') || undefined, benefits: g('npSpecs') || undefined,
+          forbiddenClaims: g('npForbidden') || undefined,
+          sellingPrice: g('npPrice') ? Number(g('npPrice')) : undefined,
+        });
+        state.ws = newWs(); state.ws.productId = p.id;
+        state.ws.product = await api.get(`/api/creative-factory/products/${p.id}`);
+        state.ws.specsText = g('npSpecs') || '';
+        wsPersist(); closeDrawer(); UI.toast('تم إنشاء المنتج'); renderNew($('cfView'));
       } catch (e) { UI.toast(e.message, 'error'); }
     };
   });
 }
 
-// ---- STEP: goal --------------------------------------------------------
-function wizGoal(body) {
-  const w = state.wiz;
-  body.innerHTML = `<div class="cf-card"><h2>2) إيه اللي عايز تعمله؟</h2>
-    <div class="cf-grid cards" style="margin-top:12px;">
-      ${PROJECT_TYPE_CARDS.map((c) => `<div class="cf-choice ${w.projectType === c.key ? 'sel' : ''}" data-pt="${c.key}"><div class="ic">${c.ic}</div><div class="t">${E(c.t)}</div><div class="d">${E(c.d)}</div></div>`).join('')}
-    </div>
-    <div class="cf-actions">
-      <button class="cf-btn ghost" id="cfBackP">→ رجوع</button>
-      <button class="cf-btn primary" id="cfToCount" ${w.projectType ? '' : 'disabled'}>التالي: العدد ←</button>
-    </div></div>`;
-  body.querySelectorAll('[data-pt]').forEach((c) => { c.onclick = () => { w.projectType = c.dataset.pt; wizGoal(body); }; });
-  $('cfBackP').onclick = () => goStep('product');
-  $('cfToCount').onclick = () => goStep('count');
-}
-
-// ---- STEP: count + advanced ------------------------------------------
-async function wizCount(body) {
-  const w = state.wiz;
-  const btns = state.status?.options?.imageCountButtons || [1, 2, 3, 4, 5, 10, 20, 50];
-  const presets = state.status?.options?.stylePresets || [];
-  const est = await api.post('/api/creative-factory/projects/estimate-cost', { count: w.count, generationMode: w.adv.generationMode }).catch(() => null);
-  body.innerHTML = `<div class="cf-card">
-    <h2>3) عدد الصور</h2>
-    <div class="cf-count-btns" style="margin:12px 0;">
-      ${btns.map((n) => `<button class="${w.countMode === 'MANUAL' && w.count === n ? 'sel' : ''}" data-cnt="${n}">${n}</button>`).join('')}
-      <button class="${w.countMode === 'AI' ? 'sel' : ''}" data-cnt="ai" style="min-width:auto;padding:9px 14px;">✨ خلّي الـ AI يحدد</button>
-    </div>
-    ${w.countMode === 'AI' && w.aiReason ? `<div class="cf-banner info">أنصحك بـ <b>${w.count}</b> صورة — ${E(w.aiReason)}</div>` : ''}
-    <div class="cf-muted">التكلفة التقديرية: <b>${E(est?.display || 'غير متاحة حاليًا')}</b></div>
-
-    <details class="cf-collapse" style="margin-top:16px;">
-      <summary>إعدادات متقدمة (اختياري)</summary>
-      <div class="cf-row" style="margin-top:10px;">
-        <div class="cf-field"><label>نمط التصميم</label><select data-adv="stylePreset">${presets.map((p) => `<option value="${p.key}" ${w.adv.stylePreset === p.key ? 'selected' : ''}>${E(p.label)}</option>`).join('')}</select></div>
-        <div class="cf-field"><label>المقاس</label><select data-adv="aspectRatio">${(state.status.options.aspectRatios || ['1:1']).map((r) => `<option ${w.adv.aspectRatio === r ? 'selected' : ''}>${r}</option>`).join('')}</select></div>
-        <div class="cf-field"><label>كثافة النص</label><select data-adv="textDensity">${Object.entries(DENSITY_LABEL).map(([k, v]) => `<option value="${k}" ${w.adv.textDensity === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-      </div>
-      <div class="cf-row">
-        <div class="cf-field"><label>الأشخاص</label><select data-adv="peopleRule">${Object.entries(PEOPLE_LABEL).map(([k, v]) => `<option value="${k}" ${w.adv.peopleRule === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
-        <div class="cf-field"><label>حجاب إلزامي</label><select data-adv="hijabRequired"><option value="false" ${!w.adv.hijabRequired ? 'selected' : ''}>لا</option><option value="true" ${w.adv.hijabRequired ? 'selected' : ''}>نعم</option></select></div>
-        <div class="cf-field"><label>وضع الإنشاء</label><select data-adv="generationMode"><option value="FAST" ${w.adv.generationMode === 'FAST' ? 'selected' : ''}>سريع (FAST)</option><option value="PREMIUM" ${w.adv.generationMode === 'PREMIUM' ? 'selected' : ''}>مميز (PREMIUM — أفضل نسخة للهيرو)</option></select></div>
-      </div>
-      <div class="cf-row">
-        <div class="cf-field"><label>السوق</label><input data-adv="market" value="${E(w.adv.market)}"/></div>
-        <div class="cf-field"><label>اللغة</label><input data-adv="language" value="${E(w.adv.language)}"/></div>
-        <div class="cf-field"><label>اللهجة</label><input data-adv="dialect" value="${E(w.adv.dialect)}"/></div>
-      </div>
-    </details>
-
-    <div class="cf-actions">
-      <button class="cf-btn ghost" id="cfBackG">→ رجوع</button>
-      <button class="cf-btn primary" id="cfMakePlan">اقترح خطة الصور بالذكاء الاصطناعي ←</button>
-    </div>
-  </div>`;
-  body.querySelectorAll('[data-cnt]').forEach((b) => {
-    b.onclick = async () => {
-      if (b.dataset.cnt === 'ai') {
-        w.countMode = 'AI';
-        await ensureProject();
-        try { const rec = await api.post(`/api/creative-factory/projects/${w.projectId}/recommend-count`, {}); w.count = rec.count; w.aiReason = rec.reason; }
-        catch (e) { UI.toast(e.message, 'error'); }
-      } else { w.countMode = 'MANUAL'; w.count = Number(b.dataset.cnt); w.aiReason = null; }
-      wizCount(body);
-    };
-  });
-  body.querySelectorAll('[data-adv]').forEach((el) => {
-    el.onchange = () => {
-      const k = el.dataset.adv;
-      w.adv[k] = k === 'hijabRequired' ? el.value === 'true' : el.value;
-      if (['generationMode'].includes(k)) wizCount(body);
-    };
-  });
-  $('cfBackG').onclick = () => goStep('goal');
-  $('cfMakePlan').onclick = async () => {
-    const btn = $('cfMakePlan'); btn.disabled = true; btn.textContent = 'جاري تصميم الخطة…';
-    try { await ensureProject(); const res = await api.post(`/api/creative-factory/projects/${w.projectId}/plan`, { count: w.count }); w.plan = res; goStep('plan'); }
-    catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'اقترح خطة الصور بالذكاء الاصطناعي ←'; }
-  };
-}
-
-async function ensureProject() {
-  const w = state.wiz;
-  if (w.projectId) {
-    // keep settings in sync — recreate only if type changed
-    return;
-  }
-  const body = {
-    productId: w.productId, projectType: w.projectType, quantity: w.count, quantityMode: w.countMode,
-    aiQuantityReason: w.aiReason || undefined,
-    stylePreset: w.adv.stylePreset, market: w.adv.market, language: w.adv.language, dialect: w.adv.dialect,
-    aspectRatio: w.adv.aspectRatio, textDensity: w.adv.textDensity, peopleRule: w.adv.peopleRule,
-    hijabRequired: w.adv.hijabRequired, generationMode: w.adv.generationMode, productLockMode: w.adv.productLockMode,
-  };
-  const p = await api.post('/api/creative-factory/projects', body);
-  w.projectId = p.id; w.project = p;
-}
-
-// ---- STEP: plan -------------------------------------------------------
-async function wizPlan(body) {
-  const w = state.wiz;
-  const proj = await api.get(`/api/creative-factory/projects/${w.projectId}`);
-  w.project = proj;
-  const est = await api.post('/api/creative-factory/projects/estimate-cost', { count: proj.items.length, generationMode: proj.generationMode }).catch(() => null);
-  body.innerHTML = `<div class="cf-card">
-    <h2>4) خطة الكرياتيفات (${proj.items.length} صورة)</h2>
-    <div class="hint">راجع كل صورة — تقدر تعدّل الفكرة أو النص، تعيد الترتيب، تضيف أو تحذف. مفيش أي صورة هتتولد قبل الاعتماد.</div>
-    <div id="cfPlanList">${proj.items.map((it, i) => planItemCard(it, i, proj.items.length)).join('')}</div>
-    <button class="cf-btn sm ghost" id="cfAddItem">+ صورة</button>
-    <div class="cf-actions">
-      <button class="cf-btn ghost" id="cfBackC">→ رجوع للإعدادات</button>
-      <button class="cf-btn ghost" id="cfReplan">↻ إعادة توليد الخطة</button>
-      <span class="cf-muted">تقدير التكلفة: <b>${E(est?.display || 'غير متاحة حاليًا')}</b></span>
-      <button class="cf-btn primary" id="cfApprovePlan">اعتماد الخطة وإنشاء الصور</button>
-    </div>
-  </div>`;
-  wirePlanList(proj);
-  $('cfBackC').onclick = () => goStep('count');
-  $('cfReplan').onclick = async () => {
-    if (!await UI.confirmModal({ title: 'إعادة توليد الخطة', message: 'هيتم استبدال عناصر الخطة الحالية بخطة جديدة.', confirmLabel: 'توليد', danger: true })) return;
-    try { await api.post(`/api/creative-factory/projects/${w.projectId}/plan`, { count: proj.items.length }); wizPlan(body); } catch (e) { UI.toast(e.message, 'error'); }
-  };
-  $('cfAddItem').onclick = async () => { try { await api.post(`/api/creative-factory/projects/${w.projectId}/plan/items`, { purpose: 'صورة إضافية' }); wizPlan(body); } catch (e) { UI.toast(e.message, 'error'); } };
-  $('cfApprovePlan').onclick = async () => {
-    const btn = $('cfApprovePlan'); btn.disabled = true; btn.textContent = 'جاري بدء الإنشاء…';
-    try {
-      await api.post(`/api/creative-factory/projects/${w.projectId}/plan/approve`, {});
-      const job = await api.post(`/api/creative-factory/projects/${w.projectId}/generate`, {});
-      w.jobId = job.id; goStep('generate');
-    } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'اعتماد الخطة وإنشاء الصور'; }
-  };
-}
-function planItemCard(it, i, total) {
-  return `<div class="cf-plan-item" data-item="${it.id}">
-    <div class="ph">
-      <span class="idx">${it.position}</span>
-      <span class="purpose">${E(it.purpose || 'صورة')}</span>
-      ${it.angle ? `<span class="angle">${E(it.angle)}</span>` : ''}
-      <span class="sp">
-        <button class="cf-btn sm ghost" data-mv="up" ${i === 0 ? 'disabled' : ''}>↑</button>
-        <button class="cf-btn sm ghost" data-mv="down" ${i === total - 1 ? 'disabled' : ''}>↓</button>
-        <button class="cf-btn sm ghost" data-edit>تعديل</button>
-        <button class="cf-btn sm ghost" data-del style="color:var(--cf-red);">حذف</button>
-      </span>
-    </div>
-    <div class="kv">
-      ${it.scene ? `<div><b>المشهد:</b> ${E(it.scene)}</div>` : ''}
-      ${it.cameraAngle ? `<div><b>زاوية الكاميرا:</b> ${E(it.cameraAngle)}</div>` : ''}
-      ${it.composition ? `<div><b>التكوين:</b> ${E(it.composition)}</div>` : ''}
-      ${it.background ? `<div><b>الخلفية:</b> ${E(it.background)}</div>` : ''}
-      ${it.headline ? `<div><b>الهوك:</b> «${E(it.headline)}»</div>` : ''}
-      ${(it.copy && it.copy.hook && it.copy.hook !== it.headline) ? `<div><b>نص:</b> «${E(it.copy.hook)}»</div>` : ''}
-    </div>
-    ${it.reason ? `<div class="reason">${E(it.reason)}</div>` : ''}
-  </div>`;
-}
-function wirePlanList(proj) {
-  const w = state.wiz;
-  const list = $('cfPlanList');
-  const ids = proj.items.map((x) => x.id);
-  list.querySelectorAll('[data-item]').forEach((row) => {
-    const id = Number(row.dataset.item);
-    row.querySelector('[data-del]').onclick = async () => { try { await api.delete(`/api/creative-factory/projects/${w.projectId}/plan/items/${id}`); wizPlan($('cfWizBody')); } catch (e) { UI.toast(e.message, 'error'); } };
-    row.querySelector('[data-edit]').onclick = () => editPlanItem(proj.items.find((x) => x.id === id));
-    row.querySelectorAll('[data-mv]').forEach((b) => {
-      b.onclick = async () => {
-        const idx = ids.indexOf(id); const j = b.dataset.mv === 'up' ? idx - 1 : idx + 1;
-        if (j < 0 || j >= ids.length) return;
-        const order = ids.slice(); [order[idx], order[j]] = [order[j], order[idx]];
-        try { await api.post(`/api/creative-factory/projects/${w.projectId}/plan/reorder`, { orderIds: order }); wizPlan($('cfWizBody')); } catch (e) { UI.toast(e.message, 'error'); }
-      };
-    });
-  });
-}
-function editPlanItem(it) {
-  const w = state.wiz;
-  openDrawer(`<h2 style="margin-top:0;">تعديل الصورة ${it.position}</h2>
-    <div class="cf-field"><label>الغرض</label><input id="eiPurpose" value="${E(it.purpose || '')}"/></div>
-    <div class="cf-field"><label>الزاوية</label><input id="eiAngle" value="${E(it.angle || '')}"/></div>
-    <div class="cf-field"><label>المشهد</label><textarea id="eiScene">${E(it.scene || '')}</textarea></div>
-    <div class="cf-field"><label>زاوية الكاميرا</label><input id="eiCam" value="${E(it.cameraAngle || '')}"/></div>
-    <div class="cf-field"><label>التكوين</label><input id="eiComp" value="${E(it.composition || '')}"/></div>
-    <div class="cf-field"><label>الخلفية</label><input id="eiBg" value="${E(it.background || '')}"/></div>
-    <div class="cf-field"><label>الهوك النصي</label><input id="eiHook" value="${E((it.copy && it.copy.hook) || it.headline || '')}"/></div>
-    <div class="cf-field"><label>سطر مساند</label><input id="eiSub" value="${E((it.copy && it.copy.supportingLine) || it.supportingCopy || '')}"/></div>
-    <div class="cf-field"><label>CTA</label><input id="eiCta" value="${E((it.copy && it.copy.cta) || it.cta || '')}"/></div>
-    <button class="cf-btn primary" id="eiSave">حفظ</button>`);
-  $('eiSave').onclick = async () => {
-    const body = {
-      purpose: $('eiPurpose').value, angle: $('eiAngle').value, scene: $('eiScene').value, cameraAngle: $('eiCam').value,
-      composition: $('eiComp').value, background: $('eiBg').value, headline: $('eiHook').value,
-      copy: { hook: $('eiHook').value, supportingLine: $('eiSub').value, cta: $('eiCta').value },
-    };
-    try { await api.patch(`/api/creative-factory/projects/${w.projectId}/plan/items/${it.id}`, body); closeDrawer(); wizPlan($('cfWizBody')); }
-    catch (e) { UI.toast(e.message, 'error'); }
-  };
-}
-
-// ---- STEP: generate -------------------------------------------------
-async function wizGenerate(body) {
-  const w = state.wiz;
-  await paintGenerate(body);
-  if (state.poll) clearInterval(state.poll);
-  state.poll = setInterval(() => paintGenerate(body).catch(() => {}), 2500);
-}
-async function paintGenerate(body) {
-  const w = state.wiz;
-  const proj = await api.get(`/api/creative-factory/projects/${w.projectId}`);
-  const job = proj.jobs[0] || null;
-  const done = ['COMPLETED', 'PARTIAL_COMPLETE', 'FAILED', 'CANCELLED'].includes(job?.status);
-  if (done && state.poll) { clearInterval(state.poll); state.poll = null; }
-  const counts = { done: proj.items.filter((i) => i.status === 'COMPLETED').length, gen: proj.items.filter((i) => ['GENERATING', 'QUEUED', 'REVIEWING', 'REGENERATING'].includes(i.status)).length, rev: proj.items.filter((i) => i.status === 'NEEDS_REVIEW').length, fail: proj.items.filter((i) => i.status === 'FAILED').length };
-  body.innerHTML = `<div class="cf-card">
-    <h2>5) الإنشاء</h2>
-    ${job ? `
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:6px;"><span>${statusText(job.status)}</span><span>${job.completedItems}/${job.totalItems}</span></div>
-      <div class="cf-progress"><i style="width:${job.progress || 0}%"></i></div>
-      <div class="cf-muted" style="margin-top:6px;">تم: ${counts.done} · قيد الإنشاء: ${counts.gen} · يحتاج مراجعة: ${counts.rev} · فشل: ${counts.fail}</div>
-      ${job.status === 'FAILED' && job.error ? `<div class="cf-banner warn" style="margin-top:10px;">فشل إنشاء الصور: ${E(job.error)}</div>` : ''}
-      ${job.status === 'COMPLETED' ? `<div class="cf-banner ok" style="margin-top:10px;">✅ تم إنشاء كل الصور بنجاح — راجعها في تبويب «النتائج».</div>` : ''}
-    ` : '<div class="cf-muted">لم تبدأ بعد.</div>'}
-    <div class="cf-grid gallery" style="margin-top:16px;">
-      ${proj.items.map((it) => genItemTile(it)).join('')}
-    </div>
-    <div class="cf-actions">
-      ${(counts.fail || counts.rev) && done ? `<button class="cf-btn" id="cfRetry">إعادة محاولة الفاشل/الناقص</button>` : ''}
-      <a class="cf-btn ghost" href="#results">عرض النتائج</a>
-      <button class="cf-btn ghost" id="cfNewAnother">مشروع جديد</button>
-    </div>
-  </div>`;
-  proj.items.forEach((it) => {
-    const t = body.querySelector(`[data-gi="${it.id}"]`);
-    if (t && it.approvedAsset) t.onclick = () => openAssetDrawer(it.approvedAsset.id);
-    else if (t && it.assets && it.assets.length) t.onclick = () => openAssetDrawer(it.assets[0].id);
-  });
-  if ($('cfRetry')) $('cfRetry').onclick = async () => { try { const j = await api.post(`/api/creative-factory/projects/${w.projectId}/retry-failed`, {}); w.jobId = j.id; wizGenerate(body); } catch (e) { UI.toast(e.message, 'error'); } };
-  if ($('cfNewAnother')) $('cfNewAnother').onclick = () => { state.wiz = newWiz(); renderNew($('cfView')); };
-}
-function genItemTile(it) {
-  const [lbl, cls] = ITEM_STATUS[it.status] || ['—', 'gray'];
-  const a = it.approvedAsset || (it.assets && it.assets[0]);
-  return `<div class="cf-tile" data-gi="${it.id}">
-    ${a ? `<img class="thumb" src="/api/creative-factory/assets/${a.id}/image" loading="lazy"/>` : `<div class="thumb ph">${it.status === 'GENERATING' ? '⏳ جاري الإنشاء' : it.status === 'REGENERATING' ? '↻ إعادة المحاولة' : it.status === 'FAILED' ? '✕ فشل' : 'في الانتظار'}</div>`}
-    <div class="body"><div class="top"><span style="font-weight:800;font-size:12px;">#${it.position}</span><span class="cf-badge ${cls}">${lbl}</span></div>
-    <div class="hook">${E(it.purpose || '')}</div>
-    ${a && a.quality ? `<div class="meta">جودة ${a.quality.overall ?? '—'} · تطابق ${a.quality.productAccuracy ?? '—'}</div>` : ''}
-    </div></div>`;
-}
-function statusText(s) {
-  return { QUEUED: 'في قائمة الانتظار…', GENERATING: 'جاري إنشاء الصور…', REVIEWING: 'فحص الجودة…', REGENERATING: 'إعادة المحاولة…', PARTIAL_COMPLETE: 'اكتمل جزئيًا', COMPLETED: 'اكتمل', FAILED: 'فشل', CANCELLED: 'أُلغي' }[s] || s;
-}
-
 // ===========================================================================
 // TAB 2 — مشاريعي
 // ===========================================================================
-async function renderProjects(view) {
+async function renderProjects(view, rid) {
   const { projects } = await api.get('/api/creative-factory/projects');
+  if (rid !== undefined && state.rid !== rid) return;
   view.innerHTML = head('مشاريعي', `${projects.length} مشروع`) + providerBanner()
     + (projects.length ? `<div class="cf-grid cards">${projects.map(projectCard).join('')}</div>` : `<div class="cf-empty">مفيش مشاريع لسه. ابدأ من تبويب «إنشاء جديد».</div>`);
   view.querySelectorAll('[data-open]').forEach((c) => { c.onclick = () => openProject(Number(c.dataset.open)); });
@@ -587,12 +803,12 @@ function projectCard(p) {
 }
 async function openProject(id) {
   const p = await api.get(`/api/creative-factory/projects/${id}`);
-  const running = ['QUEUED', 'GENERATING', 'REVIEWING', 'REGENERATING'].includes(p.status);
   openDrawer(`<h2 style="margin-top:0;">${E(p.productName || 'مشروع')} — ${E(p.projectType)}</h2>
     <div class="cf-muted">الحالة: ${E(p.status)} · ${p.items.length} صورة · نمط ${E(p.stylePreset || '—')} · قفل ${E(LOCK_LABEL[p.productLockMode] || p.productLockMode)}</div>
     <div class="cf-grid gallery" style="margin-top:14px;">${p.items.map(genItemTile).join('')}</div>
     <div class="cf-actions">
-      ${state.isAdmin && ['DRAFT', 'PLAN_READY'].includes(p.status) ? `<button class="cf-btn primary" id="pjGenerate">بدء الإنشاء</button>` : ''}
+      ${['DRAFT', 'PLAN_READY', 'PLANNING'].includes(p.status) ? `<button class="cf-btn primary" id="pjResume">إكمال في «إنشاء جديد»</button>` : ''}
+      ${state.isAdmin && ['DRAFT', 'PLAN_READY'].includes(p.status) ? `<button class="cf-btn" id="pjGenerate">بدء الإنشاء</button>` : ''}
       ${state.isAdmin && ['PARTIAL_COMPLETE', 'FAILED'].includes(p.status) ? `<button class="cf-btn" id="pjRetry">إعادة محاولة الفاشل</button>` : ''}
       ${state.isAdmin ? `<button class="cf-btn ghost" id="pjDup">تكرار المشروع</button>` : ''}
       ${state.isAdmin && p.status !== 'CANCELLED' ? `<button class="cf-btn ghost" id="pjArch" style="color:var(--cf-red);">أرشفة</button>` : ''}
@@ -602,6 +818,7 @@ async function openProject(id) {
     const a = it?.approvedAsset || it?.assets?.[0];
     if (a) t.onclick = () => openAssetDrawer(a.id);
   });
+  if ($('pjResume')) $('pjResume').onclick = () => { try { localStorage.setItem(LS_KEY, JSON.stringify({ productId: p.productId, projectId: p.id })); } catch { /* ignore */ } state.ws = null; closeDrawer(); location.hash = 'new'; };
   if ($('pjGenerate')) $('pjGenerate').onclick = async () => { try { await api.post(`/api/creative-factory/projects/${id}/plan/approve`, {}); await api.post(`/api/creative-factory/projects/${id}/generate`, {}); closeDrawer(); UI.toast('بدأ الإنشاء'); route(); } catch (e) { UI.toast(e.message, 'error'); } };
   if ($('pjRetry')) $('pjRetry').onclick = async () => { try { await api.post(`/api/creative-factory/projects/${id}/retry-failed`, {}); closeDrawer(); UI.toast('بدأت إعادة المحاولة'); route(); } catch (e) { UI.toast(e.message, 'error'); } };
   if ($('pjDup')) $('pjDup').onclick = async () => { try { await api.post(`/api/creative-factory/projects/${id}/duplicate`, {}); closeDrawer(); UI.toast('تم التكرار'); route(); } catch (e) { UI.toast(e.message, 'error'); } };
@@ -612,7 +829,8 @@ async function openProject(id) {
 // TAB 3 — النتائج (gallery)
 // ===========================================================================
 const results = { cursor: null, items: [], filter: {} };
-async function renderResults(view) {
+async function renderResults(view, rid) {
+  if (rid !== undefined && state.rid !== rid) return;
   results.cursor = null; results.items = [];
   view.innerHTML = head('النتائج', 'كل الكرياتيفات المُنشأة') + providerBanner()
     + `<div class="cf-row" style="margin-bottom:14px;">
@@ -668,27 +886,46 @@ async function openAssetDrawer(id) {
     ${a.copy?.hook ? `<div style="margin-top:8px;font-weight:700;">«${E(a.copy.hook)}»</div>` : ''}
     ${q ? `<div style="margin-top:14px;">
       <div style="font-weight:800;font-size:13px;margin-bottom:6px;">الجودة — إجمالي ${q.overall ?? '—'}${q.passed ? ' · <span style="color:var(--cf-green)">اجتاز</span>' : ' · <span style="color:var(--cf-amber)">يحتاج مراجعة</span>'}</div>
-      ${sc('product_accuracy_score', 'تطابق المنتج')}${sc('identity_score', 'هوية المنتج')}${sc('visual_quality_score', 'الجودة البصرية')}${sc('composition_score', 'التكوين')}
-      ${sc('marketing_score', 'وضوح الإعلان')}${sc('arabic_text_score', 'النص العربي')}${sc('claim_score', 'سلامة الادعاءات')}${sc('artifact_score', 'خلو من التشوه')}
+      ${sc('product_accuracy_score', 'تطابق المنتج')}${sc('visual_quality_score', 'الجودة البصرية')}${sc('marketing_score', 'وضوح الإعلان')}${sc('arabic_text_score', 'النص العربي')}${sc('claim_score', 'سلامة الادعاءات')}
       ${(q.failureReasons || []).length ? `<div class="cf-muted" style="margin-top:6px;">ملاحظات: ${q.failureReasons.map(E).join(' · ')}</div>` : ''}
-    </div>` : '<div class="cf-muted" style="margin-top:12px;">لا يوجد تقييم آلي (الـ AII النصي غير متاح).</div>'}
+      <details class="cf-collapse" style="margin-top:6px;"><summary>كل المقاييس</summary>${sc('identity_score', 'هوية المنتج')}${sc('composition_score', 'التكوين')}${sc('product_visibility_score', 'وضوح المنتج')}${sc('text_readability_score', 'سهولة القراءة')}${sc('artifact_score', 'خلو من التشوه')}${sc('reference_consistency_score', 'الاتساق مع المرجع')}${sc('plan_compliance_score', 'الالتزام بالخطة')}</details>
+    </div>` : '<div class="cf-muted" style="margin-top:12px;">لا يوجد تقييم آلي (الـ AI النصي غير متاح).</div>'}
     <div class="cf-actions">
       ${state.isAdmin && a.status !== 'APPROVED' ? `<button class="cf-btn primary sm" data-st="APPROVED">اعتماد</button>` : ''}
       ${state.isAdmin && a.status !== 'REJECTED' ? `<button class="cf-btn ghost sm" data-st="REJECTED">رفض</button>` : ''}
+      <a class="cf-btn ghost sm" href="${E(a.imageUrl)}" target="_blank" download>تحميل</a>
+      ${state.isAdmin ? `<button class="cf-btn ghost sm" id="cfRegen">إعادة إنشاء</button>` : ''}
       ${state.isAdmin ? `<button class="cf-btn ghost sm" id="cfVary">Variation</button>` : ''}
-      ${state.isAdmin ? `<button class="cf-btn ghost sm" id="cfFamily">شجرة العائلة</button>` : ''}
-      <a class="cf-btn ghost sm" href="${E(a.imageUrl)}" target="_blank">فتح الصورة</a>
-      <button class="cf-btn ghost sm" id="cfPrompt">عرض البرومبت</button>
     </div>
+    ${state.isAdmin ? `<div class="cf-varmenu">
+      <button class="cf-btn ghost sm" data-vt="NEW_HOOK">تغيير الهوك</button>
+      <button class="cf-btn ghost sm" data-vt="NEW_COPY">تغيير النص</button>
+      <button class="cf-btn ghost sm" data-vt="NEW_BACKGROUND">تغيير الخلفية</button>
+      <button class="cf-btn ghost sm" data-vt="NEW_CAMERA_ANGLE">تغيير الزاوية</button>
+      <button class="cf-btn ghost sm" data-vt="SAME_CONCEPT:3">نفس الفكرة ×3</button>
+      <button class="cf-btn ghost sm" id="cfDetails">عرض التفاصيل</button>
+    </div>` : ''}
     <div id="cfPromptBox"></div>`;
   $('cfDrawer').querySelectorAll('[data-st]').forEach((b) => {
     b.onclick = async () => { try { await api.post(`/api/creative-factory/assets/${id}/status`, { status: b.dataset.st }); UI.toast('تم'); openAssetDrawer(id); if (state.tab === 'results') renderResults($('cfView')); } catch (e) { UI.toast(e.message, 'error'); } };
   });
-  if ($('cfPrompt')) $('cfPrompt').onclick = () => { $('cfPromptBox').innerHTML = a.prompt ? `<pre style="white-space:pre-wrap;font-size:11px;background:var(--cf-bg);padding:10px;border-radius:8px;margin-top:10px;">${E(a.prompt)}</pre><div class="cf-muted">إصدار البرومبت ${a.promptVersion || 1}</div>` : '<div class="cf-muted" style="margin-top:8px;">لا يوجد برومبت محفوظ (الصورة لم تُنشأ فعليًا).</div>'; };
+  if ($('cfRegen')) $('cfRegen').onclick = async () => {
+    if (!await UI.confirmModal({ title: 'إعادة إنشاء', message: 'هيتم رفض الصورة الحالية وإعادة توليد نفس العنصر.', confirmLabel: 'إعادة', danger: true })) return;
+    try {
+      await api.post(`/api/creative-factory/assets/${id}/status`, { status: 'REJECTED' });
+      if (a.project?.id) await api.post(`/api/creative-factory/projects/${a.project.id}/retry-failed`, {});
+      UI.toast('بدأت إعادة الإنشاء'); closeDrawer();
+    } catch (e) { UI.toast(e.message, 'error'); }
+  };
   if ($('cfVary')) $('cfVary').onclick = () => variationPrompt(id);
-  if ($('cfFamily')) $('cfFamily').onclick = async () => {
-    const fam = await api.get(`/api/creative-factory/assets/${id}/family`);
-    $('cfPromptBox').innerHTML = `<div style="margin-top:10px;font-size:12px;"><b>الجذر:</b> #${fam.rootId ?? '—'}<br/>${(fam.edges || []).map((e) => `• ${E(e.type)} (جيل ${e.generation}) → ${e.childAssetId ? '#' + e.childAssetId : 'قيد الإنشاء'} — ${E(e.status)}`).join('<br/>') || 'لا اشتقاقات'}</div>`;
+  $('cfDrawer').querySelectorAll('[data-vt]').forEach((b) => b.onclick = async () => {
+    const [vt, cnt] = b.dataset.vt.split(':');
+    try { await api.post(`/api/creative-factory/assets/${id}/variations`, { variationType: vt, count: Number(cnt) || 1 }); UI.toast('بدأ إنشاء Variation — تابعه في «النتائج».'); closeDrawer(); }
+    catch (e) { UI.toast(e.message, 'error'); }
+  });
+  if ($('cfDetails')) $('cfDetails').onclick = () => {
+    $('cfPromptBox').innerHTML = `<pre style="white-space:pre-wrap;font-size:11px;background:var(--cf-bg);padding:10px;border-radius:8px;margin-top:10px;">${E(a.prompt || 'لا يوجد برومبت محفوظ.')}</pre>
+      <div class="cf-muted">إصدار البرومبت ${a.promptVersion || 1} · محاولات: ${(a.attempts || []).length}</div>`;
   };
 }
 function variationPrompt(parentId) {
@@ -708,8 +945,9 @@ function variationPrompt(parentId) {
 // ===========================================================================
 // TAB 4 — تعلّم الـ AI
 // ===========================================================================
-async function renderLearn(view) {
+async function renderLearn(view, rid) {
   const data = await api.get('/api/creative-factory/learning');
+  if (rid !== undefined && state.rid !== rid) return;
   const dims = data.dimensions || {};
   const DIM_LABEL = { HOOK: 'الهوكات', ANGLE: 'زوايا الرسالة', STYLE: 'الأساليب البصرية', CONCEPT: 'المفاهيم', FORMAT: 'الأنواع' };
   view.innerHTML = head('تعلّم الـ AI', 'أي هوك / زاوية / أسلوب بيجيب نتيجة أحسن — مع حجم عيّنة صريح، بدون استنتاج من بيانات ضعيفة')

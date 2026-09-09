@@ -176,9 +176,12 @@ try {
   ok('variation lineage: parent set + generation_number 1,2', vrows.length === 2 && vrows[0].parent_asset_id === fakeAsset.id && vrows[0].generation_number === 1 && vrows[1].generation_number === 2 && vrows[0].variation_type === 'NEW_HOOK');
   await throws('unknown variation type rejected', () => createVariations({ parentAssetId: fakeAsset.id, variationType: 'NOPE', count: 1 }), /غير معروف/);
 } finally {
-  // cleanup — cascade wipes projects/items/assets/jobs/refs/dna/variations
+  // cleanup — cascade wipes projects/items/jobs/refs/dna/variations; assets
+  // only SET NULL on item delete, so remove them explicitly first.
   if (productId) {
     const blobs = await prisma.cfBlob.findMany({ where: { key: { contains: `/${productId}` } }, select: { key: true } }).catch(() => []);
+    await prisma.cfVariation.deleteMany({ where: { parent_asset: { product_id: productId } } }).catch(() => {});
+    await prisma.cfAsset.deleteMany({ where: { OR: [{ product_id: productId }, { storage_key: { contains: 'cf/test/' } }] } }).catch(() => {});
     await prisma.cfProduct.delete({ where: { id: productId } }).catch(() => {});
     await prisma.cfBlob.deleteMany({ where: { key: { in: blobs.map((b) => b.key) } } }).catch(() => {});
     await prisma.cfBlob.deleteMany({ where: { key: { contains: 'cf/test/' } } }).catch(() => {});
