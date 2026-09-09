@@ -66,14 +66,21 @@ export function storageProviderName() {
 export const CF_DEFAULT_THRESHOLDS = {
   qualityThreshold: num(process.env.CF_QUALITY_THRESHOLD, 88),          // overall 0..100
   productAccuracyThreshold: num(process.env.CF_PRODUCT_ACCURACY_THRESHOLD, 90),
+  realismThreshold: num(process.env.CF_REALISM_THRESHOLD, 72),          // "would a customer suspect AI?"
   claimComplianceMustPass: true,
-  maxRetries: num(process.env.CF_MAX_RETRIES, 3),
+  // Targeted-retry caps per mode (spec §16/§19). A retry is never a blind repeat.
+  maxRetriesFast: num(process.env.CF_MAX_RETRIES_FAST, 1),
+  maxRetriesPremium: num(process.env.CF_MAX_RETRIES_PREMIUM, 2),
+  maxRetries: num(process.env.CF_MAX_RETRIES, 3),                        // legacy cap / ceiling
   maxImagesPerProject: num(process.env.CF_MAX_IMAGES_PER_PROJECT, 50),
-  premiumCandidates: num(process.env.CF_PREMIUM_CANDIDATES, 3),          // best-of-N for important images
+  generationConcurrency: num(process.env.CF_GENERATION_CONCURRENCY, 3),  // independent images in parallel
+  premiumCandidates: num(process.env.CF_PREMIUM_CANDIDATES, 2),          // best-of-N — HERO only, PREMIUM only
   premiumCandidatesMax: 4,
+  goodEnoughMargin: num(process.env.CF_GOOD_ENOUGH_MARGIN, 8),           // overall >= (threshold - margin) + product/realism ok -> stop
   dailyImageBudget: num(process.env.CF_DAILY_IMAGE_BUDGET, 0),           // 0 = no explicit ceiling
   monthlyImageBudget: num(process.env.CF_MONTHLY_IMAGE_BUDGET, 0),
   allowPremiumMode: bool(process.env.CF_ALLOW_PREMIUM, true),
+  textOverlay: bool(process.env.CF_TEXT_OVERLAY, true),                  // render Arabic ourselves (never the image model)
   defaultGenerationMode: (clean(process.env.CF_DEFAULT_GENERATION_MODE) || 'FAST').toUpperCase(),
   minReferenceImages: num(process.env.CF_MIN_REFERENCE_IMAGES, 3),
   maxReferenceImages: num(process.env.CF_MAX_REFERENCE_IMAGES, 6),

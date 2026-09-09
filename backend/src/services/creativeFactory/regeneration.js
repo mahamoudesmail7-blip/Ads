@@ -1,37 +1,58 @@
 // AI Creative Factory — RegenerationService.
 //
-// When an image fails quality review, build a TARGETED corrective note that
-// gets folded into the next prompt (see promptBuilder buildPrompt's
-// correctiveNote). It never regenerates the whole project — only the failed
-// item — and every attempt is stored (cf_generation_attempts) so the history
-// is auditable.
+// A retry is NEVER a blind repeat call (spec §16). From the classified
+// failure code + the judge's reasons, build a precise corrective note that
+// names the specific reference image to preserve from, and gets folded into
+// the next prompt as "تصحيحات إلزامية".
+const CODE_FIX = {
+  PRODUCT_SHAPE_WRONG: 'الشكل/الهيكل اختلف عن المرجع. طابِق شكل المنتج ونِسبه حرفيًا من REFERENCE 1.',
+  PRODUCT_COLOR_WRONG: 'اللون اختلف. استخدم نفس ألوان المنتج بالضبط كما في الصور المرجعية، بدون أي تعديل لوني.',
+  MISSING_DETAIL: 'تفصيلة مهمة ناقصة من المنتج. أعِد كل التفاصيل المرئية في المراجع (أزرار، منافذ، ملصقات، ملمس).',
+  EXTRA_COMPONENT: 'أُضيف مكوّن غير موجود في المنتج. احذف أي زر/شاشة/لمبة/منفذ/ملحق مش موجود في المراجع.',
+  WRONG_ORIENTATION: 'اتجاه المنتج غلط. ضَع المنتج في وضعه الصحيح كما يُستخدم فعليًا.',
+  BAD_HAND: 'الأيدي غير واقعية. إمّا يد واحدة طبيعية تمامًا بأصابع صحيحة وحجم صحيح ملامسة للمنتج، أو احذف الأشخاص واعرض المنتج وحده.',
+  WRONG_SCALE: 'مقياس المنتج غير واقعي. اضبط نسبة حجم المنتج للبيئة/اليد، أو استخدم لقطة مقرّبة لا تكشف المقياس.',
+  BAD_COMPOSITION: 'أعِد التكوين: المنتج بطل الكادر بوضوح، ومنطقة نص آمنة واضحة، بدون قصّ للمنتج.',
+  VISUAL_ARTIFACT: 'أزِل أي تشوّه/تكرار/حواف ذائبة/رموز عشوائية في المنتج أو الخلفية.',
+  AI_LOOK: 'الصورة تبدو AI. اجعلها تصوير منتج تجاري واقعي: إضاءة طبيعية، خامات حقيقية، ظلال وانعكاسات معقولة، بدون لمعان CGI أو نيون أو بيئة مستقبلية.',
+  TEXT_IN_IMAGE: 'ظهر نص/حروف/شعار في الصورة. لا تكتب أي نص أو أرقام أو شعار إطلاقًا؛ اترك منطقة النص فارغة نظيفة.',
+  CLAIM_ISSUE: 'ظهر ادعاء/رقم غير مدعوم. احذف أي نص أو رمز يوحي بادعاء غير مذكور في المواصفات.',
+  WRONG_USAGE: 'طريقة استخدام المنتج غير صحيحة. صوّره وهو يُستخدم بالطريقة الصحيحة الواقعية فقط.',
+};
+
 const REASON_HINTS = [
-  { rx: /لون|colour|color/i, hint: 'طابق ألوان المنتج مع الصور المرجعية بدقة.' },
-  { rx: /شكل|هيكل|proportion|نِسب|نسب/i, hint: 'صحّح شكل المنتج ونِسبه ليطابق المرجع تمامًا.' },
-  { rx: /نص|خط|كتابة|arabic|typo/i, hint: 'اكتب النص العربي بشكل صحيح ومقروء 100%، بدون حروف مكسورة.' },
-  { rx: /تشوه|artifact|distort|deform/i, hint: 'أزل أي تشوهات أو تكرار غير طبيعي في المنتج.' },
-  { rx: /شعار|logo|منفذ|port|زر|button|ملصق|label/i, hint: 'لا تُظهر أي شعار/منفذ/زر/ملصق غير موجود في هوية المنتج.' },
-  { rx: /خلفي|background|بيئة/i, hint: 'بسّط الخلفية والتزم بعائلة الخلفية الموحدة.' },
-  { rx: /ادعاء|claim|نسبة|%/i, hint: 'احذف أي نص أو رقم أو ادعاء غير مدعوم بالمواصفات.' },
-  { rx: /تكوين|composition|قص|crop/i, hint: 'أعد التكوين بحيث يكون المنتج بطل الكادر مع منطقة نص آمنة واضحة.' },
-  { rx: /وضوح|visib|صغير/i, hint: 'كبّر المنتج في الكادر واجعله أوضح.' },
+  { rx: /لون|colou?r/i, code: 'PRODUCT_COLOR_WRONG' },
+  { rx: /شكل|هيكل|نِسب|نسب|proportion|shape/i, code: 'PRODUCT_SHAPE_WRONG' },
+  { rx: /زر|button|شاشة|screen|منفذ|port|لمبة|led|ملصق|label|شعار|logo/i, code: 'EXTRA_COMPONENT' },
+  { rx: /ناقص|مفقود|missing/i, code: 'MISSING_DETAIL' },
+  { rx: /يد|أصابع|hand|finger/i, code: 'BAD_HAND' },
+  { rx: /تشوه|artifact|distort|deform|ملتوي|تكرار|duplicate/i, code: 'VISUAL_ARTIFACT' },
+  { rx: /نص|حروف|كتابة|text|typo|arabic/i, code: 'TEXT_IN_IMAGE' },
+  { rx: /ادعاء|claim|نسبة|%/i, code: 'CLAIM_ISSUE' },
+  { rx: /مقياس|حجم|scale|size/i, code: 'WRONG_SCALE' },
+  { rx: /تكوين|composition|قص|crop/i, code: 'BAD_COMPOSITION' },
+  { rx: /استخدام|usage|بالمقلوب|اتجاه|orientation/i, code: 'WRONG_ORIENTATION' },
+  { rx: /AI|ذكاء اصطناعي|بلاستيك|نيون|CGI|مبالغ/i, code: 'AI_LOOK' },
 ];
 
-/** @returns {string} a concise corrective note for the next attempt */
+/** @returns {string} concise corrective note for the next attempt */
 export function buildCorrectiveNote(review) {
   const reasons = (review?.failure_reasons || []).filter(Boolean);
-  const hints = new Set();
-  for (const r of reasons) {
-    for (const h of REASON_HINTS) if (h.rx.test(r)) hints.add(h.hint);
-  }
-  // Low individual scores also drive hints even when the text reason is vague.
-  const s = review?.scores || {};
-  if ((s.product_accuracy_score ?? 100) < 90) hints.add('ارفع تطابق المنتج مع المرجع (شكل/لون/مكوّنات).');
-  if ((s.arabic_text_score ?? 100) < 85) hints.add('اكتب النص العربي بشكل صحيح ومقروء تمامًا.');
-  if ((s.artifact_score ?? 100) < 85) hints.add('أزل التشوهات البصرية.');
-  if ((s.claim_score ?? 100) < 95) hints.add('احذف أي ادعاء غير مدعوم.');
+  const codes = new Set();
+  if (review?.failure_code && review.failure_code !== 'OK') codes.add(review.failure_code);
+  for (const r of reasons) for (const h of REASON_HINTS) if (h.rx.test(r)) codes.add(h.code);
 
-  const parts = [...hints];
-  if (reasons.length) parts.unshift(`عالج تحديدًا: ${reasons.slice(0, 4).join(' / ')}`);
-  return parts.join(' ').slice(0, 700) || 'حسّن الجودة العامة والتطابق مع المرجع.';
+  const s = review?.scores || {};
+  if ((s.product_accuracy_score ?? 100) < 90) codes.add('PRODUCT_SHAPE_WRONG');
+  if ((review?.realism ?? 100) < 72 || review?.looks_ai) codes.add('AI_LOOK');
+  if ((s.artifact_score ?? 100) < 75) codes.add('VISUAL_ARTIFACT');
+  if ((s.claim_score ?? 100) < 95) codes.add('CLAIM_ISSUE');
+  if (review?.identity_mismatch) { codes.add('PRODUCT_SHAPE_WRONG'); codes.add('PRODUCT_COLOR_WRONG'); }
+
+  const fixes = [...codes].map((c) => CODE_FIX[c]).filter(Boolean);
+  const parts = [];
+  if (reasons.length) parts.push(`عالج تحديدًا: ${reasons.slice(0, 3).join(' / ')}.`);
+  parts.push(...fixes);
+  parts.push('حافظ على هوية المنتج من الصور المرجعية كأولوية قصوى.');
+  return parts.join(' ').slice(0, 900);
 }

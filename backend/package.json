@@ -39,5 +39,9 @@
     "tesseract.js@7.0.0": true,
     "sharp@0.32.6": true,
     "protobufjs@6.11.6": true
+  },
+  "optionalDependencies": {
+    "@napi-rs/canvas": "^1.0.9",
+    "@expo-google-fonts/cairo": "^0.4.2"
   }
 }

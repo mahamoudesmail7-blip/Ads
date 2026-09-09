@@ -10,33 +10,46 @@ import { callAiJson } from './textAi.js';
 import { StorageService } from './storage.js';
 import { emptyDnaSkeleton } from './taxonomy.js';
 
-const MODEL_VERSION = 'cf-dna-v1';
+const MODEL_VERSION = 'cf-dna-v2';
 
-const SYSTEM = `أنت محلل منتجات بصري دقيق للتجارة الإلكترونية. مهمتك: من صور المنتج المرجعية وبيانات المنتج، استخرج ملف "حمض نووي بصري" (Product DNA) منظّم.
+const SYSTEM = `أنت محلل منتجات بصري كبير (Senior Product Analyst) للتجارة الإلكترونية في مصر. تحلّل أي فئة منتج (إلكترونيات، عناية، إكسسوارات سيارات، منزل، عِدد، ألعاب، مطبخ، حيوانات أليفة، صيد، مكتب، هدايا، أجهزة صحية استهلاكية، ديكور... إلخ).
+تُخرج ملف "حمض نووي بصري" (Product DNA) منظّم يقود مولّد الصور لاحقاً.
 قواعد صارمة:
-- صف فقط ما هو مرئي فعلاً في الصور أو مذكور صراحة في البيانات. لا تخترع أي تفصيلة.
-- إذا كانت معلومة غير واضحة، اترك القيمة null أو []، ولا تخمّن.
-- "never_invent" = قائمة العناصر التي يجب ألا يبتكرها مولّد الصور لاحقاً (شعارات، منافذ، أزرار، ملصقات، أرقام موديل...).
-- أعطِ confidence رقم من 0 إلى 100 لمدى وضوح الصور.`;
+- لا تفترض نفس الافتراضات لكل فئة. حدّد الفئة أولاً ثم حلّل بمنطقها.
+- صف فقط ما هو مرئي فعلاً في الصور المرجعية أو مذكور صراحة في بيانات المنتج. ممنوع اختراع أي تفصيلة.
+- إذا كانت معلومة غير واضحة اترك null أو [] — لا تخمّن.
+- "never_invent" = عناصر يجب ألا يضيفها مولّد الصور (شعارات غير ظاهرة، منافذ، أزرار، شاشات، لمبات، ملحقات، أرقام موديل، نصوص).
+- "category_safety_rules" = قيود مستنتَجة من الفئة (مثال: عناية → ممنوع ادعاءات طبية؛ جهاز صحي → ممنوع ادعاء تشخيص/علاج؛ إلكترونيات → ممنوع اختراع مواصفات تقنية؛ سيارات → ممنوع اختراع توافق؛ أطفال → ممنوع استخدام غير آمن؛ منتج بدون موتور → ممنوع إظهار حركة آلية؛ بدون ادعاء مقاوم للماء → ممنوع وضعه تحت الماء).
+- "scale_confidence" = 0..100 لمدى تأكدك من الحجم الفيزيائي الحقيقي من الصور/السياق. لو منخفض، سيتجنّب النظام لقطات تكشف المقياس.
+- "confidence" = 0..100 لوضوح الصور عموماً.`;
 
 function dnaUserPrompt(product) {
-  return `بيانات المنتج:
+  return `بيانات المنتج من المالك:
 - الاسم: ${product.name || '—'}
-- التصنيف: ${product.category || '—'}
+- الاسم الداخلي/الإنجليزي: ${product.internal_name || '—'}
+- التصنيف المُدخل: ${product.category || '—'}
 - الوصف: ${product.description || '—'}
-- المواصفات: ${product.specifications || '—'}
+- المواصفات/المميزات: ${product.specifications || '—'}
 - الفوائد: ${product.benefits || '—'}
+- حالات الاستخدام: ${product.use_cases || '—'}
+- الجمهور: ${product.target_audience || '—'}
+- ادعاءات مسموح بها: ${product.allowed_claims || '—'}
+- ادعاءات ممنوعة: ${product.forbidden_claims || '—'}
 - ملاحظات: ${product.notes || '—'}
 
-أعد JSON بهذا الشكل بالضبط (نفس المفاتيح):
+حلّل الصور المرجعية المرفقة وأعد JSON بنفس هذه المفاتيح بالضبط:
 {
-  "primary_colors": [], "secondary_colors": [], "product_shape": null,
-  "visible_materials": [], "proportions": null, "buttons": null, "ports": null,
-  "display_screen": null, "handles": null, "attachments": [], "cables": [],
-  "hoses": [], "accessories": [], "logos_branding": [], "patterns": [],
-  "transparent_parts": null, "metallic_parts": null, "packaging_appearance": null,
-  "unique_design_details": [], "features_visible_in_reference": [],
-  "never_invent": [], "confidence": 0
+ "product_category": null, "product_type": null, "primary_purpose": null, "secondary_purposes": [],
+ "exact_shape": null, "proportions": null, "primary_colors": [], "secondary_colors": [],
+ "visible_materials": [], "surface_texture": null, "buttons": null, "ports": null,
+ "display_screen": null, "lights_indicators": null, "openings": null, "handles": null,
+ "accessories": [], "cables": [], "hoses": [], "printed_elements": null, "logos_branding": [],
+ "patterns": [], "transparent_parts": null, "metallic_parts": null, "packaging_appearance": null,
+ "unique_design_details": [],
+ "correct_orientation": null, "held_where": null, "interaction_with_people": null,
+ "typical_placement": null, "realistic_environment": null, "physical_scale": null, "scale_confidence": 0,
+ "likely_audience": null, "lifestyle_context": null,
+ "features_visible_in_reference": [], "never_invent": [], "category_safety_rules": [], "confidence": 0
 }`;
 }
 

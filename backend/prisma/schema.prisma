@@ -64,6 +64,7 @@ model User {
   cf_projects_created            CfProject[]                  @relation("CfProjectCreator")
   cf_jobs_created                CfJob[]                      @relation("CfJobCreator")
   cf_variations_created          CfVariation[]                @relation("CfVariationCreator")
+  cf_feedback_created            CfFeedback[]                 @relation("CfFeedbackCreator")
 
   @@map("users")
 }
@@ -1861,6 +1862,7 @@ model CfProjectItem {
   reference_priority_json String?
   visual_style            String?
   reason                  String?
+  plan_meta_json          String? // { creativeGoal, marketingAngle, customerQuestion, visualConcept, cameraPlan, scenePlan, productPosition, copyGoal, textLayout } — spec §6
   creative_direction_json String?
   continuity_json         String?
   status                  String  @default("PLANNED")
@@ -1972,6 +1974,7 @@ model CfAsset {
   variations_as_parent CfVariation[]       @relation("CfVariationParent")
   variations_as_child  CfVariation[]       @relation("CfVariationChild")
   performance_links    CfPerformanceLink[]
+  feedback             CfFeedback[]
 
   @@index([project_item_id])
   @@index([product_id])
@@ -2141,4 +2144,27 @@ model CfLearningInsight {
 
   @@unique([dimension, key])
   @@map("cf_learning_insights")
+}
+
+// Explicit owner feedback on a generated creative (spec §21). Keyed by
+// product category / creative angle / style so Creative Strategy can weight
+// future plans. verdict: UP | DOWN. reason: free-form or one of a known set.
+model CfFeedback {
+  id               Int      @id @default(autoincrement())
+  asset_id         Int
+  asset            CfAsset  @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  verdict          String // UP | DOWN
+  reason           String? // المنتج اتغير | الفكرة ضعيفة | التصميم مش عاجبني | الكلام ضعيف | الصورة مش واقعية | استخدام المنتج غلط | أخرى
+  note             String?
+  product_category String?
+  creative_angle   String?
+  style_preset     String?
+  prompt_strategy  String? // e.g. lock mode + text layout
+  created_by_id    Int?
+  created_by       User?    @relation("CfFeedbackCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at       DateTime @default(now())
+
+  @@index([asset_id])
+  @@index([product_category, creative_angle])
+  @@map("cf_feedback")
 }

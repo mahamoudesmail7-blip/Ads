@@ -24,9 +24,11 @@ import { getDna } from './productDna.js';
 import { generateCopyForItem } from './marketingCopy.js';
 import { guardCopy } from './claimsGuard.js';
 import { directItem, defaultContinuity } from './creativeDirector.js';
-import { buildPrompt } from './promptBuilder.js';
+import { buildPrompt, selectReferencesForItem } from './promptBuilder.js';
 import { reviewImage, saveReview } from './imageQuality.js';
 import { buildCorrectiveNote } from './regeneration.js';
+import { validatePlanConcepts } from './creativeStrategy.js';
+import { composeText, textCompositorAvailable } from './textCompositor.js';
 
 const running = new Set();     // job ids currently being processed in THIS process
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
@@ -99,7 +101,10 @@ export async function processDueJobs() {
 }
 
 // ---------------------------------------------------------------------------
-// Worker
+// Worker — prepares the shared intelligence ONCE (DNA cached, plan validated,
+// references cached), then runs the independent image items through a bounded
+// concurrency pool (spec §14/§15). Text is rendered by our own engine, never
+// the image model (spec §10).
 // ---------------------------------------------------------------------------
 async function runJob(jobId) {
   const job = await prisma.cfJob.findUnique({ where: { id: jobId }, include: { project: { include: { product: true } } } });
@@ -108,67 +113,114 @@ async function runJob(jobId) {
   const project = job.project;
   const product = project.product;
   const th = await getEffectiveThresholds();
-  const dna = await getDna(product.id);
+  const dna = await getDna(product.id);                                   // cached (run once at analyze time)
   const references = await loadReferenceImages(product.id, th.maxReferenceImages);
   const continuity = defaultContinuity(project);
   const provider = getImageProvider();
   const providerCaps = provider.getCapabilities();
+  const textEngine = th.textOverlay && textCompositorAvailable();
 
   const itemIds = safeParse(job.item_ids_json, []);
   await prisma.cfJob.update({ where: { id: jobId }, data: { status: 'GENERATING', started_at: job.started_at || new Date(), heartbeat_at: new Date() } });
   await prisma.cfProject.update({ where: { id: project.id }, data: { status: 'GENERATING' } });
 
-  let completed = 0;
-  let failed = 0;
-  for (let idx = 0; idx < itemIds.length; idx++) {
-    const fresh = await prisma.cfJob.findUnique({ where: { id: jobId } });
-    if (!fresh || fresh.status === 'CANCELLED') return;
-
-    const item = await prisma.cfProjectItem.findUnique({ where: { id: itemIds[idx] }, include: { copy: true } });
-    if (!item) { failed++; continue; }
-
-    try {
-      const outcome = await generateItem({ item, project, product, dna, references, continuity, provider, providerCaps, th });
-      if (outcome.status === 'COMPLETED') completed++;
-      else failed++;
-    } catch (err) {
-      failed++;
-      await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'FAILED' } });
-      logger.error('CF_ITEM_FAILED', { itemId: item.id, message: err.message });
-      if (err instanceof CfProviderError && err.code === 'PROVIDER_NOT_CONFIGURED') {
-        // No point hammering the rest — fail the remaining items with the same honest reason.
-        await prisma.cfProjectItem.updateMany({ where: { id: { in: itemIds.slice(idx + 1) }, status: { in: ['QUEUED', 'GENERATING', 'REGENERATING', 'PLANNED'] } }, data: { status: 'FAILED' } });
-        failed += itemIds.length - idx - 1;
-        await prisma.cfJob.update({ where: { id: jobId }, data: { error: err.message } });
-        break;
+  // Pre-generation intelligence: tighten any plan concept that contradicts
+  // the DNA BEFORE spending on generation (spec §23).
+  {
+    const rows = await prisma.cfProjectItem.findMany({ where: { id: { in: itemIds } } });
+    const shaped = rows.map((r) => {
+      const pm = safeParse(r.plan_meta_json, {}) || {};
+      return {
+        id: r.id, position: r.position, angle: r.angle, marketing_angle: pm.marketingAngle || r.angle,
+        scene: r.scene, scene_plan: pm.scenePlan || r.scene,
+        visual_concept: pm.visualConcept || null, text_layout: pm.textLayout || null,
+      };
+    });
+    const { items: checked, notes } = validatePlanConcepts({ items: shaped, dna, product });
+    if (notes.length) {
+      for (const it of checked) {
+        const patch = { scene: it.scene ?? undefined, angle: it.angle ?? undefined };
+        if (it.text_layout || it.visual_concept) {
+          const r = rows.find((x) => x.id === it.id);
+          const pm = { ...(safeParse(r?.plan_meta_json, {}) || {}), textLayout: it.text_layout || undefined, visualConcept: it.visual_concept || undefined, marketingAngle: it.marketing_angle || undefined };
+          patch.plan_meta_json = JSON.stringify(pm);
+        }
+        await prisma.cfProjectItem.update({ where: { id: it.id }, data: patch }).catch(() => {});
       }
+      logger.info('CF_PLAN_SANITY', { jobId, adjusted: notes.length });
     }
-
-    const progress = Math.round(((completed + failed) / itemIds.length) * 100);
-    await prisma.cfJob.update({ where: { id: jobId }, data: { completed_items: completed, failed_items: failed, progress, heartbeat_at: new Date() } });
   }
 
-  const finalStatus = completed === itemIds.length ? 'COMPLETED' : completed > 0 ? 'PARTIAL_COMPLETE' : 'FAILED';
+  const state = { completed: 0, failed: 0, providerDown: false };
+  const queue = itemIds.slice();
+  const concurrency = Math.max(1, Math.min(th.generationConcurrency, queue.length));
+
+  async function poolWorker() {
+    while (queue.length) {
+      const fresh = await prisma.cfJob.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (!fresh || fresh.status === 'CANCELLED' || state.providerDown) return;
+      const itemId = queue.shift();
+      if (itemId == null) return;
+      const item = await prisma.cfProjectItem.findUnique({ where: { id: itemId }, include: { copy: true } });
+      if (!item) { state.failed++; continue; }
+      try {
+        const outcome = await generateItem({ item, project, product, dna, references, continuity, provider, providerCaps, th, textEngine });
+        if (outcome.status === 'COMPLETED') state.completed++; else state.failed++;
+      } catch (err) {
+        state.failed++;
+        await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'FAILED' } }).catch(() => {});
+        logger.error('CF_ITEM_FAILED', { itemId: item.id, message: err.message });
+        if (err instanceof CfProviderError && err.code === 'PROVIDER_NOT_CONFIGURED') {
+          state.providerDown = true;
+          await prisma.cfJob.update({ where: { id: jobId }, data: { error: err.message } }).catch(() => {});
+        }
+      }
+      const progress = Math.round(((state.completed + state.failed) / itemIds.length) * 100);
+      await prisma.cfJob.update({ where: { id: jobId }, data: { completed_items: state.completed, failed_items: state.failed, progress, heartbeat_at: new Date() } }).catch(() => {});
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, poolWorker));
+
+  if (state.providerDown) {
+    await prisma.cfProjectItem.updateMany({ where: { id: { in: itemIds }, status: { in: ['QUEUED', 'GENERATING', 'REGENERATING', 'PLANNED'] } }, data: { status: 'FAILED' } });
+    const stillOpen = await prisma.cfProjectItem.count({ where: { id: { in: itemIds }, status: 'FAILED' } });
+    state.failed = Math.max(state.failed, stillOpen);
+  }
+
+  const jobNow = await prisma.cfJob.findUnique({ where: { id: jobId }, select: { status: true } });
+  if (jobNow?.status === 'CANCELLED') return;
+  const finalStatus = state.completed === itemIds.length ? 'COMPLETED' : state.completed > 0 ? 'PARTIAL_COMPLETE' : 'FAILED';
   await prisma.cfJob.update({
     where: { id: jobId },
-    data: { status: finalStatus, completed_items: completed, failed_items: failed, progress: 100, finished_at: new Date(), heartbeat_at: new Date() },
+    data: { status: finalStatus, completed_items: state.completed, failed_items: state.failed, progress: 100, finished_at: new Date(), heartbeat_at: new Date() },
   });
   await syncProjectStatus(project.id);
 }
 
 /**
- * Generate ONE plan item to completion (or NEEDS_REVIEW after maxRetries).
+ * Generate ONE plan item to completion (or NEEDS_REVIEW after the mode's
+ * retry cap). Targeted retries only; text is composited by our own engine.
  * @returns {Promise<{status:'COMPLETED'|'NEEDS_REVIEW'|'FAILED', assetId?:number}>}
  */
-async function generateItem({ item, project, product, dna, references, continuity, provider, providerCaps, th }) {
+async function generateItem({ item, project, product, dna, references, continuity, provider, providerCaps, th, textEngine }) {
   await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'GENERATING' } });
 
-  // 1) claim-guarded copy (only (re)generate if missing or not yet passed)
+  // 1) claim-guarded copy (only (re)generate if missing or not yet passed).
+  //    generateCopyForItem returns { hook, supportingLine, featureLabels, cta,
+  //    headline, subtitle } — normalise to the snake_case guardCopy/DB shape.
   let copy = item.copy;
   if (!copy || !['PASSED', 'REWRITTEN'].includes(copy.claim_status) || !copy.edited_by_user) {
-    const draft = copy?.edited_by_user
-      ? { hook: copy.hook, supporting_line: copy.supporting_line, headline: copy.headline, subtitle: copy.subtitle, cta: copy.cta, feature_callouts: safeParse(copy.feature_callouts_json, []) }
-      : await generateCopyForItem({ item: { ...item, features: safeParse(item.features_json, []) }, product, project, dna });
+    const raw = copy?.edited_by_user
+      ? { hook: copy.hook, supportingLine: copy.supporting_line, headline: copy.headline, subtitle: copy.subtitle, cta: copy.cta, featureLabels: safeParse(copy.feature_callouts_json, []) }
+      : await generateCopyForItem({ item: { ...item, features: safeParse(item.features_json, []), customerQuestion: item.customer_question, copyGoal: safeParse(item.creative_direction_json, {})?.copy_goal }, product, project, dna: dna?.data || dna });
+    const draft = {
+      hook: raw.hook, headline: raw.headline || raw.hook,
+      supporting_line: raw.supportingLine ?? raw.supporting_line ?? null,
+      subtitle: raw.subtitle ?? null, cta: raw.cta ?? null,
+      feature_callouts: raw.featureLabels ?? raw.feature_callouts ?? [],
+      alignment: raw.alignment || 'center', priority: raw.priority || 'HEADLINE_FIRST', safe_area: raw.safe_area || 'top',
+    };
     const guarded = await guardCopy({ copy: { ...draft, feature_callouts: draft.feature_callouts || [] }, product });
     copy = await prisma.cfCreativeCopy.upsert({
       where: { project_item_id: item.id },
@@ -193,32 +245,60 @@ async function generateItem({ item, project, product, dna, references, continuit
       return { status: 'NEEDS_REVIEW' };
     }
   }
+  const pm = safeParse(item.plan_meta_json, {}) || {};
+  const itemFull = {
+    ...item,
+    features: safeParse(item.features_json, []),
+    reference_priority: safeParse(item.reference_priority_json, []),
+    creative_goal: pm.creativeGoal || item.purpose || null,
+    marketing_angle: pm.marketingAngle || item.angle || null,
+    customer_question: pm.customerQuestion || null,
+    visual_concept: pm.visualConcept || null,
+    camera_plan: pm.cameraPlan || item.camera_angle || null,
+    scene_plan: pm.scenePlan || item.scene || null,
+    product_position: pm.productPosition || item.product_placement || null,
+    copy_goal: pm.copyGoal || null,
+    text_layout: pm.textLayout || null,
+  };
   const copyObj = {
-    hook: copy.hook, supporting_line: copy.supporting_line, headline: copy.headline, subtitle: copy.subtitle,
-    cta: copy.cta, feature_callouts: safeParse(copy.feature_callouts_json, []), safe_area: copy.safe_area,
+    hook: copy.hook, headline: copy.headline || copy.hook, supportingLine: copy.supporting_line, subtitle: copy.subtitle,
+    cta: copy.cta, featureLabels: safeParse(copy.feature_callouts_json, []), safe_area: copy.safe_area,
   };
 
-  // 2) creative direction
-  const { direction } = await directItem({ item: { ...item, reference_priority: safeParse(item.reference_priority_json, []) }, copy: copyObj, product, dna, project, continuity });
+  // 2) creative direction (once)
+  const { direction } = await directItem({ item: itemFull, copy: copyObj, product, dna, project, continuity });
   await prisma.cfProjectItem.update({ where: { id: item.id }, data: { creative_direction_json: JSON.stringify(direction), continuity_json: JSON.stringify(continuity) } });
 
   const size = imageSizeFor(project.aspect_ratio);
   const isHero = item.position === 1 || /HERO/i.test(item.angle || '');
-  const wantCandidates = project.generation_mode === 'PREMIUM' && th.allowPremiumMode && isHero ? Math.max(2, th.premiumCandidates) : 1;
-  const providerRefs = providerCaps.referenceImages ? references.map((r) => ({ b64: r.buffer.toString('base64'), mime: r.mime })) : [];
+  const premium = project.generation_mode === 'PREMIUM' && th.allowPremiumMode;
+  // best-of-N: PREMIUM + HERO only (spec §19 "not several candidates for every image")
+  const wantCandidates = premium && isHero ? Math.max(2, th.premiumCandidates) : 1;
+  const maxRetries = premium ? th.maxRetriesPremium : th.maxRetriesFast;
+  const maxAttempts = maxRetries + 1;
 
-  const maxAttempts = th.maxRetries + 1;
+  // reference-aware selection for THIS shot (spec §3)
+  const chosenRefs = selectReferencesForItem(references, itemFull, 4);
+  const providerRefs = providerCaps.referenceImages
+    ? chosenRefs.map((r) => ({ b64: r.buffer.toString('base64'), mime: r.mime }))
+    : [];
+  const layout = itemFull.text_layout || direction.text_layout || 'HEADLINE_TOP';
+
   let corrective = null;
   let bestAsset = null;
   let bestReview = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const built = buildPrompt({ item: { ...item, features: safeParse(item.features_json, []) }, copy: copyObj, direction, product, dna, project, lockMode: project.product_lock_mode, correctiveNote: corrective, promptVersion: attempt });
+    const built = buildPrompt({
+      item: { ...itemFull, text_layout: layout }, copy: copyObj, direction, product, dna, project,
+      references: chosenRefs, lockMode: project.product_lock_mode, correctiveNote: corrective,
+      promptVersion: attempt, textOverlay: textEngine,
+    });
     const attemptRow = await prisma.cfGenerationAttempt.create({
       data: {
         project_item_id: item.id, attempt_number: attempt, provider: provider.name, model: providerCaps.model || null,
         prompt: built.prompt, prompt_version: attempt, corrective_prompt: corrective,
-        provider_request_json: JSON.stringify({ size, n: wantCandidates, references: providerRefs.length }),
+        provider_request_json: JSON.stringify({ size, n: wantCandidates, references: providerRefs.length, textLayout: layout, textEngine }),
         status: 'RUNNING', images_requested: wantCandidates, estimated_cost: estimateCostUsd(wantCandidates),
       },
     });
@@ -227,9 +307,9 @@ async function generateItem({ item, project, product, dna, references, continuit
     try {
       gen = await provider.generate({ prompt: built.prompt, size, n: wantCandidates, referenceImages: providerRefs, quality: undefined });
     } catch (err) {
-      await prisma.cfGenerationAttempt.update({ where: { id: attemptRow.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 500), duration_ms: null } });
-      if (err instanceof CfProviderError && err.code === 'PROVIDER_NOT_CONFIGURED') throw err; // bubble to runJob's short-circuit
-      corrective = buildCorrectiveNote({ failure_reasons: [err.message] });
+      await prisma.cfGenerationAttempt.update({ where: { id: attemptRow.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 500) } });
+      if (err instanceof CfProviderError && err.code === 'PROVIDER_NOT_CONFIGURED') throw err;
+      corrective = buildCorrectiveNote({ failure_reasons: [err.message], failure_code: 'VISUAL_ARTIFACT' });
       continue;
     }
 
@@ -238,13 +318,19 @@ async function generateItem({ item, project, product, dna, references, continuit
       data: { status: 'SUCCEEDED', duration_ms: gen.durationMs || null, provider_metadata_json: JSON.stringify({ usage: gen.usage || null, raw: gen.raw || null }), actual_cost: estimateCostUsd(gen.images.length) },
     });
 
-    // Store + review each candidate
     let attemptBest = null;
     let attemptBestReview = null;
     for (let c = 0; c < gen.images.length; c++) {
-      const img = gen.images[c];
-      const buf = Buffer.from(img.b64, 'base64');
-      const stored = await StorageService.putBuffer(buf, { mime: img.mime || 'image/png', prefix: `cf/p${project.id}/i${item.id}` });
+      const rawBuf = Buffer.from(gen.images[c].b64, 'base64');
+      // 3) our text engine renders the EXACT approved Arabic — the model drew none
+      let finalBuf = rawBuf;
+      let textApplied = false;
+      let usedLayout = layout;
+      if (textEngine) {
+        const comp = await composeText({ baseImageBuffer: rawBuf, copy: copyObj, layout, projectType: project.project_type, textDensity: project.text_density });
+        finalBuf = comp.buffer; textApplied = comp.applied; usedLayout = comp.layout;
+      }
+      const stored = await StorageService.putBuffer(finalBuf, { mime: 'image/png', prefix: `cf/p${project.id}/i${item.id}` });
       const asset = await prisma.cfAsset.create({
         data: {
           project_item_id: item.id, generation_attempt_id: attemptRow.id, product_id: product.id,
@@ -254,7 +340,8 @@ async function generateItem({ item, project, product, dna, references, continuit
           generation_number: attempt,
         },
       });
-      const review = await reviewImage({ assetBuffer: buf, assetMime: stored.mime, item, copy: copyObj, product, dna, project, references });
+      const review = await reviewImage({ assetBuffer: finalBuf, assetMime: 'image/png', item: itemFull, copy: copyObj, product, dna, project, references: chosenRefs });
+      review._textApplied = textApplied; review._textLayout = usedLayout;
       await saveReview(asset.id, review);
       const score = review.overall ?? -1;
       if (!attemptBestReview || score > (attemptBestReview.overall ?? -1)) { attemptBest = asset; attemptBestReview = review; }
@@ -265,17 +352,17 @@ async function generateItem({ item, project, product, dna, references, continuit
 
     if (attemptBestReview?.passed) {
       await prisma.cfAsset.update({ where: { id: attemptBest.id }, data: { status: 'APPROVED', is_candidate: false, candidate_rank: null } });
-      // demote sibling candidates from this attempt
       await prisma.cfAsset.updateMany({ where: { generation_attempt_id: attemptRow.id, id: { not: attemptBest.id } }, data: { status: 'REJECTED' } });
       await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'COMPLETED', approved_asset_id: attemptBest.id } });
       return { status: 'COMPLETED', assetId: attemptBest.id };
     }
 
-    corrective = buildCorrectiveNote(attemptBestReview || { failure_reasons: ['جودة غير كافية'] });
+    // targeted corrective for the next attempt (never a blind repeat)
+    corrective = buildCorrectiveNote(attemptBestReview || { failure_reasons: ['جودة غير كافية'], failure_code: 'BAD_COMPOSITION' });
     if (attempt < maxAttempts) await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'REGENERATING' } });
   }
 
-  // Exhausted retries — keep the best attempt visible, flag for a human.
+  // Retry cap reached — keep the best attempt visible, flag for a human.
   await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'NEEDS_REVIEW', approved_asset_id: null } });
   if (bestAsset) await prisma.cfAsset.update({ where: { id: bestAsset.id }, data: { status: 'PENDING_REVIEW' } });
   return { status: 'NEEDS_REVIEW', assetId: bestAsset?.id };

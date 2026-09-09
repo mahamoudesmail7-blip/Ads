@@ -727,17 +727,19 @@ async function openDnaDrawer() {
   const d = ws.product?.dna;
   const data = d?.data || {};
   const val = (k) => (Array.isArray(data[k]) ? data[k].join('، ') : (data[k] || ''));
+  const LIST_KEYS = ['primary_colors', 'secondary_colors', 'visible_materials', 'logos_branding', 'accessories', 'unique_design_details', 'features_visible_in_reference', 'never_invent', 'category_safety_rules'];
+  const TEXT_KEYS = ['product_category', 'product_type', 'primary_purpose', 'exact_shape', 'proportions', 'surface_texture', 'buttons', 'ports', 'display_screen', 'packaging_appearance', 'correct_orientation', 'physical_scale', 'likely_audience'];
   openDrawer(`<h2 style="margin-top:0;">فهم المنتج (Product DNA)</h2>
-    <div class="cf-muted">${d ? `${dnaSourceLabel(d.source)} · إصدار ${d.version} · ثقة ${d.confidence ?? '—'}` : 'لم يتم التحليل بعد'}</div>
-    ${['primary_colors', 'secondary_colors', 'visible_materials', 'logos_branding', 'accessories', 'unique_design_details', 'never_invent'].map((k) => `<div class="cf-field"><label>${E(dnaFieldLabel(k))}</label><input data-dna="${k}" value="${E(val(k))}" placeholder="افصل بفاصلة"/></div>`).join('')}
-    ${['product_shape', 'display_screen', 'ports', 'packaging_appearance'].map((k) => `<div class="cf-field"><label>${E(dnaFieldLabel(k))}</label><input data-dna="${k}" value="${E(val(k))}"/></div>`).join('')}
+    <div class="cf-muted">${d ? `${dnaSourceLabel(d.source)} · إصدار ${d.version} · ثقة ${d.confidence ?? '—'}${data.scale_confidence != null ? ` · ثقة المقياس ${data.scale_confidence}` : ''}` : 'لم يتم التحليل بعد'}</div>
+    ${TEXT_KEYS.filter((k) => data[k] != null || d).map((k) => `<div class="cf-field"><label>${E(dnaFieldLabel(k))}</label><input data-dna="${k}" value="${E(val(k))}"/></div>`).join('')}
+    ${LIST_KEYS.map((k) => `<div class="cf-field"><label>${E(dnaFieldLabel(k))}</label><input data-dna="${k}" value="${E(val(k))}" placeholder="افصل بفاصلة"/></div>`).join('')}
     <button class="cf-btn primary" id="cfDnaSave">حفظ التعديلات</button>
     <button class="cf-btn ghost" id="cfDnaRe" style="margin-inline-start:8px;">إعادة التحليل</button>`);
   $('cfDnaSave').onclick = async () => {
     const patch = {};
     $('cfDrawer').querySelectorAll('[data-dna]').forEach((inp) => {
       const k = inp.dataset.dna;
-      patch[k] = ['product_shape', 'display_screen', 'ports', 'packaging_appearance'].includes(k) ? (inp.value.trim() || null) : inp.value.split(/[،,]+/).map((x) => x.trim()).filter(Boolean);
+      patch[k] = LIST_KEYS.includes(k) ? inp.value.split(/[،,]+/).map((x) => x.trim()).filter(Boolean) : (inp.value.trim() || null);
     });
     try { await api.patch(`/api/creative-factory/products/${ws.productId}/dna`, { data: patch }); closeDrawer(); await reloadProduct(); UI.toast('تم الحفظ'); paintCardImages(); }
     catch (e) { UI.toast(e.message, 'error'); }
@@ -745,7 +747,16 @@ async function openDnaDrawer() {
   $('cfDnaRe').onclick = async () => { closeDrawer(); await runAnalyze(); };
 }
 function dnaFieldLabel(k) {
-  return { primary_colors: 'الألوان الأساسية', secondary_colors: 'ألوان ثانوية', visible_materials: 'الخامات المرئية', logos_branding: 'الشعارات/العلامة', accessories: 'ملحقات', unique_design_details: 'تفاصيل مميزة', never_invent: 'ممنوع اختراعه', product_shape: 'الشكل', display_screen: 'الشاشة', ports: 'المنافذ', packaging_appearance: 'مظهر العبوة' }[k] || k;
+  return {
+    product_category: 'الفئة', product_type: 'نوع المنتج', primary_purpose: 'الغرض الأساسي',
+    exact_shape: 'الشكل الدقيق', proportions: 'النِسب', surface_texture: 'ملمس السطح',
+    primary_colors: 'الألوان الأساسية', secondary_colors: 'ألوان ثانوية', visible_materials: 'الخامات المرئية',
+    buttons: 'الأزرار', ports: 'المنافذ', display_screen: 'الشاشة',
+    logos_branding: 'الشعارات/العلامة', accessories: 'ملحقات', unique_design_details: 'تفاصيل مميزة',
+    features_visible_in_reference: 'مميزات ظاهرة في الصور', never_invent: 'ممنوع اختراعه',
+    category_safety_rules: 'قيود الفئة', packaging_appearance: 'مظهر العبوة',
+    correct_orientation: 'الاتجاه الصحيح', physical_scale: 'الحجم الواقعي', likely_audience: 'الجمهور المرجّح',
+  }[k] || k;
 }
 function dnaSourceLabel(s) { return { AI_ANALYZED: 'بالذكاء الاصطناعي', USER_EDITED: 'تعديل يدوي', MIXED: 'مختلط', UNAVAILABLE: 'غير متاح (يدوي)' }[s] || s; }
 
@@ -890,6 +901,10 @@ async function openAssetDrawer(id) {
       ${(q.failureReasons || []).length ? `<div class="cf-muted" style="margin-top:6px;">ملاحظات: ${q.failureReasons.map(E).join(' · ')}</div>` : ''}
       <details class="cf-collapse" style="margin-top:6px;"><summary>كل المقاييس</summary>${sc('identity_score', 'هوية المنتج')}${sc('composition_score', 'التكوين')}${sc('product_visibility_score', 'وضوح المنتج')}${sc('text_readability_score', 'سهولة القراءة')}${sc('artifact_score', 'خلو من التشوه')}${sc('reference_consistency_score', 'الاتساق مع المرجع')}${sc('plan_compliance_score', 'الالتزام بالخطة')}</details>
     </div>` : '<div class="cf-muted" style="margin-top:12px;">لا يوجد تقييم آلي (الـ AI النصي غير متاح).</div>'}
+    <div class="cf-fbrow">
+      <button class="cf-btn ghost sm" data-fb="UP">👍 ممتازة</button>
+      <button class="cf-btn ghost sm" data-fb="DOWN">👎 مش مناسبة</button>
+    </div>
     <div class="cf-actions">
       ${state.isAdmin && a.status !== 'APPROVED' ? `<button class="cf-btn primary sm" data-st="APPROVED">اعتماد</button>` : ''}
       ${state.isAdmin && a.status !== 'REJECTED' ? `<button class="cf-btn ghost sm" data-st="REJECTED">رفض</button>` : ''}
@@ -908,6 +923,18 @@ async function openAssetDrawer(id) {
     <div id="cfPromptBox"></div>`;
   $('cfDrawer').querySelectorAll('[data-st]').forEach((b) => {
     b.onclick = async () => { try { await api.post(`/api/creative-factory/assets/${id}/status`, { status: b.dataset.st }); UI.toast('تم'); openAssetDrawer(id); if (state.tab === 'results') renderResults($('cfView')); } catch (e) { UI.toast(e.message, 'error'); } };
+  });
+  const FB_REASONS = ['المنتج اتغير', 'الفكرة ضعيفة', 'التصميم مش عاجبني', 'الكلام ضعيف', 'الصورة مش واقعية', 'استخدام المنتج غلط', 'أخرى'];
+  const sendFb = async (verdict, reason) => {
+    try { await api.post(`/api/creative-factory/assets/${id}/feedback`, { verdict, reason }); UI.toast(verdict === 'UP' ? 'اتسجّل 👍' : 'اتسجّل — هنحسّن الاقتراحات القادمة'); $('cfPromptBox').innerHTML = ''; }
+    catch (e) { UI.toast(e.message, 'error'); }
+  };
+  $('cfDrawer').querySelectorAll('[data-fb]').forEach((b) => {
+    b.onclick = () => {
+      if (b.dataset.fb === 'UP') return sendFb('UP');
+      $('cfPromptBox').innerHTML = `<div style="margin-top:10px;border-top:1px solid var(--cf-border);padding-top:10px;"><div class="cf-muted" style="margin-bottom:6px;">إيه السبب؟</div><div class="cf-chips">${FB_REASONS.map((r) => `<button class="cf-chip" data-fbr="${E(r)}">${E(r)}</button>`).join('')}</div></div>`;
+      $('cfPromptBox').querySelectorAll('[data-fbr]').forEach((c) => c.onclick = () => sendFb('DOWN', c.dataset.fbr));
+    };
   });
   if ($('cfRegen')) $('cfRegen').onclick = async () => {
     if (!await UI.confirmModal({ title: 'إعادة إنشاء', message: 'هيتم رفض الصورة الحالية وإعادة توليد نفس العنصر.', confirmLabel: 'إعادة', danger: true })) return;
@@ -959,6 +986,17 @@ async function renderLearn(view, rid) {
           </div>
         </div>
       </div>
+      ${(() => {
+        const fb = data.feedback || {};
+        if (!fb.total) return '';
+        const angleRows = (fb.byAngle || []).filter((x) => x.n >= 1).slice(0, 8);
+        const reasons = Object.entries(fb.byReason || {}).sort((a, b) => b[1] - a[1]);
+        return `<div class="cf-card"><h2>تقييمك للكرياتيفات (${fb.total})</h2>
+          <div class="cf-muted" style="margin-bottom:8px;">النظام بيرجّح الزوايا اللي قيّمتها 👍 ويتجنّب اللي 👎 في الخطط الجاية لنفس فئة المنتج.</div>
+          ${angleRows.map((r) => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--cf-border);font-size:12.5px;"><b>${E(r.key || '—')}</b><span class="${r.score > 0 ? '' : 'cf-muted'}" style="${r.score > 0 ? 'color:var(--cf-green)' : r.score < 0 ? 'color:var(--cf-red)' : ''}">👍 ${r.up} · 👎 ${r.down}</span></div>`).join('') || '<div class="cf-muted">لسه مفيش تقييمات موزّعة على زوايا.</div>'}
+          ${reasons.length ? `<div class="cf-muted" style="margin-top:8px;">أكثر أسباب الرفض: ${reasons.map(([k, v]) => `${E(k)} (${v})`).join(' · ')}</div>` : ''}
+        </div>`;
+      })()}
       ${Object.keys(dims).length ? Object.entries(dims).map(([dim, rows]) => `
         <div class="cf-card"><h2>${E(DIM_LABEL[dim] || dim)}</h2>
           ${rows.map((r) => `<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--cf-border);font-size:12.5px;">

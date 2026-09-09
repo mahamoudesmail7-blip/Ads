@@ -252,3 +252,6 @@
   .cf-ws-grid > :last-child { grid-column: auto; }
   .cf-typecards { grid-template-columns: 1fr; }
 }
+
+.cf-fbrow { display: flex; gap: 8px; margin: 10px 0 4px; }
+.cf-fbrow .cf-btn { flex: 1; }

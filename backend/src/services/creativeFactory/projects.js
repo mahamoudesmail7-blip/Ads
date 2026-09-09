@@ -373,6 +373,7 @@ export function serializePlanItem(it, reviewByAsset = new Map()) {
     background: it.background, headline: it.headline, supportingCopy: it.supporting_copy, cta: it.cta,
     features: safeParse(it.features_json, []), referencePriority: safeParse(it.reference_priority_json, []),
     visualStyle: it.visual_style, reason: it.reason, status: it.status,
+    planMeta: safeParse(it.plan_meta_json, null),
     approvedAssetId: it.approved_asset_id,
     attemptCount: it._count?.attempts ?? undefined,
     copy: it.copy ? {
@@ -393,7 +394,8 @@ export async function generatePlan(projectId, { count } = {}) {
   const dna = await getDna(project.product_id);
   const th = await getEffectiveThresholds();
   const n = clampInt(count ?? project.quantity, 1, 1, th.maxImagesPerProject);
-  const { items, source } = await buildCreativePlan({ project, product: project.product, dna, count: n });
+  const feedbackHints = await getFeedbackHints(project.product?.category || null).catch(() => null);
+  const { items, source } = await buildCreativePlan({ project, product: project.product, dna, count: n, feedbackHints });
 
   // Replace any existing plan items (only allowed pre-generation).
   await prisma.cfProjectItem.deleteMany({ where: { project_id: projectId } });
@@ -408,6 +410,17 @@ export async function generatePlan(projectId, { count } = {}) {
         features_json: JSON.stringify(raw.features || []),
         reference_priority_json: JSON.stringify(raw.reference_priority || []),
         visual_style: strOrNull(raw.visual_style), reason: strOrNull(raw.reason), status: 'PLANNED',
+        plan_meta_json: JSON.stringify({
+          creativeGoal: raw.creative_goal || raw.creativeGoal || null,
+          marketingAngle: raw.marketing_angle || raw.marketingAngle || raw.angle || null,
+          customerQuestion: raw.customer_question || raw.customerQuestion || null,
+          visualConcept: raw.visual_concept || raw.visualConcept || null,
+          cameraPlan: raw.camera_plan || raw.cameraPlan || raw.camera_angle || null,
+          scenePlan: raw.scene_plan || raw.scenePlan || raw.scene || null,
+          productPosition: raw.product_position || raw.productPosition || raw.product_placement || null,
+          copyGoal: raw.copy_goal || raw.copyGoal || null,
+          textLayout: raw.text_layout || raw.textLayout || null,
+        }),
       },
     });
   }
@@ -606,6 +619,63 @@ export async function estimateProjectCost({ count, generationMode }) {
     estimatedUsd: usd,
     available: imageUnitCostUsd() !== null,
     display: usd === null ? 'غير متاحة حاليًا' : `~$${usd}`,
+  };
+}
+
+// ===========================================================================
+// Feedback (spec §21) — 👍/👎 + reason, keyed by category / angle / style.
+// ===========================================================================
+export const FEEDBACK_REASONS = ['المنتج اتغير', 'الفكرة ضعيفة', 'التصميم مش عاجبني', 'الكلام ضعيف', 'الصورة مش واقعية', 'استخدام المنتج غلط', 'أخرى'];
+
+export async function saveAssetFeedback(assetId, { verdict, reason, note }, userId) {
+  const v = verdict === 'UP' || verdict === 'DOWN' ? verdict : null;
+  if (!v) throw bad('verdict لازم يكون UP أو DOWN.');
+  const a = await prisma.cfAsset.findUnique({
+    where: { id: assetId },
+    include: { product: { select: { category: true } }, project_item: { include: { project: { select: { style_preset: true, project_type: true, product_lock_mode: true } } } } },
+  });
+  if (!a) throw bad('الصورة غير موجودة.', 404);
+  const it = a.project_item;
+  const row = await prisma.cfFeedback.create({
+    data: {
+      asset_id: assetId, verdict: v,
+      reason: reason && FEEDBACK_REASONS.includes(reason) ? reason : (reason ? 'أخرى' : null),
+      note: strOrNull(note),
+      product_category: a.product?.category || null,
+      creative_angle: it?.angle || safeParse(it?.plan_meta_json, {})?.marketingAngle || null,
+      style_preset: it?.project?.style_preset || null,
+      prompt_strategy: [it?.project?.product_lock_mode, safeParse(it?.plan_meta_json, {})?.textLayout].filter(Boolean).join('+') || null,
+      created_by_id: userId || null,
+    },
+  });
+  // reflect a thumbs-down as a soft signal on the asset
+  if (v === 'DOWN' && a.status === 'APPROVED') {
+    await prisma.cfAsset.update({ where: { id: assetId }, data: { status: 'PENDING_REVIEW' } }).catch(() => {});
+  }
+  return { id: row.id, verdict: v };
+}
+
+/** Aggregated hints Creative Strategy can weight future plans with. */
+export async function getFeedbackHints(category = null) {
+  const where = category ? { product_category: category } : {};
+  const rows = await prisma.cfFeedback.findMany({ where, orderBy: { id: 'desc' }, take: 400 });
+  const tally = (field) => {
+    const m = new Map();
+    for (const r of rows) {
+      const k = r[field]; if (!k) continue;
+      const e = m.get(k) || { up: 0, down: 0 };
+      e[r.verdict === 'UP' ? 'up' : 'down']++;
+      m.set(k, e);
+    }
+    return [...m.entries()].map(([key, v]) => ({ key, ...v, score: v.up - v.down, n: v.up + v.down }))
+      .sort((x, y) => y.score - x.score);
+  };
+  return {
+    total: rows.length,
+    byAngle: tally('creative_angle'),
+    byStyle: tally('style_preset'),
+    byReason: rows.filter((r) => r.verdict === 'DOWN' && r.reason)
+      .reduce((acc, r) => { acc[r.reason] = (acc[r.reason] || 0) + 1; return acc; }, {}),
   };
 }
 

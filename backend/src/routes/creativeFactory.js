@@ -152,6 +152,7 @@ router.get('/assets/:id/image', asyncRoute(async (req, res) => {
   res.set('Content-Type', mime || 'image/png').set('Cache-Control', 'private, max-age=600').send(buffer);
 }));
 router.post('/assets/:id/status', admin, asyncRoute(async (req, res) => res.json(await P.setAssetStatus(idParam(req.params.id), String(req.body?.status || '')))));
+router.post('/assets/:id/feedback', asyncRoute(async (req, res) => res.status(201).json(await P.saveAssetFeedback(idParam(req.params.id), { verdict: req.body?.verdict, reason: req.body?.reason, note: req.body?.note }, req.user.id))));
 router.post('/assets/:id/variations', admin, asyncRoute(async (req, res) => {
   res.status(202).json(await createVariations({
     parentAssetId: idParam(req.params.id), variationType: String(req.body?.variationType || ''),
@@ -163,7 +164,11 @@ router.get('/assets/:id/family', asyncRoute(async (req, res) => res.json((await 
 // ---------------------------------------------------------------------------
 // Learning
 // ---------------------------------------------------------------------------
-router.get('/learning', asyncRoute(async (req, res) => res.json(await getInsights())));
+router.get('/learning', asyncRoute(async (req, res) => {
+  const { getFeedbackHints } = await import('../services/creativeFactory/projects.js');
+  const [insights, feedback] = await Promise.all([getInsights(), getFeedbackHints(req.query.category || null)]);
+  res.json({ ...insights, feedback });
+}));
 router.post('/learning/recompute', admin, asyncRoute(async (req, res) => res.json(await recomputeInsights())));
 router.post('/learning/link', admin, asyncRoute(async (req, res) => res.status(201).json(await linkPerformance(req.body || {}))));
 

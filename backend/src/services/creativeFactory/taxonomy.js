@@ -68,31 +68,74 @@ export const QUALITY_DIMENSIONS = [
   { key: 'plan_compliance_score', label: 'الالتزام بالخطة' },
 ];
 
+// Classified image-generation failure reasons — drive TARGETED retries
+// (regeneration.js), never a blind repeat call.
+export const FAILURE_CODES = [
+  'PRODUCT_SHAPE_WRONG', 'PRODUCT_COLOR_WRONG', 'MISSING_DETAIL', 'EXTRA_COMPONENT',
+  'WRONG_ORIENTATION', 'BAD_HAND', 'WRONG_SCALE', 'BAD_COMPOSITION',
+  'VISUAL_ARTIFACT', 'AI_LOOK', 'TEXT_IN_IMAGE', 'CLAIM_ISSUE', 'WRONG_USAGE', 'OK',
+];
+
+// Which reference angles matter for a given planned camera angle (spec §3).
+export function referenceHintFor(cameraAngle = '') {
+  const a = String(cameraAngle).toLowerCase();
+  if (/front|أمام|واجهة/.test(a)) return ['front', '3/4', 'front 3/4'];
+  if (/side|جانب/.test(a)) return ['side', '3/4'];
+  if (/top|أعلى|فوق/.test(a)) return ['top', 'front'];
+  if (/back|خلف/.test(a)) return ['back', '3/4'];
+  if (/macro|detail|قريب|تفاصيل|زوم/.test(a)) return ['detail', 'macro', 'front'];
+  if (/multi|زوايا/.test(a)) return ['front', 'side', '3/4', 'back', 'top'];
+  if (/pack|علبة|كرتون|صندوق/.test(a)) return ['packaging', 'front'];
+  return ['front', '3/4', 'side']; // lifestyle / hero / generic → identity from several
+}
+
 // Empty, explicit Product DNA skeleton — used when AI is unavailable so the
 // owner still gets a structured form to fill, never a fake filled profile.
 export function emptyDnaSkeleton() {
   return {
+    // WHAT IS IT?
+    product_category: null,          // e.g. "hair care appliance", "fishing reel"
+    product_type: null,              // e.g. "steam hair straightener"
+    primary_purpose: null,
+    secondary_purposes: [],
+    // WHAT DOES IT LOOK LIKE?
+    exact_shape: null,
+    proportions: null,               // relative proportions readable from the refs
     primary_colors: [],
     secondary_colors: [],
-    product_shape: null,
     visible_materials: [],
-    proportions: null,
-    buttons: null,
+    surface_texture: null,
+    buttons: null,                   // count + shape + placement, as text
     ports: null,
     display_screen: null,
+    lights_indicators: null,
+    openings: null,
     handles: null,
-    attachments: [],
+    accessories: [],
     cables: [],
     hoses: [],
-    accessories: [],
+    printed_elements: null,          // readable text/markings actually on the product
     logos_branding: [],
     patterns: [],
     transparent_parts: null,
     metallic_parts: null,
     packaging_appearance: null,
     unique_design_details: [],
+    // HOW IS IT USED?
+    correct_orientation: null,
+    held_where: null,
+    interaction_with_people: null,
+    typical_placement: null,
+    realistic_environment: null,
+    physical_scale: null,            // e.g. "fits in one hand ~25cm"
+    scale_confidence: null,          // 0..100 — low → avoid scale-exposing shots
+    // WHO IS IT FOR?
+    likely_audience: null,
+    lifestyle_context: null,
+    // SAFETY
     features_visible_in_reference: [],
-    never_invent: [],
+    never_invent: [],                // components/text the generator must NOT add
+    category_safety_rules: [],       // inferred: "no medical cure claims", "no underwater unless waterproof", ...
     confidence: null,
   };
 }
