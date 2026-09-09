@@ -54,6 +54,7 @@ export const NAV_ITEMS = [
   { key: 'lostorders', href: 'lost-orders.html', label: 'الأوردرات المفقودة', icon: navIcon('lostorders'), badgeId: 'navLostOrdersBadge' },
   { key: 'aiintel', href: 'ai-intelligence.html', label: 'AI Intelligence', icon: navIcon('aiintel') },
   { key: 'aimediabuyer', href: 'ai-media-buyer.html', label: 'AI Media Buyer', icon: navIcon('aimediabuyer') },
+  { key: 'creativefactory', href: 'creative-factory.html', label: 'مصنع الكرياتيفات', icon: navIcon('aimediabuyer') },
   { key: 'productresearch', href: 'product-research.html', label: 'بحث المنتجات', icon: navIcon('productresearch') },
   { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },
   { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: navIcon('compare') },
@@ -71,6 +72,7 @@ const NAV_ROLE_REQUIREMENT = {
   settings: ['ADMIN'],
   aiintel: ['ADMIN', 'MANAGER'],
   aimediabuyer: ['ADMIN', 'MANAGER'],
+  creativefactory: ['ADMIN', 'MANAGER'],
   productresearch: ['ADMIN', 'MANAGER'],
 };
 

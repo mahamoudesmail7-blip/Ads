@@ -20,6 +20,14 @@ export function errorHandler(err, req, res, _next) {
     return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'بيانات غير صحيحة.', details: err.issues });
   }
 
+  // An error a service deliberately tagged with an HTTP status is a
+  // user-facing, non-internal error — surface its real (Arabic) message
+  // instead of a generic 500. Only trusted when `status` is set explicitly.
+  const tagged = Number(err?.status || err?.statusCode);
+  if (Number.isInteger(tagged) && tagged >= 400 && tagged <= 599 && tagged !== 500) {
+    return res.status(tagged).json({ error: err.code || 'REQUEST_ERROR', message: err.message || 'الطلب غير صالح.', ...(err.details ? { details: err.details } : {}), ...(err.scale ? { scale: err.scale } : {}) });
+  }
+
   logger.error('Unhandled error', { message: err?.message, stack: err?.stack, path: req.path, method: req.method });
   res.status(500).json({ error: 'SERVER_ERROR', message: 'حصل خطأ في السيرفر.' });
 }

@@ -153,6 +153,7 @@ function renderNav() {
         <div class="av">${E(initials)}</div>
         <div><div class="nm">${E(u.name || '—')}</div><div class="rl">${E({ ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' }[u.role] || u.role || '')}</div></div>
       </div>
+      <a class="amb-nav-link" href="creative-factory.html">✨ مصنع الكرياتيفات</a>
       <a class="amb-nav-link" href="ai-intelligence.html">🧠 AI Intelligence</a>
       <a class="amb-nav-link" href="index.html">↩︎ الرجوع للنظام</a>
     </div>`;
