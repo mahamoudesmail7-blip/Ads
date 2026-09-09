@@ -59,6 +59,11 @@ model User {
   amb_clone_audit_entries        AmbCloneAudit[]              @relation("AmbCloneAuditActor")
   media_scalings_created         MediaLibraryScaling[]        @relation("MediaScalingCreator")
   amb_scale_decisions_reviewed   AmbScaleDecision[]
+  // AI Creative Factory — additive back-relations only (no column change on `users`).
+  cf_products_created            CfProduct[]                  @relation("CfProductCreator")
+  cf_projects_created            CfProject[]                  @relation("CfProjectCreator")
+  cf_jobs_created                CfJob[]                      @relation("CfJobCreator")
+  cf_variations_created          CfVariation[]                @relation("CfVariationCreator")
 
   @@map("users")
 }
@@ -97,6 +102,7 @@ model Product {
   product_research_searches    ProductResearchSearch[]
   product_research_competitors ProductResearchCompetitor[]
   amb_product                  AmbProduct? // AI Media Buyer economics profile for this product (optional 1:1) — additive
+  cf_product                   CfProduct? // AI Creative Factory profile for this product (optional 1:1) — additive
 
   @@index([active])
   @@index([product_name])
@@ -1007,6 +1013,7 @@ model AmbProduct {
   campaign_maps        AmbProductCampaignMap[]
   recommendations      AmbRecommendation[]
   media_library_assets MediaLibraryAsset[]
+  cf_product           CfProduct? // AI Creative Factory profile linked to this AMB product (optional 1:1) — additive
 
   @@index([active])
   @@map("amb_products")
@@ -1684,4 +1691,452 @@ model MediaLibraryScaling {
   @@index([asset_id])
   @@index([clone_batch_id])
   @@map("media_library_scalings")
+}
+
+// ============================================================================
+// AI CREATIVE FACTORY — "مصنع الكرياتيفات بالذكاء الاصطناعي".
+// A complete, additive system for AI product-image creation: product profile
+// + reference photos -> Product DNA -> AI creative plan (owner-approved) ->
+// background image generation through a provider abstraction -> automatic
+// quality review -> targeted regeneration -> durable storage -> variations
+// with lineage -> a performance-learning scaffold linked by a stable
+// Creative ID.
+//
+// Every table here is NEW (cf_ prefix). Nothing in AI Media Buyer, Meta
+// sync, Clone & Schedule, Media Library or Champions is modified. The image
+// provider (OpenAI) and object storage are pluggable and configured only
+// through env vars — the whole workflow runs in a mock-safe "provider off"
+// mode with no key present (it never fabricates a generated image).
+// ============================================================================
+
+// Creative product profile. An EXTENSION of an existing product where one
+// exists (optional 1:1 link to AmbProduct and/or Product) — never a
+// replacement — plus the creative-only fields (specs / benefits / claims /
+// lock mode). name is kept locally so a project can target something not
+// yet in the catalog.
+model CfProduct {
+  id             Int         @id @default(autoincrement())
+  amb_product_id Int?        @unique
+  amb_product    AmbProduct? @relation(fields: [amb_product_id], references: [id], onDelete: SetNull)
+  product_id     Int?        @unique
+  product        Product?    @relation(fields: [product_id], references: [id], onDelete: SetNull)
+
+  name             String
+  internal_name    String?
+  category         String?
+  description      String?
+  specifications   String?
+  benefits         String?
+  use_cases        String?
+  target_audience  String?
+  problems         String?
+  allowed_claims   String?
+  forbidden_claims String?
+  selling_price    Float?
+  currency         String  @default("EGP")
+  notes            String?
+
+  // sarem | motawazen | ebdaa  (STRICT is the default — preserve product identity).
+  product_lock_mode String @default("STRICT")
+
+  created_by_id Int?
+  created_by    User?    @relation("CfProductCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  reference_images CfReferenceImage[]
+  dna              CfProductDna?
+  projects         CfProject[]
+  assets           CfAsset[]
+
+  @@index([amb_product_id])
+  @@map("cf_products")
+}
+
+// 3-6 product reference photos. Stored through StorageService (provider +
+// key); url is a convenience mirror when the provider exposes one.
+model CfReferenceImage {
+  id         Int       @id @default(autoincrement())
+  product_id Int
+  product    CfProduct @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  storage_provider String   @default("db")
+  storage_key      String
+  url              String?
+  angle_label      String?
+  mime             String   @default("image/jpeg")
+  width            Int?
+  height           Int?
+  bytes            Int?
+  sort_order       Int      @default(0)
+  active           Boolean  @default(true)
+  created_at       DateTime @default(now())
+
+  @@index([product_id])
+  @@map("cf_reference_images")
+}
+
+// Structured Product DNA (not free text). data_json holds the full
+// structured profile (colors, shape, materials, components, logos,
+// packaging, "never invent" list, ...). One per product; version bumps on
+// re-analysis, reviewed_by_user flips true after a manual correction.
+model CfProductDna {
+  id         Int       @id @default(autoincrement())
+  product_id Int       @unique
+  product    CfProduct @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  data_json        String
+  confidence       Float?
+  version          Int      @default(1)
+  reviewed_by_user Boolean  @default(false)
+  model_version    String   @default("cf-dna-v1")
+  source           String   @default("AI_ANALYZED")
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@map("cf_product_dna")
+}
+
+// A creative project = one product + one goal + a quantity + settings.
+// project_type: PRODUCT_PAGE | META_ADS | SOCIAL | RETARGETING | VARIATIONS | CUSTOM
+// status: DRAFT | PLANNING | PLAN_READY | QUEUED | GENERATING | REVIEWING |
+//         REGENERATING | PARTIAL_COMPLETE | COMPLETED | FAILED | CANCELLED
+model CfProject {
+  id         Int       @id @default(autoincrement())
+  product_id Int
+  product    CfProduct @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  project_type       String
+  quantity           Int     @default(1)
+  quantity_mode      String  @default("MANUAL")
+  ai_quantity_reason String?
+  generation_mode    String  @default("FAST")
+  style_preset       String?
+  market             String  @default("EG")
+  language           String  @default("ar")
+  dialect            String  @default("egyptian")
+  aspect_ratio       String  @default("1:1")
+  text_density       String  @default("MINIMAL")
+  people_rule        String  @default("NONE")
+  hijab_required     Boolean @default(false)
+  product_lock_mode  String  @default("STRICT")
+  status             String  @default("DRAFT")
+  plan_notes         String?
+  estimated_cost     Float?
+
+  created_by_id Int?
+  created_by    User?     @relation("CfProjectCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+  archived_at   DateTime?
+
+  items CfProjectItem[]
+  jobs  CfJob[]
+
+  @@index([product_id])
+  @@index([status])
+  @@map("cf_projects")
+}
+
+// One planned image inside a project (the "Creative Plan" card), plus its
+// live generation status. status: PLANNED | QUEUED | GENERATING | REVIEWING |
+// REGENERATING | COMPLETED | NEEDS_REVIEW | FAILED
+model CfProjectItem {
+  id         Int       @id @default(autoincrement())
+  project_id Int
+  project    CfProject @relation(fields: [project_id], references: [id], onDelete: Cascade)
+
+  position                Int
+  purpose                 String?
+  angle                   String?
+  scene                   String?
+  product_placement       String?
+  camera_angle            String?
+  composition             String?
+  background              String?
+  headline                String?
+  supporting_copy         String?
+  cta                     String?
+  features_json           String?
+  reference_priority_json String?
+  visual_style            String?
+  reason                  String?
+  creative_direction_json String?
+  continuity_json         String?
+  status                  String  @default("PLANNED")
+  approved_asset_id       Int?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  copy     CfCreativeCopy?
+  attempts CfGenerationAttempt[]
+  assets   CfAsset[]
+
+  @@index([project_id])
+  @@index([status])
+  @@map("cf_project_items")
+}
+
+// Arabic marketing copy — stored SEPARATELY from the technical generation
+// prompt (spec requirement). claim_status: PENDING | PASSED | REWRITTEN | BLOCKED
+model CfCreativeCopy {
+  id              Int           @id @default(autoincrement())
+  project_item_id Int           @unique
+  project_item    CfProjectItem @relation(fields: [project_item_id], references: [id], onDelete: Cascade)
+
+  hook                  String?
+  supporting_line       String?
+  feature_callouts_json String?
+  cta                   String?
+  headline              String?
+  subtitle              String?
+  alignment             String?
+  priority              String?
+  safe_area             String?
+  claim_status          String   @default("PENDING")
+  claim_issues_json     String?
+  edited_by_user        Boolean  @default(false)
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  @@map("cf_creative_copy")
+}
+
+// One generation attempt for one project item. status: PENDING | RUNNING |
+// SUCCEEDED | FAILED | REJECTED
+model CfGenerationAttempt {
+  id              Int           @id @default(autoincrement())
+  project_item_id Int
+  project_item    CfProjectItem @relation(fields: [project_item_id], references: [id], onDelete: Cascade)
+
+  attempt_number         Int      @default(1)
+  provider               String   @default("disabled")
+  model                  String?
+  prompt                 String?
+  prompt_version         Int      @default(1)
+  corrective_prompt      String?
+  provider_request_json  String?
+  provider_metadata_json String?
+  status                 String   @default("PENDING")
+  images_requested       Int      @default(1)
+  usage_json             String?
+  estimated_cost         Float?
+  actual_cost            Float?
+  duration_ms            Int?
+  error                  String?
+  created_at             DateTime @default(now())
+  updated_at             DateTime @updatedAt
+
+  assets CfAsset[]
+
+  @@index([project_item_id])
+  @@map("cf_generation_attempts")
+}
+
+// A stored image. uuid is the STABLE Creative ID that survives regeneration,
+// download and Meta linkage. kind: GENERATED | REFERENCE | OVERLAY.
+// status: PENDING_REVIEW | APPROVED | REJECTED | ARCHIVED | CANDIDATE
+model CfAsset {
+  id                    Int                  @id @default(autoincrement())
+  uuid                  String               @unique @default(uuid())
+  project_item_id       Int?
+  project_item          CfProjectItem?       @relation(fields: [project_item_id], references: [id], onDelete: SetNull)
+  generation_attempt_id Int?
+  generation_attempt    CfGenerationAttempt? @relation(fields: [generation_attempt_id], references: [id], onDelete: SetNull)
+  parent_asset_id       Int?
+  parent_asset          CfAsset?             @relation("CfAssetLineage", fields: [parent_asset_id], references: [id], onDelete: SetNull)
+  product_id            Int?
+  product               CfProduct?           @relation(fields: [product_id], references: [id], onDelete: SetNull)
+
+  storage_provider  String  @default("db")
+  storage_key       String
+  url               String?
+  thumbnail_key     String?
+  mime              String  @default("image/png")
+  width             Int?
+  height            Int?
+  bytes             Int?
+  kind              String  @default("GENERATED")
+  status            String  @default("PENDING_REVIEW")
+  is_candidate      Boolean @default(false)
+  candidate_rank    Int?
+  variation_type    String?
+  generation_number Int     @default(1)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  blob                 CfAssetBlob?
+  quality_review       CfQualityReview?
+  children             CfAsset[]           @relation("CfAssetLineage")
+  variations_as_parent CfVariation[]       @relation("CfVariationParent")
+  variations_as_child  CfVariation[]       @relation("CfVariationChild")
+  performance_links    CfPerformanceLink[]
+
+  @@index([project_item_id])
+  @@index([product_id])
+  @@index([status])
+  @@map("cf_assets")
+}
+
+// Image bytes for the db storage provider (durable Postgres storage — the
+// mock-safe default that needs no external bucket / secret). Other providers
+// (s3 / cloudinary) leave this null and use storage_key against the bucket.
+model CfAssetBlob {
+  id         Int      @id @default(autoincrement())
+  asset_id   Int      @unique
+  asset      CfAsset  @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+  data       Bytes
+  created_at DateTime @default(now())
+
+  @@map("cf_asset_blobs")
+}
+
+// Automatic quality evaluation for one asset. Scores 0-100. passed gates
+// whether the asset can be APPROVED without human review.
+model CfQualityReview {
+  id       Int     @id @default(autoincrement())
+  asset_id Int     @unique
+  asset    CfAsset @relation(fields: [asset_id], references: [id], onDelete: Cascade)
+
+  overall_score               Float?
+  product_accuracy_score      Float?
+  identity_score              Float?
+  visual_quality_score        Float?
+  composition_score           Float?
+  product_visibility_score    Float?
+  marketing_score             Float?
+  arabic_text_score           Float?
+  text_readability_score      Float?
+  claim_score                 Float?
+  artifact_score              Float?
+  reference_consistency_score Float?
+  plan_compliance_score       Float?
+
+  passed               Boolean  @default(false)
+  failure_reasons_json String?
+  recommendation       String?
+  review_output_json   String?
+  judge_model          String?
+  created_at           DateTime @default(now())
+
+  @@map("cf_quality_reviews")
+}
+
+// Background generation job — mirrors the AMB clone job pattern (DB row +
+// interval worker) so progress survives a page refresh. status: QUEUED |
+// GENERATING | REVIEWING | REGENERATING | PARTIAL_COMPLETE | COMPLETED |
+// FAILED | CANCELLED
+model CfJob {
+  id         Int       @id @default(autoincrement())
+  uuid       String    @unique @default(uuid())
+  project_id Int
+  project    CfProject @relation(fields: [project_id], references: [id], onDelete: Cascade)
+
+  kind            String    @default("PROJECT_GENERATION")
+  status          String    @default("QUEUED")
+  total_items     Int       @default(0)
+  completed_items Int       @default(0)
+  failed_items    Int       @default(0)
+  progress        Int       @default(0)
+  item_ids_json   String?
+  error           String?
+  started_at      DateTime?
+  finished_at     DateTime?
+  heartbeat_at    DateTime?
+
+  created_by_id Int?
+  created_by    User?    @relation("CfJobCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@index([project_id])
+  @@index([status])
+  @@map("cf_jobs")
+}
+
+// Variation lineage — every variation records its parent, type and
+// generation number. variation_type: SAME_CONCEPT | NEW_HOOK | NEW_COPY |
+// NEW_BACKGROUND | NEW_CAMERA_ANGLE | NEW_ENVIRONMENT | NEW_AUDIENCE |
+// NEW_STYLE | NEW_ANGLE
+model CfVariation {
+  id              Int      @id @default(autoincrement())
+  parent_asset_id Int
+  parent_asset    CfAsset  @relation("CfVariationParent", fields: [parent_asset_id], references: [id], onDelete: Cascade)
+  child_asset_id  Int?
+  child_asset     CfAsset? @relation("CfVariationChild", fields: [child_asset_id], references: [id], onDelete: SetNull)
+  project_id      Int?
+
+  variation_type    String
+  generation_number Int     @default(1)
+  instructions_json String?
+  status            String  @default("PENDING")
+
+  created_by_id Int?
+  created_by    User?    @relation("CfVariationCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at    DateTime @default(now())
+
+  @@index([parent_asset_id])
+  @@map("cf_variations")
+}
+
+// Links a stable Creative ID (asset uuid) to a real Meta ad + its imported
+// performance. Populated later by the learning layer; nothing here is
+// fabricated. One row per (asset, meta ad).
+model CfPerformanceLink {
+  id         Int      @id @default(autoincrement())
+  asset_uuid String
+  asset_id   Int?
+  asset      CfAsset? @relation(fields: [asset_id], references: [id], onDelete: SetNull)
+
+  ad_account_id    String?
+  meta_ad_id       String?
+  meta_creative_id String?
+  campaign_name    String?
+  adset_name       String?
+  ad_name          String?
+  linked_by        String  @default("MANUAL")
+
+  spend       Float?
+  impressions Int?
+  clicks      Int?
+  ctr         Float?
+  cpc         Float?
+  purchases   Int?
+  cpa         Float?
+  cvr         Float?
+  roas        Float?
+  revenue     Float?
+  sample_size Int?
+
+  last_synced_at DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  @@unique([asset_uuid, meta_ad_id])
+  @@index([asset_id])
+  @@map("cf_performance_links")
+}
+
+// Aggregated learning output (which hooks / angles / styles / concepts
+// perform best) with an explicit sample size + confidence — never a
+// causation claim from weak data. dimension: HOOK | ANGLE | STYLE | CONCEPT |
+// FORMAT
+model CfLearningInsight {
+  id            Int      @id @default(autoincrement())
+  dimension     String
+  key           String
+  sample_size   Int      @default(0)
+  confidence    Float?
+  avg_cpa       Float?
+  avg_roas      Float?
+  avg_ctr       Float?
+  win_rate      Float?
+  verdict       String?
+  evidence_json String?
+  computed_at   DateTime @default(now())
+
+  @@unique([dimension, key])
+  @@map("cf_learning_insights")
 }
