@@ -4,7 +4,7 @@
 import { prisma } from '../../prisma.js';
 import { StorageService, parseDataUrl } from './storage.js';
 import { getEffectiveThresholds } from './thresholds.js';
-import { estimateCostUsd, imageUnitCostUsd } from './config.js';
+import { estimateCostUsd, imageUnitCostUsd, imageSizeFor } from './config.js';
 import { PROJECT_TYPES, PRODUCT_LOCK_MODES, STYLE_PRESETS, TEXT_DENSITIES, PEOPLE_RULES, ASPECT_RATIOS } from './taxonomy.js';
 import { buildCreativePlan, recommendImageCount } from './creativeStrategy.js';
 import { getDna } from './productDna.js';
@@ -607,17 +607,21 @@ export async function setAssetStatus(id, status) {
 // ===========================================================================
 // Cost estimate
 // ===========================================================================
-export async function estimateProjectCost({ count, generationMode }) {
+export async function estimateProjectCost({ count, generationMode, aspectRatio = '1:1' }) {
   const th = await getEffectiveThresholds();
   const n = clampInt(count, 1, 1, th.maxImagesPerProject);
+  const size = imageSizeFor(aspectRatio);
+  // one hero best-of-N in PREMIUM + a small allowance for the odd retry
   const premiumExtra = generationMode === 'PREMIUM' && th.allowPremiumMode ? (th.premiumCandidates - 1) : 0;
-  const totalImages = n + premiumExtra;
-  const usd = estimateCostUsd(totalImages);
+  const retryAllowance = Math.ceil(n * ((generationMode === 'PREMIUM' ? th.maxRetriesPremium : th.maxRetriesFast) * 0.35));
+  const totalImages = n + premiumExtra + retryAllowance;
+  const usd = estimateCostUsd(totalImages, size);
   return {
     imageCount: n,
     internalImageCount: totalImages,
     estimatedUsd: usd,
-    available: imageUnitCostUsd() !== null,
+    perImageUsd: imageUnitCostUsd(size),
+    available: imageUnitCostUsd(size) !== null,
     display: usd === null ? 'غير متاحة حاليًا' : `~$${usd}`,
   };
 }

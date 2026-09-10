@@ -104,7 +104,7 @@ router.get('/projects', asyncRoute(async (req, res) => res.json({
 })));
 router.post('/projects', admin, asyncRoute(async (req, res) => res.status(201).json(await P.createProject(req.body || {}, req.user.id))));
 router.patch('/projects/:id', admin, asyncRoute(async (req, res) => res.json(await P.updateProjectSettings(idParam(req.params.id), req.body || {}))));
-router.post('/projects/estimate-cost', asyncRoute(async (req, res) => res.json(await P.estimateProjectCost({ count: req.body?.count, generationMode: req.body?.generationMode }))));
+router.post('/projects/estimate-cost', asyncRoute(async (req, res) => res.json(await P.estimateProjectCost({ count: req.body?.count, generationMode: req.body?.generationMode, aspectRatio: req.body?.aspectRatio }))));
 router.get('/projects/:id', asyncRoute(async (req, res) => res.json(await P.getProjectFull(idParam(req.params.id)))));
 
 router.post('/projects/:id/recommend-count', asyncRoute(async (req, res) => {

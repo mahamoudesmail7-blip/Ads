@@ -47,6 +47,22 @@ export async function createGenerationJob({ projectId, itemIds = null, userId = 
   const active = await prisma.cfJob.findFirst({ where: { project_id: projectId, status: { in: ['QUEUED', 'GENERATING', 'REVIEWING', 'REGENERATING'] } } });
   if (active) { const e = new Error('فيه عملية إنشاء شغالة على المشروع ده بالفعل.'); e.status = 409; e.jobId = active.id; throw e; }
 
+  // Spend guard — stop a runaway before it starts (spec §14 cost control).
+  const th = await getEffectiveThresholds();
+  if (th.dailyImageBudgetUsd > 0) {
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const todays = await prisma.cfGenerationAttempt.aggregate({
+      where: { status: 'SUCCEEDED', created_at: { gte: dayStart } },
+      _sum: { actual_cost: true, estimated_cost: true },
+    });
+    const spent = todays._sum.actual_cost || todays._sum.estimated_cost || 0;
+    if (spent >= th.dailyImageBudgetUsd) {
+      const e = new Error(`تجاوزت ميزانية اليوم للصور (~$${spent.toFixed(2)} من $${th.dailyImageBudgetUsd}). زوّد CF_DAILY_IMAGE_BUDGET أو استنى بكرة.`);
+      e.status = 429;
+      throw e;
+    }
+  }
+
   const job = await prisma.cfJob.create({
     data: {
       project_id: projectId, kind, status: 'QUEUED',
@@ -300,7 +316,7 @@ async function generateItem({ item, project, product, dna, references, continuit
         project_item_id: item.id, attempt_number: attempt, provider: provider.name, model: providerCaps.model || null,
         prompt: built.prompt, prompt_version: attempt, corrective_prompt: corrective,
         provider_request_json: JSON.stringify({ size, n: wantCandidates, references: providerRefs.length, textLayout: layout, textEngine }),
-        status: 'RUNNING', images_requested: wantCandidates, estimated_cost: estimateCostUsd(wantCandidates),
+        status: 'RUNNING', images_requested: wantCandidates, estimated_cost: estimateCostUsd(wantCandidates, size),
       },
     });
 
@@ -316,7 +332,7 @@ async function generateItem({ item, project, product, dna, references, continuit
 
     await prisma.cfGenerationAttempt.update({
       where: { id: attemptRow.id },
-      data: { status: 'SUCCEEDED', duration_ms: gen.durationMs || null, provider_metadata_json: JSON.stringify({ usage: gen.usage || null, raw: gen.raw || null }), actual_cost: estimateCostUsd(gen.images.length) },
+      data: { status: 'SUCCEEDED', duration_ms: gen.durationMs || null, provider_metadata_json: JSON.stringify({ usage: gen.usage || null, raw: gen.raw || null }), actual_cost: estimateCostUsd(gen.images.length, size) },
     });
 
     let attemptBest = null;

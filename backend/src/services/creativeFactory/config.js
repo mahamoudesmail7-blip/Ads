@@ -49,7 +49,11 @@ export function imageSizeFor(aspectRatio) {
   return map[aspectRatio] || map['1:1'];
 }
 export function imageQualityTier() {
-  return clean(process.env.CF_IMAGE_QUALITY) || 'high'; // low | medium | high (gpt-image-1)
+  // Default 'medium': ~$0.04/image on gpt-image-1 vs ~$0.17 for 'high' — 4x
+  // more images per dollar, and 'medium' is genuinely fine for e-commerce ad
+  // creatives. Set CF_IMAGE_QUALITY=high for hero shots.
+  const v = clean(process.env.CF_IMAGE_QUALITY).toLowerCase();
+  return ['low', 'medium', 'high', 'auto'].includes(v) ? v : 'medium';
 }
 
 // ---------------------------------------------------------------------------
@@ -86,15 +90,26 @@ export const CF_DEFAULT_THRESHOLDS = {
   maxReferenceImages: num(process.env.CF_MAX_REFERENCE_IMAGES, 6),
 };
 
-// Per-image price estimate (USD) — used only for the "التكلفة التقديرية"
-// display. If not configured we show "غير متاحة حاليًا" rather than inventing
-// a number.
-export function imageUnitCostUsd() {
-  const v = num(process.env.CF_IMAGE_UNIT_COST_USD, NaN);
-  return Number.isFinite(v) ? v : null;
+// Per-image price estimate (USD) for the "التكلفة التقديرية" display.
+// CF_IMAGE_UNIT_COST_USD overrides everything; otherwise we derive a rough
+// figure from the gpt-image-1 quality tier + output size so the owner sees a
+// real number BEFORE hitting generate (published OpenAI rates: image output
+// $40/1M tokens; a 1024² image is ~272 / ~1056 / ~4160 output tokens for
+// low / medium / high). It is an estimate, not a bill.
+const GPT_IMAGE1_UNIT_USD = {
+  '1024x1024': { low: 0.011, medium: 0.042, high: 0.167, auto: 0.09 },
+  '1024x1536': { low: 0.016, medium: 0.063, high: 0.25, auto: 0.14 },
+  '1536x1024': { low: 0.016, medium: 0.063, high: 0.25, auto: 0.14 },
+};
+export function imageUnitCostUsd(size = '1024x1024') {
+  const explicit = num(process.env.CF_IMAGE_UNIT_COST_USD, NaN);
+  if (Number.isFinite(explicit)) return explicit;
+  if (imageProviderName() !== 'openai') return null;
+  const tier = GPT_IMAGE1_UNIT_USD[size] || GPT_IMAGE1_UNIT_USD['1024x1024'];
+  return tier[imageQualityTier()] ?? tier.medium;
 }
-export function estimateCostUsd(imageCount) {
-  const unit = imageUnitCostUsd();
+export function estimateCostUsd(imageCount, size = '1024x1024') {
+  const unit = imageUnitCostUsd(size);
   if (unit === null) return null;
   return Math.round(unit * Math.max(0, imageCount) * 1000) / 1000;
 }
