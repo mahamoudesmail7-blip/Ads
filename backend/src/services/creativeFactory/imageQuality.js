@@ -72,11 +72,13 @@ export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, 
  "identity_mismatch": false,
  "text_layout_ok": true,
  "failure_code": "OK",
- "failure_reasons": ["سبب مختصر واضح"],
+ "failure_reasons": ["سبب واحد مختصر", "سبب ثانٍ اختياري"],
  "recommendation": "APPROVE | REGENERATE | NEEDS_HUMAN_REVIEW"
-}`,
+}
+
+مهم جدًا: أعد كائن JSON واحد فقط — يبدأ بـ { وينتهي بـ } — بدون أي كلام قبله أو بعده، وبحد أقصى سببين قصيرين في failure_reasons.`,
     images,
-    maxTokens: 950,
+    maxTokens: 1500,
   });
 
   if (!ai.ok || !ai.data?.scores) return neutralReview(ai.reason || 'تعذّر تقييم الصورة آليًا.');
@@ -90,7 +92,10 @@ export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, 
   const looksAi = ai.data.looks_ai_generated === true;
   const failureCode = FAILURE_CODES.includes(ai.data.failure_code) ? ai.data.failure_code : 'OK';
   const productAcc = scores.product_accuracy_score ?? 0;
-  const claimOk = (scores.claim_score ?? 0) >= 95;
+  // Hard claim gate stays strict; the "good enough" path only needs "no
+  // flagged claim problem" (our text engine controls the on-image text now).
+  const claimHardOk = (scores.claim_score ?? 0) >= 95;
+  const claimSoftOk = (scores.claim_score ?? 100) >= 88 && failureCode !== 'CLAIM_ISSUE';
 
   // ---- gate (spec §17) ----
   let passed =
@@ -99,18 +104,20 @@ export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, 
     !identityMismatch &&
     (realism === null || realism >= th.realismThreshold) &&
     !looksAi &&
-    (!th.claimComplianceMustPass || claimOk) &&
+    (!th.claimComplianceMustPass || claimHardOk) &&
     (scores.artifact_score ?? 100) >= 60;
 
-  // ---- "good enough" (spec §18) — product + realism solid, only minor
-  //      aesthetic/composition gap keeping overall a few points under bar ----
+  // ---- "good enough" (spec §18) — product + realism solid, only a minor
+  //      aesthetic/composition gap keeping `overall` a few points under bar.
+  //      Don't chase 96 when the product is right and it looks real. ----
   const goodEnough =
     !passed &&
-    !identityMismatch && !looksAi && claimOk &&
+    !identityMismatch && !looksAi && claimSoftOk &&
     productAcc >= th.productAccuracyThreshold &&
     (realism ?? 0) >= th.realismThreshold &&
     overall !== null && overall >= (th.qualityThreshold - th.goodEnoughMargin) &&
-    ['OK', 'BAD_COMPOSITION', 'MISSING_DETAIL'].includes(failureCode);
+    ['OK', 'BAD_COMPOSITION', 'MISSING_DETAIL'].includes(failureCode) &&
+    (scores.artifact_score ?? 100) >= 65;
   if (goodEnough) passed = true;
 
   return {

@@ -79,6 +79,7 @@ export async function retryFailedItems({ projectId, userId = null }) {
 }
 
 export function kickWorker() {
+  if (process.env.CF_DISABLE_AUTOKICK === '1') return; // offline tests drive processDueJobs() themselves
   setImmediate(() => { processDueJobs().catch((err) => logger.error('CF_JOB_WORKER_KICK_FAILED', { message: err.message })); });
 }
 
@@ -397,7 +398,11 @@ async function failJob(jobId, message) {
     const job = await prisma.cfJob.findUnique({ where: { id: jobId } });
     if (!job) return;
     await prisma.cfJob.update({ where: { id: jobId }, data: { status: 'FAILED', error: (message || 'خطأ غير معروف').slice(0, 500), finished_at: new Date() } });
-    await prisma.cfProjectItem.updateMany({ where: { project_id: job.project_id, status: { in: ['QUEUED', 'GENERATING', 'REGENERATING'] } }, data: { status: 'FAILED' } });
+    const itemIds = safeParse(job.item_ids_json, []);
+    await prisma.cfProjectItem.updateMany({
+      where: { ...(itemIds.length ? { id: { in: itemIds } } : { project_id: job.project_id }), status: { in: ['QUEUED', 'GENERATING', 'REGENERATING', 'PLANNED'] } },
+      data: { status: 'FAILED' },
+    });
     await syncProjectStatus(job.project_id);
   } catch { /* best effort */ }
 }

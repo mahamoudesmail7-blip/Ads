@@ -45,7 +45,9 @@ export async function callAiJson({ system, user, images = [], maxTokens = 1600 }
   return { ok: true, data: parsed, raw };
 }
 
-/** Pulls the first balanced JSON object/array out of a model reply (handles ```json fences + prose). */
+/** Pulls the first balanced JSON object/array out of a model reply (handles
+ *  ```json fences + prose + a TRUNCATED tail — the common failure when the
+ *  judge runs past max_tokens mid-object). */
 export function extractJson(text) {
   if (!text) return undefined;
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
@@ -79,6 +81,55 @@ export function extractJson(text) {
         }
       }
     }
+    // never balanced → salvage a truncated object: close open strings/braces
+    const salvaged = salvageTruncatedJson(c.slice(start));
+    if (salvaged !== undefined) return salvaged;
   }
   return undefined;
+}
+
+/** Best-effort repair of a JSON object/array cut off mid-stream. Walk to the
+ *  last position where a complete value had just been emitted, snapshot the
+ *  open-bracket stack THERE, then slice + auto-close. */
+function salvageTruncatedJson(s) {
+  if (!s || (s[0] !== '{' && s[0] !== '[')) return undefined;
+  const stack = [];
+  let inStr = false;
+  let esc = false;
+  let safe = null; // { pos, stack: [...] } — a clean cut point
+
+  const mark = (pos) => { safe = { pos, stack: stack.slice() }; };
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') { inStr = false; if (looksLikeValueString(s, i)) mark(i + 1); }
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{' || ch === '[') { stack.push(ch === '{' ? '}' : ']'); continue; }
+    if (ch === '}' || ch === ']') { stack.pop(); mark(i + 1); continue; }
+    if (ch === ',') { mark(i); continue; }             // cut right before the comma
+    if (/[0-9tfn]/i.test(ch)) {
+      // number / true / false / null → scan to its end
+      const m = /^(-?\d[\d.eE+\-]*|true|false|null)/.exec(s.slice(i));
+      if (m && isValuePosition(s, i)) { i += m[0].length - 1; mark(i + 1); }
+    }
+  }
+  if (!safe) return undefined;
+  const head = s.slice(0, safe.pos).replace(/[,\s]*$/, '');
+  const closed = head + safe.stack.slice().reverse().join('');
+  try { return JSON.parse(closed); } catch { return undefined; }
+}
+// a closing quote is the end of a VALUE (not a key) when the next non-space
+// char is a comma or a closing bracket.
+function looksLikeValueString(s, quoteIdx) {
+  const rest = s.slice(quoteIdx + 1).replace(/^\s+/, '');
+  return rest === '' || rest[0] === ',' || rest[0] === '}' || rest[0] === ']';
+}
+function isValuePosition(s, i) {
+  const before = s.slice(0, i).replace(/\s+$/, '');
+  return before.endsWith(':') || before.endsWith('[') || before.endsWith(',');
 }

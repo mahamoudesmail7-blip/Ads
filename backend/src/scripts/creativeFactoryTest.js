@@ -11,6 +11,7 @@ import 'dotenv/config';
 process.env.ANTHROPIC_API_KEY = '';
 process.env.OPENAI_API_KEY = '';
 process.env.CF_IMAGE_PROVIDER = 'disabled';
+process.env.CF_DISABLE_AUTOKICK = '1'; // the test pumps processDueJobs() itself — no racing in-process kick
 process.env.CF_STORAGE_PROVIDER = 'db';
 process.env.CF_IMAGE_UNIT_COST_USD = '';
 
@@ -27,6 +28,22 @@ const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓'
 async function throws(name, fn, rx) {
   try { await fn(); ok(name, false, 'did NOT throw'); }
   catch (e) { ok(name, rx ? rx.test(e.message) : true, e.message.slice(0, 80)); }
+}
+const JOB_DONE = ['FAILED', 'PARTIAL_COMPLETE', 'COMPLETED', 'CANCELLED'];
+const ITEM_BUSY = ['QUEUED', 'GENERATING', 'REGENERATING', 'PLANNED'];
+// Drive the worker + wait until the job AND every one of its items reach a
+// terminal state (the in-process kick + our pump can race otherwise).
+async function settleJob(jobId, projectId, tries = 70) {
+  for (let i = 0; i < tries; i++) {
+    await processDueJobs().catch(() => {});
+    const j = await prisma.cfJob.findUnique({ where: { id: jobId } });
+    const items = await prisma.cfProjectItem.findMany({ where: { project_id: projectId }, select: { status: true } });
+    if (j && JOB_DONE.includes(j.status) && items.every((it) => !ITEM_BUSY.includes(it.status))) {
+      await new Promise((r) => setTimeout(r, 150)); // let any trailing write flush
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
 }
 
 // --- minimal but structurally valid PNG with a chosen width/height in IHDR ---
@@ -131,12 +148,7 @@ try {
   ok('job created QUEUED', job.status === 'QUEUED' && job.totalItems === 5);
   await throws('second concurrent job refused', () => createGenerationJob({ projectId, userId: null }), /شغالة/);
 
-  for (let i = 0; i < 12; i++) {
-    await processDueJobs();
-    const j = await prisma.cfJob.findUnique({ where: { id: job.id } });
-    if (['FAILED', 'PARTIAL_COMPLETE', 'COMPLETED', 'CANCELLED'].includes(j.status)) break;
-    await new Promise((r) => setTimeout(r, 120));
-  }
+  await settleJob(job.id, projectId);
   const doneJob = await prisma.cfJob.findUnique({ where: { id: job.id } });
   ok('job ends FAILED (provider off)', doneJob.status === 'FAILED', doneJob.status);
   ok('job error mentions provider not configured', /مزود إنشاء الصور غير متصل|OPENAI_API_KEY/.test(doneJob.error || ''), doneJob.error);
@@ -150,12 +162,7 @@ try {
   // retry
   const retryJob = await retryFailedItems({ projectId, userId: null });
   ok('retry creates a new job', Number.isInteger(retryJob.id) && retryJob.id !== job.id);
-  for (let i = 0; i < 12; i++) {
-    await processDueJobs();
-    const j = await prisma.cfJob.findUnique({ where: { id: retryJob.id } });
-    if (['FAILED', 'PARTIAL_COMPLETE', 'COMPLETED'].includes(j.status)) break;
-    await new Promise((r) => setTimeout(r, 120));
-  }
+  await settleJob(retryJob.id, projectId);
   const jobCount = await prisma.cfJob.count({ where: { project_id: projectId } });
   ok('exactly 2 jobs total (no duplicates per call)', jobCount === 2, `got ${jobCount}`);
   ok('still zero assets after retry', (await prisma.cfAsset.count({ where: { product_id: productId } })) === 0);
