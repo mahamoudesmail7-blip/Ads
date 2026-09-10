@@ -26,7 +26,7 @@ import {
   getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
   getCreativeNode, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
   uploadAdImageFromUrl, uploadAdVideoFromUrl, createCampaign, createAdSet, createAdCreative, createAd,
-  setEntityStatus,
+  setEntityStatus, campaignInsightsRaw,
 } from '../metaGraphClient.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
@@ -229,11 +229,96 @@ export async function listCloneAccounts() {
   return { accounts, selectedAdAccountId: connection.selected_ad_account_id || null };
 }
 
-export async function listSourceCampaigns({ accountId }) {
+// Reporting-period presets for the Clone "choose campaigns" table. Dates are
+// resolved in the ad account's own local calendar (Africa/Cairo default) so
+// "اليوم"/"أمس" line up with what the owner sees in Ads Manager.
+const CLONE_PERIODS = {
+  today: { days: 0, label: 'اليوم' },
+  yesterday: { days: 1, offsetEnd: 1, label: 'أمس' },
+  last7: { days: 6, label: 'آخر 7 أيام' },
+  last14: { days: 13, label: 'آخر 14 يوم' },
+  last30: { days: 29, label: 'آخر 30 يوم' },
+};
+function cairoDateStr(offsetDays = 0, tz = 'Africa/Cairo') {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date()).filter((x) => x.type !== 'literal').map((x) => [x.type, x.value]));
+  const d = new Date(Date.UTC(+p.year, +p.month - 1, +p.day));
+  d.setUTCDate(d.getUTCDate() - offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+export function resolveClonePeriod({ datePreset, since, until } = {}) {
+  if (datePreset === 'custom' && /^\d{4}-\d{2}-\d{2}$/.test(since || '') && /^\d{4}-\d{2}-\d{2}$/.test(until || '')) {
+    return { preset: 'custom', since, until, label: `${since} → ${until}` };
+  }
+  const p = CLONE_PERIODS[datePreset] || CLONE_PERIODS.last7;
+  const endOff = p.offsetEnd || 0;
+  return { preset: datePreset && CLONE_PERIODS[datePreset] ? datePreset : 'last7', since: cairoDateStr(p.days), until: cairoDateStr(endOff), label: p.label };
+}
+
+export async function listSourceCampaigns({ accountId, datePreset, since, until } = {}) {
   if (!accountId) { const e = new Error('accountId مطلوب.'); e.status = 400; throw e; }
   const { token } = await requireConnectedToken();
-  const campaigns = await listCampaignsForClone(token, accountId, { since: daysAgoISO(7), until: todayISO() });
-  return { accountId, campaigns };
+  const period = resolveClonePeriod({ datePreset, since, until });
+  const campaigns = await listCampaignsForClone(token, accountId, { since: period.since, until: period.until });
+  return {
+    accountId,
+    period: { ...period, timezone: 'Africa/Cairo', attribution: 'unified (per-campaign, same as Ads Manager)', actionReportTime: 'conversion', purchaseAction: 'omni_purchase (with fallbacks)' },
+    campaigns: campaigns.map(({ _meta, ...c }) => c),
+  };
+}
+
+/** "مطابقة مع Meta" debug for one campaign — every number the clone table
+ *  shows, plus the raw Meta response it came from, side by side with the
+ *  latest performance snapshot (system store) and the last sync time. */
+export async function campaignMetaMatch({ accountId, campaignId, datePreset, since, until }) {
+  if (!accountId || !campaignId) { const e = new Error('accountId و campaignId مطلوبان.'); e.status = 400; throw e; }
+  const { token } = await requireConnectedToken();
+  const period = resolveClonePeriod({ datePreset, since, until });
+  const raw = await campaignInsightsRaw(token, campaignId, { since: period.since, until: period.until });
+
+  // system store side (may lag by a sync cycle; latest-per-day, not summed)
+  let systemSnapshot = null;
+  let lastSyncAt = null;
+  try {
+    const snaps = await prisma.metaPerformanceSnapshot.findMany({
+      where: { level: 'campaign', campaign_id: campaignId, date_start: { gte: period.since, lte: period.until } },
+      orderBy: { snapshot_at: 'asc' },
+      select: { date_start: true, snapshot_at: true, spend: true, meta_purchases: true },
+    });
+    const latestPerDay = new Map();
+    for (const s of snaps) latestPerDay.set(s.date_start, s);
+    const days = [...latestPerDay.values()];
+    systemSnapshot = days.length ? {
+      days: days.length,
+      spend: Math.round(days.reduce((a, s) => a + (s.spend || 0), 0) * 100) / 100,
+      purchases: days.reduce((a, s) => a + (s.meta_purchases || 0), 0),
+      note: 'latest snapshot per day, summed across the range (never summed intra-day)',
+    } : null;
+    const lastRun = await prisma.ambSyncRun.findFirst({ where: { status: { in: ['SUCCESS', 'PARTIAL'] } }, orderBy: { finished_at: 'desc' }, select: { finished_at: true } });
+    lastSyncAt = lastRun?.finished_at || null;
+  } catch { /* snapshot store optional */ }
+
+  return {
+    campaignId,
+    adAccountId: accountId,
+    period: { ...period, timezone: 'Africa/Cairo' },
+    attribution: 'use_unified_attribution_setting=true (per-campaign — matches Ads Manager)',
+    actionReportTime: 'conversion',
+    meta: {
+      dateStart: raw.dateStart, dateStop: raw.dateStop,
+      rawSpend: raw.spend, rawPurchases: raw.purchases,
+      purchaseActionUsed: raw.purchaseActionUsed,
+      purchaseBreakdown: raw.purchaseBreakdown,
+      allPurchaseActions: raw.allPurchaseActions,
+      cpa: raw.cpa,
+    },
+    system: {
+      cloneTable: { purchases: raw.purchases, spend: raw.spend, cpa: raw.cpa, source: 'live Meta insights (same call as the table)' },
+      snapshotStore: systemSnapshot,
+      lastSyncAt,
+    },
+    matchesAdsManager: 'Set Ads Manager to the same date range + "الأداء" here to compare. Purchases uses omni_purchase (the same de-duplicated total Ads Manager\'s Purchases column shows).',
+  };
 }
 
 /**

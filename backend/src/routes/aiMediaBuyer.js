@@ -258,7 +258,27 @@ router.get('/clone/accounts', asyncRoute(async (req, res) => {
 
 router.get('/clone/campaigns', asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  res.json(await clone.listSourceCampaigns({ accountId: String(req.query.accountId || '') }));
+  res.json(await clone.listSourceCampaigns({
+    accountId: String(req.query.accountId || ''),
+    datePreset: req.query.datePreset ? String(req.query.datePreset) : undefined,
+    since: req.query.since ? String(req.query.since) : undefined,
+    until: req.query.until ? String(req.query.until) : undefined,
+  }));
+}));
+
+// "مطابقة مع Meta" — ADMIN debug: for one source campaign, the exact date
+// range / timezone / attribution / raw purchase action + raw Meta values the
+// clone table is using, plus every purchase-type breakdown so the owner can
+// line it up against Ads Manager.
+router.get('/clone/campaign-meta-match', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.campaignMetaMatch({
+    accountId: String(req.query.accountId || ''),
+    campaignId: String(req.query.campaignId || ''),
+    datePreset: req.query.datePreset ? String(req.query.datePreset) : undefined,
+    since: req.query.since ? String(req.query.since) : undefined,
+    until: req.query.until ? String(req.query.until) : undefined,
+  }));
 }));
 
 router.post('/clone/preview', asyncRoute(async (req, res) => {

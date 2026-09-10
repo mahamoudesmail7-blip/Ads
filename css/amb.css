@@ -535,3 +535,11 @@ body { background: var(--amb-bg); }
 .amb-app .amb-input { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 7px 14px; font-size: 12px; font-weight: 600; color: var(--amb-text); box-shadow: var(--amb-shadow); font-family: inherit; min-width: 200px; }
 .amb-app .amb-input.sm { padding: 6px 13px; }
 .amb-app .amb-input:focus { outline: 2px solid var(--amb-blue-soft, #dbeafe); border-color: var(--amb-blue); }
+
+/* Issue 2 — reporting-period selector for the clone campaigns table */
+.amb-app .amb-clone-period { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 12px 0 2px; }
+.amb-app .amb-clone-period-lbl { font-size: 13px; font-weight: 700; color: var(--amb-text); background: var(--amb-blue-soft, #dbeafe); border-radius: 999px; padding: 6px 14px; }
+.amb-app .amb-clone-period-btns { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.amb-app .amb-clone-period-btns .amb-fbtn { padding: 6px 12px; font-size: 12px; }
+.amb-app .amb-clone-custom { display: inline-flex; align-items: center; gap: 6px; }
+.amb-app .amb-clone-custom .amb-input.sm { min-width: 0; }

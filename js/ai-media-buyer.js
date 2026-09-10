@@ -1926,6 +1926,11 @@ const cloneState = {
   sourceId: null,
   campaigns: null,
   campaignsForAccount: null,
+  campaignsForPeriod: null,  // the datePreset the loaded campaigns were fetched with
+  campPeriod: 'last7',       // today | yesterday | last7 | last14 | last30 | custom  (Issue 2: ONE explicit reporting period)
+  campPeriodLabel: 'آخر 7 أيام',
+  campCustom: { since: '', until: '' },
+  campMeta: null,            // { period, ... } echo from /clone/campaigns
   campFilter: null,          // { status, perf, sort, q, best } — frontend-only table view
   selected: new Set(),
   dests: new Set(),
@@ -2151,6 +2156,25 @@ async function renderCloneFrom(body) {
 // performing" quick filter. Nothing about clone/schedule/approval/preflight/
 // execution logic changes — this only re-orders and hides rows in the view.
 const CLONE_CAMP_FILTER_DEFAULT = () => ({ status: 'all', perf: 'all', sort: 'orders_desc', q: '', best: false });
+
+// Issue 2: the clone table must show ONE explicit reporting period. Same list the
+// backend accepts (resolveClonePeriod). Default = last7 (آخر 7 أيام).
+const CLONE_PERIODS = [
+  { k: 'today',    label: 'اليوم' },
+  { k: 'yesterday',label: 'أمس' },
+  { k: 'last7',    label: 'آخر 7 أيام' },
+  { k: 'last14',   label: 'آخر 14 يوم' },
+  { k: 'last30',   label: 'آخر 30 يوم' },
+  { k: 'custom',   label: 'مخصص' },
+];
+const clonePeriodLabel = (k) => (CLONE_PERIODS.find((p) => p.k === k) || CLONE_PERIODS[2]).label;
+const clonePeriodQS = () => {
+  const k = cloneState.campPeriod || 'last7';
+  if (k === 'custom' && cloneState.campCustom?.since && cloneState.campCustom?.until) {
+    return `&datePreset=custom&since=${encodeURIComponent(cloneState.campCustom.since)}&until=${encodeURIComponent(cloneState.campCustom.until)}`;
+  }
+  return `&datePreset=${encodeURIComponent(k === 'custom' ? 'last7' : k)}`;
+};
 const cloneCampNum = (v) => { if (v === null || v === undefined || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
 const cloneCampIsActive = (c) => c.status === 'ACTIVE';
 const cloneCampPurch = (c) => cloneCampNum(c.purchases) || 0;
@@ -2183,15 +2207,26 @@ function cloneCampView(list, f) {
 }
 
 async function renderCloneCampaigns(body) {
-  if (cloneState.campaignsForAccount !== cloneState.sourceId) {
-    const r = await api.get(`/api/ai-media-buyer/clone/campaigns?accountId=${encodeURIComponent(cloneState.sourceId)}`);
+  const periodKey = cloneState.campPeriod || 'last7';
+  const customReady = periodKey !== 'custom' || (cloneState.campCustom?.since && cloneState.campCustom?.until);
+  const staleAccount = cloneState.campaignsForAccount !== cloneState.sourceId;
+  const stalePeriod = customReady && cloneState.campaignsForPeriod !== (periodKey === 'custom'
+    ? `custom:${cloneState.campCustom.since}:${cloneState.campCustom.until}` : periodKey);
+  if (staleAccount || stalePeriod) {
+    body.innerHTML = `${cloneStepper()}<div class="amb-panel"><div class="amb-empty">بنحمّل بيانات الأداء لفترة «${E(clonePeriodLabel(periodKey))}»…</div></div>`;
+    const r = await api.get(`/api/ai-media-buyer/clone/campaigns?accountId=${encodeURIComponent(cloneState.sourceId)}${clonePeriodQS()}`);
     cloneState.campaigns = r.campaigns || [];
+    cloneState.campMeta = r.period || null;
+    cloneState.campPeriodLabel = r.period?.label || clonePeriodLabel(periodKey);
     cloneState.campaignsForAccount = cloneState.sourceId;
-    cloneState.campFilter = CLONE_CAMP_FILTER_DEFAULT();
+    cloneState.campaignsForPeriod = periodKey === 'custom'
+      ? `custom:${cloneState.campCustom.since}:${cloneState.campCustom.until}` : periodKey;
+    if (staleAccount) cloneState.campFilter = CLONE_CAMP_FILTER_DEFAULT();
   }
   if (!cloneState.campFilter) cloneState.campFilter = CLONE_CAMP_FILTER_DEFAULT();
   const list = cloneState.campaigns || [];
   const f = cloneState.campFilter;
+  const perfLabel = cloneState.campPeriodLabel || clonePeriodLabel(periodKey);
   const srcName = cloneState.accounts?.find((a) => a.id === cloneState.sourceId)?.name || cloneState.sourceId;
 
   const active = list.filter(cloneCampIsActive).length;
@@ -2205,6 +2240,20 @@ async function renderCloneCampaigns(body) {
     <div class="amb-panel">
       <div class="section-title" style="margin-top:0;">اختر الحملات من «${E(srcName)}»</div>
       <div class="faint" style="font-size:12px; margin-bottom:10px;">اختر يدويًا الحملات اللي عايز تنسخها — مفيش أي حاجة بتتنسخ تلقائيًا. <b>للاختبار ابدأ بحملات متوقفة (Paused).</b></div>
+
+      <div class="amb-clone-period">
+        <span class="amb-clone-period-lbl">الأداء: <b>${E(perfLabel)}</b></span>
+        <span class="amb-clone-period-btns">
+          ${CLONE_PERIODS.map((p) => `<button class="amb-fbtn ${periodKey === p.k ? 'active' : ''}" data-cperiod="${p.k}">${E(p.label)}</button>`).join('')}
+        </span>
+        ${periodKey === 'custom' ? `<span class="amb-clone-custom">
+          <input type="date" id="ambClonePerFrom" class="amb-input sm" value="${E(cloneState.campCustom.since || '')}" />
+          <span class="faint">→</span>
+          <input type="date" id="ambClonePerTo" class="amb-input sm" value="${E(cloneState.campCustom.until || '')}" />
+          <button class="amb-btn sm" id="ambClonePerApply">تطبيق</button>
+        </span>` : ''}
+      </div>
+      <div class="faint" style="font-size:11px; margin:-2px 0 10px;">الشراء + الصرف + CPA كلهم من نفس الفترة والتوقيت (Africa/Cairo) ونافذة الإسناد الموحّدة — نفس أعمدة Ads Manager.</div>
 
       <div class="amb-clone-summary">
         <span>شغّال: <b>${active}</b></span><span>متوقف: <b>${paused}</b></span><span>جابت أوردرات: <b>${withOrders}</b></span>
@@ -2239,8 +2288,9 @@ async function renderCloneCampaigns(body) {
     const view = cloneCampView(list, cloneState.campFilter);
     const visIds = new Set(view.map((c) => c.id));
     const wrap = $('ambCloneCampWrap');
+    const matchCol = state.isAdmin;
     wrap.innerHTML = view.length ? `<div class="table-wrap"><table class="data">
-      <thead><tr><th></th><th>الحملة</th><th>ID</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>الصرف (7ي)</th><th>شراء</th><th>CPA</th><th>مجموعات</th><th>إعلانات</th></tr></thead>
+      <thead><tr><th></th><th>الحملة</th><th>ID</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>الصرف (${E(perfLabel)})</th><th>شراء</th><th>CPA</th><th>مجموعات</th><th>إعلانات</th>${matchCol ? '<th></th>' : ''}</tr></thead>
       <tbody>${view.map((c) => `<tr class="${cloneState.selected.has(c.id) ? 'amb-row-sel' : ''}">
         <td><input type="checkbox" data-camp="${E(c.id)}" ${cloneState.selected.has(c.id) ? 'checked' : ''} /></td>
         <td><b>${E(c.name)}</b></td>
@@ -2253,8 +2303,11 @@ async function renderCloneCampaigns(body) {
         <td>${c.cpa == null ? '—' : fmtEGP(c.cpa)}</td>
         <td>${fmtNum(c.adsetCount)}</td>
         <td>${fmtNum(c.adCount)}</td>
+        ${matchCol ? `<td><button class="amb-btn sm ghost" data-metamatch="${E(c.id)}" title="مطابقة مع Meta">مطابقة مع Meta</button></td>` : ''}
       </tr>`).join('')}</tbody>
-    </table></div>` : '<div class="amb-empty">مفيش حملات مطابقة للفلتر.</div>';
+    </table></div><div id="ambCloneMetaMatch"></div>` : '<div class="amb-empty">مفيش حملات مطابقة للفلتر.</div>';
+
+    wrap.querySelectorAll('[data-metamatch]').forEach((b) => { b.onclick = () => cloneMetaMatch(b.dataset.metamatch); });
 
     const hiddenSel = [...cloneState.selected].filter((id) => !visIds.has(id) && list.some((c) => c.id === id)).length;
     const cnt = $('ambCloneSelCount');
@@ -2273,6 +2326,26 @@ async function renderCloneCampaigns(body) {
   };
 
   const setF = (patch) => { Object.assign(cloneState.campFilter, patch); renderCloneCampaigns(body); };
+
+  // reporting-period selector (Issue 2) — changes the date range for شراء / صرف / CPA, keeps the current selection
+  body.querySelectorAll('[data-cperiod]').forEach((b) => {
+    b.onclick = () => {
+      const k = b.dataset.cperiod;
+      if (k === cloneState.campPeriod) return;
+      cloneState.campPeriod = k;
+      renderCloneCampaigns(body); // stale-check refetches for a real preset; 'custom' just reveals the date inputs
+    };
+  });
+  const applyBtn = $('ambClonePerApply');
+  if (applyBtn) applyBtn.onclick = () => {
+    const s = $('ambClonePerFrom')?.value || '';
+    const u = $('ambClonePerTo')?.value || '';
+    if (!s || !u) { UI.toast('اختر تاريخ البداية والنهاية.', 'error'); return; }
+    if (s > u) { UI.toast('تاريخ البداية بعد تاريخ النهاية.', 'error'); return; }
+    cloneState.campCustom = { since: s, until: u };
+    cloneState.campaignsForPeriod = null;
+    renderCloneCampaigns(body);
+  };
 
   body.querySelectorAll('[data-cf]').forEach((b) => {
     b.onclick = () => {
@@ -2297,6 +2370,56 @@ async function renderCloneCampaigns(body) {
 
   paint();
   wireCloneNav(1, () => { if (cloneState.selected.size) { cloneState.step = 3; renderCloneStep(); } });
+}
+
+// "مطابقة مع Meta" (ADMIN debug) — for one source campaign, show the exact
+// Campaign ID / Ad Account ID / date range / timezone / attribution / raw
+// purchase action + raw Meta purchases & spend the clone table is using, next
+// to the system snapshot store and last sync time, so the owner can line it up
+// against Ads Manager.
+async function cloneMetaMatch(campaignId) {
+  const mount = $('ambCloneMetaMatch');
+  if (!mount) return;
+  const camp = (cloneState.campaigns || []).find((c) => c.id === campaignId);
+  mount.innerHTML = `<div class="amb-panel" style="margin-top:12px;"><div class="faint">بنجيب المطابقة من Meta لـ «${E(camp?.name || campaignId)}»…</div></div>`;
+  mount.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  let d;
+  try {
+    d = await api.get(`/api/ai-media-buyer/clone/campaign-meta-match?accountId=${encodeURIComponent(cloneState.sourceId)}&campaignId=${encodeURIComponent(campaignId)}${clonePeriodQS()}`);
+  } catch (e) {
+    mount.innerHTML = `<div class="amb-panel" style="margin-top:12px;"><div class="amb-empty">فشل المطابقة: ${E(e.message)}</div></div>`;
+    return;
+  }
+  const m = d.meta || {};
+  const sys = d.system || {};
+  const snap = sys.snapshotStore;
+  const row = (k, v) => `<div class="amb-derived-row"><span>${E(k)}</span><b>${v}</b></div>`;
+  const brk = m.purchaseBreakdown && Object.keys(m.purchaseBreakdown).length
+    ? Object.entries(m.purchaseBreakdown).map(([k, v]) => `${E(k)}=${fmtNum(v)}`).join(' · ') : '—';
+  mount.innerHTML = `<div class="amb-panel" style="margin-top:12px;">
+    <div class="section-title" style="margin-top:0;">مطابقة مع Meta — «${E(camp?.name || campaignId)}»
+      <button class="amb-btn sm ghost" id="ambMetaMatchClose" style="float:left;">إغلاق</button></div>
+    <div class="faint" style="font-size:12px; margin-bottom:8px;">اضبط Ads Manager على نفس الفترة والعمود «Purchases» — المفروض يطابق <b>Raw Meta Purchases</b> و<b>Raw Meta Spend</b> تحت.</div>
+    ${row('Campaign ID', `<span class="mono">${E(d.campaignId)}</span>`)}
+    ${row('Ad Account ID', `<span class="mono">${E(d.adAccountId)}</span>`)}
+    ${row('الفترة', `${E(d.period?.label || '')} — ${E(m.dateStart || d.period?.since || '')} → ${E(m.dateStop || d.period?.until || '')}`)}
+    ${row('التوقيت', E(d.period?.timezone || 'Africa/Cairo'))}
+    ${row('نافذة الإسناد', E(d.attribution || ''))}
+    ${row('action_report_time', E(d.actionReportTime || 'conversion'))}
+    ${row('Raw purchase action used', `<span class="mono">${E(m.purchaseActionUsed || '—')}</span>`)}
+    ${row('Raw Meta Purchases', fmtNum(m.rawPurchases))}
+    ${row('Raw Meta Spend', m.rawSpend == null ? '—' : fmtEGP(m.rawSpend))}
+    ${row('CPA', m.cpa == null ? '—' : fmtEGP(m.cpa))}
+    ${row('كل أنواع الشراء (raw)', `<span style="font-size:11px;">${brk}</span>`)}
+    <hr style="border:none;border-top:1px solid var(--line,#333);margin:10px 0;" />
+    ${row('System — جدول النسخ (Purchases)', fmtNum(sys.cloneTable?.purchases))}
+    ${row('System — جدول النسخ (Spend)', sys.cloneTable?.spend == null ? '—' : fmtEGP(sys.cloneTable.spend))}
+    ${row('System — مخزن اللقطات (Purchases)', snap ? fmtNum(snap.purchases) : '— (لا توجد لقطات لهذه الفترة)')}
+    ${row('System — مخزن اللقطات (Spend)', snap ? fmtEGP(snap.spend) : '—')}
+    ${snap ? `<div class="faint" style="font-size:11px;">${E(snap.note || '')} · ${fmtNum(snap.days)} يوم</div>` : ''}
+    ${row('آخر مزامنة', d.system?.lastSyncAt ? new Date(d.system.lastSyncAt).toLocaleString('ar-EG') : '—')}
+  </div>`;
+  const cl = $('ambMetaMatchClose'); if (cl) cl.onclick = () => { mount.innerHTML = ''; };
 }
 
 // ---- Step 3 · TO ACCOUNT(S) ----

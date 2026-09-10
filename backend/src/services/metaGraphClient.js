@@ -609,24 +609,31 @@ export async function listCampaignsForClone(token, adAccountId, { since, until }
   for (const r of adRows) adCount.set(r.campaign_id, (adCount.get(r.campaign_id) || 0) + 1);
 
   // Insights per campaign for the requested window (best-effort — an account
-  // with zero delivery just returns nothing, which is fine).
+  // with zero delivery just returns nothing, which is fine). ONE call, ONE
+  // time_range, ONE attribution setting → spend + purchases + CPA are always
+  // from the same period/timezone/attribution.
+  //   • use_unified_attribution_setting: matches each campaign's own
+  //     attribution window, i.e. exactly what Ads Manager's columns show.
+  //   • action_report_time: conversion — attribute a purchase to when it
+  //     happened (Ads Manager default), not to the impression time.
   let insightsById = new Map();
+  let attributionUsed = 'unified';
   if (since && until) {
     try {
       const rows = await graphList(`/${adAccountId}/insights`, {
         level: 'campaign', time_range: { since, until },
-        fields: 'campaign_id,spend,actions,cost_per_action_type', limit: 500,
+        use_unified_attribution_setting: 'true', action_report_time: 'conversion',
+        fields: 'campaign_id,spend,actions,cost_per_action_type,date_start,date_stop',
       }, token);
       insightsById = new Map(rows.map((r) => [r.campaign_id, r]));
     } catch { /* leave metrics null */ }
   }
 
-  const PURCHASE = new Set(['omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase', 'onsite_conversion.purchase']);
   return campaigns.map((c) => {
     const ins = insightsById.get(c.id);
     const spend = ins ? Number(ins.spend) || 0 : null;
-    const pAction = ins?.actions?.find((a) => PURCHASE.has(a.action_type));
-    const purchases = pAction ? Math.round(Number(pAction.value) || 0) : null;
+    const pk = pickPurchases(ins?.actions);
+    const purchases = pk.value;
     return {
       id: c.id,
       name: c.name || c.id,
@@ -644,8 +651,68 @@ export async function listCampaignsForClone(token, adAccountId, { since, until }
       spend,
       purchases,
       cpa: spend != null && purchases ? spend / purchases : null,
+      // for the "مطابقة مع Meta" debug panel — never shown on the row itself
+      _meta: ins ? {
+        dateStart: ins.date_start || since, dateStop: ins.date_stop || until,
+        attribution: attributionUsed, actionReportTime: 'conversion',
+        purchaseActionUsed: pk.actionType,
+        rawPurchases: pk.value,
+        rawActionValues: pk.all,
+        rawSpend: spend,
+      } : null,
     };
   });
+}
+
+// Ads Manager's "Purchases" column is `omni_purchase` (the de-duplicated
+// cross-surface total = pixel + on-Meta shop). Prefer it explicitly; fall
+// back through the other purchase action types in a fixed order so the value
+// is deterministic (never "whichever the array happened to list first").
+const PURCHASE_PRIORITY = [
+  'omni_purchase',
+  'purchase',
+  'offsite_conversion.fb_pixel_purchase',
+  'onsite_web_purchase',
+  'onsite_conversion.purchase',
+  'web_in_store_purchase',
+];
+export function pickPurchases(actions) {
+  if (!Array.isArray(actions)) return { value: null, actionType: null, all: {} };
+  const map = new Map(actions.map((a) => [a.action_type, Math.round(Number(a.value) || 0)]));
+  const all = {};
+  for (const t of PURCHASE_PRIORITY) if (map.has(t)) all[t] = map.get(t);
+  for (const t of PURCHASE_PRIORITY) {
+    if (map.has(t)) return { value: map.get(t), actionType: t, all };
+  }
+  return { value: null, actionType: null, all };
+}
+
+/** Raw insights for ONE campaign + every purchase-type breakdown — powers the
+ *  "مطابقة مع Meta" debug panel. Same params the clone table uses. */
+export async function campaignInsightsRaw(token, campaignId, { since, until }) {
+  const rows = await graphList(`/${campaignId}/insights`, {
+    level: 'campaign', time_range: { since, until },
+    use_unified_attribution_setting: 'true', action_report_time: 'conversion',
+    fields: 'campaign_id,campaign_name,spend,impressions,clicks,actions,action_values,cost_per_action_type,date_start,date_stop',
+  }, token).catch((e) => { throw new Error(`Meta insights: ${e.message}`); });
+  const row = rows[0] || null;
+  const pk = pickPurchases(row?.actions);
+  const allPurchaseActions = (row?.actions || [])
+    .filter((a) => /purchase/i.test(a.action_type))
+    .map((a) => ({ action_type: a.action_type, value: Math.round(Number(a.value) || 0) }));
+  return {
+    found: !!row,
+    dateStart: row?.date_start || since,
+    dateStop: row?.date_stop || until,
+    spend: row ? Number(row.spend) || 0 : null,
+    impressions: row ? Number(row.impressions) || 0 : null,
+    clicks: row ? Number(row.clicks) || 0 : null,
+    purchaseActionUsed: pk.actionType,
+    purchases: pk.value,
+    purchaseBreakdown: pk.all,
+    allPurchaseActions,
+    cpa: row && pk.value ? (Number(row.spend) || 0) / pk.value : null,
+  };
 }
 
 /** Full campaign node (every transferable field) for the deep clone. */
