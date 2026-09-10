@@ -523,3 +523,15 @@ body { background: var(--amb-bg); }
 .amb-scale-slot .sh { font-size: 12px; font-weight: 800; color: var(--amb-text); margin-bottom: 6px; }
 .amb-scale-slot .slot-ads { margin-top: 6px; }
 .amb-scale-sumline { font-size: 12px; color: var(--amb-text-dim); padding: 2px 0; }
+
+/* Clone → Choose Campaigns: frontend filter/sort bar */
+.amb-app .amb-clone-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 12px 0 4px; }
+.amb-app .amb-clone-filters .amb-fgrp { display: inline-flex; align-items: center; gap: 5px; }
+.amb-app .amb-clone-filters .amb-fgrp .fl { font-size: 11px; font-weight: 700; color: var(--amb-text-faint); margin-inline-end: 2px; }
+.amb-app .amb-clone-filters .amb-fbtn { padding: 6px 12px; font-size: 12px; }
+.amb-app .amb-clone-filters .amb-fbtn.best { border-color: var(--amb-amber); color: #9a6a00; }
+.amb-app .amb-clone-filters .amb-fbtn.best.active { background: var(--amb-amber); border-color: var(--amb-amber); color: #241a00; }
+.amb-app .amb-clone-filters .amb-select.sm { padding: 6px 12px; font-size: 12px; }
+.amb-app .amb-input { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 7px 14px; font-size: 12px; font-weight: 600; color: var(--amb-text); box-shadow: var(--amb-shadow); font-family: inherit; min-width: 200px; }
+.amb-app .amb-input.sm { padding: 6px 13px; }
+.amb-app .amb-input:focus { outline: 2px solid var(--amb-blue-soft, #dbeafe); border-color: var(--amb-blue); }

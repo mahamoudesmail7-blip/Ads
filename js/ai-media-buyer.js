@@ -1926,6 +1926,7 @@ const cloneState = {
   sourceId: null,
   campaigns: null,
   campaignsForAccount: null,
+  campFilter: null,          // { status, perf, sort, q, best } — frontend-only table view
   selected: new Set(),
   dests: new Set(),
   execMode: 'RUN_NOW',       // 'RUN_NOW' | 'SCHEDULE' — the ONLY scheduling control
@@ -2144,53 +2145,157 @@ async function renderCloneFrom(body) {
 }
 
 // ---- Step 2 · SELECT CAMPAIGNS ----
+// ---- Step 2 · CHOOSE CAMPAIGNS ----
+// Frontend-only table UX: smart default sort (ACTIVE first, then purchases
+// DESC, then CPA ASC), status/perf filters, name search, and a "best
+// performing" quick filter. Nothing about clone/schedule/approval/preflight/
+// execution logic changes — this only re-orders and hides rows in the view.
+const CLONE_CAMP_FILTER_DEFAULT = () => ({ status: 'all', perf: 'all', sort: 'orders_desc', q: '', best: false });
+const cloneCampNum = (v) => { if (v === null || v === undefined || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
+const cloneCampIsActive = (c) => c.status === 'ACTIVE';
+const cloneCampPurch = (c) => cloneCampNum(c.purchases) || 0;
+
+function cloneCampView(list, f) {
+  const q = (f.q || '').trim().toLowerCase();
+  const filtered = (list || []).filter((c) => {
+    if (q && !String(c.name || '').toLowerCase().includes(q)) return false;
+    if (f.best) return cloneCampIsActive(c) && cloneCampPurch(c) > 0;
+    if (f.status === 'active' && !cloneCampIsActive(c)) return false;
+    if (f.status === 'paused' && cloneCampIsActive(c)) return false; // "paused" = anything not ACTIVE
+    if (f.perf === 'orders' && !(cloneCampPurch(c) > 0)) return false;
+    if (f.perf === 'noorders' && cloneCampPurch(c) > 0) return false;
+    return true;
+  });
+  const cpa = (c) => { const n = cloneCampNum(c.cpa); return n == null ? Infinity : n; };
+  const spend = (c) => { const n = cloneCampNum(c.spend); return n == null ? -1 : n; };
+  const grp = (c) => (cloneCampIsActive(c) ? 0 : 1); // ACTIVE always above PAUSED
+  const byOrders = (dir) => (a, b) => grp(a) - grp(b) || dir * (cloneCampPurch(b) - cloneCampPurch(a)) || cpa(a) - cpa(b);
+  const S = {
+    orders_desc: byOrders(1),
+    orders_asc: byOrders(-1),
+    cpa_asc: (a, b) => grp(a) - grp(b) || cpa(a) - cpa(b) || cloneCampPurch(b) - cloneCampPurch(a),
+    spend_desc: (a, b) => grp(a) - grp(b) || spend(b) - spend(a) || cloneCampPurch(b) - cloneCampPurch(a),
+  };
+  // "best performing" quick filter: purchases DESC, ties broken by CPA ASC (already ACTIVE-only)
+  const bestCmp = (a, b) => cloneCampPurch(b) - cloneCampPurch(a) || cpa(a) - cpa(b);
+  filtered.sort(f.best ? bestCmp : (S[f.sort] || S.orders_desc));
+  return filtered;
+}
+
 async function renderCloneCampaigns(body) {
   if (cloneState.campaignsForAccount !== cloneState.sourceId) {
     const r = await api.get(`/api/ai-media-buyer/clone/campaigns?accountId=${encodeURIComponent(cloneState.sourceId)}`);
     cloneState.campaigns = r.campaigns || [];
     cloneState.campaignsForAccount = cloneState.sourceId;
+    cloneState.campFilter = CLONE_CAMP_FILTER_DEFAULT();
   }
-  const list = cloneState.campaigns;
+  if (!cloneState.campFilter) cloneState.campFilter = CLONE_CAMP_FILTER_DEFAULT();
+  const list = cloneState.campaigns || [];
+  const f = cloneState.campFilter;
   const srcName = cloneState.accounts?.find((a) => a.id === cloneState.sourceId)?.name || cloneState.sourceId;
+
+  const active = list.filter(cloneCampIsActive).length;
+  const paused = list.length - active;
+  const withOrders = list.filter((c) => cloneCampPurch(c) > 0).length;
+
+  const pill = (group, val, label) => `<button class="amb-fbtn ${f[group] === val ? 'active' : ''}" data-cf="${group}" data-cfv="${val}">${E(label)}</button>`;
+
   body.innerHTML = `
     ${cloneStepper()}
     <div class="amb-panel">
       <div class="section-title" style="margin-top:0;">اختر الحملات من «${E(srcName)}»</div>
       <div class="faint" style="font-size:12px; margin-bottom:10px;">اختر يدويًا الحملات اللي عايز تنسخها — مفيش أي حاجة بتتنسخ تلقائيًا. <b>للاختبار ابدأ بحملات متوقفة (Paused).</b></div>
-      <div class="toolbar" style="margin-bottom:10px;">
+
+      <div class="amb-clone-summary">
+        <span>شغّال: <b>${active}</b></span><span>متوقف: <b>${paused}</b></span><span>جابت أوردرات: <b>${withOrders}</b></span>
+      </div>
+
+      <div class="amb-clone-filters">
+        <button class="amb-fbtn best ${f.best ? 'active' : ''}" data-cf="best">🔥 الأفضل أداءً</button>
+        <span class="amb-fgrp"><span class="fl">الحالة</span>${pill('status', 'all', 'الكل')}${pill('status', 'active', 'شغال')}${pill('status', 'paused', 'متوقف')}</span>
+        <span class="amb-fgrp"><span class="fl">الأداء</span>${pill('perf', 'all', 'كل الحملات')}${pill('perf', 'orders', 'جابت أوردرات')}${pill('perf', 'noorders', 'بدون أوردرات')}</span>
+        <span class="amb-fgrp"><span class="fl">ترتيب</span>
+          <select id="ambCloneSort" class="amb-select sm">
+            <option value="orders_desc" ${f.sort === 'orders_desc' ? 'selected' : ''}>الأوردرات: الأعلى أولاً</option>
+            <option value="orders_asc" ${f.sort === 'orders_asc' ? 'selected' : ''}>الأوردرات: الأقل أولاً</option>
+            <option value="cpa_asc" ${f.sort === 'cpa_asc' ? 'selected' : ''}>CPA: الأقل أولاً</option>
+            <option value="spend_desc" ${f.sort === 'spend_desc' ? 'selected' : ''}>الصرف: الأعلى أولاً</option>
+          </select>
+        </span>
+        <input id="ambCloneSearch" class="amb-input sm" type="search" placeholder="ابحث باسم الحملة..." value="${E(f.q)}" />
+      </div>
+
+      <div class="toolbar" style="margin:10px 0;">
         <button class="amb-btn sm" id="ambCloneSelAll">تحديد الكل</button>
         <button class="amb-btn sm ghost" id="ambCloneSelNone">إلغاء التحديد</button>
-        <span class="faint" style="font-size:12px;">${cloneState.selected.size} / ${list.length} محددة</span>
+        <span class="faint" id="ambCloneSelCount" style="font-size:12px;"></span>
       </div>
-      ${list.length ? `<div class="table-wrap"><table class="data">
-        <thead><tr><th></th><th>الحملة</th><th>ID</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>الصرف (7ي)</th><th>شراء</th><th>CPA</th><th>مجموعات</th><th>إعلانات</th></tr></thead>
-        <tbody>${list.map((c) => `<tr class="${cloneState.selected.has(c.id) ? 'amb-row-sel' : ''}">
-          <td><input type="checkbox" data-camp="${E(c.id)}" ${cloneState.selected.has(c.id) ? 'checked' : ''} /></td>
-          <td><b>${E(c.name)}</b></td>
-          <td class="mono faint" style="font-size:11px;">${E(c.id)}</td>
-          <td>${badge(META_STATUS_AR[c.status] || c.status || '—', c.status === 'ACTIVE' ? 'blue' : 'gray')}</td>
-          <td class="faint" style="font-size:12px;">${E(c.objective || '—')}</td>
-          <td>${c.dailyBudgetMinor ? fmtEGP(c.dailyBudgetMinor / 100) + '/يوم' : c.lifetimeBudgetMinor ? fmtEGP(c.lifetimeBudgetMinor / 100) : `<span class="faint">${E(c.budgetMode)}</span>`}</td>
-          <td>${c.spend == null ? '—' : fmtEGP(c.spend)}</td>
-          <td>${fmtNum(c.purchases)}</td>
-          <td>${c.cpa == null ? '—' : fmtEGP(c.cpa)}</td>
-          <td>${fmtNum(c.adsetCount)}</td>
-          <td>${fmtNum(c.adCount)}</td>
-        </tr>`).join('')}</tbody>
-      </table></div>` : '<div class="amb-empty">مفيش حملات في الحساب ده.</div>'}
+
+      <div id="ambCloneCampWrap"></div>
     </div>
     ${cloneNav(1, 3, 'التالي: حسابات الوجهة', cloneState.selected.size > 0)}`;
-  const refresh = () => renderCloneStep();
-  $('ambCloneSelAll').onclick = () => { cloneState.selected = new Set(list.map((c) => c.id)); refresh(); };
-  $('ambCloneSelNone').onclick = () => { cloneState.selected = new Set(); refresh(); };
-  body.querySelectorAll('[data-camp]').forEach((cb) => {
-    cb.onchange = () => {
-      if (cb.checked) cloneState.selected.add(cb.dataset.camp); else cloneState.selected.delete(cb.dataset.camp);
-      cb.closest('tr').classList.toggle('amb-row-sel', cb.checked);
-      const n = $('ambCloneNext'); if (n) n.disabled = cloneState.selected.size === 0;
-      const cnt = body.querySelector('.toolbar .faint'); if (cnt) cnt.textContent = `${cloneState.selected.size} / ${list.length} محددة`;
+
+  const paint = () => {
+    const view = cloneCampView(list, cloneState.campFilter);
+    const visIds = new Set(view.map((c) => c.id));
+    const wrap = $('ambCloneCampWrap');
+    wrap.innerHTML = view.length ? `<div class="table-wrap"><table class="data">
+      <thead><tr><th></th><th>الحملة</th><th>ID</th><th>الحالة</th><th>الهدف</th><th>الميزانية</th><th>الصرف (7ي)</th><th>شراء</th><th>CPA</th><th>مجموعات</th><th>إعلانات</th></tr></thead>
+      <tbody>${view.map((c) => `<tr class="${cloneState.selected.has(c.id) ? 'amb-row-sel' : ''}">
+        <td><input type="checkbox" data-camp="${E(c.id)}" ${cloneState.selected.has(c.id) ? 'checked' : ''} /></td>
+        <td><b>${E(c.name)}</b></td>
+        <td class="mono faint" style="font-size:11px;">${E(c.id)}</td>
+        <td>${badge(META_STATUS_AR[c.status] || c.status || '—', c.status === 'ACTIVE' ? 'blue' : 'gray')}</td>
+        <td class="faint" style="font-size:12px;">${E(c.objective || '—')}</td>
+        <td>${c.dailyBudgetMinor ? fmtEGP(c.dailyBudgetMinor / 100) + '/يوم' : c.lifetimeBudgetMinor ? fmtEGP(c.lifetimeBudgetMinor / 100) : `<span class="faint">${E(c.budgetMode)}</span>`}</td>
+        <td>${c.spend == null ? '—' : fmtEGP(c.spend)}</td>
+        <td>${fmtNum(c.purchases)}</td>
+        <td>${c.cpa == null ? '—' : fmtEGP(c.cpa)}</td>
+        <td>${fmtNum(c.adsetCount)}</td>
+        <td>${fmtNum(c.adCount)}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>` : '<div class="amb-empty">مفيش حملات مطابقة للفلتر.</div>';
+
+    const hiddenSel = [...cloneState.selected].filter((id) => !visIds.has(id) && list.some((c) => c.id === id)).length;
+    const cnt = $('ambCloneSelCount');
+    if (cnt) cnt.textContent = `${cloneState.selected.size} محددة${hiddenSel ? ` (منها ${hiddenSel} مخفية بالفلتر)` : ''} · ${view.length} ظاهرة من ${list.length}`;
+    const nx = $('ambCloneNext'); if (nx) nx.disabled = cloneState.selected.size === 0;
+
+    wrap.querySelectorAll('[data-camp]').forEach((cb) => {
+      cb.onchange = () => {
+        if (cb.checked) cloneState.selected.add(cb.dataset.camp); else cloneState.selected.delete(cb.dataset.camp);
+        cb.closest('tr').classList.toggle('amb-row-sel', cb.checked);
+        paint();
+      };
+    });
+    // stash the current visible ids for the toolbar buttons
+    paint._visible = view.map((c) => c.id);
+  };
+
+  const setF = (patch) => { Object.assign(cloneState.campFilter, patch); renderCloneCampaigns(body); };
+
+  body.querySelectorAll('[data-cf]').forEach((b) => {
+    b.onclick = () => {
+      const g = b.dataset.cf;
+      if (g === 'best') return setF({ best: !cloneState.campFilter.best });
+      setF({ [g]: b.dataset.cfv, best: false });
     };
   });
+  $('ambCloneSort').onchange = (e) => setF({ sort: e.target.value, best: false });
+
+  // search: live-filter without a full re-render so focus/caret stay put
+  let searchT = null;
+  $('ambCloneSearch').oninput = (e) => {
+    cloneState.campFilter.q = e.target.value;
+    cloneState.campFilter.best = cloneState.campFilter.best; // unchanged
+    clearTimeout(searchT);
+    searchT = setTimeout(paint, 120);
+  };
+
+  $('ambCloneSelAll').onclick = () => { (paint._visible || []).forEach((id) => cloneState.selected.add(id)); paint(); };
+  $('ambCloneSelNone').onclick = () => { cloneState.selected = new Set(); paint(); };
+
+  paint();
   wireCloneNav(1, () => { if (cloneState.selected.size) { cloneState.step = 3; renderCloneStep(); } });
 }
 
