@@ -541,6 +541,76 @@ export async function getEntityLive(token, entityId) {
   return { id: d.id, name: d.name || null, status: d.status || null, effectiveStatus: d.effective_status || null };
 }
 
+/**
+ * READ (quiet) — the live review + delivery picture for ONE cloned campaign:
+ * the campaign, each ad set (configured/effective status + start_time), and
+ * each ad (configured/effective status + Meta's ad_review_feedback). Used by
+ * native-scheduling reconciliation + the "حالة مراجعة Meta" UI panel. Never
+ * writes. Returns null only if the campaign id itself can't be read.
+ */
+export async function getCloneJobLiveState(token, { campaignId, adsetIds = [], adIds = [] }) {
+  if (!campaignId) return null;
+  const camp = await graphGetQuiet(`/${campaignId}`, { fields: 'id,name,status,effective_status,start_time,stop_time' }, token);
+  if (!camp || !camp.id) return null;
+  const norm = (d) => ({
+    id: d.id,
+    configuredStatus: d.status || null,
+    effectiveStatus: d.effective_status || null,
+    startTime: d.start_time || null,
+    endTime: d.end_time || d.stop_time || null,
+  });
+  const adsets = [];
+  for (const id of adsetIds) {
+    const d = await graphGetQuiet(`/${id}`, { fields: 'id,name,status,effective_status,start_time,end_time' }, token);
+    if (d && d.id) adsets.push({ ...norm(d), name: d.name || null });
+  }
+  const ads = [];
+  for (const id of adIds) {
+    const d = await graphGetQuiet(`/${id}`, { fields: 'id,name,status,effective_status,ad_review_feedback' }, token);
+    if (d && d.id) {
+      ads.push({
+        ...norm(d), name: d.name || null,
+        reviewFeedback: d.ad_review_feedback && typeof d.ad_review_feedback === 'object'
+          ? (d.ad_review_feedback.global || d.ad_review_feedback) : null,
+      });
+    }
+  }
+  // Roll up a single review + delivery verdict the UI can badge directly.
+  const adEff = ads.map((a) => (a.effectiveStatus || '').toUpperCase());
+  const anyDisapproved = adEff.some((s) => s === 'DISAPPROVED' || s === 'WITH_ISSUES');
+  const anyInReview = adEff.some((s) => ['PENDING_REVIEW', 'IN_PROCESS', 'PENDING_PROCESSING'].includes(s));
+  const allApproved = ads.length > 0 && !anyInReview && !anyDisapproved
+    && adEff.every((s) => ['ACTIVE', 'PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED'].includes(s));
+  let reviewStatus = 'UNKNOWN';
+  if (anyDisapproved) reviewStatus = 'REJECTED';
+  else if (anyInReview) reviewStatus = 'IN_REVIEW';
+  else if (allApproved) reviewStatus = 'APPROVED';
+  const campEff = (camp.effective_status || '').toUpperCase();
+  const adsetEff = adsets.map((a) => (a.effectiveStatus || '').toUpperCase());
+  const delivering = campEff === 'ACTIVE' && adsetEff.some((s) => s === 'ACTIVE') && adEff.some((s) => s === 'ACTIVE');
+  const scheduledHold = adsetEff.some((s) => ['SCHEDULED', 'PENDING_REVIEW', 'IN_PROCESS'].includes(s)) && !delivering;
+  return {
+    campaign: { ...norm(camp), name: camp.name || null },
+    adsets,
+    ads,
+    reviewStatus, // IN_REVIEW | APPROVED | REJECTED | UNKNOWN
+    deliveryStatus: delivering ? 'DELIVERING' : scheduledHold ? 'SCHEDULED' : 'NOT_DELIVERING',
+    rejectedFeedback: anyDisapproved ? (ads.find((a) => a.reviewFeedback)?.reviewFeedback || null) : null,
+  };
+}
+
+/** WRITE — set an ad set's native schedule window. `startTime` / `endTime` are
+ *  ISO-8601 strings (or null to leave unchanged). Used for native Meta
+ *  scheduling: an ACTIVE ad set with a future `start_time` is reviewed now but
+ *  delivers nothing (zero spend) until that instant. */
+export async function setAdSetSchedule(token, adsetId, { startTime = null, endTime = null } = {}) {
+  const body = {};
+  if (startTime) body.start_time = startTime;
+  if (endTime) body.end_time = endTime;
+  if (!Object.keys(body).length) return null;
+  return graphPost(`/${adsetId}`, body, token);
+}
+
 /** WRITE — budget change. Amount is in MINOR units of the account currency (e.g. EGP → piasters, ×100). Pass exactly one of dailyBudgetMinor / lifetimeBudgetMinor, matching the budget type the entity already uses. */
 export async function setEntityBudget(token, entityId, { dailyBudgetMinor, lifetimeBudgetMinor }) {
   const body = {};

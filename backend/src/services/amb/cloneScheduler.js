@@ -11,7 +11,7 @@
 // All the real work + guards live in the services. This file is just the
 // heartbeat. It keeps working with the browser closed / user logged out.
 import { logger } from '../../logger.js';
-import { activateDueJobs } from './cloneEngine.js';
+import { activateDueJobs, reconcileNativeScheduledJobs } from './cloneEngine.js';
 import { runDueCampaignSchedules } from './campaignSchedule.js';
 
 let timer = null;
@@ -22,6 +22,10 @@ export function startAmbCloneScheduler() {
   const tick = async () => {
     try { await activateDueJobs(); }
     catch (err) { logger.error('AMB clone scheduler tick failed', { message: err.message }); }
+    // Native-schedule watch: confirm delivery / catch a stray pause / surface a
+    // Meta rejection for SCHEDULED_NATIVE jobs. Never recreates or republishes.
+    try { await reconcileNativeScheduledJobs(); }
+    catch (err) { logger.error('AMB native schedule reconcile failed', { message: err.message }); }
     try { await runDueCampaignSchedules(); }
     catch (err) { logger.error('AMB campaign schedule tick failed', { message: err.message }); }
   };

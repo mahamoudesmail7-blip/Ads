@@ -35,6 +35,7 @@ export const AMB_DEFAULT_SETTINGS = {
   ambCloneDefaultActivationTime: '00:00',   // HH:MM in each destination account's timezone
   ambCloneAutoActivate: true,               // scheduler flips cloned (PAUSED) campaigns ACTIVE at the scheduled time; set false to hold them
   ambCloneMaxCampaignsPerBatch: 20,         // guard on one clone batch
+  ambCloneNativeSchedule: false,            // OPT-IN: scheduled clones use native Meta start_time (campaign/ad sets/ads ACTIVE now → Meta reviews immediately, zero spend, auto-delivers at start). Default OFF keeps the create-PAUSED-then-flip behaviour.
   // Media Asset Library
   ambMediaLibraryAutoDiscover: true,        // fold new creatives into the library on every sync
   ambMediaLibraryScanDays: 30,              // how far back a discovery pass looks for creatives

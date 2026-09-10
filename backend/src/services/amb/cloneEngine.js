@@ -26,7 +26,7 @@ import {
   getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
   getCreativeNode, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
   uploadAdImageFromUrl, uploadAdVideoFromUrl, createCampaign, createAdSet, createAdCreative, createAd,
-  setEntityStatus, campaignInsightsRaw,
+  setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
 } from '../metaGraphClient.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
@@ -412,7 +412,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
 // ---------------------------------------------------------------------------
 // Batch lifecycle
 // ---------------------------------------------------------------------------
-export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, adAllowlist = null, campaignBudgetOverrideEgp = null, campaignNameOverride = null, allowSameAccount = false, slotPlan = null, budgetMode = null, userId }) {
+export async function createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode = null, startAt = null, nativeSchedule = false, destinationPageId = null, destinationInstagramId = null, identityMap = null, pixelMap = null, allowPageOnlyIg = true, copyValidAdsOnly = false, recreateBoosted = false, adAllowlist = null, campaignBudgetOverrideEgp = null, campaignNameOverride = null, allowSameAccount = false, slotPlan = null, budgetMode = null, userId }) {
   const bid = batchId && /^[a-z0-9-]{8,64}$/i.test(batchId) ? batchId : crypto.randomUUID();
 
   const existing = await prisma.ambCloneBatch.findUnique({ where: { batch_id: bid } });
@@ -439,6 +439,18 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
     }
   }
   const autoActivate = execMode === 'RUN_NOW' || execMode === 'SCHEDULE';
+  // Native Meta scheduling (opt-in): for a future SCHEDULE start, create the
+  // campaign / ad sets / ads ACTIVE with the ad sets carrying a native future
+  // `start_time`. Meta then reviews the ads immediately, holds ALL delivery
+  // (zero spend) until start_time, and delivers automatically on approval —
+  // no reliance on the Railway tick to send ACTIVE at the exact minute. The
+  // tick stays as a safety-net + rejection surface. Default OFF: RUN_NOW and
+  // un-flagged SCHEDULE batches keep the create-PAUSED-then-flip behaviour.
+  // Turned on per-batch (this param, from the UI) OR globally via the
+  // ambCloneNativeSchedule setting.
+  const ambSettings0 = await getAmbSettings().catch(() => ({}));
+  const useNativeSchedule = execMode === 'SCHEDULE'
+    && (nativeSchedule === true || ambSettings0.ambCloneNativeSchedule === true);
 
   // One read-only pass computes the pre-flight matrix + per-destination
   // schedule. The engine re-runs a fresh pre-flight per job at clone time, so
@@ -474,7 +486,7 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
       schedule_local_time: execMode === 'SCHEDULE' ? String(startAt) : execMode === 'RUN_NOW' ? 'RUN_NOW' : preview.scheduleLocalTime,
       destination_page_id: destPage,
       destination_instagram_id: destIg,
-      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true, autoActivate, executionMode: execMode, startAtCairo: execMode === 'SCHEDULE' ? String(startAt) : null, ...scaleExtra }),
+      identity_map_json: JSON.stringify({ ...(idMap || {}), allowPageOnlyIg: allowPageOnlyIg !== false, copyValidAdsOnly: copyValidAdsOnly === true, autoActivate, executionMode: execMode, startAtCairo: execMode === 'SCHEDULE' ? String(startAt) : null, nativeSchedule: useNativeSchedule, ...scaleExtra }),
       pixel_map_json: pxMap ? JSON.stringify(pxMap) : null,
       recreate_boosted: !!recreateBoosted && !!destPage,
       total_copies: preview.totalCopies,
@@ -508,7 +520,7 @@ export async function createBatch({ batchId, sourceAccountId, destinationAccount
     }
   }
 
-  const execNote = execMode === 'RUN_NOW' ? ' · تشغيل الآن' : execMode === 'SCHEDULE' ? ` · جدولة البداية ${startAt} (Africa/Cairo)` : '';
+  const execNote = execMode === 'RUN_NOW' ? ' · تشغيل الآن' : execMode === 'SCHEDULE' ? ` · جدولة البداية ${startAt} (Africa/Cairo)${useNativeSchedule ? ' · جدولة Meta الأصلية (مراجعة فورية، بدون صرف قبل الموعد)' : ''}` : '';
   await audit(bid, null, 'PREFLIGHT', { detail: `دفعة اتجهزت: ${camps.length} حملة × ${dests.length} حساب = ${preview.totalCopies} نسخة (${preview.blockedCopies} محجوبة).${execNote}`, actorId: userId });
   logger.info('AMB clone batch created', { batchId: bid, copies: preview.totalCopies, blocked: preview.blockedCopies });
   return getBatch(bid);
@@ -636,7 +648,7 @@ async function runBatch(batchId) {
 
   const jobs = batch.jobs.filter((jb) => !TERMINAL_JOB.has(jb.status) && jb.preflight_status !== 'BLOCKED' && !['PREFLIGHT_BLOCKED', 'CANNOT_COPY'].includes(jb.status));
   for (const job of jobs) {
-    if (['CLONED_PAUSED', 'ACTIVATION_PENDING'].includes(job.status)) continue; // done cloning, waiting for schedule
+    if (['CLONED_PAUSED', 'ACTIVATION_PENDING', 'SCHEDULED_NATIVE', 'ACTIVATED'].includes(job.status)) continue; // done cloning, waiting for schedule / already live
     try {
       await cloneJob(job.id, token);
     } catch (err) {
@@ -660,8 +672,8 @@ async function recomputeBatchStatus(batchId) {
   const jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId } });
   const relevant = jobs.filter((jb) => !['CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY', 'NEEDS_DECISION', 'NEEDS_INPUT'].includes(jb.status) && jb.preflight_status !== 'BLOCKED');
   const failed = relevant.filter((jb) => jb.status === 'FAILED' || jb.status === 'ACTIVATION_FAILED');
-  const cloned = relevant.filter((jb) => ['CLONED_PAUSED', 'ACTIVATION_PENDING', 'ACTIVATED'].includes(jb.status));
-  const activated = relevant.filter((jb) => jb.status === 'ACTIVATED');
+  const cloned = relevant.filter((jb) => ['CLONED_PAUSED', 'ACTIVATION_PENDING', 'SCHEDULED_NATIVE', 'ACTIVATED'].includes(jb.status));
+  const activated = relevant.filter((jb) => ['ACTIVATED', 'SCHEDULED_NATIVE'].includes(jb.status));
   const needsDecision = jobs.some((jb) => jb.status === 'NEEDS_DECISION');
   const needsInput = jobs.some((jb) => jb.status === 'NEEDS_INPUT');
   let status;
@@ -702,6 +714,25 @@ async function cloneJob(jobId, token) {
   // Winner → Scale budget mode (hoisted so the campaign-payload assertions can see it).
   const scaleBudgetForced = Number(identityMap.campaignBudgetOverrideEgp) > 0;
   const hasSlotPlan = Array.isArray(identityMap.slotPlan) && identityMap.slotPlan.length > 0;
+
+  // Native Meta scheduling (opt-in, SCHEDULE only): create every entity ACTIVE
+  // and stamp the ad sets with a native future `start_time` so Meta reviews the
+  // ads NOW and holds delivery (zero spend) until the moment arrives. Guarded on
+  // a still-future instant (≥60s) so a late/resumed job can never publish a
+  // live, already-past ad set. Falls back to the PAUSED path otherwise.
+  const activationAt = job.scheduled_activation_at ? new Date(job.scheduled_activation_at) : null;
+  const nativeSchedule = identityMap.nativeSchedule === true
+    && identityMap.executionMode === 'SCHEDULE'
+    && activationAt && activationAt.getTime() > Date.now() + 60_000;
+  // Every entity is still CREATED paused (a paused ad set can carry a future
+  // start_time). Once the whole job is verified complete, one controlled
+  // top-down pass flips campaign → ad sets → ads to ACTIVE — Meta then reviews
+  // immediately and start_time holds delivery. A broken/partial job never goes
+  // live because that pass only runs on a complete verdict.
+  const nativeStartTime = nativeSchedule ? activationAt.toISOString() : null;
+  if (nativeSchedule) {
+    await audit(batchId, jobId, 'CLONE_NATIVE_SCHEDULE', { detail: `جدولة Meta الأصلية: start_time = ${nativeStartTime} على المجموعات؛ تفعيل فوري بعد اكتمال النسخ (مراجعة فورية، لا صرف قبل الموعد).` });
+  }
 
   await prisma.ambCloneJob.update({ where: { id: jobId }, data: { status: 'CLONING', attempts: { increment: 1 }, last_attempt_at: new Date(), error: null } });
   await audit(batchId, jobId, 'CLONE_START', { detail: `${job.source_campaign_name || job.source_campaign_id} → ${job.destination_account_name || dest}` });
@@ -998,7 +1029,7 @@ async function cloneJob(jobId, token) {
       idMap.adsets[as.id] = newAdsetId;
     } else {
       try {
-        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap, scaleBudgetForced });
+        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap, scaleBudgetForced, nativeStartTime });
         // §12 assertion — ABO: this ad set MUST carry the owner's budget; CBO: it must NOT.
         if (hasSlotPlan && !(payload.daily_budget > 0)) throw new Error(`ABO scale: ad set "${as.name}" payload is missing daily_budget.`);
         if (scaleBudgetForced && (payload.daily_budget || payload.lifetime_budget)) throw new Error(`CBO scale: ad set "${as.name}" payload must not carry a budget.`);
@@ -1147,7 +1178,35 @@ async function cloneJob(jobId, token) {
   // other ads are done; only those ads await a URL.
   const structureOk = madeAdsets >= expectedAdsets && (madeAds + needsInputAds) >= expectedAds && !anyFail;
   const complete = structureOk && needsInputAds === 0;
-  const status = complete ? 'CLONED_PAUSED' : structureOk ? 'NEEDS_INPUT' : 'FAILED';
+
+  // Native Meta scheduling: the job is fully built — flip campaign → ad sets →
+  // ads to ACTIVE in one controlled top-down pass (child never ACTIVE under a
+  // paused parent). The ad sets already carry the future `start_time`, so Meta
+  // reviews the ads now and holds delivery (zero spend) until the moment. This
+  // runs ONLY on a complete verdict; a partial/NEEDS_INPUT job stays PAUSED.
+  let status = complete ? 'CLONED_PAUSED' : structureOk ? 'NEEDS_INPUT' : 'FAILED';
+  let nativeNote = '';
+  if (complete && nativeSchedule) {
+    const orderedIds = [
+      newCampaignId,
+      ...Object.values(idMap.adsets || {}),
+      ...Object.values(idMap.ads || {}),
+    ].filter(Boolean);
+    const activateErrs = [];
+    for (const id of orderedIds) {
+      try { await setEntityStatus(token, id, 'ACTIVE'); }
+      catch (err) { activateErrs.push(`${id}: ${metaErr(err)}`); }
+    }
+    if (activateErrs.length) {
+      status = 'ACTIVATION_FAILED';
+      nativeNote = ` — فشل تفعيل الجدولة الأصلية جزئيًا: ${activateErrs[0]}`;
+      await audit(batchId, jobId, 'ACTIVATION_FAILED', { detail: `جدولة Meta الأصلية: ${activateErrs.join(' | ')}` });
+    } else {
+      status = 'SCHEDULED_NATIVE';
+      nativeNote = ` — مُجدوَلة عبر Meta: تبدأ المراجعة الآن، والتشغيل ${nativeStartTime} بدون صرف قبله.`;
+      await audit(batchId, jobId, 'SCHEDULE_NATIVE_ARMED', { detail: `الحملة + ${counts.adsets} مجموعة + ${counts.ads} إعلان ACTIVE مع start_time=${nativeStartTime}. Meta يراجع الآن ويحجز التسليم حتى الموعد.` });
+    }
+  }
 
   await prisma.ambCloneJob.update({
     where: { id: jobId },
@@ -1155,18 +1214,19 @@ async function cloneJob(jobId, token) {
       status,
       id_map_json: JSON.stringify(idMap),
       copies_created_json: JSON.stringify(counts),
-      error: complete ? null
+      error: complete && status !== 'ACTIVATION_FAILED' ? null
+        : status === 'ACTIVATION_FAILED' ? nativeNote.trim()
         : structureOk ? `تم نسخ الحملة والمجموعات و${madeAds}/${expectedAds} إعلان. ${needsInputAds} إعلان يحتاج رابط وجهة — أدخِله ثم استأنف.`
         : `اكتمل جزئيًا: ${madeAdsets}/${expectedAdsets} مجموعات، ${madeAds}/${expectedAds} إعلانات.`,
     },
   });
   await audit(batchId, jobId, complete ? 'JOB_DONE' : structureOk ? 'JOB_NEEDS_INPUT' : 'JOB_FAILED', {
     detail: complete
-      ? `تم إنشاء الحملة كاملة (PAUSED): ${counts.adsets} مجموعة، ${counts.ads} إعلان.`
+      ? `تم إنشاء الحملة كاملة: ${counts.adsets} مجموعة، ${counts.ads} إعلان.${nativeNote || ' (PAUSED)'}`
       : structureOk
         ? `تم نسخ الحملة + المجموعات + ${madeAds}/${expectedAds} إعلان (PAUSED). ${needsInputAds} إعلان بانتظار رابط الوجهة.`
         : `اكتمل جزئيًا — قابل للاستئناف.`,
-    data: { counts, idMap, needsInputAds },
+    data: { counts, idMap, needsInputAds, nativeSchedule: !!nativeSchedule },
   });
 }
 
@@ -1184,7 +1244,7 @@ function transformTargeting(targeting, resolved) {
   return t;
 }
 
-function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {}, scaleBudgetForced = false }) {
+function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {}, scaleBudgetForced = false, nativeStartTime = null }) {
   const payload = {
     name: as.name,
     campaign_id: newCampaignId,
@@ -1231,14 +1291,17 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
   if (as.dsa_payor) payload.dsa_payor = as.dsa_payor;
   if (as.frequency_control_specs) payload.frequency_control_specs = as.frequency_control_specs;
 
-  // Time: only keep a start/end that is still in the future. A lifetime-budget
-  // ad set REQUIRES an end_time — if the source one has passed, push it out so
-  // the clone is valid (it's PAUSED and won't spend until activated anyway).
+  // Time. Native-schedule clones stamp the owner's chosen start instant here so
+  // Meta itself holds delivery until then (ad set is ACTIVE, reviewed now, zero
+  // spend before start_time). Otherwise only keep a source start/end still in
+  // the future. A lifetime-budget ad set REQUIRES an end_time — if the source
+  // one has passed, push it out so the clone is valid.
   const now = Date.now();
-  if (as.start_time && new Date(as.start_time).getTime() > now) payload.start_time = as.start_time;
+  if (nativeStartTime) payload.start_time = nativeStartTime;
+  else if (as.start_time && new Date(as.start_time).getTime() > now) payload.start_time = as.start_time;
   const usesLifetime = payload.lifetime_budget || (!campaignHasBudget && as.lifetime_budget);
   if (as.end_time && new Date(as.end_time).getTime() > now) payload.end_time = as.end_time;
-  else if (usesLifetime) payload.end_time = new Date(now + 14 * 24 * 3600 * 1000).toISOString();
+  else if (usesLifetime) payload.end_time = new Date(Math.max(now, new Date(nativeStartTime || now).getTime()) + 14 * 24 * 3600 * 1000).toISOString();
   return payload;
 }
 
@@ -1457,6 +1520,117 @@ export async function activateDueJobs() {
 }
 
 // ---------------------------------------------------------------------------
+// Native-schedule reconciliation (safety net + rejection surface).
+//
+// A SCHEDULED_NATIVE job is already ACTIVE on Meta with a future ad-set
+// start_time — Meta reviews now and delivers on its own at the moment. This
+// pass (same 60s tick) only WATCHES it: once the start instant is reached it
+// confirms delivery / catches a stray PAUSE / surfaces a Meta rejection. It
+// NEVER recreates anything and never re-publishes; a still-in-review ad is
+// left alone (Meta auto-delivers on approval).
+// ---------------------------------------------------------------------------
+export async function reconcileNativeScheduledJobs() {
+  const settings = await getAmbSettings();
+  if (settings.ambExecutionMode === 'ADVISORY') return { checked: 0, skipped: 'ADVISORY' };
+
+  const jobs = await prisma.ambCloneJob.findMany({
+    where: {
+      status: 'SCHEDULED_NATIVE',
+      batch: { status: { notIn: ['CANCELLED'] } },
+    },
+    take: 50,
+    include: { batch: true },
+  });
+  if (!jobs.length) return { checked: 0 };
+
+  let token;
+  try { token = await getDecryptedToken(); } catch { return { checked: 0, skipped: 'NO_TOKEN' }; }
+
+  const now = Date.now();
+  let delivering = 0; let rejected = 0; let fixed = 0;
+  for (const job of jobs) {
+    const idMap = j(job.id_map_json, {}) || {};
+    let state;
+    try {
+      state = await getCloneJobLiveState(token, {
+        campaignId: job.destination_campaign_id,
+        adsetIds: Object.values(idMap.adsets || {}),
+        adIds: Object.values(idMap.ads || {}),
+      });
+    } catch (err) { logger.warn('AMB native reconcile read failed', { jobId: job.id, message: err.message }); continue; }
+    if (!state) {
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATION_FAILED', error: 'الحملة المجدولة غير موجودة في Meta — ربما حُذفت.' } });
+      await audit(job.batch_id, job.id, 'ACTIVATION_FAILED', { detail: 'native schedule: destination campaign not found on Meta.' });
+      await recomputeBatchStatus(job.batch_id);
+      continue;
+    }
+
+    // Meta rejected the ad(s) — surface it, do NOT recreate.
+    if (state.reviewStatus === 'REJECTED') {
+      const fb = state.rejectedFeedback ? JSON.stringify(state.rejectedFeedback).slice(0, 600) : 'بدون تفاصيل من Meta';
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'REJECTED', error: `مرفوضة من Meta: ${fb}` } });
+      await audit(job.batch_id, job.id, 'META_REJECTED', { detail: `native schedule: Meta disapproved. ${fb}` });
+      await raiseAlert({
+        severity: 'WARNING', category: 'EXECUTION',
+        title: `إعلان مرفوض من Meta: ${job.source_campaign_name || job.source_campaign_id}`,
+        message: `الحملة المجدولة في ${job.destination_account_name || job.destination_ad_account_id} — راجع سبب الرفض في Meta. لن يُعاد إنشاء الإعلان.`,
+        dedupeKey: `clone-native-rejected:${job.id}`,
+      }).catch(() => {});
+      await recomputeBatchStatus(job.batch_id);
+      rejected++;
+      continue;
+    }
+
+    // Safety net: something Meta shows as configured-PAUSED (not by us) — flip it
+    // back ACTIVE so the native schedule still fires. Only touches this job's
+    // destination ids.
+    const strays = [state.campaign, ...(state.adsets || []), ...(state.ads || [])]
+      .filter((e) => e && (e.configuredStatus || '').toUpperCase() === 'PAUSED');
+    for (const e of strays) {
+      try { await setEntityStatus(token, e.id, 'ACTIVE'); fixed++; }
+      catch (err) { logger.warn('AMB native reconcile re-activate failed', { id: e.id, message: err.message }); }
+    }
+    if (strays.length) {
+      await audit(job.batch_id, job.id, 'SCHEDULE_NATIVE_REPAIR', { detail: `أعدنا تفعيل ${strays.length} عنصر وجده Meta متوقفًا قبل الموعد.` });
+    }
+
+    // Past the start instant and actually delivering (or fully approved) → done.
+    const started = job.scheduled_activation_at && new Date(job.scheduled_activation_at).getTime() <= now;
+    if (started && (state.deliveryStatus === 'DELIVERING' || state.reviewStatus === 'APPROVED')) {
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATED', activated_at: new Date() } });
+      await audit(job.batch_id, job.id, 'ACTIVATION', { detail: `بدأ التشغيل عبر جدولة Meta الأصلية (${state.deliveryStatus}).` });
+      await recomputeBatchStatus(job.batch_id);
+      delivering++;
+    }
+    // else: before start_time, or still IN_REVIEW at/after it — leave as
+    // SCHEDULED_NATIVE; Meta delivers automatically once approved.
+  }
+  if (delivering || rejected || fixed) logger.info('AMB native schedule reconcile', { delivering, rejected, fixed, checked: jobs.length });
+  return { checked: jobs.length, delivering, rejected, fixed };
+}
+
+/** On-demand live Meta review + delivery picture for one cloned job — powers
+ *  the "حالة مراجعة Meta" panel. Read-only. */
+export async function getCloneJobMetaStatus(jobId) {
+  const job = await prisma.ambCloneJob.findUnique({ where: { id: Number(jobId) } });
+  if (!job) { const e = new Error('المهمة غير موجودة.'); e.status = 404; throw e; }
+  const idMap = j(job.id_map_json, {}) || {};
+  const { token } = await requireConnectedToken();
+  const state = await getCloneJobLiveState(token, {
+    campaignId: job.destination_campaign_id,
+    adsetIds: Object.values(idMap.adsets || {}),
+    adIds: Object.values(idMap.ads || {}),
+  });
+  return {
+    jobId: job.id,
+    jobStatus: job.status,
+    destinationCampaignId: job.destination_campaign_id,
+    scheduledActivationAt: isoOrNull(job.scheduled_activation_at),
+    live: state,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Serialization for the API
 // ---------------------------------------------------------------------------
 async function audit(batchId, jobId, event, { level, source_id, destination_id, detail, data, actorId } = {}) {
@@ -1488,7 +1662,7 @@ export async function listBatches({ limit = 25 } = {}) {
 }
 
 function summarizeJobs(jobs) {
-  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, activated: 0, failed: 0, cancelled: 0, cannotCopy: 0, needsDecision: 0, needsInput: 0 };
+  const s = { total: jobs.length, blocked: 0, pending: 0, cloning: 0, clonedPaused: 0, scheduledNative: 0, activated: 0, rejected: 0, failed: 0, cancelled: 0, cannotCopy: 0, needsDecision: 0, needsInput: 0 };
   for (const jb of jobs) {
     if (jb.preflight_status === 'BLOCKED' || jb.status === 'PREFLIGHT_BLOCKED') s.blocked++;
     else if (jb.status === 'CANNOT_COPY') s.cannotCopy++;
@@ -1497,7 +1671,9 @@ function summarizeJobs(jobs) {
     else if (jb.status === 'PENDING') s.pending++;
     else if (jb.status === 'CLONING') s.cloning++;
     else if (jb.status === 'CLONED_PAUSED' || jb.status === 'ACTIVATION_PENDING') s.clonedPaused++;
+    else if (jb.status === 'SCHEDULED_NATIVE') s.scheduledNative++;
     else if (jb.status === 'ACTIVATED') s.activated++;
+    else if (jb.status === 'REJECTED') s.rejected++;
     else if (jb.status === 'FAILED' || jb.status === 'ACTIVATION_FAILED') s.failed++;
     else if (jb.status === 'CANCELLED') s.cancelled++;
   }
@@ -1525,6 +1701,7 @@ export async function getBatch(batchId) {
     executionMode: (j(b.identity_map_json, {}) || {}).executionMode || null,   // 'RUN_NOW' | 'SCHEDULE' | null
     startAtCairo: (j(b.identity_map_json, {}) || {}).startAtCairo || null,     // Cairo-local "YYYY-MM-DDTHH:MM"
     autoActivate: (j(b.identity_map_json, {}) || {}).autoActivate === true,
+    nativeSchedule: (j(b.identity_map_json, {}) || {}).nativeSchedule === true, // Meta-native scheduling (review now, deliver at start, zero spend before)
     destinationPageId: b.destination_page_id || null,
     destinationInstagramId: b.destination_instagram_id || null,
     identityMap: j(b.identity_map_json, null),

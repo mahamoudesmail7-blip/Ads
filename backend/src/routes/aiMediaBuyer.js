@@ -332,8 +332,8 @@ router.get('/clone/batches/:batchId', asyncRoute(async (req, res) => {
 
 router.post('/clone/batches', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
-  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode, startAt, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted } = req.body || {};
-  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode, startAt, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted, userId: req.user.id }));
+  const { batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode, startAt, nativeSchedule, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted } = req.body || {};
+  res.status(201).json(await clone.createBatch({ batchId, sourceAccountId, destinationAccountIds, campaignIds, scheduleLocalTime, executionMode, startAt, nativeSchedule: nativeSchedule === true, destinationPageId, destinationInstagramId, identityMap, pixelMap, allowPageOnlyIg, copyValidAdsOnly, recreateBoosted, userId: req.user.id }));
 }));
 
 router.post('/clone/batches/:batchId/copy-valid-only', requireRole('ADMIN'), asyncRoute(async (req, res) => {
@@ -373,6 +373,13 @@ router.get('/clone/batches/:batchId/verify', asyncRoute(async (req, res) => {
 router.get('/clone/jobs/:jobId/verify', asyncRoute(async (req, res) => {
   const { verifyJob } = await import('../services/amb/cloneVerify.js');
   res.json(await verifyJob(req.params.jobId));
+}));
+
+// Live Meta review + delivery picture for one cloned job (for the "حالة مراجعة
+// Meta" panel on a scheduled clone). Read-only, polls Meta on demand.
+router.get('/clone/jobs/:jobId/meta-status', asyncRoute(async (req, res) => {
+  const clone = await import('../services/amb/cloneEngine.js');
+  res.json(await clone.getCloneJobMetaStatus(req.params.jobId));
 }));
 
 // ---------------------------------------------------------------------------

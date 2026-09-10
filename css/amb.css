@@ -543,3 +543,7 @@ body { background: var(--amb-bg); }
 .amb-app .amb-clone-period-btns .amb-fbtn { padding: 6px 12px; font-size: 12px; }
 .amb-app .amb-clone-custom { display: inline-flex; align-items: center; gap: 6px; }
 .amb-app .amb-clone-custom .amb-input.sm { min-width: 0; }
+
+/* Issue 1 — native-schedule "حالة مراجعة Meta" panel on a scheduled clone card */
+.amb-app .amb-meta-review { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--amb-border); border-radius: 10px; background: var(--amb-surface); }
+.amb-app .amb-meta-review-h { display: flex; align-items: center; justify-content: space-between; font-weight: 800; font-size: 12.5px; margin-bottom: 8px; }

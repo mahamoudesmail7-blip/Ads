@@ -1937,6 +1937,7 @@ const cloneState = {
   execMode: 'RUN_NOW',       // 'RUN_NOW' | 'SCHEDULE' — the ONLY scheduling control
   startDate: '',              // Cairo-local 'YYYY-MM-DD' (defaulted to tomorrow on first render)
   startTime: '00:00',         // Cairo-local 'HH:MM' 24h (default 12:00 AM)
+  nativeSchedule: false,      // SCHEDULE only — use native Meta start_time (review now, zero spend, auto-deliver at start)
   preview: null,
   analysis: null,           // POST /clone/analyze result
   pageMap: {},               // { sourcePageId: destPageId }
@@ -1971,9 +1972,13 @@ const CLONE_JOB_AR = {
   PENDING: ['بالانتظار', 'gray'], PREFLIGHT_BLOCKED: ['محجوبة', 'red'], CLONING: ['جارِ النسخ', 'blue'],
   NEEDS_INPUT: ['محتاجة رابط وجهة', 'yellow'],
   CLONED_PAUSED: ['اتنسخت — متوقفة', 'green'], ACTIVATION_PENDING: ['جارِ التفعيل', 'blue'],
-  ACTIVATED: ['مُفعّلة', 'green'], ACTIVATION_FAILED: ['فشل التفعيل', 'red'], FAILED: ['فشلت', 'red'], CANCELLED: ['ملغاة', 'gray'],
+  SCHEDULED_NATIVE: ['بانتظار موعد التشغيل', 'blue'], REJECTED: ['مرفوضة من Meta', 'red'],
+  ACTIVATED: ['بدأ التشغيل', 'green'], ACTIVATION_FAILED: ['فشل التفعيل', 'red'], FAILED: ['فشلت', 'red'], CANCELLED: ['ملغاة', 'gray'],
   CANNOT_COPY: ['لا يمكن نسخها', 'red'], NEEDS_DECISION: ['محتاجة قرار', 'yellow'],
 };
+// Meta review + delivery labels for the scheduled-clone status panel
+const META_REVIEW_AR = { IN_REVIEW: ['قيد مراجعة Meta', 'blue'], APPROVED: ['تمت الموافقة — مجدولة', 'green'], REJECTED: ['مرفوضة من Meta', 'red'], UNKNOWN: ['—', 'gray'] };
+const META_DELIVERY_AR = { DELIVERING: ['بدأ التشغيل', 'green'], SCHEDULED: ['بانتظار موعد التشغيل', 'blue'], NOT_DELIVERING: ['لا يوجد تسليم', 'gray'] };
 const PF_AR = { READY: ['جاهزة', 'green'], WARNING: ['تحذير', 'yellow'], BLOCKED: ['محجوبة', 'red'] };
 const PF_CHECK_ICON = { INFO: '•', WARN: '⚠', BLOCK: '✖' };
 
@@ -2513,6 +2518,11 @@ function cloneScheduleSectionHtml() {
         </div>
       </div>
       <div id="ambCloneSchedErr" class="faint" style="font-size:12px; color:var(--amb-red); margin-top:4px;"></div>
+      <label class="amb-radio-row" style="cursor:pointer; margin-top:8px; align-items:flex-start;">
+        <input type="checkbox" id="ambCloneNativeSchedule" ${cloneState.nativeSchedule ? 'checked' : ''} />
+        <span class="rr-main">جدولة Meta الأصلية (مُستحسَن)</span>
+        <span class="rr-sub">تُنشأ الحملة + المجموعات + الإعلانات وتدخل <b>مراجعة Meta فورًا</b>، مع <b>start_time</b> أصلي على المجموعات — <b>لا صرف ولا تسليم قبل الموعد</b>، ويبدأ التشغيل تلقائيًا عند الموافقة. بدون هذا الخيار تُنسخ متوقفة ويُفعّلها السيرفر عند الموعد.</span>
+      </label>
     </div>
     <div class="faint" style="font-size:12.5px; margin-top:6px;">Execution Type: <span id="ambCloneExecSummary">${summary}</span></div>
   `;
@@ -2540,6 +2550,7 @@ function wireCloneScheduleSection() {
   });
   const d = $('ambCloneStartDate'); if (d) d.onchange = () => { cloneState.startDate = d.value || cairoDateStr(1); paint(); };
   const t = $('ambCloneStartTime'); if (t) t.onchange = () => { cloneState.startTime = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; paint(); };
+  const nsv = $('ambCloneNativeSchedule'); if (nsv) nsv.onchange = () => { cloneState.nativeSchedule = nsv.checked; };
   paint();
 }
 /** True when the scheduling section is in a valid state to submit. */
@@ -2659,7 +2670,10 @@ async function renderCloneReview(body) {
       title: scheduled ? 'نسخ وجدولة البداية' : 'نسخ وتشغيل الآن',
       message: `هيتم إنشاء ${preview.cloneableCopies} حملة (بكل المجموعات والإعلانات) في ${preview.destinations.length} حساب وجهة كنسخة مطابقة للمصدر. حملات المصدر مش هتتغير خالص.<br><br>`
         + (scheduled
-          ? `<b>وقت التشغيل:</b> ${fmtDMY(cloneState.startDate)} — ${fmt12h(cloneState.startTime)} — Africa/Cairo.<br>تُنسخ متوقفة (PAUSED) وتتفعّل تلقائيًا في الوقت ده.`
+          ? `<b>وقت التشغيل:</b> ${fmtDMY(cloneState.startDate)} — ${fmt12h(cloneState.startTime)} — Africa/Cairo.<br>`
+            + (cloneState.nativeSchedule
+              ? `جدولة Meta الأصلية: تُنشأ الحملة/المجموعات/الإعلانات وتدخل مراجعة Meta فورًا مع <code>start_time</code> على المجموعات — <b>لا صرف ولا تسليم قبل الموعد</b>، ويبدأ التشغيل تلقائيًا عند الموافقة.`
+              : `تُنسخ متوقفة (PAUSED) ويُفعّلها السيرفر تلقائيًا في الوقت ده.`)
           : `<b>وقت التشغيل:</b> تشغيل الآن — تُنسخ (PAUSED) وتتفعّل فورًا بعد اكتمال النسخ.`)
         + `<br><br>متابعة؟`,
       confirmLabel: scheduled ? 'نسخ وجدولة' : 'نسخ وتشغيل', danger: true,
@@ -2676,6 +2690,7 @@ async function renderCloneReview(body) {
         campaignIds: [...cloneState.selected],
         executionMode: cloneState.execMode,
         startAt,
+        nativeSchedule: cloneState.execMode === 'SCHEDULE' && cloneState.nativeSchedule === true,
         destinationPageId: idp.destinationPageId,
         destinationInstagramId: idp.destinationInstagramId,
         identityMap: idp.identityMap,
@@ -2819,7 +2834,7 @@ function syncCloneApproveButton() {
 }
 
 function resetCloneWizard() {
-  Object.assign(cloneState, { step: 1, srcBiz: '__ALL__', dstBiz: '__ALL__', sourceId: null, campaigns: null, campaignsForAccount: null, selected: new Set(), dests: new Set(), execMode: 'RUN_NOW', startDate: '', startTime: '00:00', preview: null, analysis: null, pageMap: {}, igChoice: 'PAGE_ONLY', pixelMap: {}, batchId: null, batch: null });
+  Object.assign(cloneState, { step: 1, srcBiz: '__ALL__', dstBiz: '__ALL__', sourceId: null, campaigns: null, campaignsForAccount: null, campaignsForPeriod: null, selected: new Set(), dests: new Set(), execMode: 'RUN_NOW', startDate: '', startTime: '00:00', nativeSchedule: false, preview: null, analysis: null, pageMap: {}, igChoice: 'PAGE_ONLY', pixelMap: {}, batchId: null, batch: null });
 }
 
 // ---- Step 6 · RESULT / progress ----
@@ -2989,6 +3004,7 @@ const SETTING_FIELDS = [
   ['ambAllowAutoBudgetIncrease', 'أوتوبايلوت: اسمح بزيادة الميزانية', 'bool'],
   ['ambAllowAutoBudgetDecrease', 'أوتوبايلوت: اسمح بتقليل الميزانية', 'bool'],
   ['ambAllowDuplicationActions', 'أوتوبايلوت: اسمح بأكشنز التكرار', 'bool'],
+  ['ambCloneNativeSchedule', 'نسخ وجدولة: استخدم جدولة Meta الأصلية (مراجعة فورية، لا صرف قبل الموعد)', 'bool'],
 ];
 async function renderSettings(panel) {
   const { settings } = await api.get('/api/ai-media-buyer/settings');
@@ -3082,9 +3098,12 @@ function startSchedTicker() {
 
 function schedMetaStatusChip(s, job) {
   const st = s?.status || job?.status;
+  if (job?.status === 'REJECTED') return '<span class="badge red">⛔ مرفوضة من Meta</span>';
+  if (job?.status === 'SCHEDULED_NATIVE' || (s?.nativePrestaged && ['SCHEDULED', 'PENDING_APPROVAL'].includes(s?.status)))
+    return '<span class="badge blue">🕒 قيد مراجعة Meta — بانتظار موعد التشغيل</span>';
   if (s?.status === 'RUNNING') return '<span class="badge green">🟢 شغالة الآن</span>';
   if (['CLONED_PAUSED', 'ACTIVATION_FAILED'].includes(job?.status) || ['SCHEDULED', 'PENDING_APPROVAL', 'PAUSED', 'ENDED', 'NEEDS_INTERVENTION'].includes(s?.status)) return '<span class="badge gray">⏸ متوقفة (PAUSED)</span>';
-  if (job?.status === 'ACTIVATED') return '<span class="badge green">🟢 مُفعّلة</span>';
+  if (job?.status === 'ACTIVATED') return '<span class="badge green">🟢 بدأ التشغيل</span>';
   return `<span class="badge gray">${E(st || '—')}</span>`;
 }
 
@@ -3158,16 +3177,30 @@ function scheduleCardHtml(s, job) {
       ${s.actualEndText ? `<div><span class="rl">توقفت فعليًا</span><span class="rv">${E(s.actualEndText)}</span></div>` : ''}
     </div>
     ${cd ? `<div style="margin-top:8px;">${cd}</div>` : ''}
+    ${(s.nativePrestaged || ['SCHEDULED_NATIVE', 'REJECTED', 'ACTIVATED'].includes(job?.status)) ? `
+      <div class="amb-meta-review" data-meta-review="${s.cloneJobId || job?.id || ''}">
+        <div class="amb-meta-review-h">
+          <span>حالة مراجعة Meta</span>
+          <button class="amb-btn sm ghost" data-meta-refresh="${s.cloneJobId || job?.id || ''}">تحديث من Meta</button>
+        </div>
+        <div class="amb-sched-grid">
+          <div><span class="rl">موعد التشغيل</span><span class="rv">${E(s.startLocalText || '—')} · ${E(s.timezone || 'Africa/Cairo')}</span></div>
+          <div><span class="rl">Meta Review</span><span class="rv" data-mr="review">${badge(...(META_REVIEW_AR[job?.status === 'REJECTED' ? 'REJECTED' : 'UNKNOWN']))}</span></div>
+          <div><span class="rl">Delivery Status</span><span class="rv" data-mr="delivery">${badge(...(META_DELIVERY_AR[job?.status === 'ACTIVATED' ? 'DELIVERING' : 'SCHEDULED']))}</span></div>
+          <div><span class="rl">قبل الموعد</span><span class="rv">لا مراجعة يدوية · لا صرف · Meta يبدأ التسليم تلقائيًا عند الموافقة</span></div>
+        </div>
+        <div class="faint" data-mr="feedback" style="font-size:11.5px;margin-top:4px;"></div>
+      </div>` : ''}
     ${s.interventionReason ? `<div class="amb-batchnote" style="margin-top:8px;"><span>⚠️ ${E(s.interventionReason)}</span></div>` : ''}
     ${s.lastError ? `<div style="color:var(--amb-red);font-size:12px;margin-top:6px;">${E(s.lastError)}</div>` : ''}
-    <div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:8px;">
+    ${s.native ? `<div class="faint" style="font-size:11.5px;margin-top:10px;">جدولة Meta الأصلية على مستوى الدفعة — للتعديل أو الإلغاء استخدم أدوات الدفعة بالأعلى.</div>` : `<div class="toolbar" style="margin-top:12px; flex-wrap:wrap; gap:8px;">
       ${isPending && state.isAdmin ? `<button class="amb-btn primary" data-sa="approve" data-id="${s.id}">موافقة على الجدولة</button>` : ''}
       ${canEdit && state.isAdmin ? `<button class="amb-btn ghost" data-sa="edit" data-id="${s.id}">تعديل الجدولة</button>` : ''}
       ${!isRunning && !isDone && state.isAdmin ? `<button class="amb-btn" data-sa="runnow" data-id="${s.id}">تشغيل الآن</button>` : ''}
       ${isRunning && state.isAdmin ? `<button class="amb-btn danger" data-sa="pausenow" data-id="${s.id}">إيقاف الآن</button>` : ''}
       ${!isRunning && !isDone && state.isAdmin ? `<button class="amb-btn danger ghost" data-sa="cancel" data-id="${s.id}">إلغاء الجدولة</button>` : ''}
       ${s.edits && s.edits.length ? `<button class="amb-btn ghost" data-sa="history" data-id="${s.id}">السجل (${s.edits.length})</button>` : ''}
-    </div>
+    </div>`}
     <div class="amb-sched-history" data-sched-history="${s.id}" hidden>
       ${(s.edits || []).map((e) => `<div class="faint" style="font-size:11.5px;">${fmtDT(e.at)} — ${e.material ? 'تعديل جوهري' : 'تعديل'}: ${E(JSON.stringify(e.to))}</div>`).join('')}
     </div>
@@ -3203,6 +3236,28 @@ function wireScheduleEditor(mount, job, onDone) {
 function wireScheduleCard(mount, s, onDone) {
   const card = mount.querySelector(`[data-sched-card="${s.id}"]`);
   if (!card) return;
+  const mrBtn = card.querySelector('[data-meta-refresh]');
+  if (mrBtn) {
+    const load = async () => {
+      const jid = mrBtn.dataset.metaRefresh;
+      mrBtn.disabled = true; mrBtn.textContent = '… بيحدّث';
+      try {
+        const d = await api.get(`/api/ai-media-buyer/clone/jobs/${encodeURIComponent(jid)}/meta-status`);
+        const live = d.live || {};
+        const rv = card.querySelector('[data-mr="review"]');
+        const dv = card.querySelector('[data-mr="delivery"]');
+        const fb = card.querySelector('[data-mr="feedback"]');
+        if (rv) rv.innerHTML = badge(...(META_REVIEW_AR[live.reviewStatus] || META_REVIEW_AR.UNKNOWN));
+        if (dv) dv.innerHTML = badge(...(META_DELIVERY_AR[live.deliveryStatus] || META_DELIVERY_AR.NOT_DELIVERING));
+        if (fb) fb.textContent = live.rejectedFeedback
+          ? `سبب رفض Meta: ${typeof live.rejectedFeedback === 'string' ? live.rejectedFeedback : JSON.stringify(live.rejectedFeedback)}`
+          : `آخر تحديث: ${new Date().toLocaleTimeString('ar-EG')} · حالة المهمة: ${E((CLONE_JOB_AR[d.jobStatus] || [d.jobStatus])[0])}`;
+      } catch (e) { UI.toast(e.message, 'error'); }
+      mrBtn.disabled = false; mrBtn.textContent = 'تحديث من Meta';
+    };
+    mrBtn.onclick = load;
+    load(); // fetch once on render
+  }
   card.querySelectorAll('[data-sa]').forEach((btn) => {
     btn.onclick = async () => {
       const act = btn.dataset.sa;
@@ -3235,7 +3290,7 @@ function wireScheduleCard(mount, s, onDone) {
 
 /** Schedule area inside the clone RESULT view — one block per copied campaign. */
 async function renderCloneSchedules(mount, batch) {
-  const eligible = (batch.jobs || []).filter((jb) => ['CLONED_PAUSED', 'ACTIVATED', 'ACTIVATION_FAILED'].includes(jb.status));
+  const eligible = (batch.jobs || []).filter((jb) => ['CLONED_PAUSED', 'SCHEDULED_NATIVE', 'REJECTED', 'ACTIVATED', 'ACTIVATION_FAILED'].includes(jb.status));
   if (!eligible.length) { mount.innerHTML = ''; return; }
   let schedules = [];
   try { schedules = await api.get(`/api/ai-media-buyer/schedules?batchId=${encodeURIComponent(batch.batchId)}`); } catch { /* ignore */ }
@@ -3243,21 +3298,39 @@ async function renderCloneSchedules(mount, batch) {
   for (const s of schedules) {
     if (!byJob[s.cloneJobId] || s.id > byJob[s.cloneJobId].id) byJob[s.cloneJobId] = s;
   }
+  // Batch-level native scheduling makes the job SCHEDULED_NATIVE with no
+  // per-campaign schedule row — synthesize a read-only card from the batch.
+  const batchNativeStart = batch.startAtCairo || null;
+  const synthNative = (jb) => ({
+    id: `native-${jb.id}`, cloneJobId: jb.id, batchId: batch.batchId,
+    campaignName: jb.sourceCampaignName, destinationCampaignId: jb.destinationCampaignId,
+    sourceAccountName: batch.source?.name, destinationAccountName: jb.destinationAccountName, destinationAccountId: jb.destinationAccountId,
+    mode: 'START_AT', timezone: 'Africa/Cairo',
+    startAt: jb.scheduledActivationAt || null,
+    startLocalText: batchNativeStart ? String(batchNativeStart).replace('T', ' — ') : (jb.scheduledActivationAt ? fmtDT(jb.scheduledActivationAt) : '—'),
+    endLocalText: null, status: jb.status === 'REJECTED' ? 'NEEDS_INTERVENTION' : 'SCHEDULED',
+    displayStatus: 'SCHEDULED', approved: true, nativePrestaged: true, native: true,
+    edits: [], startsInMs: jb.scheduledActivationAt ? new Date(jb.scheduledActivationAt).getTime() - Date.now() : null,
+  });
   mount.innerHTML = `
     <div class="section-title">جدولة الحملات المنسوخة</div>
     <div class="amb-sched-list">
       ${eligible.map((jb) => {
-        const s = byJob[jb.id];
+        let s = byJob[jb.id];
+        const isNativeJob = ['SCHEDULED_NATIVE', 'REJECTED'].includes(jb.status) || (jb.status === 'ACTIVATED' && !s);
+        if (!s && isNativeJob) s = synthNative(jb);
         const active = s && !['CANCELLED', 'ENDED'].includes(s.status);
-        if (active && !schedState.editing[jb.id]) return `<div class="amb-sched-slot" data-slot="${jb.id}">${scheduleCardHtml(s, jb)}</div>`;
+        if ((active && !schedState.editing[jb.id]) || (s && s.native)) return `<div class="amb-sched-slot" data-slot="${jb.id}">${scheduleCardHtml(s, jb)}</div>`;
         return `<div class="amb-sched-slot" data-slot="${jb.id}">${scheduleEditorHtml(jb)}${s && ['CANCELLED', 'ENDED'].includes(s.status) ? `<div class="faint" style="font-size:11.5px;margin-top:6px;">آخر جدولة: ${E((SCHED_STATUS_AR[s.status] || [s.status])[0])} — ${E(s.startLocalText || '')}</div>` : ''}</div>`;
       }).join('')}
     </div>`;
   const refresh = () => renderCloneSchedules(mount, batch);
   eligible.forEach((jb) => {
-    const s = byJob[jb.id];
+    let s = byJob[jb.id];
+    const isNativeJob = ['SCHEDULED_NATIVE', 'REJECTED'].includes(jb.status) || (jb.status === 'ACTIVATED' && !s);
+    if (!s && isNativeJob) s = synthNative(jb);
     const active = s && !['CANCELLED', 'ENDED'].includes(s.status);
-    if (active && !schedState.editing[jb.id]) wireScheduleCard(mount, s, refresh);
+    if ((active && !schedState.editing[jb.id]) || (s && s.native)) wireScheduleCard(mount, s, refresh);
     else wireScheduleEditor(mount, jb, refresh);
   });
   startSchedTicker();

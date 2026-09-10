@@ -26,7 +26,7 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
-import { setEntityStatus, getEntityLive } from '../metaGraphClient.js';
+import { setEntityStatus, getEntityLive, setAdSetSchedule } from '../metaGraphClient.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
 
@@ -206,8 +206,61 @@ export async function approveSchedule({ id, userId }) {
   // Start instant already reached (RUN_NOW or a past START_AT) → don't wait for the tick.
   if (row.start_at.getTime() <= Date.now()) {
     kick(row.id, 'START');
+  } else if (settings.ambCloneNativeSchedule === true) {
+    // OPT-IN native Meta scheduling: stamp the destination ad sets with the
+    // approved start instant and activate campaign → ad sets → ads NOW so Meta
+    // reviews the ads immediately and holds ALL delivery (zero spend) until
+    // start_at. The tick's execute('START') at start_at then only revalidates.
+    await preStageNativeStart(row, userId).catch((e) => logger.warn('AMB schedule native pre-stage failed', { id: row.id, message: e.message }));
   }
   return getSchedule(row.id);
+}
+
+/** Native pre-stage for a future-dated schedule: set ad-set start_time and flip
+ *  campaign → ad sets → ads ACTIVE so Meta reviews now, zero spend until start. */
+async function preStageNativeStart(row, actorId) {
+  const settings = await getAmbSettings();
+  if (settings.ambExecutionMode === 'ADVISORY') return;
+  const conn = await getConnection();
+  if (!conn || conn.status !== 'CONNECTED') return;
+  const job = await prisma.ambCloneJob.findUnique({ where: { id: row.clone_job_id } });
+  const destCampaignId = row.destination_campaign_id || job?.destination_campaign_id || null;
+  if (!destCampaignId || !job) return;
+  const idMap = j(job.id_map_json, {}) || {};
+  const adsetIds = Object.values(idMap.adsets || {});
+  const adIds = Object.values(idMap.ads || {});
+  const token = await getDecryptedToken();
+  const startIso = row.start_at.toISOString();
+  const endIso = row.end_at ? row.end_at.toISOString() : null;
+
+  const errs = [];
+  for (const asId of adsetIds) {
+    try { await setAdSetSchedule(token, asId, { startTime: startIso, endTime: endIso }); }
+    catch (e) { errs.push(`start_time ${asId}: ${e.message}`); }
+  }
+  // top-down activate so a child is never ACTIVE under a paused parent
+  for (const id of [destCampaignId, ...adsetIds, ...adIds]) {
+    try { await setEntityStatus(token, id, 'ACTIVE'); }
+    catch (e) { errs.push(`activate ${id}: ${e.message}`); }
+  }
+  await prisma.ambCampaignSchedule.update({
+    where: { id: row.id },
+    data: { start_meta_response_json: JSON.stringify({ nativePrestaged: true, at: new Date().toISOString(), startTime: startIso, endTime: endIso, errors: errs }).slice(0, 4000) },
+  });
+  await audit(row.batch_id, row.clone_job_id, 'SCHEDULE_NATIVE_PRESTAGE', {
+    actorId,
+    detail: errs.length
+      ? `تجهيز جدولة Meta الأصلية مع ${errs.length} خطأ: ${errs[0]}`
+      : `تم ضبط start_time=${startIso} على ${adsetIds.length} مجموعة وتفعيل الحملة/المجموعات/الإعلانات — Meta يراجع الآن ولا صرف قبل الموعد.`,
+    data: { startTime: startIso, endTime: endIso, adsets: adsetIds.length, ads: adIds.length, errors: errs },
+  });
+  if (errs.length) {
+    await raiseAlert({
+      severity: 'WARNING', category: 'EXECUTION',
+      title: `تجهيز جدولة Meta الأصلية جزئي: ${row.campaign_name || destCampaignId}`,
+      message: errs[0], dedupeKey: `sched-native-prestage:${row.id}`,
+    }).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,12 +304,17 @@ export async function editSchedule({ id, mode, timezone, startDate, startTime, e
     material,
   });
 
+  // A material edit un-approves the schedule. If it was already native
+  // pre-staged (ACTIVE, holding on the old start_time), pull it back to PAUSED
+  // so a stale start_time can't fire before the owner re-approves.
+  if (material) await revertNativePrestage(row, 'تعديل جوهري على الجدولة', userId);
+
   await prisma.ambCampaignSchedule.update({
     where: { id: row.id },
     data: {
       mode: nextMode, timezone: tz, start_at: startAt, end_at: endAt, start_local: startLocal, end_local: endLocal,
       edits_json,
-      ...(material ? { status: 'PENDING_APPROVAL', approval_required: true, approved_at: null, approved_by_id: null, intervention_reason: null, last_error: null } : {}),
+      ...(material ? { status: 'PENDING_APPROVAL', approval_required: true, approved_at: null, approved_by_id: null, intervention_reason: null, last_error: null, start_meta_response_json: null } : {}),
     },
   });
   await audit(row.batch_id, row.clone_job_id, 'SCHEDULE_EDITED', {
@@ -268,6 +326,27 @@ export async function editSchedule({ id, mode, timezone, startDate, startTime, e
   return getSchedule(row.id);
 }
 
+/** Undo a native pre-stage: pause campaign → ad sets → ads back down so nothing
+ *  delivers at the (now stale/cancelled) start_time. Best-effort. */
+async function revertNativePrestage(row, reason, actorId) {
+  const pre = j(row.start_meta_response_json, {}) || {};
+  if (pre.nativePrestaged !== true) return;
+  try {
+    const conn = await getConnection();
+    if (!conn || conn.status !== 'CONNECTED') return;
+    const job = await prisma.ambCloneJob.findUnique({ where: { id: row.clone_job_id } });
+    const destCampaignId = row.destination_campaign_id || job?.destination_campaign_id || null;
+    if (!destCampaignId || !job) return;
+    const idMap = j(job.id_map_json, {}) || {};
+    const token = await getDecryptedToken();
+    // ads → ad sets → campaign (bottom-up on the way down)
+    for (const id of [...Object.values(idMap.ads || {}), ...Object.values(idMap.adsets || {}), destCampaignId]) {
+      try { await setEntityStatus(token, id, 'PAUSED'); } catch { /* best-effort */ }
+    }
+    await audit(row.batch_id, row.clone_job_id, 'SCHEDULE_NATIVE_REVERT', { actorId, detail: `${reason} — أُعيدت الحملة/المجموعات/الإعلانات إلى PAUSED.` });
+  } catch (e) { logger.warn('AMB schedule native revert failed', { id: row.id, message: e.message }); }
+}
+
 // ---------------------------------------------------------------------------
 // Cancel (before start) — campaign stays PAUSED.
 // ---------------------------------------------------------------------------
@@ -276,6 +355,7 @@ export async function cancelSchedule({ id, userId }) {
   if (!row) throw badReq('الجدولة مش موجودة.', 404);
   if (['CANCELLED', 'ENDED'].includes(row.status)) return getSchedule(row.id);
   if (row.status === 'RUNNING') throw badReq('الحملة شغالة — استخدم "إيقاف الآن" بدل إلغاء الجدولة.', 409);
+  await revertNativePrestage(row, 'أُلغيت الجدولة', userId);
   await prisma.ambCampaignSchedule.update({
     where: { id: row.id },
     data: { status: 'CANCELLED', cancelled_by_id: userId || null, cancelled_at: new Date() },
@@ -556,6 +636,7 @@ async function serialize(row, userNames) {
     interventionReason: row.intervention_reason,
     lastError: row.last_error,
     edits: j(row.edits_json, []) || [],
+    nativePrestaged: (j(row.start_meta_response_json, {}) || {}).nativePrestaged === true,
     startMetaResponse: j(row.start_meta_response_json, null),
     endMetaResponse: j(row.end_meta_response_json, null),
     createdAt: row.created_at?.toISOString() || null,
