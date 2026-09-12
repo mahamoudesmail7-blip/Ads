@@ -1,0 +1,125 @@
+/* ============================================================================
+   AI Product Marketing Center — "مركز التسويق الذكي للمنتج". Loaded ONLY by
+   product-marketing-center.html, AFTER css/amb.css (reuses its --amb-* design
+   tokens so this page matches AI Media Buyer exactly). Every class here is
+   pmc-* scoped — nothing here can affect any other page.
+   ============================================================================ */
+.pmc-wrap { max-width: 1180px; }
+
+/* This page's nav re-uses amb.css's .amb-nav-item classes on <a> tags
+   (plain page links, not the AMB SPA's hash-routed buttons) — restore the
+   no-underline look those classes assume without touching amb.css itself. */
+.pmc-shell .amb-nav-item { text-decoration: none; }
+
+.pmc-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.pmc-header h1 { font-size: 22px; margin: 0 0 6px; color: var(--amb-text); }
+.pmc-header .sub { color: var(--amb-text-dim); font-size: 13.5px; max-width: 640px; line-height: 1.6; }
+.pmc-ai-chip { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, var(--amb-blue-bg), var(--amb-purple-bg)); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 10px 16px; font-size: 12.5px; font-weight: 700; color: var(--amb-text); box-shadow: var(--amb-shadow); white-space: nowrap; }
+
+/* ---- Source picker (§1) ---- */
+.pmc-source-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+@media (max-width: 760px) { .pmc-source-grid { grid-template-columns: 1fr; } }
+.pmc-source-card { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 18px; box-shadow: var(--amb-shadow); cursor: pointer; transition: box-shadow .15s, border-color .15s; }
+.pmc-source-card:hover { box-shadow: var(--amb-shadow-hover); border-color: var(--amb-blue); }
+.pmc-source-card.active { border-color: var(--amb-blue); background: var(--amb-blue-bg); }
+.pmc-source-card .ic { font-size: 26px; margin-bottom: 8px; }
+.pmc-source-card .t { font-weight: 800; font-size: 15px; color: var(--amb-text); margin-bottom: 4px; }
+.pmc-source-card .d { font-size: 12.5px; color: var(--amb-text-dim); line-height: 1.5; }
+
+.pmc-eo-search { margin-top: 14px; }
+.pmc-eo-results { margin-top: 10px; display: grid; gap: 8px; max-height: 360px; overflow-y: auto; }
+.pmc-eo-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); cursor: pointer; background: var(--amb-surface-2); }
+.pmc-eo-row:hover { border-color: var(--amb-blue); }
+.pmc-eo-row img { width: 42px; height: 42px; border-radius: 8px; object-fit: cover; background: var(--amb-border); flex-shrink: 0; }
+.pmc-eo-row .n { font-size: 13px; font-weight: 600; color: var(--amb-text); flex: 1; }
+
+.pmc-upload-zone { margin-top: 14px; border: 2px dashed var(--amb-border-strong); border-radius: var(--amb-radius); padding: 24px; text-align: center; background: var(--amb-surface-2); cursor: pointer; }
+.pmc-upload-zone:hover { border-color: var(--amb-blue); }
+.pmc-upload-previews { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.pmc-upload-previews img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--amb-border); }
+
+/* ---- Confirmed product card ---- */
+.pmc-confirm-card { display: flex; gap: 16px; align-items: flex-start; background: var(--amb-surface); border: 1px solid var(--amb-green); border-radius: var(--amb-radius); padding: 18px; box-shadow: var(--amb-shadow); }
+.pmc-confirm-card img { width: 96px; height: 96px; border-radius: 12px; object-fit: cover; background: var(--amb-border); flex-shrink: 0; }
+.pmc-confirm-card .body { flex: 1; min-width: 0; }
+.pmc-confirm-card .title { font-weight: 800; font-size: 15px; color: var(--amb-green); display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.pmc-confirm-card .name { font-weight: 700; font-size: 16px; margin-bottom: 8px; }
+.pmc-trait-groups { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 8px; }
+.pmc-trait-col .h { font-size: 11.5px; font-weight: 800; margin-bottom: 6px; }
+.pmc-trait-col.confirmed .h { color: var(--amb-green); }
+.pmc-trait-col.potential .h { color: var(--amb-amber); }
+.pmc-trait-col.unconfirmed .h { color: var(--amb-text-faint); }
+.pmc-trait-col ul { margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--amb-text-dim); display: grid; gap: 3px; }
+
+/* ---- Top-screen "at a glance" cards ---- */
+.pmc-top-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 16px; }
+.pmc-card { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 16px; box-shadow: var(--amb-shadow); }
+.pmc-card .h { font-size: 12.5px; font-weight: 800; color: var(--amb-text-dim); display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
+
+.pmc-score-ring { position: relative; width: 92px; height: 92px; margin: 4px auto 8px; }
+.pmc-score-ring svg { transform: rotate(-90deg); }
+.pmc-score-ring .num { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; font-weight: 800; }
+.pmc-score-ring .num b { font-size: 22px; line-height: 1; }
+.pmc-score-ring .num span { font-size: 10px; color: var(--amb-text-faint); }
+.pmc-score-label { text-align: center; font-weight: 800; font-size: 13px; margin-top: 4px; }
+.pmc-score-label.strong { color: var(--amb-green); } .pmc-score-label.medium { color: var(--amb-amber); } .pmc-score-label.weak { color: var(--amb-red); }
+
+.pmc-kv { display: flex; justify-content: space-between; padding: 5px 0; font-size: 12.5px; border-bottom: 1px dashed var(--amb-border); }
+.pmc-kv:last-child { border-bottom: none; }
+.pmc-kv b { font-variant-numeric: tabular-nums; }
+
+.pmc-diag-item { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--amb-border); }
+.pmc-diag-item:last-child { border-bottom: none; }
+.pmc-diag-item .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+.pmc-diag-item .dot.HIGH { background: var(--amb-red); } .pmc-diag-item .dot.MEDIUM { background: var(--amb-amber); } .pmc-diag-item .dot.INFO { background: var(--amb-blue); }
+.pmc-diag-item .t { font-weight: 700; font-size: 13px; } .pmc-diag-item .e { font-size: 12px; color: var(--amb-text-dim); margin: 2px 0; } .pmc-diag-item .a { font-size: 12px; color: var(--amb-blue); }
+
+.pmc-angle-mini { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px dashed var(--amb-border); font-size: 12.5px; }
+.pmc-angle-mini:last-child { border-bottom: none; }
+
+.pmc-action-item { border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 10px 12px; margin-bottom: 8px; background: var(--amb-surface-2); }
+.pmc-action-item .t { font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+.pmc-action-item .r { font-size: 12px; color: var(--amb-text-dim); margin-bottom: 8px; }
+.pmc-action-item .btns { display: flex; gap: 6px; }
+
+/* ---- Tabs ---- */
+.pmc-tabs { display: flex; gap: 4px; margin: 18px 0 14px; border-bottom: 1px solid var(--amb-border); overflow-x: auto; }
+.pmc-tab { padding: 10px 16px; font-size: 13px; font-weight: 700; color: var(--amb-text-dim); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; font-family: inherit; }
+.pmc-tab:hover { color: var(--amb-text); }
+.pmc-tab.active { color: var(--amb-blue); border-bottom-color: var(--amb-blue); }
+
+/* ---- Kind/confidence/claim pills ---- */
+.pmc-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 800; padding: 2px 8px; border-radius: 999px; }
+.pmc-pill.FACT { background: var(--amb-blue-bg); color: var(--amb-blue); }
+.pmc-pill.HYPOTHESIS { background: var(--amb-purple-bg); color: var(--amb-purple); }
+.pmc-pill.RECOMMENDATION { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-pill.conf-LOW { background: var(--amb-surface-2); color: var(--amb-text-faint); }
+.pmc-pill.conf-MEDIUM { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-pill.conf-HIGH { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-claim { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 999px; }
+.pmc-claim.GREEN { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-claim.YELLOW { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-claim.RED { background: var(--amb-red-bg); color: var(--amb-red); }
+
+/* ---- Angle / hook / post / idea cards ---- */
+.pmc-angle-card { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 16px; margin-bottom: 12px; box-shadow: var(--amb-shadow); }
+.pmc-angle-card .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.pmc-angle-card .name { font-weight: 800; font-size: 14.5px; }
+.pmc-angle-card .cat { font-size: 11px; color: var(--amb-text-faint); background: var(--amb-surface-2); padding: 2px 8px; border-radius: 999px; }
+.pmc-angle-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px 16px; font-size: 12px; margin-top: 10px; }
+.pmc-angle-fields .f b { display: block; color: var(--amb-text-faint); font-size: 10.5px; font-weight: 700; margin-bottom: 2px; }
+
+.pmc-hook-item, .pmc-idea-item { border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 10px 12px; margin-bottom: 8px; background: var(--amb-surface-2); font-size: 13px; }
+.pmc-idea-item .t { font-weight: 700; margin-bottom: 4px; }
+.pmc-idea-item .f { font-size: 12px; color: var(--amb-text-dim); margin: 2px 0; }
+
+.pmc-loc-table td, .pmc-loc-table th { text-align: center; }
+.pmc-loc-table td:first-child, .pmc-loc-table th:first-child { text-align: start; }
+
+.pmc-empty { text-align: center; padding: 30px 16px; color: var(--amb-text-faint); font-size: 13px; background: var(--amb-surface-2); border: 1px dashed var(--amb-border); border-radius: var(--amb-radius); }
+
+.pmc-memory-item { border-inline-start: 3px solid var(--amb-purple); padding: 8px 12px; margin-bottom: 8px; background: var(--amb-surface-2); border-radius: 0 var(--amb-radius-sm) var(--amb-radius-sm) 0; font-size: 12.5px; }
+.pmc-memory-item .lbl { font-weight: 700; color: var(--amb-purple); font-size: 11px; }
+
+.pmc-winner-box { background: var(--amb-green-bg); border: 1px solid var(--amb-green); border-radius: var(--amb-radius); padding: 14px 16px; margin-bottom: 12px; }
+.pmc-loser-box { background: var(--amb-red-bg); border: 1px solid var(--amb-red); border-radius: var(--amb-radius); padding: 14px 16px; margin-bottom: 12px; }

@@ -65,6 +65,9 @@ model User {
   cf_jobs_created                CfJob[]                      @relation("CfJobCreator")
   cf_variations_created          CfVariation[]                @relation("CfVariationCreator")
   cf_feedback_created            CfFeedback[]                 @relation("CfFeedbackCreator")
+  // AI Product Marketing Center — additive back-relations only (no column change on `users`).
+  pmc_profiles_locked            ProductMarketingProfile[]
+  pmc_actions_decided            ProductMarketingActionLog[]
 
   @@map("users")
 }
@@ -104,6 +107,7 @@ model Product {
   product_research_competitors ProductResearchCompetitor[]
   amb_product                  AmbProduct? // AI Media Buyer economics profile for this product (optional 1:1) — additive
   cf_product                   CfProduct? // AI Creative Factory profile for this product (optional 1:1) — additive
+  pmc_profiles                 ProductMarketingProfile[] // AI Product Marketing Center profiles for this product — additive
 
   @@index([active])
   @@index([product_name])
@@ -2167,4 +2171,141 @@ model CfFeedback {
   @@index([asset_id])
   @@index([product_category, creative_angle])
   @@map("cf_feedback")
+}
+
+// ============================================================================
+// AI PRODUCT MARKETING CENTER — "مركز التسويق الذكي للمنتج". Fully isolated,
+// additive module (new tables only — no existing table touched). Reuses the
+// existing Product / AmbProduct / EasyOrdersOrder / Meta pipeline for every
+// real number; these tables only hold this module's OWN state: the locked
+// product reference, the cached analysis snapshot (so the AI is never
+// re-run on every page load), the self-learning hypothesis history, and the
+// action-approval log. See services/amb/productMarketing.js.
+// ============================================================================
+
+// The locked product reference for one analysis session. Created the moment
+// the owner picks an Easy Orders product or uploads image(s) — nothing in
+// this module runs before a profile exists ("no product reference -> no
+// analysis" rule).
+model ProductMarketingProfile {
+  id       Int @id @default(autoincrement())
+
+  // Resolved catalog link — set only when a real internal Product row with
+  // this exact name already exists (never fabricated; enables reusing the
+  // real Meta + Easy Orders pipeline). Null just means "new product, no
+  // history yet", not an error.
+  product_id Int?
+  product    Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
+
+  source                String // EASY_ORDERS | MANUAL_UPLOAD
+  locked_name           String // the exact name the analysis is locked to — never silently changed
+  easy_orders_product_id String?
+  easy_orders_slug       String?
+  selling_price          Float?
+  primary_image_url      String? // Easy Orders CDN thumb (EASY_ORDERS) or /images/:imageId route (MANUAL_UPLOAD)
+
+  confirmed_traits_json   String? // [{label, value}] — high-confidence, from vision or Easy Orders data
+  potential_traits_json   String? // [{label, value, confidence}] — plausible but not certain
+  unconfirmed_traits_json String? // [{label}] — explicitly "غير مؤكد", never guessed as fact
+  vision_profile_json     String? // raw analyzeProductImage() profile (MANUAL_UPLOAD only) — audit trail
+
+  locked_by_id Int?
+  locked_by    User? @relation(fields: [locked_by_id], references: [id], onDelete: SetNull)
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  images    ProductMarketingImage[]
+  snapshots ProductMarketingSnapshot[]
+  memory    ProductMarketingMemoryEntry[]
+  actions   ProductMarketingActionLog[]
+
+  @@index([product_id])
+  @@map("pmc_profiles")
+}
+
+// MANUAL_UPLOAD reference photos (same simple base64-in-column approach the
+// AI Creative Factory reference images already use). Never populated for an
+// EASY_ORDERS profile — that source's image is the EO CDN URL itself.
+model ProductMarketingImage {
+  id         Int    @id @default(autoincrement())
+  profile_id Int
+  profile    ProductMarketingProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+  data_url   String // "data:image/...;base64,..."
+  sort_order Int    @default(0)
+  created_at DateTime @default(now())
+
+  @@index([profile_id])
+  @@map("pmc_images")
+}
+
+// The cached "brain" output for one profile + reporting window. Recomputed
+// only on an explicit refresh (or when stale) — never on a plain page open,
+// per the module's speed requirement. Every qualitative field inside the
+// JSON blobs is expected to carry its own kind (FACT/HYPOTHESIS/RECOMMENDATION)
+// + confidence — enforced by services/amb/productMarketing.js, not by the
+// column shape.
+model ProductMarketingSnapshot {
+  id         Int    @id @default(autoincrement())
+  profile_id Int
+  profile    ProductMarketingProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  window_name   String // today | yesterday | last7 | last14 | last30
+  ad_account_id String?
+
+  metrics_json        String // deterministic real numbers only (Meta + Easy Orders + economics)
+  opportunity_json     String // { score, label, confidence, dataSufficient, components:[...] }
+  diagnosis_json       String // [{problem, evidence, severity, action}]
+  audience_json        String // { segments:[...], buyerVsUser:{...} } — HYPOTHESIS, never presented as fact
+  locations_json       String // ranked governorates from real Easy Orders + Meta data
+  angles_json          String // sales angles incl. claim status
+  winning_formula_json String? // null when data is insufficient
+  actions_json         String // top AI actions, each with reason/confidence/source
+
+  ai_model_version String  @default("pmc-v1")
+  ai_raw_json      String? // last raw Claude response — audit trail only, never shown raw to the user
+  computed_at      DateTime @default(now())
+
+  @@unique([profile_id, window_name])
+  @@map("pmc_snapshots")
+}
+
+// Self-learning marketing memory (§22) — an append-only log of every time a
+// hypothesis about this product changed, WITH the evidence, never a silent
+// overwrite. field is a short key such as "audience" | "location" | "angle".
+model ProductMarketingMemoryEntry {
+  id            Int      @id @default(autoincrement())
+  profile_id    Int
+  profile       ProductMarketingProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+  field         String
+  previous_json String? // null on the very first hypothesis for this field
+  new_json      String
+  evidence      String
+  created_at    DateTime @default(now())
+
+  @@index([profile_id, field])
+  @@map("pmc_memory")
+}
+
+// "ماذا أفعل الآن؟" recommendations + the owner's decision on each. Deciding
+// here NEVER itself writes to Meta — it only records the decision; any real
+// Meta action still goes through the existing AI Media Buyer approval flow.
+model ProductMarketingActionLog {
+  id         Int      @id @default(autoincrement())
+  profile_id Int
+  profile    ProductMarketingProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  action_key String // stable key so a re-generated list can recognize "the same action" across refreshes
+  title      String
+  reason     String
+  confidence String // LOW | MEDIUM | HIGH
+  source     String
+  status     String   @default("PENDING") // PENDING | APPROVED | MODIFIED | REJECTED
+  note       String?
+  decided_by_id Int?
+  decided_by    User? @relation(fields: [decided_by_id], references: [id], onDelete: SetNull)
+  decided_at    DateTime?
+  created_at    DateTime @default(now())
+
+  @@index([profile_id])
+  @@map("pmc_actions")
 }

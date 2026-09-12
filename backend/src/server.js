@@ -32,6 +32,7 @@ import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
 import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
 import creativeFactoryRoutes from './routes/creativeFactory.js';
+import productMarketingRoutes from './routes/productMarketing.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
@@ -81,6 +82,7 @@ app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
 app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new module INSIDE AI Intelligence (see routes/aiMediaBuyer.js)
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
+app.use('/api/product-marketing', productMarketingRoutes); // AI Product Marketing Center — "مركز التسويق الذكي للمنتج" (see routes/productMarketing.js)
 app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
 app.use('/api/product-research', productResearchRoutes);
 
