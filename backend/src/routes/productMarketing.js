@@ -15,7 +15,10 @@ function idParam(v) { const n = Number(v); if (!Number.isInteger(n) || n <= 0) {
 
 // ---- Product source / lock ----
 router.get('/easy-orders/search', asyncRoute(async (req, res) => {
-  res.json({ products: await PM.searchEasyOrdersProducts(req.query.q) });
+  // §1 — the service now returns {products, ok, source, error} so a real
+  // EasyOrders API/network/config failure is never indistinguishable from
+  // a genuinely empty catalogue — passed straight through, not re-wrapped.
+  res.json(await PM.searchEasyOrdersProducts(req.query.q));
 }));
 router.post('/profiles/from-easy-orders', asyncRoute(async (req, res) => {
   res.status(201).json(await PM.lockFromEasyOrders({ eoProductId: req.body?.eoProductId, userId: req.user.id }));

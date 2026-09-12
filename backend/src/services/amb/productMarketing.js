@@ -16,10 +16,11 @@ import { resolveWindow } from './metricsEngine.js';
 import { buildHierarchy } from './hierarchyAnalysis.js';
 import { productDashboard } from './ambProducts.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
-import { getEasyOrdersProducts } from './easyOrdersProducts.js';
+import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations } from './productMarketingScoring.js';
 import * as PMAI from './productMarketingAI.js';
+import { mapProductByName } from '../../../../js/product-mapping.js';
 
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
@@ -39,22 +40,51 @@ const WINDOWS = ['today', 'yesterday', 'last3', 'last7'];
  * paging) client-side over that one real list — no repeated round-trips.
  */
 export async function searchEasyOrdersProducts(query) {
-  const list = await getEasyOrdersProducts();
+  const status = await getAllEasyOrdersProductsStatus();
   const q = String(query || '').trim().toLowerCase();
-  const filtered = q ? list.filter((p) => p.name.toLowerCase().includes(q)) : list;
-  return filtered.map((p) => ({ id: p.id, name: p.name, slug: p.slug, thumb: p.thumb, price: p.price ?? null, createdAt: p.createdAt || null }));
+  const filtered = q ? status.products.filter((p) => p.name.toLowerCase().includes(q)) : status.products;
+  return {
+    products: filtered.map((p) => ({ id: p.id, name: p.name, slug: p.slug, thumb: p.thumb, price: p.price ?? null, createdAt: p.createdAt || null })),
+    // §1 — a real API/network/config failure must never be presented to the
+    // frontend as an indistinguishable "zero products"; ok/source/error let
+    // the UI show the REAL reason (and a retry) instead of a wrong "not found".
+    ok: status.ok, source: status.source, error: status.error,
+  };
 }
 
+// BUG 3 fix — this used to be a plain Prisma `equals` (case-insensitive
+// only), which silently fails to link a real product the moment the Easy
+// Orders name differs from the internal catalog name by so much as an
+// Arabic alef/ya/ta-marbuta variant or stray whitespace — exactly the kind
+// of near-miss that produces "no data" everywhere downstream even though a
+// real, already-matched product exists. Reusing the SAME normalizer AI
+// Media Buyer's own campaign->product mapping already relies on
+// (js/product-mapping.js, also used by amb/mapping.js) means one normalization
+// rule for the whole app instead of a second, weaker one just for PMC.
+//
+// Deliberately EXACT-only here (method 'exact_name'/'exact_sku', confidence
+// 1) — never the fuzzy tier. Verified against the real production catalog:
+// mapProductByName's fuzzy path at its normal 0.6 threshold produced a false
+// positive (an ultrasonic blackhead-remover matched to an ultrasonic
+// tooth-cleaner at 0.71 "confidence" purely on shared generic tokens). A
+// silent wrong link would misattribute a real product's Meta/COD history —
+// worse than the honest "not mapped yet" state. amb/mapping.js only ever
+// surfaces its fuzzy guesses as a SUGGESTION for a human to confirm; PMC's
+// auto-lock has no such confirmation step, so it must not auto-apply one.
 async function findInternalProductByName(name) {
   const n = String(name || '').trim();
   if (!n) return null;
-  return prisma.product.findFirst({ where: { product_name: { equals: n, mode: 'insensitive' } } });
+  const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
+  const match = mapProductByName(n, candidates, 0.6);
+  if (!match.productId || (match.method !== 'exact_name' && match.method !== 'exact_sku')) return null;
+  return prisma.product.findUnique({ where: { id: match.productId } });
 }
 
 /** Option A — lock a profile onto a real Easy Orders product. The EO image becomes the one true reference; never swapped, never re-guessed. */
 export async function lockFromEasyOrders({ eoProductId, userId }) {
-  const list = await getEasyOrdersProducts();
-  const eo = list.find((p) => String(p.id) === String(eoProductId));
+  const status = await getAllEasyOrdersProductsStatus();
+  if (!status.ok) throw bad(`تعذر تحميل منتجات Easy Orders: ${status.error || 'خطأ غير معروف'}`, 502);
+  const eo = status.products.find((p) => String(p.id) === String(eoProductId));
   if (!eo) throw bad('منتج Easy Orders غير موجود — حاول تبحث تاني.', 404);
 
   const product = await findInternalProductByName(eo.name);
@@ -231,6 +261,20 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     govRows = await codCountsByGovernorate({ productId: profile.product_id, from: window.from, to: window.to });
   }
 
+  // §3 (BUG 3) — WHY a number is missing must never collapse into one vague
+  // "بيانات غير كافية". These two booleans (+ their ready-to-show Arabic
+  // messages) travel with the snapshot so the frontend can tell "no Meta
+  // campaign mapped" apart from "no Easy Orders orders in this window"
+  // apart from "mapped, but the real sample is just small".
+  const metaMapped = !!ambProduct;
+  const codMapped = cod.source !== 'none';
+  const dataAvailability = {
+    metaMapped,
+    metaMessage: metaMapped ? null : 'لا توجد حملات Meta مرتبطة بهذا المنتج.',
+    codMapped,
+    codMessage: codMapped ? null : 'لا توجد بيانات Easy Orders مرتبطة بهذا المنتج في الفترة المحددة.',
+  };
+
   const m = dashboard?.metrics || {};
   const metrics = {
     windowLabel: window.label,
@@ -246,6 +290,7 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     netMarginPct: m.netMarginPct ?? null,
     roas: m.roas ?? null,
     ctr: null, cpc: null, cvr: null, frequency: null, // filled below from the product's own campaign rollup when a Meta mapping exists
+    dataAvailability,
   };
   let bestWorst = { best: null, worst: null };
   if (adAccountId && ambProduct) {

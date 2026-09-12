@@ -62,6 +62,25 @@ function toResponsesInput(messages) {
   return messages.map((m) => ({ role: m.role, content: toResponsesContent(m.content) }));
 }
 
+// OpenAI's Responses API rejects `text.format: {type:'json_object'}` with a
+// 400 ("Response input messages must contain the word 'json' in some form")
+// UNLESS the literal word "json" appears somewhere in the `input` array
+// itself — the `instructions` (system prompt) field does NOT count, even
+// when it says "رجّع JSON فقط". Every caller's own system prompt already
+// asks for JSON in Arabic/English, but that alone isn't enough — this is
+// the ONE centralized place that guarantees it, so no individual feature
+// prompt has to remember to. Idempotent: appended unconditionally whenever
+// jsonMode is requested, regardless of what the caller's own prompt says.
+const JSON_MODE_DIRECTIVE = 'Return the response as valid JSON only. Do not include markdown, code fences, commentary, or text outside the JSON object.';
+export function ensureJsonDirective(input) {
+  if (!input.length) return [{ role: 'user', content: [{ type: 'input_text', text: JSON_MODE_DIRECTIVE }] }];
+  const withDirective = input.slice();
+  const last = { ...withDirective[withDirective.length - 1] };
+  last.content = [...last.content, { type: 'input_text', text: JSON_MODE_DIRECTIVE }];
+  withDirective[withDirective.length - 1] = last;
+  return withDirective;
+}
+
 /** Anthropic tool shape ({name, description, input_schema}) → Responses API function-tool shape. */
 export function toResponsesTools(tools) {
   if (!Array.isArray(tools)) return undefined;
@@ -163,7 +182,8 @@ function extractFunctionCalls(data) {
  */
 export async function callOpenAiText({ system, messages, maxTokens = 1024, model, jsonMode = false }) {
   const apiKey = apiKeyOrThrow();
-  const input = toResponsesInput(messages);
+  let input = toResponsesInput(messages);
+  if (jsonMode) input = ensureJsonDirective(input);
   const data = await withRetry(() => callResponsesApi({ apiKey, model, instructions: system, input, maxOutputTokens: maxTokens, jsonMode }));
   return {
     text: extractText(data),

@@ -30,7 +30,11 @@ export function computeOpportunityScore({ metrics, settings }) {
   const haveSpend = spend != null && spend > 0;
   const havePurchases = purchases != null && purchases > 0;
   if (!haveSpend || !havePurchases) {
-    return { score: null, label: null, confidence: 'LOW', dataSufficient: false, components: [], note: 'البيانات غير كافية للحكم — لسه مفيش صرف/مشتريات كفاية على هذا المنتج.' };
+    // §3 (BUG 3) — specific, not vague: "never mapped" vs "mapped but the real numbers are just small/zero yet".
+    const note = metrics.dataAvailability && !metrics.dataAvailability.metaMapped
+      ? 'لا توجد حملات Meta مرتبطة بهذا المنتج — لا يمكن حساب فرصة النجاح بدون بيانات أداء حقيقية.'
+      : 'البيانات موجودة لكن حجم العينة غير كافٍ للحكم — لسه مفيش صرف/مشتريات كفاية على هذا المنتج.';
+    return { score: null, label: null, confidence: 'LOW', dataSufficient: false, components: [], note };
   }
 
   const components = [];
@@ -97,8 +101,15 @@ export function computeDiagnosis({ metrics, creative, settings }) {
   const cvr = n(metrics.cvr);
   const frequency = n(metrics.frequency);
 
+  // §3 (BUG 3) — WHY there's no Meta signal must be specific: "never mapped
+  // to a campaign" is a completely different situation from "mapped, ran
+  // real spend, still too little data" — never the same vague sentence.
+  if (metrics.dataAvailability && !metrics.dataAvailability.metaMapped) {
+    out.push({ problem: 'لا توجد حملات Meta مرتبطة بهذا المنتج', evidence: 'المنتج لسه مش مربوط بحملة Meta حقيقية في AI Media Buyer.', severity: 'INFO', action: 'اربط المنتج بحملته في AI Media Buyer عشان تظهر بيانات الأداء الحقيقية هنا.' });
+    return out;
+  }
   if (spend < 100 || purchases == null) {
-    out.push({ problem: 'بيانات غير كافية', evidence: `الصرف حتى الآن ${Math.round(spend)} جنيه${purchases == null ? '، مفيش مشتريات مرتبطة بعد' : ''}.`, severity: 'INFO', action: 'كمّل الصرف على الفترة الحالية قبل الحكم على المنتج.' });
+    out.push({ problem: 'البيانات موجودة لكن حجم العينة غير كافٍ للحكم', evidence: `الصرف حتى الآن ${Math.round(spend)} جنيه${purchases == null ? '، مفيش مشتريات مرتبطة بعد' : ''}.`, severity: 'INFO', action: 'كمّل الصرف على الفترة الحالية قبل الحكم على المنتج.' });
     return out;
   }
 

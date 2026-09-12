@@ -36,6 +36,7 @@
 .pmc-pcard.selected { border-color: var(--amb-blue); box-shadow: 0 0 0 2px var(--amb-blue-bg), var(--amb-shadow-hover); }
 .pmc-pcard .thumb { width: 100%; aspect-ratio: 1 / 1; background: var(--amb-surface-2); overflow: hidden; }
 .pmc-pcard .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pmc-thumb-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 28px; color: var(--amb-text-faint); background: var(--amb-surface-2); }
 .pmc-pcard .body { padding: 8px 10px 10px; }
 .pmc-pcard .n { font-size: 12px; font-weight: 700; color: var(--amb-text); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.6em; }
 .pmc-pcard .price { font-size: 12px; font-weight: 800; color: var(--amb-blue); margin-top: 4px; }

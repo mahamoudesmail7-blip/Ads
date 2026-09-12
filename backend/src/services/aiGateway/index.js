@@ -25,6 +25,41 @@ export { TIERS, TTL, cacheInvalidate, requestHash, usageSummary, checkBudget, al
 
 export function isAiConfigured() { return isOpenAiConfigured(); }
 
+// A real OpenAI HTTP/network failure must never reach a user-facing card as
+// raw provider text (status codes, JSON error bodies, stack-shaped
+// messages) — only this one generic, safe Arabic message does. The full
+// technical detail is NEVER dropped: it's still logged in full via
+// logUsage()/logger.error() right where this is called, for admin/debug.
+// NOT_CONFIGURED is deliberately exempt — it's the app's OWN clear setup
+// message ("OPENAI_API_KEY مش متظبط..."), generated locally before any
+// network call, not a raw provider error, and hiding it would make the
+// owner's own missing-config state harder to diagnose.
+/**
+ * §43 — a light, dependency-free validity probe used ONLY to decide whether
+ * a jsonMode response is worth one retry. Deliberately simpler than
+ * creativeFactory/textAi.js's extractJson() (which also salvages a
+ * truncated tail) — that fuller extraction still runs in the CALLER after
+ * generateText() returns, so this never needs to duplicate it or import it
+ * (which would be a circular import: textAi.js already imports
+ * generateText from this very file).
+ */
+export function looksLikeValidJson(text) {
+  const stripped = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+  const start = stripped.search(/[{[]/);
+  if (start === -1) return false;
+  try { JSON.parse(stripped.slice(start)); return true; } catch { return false; }
+}
+
+const USER_SAFE_AI_ERROR = 'تعذر إكمال التحليل حالياً — حاول مرة أخرى';
+export function sanitizeAiError(err) {
+  if (err.errorType === 'NOT_CONFIGURED') return err;
+  const safe = new Error(USER_SAFE_AI_ERROR);
+  safe.debugMessage = err.message;
+  safe.httpStatus = err.httpStatus || null;
+  safe.errorType = err.errorType || null;
+  return safe;
+}
+
 /**
  * §5/§8 — image generation cost/usage tracking + the SAME monthly budget
  * guard text/vision already use. Creative Factory's own generation loop
@@ -94,15 +129,32 @@ export async function generateText({ feature, tier = TIERS.ROUTINE, system, mess
 
   const startedAt = Date.now();
   try {
-    const { text, requestId, usage } = await callOpenAiText({ system, messages, maxTokens, model, jsonMode });
+    let { text, requestId, usage } = await callOpenAiText({ system, messages, maxTokens, model, jsonMode });
+    let retried = false;
+    // §43 — ONE bounded retry when jsonMode was requested but the model
+    // didn't actually return parseable JSON (never a loop: at most one
+    // extra call, ever). The caller's own extractJson() still gets the
+    // final say on the returned text either way — this only decides
+    // whether it's worth asking the model again first.
+    if (jsonMode && !looksLikeValidJson(text)) {
+      logger.warn('AI_GATEWAY_MALFORMED_JSON_RETRY', { feature, tier, model });
+      const correctionMessages = [...messages, { role: 'assistant', content: text }, { role: 'user', content: 'الرد السابق مش JSON صالح. رجّع الآن JSON صالح فقط بنفس المطلوب، بدون أي نص أو شرح خارج الكائن.' }];
+      try {
+        const retry = await callOpenAiText({ system, messages: correctionMessages, maxTokens, model, jsonMode });
+        text = retry.text; requestId = retry.requestId; usage = retry.usage; retried = true;
+      } catch { /* the retry itself failing just means we fall through with the original (still malformed) text — the caller's own fallback handles that exactly as it always has */ }
+    }
     const estimatedCostUsd = estimateTextCostUsd({ tier, inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens });
-    await logUsage({ feature, tier, model, promptVersion, status: 'SUCCESS', cached: false, inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens, estimatedCostUsd, requestId, productId, userId, durationMs: Date.now() - startedAt });
+    await logUsage({ feature, tier, model, promptVersion, status: 'SUCCESS', cached: false, inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens, estimatedCostUsd, requestId, productId, userId, durationMs: Date.now() - startedAt, error: retried ? 'recovered after one malformed-JSON retry' : null });
     if (cacheKey) await cacheSet({ cacheKey, feature, promptVersion, data: text, ttlMs: cacheTtlMs });
-    return { text, cached: false, requestId, model, usage, estimatedCostUsd };
+    return { text, cached: false, requestId, model, usage, estimatedCostUsd, retried };
   } catch (err) {
-    await logUsage({ feature, tier, model, promptVersion, status: 'FAILED', error: err.message, productId, userId, durationMs: Date.now() - startedAt });
-    logger.error('AI_GATEWAY_TEXT_FAILED', { feature, tier, model, message: err.message });
-    throw err;
+    // Full technical detail — feature/model/status/requestId/raw OpenAI
+    // error/timestamp — goes to the log line and the usage-log row (admin/
+    // debug only); never into what gets thrown/rendered.
+    await logUsage({ feature, tier, model, promptVersion, status: 'FAILED', error: err.message, requestId: err.requestId || null, productId, userId, durationMs: Date.now() - startedAt });
+    logger.error('AI_GATEWAY_TEXT_FAILED', { feature, tier, model, httpStatus: err.httpStatus || null, errorType: err.errorType || null, message: err.message });
+    throw sanitizeAiError(err);
   }
 }
 
@@ -130,8 +182,8 @@ export async function runTools({ feature, tier = TIERS.BALANCED, system, userMes
     return { text, toolCalls };
   } catch (err) {
     await logUsage({ feature, tier, model, status: 'FAILED', error: err.message, userId, durationMs: Date.now() - startedAt });
-    logger.error('AI_GATEWAY_TOOLS_FAILED', { feature, tier, model, message: err.message });
-    throw err;
+    logger.error('AI_GATEWAY_TOOLS_FAILED', { feature, tier, model, httpStatus: err.httpStatus || null, errorType: err.errorType || null, message: err.message });
+    throw sanitizeAiError(err);
   }
 }
 

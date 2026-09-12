@@ -139,9 +139,17 @@ async function loadEoCatalog() {
   paintEoGrid();
   try {
     const r = await api.get('/api/product-marketing/easy-orders/search', { q: '' });
-    state.eoAll = r.products || [];
+    // §1 — the backend now says explicitly whether this is a REAL catalogue
+    // (possibly genuinely empty) or a failure; a failure must never be
+    // shown as "لم يتم العثور على منتجات" — show the real technical reason.
+    if (r.ok === false) {
+      state.eoError = r.error || 'تعذر تحميل منتجات Easy Orders.';
+      state.eoAll = null;
+    } else {
+      state.eoAll = r.products || [];
+    }
   } catch (e) {
-    state.eoError = e.message || 'فشل الاتصال بـ Easy Orders.';
+    state.eoError = e.message || 'تعذر الاتصال بـ Easy Orders.';
     state.eoAll = null;
   }
   state.eoLoading = false;
@@ -196,7 +204,7 @@ function paintEoGrid() {
   const visible = list.slice(0, state.eoVisible);
   grid.innerHTML = `<div class="pmc-product-grid">${visible.map((p) => `
     <div class="pmc-pcard ${state.eoSelected?.id === p.id ? 'selected' : ''}" data-pick="${E(p.id)}">
-      <div class="thumb"><img src="${E(p.thumb || '')}" loading="lazy" onerror="this.closest('.thumb').style.background='var(--amb-border)'" /></div>
+      <div class="thumb">${p.thumb ? `<img src="${E(p.thumb)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'pmc-thumb-placeholder',textContent:'📦'}))" />` : `<div class="pmc-thumb-placeholder">📦</div>`}</div>
       <div class="body">
         <div class="n" title="${E(p.name)}">${E(p.name)}</div>
         <div class="price ${p.price ? '' : 'na'}">${p.price ? fmtEGP(p.price) : 'السعر غير متاح'}</div>
@@ -380,7 +388,7 @@ function renderOverview(mount, s) {
       </div>
       <div class="pmc-card">
         <div class="h">📍 أفضل المحافظات</div>
-        ${(s.locations || []).slice(0, 5).map((l) => `<div class="pmc-kv"><span>${E(l.government)}</span><b>${fmtNum(l.delivered)} مُستلم</b></div>`).join('') || '<div class="pmc-empty" style="padding:10px;">البيانات غير كافية للحكم</div>'}
+        ${(s.locations || []).slice(0, 5).map((l) => `<div class="pmc-kv"><span>${E(l.government)}</span><b>${fmtNum(l.delivered)} مُستلم</b></div>`).join('') || `<div class="pmc-empty" style="padding:10px;">${E(m.dataAvailability?.codMessage || 'البيانات غير كافية للحكم')}</div>`}
       </div>
       <div class="pmc-card">
         <div class="h">🏆 التركيبة الرابحة</div>
@@ -390,7 +398,7 @@ function renderOverview(mount, s) {
 
     <div class="pmc-card" style="margin-top:14px;">
       <div class="h">🔥 أفضل زوايا بيع مقترحة</div>
-      ${(s.angles || []).slice(0, 3).map((a) => `<div class="pmc-angle-mini"><span>${E(a.name)} ${claimPill(a.claimStatus, a.claimReason)}</span>${confPill(a.confidence)}</div>`).join('') || '<div class="pmc-empty">البيانات غير كافية للحكم</div>'}
+      ${(s.angles || []).slice(0, 3).map((a) => `<div class="pmc-angle-mini"><span>${E(a.name)} ${claimPill(a.claimStatus, a.claimReason)}</span>${confPill(a.confidence)}</div>`).join('') || `<div class="pmc-empty">${E(s.aiFailed ? (s.aiFailReason || 'تعذر إكمال التحليل حالياً — حاول مرة أخرى') : 'البيانات غير كافية للحكم')}</div>`}
     </div>
 
     <div class="pmc-card" style="margin-top:14px;">
@@ -508,7 +516,7 @@ function renderAngles(mount, s) {
           <button class="amb-btn sm" data-gen-post="${i}">توليد بوست</button>
           <button class="amb-btn sm ghost" data-gen-idea="${i}">أفكار كرياتيف</button>
         </div>
-      </div>`).join('') || '<div class="pmc-empty">البيانات غير كافية للحكم — استمر بالصرف على المنتج أو راجع تحليل المنافسين.</div>'}
+      </div>`).join('') || `<div class="pmc-empty">${E(s.aiFailed ? (s.aiFailReason || 'تعذر إكمال التحليل حالياً — حاول مرة أخرى') : 'البيانات غير كافية للحكم — استمر بالصرف على المنتج أو راجع تحليل المنافسين.')}</div>`}
     </div>`;
   mount.querySelectorAll('[data-gen-hooks]').forEach((b) => b.onclick = () => { state.genAngle = s.angles[Number(b.dataset.genHooks)].name; state.tab = 'hooks'; renderTabBody(); generateHooks(); });
   mount.querySelectorAll('[data-gen-post]').forEach((b) => b.onclick = () => { state.genAngle = s.angles[Number(b.dataset.genPost)].name; state.tab = 'hooks'; renderTabBody(); generatePost(); });
@@ -674,7 +682,7 @@ function renderLocations(mount, s) {
       ${rows.length ? `<div class="table-wrap"><table class="data pmc-loc-table">
         <thead><tr><th>المحافظة</th><th>الطلبات</th><th>مؤكدة</th><th>مُستلمة</th><th>مرتجعة</th><th>معدل الاستلام</th></tr></thead>
         <tbody>${rows.map((l) => `<tr><td>${E(l.government)}</td><td>${fmtNum(l.orders)}</td><td>${fmtNum(l.confirmed)}</td><td>${fmtNum(l.delivered)}</td><td>${fmtNum(l.returned)}</td><td>${fmtPct1(l.deliveryRate)}</td></tr>`).join('')}</tbody>
-      </table></div>` : '<div class="pmc-empty">البيانات غير كافية للحكم — لا توجد طلبات مسجّلة بعنوان محافظة في هذه الفترة.</div>'}
+      </table></div>` : `<div class="pmc-empty">${E(s.metrics?.dataAvailability?.codMessage || 'لا توجد طلبات مسجّلة بعنوان محافظة في هذه الفترة.')}</div>`}
       ${s.locationCommentary ? `<div class="faint" style="font-size:12px;margin-top:10px;">${E(s.locationCommentary)}</div>` : ''}
     </div>`;
 }

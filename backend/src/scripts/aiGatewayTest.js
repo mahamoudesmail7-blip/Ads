@@ -11,7 +11,8 @@ import { requestHash, cacheGet, cacheSet, cacheInvalidate } from '../services/ai
 import { estimateTextCostUsd } from '../services/aiGateway/costEstimator.js';
 import { logUsage, usageSummary } from '../services/aiGateway/usageLog.js';
 import { checkBudget } from '../services/aiGateway/budget.js';
-import { anthropicEnabled, isAiConfigured } from '../services/aiGateway/index.js';
+import { anthropicEnabled, isAiConfigured, sanitizeAiError, looksLikeValidJson } from '../services/aiGateway/index.js';
+import { ensureJsonDirective } from '../services/aiGateway/openaiClient.js';
 import { askClaude, runAgentTurn } from '../services/ai.js';
 
 let pass = 0, fail = 0;
@@ -27,6 +28,46 @@ console.log('§4 Model routing (env-driven, never hardcoded past the documented 
   if (prevRoutine === undefined) delete process.env.AI_TEXT_ROUTINE_MODEL; else process.env.AI_TEXT_ROUTINE_MODEL = prevRoutine;
   ok('unknown tier never throws — falls back to routine', modelForTier('nonsense') === modelForTier(TIERS.ROUTINE));
   ok('image model has a real default', typeof imageModel() === 'string' && imageModel().length > 0);
+}
+
+console.log('\nJSON-mode 400 fix — ensureJsonDirective() (OpenAI rejects text.format:json_object unless the literal word "json" is in the INPUT array, not just the system/instructions field):');
+{
+  const withoutJson = [{ role: 'user', content: [{ type: 'input_text', text: 'حلل الأداء وارجع النتيجة.' }] }];
+  const fixed = ensureJsonDirective(withoutJson);
+  const flatText = (msgs) => msgs.flatMap((m) => m.content).filter((c) => c.type === 'input_text').map((c) => c.text).join(' ');
+  ok('a prompt with no "json" mention gets one appended', /json/i.test(flatText(fixed)));
+  ok('the original message content is preserved (directive is appended, not a replacement)', flatText(fixed).includes('حلل الأداء وارجع النتيجة'));
+  ok('the original input array is never mutated in place', withoutJson[0].content.length === 1);
+  ok('empty input never crashes — a real user message with the directive is created', ensureJsonDirective([]).length === 1 && /json/i.test(flatText(ensureJsonDirective([]))));
+
+  const alreadyHasJson = [{ role: 'user', content: [{ type: 'input_text', text: 'رجّع JSON فقط.' }] }];
+  const stillFixed = ensureJsonDirective(alreadyHasJson);
+  ok('idempotent — still appends even when the caller already said JSON (never assumes, always guarantees)', flatText(stillFixed).toLowerCase().split('json').length - 1 >= 2);
+}
+
+console.log('\nRaw OpenAI errors never reach a user-facing card (sanitizeAiError):');
+{
+  const rawHttpError = new Error('OpenAI API error 400: {"type":"error","error":{"type":"invalid_request_error","message":"Response input messages must contain the word \'json\' in some form..."}}');
+  rawHttpError.httpStatus = 400;
+  const safe = sanitizeAiError(rawHttpError);
+  ok('a raw HTTP error body is replaced with the generic Arabic message', safe.message === 'تعذر إكمال التحليل حالياً — حاول مرة أخرى');
+  ok('the raw technical detail is preserved on a non-message property for admin/debug, never lost', safe.debugMessage === rawHttpError.message);
+  ok('the raw JSON/error body never leaks into the thrown message', !safe.message.includes('invalid_request_error') && !safe.message.includes('{"type"'));
+
+  const notConfigured = new Error('OPENAI_API_KEY مش متظبط — ضيفه في متغيرات البيئة عشان تشغّل أي ميزة ذكاء اصطناعي.');
+  notConfigured.errorType = 'NOT_CONFIGURED';
+  const stillClear = sanitizeAiError(notConfigured);
+  ok('NOT_CONFIGURED is exempt — the app\'s own clear setup message stays visible for the owner to actually fix it', stillClear.message === notConfigured.message);
+}
+
+console.log('\n§43 malformed-JSON retry decision (looksLikeValidJson) — bounded, never a loop by construction (generateText retries at most once regardless):');
+{
+  ok('a clean JSON object is valid', looksLikeValidJson('{"ok": true}'));
+  ok('JSON wrapped in a ```json fence is still recognized as valid', looksLikeValidJson('```json\n{"ok": true}\n```'));
+  ok('a bare JSON array is valid', looksLikeValidJson('[1, 2, 3]'));
+  ok('empty/prose-only text is invalid — worth a retry', !looksLikeValidJson('عفوًا، مقدرش أرجع نتيجة دلوقتي.'));
+  ok('a truncated/cut-off object is invalid — worth a retry', !looksLikeValidJson('{"hooks": [{"text": "قول'));
+  ok('empty string never crashes the check', looksLikeValidJson('') === false);
 }
 
 console.log('\n§32/§33 Cache request-hash (deterministic, order-independent):');

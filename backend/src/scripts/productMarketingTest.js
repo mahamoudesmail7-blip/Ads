@@ -15,6 +15,12 @@ console.log('§4 Opportunity Score:');
   const insufficient = computeOpportunityScore({ metrics: { totalSpend: 0, metaPurchases: null }, settings: SETTINGS });
   ok('no spend/purchases -> dataSufficient:false, score:null', insufficient.dataSufficient === false && insufficient.score === null);
 
+  // BUG 3 fix — the note must say WHY: no mapping at all vs. mapped-but-early.
+  const noMappingScore = computeOpportunityScore({ metrics: { totalSpend: 0, metaPurchases: null, dataAvailability: { metaMapped: false } }, settings: SETTINGS });
+  ok('no Meta mapping -> the score note says so specifically, not a generic "insufficient data"', noMappingScore.note.includes('لا توجد حملات Meta مرتبطة'));
+  const mappedButEarlyScore = computeOpportunityScore({ metrics: { totalSpend: 0, metaPurchases: null, dataAvailability: { metaMapped: true } }, settings: SETTINGS });
+  ok('mapped but too early -> a DIFFERENT note than the no-mapping case', mappedButEarlyScore.note !== noMappingScore.note && !mappedButEarlyScore.note.includes('لا توجد حملات Meta مرتبطة'));
+
   const strong = computeOpportunityScore({
     metrics: { totalSpend: 1000, metaPurchases: 20, deliveredCpa: 60, avgCpa: 50, deliveredOrders: 18, deliveryRate: 0.9, netProfit: 500 },
     settings: SETTINGS,
@@ -35,7 +41,12 @@ console.log('§4 Opportunity Score:');
 console.log('\n§6 Quick Diagnosis (rule-based, never a single vague verdict):');
 {
   const noData = computeDiagnosis({ metrics: { totalSpend: 20, metaPurchases: null }, settings: SETTINGS });
-  ok('too little spend -> insufficient-data diagnosis only', noData.length === 1 && noData[0].problem.includes('غير كافية'));
+  ok('too little spend (mapped, just early) -> "sample too small", not a vague catch-all', noData.length === 1 && /غير كافٍ|غير كافية/.test(noData[0].problem));
+
+  // BUG 3 fix — "never mapped to Meta" must be its OWN specific message, never the same generic "sample too small" text.
+  const noMapping = computeDiagnosis({ metrics: { totalSpend: 0, metaPurchases: null, dataAvailability: { metaMapped: false, codMapped: false } }, settings: SETTINGS });
+  ok('no Meta mapping at all -> the SPECIFIC "لا توجد حملات Meta مرتبطة" message, not "sample too small"', noMapping.length === 1 && noMapping[0].problem.includes('لا توجد حملات Meta مرتبطة'));
+  ok('no-mapping message is distinct from the small-sample message', noMapping[0].problem !== noData[0].problem);
 
   const weakHook = computeDiagnosis({ metrics: { totalSpend: 500, metaPurchases: 3, ctr: 0.4, avgCpa: 200 }, settings: SETTINGS });
   ok('low CTR -> flags weak Hook with evidence+action', weakHook.some((d) => d.problem.includes('Hook') && d.evidence && d.action));
