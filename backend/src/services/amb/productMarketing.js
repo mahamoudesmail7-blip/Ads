@@ -29,12 +29,20 @@ const WINDOWS = ['today', 'yesterday', 'last3', 'last7'];
 // §1 — Product source, lock, understanding
 // ---------------------------------------------------------------------------
 
-/** Searchable Easy Orders picker — filters the existing cached catalogue by name (substring, case/space-insensitive). */
+/**
+ * The Easy Orders picker's data source — the FULL real catalogue (no
+ * artificial cap; EasyOrders returns every product in one call for this
+ * account, confirmed against the live API — no pagination envelope to
+ * follow). `query` optionally filters by name server-side, but the
+ * frontend fetches once with no query and does the rest (search + "الأحدث" /
+ * "تم استخدامها مؤخراً" filtering, plus its own progressive "تحميل المزيد"
+ * paging) client-side over that one real list — no repeated round-trips.
+ */
 export async function searchEasyOrdersProducts(query) {
   const list = await getEasyOrdersProducts();
   const q = String(query || '').trim().toLowerCase();
   const filtered = q ? list.filter((p) => p.name.toLowerCase().includes(q)) : list;
-  return filtered.slice(0, 30).map((p) => ({ id: p.id, name: p.name, slug: p.slug, thumb: p.thumb, price: p.price ?? null }));
+  return filtered.map((p) => ({ id: p.id, name: p.name, slug: p.slug, thumb: p.thumb, price: p.price ?? null, createdAt: p.createdAt || null }));
 }
 
 async function findInternalProductByName(name) {

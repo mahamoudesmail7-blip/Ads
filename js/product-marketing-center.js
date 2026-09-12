@@ -30,7 +30,11 @@ const TABS = [
 const state = {
   me: null,
   source: 'EASY_ORDERS', // EASY_ORDERS | MANUAL_UPLOAD (source-picker only, before lock)
-  eoQuery: '', eoResults: [],
+  eoQuery: '', eoFilter: 'all', // all | newest | recent
+  eoAll: null, eoLoading: false, eoError: null, // the ONE real fetch, cached client-side
+  eoRecentIds: null, // distinct easyOrdersProductId from this user's own recent profiles (real usage history)
+  eoVisible: 20, // progressive "تحميل المزيد" window over the real list — never a fake page count
+  eoSelected: null, // the clicked-but-not-yet-locked EO product (confirm bar)
   uploadImages: [], // [{base64, mediaType, dataUrl}]
   profile: null, // locked profile
   windowName: 'last7',
@@ -95,51 +99,127 @@ function renderSourcePicker(mount) {
     <div class="amb-panel">
       <div class="section-title" style="margin-top:0;">اختر مصدر المنتج</div>
       <div class="faint" style="font-size:12px;margin-bottom:14px;">قبل أي تحليل، لازم تحدد المنتج الحقيقي اللي هنشتغل عليه — من كتالوج Easy Orders أو برفع صورته. مفيش تحليل من غير منتج معتمد.</div>
-      <div class="pmc-source-grid">
-        <div class="pmc-source-card ${state.source === 'EASY_ORDERS' ? 'active' : ''}" data-src="EASY_ORDERS">
-          <div class="ic">🛒</div>
-          <div class="t">اختيار من Easy Orders</div>
-          <div class="d">اختار واختار المنتج بنفس الاسم وصورته الحقيقية من الكتالوج.</div>
-        </div>
-        <div class="pmc-source-card ${state.source === 'MANUAL_UPLOAD' ? 'active' : ''}" data-src="MANUAL_UPLOAD">
-          <div class="ic">📷</div>
-          <div class="t">رفع صورة المنتج</div>
-          <div class="d">ارفع صورة أو أكتر، وهنحلل المنتج بصريًا (حتى 5 صور، JPG/PNG/WEBP).</div>
-        </div>
+      <div class="pmc-source-seg">
+        <button class="${state.source === 'EASY_ORDERS' ? 'active' : ''}" data-src="EASY_ORDERS">🛒 Easy Orders</button>
+        <button class="${state.source === 'MANUAL_UPLOAD' ? 'active' : ''}" data-src="MANUAL_UPLOAD">📷 رفع صورة</button>
       </div>
       <div id="pmcSourceBody"></div>
     </div>`;
-  mount.querySelectorAll('[data-src]').forEach((c) => { c.onclick = () => { state.source = c.dataset.src; render(); }; });
+  mount.querySelectorAll('[data-src]').forEach((c) => { c.onclick = () => { if (state.source === c.dataset.src) return; state.source = c.dataset.src; state.eoSelected = null; render(); }; });
   if (state.source === 'EASY_ORDERS') renderEasyOrdersPicker($('pmcSourceBody'));
   else renderUploadPicker($('pmcSourceBody'));
 }
 
-function renderEasyOrdersPicker(mount) {
+// ---------------------------------------------------------------------------
+// Easy Orders catalog browser — loads the FULL real catalogue immediately
+// (one call, cached client-side), then search/filter/paging all happen
+// locally over that one real list. No placeholder products, ever.
+// ---------------------------------------------------------------------------
+async function renderEasyOrdersPicker(mount) {
   mount.innerHTML = `
-    <div class="pmc-eo-search">
-      <input class="amb-input" id="pmcEoSearch" type="search" placeholder="ابحث عن المنتج بالاسم..." value="${E(state.eoQuery)}" style="width:100%;min-width:0;" />
-      <div id="pmcEoResults" class="pmc-eo-results"></div>
+    <div class="pmc-eo-toolbar">
+      <input class="amb-input pmc-input" id="pmcEoSearch" type="search" placeholder="ابحث عن المنتج بالاسم..." value="${E(state.eoQuery)}" />
+      <div class="pmc-eo-filters">
+        <button class="amb-fbtn ${state.eoFilter === 'all' ? 'active' : ''}" data-eof="all">كل المنتجات</button>
+        <button class="amb-fbtn ${state.eoFilter === 'newest' ? 'active' : ''}" data-eof="newest">الأحدث</button>
+        <button class="amb-fbtn ${state.eoFilter === 'recent' ? 'active' : ''}" data-eof="recent">تم استخدامها مؤخرًا</button>
+      </div>
+    </div>
+    <div id="pmcEoGrid"></div>
+    <div id="pmcEoConfirmBar"></div>`;
+  $('pmcEoSearch').oninput = (e) => { state.eoQuery = e.target.value; state.eoVisible = 20; paintEoGrid(); };
+  mount.querySelectorAll('[data-eof]').forEach((b) => { b.onclick = async () => { state.eoFilter = b.dataset.eof; state.eoVisible = 20; if (state.eoFilter === 'recent' && !state.eoRecentIds) await loadRecentEoIds(); renderEasyOrdersPicker(mount); }; });
+
+  if (!state.eoAll && !state.eoLoading) await loadEoCatalog();
+  paintEoGrid();
+}
+
+async function loadEoCatalog() {
+  state.eoLoading = true; state.eoError = null;
+  paintEoGrid();
+  try {
+    const r = await api.get('/api/product-marketing/easy-orders/search', { q: '' });
+    state.eoAll = r.products || [];
+  } catch (e) {
+    state.eoError = e.message || 'فشل الاتصال بـ Easy Orders.';
+    state.eoAll = null;
+  }
+  state.eoLoading = false;
+  paintEoGrid();
+}
+async function loadRecentEoIds() {
+  try {
+    const { profiles } = await api.get('/api/product-marketing/profiles');
+    const ids = [];
+    for (const p of profiles) if (p.easyOrdersProductId && !ids.includes(p.easyOrdersProductId)) ids.push(p.easyOrdersProductId);
+    state.eoRecentIds = ids;
+  } catch { state.eoRecentIds = []; }
+}
+
+function skeletonGridHtml(n = 10) {
+  return `<div class="pmc-product-grid">${Array.from({ length: n }).map(() => `<div class="pmc-skel"><div class="thumb"></div><div class="body"><div class="ln"></div><div class="ln w60"></div></div></div>`).join('')}</div>`;
+}
+
+function paintEoGrid() {
+  const grid = $('pmcEoGrid'); const bar = $('pmcEoConfirmBar');
+  if (!grid) return;
+  if (state.eoLoading) { grid.innerHTML = skeletonGridHtml(); if (bar) bar.innerHTML = ''; return; }
+  if (state.eoError) {
+    grid.innerHTML = `<div class="pmc-eo-error">
+      <div style="font-size:22px;">⚠️</div>
+      <div style="font-weight:700;margin:6px 0;">تعذّر تحميل منتجات Easy Orders</div>
+      <div class="detail">${E(state.eoError)}</div>
+      <button class="amb-btn sm primary" id="pmcEoRetry">إعادة المحاولة</button>
     </div>`;
-  const input = $('pmcEoSearch');
-  const paintResults = () => {
-    const box = $('pmcEoResults');
-    if (!state.eoResults.length) { box.innerHTML = `<div class="pmc-empty">${state.eoQuery ? 'مفيش نتائج مطابقة.' : 'ابدأ الكتابة للبحث في كتالوج Easy Orders.'}</div>`; return; }
-    box.innerHTML = state.eoResults.map((p) => `<div class="pmc-eo-row" data-eo="${E(p.id)}">
-      <img src="${E(p.thumb || '')}" onerror="this.style.visibility='hidden'" />
-      <div class="n">${E(p.name)}</div>
-      <span class="faint" style="font-size:11px;">#${E(p.slug || p.id)}</span>
-    </div>`).join('');
-    box.querySelectorAll('[data-eo]').forEach((r) => { r.onclick = () => lockEasyOrders(r.dataset.eo); });
-  };
-  let t = null;
-  const search = async () => {
-    state.eoQuery = input.value;
-    try { state.eoResults = (await api.get('/api/product-marketing/easy-orders/search', { q: state.eoQuery })).products; }
-    catch (e) { UI.toast(e.message, 'error'); state.eoResults = []; }
-    paintResults();
-  };
-  input.oninput = () => { clearTimeout(t); t = setTimeout(search, 250); };
-  search();
+    $('pmcEoRetry').onclick = loadEoCatalog;
+    if (bar) bar.innerHTML = '';
+    return;
+  }
+  const all = state.eoAll || [];
+  if (!all.length) { grid.innerHTML = `<div class="pmc-eo-error"><div style="font-size:22px;">📦</div><div style="font-weight:700;margin:6px 0;">لم يتم العثور على منتجات في Easy Orders</div><button class="amb-btn sm primary" id="pmcEoRetry">إعادة المحاولة</button></div>`; $('pmcEoRetry').onclick = loadEoCatalog; if (bar) bar.innerHTML = ''; return; }
+
+  const q = state.eoQuery.trim().toLowerCase();
+  let list = q ? all.filter((p) => p.name.toLowerCase().includes(q)) : all.slice();
+  if (state.eoFilter === 'newest') list = [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  else if (state.eoFilter === 'recent') {
+    const rec = state.eoRecentIds || [];
+    list = rec.map((id) => list.find((p) => String(p.id) === String(id))).filter(Boolean);
+  }
+
+  if (!list.length) {
+    const msg = state.eoFilter === 'recent' ? 'لسه ما استخدمتش أي منتج من Easy Orders في تحليل سابق.' : q ? 'مفيش منتجات مطابقة للبحث.' : 'مفيش منتجات.';
+    grid.innerHTML = `<div class="pmc-empty">${E(msg)}</div>`;
+    if (bar) bar.innerHTML = '';
+    return;
+  }
+
+  const visible = list.slice(0, state.eoVisible);
+  grid.innerHTML = `<div class="pmc-product-grid">${visible.map((p) => `
+    <div class="pmc-pcard ${state.eoSelected?.id === p.id ? 'selected' : ''}" data-pick="${E(p.id)}">
+      <div class="thumb"><img src="${E(p.thumb || '')}" loading="lazy" onerror="this.closest('.thumb').style.background='var(--amb-border)'" /></div>
+      <div class="body">
+        <div class="n" title="${E(p.name)}">${E(p.name)}</div>
+        <div class="price ${p.price ? '' : 'na'}">${p.price ? fmtEGP(p.price) : 'السعر غير متاح'}</div>
+        <button class="pick-btn">${state.eoSelected?.id === p.id ? '✓ مُختار' : 'اختيار المنتج'}</button>
+      </div>
+    </div>`).join('')}</div>
+    ${list.length > visible.length ? `<div style="text-align:center;margin-top:14px;"><button class="amb-btn" id="pmcEoLoadMore">تحميل المزيد (${fmtNum(list.length - visible.length)} أكتر)</button></div>` : ''}`;
+
+  grid.querySelectorAll('[data-pick]').forEach((c) => { c.onclick = () => { state.eoSelected = list.find((p) => String(p.id) === c.dataset.pick); paintEoGrid(); }; });
+  const more = $('pmcEoLoadMore'); if (more) more.onclick = () => { state.eoVisible += 20; paintEoGrid(); };
+
+  if (bar) {
+    bar.innerHTML = state.eoSelected ? `<div class="pmc-confirm-bar">
+      <img src="${E(state.eoSelected.thumb || '')}" onerror="this.style.visibility='hidden'" />
+      <div class="info"><div class="n">${E(state.eoSelected.name)}</div><div class="p">${state.eoSelected.price ? fmtEGP(state.eoSelected.price) : 'السعر غير متاح'} · Easy Orders</div></div>
+      <button class="amb-btn sm ghost" id="pmcEoCancelPick">إلغاء</button>
+      <button class="amb-btn primary" id="pmcEoConfirmPick">تأكيد وبدء التحليل</button>
+    </div>` : '';
+    if (state.eoSelected) {
+      $('pmcEoCancelPick').onclick = () => { state.eoSelected = null; paintEoGrid(); };
+      $('pmcEoConfirmPick').onclick = () => lockEasyOrders(state.eoSelected.id);
+    }
+  }
 }
 
 function renderUploadPicker(mount) {
@@ -177,11 +257,13 @@ async function addFiles(files) {
 }
 
 async function lockEasyOrders(eoId) {
+  const btn = $('pmcEoConfirmPick'); if (btn) { btn.disabled = true; btn.textContent = 'جارِ التأكيد…'; }
   try {
     state.profile = await api.post('/api/product-marketing/profiles/from-easy-orders', { eoProductId: eoId });
+    state.eoSelected = null;
     resetWorkspace();
     render();
-  } catch (e) { UI.toast(e.message, 'error'); }
+  } catch (e) { UI.toast(e.message, 'error'); if (btn) { btn.disabled = false; btn.textContent = 'تأكيد وبدء التحليل'; } }
 }
 async function lockFromUpload() {
   try {
@@ -225,7 +307,7 @@ function renderWorkspace(mount) {
     <div class="pmc-tabs">${TABS.map((t) => `<button class="pmc-tab ${state.tab === t.k ? 'active' : ''}" data-tab="${t.k}">${E(t.label)}</button>`).join('')}</div>
     <div id="pmcTabBody"></div>`;
 
-  $('pmcChangeProduct').onclick = () => { state.profile = null; render(); };
+  $('pmcChangeProduct').onclick = () => { state.profile = null; state.eoSelected = null; render(); };
   mount.querySelectorAll('[data-win]').forEach((b) => { b.onclick = () => { state.windowName = b.dataset.win; state.snapshot = null; renderWorkspace(mount); loadSnapshot(); }; });
   $('pmcRefresh').onclick = () => loadSnapshot(true);
   mount.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { state.tab = b.dataset.tab; renderTabBody(); }; });

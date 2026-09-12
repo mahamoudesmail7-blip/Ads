@@ -20,7 +20,18 @@ function norm(s) {
   return String(s || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
 
-/** All EasyOrders products (id, name, slug, thumb). Cached 1h. [] when not configured / on error. */
+/**
+ * All EasyOrders products: {id, name, slug, thumb, price, createdAt}. Cached
+ * 1h. [] when not configured / on error.
+ *
+ * `price` and `createdAt` are real fields EasyOrders' /products response
+ * already carries (confirmed against the live API) — surfaced here in
+ * addition to the original id/name/slug/thumb so AI Product Marketing
+ * Center's Easy Orders picker can show a real price and sort by real
+ * creation date. Purely additive: the original 4 fields are unchanged, so
+ * the existing easyOrdersImageFor() match logic below (and any other
+ * caller reading only those 4) is unaffected.
+ */
 export async function getEasyOrdersProducts() {
   const key = process.env.EASYORDERS_API_KEY;
   if (!key) return [];
@@ -31,6 +42,8 @@ export async function getEasyOrdersProducts() {
     const raw = await res.json();
     const list = (Array.isArray(raw) ? raw : []).map((p) => ({
       id: p.id, name: p.name || '', slug: p.slug || '', thumb: p.thumb || null,
+      price: Number.isFinite(Number(p.price)) && p.price !== null ? Number(p.price) : null,
+      createdAt: p.created_at || null,
     })).filter((p) => p.thumb);
     cache = { at: Date.now(), list };
     logger.info('AMB EasyOrders products cached', { count: list.length });
