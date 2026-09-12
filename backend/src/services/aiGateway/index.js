@@ -17,13 +17,35 @@ import { callOpenAiText, callOpenAiAgentTurn, isOpenAiConfigured, getOpenAiHealt
 import { modelForTier, imageModel, allConfiguredModels, TIERS } from './router.js';
 import { requestHash, cacheGet, cacheSet, cacheInvalidate, TTL } from './cache.js';
 import { logUsage, usageSummary } from './usageLog.js';
-import { estimateTextCostUsd } from './costEstimator.js';
+import { estimateTextCostUsd, estimateImageCostUsd } from './costEstimator.js';
 import { checkBudget } from './budget.js';
 import { logger } from '../../logger.js';
 
-export { TIERS, TTL, cacheInvalidate, requestHash, usageSummary, checkBudget, allConfiguredModels };
+export { TIERS, TTL, cacheInvalidate, requestHash, usageSummary, checkBudget, allConfiguredModels, imageModel, estimateImageCostUsd };
 
 export function isAiConfigured() { return isOpenAiConfigured(); }
+
+/**
+ * §5/§8 — image generation cost/usage tracking + the SAME monthly budget
+ * guard text/vision already use. Creative Factory's own generation loop
+ * (services/creativeFactory/generationJob.js) is UNCHANGED — its prompts,
+ * retry logic, storage, and CfGenerationAttempt record stay exactly as they
+ * were; this only wraps that one real provider.generate() call site with a
+ * budget check before spending and a row in the SAME ai_usage_log table
+ * every text/vision call already writes to, so the admin usage dashboard
+ * and the monthly budget guard cover images too — real architectural
+ * unification without touching working generation behavior.
+ */
+export async function checkImageBudget() { return checkBudget(); }
+
+export async function logImageUsage({ feature, model, productId, generationType, imageCount = 1, size = null, status, error, estimatedCostUsd, requestId, durationMs }) {
+  return logUsage({
+    feature, tier: TIERS.IMAGE, model, status,
+    imageCount, estimatedCostUsd, requestId, error, productId, durationMs,
+    // image_generation_type / image_size are image-only columns — passed through logUsage's generic call
+    imageGenerationType: generationType || null, imageSize: size || null,
+  });
+}
 
 /** ANTHROPIC_ENABLED gate (§47): even if some forgotten path still imports services/ai.js, this makes that fact visible instead of quietly reachable. Read once per call — cheap, and always reflects the live env var. */
 export function anthropicEnabled() { return process.env.ANTHROPIC_ENABLED === 'true'; }
@@ -45,7 +67,7 @@ export function anthropicEnabled() { return process.env.ANTHROPIC_ENABLED === 't
  * @param {string} [p.promptVersion]  §44 — stored with the cache row/usage log so a prompt change never serves a stale-shape cached result
  * @param {boolean} [p.force]  bypass cache read (still writes a fresh entry) — "إعادة التحليل"/"إنشاء أفكار جديدة" (§77)
  * @param {number} [p.productId] [p.userId]  best-effort attribution for the usage log
- * @returns {Promise<{text:string, cached:boolean, requestId:string|null}>}
+ * @returns {Promise<{text:string, cached:boolean, requestId:string|null, model:string, usage:object|null, estimatedCostUsd:number|null}>}
  */
 export async function generateText({ feature, tier = TIERS.ROUTINE, system, messages, maxTokens = 1024, jsonMode = false, cacheParts, cacheTtlMs, promptVersion, force = false, productId, userId }) {
   if (!feature) throw new Error('aiGateway.generateText: feature مطلوب (لأغراض الـ logging والـ caching).');
@@ -56,7 +78,7 @@ export async function generateText({ feature, tier = TIERS.ROUTINE, system, mess
     const cached = await cacheGet(cacheKey);
     if (cached !== null) {
       logUsage({ feature, tier, model, promptVersion, status: 'SUCCESS', cached: true, productId, userId }).catch(() => {});
-      return { text: cached, cached: true, requestId: null };
+      return { text: cached, cached: true, requestId: null, model, usage: null, estimatedCostUsd: 0 };
     }
   }
 
@@ -76,7 +98,7 @@ export async function generateText({ feature, tier = TIERS.ROUTINE, system, mess
     const estimatedCostUsd = estimateTextCostUsd({ tier, inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens });
     await logUsage({ feature, tier, model, promptVersion, status: 'SUCCESS', cached: false, inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens, outputTokens: usage.outputTokens, estimatedCostUsd, requestId, productId, userId, durationMs: Date.now() - startedAt });
     if (cacheKey) await cacheSet({ cacheKey, feature, promptVersion, data: text, ttlMs: cacheTtlMs });
-    return { text, cached: false, requestId };
+    return { text, cached: false, requestId, model, usage, estimatedCostUsd };
   } catch (err) {
     await logUsage({ feature, tier, model, promptVersion, status: 'FAILED', error: err.message, productId, userId, durationMs: Date.now() - startedAt });
     logger.error('AI_GATEWAY_TEXT_FAILED', { feature, tier, model, message: err.message });

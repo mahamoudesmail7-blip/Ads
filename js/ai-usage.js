@@ -17,6 +17,7 @@ async function init() {
   await load();
   $('aiUsageBody').addEventListener('click', (e) => {
     if (e.target.id === 'aiHealthCheckBtn') runHealthCheck();
+    if (e.target.id === 'aiTestRunBtn') runRealTest();
   });
 }
 
@@ -49,6 +50,13 @@ function render(body, data) {
     </div>
 
     <div class="card" style="margin-bottom:16px;">
+      <div class="section-title" style="margin-top:0;">اختبار إنتاج حقيقي (§1/§83 — أقل تكلفة ممكنة)</div>
+      <p class="faint" style="font-size:12px;">3 نداءات حقيقية صغيرة جدًا: Luna نصي، JSON مُهيكل، ورؤية على صورة منتج حقيقي من Easy Orders (بدون توليد أي صورة جديدة). دوس مرتين متتاليتين على نفس الزرار عشان تتأكد إن النداء التاني بيرجع من الكاش (cached:true) من غير أي تكلفة تانية.</p>
+      <button class="btn" id="aiTestRunBtn">🧪 تشغيل الاختبار الحقيقي الآن (تكلفة حقيقية صغيرة جدًا)</button>
+      <div id="aiTestRunResult" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
       <div class="section-title" style="margin-top:0;">الميزانية الشهرية</div>
       ${budget.configured ? `
         <div class="stat-grid">
@@ -59,17 +67,32 @@ function render(body, data) {
         ${budget.blocked ? '<p class="badge red" style="margin-top:10px;">🛑 تم الوصول للحد الأقصى — التوليد الجديد متوقف مؤقتًا (البيانات المحفوظة والحسابات الحتمية شغالة عادي)</p>'
           : budget.warning ? '<p class="badge yellow" style="margin-top:10px;">⚠️ اقتربت من حد الميزانية الشهرية</p>' : ''}
       ` : '<p class="muted">مفيش سقف ميزانية مضبوط (OPENAI_MONTHLY_BUDGET_USD) — الاستهلاك غير محدود حاليًا.</p>'}
+      <p class="faint" style="font-size:11px;margin-top:8px;">الميزانية دي بتشمل النص والصور مع بعض — الوصول لـ100% بيوقف التوليد الجديد (Hooks/بوستات/تحليل عميق/صور جديدة) بس مبيأثرش على النتائج المحفوظة أو الحسابات الحتمية أو استخدام النظام العادي.</p>
     </div>
 
+    <div class="section-title">اليوم</div>
     <div class="stat-grid" style="margin-bottom:16px;">
-      ${UI.statTile('📅 اليوم — استدعاءات', num(usage.today.calls))}
-      ${UI.statTile('📅 اليوم — التكلفة', usd(usage.today.costUsd))}
-      ${UI.statTile('🗓️ آخر 7 أيام — استدعاءات', num(usage.last7.calls))}
-      ${UI.statTile('🗓️ آخر 7 أيام — التكلفة', usd(usage.last7.costUsd))}
-      ${UI.statTile('📆 هذا الشهر — استدعاءات', num(usage.month.calls))}
-      ${UI.statTile('📆 هذا الشهر — التكلفة', usd(usage.month.costUsd))}
-      ${UI.statTile('♻️ نسبة استخدام الكاش (آخر 7 أيام)', usage.last7.cacheHitPct === null ? '—' : `${usage.last7.cacheHitPct}%`)}
-      ${UI.statTile('⚠️ استدعاءات فاشلة (آخر 7 أيام)', num(usage.last7.failed))}
+      ${UI.statTile('💬 نداءات نصية', num(usage.today.textCalls))}
+      ${UI.statTile('💬 تكلفة النص', usd(usage.today.textCostUsd))}
+      ${UI.statTile('🖼️ صور مُولّدة', num(usage.today.imageGenerations))}
+      ${UI.statTile('🖼️ تكلفة الصور', usd(usage.today.imageCostUsd))}
+      ${UI.statTile('💰 إجمالي التكلفة', usd(usage.today.costUsd), { colorClass: 'green' })}
+    </div>
+
+    <div class="section-title">آخر 7 أيام</div>
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${UI.statTile('💬 تكلفة النص', usd(usage.last7.textCostUsd))}
+      ${UI.statTile('🖼️ تكلفة الصور', usd(usage.last7.imageCostUsd))}
+      ${UI.statTile('💰 الإجمالي', usd(usage.last7.costUsd))}
+      ${UI.statTile('♻️ نسبة استخدام الكاش', usage.last7.cacheHitPct === null ? '—' : `${usage.last7.cacheHitPct}%`)}
+      ${UI.statTile('⚠️ نداءات نصية فاشلة', num(usage.last7.textFailed))}
+      ${UI.statTile('⚠️ نداءات صور فاشلة', num(usage.last7.imageFailed))}
+    </div>
+
+    <div class="section-title">هذا الشهر</div>
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${UI.statTile('💰 إجمالي إنفاق الذكاء الاصطناعي', usd(usage.month.costUsd), { colorClass: 'green' })}
+      ${UI.statTile('📉 الميزانية المتبقية', budget.configured ? usd(budget.remainingUsd) : 'بدون سقف')}
     </div>
 
     <div class="card" style="margin-bottom:16px;">
@@ -84,8 +107,39 @@ function render(body, data) {
       <div class="section-title" style="margin-top:0;">الأكثر تكلفة (آخر 7 أيام)</div>
       <p>الميزة الأعلى تكلفة: <b>${usage.mostExpensiveFeature ? `${E(usage.mostExpensiveFeature.feature)} — ${usd(usage.mostExpensiveFeature.costUsd)}` : 'لا توجد بيانات تكلفة كافية'}</b></p>
       <p>النموذج الأعلى تكلفة: <b>${usage.mostExpensiveModel ? `${E(usage.mostExpensiveModel.model)} — ${usd(usage.mostExpensiveModel.costUsd)}` : 'لا توجد بيانات تكلفة كافية'}</b></p>
-      ${!Object.values(usage.byTier).some((t) => t.costUsd > 0) ? '<p class="faint" style="font-size:12px;">لسه معملتش تسعير للنماذج (AI_PRICE_*_PER_1M) — الاستدعاءات بتتسجل فعليًا لكن التكلفة تظهر "غير معروف" لحد ما تضيف الأسعار الحقيقية.</p>' : ''}
+      ${!Object.values(usage.byTier).some((t) => t.costUsd > 0) ? '<p class="faint" style="font-size:12px;">⚠️ التسعير غير مضبوط (AI_PRICE_*_PER_1M / CF_IMAGE_UNIT_COST_USD) — الاستدعاءات بتتسجل فعليًا لكن التكلفة تظهر "غير معروف" بدل رقم وهمي، لحد ما تضيف الأسعار الحقيقية.</p>' : ''}
     </div>`;
+}
+
+async function runRealTest() {
+  const box = $('aiTestRunResult');
+  box.innerHTML = '<p class="muted">🧪 بنشغّل الاختبار الحقيقي — نداءات فعلية بتكلفة صغيرة جدًا…</p>';
+  let r;
+  try {
+    r = await api.post('/api/ai-usage/test-run', {});
+  } catch (err) {
+    box.innerHTML = `<p class="badge red">${E(err.message)}</p>`;
+    return;
+  }
+  const row = (label, p) => {
+    if (!p) return '';
+    if (!p.ok) return `<tr><td>${E(label)}</td><td>❌ فشل</td><td colspan="3">${E(p.error)}</td></tr>`;
+    const cost = p.estimatedCostUsd === undefined ? '—' : usd(p.estimatedCostUsd);
+    const toks = p.usage ? `in ${num(p.usage.inputTokens)} / out ${num(p.usage.outputTokens)}` : (p.cached ? 'من الكاش — 0 توكن جديد' : '—');
+    return `<tr><td>${E(label)}</td><td>${p.cached ? '♻️ CACHE_HIT' : '✅ نداء حقيقي'}</td><td>${E(p.model || '—')}</td><td>${num(p.latencyMs)} ms</td><td>${E(toks)}</td><td>${cost}</td></tr>`;
+  };
+  box.innerHTML = `<div class="table-wrap"><table class="data">
+      <thead><tr><th>الاختبار</th><th>النتيجة</th><th>الموديل</th><th>الزمن</th><th>التوكنز</th><th>التكلفة</th></tr></thead>
+      <tbody>
+        ${row('A) Luna نصي (فيه cacheKey ثابت)', r.luna)}
+        ${row('B) JSON مُهيكل', r.structured)}
+        ${row('C) رؤية (صورة منتج حقيقية من Easy Orders)', r.vision)}
+      </tbody>
+    </table></div>
+    ${r.luna?.ok && !r.luna.cached ? '<p class="faint" style="font-size:11px;margin-top:8px;">دلوقتي دوس الزرار تاني — المفروض اختبار Luna يظهر ♻️ CACHE_HIT من غير نداء OpenAI جديد.</p>' : ''}
+    ${r.luna?.ok && r.luna.cached ? '<p class="badge green" style="margin-top:8px;">✅ تأكّد: الطلب التاني رجع من الكاش (cached:true) — مفيش تكلفة إضافية.</p>' : ''}
+    ${r.vision?.ok ? `<p class="faint" style="font-size:11px;margin-top:8px;">وصف المنتج (${E(r.vision.productName)}): «${E(r.vision.text)}»</p>` : ''}
+    <p class="faint" style="font-size:11px;margin-top:4px;">وقت التشغيل: ${E(new Date(r.ranAt).toLocaleString('ar-EG'))}</p>`;
 }
 
 async function runHealthCheck() {

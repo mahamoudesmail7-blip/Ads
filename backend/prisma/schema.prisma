@@ -2335,6 +2335,8 @@ model AiUsageLog {
   cached_input_tokens Int?
   output_tokens       Int?
   image_count         Int      @default(0)
+  image_generation_type String? // NEW | EDIT | RETRY — image calls only, null for text/vision
+  image_size          String? // e.g. "1024x1024" — image calls only
   estimated_cost_usd  Float?
   request_id          String? // provider's own request id, for support lookups — never a secret
   error               String?

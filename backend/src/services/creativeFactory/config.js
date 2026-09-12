@@ -5,7 +5,7 @@
 // booleans + non-secret ids. This is the single source of truth for "is the
 // image provider actually configured right now" — the whole module runs in a
 // mock-safe "provider off" mode when it isn't, and never fabricates an image.
-import { getOpenAiHealth } from '../aiGateway/index.js';
+import { getOpenAiHealth, imageModel as gatewayImageModel } from '../aiGateway/index.js';
 
 function clean(raw) {
   if (raw === undefined || raw === null) return '';
@@ -34,8 +34,13 @@ export function imageProviderName() {
 export function openAiKey() {
   return clean(process.env.OPENAI_API_KEY);
 }
+// Delegates to the SAME resolver services/aiGateway/router.js uses for the
+// admin health check + dashboard (AI_IMAGE_MODEL, falling back to the
+// Creative-Factory-specific CF_IMAGE_MODEL, then "gpt-image-1") — real
+// generation and the dashboard must never disagree about which model is
+// actually in use.
 export function imageModel() {
-  return clean(process.env.CF_IMAGE_MODEL) || 'gpt-image-1';
+  return gatewayImageModel();
 }
 /** Requested output pixel size for an aspect ratio the OpenAI Images API supports. */
 export function imageSizeFor(aspectRatio) {

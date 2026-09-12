@@ -3,7 +3,7 @@
 // model is 100% controlled by env vars (§3/§4/§59) — if the account's real
 // model names differ from these defaults, changing the env var is enough,
 // no code change.
-export const TIERS = { ROUTINE: 'routine', BALANCED: 'balanced', ADVANCED: 'advanced' };
+export const TIERS = { ROUTINE: 'routine', BALANCED: 'balanced', ADVANCED: 'advanced', IMAGE: 'image' };
 
 function cleanEnvValue(raw) { return raw ? raw.split('\n')[0].trim() : raw; }
 
@@ -18,9 +18,9 @@ const ENV_VAR = {
   advanced: 'AI_TEXT_ADVANCED_MODEL',
 };
 
-/** The real model id configured for a tier — always env-driven, never a silent hardcode past the documented default. */
+/** The real TEXT model id configured for a tier — always env-driven, never a silent hardcode past the documented default. TIERS.IMAGE is not a text tier — use imageModel() for that; passed here it (like any unrecognized value) falls back to routine. */
 export function modelForTier(tier) {
-  const t = TIERS[String(tier || '').toUpperCase()] ? tier : (Object.values(TIERS).includes(tier) ? tier : TIERS.ROUTINE);
+  const t = ENV_VAR[tier] ? tier : TIERS.ROUTINE;
   return cleanEnvValue(process.env[ENV_VAR[t]]) || DEFAULTS[t];
 }
 

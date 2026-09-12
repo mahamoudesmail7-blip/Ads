@@ -17,6 +17,7 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getImageProvider, CfProviderError } from './imageProvider.js';
+import { checkImageBudget, logImageUsage, imageModel as gatewayImageModel } from '../aiGateway/index.js';
 import { StorageService } from './storage.js';
 import { getEffectiveThresholds } from './thresholds.js';
 import { imageSizeFor, estimateCostUsd } from './config.js';
@@ -222,6 +223,7 @@ async function runJob(jobId) {
  */
 async function generateItem({ item, project, product, dna, references, continuity, provider, providerCaps, th, textEngine }) {
   await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'GENERATING' } });
+  const imageModelName = gatewayImageModel(); // fallback label for the usage log when the provider doesn't report its own model name
 
   // 1) claim-guarded copy (only (re)generate if missing or not yet passed).
   //    generateCopyForItem returns { hook, supportingLine, featureLabels, cta,
@@ -320,11 +322,24 @@ async function generateItem({ item, project, product, dna, references, continuit
       },
     });
 
+    // §8 — the SAME monthly AI budget guard text/vision already enforce now
+    // covers image generation too, checked fresh before every paid attempt
+    // (never blocks viewing existing assets or anything already generated).
+    const imgBudget = await checkImageBudget();
+    if (imgBudget.blocked) {
+      const msg = `تم الوصول للحد الأقصى لميزانية الذكاء الاصطناعي الشهرية (${imgBudget.spentUsd}$ من ${imgBudget.budgetUsd}$) — توليد الصور الجديد متوقف مؤقتًا.`;
+      await prisma.cfGenerationAttempt.update({ where: { id: attemptRow.id }, data: { status: 'FAILED', error: msg } });
+      await logImageUsage({ feature: 'cf.image_generation', model: providerCaps.model || imageModelName, productId: product.id, generationType: attempt === 1 ? 'NEW' : 'RETRY', imageCount: wantCandidates, size, status: 'BLOCKED_BUDGET', error: msg }).catch(() => {});
+      throw new Error(msg);
+    }
+
     let gen;
+    const genStartedAt = Date.now();
     try {
       gen = await provider.generate({ prompt: built.prompt, size, n: wantCandidates, referenceImages: providerRefs, quality: undefined });
     } catch (err) {
       await prisma.cfGenerationAttempt.update({ where: { id: attemptRow.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 500) } });
+      await logImageUsage({ feature: 'cf.image_generation', model: providerCaps.model || imageModelName, productId: product.id, generationType: attempt === 1 ? 'NEW' : 'RETRY', imageCount: wantCandidates, size, status: 'FAILED', error: err.message, durationMs: Date.now() - genStartedAt }).catch(() => {});
       if (err instanceof CfProviderError && err.code === 'PROVIDER_NOT_CONFIGURED') throw err;
       corrective = buildCorrectiveNote({ failure_reasons: [err.message], failure_code: 'VISUAL_ARTIFACT' });
       continue;
@@ -334,6 +349,11 @@ async function generateItem({ item, project, product, dna, references, continuit
       where: { id: attemptRow.id },
       data: { status: 'SUCCEEDED', duration_ms: gen.durationMs || null, provider_metadata_json: JSON.stringify({ usage: gen.usage || null, raw: gen.raw || null }), actual_cost: estimateCostUsd(gen.images.length, size) },
     });
+    await logImageUsage({
+      feature: 'cf.image_generation', model: providerCaps.model || imageModelName, productId: product.id,
+      generationType: attempt === 1 ? 'NEW' : 'RETRY', imageCount: gen.images.length, size, status: 'SUCCESS',
+      estimatedCostUsd: estimateCostUsd(gen.images.length, size), requestId: gen.raw?.id || gen.raw?.request_id || null, durationMs: gen.durationMs || (Date.now() - genStartedAt),
+    }).catch(() => {});
 
     let attemptBest = null;
     let attemptBestReview = null;

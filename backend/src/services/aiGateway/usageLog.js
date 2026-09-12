@@ -4,13 +4,14 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 
-export async function logUsage({ feature, tier, model, promptVersion, status, cached, inputTokens, cachedInputTokens, outputTokens, imageCount, estimatedCostUsd, requestId, error, productId, userId, durationMs }) {
+export async function logUsage({ feature, tier, model, promptVersion, status, cached, inputTokens, cachedInputTokens, outputTokens, imageCount, imageGenerationType, imageSize, estimatedCostUsd, requestId, error, productId, userId, durationMs }) {
   try {
     await prisma.aiUsageLog.create({
       data: {
         feature, tier, model, prompt_version: promptVersion || null, status, cached: !!cached,
         input_tokens: inputTokens ?? null, cached_input_tokens: cachedInputTokens ?? null, output_tokens: outputTokens ?? null,
-        image_count: imageCount || 0, estimated_cost_usd: estimatedCostUsd ?? null,
+        image_count: imageCount || 0, image_generation_type: imageGenerationType || null, image_size: imageSize || null,
+        estimated_cost_usd: estimatedCostUsd ?? null,
         request_id: requestId || null, error: error ? String(error).slice(0, 500) : null,
         product_id: productId ?? null, user_id: userId ?? null, duration_ms: durationMs ?? null,
       },
@@ -23,14 +24,30 @@ export async function logUsage({ feature, tier, model, promptVersion, status, ca
 function since(days) { return new Date(Date.now() - days * 24 * 3600 * 1000); }
 function startOfMonthUtc() { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); }
 
+// §6 unified text+image window summary — every count/cost split by tier so
+// the dashboard never has to re-derive text-vs-image itself.
+function r3(n) { return Math.round(n * 1000) / 1000; }
 async function windowSummary(from) {
   const rows = await prisma.aiUsageLog.findMany({ where: { created_at: { gte: from } }, select: { status: true, cached: true, estimated_cost_usd: true, image_count: true, tier: true } });
-  const calls = rows.length;
+  const textRows = rows.filter((r) => r.tier !== 'image');
+  const imageRows = rows.filter((r) => r.tier === 'image');
   const cost = rows.reduce((a, r) => a + (r.estimated_cost_usd || 0), 0);
-  const imageCost = rows.filter((r) => r.tier === 'image').reduce((a, r) => a + (r.estimated_cost_usd || 0), 0);
-  const failed = rows.filter((r) => r.status === 'FAILED').length;
-  const cacheHits = rows.filter((r) => r.cached).length;
-  return { calls, costUsd: Math.round(cost * 1000) / 1000, imageCostUsd: Math.round(imageCost * 1000) / 1000, textCostUsd: Math.round((cost - imageCost) * 1000) / 1000, failed, cacheHitPct: calls ? Math.round((cacheHits / calls) * 1000) / 10 : null };
+  const imageCost = imageRows.reduce((a, r) => a + (r.estimated_cost_usd || 0), 0);
+  const textCost = cost - imageCost;
+  const cacheHits = textRows.filter((r) => r.cached).length; // caching only ever applies to text/vision — image generation is never cached (§9/§67 dedupes by image HASH elsewhere, not a blanket cache)
+  return {
+    calls: rows.length,
+    costUsd: r3(cost),
+    textCalls: textRows.length,
+    textCostUsd: r3(textCost),
+    textFailed: textRows.filter((r) => r.status === 'FAILED').length,
+    imageCalls: imageRows.length,
+    imageGenerations: imageRows.reduce((a, r) => a + (r.image_count || 0), 0),
+    imageCostUsd: r3(imageCost),
+    imageFailed: imageRows.filter((r) => r.status === 'FAILED').length,
+    failed: rows.filter((r) => r.status === 'FAILED').length,
+    cacheHitPct: textRows.length ? Math.round((cacheHits / textRows.length) * 1000) / 10 : null,
+  };
 }
 
 /** §38 admin usage dashboard data. Real numbers only — an unconfigured price rate just means costUsd stays at whatever's actually priced (partial sum), never an invented total. */
