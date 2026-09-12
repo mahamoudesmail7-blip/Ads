@@ -82,7 +82,7 @@ export async function analyzeProductDna(productId) {
   let source = 'UNAVAILABLE';
 
   if (images.length) {
-    const ai = await callAiJson({ system: SYSTEM, user: dnaUserPrompt(product), images, maxTokens: 1800 });
+    const ai = await callAiJson({ system: SYSTEM, user: dnaUserPrompt(product), images, maxTokens: 1800, feature: 'cf.product_dna', tier: 'balanced' });
     if (ai.ok && ai.data && typeof ai.data === 'object') {
       data = { ...emptyDnaSkeleton(), ...ai.data };
       confidence = clampScore(ai.data.confidence);

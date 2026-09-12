@@ -4,7 +4,7 @@
 // metric, never changes a classification, never emits a Meta action. If the
 // API is unset/failing/malformed, deterministic templates take over so the
 // page is never blocked (same contract as services/aiActionPlan.js).
-import { askClaude } from '../ai.js';
+import { generateText, TIERS, isAiConfigured } from '../aiGateway/index.js';
 import { prisma } from '../../prisma.js';
 
 const SYSTEM_PROMPT = `أنت "AI Media Buyer" — محلل شراء إعلانات Meta لمتجر تجارة إلكترونية مصري (COD).
@@ -205,7 +205,7 @@ export async function narrateRecommendations(recs, { history = [] } = {}) {
   if (recs.length === 0) {
     return { executiveSummary: 'مفيش عناصر نشطة كفاية لتحليلها في الفترة دي.', reasons, explanations, source: 'FALLBACK' };
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!isAiConfigured()) {
     fillDeterministic();
     return { executiveSummary: deterministicSummary(recs), reasons, explanations, source: 'FALLBACK' };
   }
@@ -223,7 +223,7 @@ export async function narrateRecommendations(recs, { history = [] } = {}) {
       })),
       history,
     };
-    const raw = await askClaude({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: JSON.stringify(payload) }], maxTokens: 4500 });
+    const { text: raw } = await generateText({ feature: 'amb.narrate_recommendations', tier: TIERS.BALANCED, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: JSON.stringify(payload) }], maxTokens: 4500, jsonMode: true });
     const parsed = parseJsonLoose(raw);
     if (!parsed || !parsed.executive_summary || !Array.isArray(parsed.items)) throw new Error('missing fields');
     const byKey = new Map(recs.map((r) => [String(r.key), r]));

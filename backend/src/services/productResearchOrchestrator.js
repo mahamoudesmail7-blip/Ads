@@ -179,7 +179,7 @@ export async function runSearchPipeline(searchId) {
         });
       }
       // rankResultsBatch only ranks the first MAX_AI_RANKING_RESULTS results
-      // (cost control, Step 21 — never call Claude on thousands of results
+      // (cost control, Step 21 — never call the AI model on thousands of results
       // one-by-one or in one giant batch). Anything past that cap must still
       // get an explicit UNCLASSIFIED marker instead of staying NULL forever
       // — a real result the AI simply hasn't reached yet is not the same as
@@ -233,6 +233,6 @@ function buildObservedInsights(results, platformStatus) {
       topAccounts: topN(nameCount, 10),
       platformStatus,
     },
-    aiInterpretation: null, // reserved for a future pass that asks Claude to narrate the observedData above — not built in this Phase 1, deliberately null rather than faked.
+    aiInterpretation: null, // reserved for a future pass that asks the AI model to narrate the observedData above — not built in this Phase 1, deliberately null rather than faked.
   };
 }

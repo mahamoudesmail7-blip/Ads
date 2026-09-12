@@ -42,6 +42,8 @@ export async function recommendImageCount({ product, dna, projectType, reference
 الفوائد: ${(product?.benefits || '—').slice(0, 600)}
 أعد JSON: { "count": <رقم من 1 إلى 20>, "reason": "<جملة قصيرة>" }`,
     maxTokens: 300,
+    feature: 'cf.recommend_count',
+    tier: 'routine',
   });
 
   if (ai.ok && Number.isFinite(Number(ai.data?.count))) {
@@ -163,6 +165,8 @@ Product DNA: ${JSON.stringify(dnaObj).slice(0, 2600)}
   "visual_style": "الأسلوب البصري المناسب للفئة", "reason": "ليه الصورة دي في التسلسل"
 } ] }  — بالضبط ${n} عنصر.`,
     maxTokens: 3600,
+    feature: 'cf.creative_strategy_plan',
+    tier: 'balanced', // full multi-image creative plan — real strategic reasoning
   });
 
   let items;

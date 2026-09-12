@@ -1,13 +1,21 @@
-// Thin Anthropic (Claude) API wrapper. askClaude() is the original plain
-// text-in/text-out call (still used by aiActionPlan.js — unchanged).
-// runAgentTurn() is new: a real tool-use loop for the AI E-Commerce
-// Operating System's assistant (routes/aiAssistant.js) — Claude decides
-// which real tools to call (services/aiTools.js), the tools run against
-// real data, results are fed back, and this repeats until Claude returns a
-// final text answer or maxTurns is hit. No raw fetch/SDK dependency beyond
-// what askClaude already used.
+// LEGACY — kept for rollback safety only (migration §47), NOT called by any
+// active code path as of the OpenAI migration. Every real feature that used
+// to call askClaude()/runAgentTurn() here now calls services/aiGateway/
+// (OpenAI) instead — see the migration report for the full file-by-file
+// map. This file is intentionally left working (not deleted) but gated:
+// every export below refuses to run unless ANTHROPIC_ENABLED=true is set
+// explicitly, so a forgotten import can never silently reach Anthropic in
+// normal production operation. To roll back a specific feature to
+// Anthropic, set ANTHROPIC_ENABLED=true AND re-point that feature's import
+// back to askClaude/runAgentTurn — never a blanket, unreviewed revert.
 import { logger } from '../logger.js';
 import * as health from './providerHealth.js';
+
+function assertAnthropicEnabled() {
+  if (process.env.ANTHROPIC_ENABLED !== 'true') {
+    throw new Error('Anthropic معطّل عمدًا بعد الانتقال لـ OpenAI (ANTHROPIC_ENABLED=false) — هذا المسار لا يجب أن يُستدعى في التشغيل العادي.');
+  }
+}
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-sonnet-5';
@@ -113,6 +121,7 @@ async function callMessagesApi({ apiKey, system, messages, tools, maxTokens }) {
  * @returns {Promise<string>} the assistant's text reply
  */
 export async function askClaude({ system, messages, maxTokens = 1024 }) {
+  assertAnthropicEnabled();
   const apiKey = apiKeyOrThrow();
   const data = await withRetry(() => callMessagesApi({ apiKey, system, messages, maxTokens }));
   // Newer models (claude-sonnet-5) can prepend a `thinking` block, so the
@@ -142,6 +151,7 @@ export function getAnthropicHealth() {
  * @returns {Promise<{text: string, toolCalls: {name: string, input: object}[]}>}
  */
 export async function runAgentTurn({ system, userMessage, tools, executeTool, maxTurns = 6, maxTokens = 1536, onToolCall }) {
+  assertAnthropicEnabled();
   const apiKey = apiKeyOrThrow();
   const messages = [{ role: 'user', content: userMessage }];
   const toolCalls = [];

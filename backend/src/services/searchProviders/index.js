@@ -17,7 +17,7 @@ import * as youtubeSearchProvider from './youtubeSearchProvider.js';
 import * as serpApiProvider from './serpApiProvider.js';
 import * as metaAdLibraryProvider from './metaAdLibraryProvider.js';
 import * as health from '../providerHealth.js';
-import { getAnthropicHealth } from '../ai.js';
+import { getOpenAiHealth } from '../aiGateway/index.js';
 
 const PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
 const SERPAPI_PLATFORMS = new Set(['instagram', 'facebook', 'tiktok']);
@@ -28,9 +28,9 @@ const SERPAPI_PLATFORMS = new Set(['instagram', 'facebook', 'tiktok']);
  * watchdog, providerHealth.js) — CONNECTED can now downgrade to DEGRADED on
  * its own the moment a real request fails, and recovers to CONNECTED the
  * moment one more real request succeeds, with zero redeploy (Step 14).
- * Anthropic is included here too (previously absent from this list
- * entirely) since Product Research's AI ranking/product-analysis depend on
- * it just as much as the search providers do.
+ * OpenAI is included here too (previously absent from this list entirely)
+ * since Product Research's AI ranking/product-analysis depend on it just
+ * as much as the search providers do.
  */
 export async function getProviderStatus() {
   const serpApiOk = serpApiProvider.isConfigured();
@@ -45,7 +45,7 @@ export async function getProviderStatus() {
   };
   const youtubeHealth = health.classify('youtube_data_api', youtubeOk);
   const metaAdLib = await metaAdLibraryProvider.getStatus();
-  const anthropic = getAnthropicHealth();
+  const openai = getOpenAiHealth();
   return [
     { platform: 'instagram', ...igFbTiktokStatus },
     { platform: 'facebook', ...igFbTiktokStatus },
@@ -55,7 +55,7 @@ export async function getProviderStatus() {
     // Not a search platform — a shared enhancement layer (product analysis
     // + result ranking). Reported separately so the UI can show it as its
     // own row rather than forcing it onto one platform arbitrarily.
-    { platform: 'anthropic', provider: 'anthropic', status: anthropic.status, detail: anthropic.lastErrorType || null, lastCheckedAt: anthropic.lastCheckedAt, lastSuccessfulRequestAt: anthropic.lastSuccessfulRequestAt, lastErrorAt: anthropic.lastErrorAt, latencyMs: anthropic.latencyMs },
+    { platform: 'openai', provider: 'openai', status: openai.status, detail: openai.lastErrorType || null, lastCheckedAt: openai.lastCheckedAt, lastSuccessfulRequestAt: openai.lastSuccessfulRequestAt, lastErrorAt: openai.lastErrorAt, latencyMs: openai.latencyMs },
   ];
 }
 

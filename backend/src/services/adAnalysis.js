@@ -28,8 +28,7 @@
 import crypto from 'crypto';
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
-import { askClaude } from './ai.js';
-import { classify as healthClassify } from './providerHealth.js';
+import { generateText, TIERS, isAiConfigured, getOpenAiHealth } from './aiGateway/index.js';
 
 const LOG_PREFIX = '[AdAnalysis]';
 // Bumped whenever the extraction/prompt/output shape changes, so a stale
@@ -225,16 +224,16 @@ function ruleBasedAnalyze(result, deterministic) {
   };
 }
 
-// Mirrors the exact anthropicWorthTrying() pattern already established in
-// productVisionService.js — checked ONCE per ad before ever attempting a
-// call, so once Claude proves itself unavailable (e.g. insufficient
-// credits) for the first ad in a batch, every remaining ad in that batch
-// (and every ad in every later search, until Anthropic recovers) skips
-// straight to the rule-based fallback instead of each paying its own
+// Mirrors the exact "worth trying" circuit-breaker pattern already
+// established in productVisionService.js — checked ONCE per ad before ever
+// attempting a call, so once OpenAI proves itself unavailable (e.g.
+// insufficient credits) for the first ad in a batch, every remaining ad in
+// that batch (and every ad in every later search, until OpenAI recovers)
+// skips straight to the rule-based fallback instead of each paying its own
 // failing network round-trip.
-function anthropicWorthTrying() {
-  if (!process.env.ANTHROPIC_API_KEY?.trim()) return false;
-  return healthClassify('anthropic', true).status !== 'ERROR';
+function aiWorthTrying() {
+  if (!isAiConfigured()) return false;
+  return getOpenAiHealth().status !== 'ERROR';
 }
 
 // ============================================================================
@@ -286,7 +285,7 @@ async function aiAnalyze(result, deterministic) {
   const contextLine = `حقايق مستخرجة بالفعل — لا تعيد اشتقاقها: سعر=${deterministic.price.hasPrice ? deterministic.price.value + ' ' + deterministic.price.currency : 'غير موجود'}, خصم=${deterministic.discount.hasDiscount ? (deterministic.discount.percentage ? deterministic.discount.percentage + '%' : 'موجود') : 'غير موجود'}.`;
   const userText = `العنوان: ${result.title || '(بدون عنوان)'}\nنص الإعلان: ${result.snippet || '(بدون نص)'}\n${contextLine}`;
   try {
-    const text = await askClaude({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userText }], maxTokens: 600 });
+    const { text } = await generateText({ feature: 'research.ad_library_analysis', tier: TIERS.ROUTINE, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userText }], maxTokens: 600, jsonMode: true });
     const parsed = safeJsonParse(text);
     if (!parsed || typeof parsed !== 'object') throw new Error('invalid JSON shape from AI analysis');
     return { ok: true, data: normalizeAiFields(parsed) };
@@ -324,8 +323,8 @@ export async function analyzeOneAd(result) {
   }
 
   const deterministic = deterministicExtract(result);
-  const worthTrying = anthropicWorthTrying();
-  const ai = worthTrying ? await aiAnalyze(result, deterministic) : { ok: false, error: 'Anthropic not worth trying (circuit open or unconfigured)' };
+  const worthTrying = aiWorthTrying();
+  const ai = worthTrying ? await aiAnalyze(result, deterministic) : { ok: false, error: 'OpenAI not worth trying (circuit open or unconfigured)' };
 
   let semantic, status;
   if (ai.ok) {
@@ -431,12 +430,12 @@ function distribution(analyses, pick) {
     .sort((a, b) => b.count - a.count);
 }
 
-/** Real, honest AI-availability status (Step: Part 11) — reads the SAME providerHealth tracker every real Anthropic call already feeds, never a synthetic probe. Distinguishes the specific insufficient-credits condition from a generic transient error so the UI banner can say something genuinely useful instead of a mysterious "AI failed". */
+/** Real, honest AI-availability status (Step: Part 11) — reads the SAME providerHealth tracker every real OpenAI call already feeds, never a synthetic probe. Distinguishes the specific insufficient-credits condition from a generic transient error so the UI banner can say something genuinely useful instead of a mysterious "AI failed". */
 export function getAiStatus() {
-  if (!process.env.ANTHROPIC_API_KEY?.trim()) return { status: 'NOT_CONFIGURED', label: 'الذكاء الاصطناعي غير مفعّل في هذا النظام.' };
-  const health = healthClassify('anthropic', true);
+  if (!isAiConfigured()) return { status: 'NOT_CONFIGURED', label: 'خدمة الذكاء الاصطناعي غير مفعّلة في هذا النظام.' };
+  const health = getOpenAiHealth();
   if (health.status === 'CONNECTED') return { status: 'AVAILABLE', label: 'تحليل AI مكتمل' };
-  if (health.lastErrorType === 'INSUFFICIENT_CREDITS') return { status: 'DEGRADED_NO_CREDITS', label: 'تحليل AI غير متاح — تم استخدام التحليل المحلي (رصيد Anthropic غير كافٍ)' };
+  if (health.lastErrorType === 'INSUFFICIENT_CREDITS') return { status: 'DEGRADED_NO_CREDITS', label: 'تحليل AI غير متاح حاليًا — تم استخدام التحليل المحلي (رصيد الذكاء الاصطناعي غير كافٍ)' };
   return { status: 'DEGRADED_ERROR', label: 'تحليل AI غير متاح مؤقتًا — تم استخدام التحليل المحلي' };
 }
 
@@ -622,7 +621,9 @@ export async function generateDecisionIntelligence(searchId, agg) {
 
   let result;
   try {
-    const text = await askClaude({
+    const { text } = await generateText({
+      feature: 'research.decision_intelligence',
+      tier: TIERS.BALANCED, // competitor synthesis / market pattern summary
       system: DECISION_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify({
         adsAnalyzed: agg.statsBasedOnCount,
@@ -633,6 +634,7 @@ export async function generateDecisionIntelligence(searchId, agg) {
         ctas: agg.ctas, formatRatio: agg.formatRatio,
       }) }],
       maxTokens: 1400,
+      jsonMode: true,
     });
     const parsed = safeJsonParse(text);
     if (!parsed || !Array.isArray(parsed.testOpportunities)) throw new Error('invalid decision-intelligence JSON shape');

@@ -2309,3 +2309,61 @@ model ProductMarketingActionLog {
   @@index([profile_id])
   @@map("pmc_actions")
 }
+
+// ============================================================================
+// AI GATEWAY — the central OpenAI abstraction (services/aiGateway/*) every
+// AI feature in the system now calls through. Two additive tables:
+// AiUsageLog (append-only cost/usage audit trail) and AiCacheEntry (request-
+// hash-keyed cache, so a page load or a repeated request never re-pays for
+// the same AI work). No existing table touched.
+// ============================================================================
+
+// One row per AI call attempt (including a cache hit, so "did this cost
+// money" is always answerable from this table alone). Never logs the API
+// key. product_id / user_id are denormalized best-effort attribution, both
+// nullable — a missing link never blocks logging.
+model AiUsageLog {
+  id                  Int      @id @default(autoincrement())
+  feature             String // e.g. "pmc.intelligence_report", "amb.narrate_recommendations", "cf.marketing_copy"
+  tier                String // routine | balanced | advanced | image
+  provider            String   @default("openai")
+  model               String
+  prompt_version      String?
+  status              String // SUCCESS | FAILED | BLOCKED_BUDGET
+  cached              Boolean  @default(false)
+  input_tokens        Int?
+  cached_input_tokens Int?
+  output_tokens       Int?
+  image_count         Int      @default(0)
+  estimated_cost_usd  Float?
+  request_id          String? // provider's own request id, for support lookups — never a secret
+  error               String?
+  product_id          Int?
+  user_id             Int?
+  duration_ms         Int?
+  created_at          DateTime @default(now())
+
+  @@index([created_at])
+  @@index([feature])
+  @@index([status])
+  @@map("ai_usage_log")
+}
+
+// Request-hash-keyed cache for AI outputs (§32/§33). One row per
+// (feature + inputs) combination — see aiGateway/cache.js for the hash
+// recipe. expires_at null = persistent until explicitly regenerated (hooks/
+// posts/image understanding); set = TTL-based (performance explanations,
+// audience/angle analysis).
+model AiCacheEntry {
+  id             Int       @id @default(autoincrement())
+  cache_key      String    @unique
+  feature        String
+  prompt_version String?
+  data_json      String
+  created_at     DateTime  @default(now())
+  expires_at     DateTime?
+
+  @@index([expires_at])
+  @@index([feature])
+  @@map("ai_cache_entries")
+}

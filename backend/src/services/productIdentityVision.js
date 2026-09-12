@@ -14,14 +14,14 @@
 import crypto from 'crypto';
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
-import { askClaude } from './ai.js';
+import { generateText, TIERS } from './aiGateway/index.js';
 
 // Bumped whenever the prompt/output shape changes, so a stale cached
 // profile is never served against code expecting a different shape
 // (the cache key is [image_hash, model_version, provider] — this bump
 // alone invalidates every old cached entry for this provider safely).
 const MODEL_VERSION = 'identity-v1';
-const PROVIDER = 'ANTHROPIC_VISION'; // this file is the ANTHROPIC_VISION implementation behind productVisionService.js's provider abstraction — LOCAL_VISION (localVisionProvider.js) caches independently under the same table/image_hash
+const PROVIDER = 'OPENAI_VISION'; // this file is the vision-provider implementation behind productVisionService.js's provider abstraction — migrated from Anthropic to OpenAI; the provider tag changed too so an old Anthropic-era cached profile is never served as if OpenAI produced it. LOCAL_VISION (localVisionProvider.js) caches independently under the same table/image_hash
 
 function safeJsonParse(text) {
   const stripped = text.trim().replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
@@ -125,10 +125,18 @@ export async function analyzeProductImage(imageBase64, imageMediaType) {
   }
 
   try {
-    const text = await askClaude({
+    // No gateway-level cacheParts here: this file already has its own
+    // image-hash+model-version+provider cache above/below (Steps 26/27) —
+    // adding a second cache layer keyed the same way would just be a
+    // redundant DB round-trip, not extra correctness.
+    const { text } = await generateText({
+      feature: 'vision.product_identity',
+      tier: TIERS.BALANCED, // real product-image understanding — meaningful visual reasoning, not routine classification
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: imageMediaType || 'image/jpeg', data: imageBase64 } }, { type: 'text', text: 'حلل الصورة دي وارجع الـ JSON المطلوب.' }] }],
       maxTokens: 2000,
+      jsonMode: true,
+      promptVersion: MODEL_VERSION,
     });
     const parsed = safeJsonParse(text);
     if (!parsed || typeof parsed !== 'object' || !parsed.mainProductName) throw new Error('invalid JSON shape or missing mainProductName');
@@ -231,7 +239,9 @@ export async function compareVisualMatch(referenceImageBase64, referenceImageMed
   }
 
   try {
-    const text = await askClaude({
+    const { text } = await generateText({
+      feature: 'vision.compare_visual_match',
+      tier: TIERS.ROUTINE, // a bounded 0-100 score + one-line reason — simple classification
       system: VISUAL_COMPARE_SYSTEM_PROMPT,
       messages: [{
         role: 'user',
@@ -242,6 +252,7 @@ export async function compareVisualMatch(referenceImageBase64, referenceImageMed
         ],
       }],
       maxTokens: 300,
+      jsonMode: true,
     });
     const parsed = safeJsonParse(text);
     if (!parsed || typeof parsed.visualMatchScore !== 'number') throw new Error('رد غير صالح من نموذج المقارنة');

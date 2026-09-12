@@ -353,7 +353,7 @@ export async function searchAdLibrary(token, { searchTerms, countries, limit = 2
 // metadata/budgets, and a tightly-scoped set of WRITE helpers used only by
 // the AI Media Buyer execution layer (services/amb/executor.js) AFTER owner
 // approval + a deterministic rule-engine pass + a pre-execute revalidation.
-// Nothing here is ever called directly from a Claude response.
+// Nothing here is ever called directly from an AI model response.
 // ============================================================================
 
 /** Real ad-account currency/timezone/name — needed to convert Meta's minor-unit budgets to EGP and back. */

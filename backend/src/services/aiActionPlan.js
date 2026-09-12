@@ -10,7 +10,7 @@
 // doesn't parse, callers fall back to deterministic templated text so the
 // page is never blocked on the LLM.
 import crypto from 'node:crypto';
-import { askClaude } from './ai.js';
+import { generateText, TIERS, isAiConfigured } from './aiGateway/index.js';
 
 const SYSTEM_PROMPT = `أنت "Marketing Performance Decision Agent" — وكيل تحليل أداء إعلانات Meta لمتجر تجارة إلكترونية مصري (COD).
 هتستلم قائمة "entities" (منتجات أو حملات) وكل واحد فيها معاه classification و priority و confidence و metrics محسوبين مسبقًا وثابتين — ممنوع تغيّرهم أو تخترع تصنيف جديد.
@@ -86,16 +86,22 @@ export async function generateActionPlan(entities, thresholds) {
     return { summary: 'مفيش حملات نشطة في الفترة دي — مفيش خطة عمل تُبنى عليها.', items: [], source: 'FALLBACK', inputHash };
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!isAiConfigured()) {
     return { ...fallbackPlan(entities, thresholds), inputHash };
   }
 
   try {
     const promptEntities = buildPromptEntities(entities);
-    const raw = await askClaude({
+    const { text: raw } = await generateText({
+      feature: 'ai_intelligence.action_plan',
+      tier: TIERS.ROUTINE, // basic recommendations + structured extraction — routine tier
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify({ entities: promptEntities }) }],
       maxTokens: 2048,
+      jsonMode: true,
+      cacheParts: { inputHash },
+      cacheTtlMs: null, // persistent — recomputed only when the entity/threshold set actually changes (a new inputHash)
+      promptVersion: 'action_plan_v1',
     });
 
     const jsonMatch = raw.match(/\{[\s\S]*\}/);

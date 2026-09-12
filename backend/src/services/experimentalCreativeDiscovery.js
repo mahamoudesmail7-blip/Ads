@@ -24,7 +24,7 @@
 // the shared runProviderSearch/normalizeResult, which are never modified —
 // see the inline notes at each Google-specific call site for why) and used
 // both as its own result feed and for a bounded, append-only Stage B
-// enrichment pass. A final visual-verification pass (real Claude-vision
+// enrichment pass. A final visual-verification pass (real OpenAI-vision
 // side-by-side comparisons, capped for cost) re-ranks the top text-matched
 // candidates so the same physical product surfaces first — see
 // productIdentityVision.compareVisualMatch.
@@ -103,7 +103,7 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-/** Same honest, fully-deterministic shape analyzeProduct() (productResearchAI.js) itself already falls back to internally on a real error — never invents a field, just echoes the real user input into the profile shape query generation needs. Used whenever even the bounded Claude call didn't return in time. */
+/** Same honest, fully-deterministic shape analyzeProduct() (productResearchAI.js) itself already falls back to internally on a real error — never invents a field, just echoes the real user input into the profile shape query generation needs. Used whenever even the bounded AI call didn't return in time. */
 function deterministicTextProfile(search, input) {
   return {
     main_product_name: search.product_name, product_category: '', product_description: input.description || '',
@@ -113,7 +113,7 @@ function deterministicTextProfile(search, input) {
   };
 }
 
-/** Real, bounded, text-only product analysis (Step 10) — always strips any imageBase64/imageMediaType before calling analyzeProduct() (a real bug found live: passing them through re-attaches an image to a Claude Vision call even in a path meant to avoid exactly that), and always resolves within PROVIDER_TIMEOUT_MS one way or another: a real Claude analysis, or the same honest deterministic fallback analyzeProduct() itself uses on error. */
+/** Real, bounded, text-only product analysis (Step 10) — always strips any imageBase64/imageMediaType before calling analyzeProduct() (a real bug found live: passing them through re-attaches an image to a vision AI call even in a path meant to avoid exactly that), and always resolves within PROVIDER_TIMEOUT_MS one way or another: a real AI analysis, or the same honest deterministic fallback analyzeProduct() itself uses on error. */
 async function analyzeTextOnly(searchId, search, input) {
   const { imageBase64: _img, imageMediaType: _imgType, ...textOnlyInput } = input;
   try {
@@ -265,7 +265,7 @@ function normalizeGoogleImageResult(raw, query) {
  * identity is never overwritten by text evidence). Only appends a new
  * alias to alternative_names, and only when at least 2 independent Google
  * results agree on the same phrase that isn't already known — "multiple
- * reliable signals agree", never a single weak result. No extra Claude
+ * reliable signals agree", never a single weak result. No extra AI
  * call: a plain, explainable text-overlap heuristic, kept simple and
  * auditable on purpose.
  */
@@ -792,7 +792,7 @@ export async function runExperimentalSearchPipeline(searchId) {
       // memory-fragile host; the platform's own real thumbnail is the
       // visual signal used for both images and videos, disclosed
       // honestly rather than silently pretended to be frame-sampled).
-      // ANTHROPIC_VISION is layered on top only when worth trying —
+      // OPENAI_VISION is layered on top only when worth trying —
       // never required for this pass to run at all (Step 31).
       if (hasImage && referenceImages.length > 0 && !isCancelled(searchId)) {
         const rescored = await prisma.experimentalCreativeResult.findMany({

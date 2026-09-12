@@ -1,7 +1,7 @@
 // AI Creative Factory — deterministic Arabic text composition engine.
 //
 // The image model is asked to produce a TEXT-FREE composition with a clean
-// reserved zone. This module renders the EXACT Claude-approved Arabic
+// reserved zone. This module renders the EXACT AI-approved Arabic
 // strings onto that image with real shaping + RTL via @napi-rs/canvas +
 // Cairo, so the final Arabic is always 100% correct — never AI letterforms.
 //

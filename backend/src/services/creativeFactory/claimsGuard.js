@@ -85,6 +85,8 @@ export async function guardCopy({ copy, product }) {
 المخالفات: ${JSON.stringify(scan.issues)}
 أعد JSON بنفس مفاتيح النص الحالي مع الصياغة المصححة فقط.`,
     maxTokens: 900,
+    feature: 'cf.claims_guard',
+    tier: 'routine',
   });
 
   if (ai.ok && ai.data && typeof ai.data === 'object') {

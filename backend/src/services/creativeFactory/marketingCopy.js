@@ -54,6 +54,8 @@ export async function generateCopyForItem({ item, product, project, dna }) {
  "cta": "... أو null", "headline": "<= الهوك>", "subtitle": "... أو null"
 }`,
     maxTokens: 900,
+    feature: 'cf.marketing_copy',
+    tier: 'routine', // hooks/copy — Luna territory
   });
 
   if (ai.ok && ai.data && (ai.data.hook || ai.data.headline)) {

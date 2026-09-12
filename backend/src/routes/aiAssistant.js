@@ -2,7 +2,9 @@
 // Center's chat + quick actions) and the deterministic Daily Briefing.
 // Phase 1: read-only. The assistant NEVER touches Prisma directly — every
 // fact it can cite comes from services/aiTools.js's tool layer, called
-// through a real Anthropic tool-use loop (services/ai.js runAgentTurn).
+// through the central AI gateway's tool-use loop (services/aiGateway —
+// OpenAI Responses API function-calling; services/aiTools.js's Anthropic-
+// shaped tool defs are converted internally, unchanged here).
 // Every tool call AND every assistant turn is written to AiAuditLog —
 // this is the real audit trail the spec requires, not a UI mockup.
 import { Router } from 'express';
@@ -10,7 +12,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
-import { runAgentTurn } from '../services/ai.js';
+import { runTools, TIERS } from '../services/aiGateway/index.js';
 import { TOOL_DEFINITIONS, TOOL_IMPLS, get_decisions_summary, get_product_profit, get_order_metrics, get_lost_orders_summary, get_inventory_status } from '../services/aiTools.js';
 
 const router = Router();
@@ -66,10 +68,13 @@ router.post(
 
     let result;
     try {
-      result = await runAgentTurn({
+      result = await runTools({
+        feature: 'assistant.chat',
+        tier: TIERS.BALANCED, // interactive multi-tool reasoning over real business data
         system: SYSTEM_PROMPT,
         userMessage: message.trim(),
         tools: TOOL_DEFINITIONS,
+        userId: req.user.id,
         executeTool: async (name, input) => {
           const impl = TOOL_IMPLS[name];
           if (!impl) throw new Error(`Tool غير معروف: ${name}`);

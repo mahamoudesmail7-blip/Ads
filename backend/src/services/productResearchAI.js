@@ -7,7 +7,7 @@
 // Every call here asks for strict JSON and validates the shape before
 // trusting it (Step 36) — an invalid/unparseable response never crashes the
 // pipeline, it falls back to a safe, honestly-labelled default instead.
-import { askClaude } from './ai.js';
+import { generateText, TIERS } from './aiGateway/index.js';
 import { logger } from '../logger.js';
 
 const ARRAY_FIELDS = [
@@ -73,7 +73,7 @@ export async function analyzeProduct(input) {
     : userParts.join('\n');
 
   try {
-    const text = await askClaude({ system, messages: [{ role: 'user', content }], maxTokens: 1500 });
+    const { text } = await generateText({ feature: 'research.analyze_product', tier: TIERS.BALANCED, system, messages: [{ role: 'user', content }], maxTokens: 1500, jsonMode: true });
     const parsed = safeJsonParse(text);
     if (!parsed || typeof parsed !== 'object') throw new Error('invalid JSON shape');
 
@@ -223,7 +223,11 @@ EXACT_MATCH | VERY_SIMILAR | SIMILAR | RELATED | IRRELEVANT
 
   const map = new Map();
   try {
-    const text = await askClaude({ system, messages: [{ role: 'user', content: userContent }], maxTokens: 4000 });
+    // jsonMode NOT used here — the expected top-level shape is a bare JSON
+    // array (OpenAI's json_object response format requires an object at
+    // the top level), so this relies on the prompt's own "JSON only"
+    // instruction + safeJsonParse()'s extraction below, same as before.
+    const { text } = await generateText({ feature: 'research.rank_results_batch', tier: TIERS.ROUTINE, system, messages: [{ role: 'user', content: userContent }], maxTokens: 4000 });
     const parsed = safeJsonParse(text);
     if (!Array.isArray(parsed)) throw new Error('invalid JSON shape — expected array');
     for (const item of parsed) {
@@ -267,7 +271,7 @@ export async function analyzeContent(result) {
   const userContent = `المنصة: ${result.platform}\nنوع المحتوى: ${result.contentType}\nالحساب: ${result.accountName || 'غير معروف'}\nالعنوان: ${result.title || 'غير متاح'}\nالوصف: ${result.snippet || 'غير متاح'}`;
 
   try {
-    const text = await askClaude({ system, messages: [{ role: 'user', content: userContent }], maxTokens: 600 });
+    const { text } = await generateText({ feature: 'research.analyze_content', tier: TIERS.ROUTINE, system, messages: [{ role: 'user', content: userContent }], maxTokens: 600, jsonMode: true });
     const parsed = safeJsonParse(text);
     if (!parsed || typeof parsed !== 'object') throw new Error('invalid JSON shape');
     const analysis = {};

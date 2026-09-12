@@ -1,13 +1,15 @@
 // AI Creative Factory — text/vision AI helper.
 //
-// Thin wrapper over the existing services/ai.js askClaude() (Anthropic, the
-// key the rest of the app already uses). Adds: vision image blocks, strict
-// JSON extraction, and a mock-safe contract — callAiJson() returns
-// { ok:false, reason } instead of throwing when ANTHROPIC_API_KEY is missing
-// or the call fails, so every caller can fall back to a deterministic result
-// and the workflow keeps working with no AI configured.
-import { askClaude } from '../ai.js';
-import { textAiConfigured } from './config.js';
+// Thin wrapper over the central AI gateway (services/aiGateway — OpenAI).
+// Adds: vision image blocks, strict JSON extraction, and a mock-safe
+// contract — callAiJson() returns { ok:false, reason } instead of throwing
+// when OPENAI_API_KEY is missing or the call fails, so every caller can
+// fall back to a deterministic result and the workflow keeps working with
+// no AI configured. Every one of Creative Factory's text/vision features
+// (marketingCopy, productDna, creativeStrategy, creativeDirector,
+// claimsGuard, imageQuality's judge) calls through this ONE function, so
+// migrating it here is the whole of Creative Factory's text-layer migration.
+import { generateText, TIERS, isAiConfigured } from '../aiGateway/index.js';
 import { logger } from '../../logger.js';
 
 /**
@@ -16,10 +18,12 @@ import { logger } from '../../logger.js';
  * @param {string} p.user                     the text instruction
  * @param {Array<{buffer:Buffer,mime:string,label?:string}>} [p.images]
  * @param {number} [p.maxTokens]
+ * @param {string} [p.feature]                 dotted feature name for usage logging/caching — defaults to a generic bucket when a caller hasn't been updated yet
+ * @param {'routine'|'balanced'|'advanced'} [p.tier='routine']
  * @returns {Promise<{ok:true,data:any,raw:string}|{ok:false,reason:string}>}
  */
-export async function callAiJson({ system, user, images = [], maxTokens = 1600 }) {
-  if (!textAiConfigured()) return { ok: false, reason: 'AI النصي غير مُهيأ (ANTHROPIC_API_KEY).' };
+export async function callAiJson({ system, user, images = [], maxTokens = 1600, feature = 'creative_factory.text', tier = TIERS.ROUTINE }) {
+  if (!isAiConfigured()) return { ok: false, reason: 'AI النصي غير مُهيأ (OPENAI_API_KEY).' };
 
   const content = [];
   for (const img of images.slice(0, 8)) {
@@ -34,9 +38,9 @@ export async function callAiJson({ system, user, images = [], maxTokens = 1600 }
 
   let raw = '';
   try {
-    raw = await askClaude({ system, messages: [{ role: 'user', content }], maxTokens });
+    ({ text: raw } = await generateText({ feature, tier, system, messages: [{ role: 'user', content }], maxTokens, jsonMode: true }));
   } catch (err) {
-    logger.error('CF_TEXT_AI_FAILED', { message: err?.message?.slice(0, 200) });
+    logger.error('CF_TEXT_AI_FAILED', { feature, message: err?.message?.slice(0, 200) });
     return { ok: false, reason: err?.message || 'فشل نداء AI.' };
   }
 

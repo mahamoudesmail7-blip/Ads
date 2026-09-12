@@ -79,6 +79,8 @@ export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, 
 مهم جدًا: أعد كائن JSON واحد فقط — يبدأ بـ { وينتهي بـ } — بدون أي كلام قبله أو بعده، وبحد أقصى سببين قصيرين في failure_reasons.`,
     images,
     maxTokens: 1500,
+    feature: 'cf.image_quality_judge',
+    tier: 'routine', // bounded scoring/classification against a real generated image
   });
 
   if (!ai.ok || !ai.data?.scores) return neutralReview(ai.reason || 'تعذّر تقييم الصورة آليًا.');

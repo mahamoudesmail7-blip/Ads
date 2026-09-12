@@ -6,10 +6,11 @@
 //
 // Method mirrors the existing services/adAnalysis.js (used for competitor
 // ads): DETERMINISTIC-first (offer/CTA/creative-type from real fields and
-// keyword rules, zero AI cost), then ONE text-only Claude call for the
-// fields that genuinely need judgment. Every field carries a source tag and
-// is NULL when the creative text does not support a value — labels are never
-// invented. Results cached per (creative_id, model_version).
+// keyword rules, zero AI cost), then ONE text-only AI call (OpenAI, via the
+// central aiGateway) for the fields that genuinely need judgment. Every
+// field carries a source tag and is NULL when the creative text does not
+// support a value — labels are never invented. Results cached per
+// (creative_id, model_version).
 //
 // status: ANALYZED | INSUFFICIENT_DATA (creative carries no usable text) |
 //         NOT_ANALYZED (not attempted) | FAILED.
@@ -17,7 +18,7 @@ import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getCreativeDetails } from '../metaGraphClient.js';
-import { askClaude } from '../ai.js';
+import { generateText, TIERS, isAiConfigured } from '../aiGateway/index.js';
 
 export const MODEL_VERSION = 'amb-creative-v1';
 
@@ -80,9 +81,9 @@ const SYSTEM_PROMPT = `إنت محلل إعلانات تسويقية خبير ل
 8. creativeType: من: ${CREATIVE_TYPES.join(', ')}.
 ممنوع اختراع أي حاجة مش مدعومة بالنص.`;
 
-async function labelWithClaude(text, offer, cta) {
+async function labelWithAi(text, offer, cta) {
   const userText = `العنوان/النص:\n${text}\n\nمستخرج أوتوماتيكيًا — لا تعيد اشتقاقه: أوفر=${offer || 'غير موجود'}, CTA=${cta || 'غير موجود'}.`;
-  const raw = await askClaude({ system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userText }], maxTokens: 700 });
+  const { text: raw } = await generateText({ feature: 'amb.creative_analysis', tier: TIERS.ROUTINE, system: SYSTEM_PROMPT, messages: [{ role: 'user', content: userText }], maxTokens: 700, jsonMode: true });
   const p = safeJson(raw);
   if (!p || typeof p !== 'object') throw new Error('invalid JSON from creative analysis');
   return {
@@ -108,7 +109,7 @@ export async function analyzeCreative({ adAccountId, creativeId, token }) {
   const text = pickText(details);
   const cta = pickCta(details);
   const offer = deterministicOffer(text);
-  const creativeTypeDet = details?.video_id ? null : null; // type is semantic → left to Claude
+  const creativeTypeDet = details?.video_id ? null : null; // type is semantic → left to the AI call below
 
   let payload = {
     ad_account_id: adAccountId,
@@ -124,13 +125,13 @@ export async function analyzeCreative({ adAccountId, creativeId, token }) {
     payload.status = 'INSUFFICIENT_DATA';
     payload.source = offer || cta ? 'DETERMINISTIC' : null;
     payload.creative_type = details?.video_id ? 'Product Demonstration' : null;
-  } else if (!process.env.ANTHROPIC_API_KEY) {
+  } else if (!isAiConfigured()) {
     payload.status = 'ANALYZED';
     payload.source = 'RULE_BASED';
     payload.creative_type = /قبل.?بعد|before.?after/i.test(text) ? 'Before-After' : /تجربة|رأي|review/i.test(text) ? 'Testimonial' : null;
   } else {
     try {
-      const ai = await labelWithClaude(text, offer, cta);
+      const ai = await labelWithAi(text, offer, cta);
       payload = {
         ...payload,
         status: 'ANALYZED',

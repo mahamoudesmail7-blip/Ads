@@ -1,19 +1,18 @@
-// AI Product Marketing Center — every Claude call the module makes. Reuses
-// the EXISTING generic Claude client (services/ai.js askClaude — the same
-// one AI Media Buyer's claudeAnalyst.js and AI Creative Factory's textAi.js
-// already use) and the EXISTING truncation-safe JSON extractor
-// (creativeFactory/textAi.js extractJson). No new AI client, no new key.
+// AI Product Marketing Center — every AI call the module makes. Reuses the
+// central AI gateway (services/aiGateway — OpenAI) and the EXISTING
+// truncation-safe JSON extractor (creativeFactory/textAi.js extractJson).
+// No new AI client, no new key.
 //
 // Contract every call here honours:
-//   • Claude receives ONLY the real, already-computed numbers (metrics,
+//   • The model receives ONLY the real, already-computed numbers (metrics,
 //     locations, creative fields) — it never re-derives or overrides them.
 //   • Every qualitative item it returns must carry kind: FACT | HYPOTHESIS |
 //     RECOMMENDATION and confidence: LOW | MEDIUM | HIGH — enforced here
 //     (defaulted, never trusted blindly) before anything is stored.
 //   • Claim status (§11) is validated against productMarketingScoring's hard
-//     banned-claim list AFTER Claude answers — Claude's own "آمن" label is
+//     banned-claim list AFTER the model answers — its own "آمن" label is
 //     downgraded, never upgraded, by that check.
-import { askClaude } from '../ai.js';
+import { generateText, TIERS } from '../aiGateway/index.js';
 import { extractJson } from '../creativeFactory/textAi.js';
 import { classifyClaim } from './productMarketingScoring.js';
 import { logger } from '../../logger.js';
@@ -29,10 +28,10 @@ function claimOf(text, aiStatus) {
   return { status, reason: status === 'YELLOW' ? 'يحتاج تأكيد قبل الاستخدام.' : null };
 }
 
-async function callJson({ system, user, maxTokens = 3000, label }) {
+async function callJson({ system, user, maxTokens = 3000, label, tier = TIERS.ROUTINE }) {
   let raw;
   try {
-    raw = await askClaude({ system, messages: [{ role: 'user', content: user }], maxTokens });
+    ({ text: raw } = await generateText({ feature: `pmc.${label.toLowerCase()}`, tier, system, messages: [{ role: 'user', content: user }], maxTokens, jsonMode: true }));
   } catch (err) {
     logger.error(`[ProductMarketingAI] ${label}_CALL_FAILED`, { message: err.message });
     return { ok: false, reason: err.message };
@@ -84,7 +83,7 @@ const REPORT_SYSTEM = `إنت خبير تسويق منتجات ميديا باي
 
 export async function buildIntelligenceReport(ctx) {
   const user = `بيانات المنتج والأداء الحقيقية (استخدمها فقط، ممنوع تخترع غيرها):\n${JSON.stringify(ctx, null, 2)}`;
-  const res = await callJson({ system: REPORT_SYSTEM, user, maxTokens: 4000, label: 'REPORT' });
+  const res = await callJson({ system: REPORT_SYSTEM, user, maxTokens: 4000, label: 'REPORT', tier: TIERS.BALANCED });
   if (!res.ok) return { ok: false, reason: res.reason };
   const d = res.data || {};
 

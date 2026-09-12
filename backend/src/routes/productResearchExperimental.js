@@ -390,7 +390,7 @@ router.get(
       productImage: search.product_image,
       productImages: search.product_images_json ? JSON.parse(search.product_images_json) : (search.product_image ? [search.product_image] : []),
       identityProfile: search.identity_profile_json ? JSON.parse(search.identity_profile_json) : null,
-      identityProvider: search.identity_provider, // LOCAL_VISION | LOCAL_VISION+ANTHROPIC — diagnostic (Step 24), never required for the profile above to exist
+      identityProvider: search.identity_provider, // LOCAL_VISION | LOCAL_VISION+OPENAI — diagnostic (Step 24), never required for the profile above to exist
       country: search.country,
       language: search.language,
       platforms,

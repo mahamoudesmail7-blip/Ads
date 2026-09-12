@@ -5,7 +5,7 @@
 // booleans + non-secret ids. This is the single source of truth for "is the
 // image provider actually configured right now" — the whole module runs in a
 // mock-safe "provider off" mode when it isn't, and never fabricates an image.
-import { getAnthropicHealth } from '../ai.js';
+import { getOpenAiHealth } from '../aiGateway/index.js';
 
 function clean(raw) {
   if (raw === undefined || raw === null) return '';
@@ -120,7 +120,7 @@ export function estimateCostUsd(imageCount, size = '1024x1024') {
 export function getProviderStatus() {
   const imgProvider = imageProviderName();
   const imgConfigured = imgProvider === 'disabled' ? false : (imgProvider === 'openai' ? !!openAiKey() : true);
-  const textHealth = getAnthropicHealth(); // { status, ... } — never a key
+  const textHealth = getOpenAiHealth(); // { status, ... } — never a key
   const textConfigured = !!textHealth && textHealth.status !== 'NOT_CONFIGURED';
   return {
     image: {
@@ -131,10 +131,10 @@ export function getProviderStatus() {
       envVar: 'OPENAI_API_KEY',
     },
     text: {
-      provider: 'anthropic',
+      provider: 'openai',
       configured: textConfigured,
       status: textConfigured ? (textHealth.status || 'READY') : 'NOT_CONFIGURED',
-      envVar: 'ANTHROPIC_API_KEY',
+      envVar: 'OPENAI_API_KEY',
       lastErrorType: textHealth?.lastErrorType || null,   // diagnostic only — a category, never a secret
       lastErrorAt: textHealth?.lastErrorAt || null,
       lastOkAt: textHealth?.lastSuccessfulRequestAt || null,
@@ -145,6 +145,6 @@ export function getProviderStatus() {
 }
 
 export function textAiConfigured() {
-  const h = getAnthropicHealth();
+  const h = getOpenAiHealth();
   return !!h && h.status !== 'NOT_CONFIGURED';
 }

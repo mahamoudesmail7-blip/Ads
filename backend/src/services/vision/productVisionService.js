@@ -1,8 +1,8 @@
 // productVisionService.js — EXPERIMENTAL, Internal Creative Discovery only.
 // THE provider abstraction (Step 1). experimentalCreativeDiscovery.js calls
 // ONLY this module for anything vision-related and never knows or cares
-// whether LOCAL_VISION or ANTHROPIC_VISION actually produced a given
-// field — that's the whole point: Anthropic becomes an optional
+// whether LOCAL_VISION or OPENAI_VISION actually produced a given field —
+// that's the whole point: the hosted vision call becomes an optional
 // enhancement layered on top of a real, always-available local pipeline,
 // never a requirement.
 //
@@ -10,20 +10,21 @@
 // as sufent on its own: it produces the identity profile / visual match
 // score from real OCR + real CLIP embeddings + real zero-shot
 // classification + real perceptual hashing — nothing here waits on or
-// requires Anthropic to produce a usable result. ANTHROPIC_VISION
-// (productIdentityVision.js, completely unmodified in its own logic) is
-// only ever attempted afterward, only when configured AND its own real
-// health tracker doesn't already say ERROR, and its result only ever
-// enhances fields the local pass left weak/empty — it can never overwrite
-// a real local finding with a lower-confidence guess, and any Anthropic
-// failure is swallowed silently (logged, never thrown) so the local
-// result is always what ships.
+// requires the hosted model to produce a usable result. OPENAI_VISION
+// (productIdentityVision.js, via the central aiGateway — completely
+// unmodified in its own logic) is only ever attempted afterward, only when
+// configured AND its own real health tracker doesn't already say ERROR,
+// and its result only ever enhances fields the local pass left weak/empty
+// — it can never overwrite a real local finding with a lower-confidence
+// guess, and any hosted-model failure is swallowed silently (logged, never
+// thrown) so the local result is always what ships.
 import crypto from 'crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import * as localVision from './localVisionProvider.js';
-import { analyzeProductImage as anthropicAnalyzeImage, compareVisualMatch as anthropicCompareVisual } from '../productIdentityVision.js';
+import { analyzeProductImage as aiAnalyzeImage, compareVisualMatch as aiCompareVisual } from '../productIdentityVision.js';
 import { classify as healthClassify, classifyErrorType, recordSuccess as healthRecordSuccess, recordError as healthRecordError } from '../providerHealth.js';
+import { isAiConfigured, getOpenAiHealth } from '../aiGateway/index.js';
 
 const LOG_PREFIX = '[ProductVisionService]';
 const LOCAL_MODEL_VERSION = 'local-v1';
@@ -32,13 +33,10 @@ function hashImage(imageBase64) {
   return crypto.createHash('sha256').update(imageBase64).digest('hex');
 }
 
-function anthropicConfigured() {
-  return Boolean(process.env.ANTHROPIC_API_KEY?.trim());
-}
-/** Anthropic is attempted only when configured AND its real, traffic-driven health tracker (the same one every other Claude call in this app feeds — never a synthetic probe) doesn't already show ERROR. A never-yet-exercised or merely DEGRADED state is still worth trying once; a confirmed ERROR (e.g. the known insufficient-credit state) is not worth spending a request on. */
-function anthropicWorthTrying() {
-  if (!anthropicConfigured()) return false;
-  return healthClassify('anthropic', true).status !== 'ERROR';
+/** The hosted vision enrichment is attempted only when configured AND its real, traffic-driven health tracker (the same one every other OpenAI call in this app feeds — never a synthetic probe) doesn't already show ERROR. A never-yet-exercised or merely DEGRADED state is still worth trying once; a confirmed ERROR (e.g. an insufficient-credit state) is not worth spending a request on. */
+function visionAiWorthTrying() {
+  if (!isAiConfigured()) return false;
+  return getOpenAiHealth().status !== 'ERROR';
 }
 
 // Step: exact product matching. The local-vision worker (localVisionProvider.js)
@@ -46,7 +44,7 @@ function anthropicWorthTrying() {
 // question is whether it has just proven itself broken in THIS process's
 // lifetime (a hang/crash, exactly the incident documented in
 // experimentalCreativeDiscovery.js's Stage A comments). Mirrors
-// anthropicWorthTrying()'s exact pattern: an ERROR classification here means
+// visionAiWorthTrying()'s exact pattern: an ERROR classification here means
 // "it failed and has never succeeded" (providerHealth.js's own rule) — a
 // self-healing circuit breaker, not a one-way kill switch. The very first
 // call in a process's life is always attempted (nothing to distrust yet);
@@ -107,7 +105,7 @@ function localToProfileShape(local) {
     arabicNames: [],
     englishNames: mainProductName ? [mainProductName] : [],
     keywords: [category, brand].filter(Boolean),
-    description: '', // local pipeline never invents prose — Anthropic enrichment is the only source of a real description
+    description: '', // local pipeline never invents prose — the hosted AI enrichment is the only source of a real description
     productCategory: category,
     specificCategory: category,
     categoryConfidence: local.categoryConfidence,
@@ -123,48 +121,48 @@ function localToProfileShape(local) {
       visibleBrand: brand, visibleModel: model,
       mainColors: local.dominantColors || [], secondaryColors: [], distinctivePhysicalFeatures: [], visibleText: (local.ocr.words || []).map((w) => w.text),
     },
-    visualFingerprintConfidence: local.embedding ? 60 : 0, // a real embedding was computed (structural signal exists), but no descriptive fingerprint text -- moderate, honest confidence, never the polished prose Anthropic can produce
+    visualFingerprintConfidence: local.embedding ? 60 : 0, // a real embedding was computed (structural signal exists), but no descriptive fingerprint text -- moderate, honest confidence, never the polished prose the hosted AI call can produce
     multipleProductsDetected: false, // the local pipeline has no multi-object detection -- never claims to have found or ruled this out
     imageQualityIssues: local.embedding ? [] : ['local_embedding_failed'],
     overallConfidence,
   };
 }
 
-/** Enhancement merge (Step 7 Level 2): Anthropic's output only fills gaps the local pass left weak — never overwrites a real local finding with a lower-confidence one. Text fields (description, arabicNames/englishNames/alternativeNames, distinctiveFeatures, visualFingerprint prose) come from Anthropic when available since local has no real source for them at all. */
-function mergeAnthropicEnrichment(localProfile, anthropicProfile) {
+/** Enhancement merge (Step 7 Level 2): The hosted AI's output only fills gaps the local pass left weak — never overwrites a real local finding with a lower-confidence one. Text fields (description, arabicNames/englishNames/alternativeNames, distinctiveFeatures, visualFingerprint prose) come from the hosted AI call when available since local has no real source for them at all. */
+function mergeAiEnrichment(localProfile, aiProfile) {
   const merged = { ...localProfile };
-  if (anthropicProfile.mainProductNameConfidence > localProfile.mainProductNameConfidence) {
-    merged.mainProductName = anthropicProfile.mainProductName || localProfile.mainProductName;
-    merged.mainProductNameConfidence = anthropicProfile.mainProductNameConfidence;
+  if (aiProfile.mainProductNameConfidence > localProfile.mainProductNameConfidence) {
+    merged.mainProductName = aiProfile.mainProductName || localProfile.mainProductName;
+    merged.mainProductNameConfidence = aiProfile.mainProductNameConfidence;
   }
-  if (!merged.brand && anthropicProfile.brand) { merged.brand = anthropicProfile.brand; merged.brandConfidence = anthropicProfile.brandConfidence; }
-  if (!merged.model && anthropicProfile.model) { merged.model = anthropicProfile.model; merged.modelConfidence = anthropicProfile.modelConfidence; }
-  if (anthropicProfile.categoryConfidence > localProfile.categoryConfidence) {
-    merged.productCategory = anthropicProfile.productCategory || localProfile.productCategory;
-    merged.specificCategory = anthropicProfile.specificCategory || localProfile.specificCategory;
-    merged.categoryConfidence = anthropicProfile.categoryConfidence;
+  if (!merged.brand && aiProfile.brand) { merged.brand = aiProfile.brand; merged.brandConfidence = aiProfile.brandConfidence; }
+  if (!merged.model && aiProfile.model) { merged.model = aiProfile.model; merged.modelConfidence = aiProfile.modelConfidence; }
+  if (aiProfile.categoryConfidence > localProfile.categoryConfidence) {
+    merged.productCategory = aiProfile.productCategory || localProfile.productCategory;
+    merged.specificCategory = aiProfile.specificCategory || localProfile.specificCategory;
+    merged.categoryConfidence = aiProfile.categoryConfidence;
   }
-  merged.description = anthropicProfile.description || localProfile.description;
-  merged.arabicNames = [...new Set([...(anthropicProfile.arabicNames || []), ...(localProfile.arabicNames || [])])];
-  merged.englishNames = [...new Set([...(anthropicProfile.englishNames || []), ...(localProfile.englishNames || [])])];
-  merged.alternativeNames = [...new Set([...(anthropicProfile.alternativeNames || []), ...(localProfile.alternativeNames || [])])];
-  merged.candidateNames = [...new Set([...(anthropicProfile.candidateNames || []), ...(localProfile.candidateNames || [])])];
-  merged.keywords = [...new Set([...(anthropicProfile.keywords || []), ...(localProfile.keywords || [])])];
-  merged.visibleText = [...new Set([...(anthropicProfile.visibleText || []), ...(localProfile.visibleText || [])])];
-  merged.distinctiveFeatures = anthropicProfile.distinctiveFeatures?.length ? anthropicProfile.distinctiveFeatures : localProfile.distinctiveFeatures;
-  merged.visualFingerprint = { ...localProfile.visualFingerprint, ...Object.fromEntries(Object.entries(anthropicProfile.visualFingerprint || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length))) };
-  merged.visualFingerprintConfidence = Math.max(localProfile.visualFingerprintConfidence, anthropicProfile.visualFingerprintConfidence);
-  merged.multipleProductsDetected = anthropicProfile.multipleProductsDetected || localProfile.multipleProductsDetected;
-  merged.imageQualityIssues = [...new Set([...(localProfile.imageQualityIssues || []), ...(anthropicProfile.imageQualityIssues || [])])];
-  merged.overallConfidence = Math.max(localProfile.overallConfidence, anthropicProfile.overallConfidence);
+  merged.description = aiProfile.description || localProfile.description;
+  merged.arabicNames = [...new Set([...(aiProfile.arabicNames || []), ...(localProfile.arabicNames || [])])];
+  merged.englishNames = [...new Set([...(aiProfile.englishNames || []), ...(localProfile.englishNames || [])])];
+  merged.alternativeNames = [...new Set([...(aiProfile.alternativeNames || []), ...(localProfile.alternativeNames || [])])];
+  merged.candidateNames = [...new Set([...(aiProfile.candidateNames || []), ...(localProfile.candidateNames || [])])];
+  merged.keywords = [...new Set([...(aiProfile.keywords || []), ...(localProfile.keywords || [])])];
+  merged.visibleText = [...new Set([...(aiProfile.visibleText || []), ...(localProfile.visibleText || [])])];
+  merged.distinctiveFeatures = aiProfile.distinctiveFeatures?.length ? aiProfile.distinctiveFeatures : localProfile.distinctiveFeatures;
+  merged.visualFingerprint = { ...localProfile.visualFingerprint, ...Object.fromEntries(Object.entries(aiProfile.visualFingerprint || {}).filter(([, v]) => v && (!Array.isArray(v) || v.length))) };
+  merged.visualFingerprintConfidence = Math.max(localProfile.visualFingerprintConfidence, aiProfile.visualFingerprintConfidence);
+  merged.multipleProductsDetected = aiProfile.multipleProductsDetected || localProfile.multipleProductsDetected;
+  merged.imageQualityIssues = [...new Set([...(localProfile.imageQualityIssues || []), ...(aiProfile.imageQualityIssues || [])])];
+  merged.overallConfidence = Math.max(localProfile.overallConfidence, aiProfile.overallConfidence);
   return merged;
 }
 
 /**
  * THE abstraction entry point (Step 1). Always attempts LOCAL_VISION
- * first (free, real, never optional); only ever adds ANTHROPIC_VISION as
+ * first (free, real, never optional); only ever adds OPENAI_VISION as
  * an enhancement layer on top, and only when it's actually worth trying.
- * @returns {Promise<{profile: object, identityProvider: 'LOCAL_VISION'|'LOCAL_VISION+ANTHROPIC', imageHash: string, embedding: number[]|null, perceptualHash: string|null}>}
+ * @returns {Promise<{profile: object, identityProvider: 'LOCAL_VISION'|'LOCAL_VISION+OPENAI', imageHash: string, embedding: number[]|null, perceptualHash: string|null}>}
  */
 export async function analyzeProductImage(imageBase64, imageMediaType, onProgress = () => {}) {
   await onProgress('start');
@@ -211,20 +209,20 @@ export async function analyzeProductImage(imageBase64, imageMediaType, onProgres
     await onProgress('cache_written');
   }
 
-  // --- ANTHROPIC_VISION, optional enhancement only ---
+  // --- OPENAI_VISION, optional enhancement only ---
   let identityProvider = 'LOCAL_VISION';
   let profile = localProfile;
-  if (anthropicWorthTrying()) {
+  if (visionAiWorthTrying()) {
     try {
-      const { profile: anthropicProfile, source } = await anthropicAnalyzeImage(imageBase64, imageMediaType);
-      if (source !== 'fallback' && anthropicProfile.mainProductName) {
-        profile = mergeAnthropicEnrichment(localProfile, anthropicProfile);
-        identityProvider = 'LOCAL_VISION+ANTHROPIC';
-        logger.info(`${LOG_PREFIX} ANTHROPIC_ENRICHMENT_APPLIED`, { imageHash: imageHash.slice(0, 12) });
+      const { profile: aiProfile, source } = await aiAnalyzeImage(imageBase64, imageMediaType);
+      if (source !== 'fallback' && aiProfile.mainProductName) {
+        profile = mergeAiEnrichment(localProfile, aiProfile);
+        identityProvider = 'LOCAL_VISION+OPENAI';
+        logger.info(`${LOG_PREFIX} AI_ENRICHMENT_APPLIED`, { imageHash: imageHash.slice(0, 12) });
       }
     } catch (err) {
-      logger.error(`${LOG_PREFIX} ANTHROPIC_ENRICHMENT_FAILED`, { errorType: classifyErrorType(err), message: err.message });
-      // Swallowed on purpose — LOCAL_VISION's result already shipped above; Anthropic is enhancement only, never a requirement (Step 31).
+      logger.error(`${LOG_PREFIX} AI_ENRICHMENT_FAILED`, { errorType: classifyErrorType(err), message: err.message });
+      // Swallowed on purpose — LOCAL_VISION's result already shipped above; the hosted AI call is enhancement only, never a requirement (Step 31).
     }
   }
 
@@ -339,11 +337,11 @@ function buildMatchReasons({ embSim, hashSim, brandBonus }) {
  * candidate is downloaded and locally analyzed only ONCE regardless of how
  * many references exist (real cost control, Step 13) — only the
  * similarity math is repeated per reference, which is cheap/synchronous.
- * ANTHROPIC_VISION semantic enhancement (when worth trying) still only
+ * OPENAI_VISION semantic enhancement (when worth trying) still only
  * ever compares against the PRIMARY reference image, to keep this at one
  * extra external call per candidate at most, never one per reference.
  * @param {{embedding:number[]|null, perceptualHash:string|null, imageIndex:number}[]} references from analyzeProductImages().references
- * @param {{brand:string|null, model:string|null, imageBase64:string, imageMediaType:string}} primaryMeta brand/model + the primary image, for the text bonus and any Anthropic enhancement
+ * @param {{brand:string|null, model:string|null, imageBase64:string, imageMediaType:string}} primaryMeta brand/model + the primary image, for the text bonus and any hosted-AI enhancement
  * @param {string} candidateThumbnailUrl
  * @param {string} candidateText
  * @returns {Promise<{localVisualMatchScore:number|null, visualMatchScore:number|null, visualMatchProvider:string|null, matchedReferenceIndex:number|null, matchReasons:string[], reason:string|null, embSim:number|null, hashSim:number|null, brandBonus:number, error?:string}>}
@@ -388,16 +386,16 @@ export async function compareVisualMatchMulti(references, primaryMeta, candidate
   let visualMatchScore = localVisualMatchScore;
   let visualMatchProvider = 'LOCAL_EMBEDDING';
   let reason = null;
-  if (anthropicWorthTrying()) {
+  if (visionAiWorthTrying()) {
     try {
-      const semantic = await anthropicCompareVisual(primaryMeta.imageBase64, primaryMeta.imageMediaType, candidateThumbnailUrl);
+      const semantic = await aiCompareVisual(primaryMeta.imageBase64, primaryMeta.imageMediaType, candidateThumbnailUrl);
       if (semantic.visualMatchScore !== null) {
         visualMatchScore = Math.round(0.5 * localVisualMatchScore + 0.5 * semantic.visualMatchScore);
-        visualMatchProvider = 'LOCAL_EMBEDDING+ANTHROPIC';
+        visualMatchProvider = 'LOCAL_EMBEDDING+OPENAI';
         reason = semantic.reason;
       }
     } catch (err) {
-      logger.error('[ProductVisionService] ANTHROPIC_COMPARE_FAILED', { errorType: classifyErrorType(err), message: err.message });
+      logger.error('[ProductVisionService] AI_COMPARE_FAILED', { errorType: classifyErrorType(err), message: err.message });
     }
   }
 
@@ -410,7 +408,7 @@ export async function compareVisualMatchMulti(references, primaryMeta, candidate
  * similarity, real perceptual-hash similarity, and a real brand/model
  * text-match bonus (checked against the candidate's own title/snippet
  * text, not a second OCR pass — cheaper, and that text is already real
- * data already collected for the result). ANTHROPIC_VISION semantic
+ * data already collected for the result). OPENAI_VISION semantic
  * comparison is layered on top only when worth trying, and only ever
  * blended with the local score, never substituted alone (Step 11).
  * @param {{embedding:number[]|null, perceptualHash:string|null, brand:string|null, model:string|null, imageBase64:string, imageMediaType:string}} reference
@@ -451,16 +449,16 @@ export async function compareVisualMatch(reference, candidateThumbnailUrl, candi
   let visualMatchScore = localVisualMatchScore;
   let visualMatchProvider = 'LOCAL_EMBEDDING';
   let reason = null;
-  if (anthropicWorthTrying()) {
+  if (visionAiWorthTrying()) {
     try {
-      const semantic = await anthropicCompareVisual(reference.imageBase64, reference.imageMediaType, candidateThumbnailUrl);
+      const semantic = await aiCompareVisual(reference.imageBase64, reference.imageMediaType, candidateThumbnailUrl);
       if (semantic.visualMatchScore !== null) {
         visualMatchScore = Math.round(0.5 * localVisualMatchScore + 0.5 * semantic.visualMatchScore);
-        visualMatchProvider = 'LOCAL_EMBEDDING+ANTHROPIC';
+        visualMatchProvider = 'LOCAL_EMBEDDING+OPENAI';
         reason = semantic.reason;
       }
     } catch (err) {
-      logger.error('[ProductVisionService] ANTHROPIC_COMPARE_FAILED', { errorType: classifyErrorType(err), message: err.message });
+      logger.error('[ProductVisionService] AI_COMPARE_FAILED', { errorType: classifyErrorType(err), message: err.message });
       // Swallowed — the local score above already stands.
     }
   }

@@ -137,9 +137,9 @@ async function loadProviderStatus() {
             .join('');
           return primaryBadge + fbBadges;
         }
-        if (p.platform === 'anthropic') {
+        if (p.platform === 'openai') {
           const reason = p.detail && ERROR_TYPE_LABEL_AR[p.detail] ? ` — السبب: ${ERROR_TYPE_LABEL_AR[p.detail]}` : '';
-          return `<span class="badge ${STATUS_BADGE[p.status] || ''}">🤖 Anthropic (التحليل الذكي): ${STATUS_LABEL[p.status] || p.status}${reason}</span>`;
+          return `<span class="badge ${STATUS_BADGE[p.status] || ''}">🤖 الذكاء الاصطناعي (التحليل الذكي): ${STATUS_LABEL[p.status] || p.status}${reason}</span>`;
         }
         return `<span class="badge ${STATUS_BADGE[p.status] || ''}">${PLATFORM_LABEL[p.platform]}: ${STATUS_LABEL[p.status] || p.status}</span>`;
       })

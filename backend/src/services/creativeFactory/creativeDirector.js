@@ -57,6 +57,8 @@ Product DNA: ${JSON.stringify(dna?.data || dna || {}).slice(0, 1800)}
 قواعد الاستمرارية: ${JSON.stringify(cont)}
 أعد JSON بالمفاتيح: subject_hierarchy, product_size_in_frame, product_angle, photography_type, lens_concept, lighting, environment, background, depth, shadows, reflections, supporting_objects, people, infographic_elements, text_safe_area, reference_priority, continuity_rules`,
     maxTokens: 1100,
+    feature: 'cf.creative_director',
+    tier: 'routine', // structured per-image visual brief — Luna/Terra territory, kept routine since it runs once per image in the plan
   });
 
   if (ai.ok && ai.data && typeof ai.data === 'object') {

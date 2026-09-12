@@ -156,6 +156,7 @@ function renderNav() {
       <a class="amb-nav-link" href="product-marketing-center.html">💡 مركز التسويق الذكي</a>
       <a class="amb-nav-link" href="creative-factory.html">✨ مصنع الكرياتيفات</a>
       <a class="amb-nav-link" href="ai-intelligence.html">🧠 AI Intelligence</a>
+      ${state.isAdmin ? '<a class="amb-nav-link" href="ai-usage.html">📊 استهلاك الذكاء الاصطناعي</a>' : ''}
       <a class="amb-nav-link" href="index.html">↩︎ الرجوع للنظام</a>
     </div>`;
   $('ambNavList').querySelectorAll('[data-nav]').forEach((b) => {

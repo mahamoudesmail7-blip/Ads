@@ -96,7 +96,7 @@ export const StorageService = {
     const p = PROVIDERS[provider] || activeStorageProvider();
     return p.get(key);
   },
-  /** A `data:` URL for inlining into an <img> or a Claude vision block, or null. */
+  /** A `data:` URL for inlining into an <img> or a vision-model input block, or null. */
   async getDataUrl({ provider, key }) {
     const got = await StorageService.get({ provider, key });
     if (!got) return null;

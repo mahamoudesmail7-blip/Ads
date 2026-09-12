@@ -1,13 +1,14 @@
 // Offline tests for AI Creative Factory. Forces the mock-safe "provider off"
-// mode (no ANTHROPIC / no OPENAI key) so every path is deterministic and no
-// external API is called. Seeds throwaway cf_* rows and cleans them up.
+// mode (no OPENAI key) so every path is deterministic and no external API is
+// called. Seeds throwaway cf_* rows and cleans them up.
 //   node src/scripts/creativeFactoryTest.js
 import 'dotenv/config';
 
 // Force full provider-off mode BEFORE importing the services (they read env
 // lazily). Set to '' rather than delete — a later dotenv.config() in the
 // import chain does not override an already-set key, but WOULD re-populate a
-// deleted one from .env.
+// deleted one from .env. ANTHROPIC_API_KEY is cleared too even though
+// nothing in Creative Factory reads it post-migration — belt and suspenders.
 process.env.ANTHROPIC_API_KEY = '';
 process.env.OPENAI_API_KEY = '';
 process.env.CF_IMAGE_PROVIDER = 'disabled';
