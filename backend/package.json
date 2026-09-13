@@ -13,6 +13,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:migrate-diff-safe": "node src/scripts/prismaMigrateDiffSafe.js",
     "bootstrap-admin": "node src/scripts/bootstrapAdmin.js"
   },
   "dependencies": {
