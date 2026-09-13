@@ -284,13 +284,40 @@ function summarizeCreateResults(results) {
 // worse than the honest "not mapped yet" state. amb/mapping.js only ever
 // surfaces its fuzzy guesses as a SUGGESTION for a human to confirm; PMC's
 // auto-lock has no such confirmation step, so it must not auto-apply one.
-async function findInternalProductByName(name) {
-  const n = String(name || '').trim();
+// Bug fix — a locked EASY_ORDERS profile's `locked_name` is the RAW Easy
+// Orders name, which may carry the "(s<number>)" store-tag suffix
+// (services/easyOrders.js's stripStoreTagSuffix/exactNameKey — the same
+// suffix Catalog Sync strips before creating the internal Product). This
+// function used to normalize with js/product-mapping.js's plain
+// normalizeName, which does NOT strip that suffix, so a profile locked
+// against "اسم المنتج (s259)" could never exact-match an internal Product
+// named just "اسم المنتج" — even though Catalog Sync's own audit (which DOES
+// strip it) considers them the same product. Stripping it here first makes
+// this the SAME exact-match rule used everywhere else in the app.
+export async function findInternalProductByName(name) {
+  const n = stripStoreTagSuffix(String(name || '')).trim();
   if (!n) return null;
   const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
   const match = mapProductByName(n, candidates, 0.6);
   if (!match.productId || (match.method !== 'exact_name' && match.method !== 'exact_sku')) return null;
   return prisma.product.findUnique({ where: { id: match.productId } });
+}
+
+/**
+ * Bug fix — `profile.product_id` is resolved ONCE, at lock time
+ * (lockFromEasyOrders/lockFromImages), and never re-resolved afterward. A
+ * profile locked BEFORE its matching internal Product existed (e.g. an Easy
+ * Orders product later created via Catalog Sync) stayed permanently stuck
+ * at product_id=null even after a real, exact-name match started existing —
+ * silently hiding real COD/Meta data forever. Called fresh on every real
+ * (non-cached) computeSnapshot(), in-memory only — this NEVER writes back
+ * onto the profile row (no pmc_profiles update), so a later "إعادة تحليل"
+ * naturally self-heals without any backfill or migration.
+ */
+export async function resolveEffectiveProductId(profile) {
+  if (profile.product_id) return profile.product_id;
+  const match = await findInternalProductByName(profile.locked_name);
+  return match?.id || null;
 }
 
 /**
@@ -470,12 +497,14 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   const connection = await getConnection();
   const adAccountId = connection?.selected_ad_account_id || null;
 
+  const effectiveProductId = await resolveEffectiveProductId(profile);
+
   // Meta + economics, reusing the EXISTING product dashboard when this
   // profile is linked to a real AmbProduct; otherwise Meta numbers stay
   // null/honest ("no campaign mapped yet") rather than guessed.
   let dashboard = null; let ambProduct = null;
-  if (profile.product_id) {
-    ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: profile.product_id } });
+  if (effectiveProductId) {
+    ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: effectiveProductId } });
     if (ambProduct) dashboard = await productDashboard(ambProduct.id, { windowName: win }).catch((e) => { logger.warn('[ProductMarketing] productDashboard failed', { message: e.message }); return null; });
   }
 
@@ -500,9 +529,9 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // Easy Orders truth (independent of Meta mapping — real COD data whenever product_id resolves to a catalog Product with orders).
   let cod = { source: 'none', orders: null, confirmed: null, delivered: null, returned: null };
   let govRows = [];
-  if (profile.product_id) {
-    cod = await codCountsForProduct({ productId: profile.product_id, from: window.from, to: window.to });
-    govRows = await codCountsByGovernorate({ productId: profile.product_id, from: window.from, to: window.to });
+  if (effectiveProductId) {
+    cod = await codCountsForProduct({ productId: effectiveProductId, from: window.from, to: window.to });
+    govRows = await codCountsByGovernorate({ productId: effectiveProductId, from: window.from, to: window.to });
   }
 
   // §3 (BUG 3) — WHY a number is missing must never collapse into one vague
