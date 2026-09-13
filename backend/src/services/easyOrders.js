@@ -5,6 +5,7 @@
 // webhooks.js; its behavior is unchanged, only its location.
 import { prisma } from '../prisma.js';
 import { ensureLostOrderTracking } from './lostOrders.js';
+import { normalizeName } from '../../../js/product-mapping.js';
 
 export const EASYORDERS_API_BASE = 'https://api.easy-orders.net/api/v1/external-apps';
 
@@ -45,10 +46,49 @@ export async function recomputeDailyOrder(productId, date) {
   });
 }
 
-/** Matches an EasyOrders cart item to our Product by exact SKU — no fuzzy name matching here (unlike the Excel-import path in product-mapping.js): a wrong guess would silently misattribute a real sale, which is worse than leaving it unmatched for manual review. */
-async function matchProduct(sku) {
-  if (!sku) return null;
-  return prisma.product.findFirst({ where: { sku } });
+// A media-buying platform (e.g. Easy Orders) sometimes appends its own
+// internal tag to a product's listed name — observed real example:
+// "جهاز قياس الضغط الذكي المنزلي (s48)" for an internal catalog entry named
+// exactly "جهاز قياس الضغط الذكي المنزلي". Stripped BEFORE normalizing,
+// and only this one literal, narrow shape — never a general
+// parenthetical-removal (which could eat real distinguishing info like a
+// genuine "(كبير)" size variant).
+const STORE_TAG_SUFFIX = /\s*\(s\d+\)\s*$/i;
+export function stripStoreTagSuffix(name) {
+  return String(name || '').replace(STORE_TAG_SUFFIX, '').trim();
+}
+
+/** The one normalized key both sides of the name comparison are reduced to — suffix-stripped, then run through the SAME Arabic-aware exact normalizer already trusted elsewhere in this codebase (js/product-mapping.js, also used by amb/mapping.js and amb/productMarketing.js). Still an EXACT-match key, never a similarity score. */
+export function exactNameKey(name) {
+  return normalizeName(stripStoreTagSuffix(name));
+}
+
+/**
+ * Matches an EasyOrders cart item to our Product.
+ *
+ * A. Exact SKU match (unchanged from before — a real, already-trusted tier).
+ * B. ONLY when SKU didn't resolve a product (missing, or present but wrong),
+ *    fall back to an EXACT normalized-name match — never fuzzy, never a
+ *    substring/contains check, never partial-word overlap. If more than one
+ *    active internal product normalizes to the same name, that's an
+ *    ambiguous data problem, not something to guess through — treated the
+ *    same as no match at all (UNMAPPED).
+ *
+ * Never touches Product Mapping's fuzzy tier or any AI — a wrong guess here
+ * would silently misattribute a real sale, which is worse than leaving it
+ * unmatched for manual review.
+ */
+export async function matchProduct(sku, name) {
+  if (sku) {
+    const bySku = await prisma.product.findFirst({ where: { sku } });
+    if (bySku) return bySku;
+  }
+
+  const key = exactNameKey(name);
+  if (!key) return null;
+  const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
+  const matches = candidates.filter((p) => exactNameKey(p.product_name) === key);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 /** Upserts one EasyOrdersOrder row per cart item from a full order payload (either the original webhook body, or a Get-Order-By-ID response), then recomputes every (product, date) it touches. */
@@ -70,7 +110,7 @@ export async function ingestOrder(order) {
   for (const item of order.cart_items || []) {
     const sku = item.product?.sku || null;
     const productNameRaw = item.product?.name || null;
-    const product = await matchProduct(sku);
+    const product = await matchProduct(sku, productNameRaw);
     await prisma.easyOrdersOrder.upsert({
       where: { order_id_cart_item_id: { order_id: order.id, cart_item_id: item.id } },
       update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, matched: !!product, date, ...customerFields },
