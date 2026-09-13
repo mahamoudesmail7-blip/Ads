@@ -18,6 +18,7 @@ import { productDashboard } from './ambProducts.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
+import { exactNameKey } from '../easyOrders.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct } from './productMarketingScoring.js';
 import * as PMAI from './productMarketingAI.js';
@@ -81,6 +82,66 @@ export async function searchEasyOrdersProducts(query, storeId = defaultStoreId()
 /** Safe store list for the frontend's "المتجر الحالي" selector — id/name/domain/enabled only, never a credential. */
 export function listEasyOrdersStores() {
   return listStores();
+}
+
+/**
+ * Classifies ONE EasyOrders catalog product against the internal Product
+ * table, read-only — same tier order and the same exact-only rules as the
+ * real ingestion path's matchProduct() in services/easyOrders.js (SKU first,
+ * then an exact normalized-name fallback with the "(s<number>)" store-tag
+ * suffix stripped), except this reports WHICH tier matched (or why it
+ * didn't) instead of collapsing straight to a single product-or-null:
+ *   EXACT_SKU_MATCH / EXACT_NAME_MATCH / AMBIGUOUS / MISSING.
+ * Never fuzzy, never contains/partial — an ambiguous SKU or name (more than
+ * one internal product) is reported as AMBIGUOUS, never guessed through.
+ */
+export function classifyCatalogProductMatch(sku, rawName, internalProducts) {
+  if (sku) {
+    const skuHits = internalProducts.filter((p) => p.sku && p.sku === sku);
+    if (skuHits.length === 1) return { status: 'EXACT_SKU_MATCH', product: skuHits[0] };
+    if (skuHits.length > 1) return { status: 'AMBIGUOUS', product: null, matchedOn: 'sku', candidates: skuHits };
+  }
+
+  const key = exactNameKey(rawName);
+  if (!key) return { status: 'MISSING', product: null };
+  const nameHits = internalProducts.filter((p) => exactNameKey(p.product_name) === key);
+  if (nameHits.length === 1) return { status: 'EXACT_NAME_MATCH', product: nameHits[0] };
+  if (nameHits.length > 1) return { status: 'AMBIGUOUS', product: null, matchedOn: 'name', candidates: nameHits };
+  return { status: 'MISSING', product: null };
+}
+
+/**
+ * READ-ONLY audit: every EasyOrders catalog product for one store vs. the
+ * internal Product table. Built for the "do we need a Product Sync or
+ * Mapping tool" decision — never creates/updates a Product, never touches
+ * EasyOrdersOrder/DailyOrder, never calls Meta. Reuses the exact same
+ * fetch (getAllEasyOrdersProductsStatus) the existing Easy Orders picker
+ * already relies on, so this is zero new network/integration surface —
+ * only a new read-only comparison over data already being fetched.
+ */
+export async function auditEasyOrdersCatalog(storeId = defaultStoreId()) {
+  const status = await getAllEasyOrdersProductsStatus(storeId);
+  const internalProducts = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
+
+  const summary = { total: status.products.length, EXACT_SKU_MATCH: 0, EXACT_NAME_MATCH: 0, MISSING: 0, AMBIGUOUS: 0 };
+  const items = status.products.map((p) => {
+    const cls = classifyCatalogProductMatch(p.sku || null, p.name, internalProducts);
+    summary[cls.status]++;
+    return {
+      eoId: p.id,
+      name: p.name,
+      sku: p.sku || null,
+      price: p.price ?? null,
+      enabled: p.enabled ?? null,
+      normalizedName: exactNameKey(p.name),
+      status: cls.status,
+      productId: cls.product?.id ?? null,
+      productName: cls.product?.product_name ?? null,
+      ambiguousCandidateIds: cls.candidates ? cls.candidates.map((c) => c.id) : undefined,
+    };
+  });
+
+  return { storeId, ok: status.ok, source: status.source, error: status.error, summary, items };
 }
 
 // BUG 3 fix — this used to be a plain Prisma `equals` (case-insensitive

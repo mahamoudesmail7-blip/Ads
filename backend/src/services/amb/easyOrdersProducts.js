@@ -50,6 +50,16 @@ async function fetchEasyOrdersProductsRaw(key) {
         id: p.id, name: p.name || '', slug: p.slug || '', thumb: p.thumb || null,
         price: Number.isFinite(Number(p.price)) && p.price !== null ? Number(p.price) : null,
         createdAt: p.created_at || null,
+        // Best-effort — EasyOrders' order payloads carry a per-cart-item sku
+        // (services/easyOrders.js's ingestion path), but it's undocumented
+        // whether the catalog /products listing itself carries a stable
+        // per-product one under `sku` or `code`; surfaced here, additively,
+        // so a caller (e.g. the catalog/internal-catalog audit) can see
+        // whatever EasyOrders actually returns instead of assuming.
+        sku: p.sku || p.code || null,
+        // Same best-effort caveat as sku above — EasyOrders hasn't documented
+        // an enabled/active flag on this endpoint; surfaced only if present.
+        enabled: typeof p.enabled === 'boolean' ? p.enabled : (typeof p.active === 'boolean' ? p.active : null),
       });
     } catch (rowErr) {
       logger.warn('AMB EasyOrders products: skipped one malformed row', { message: rowErr.message });

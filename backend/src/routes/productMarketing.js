@@ -16,6 +16,14 @@ function idParam(v) { const n = Number(v); if (!Number.isInteger(n) || n <= 0) {
 // ---- Multi-store (§1/§2) — safe metadata only, NEVER a credential ----
 router.get('/stores', asyncRoute(async (req, res) => res.json({ stores: PM.listEasyOrdersStores() })));
 
+// ---- Read-only catalog-vs-internal-Product audit (decide Sync vs Mapping) ----
+// ADMIN only (stricter than this router's default ADMIN|MANAGER) — this is a
+// diagnostic tool, not a normal PMC workflow surface. Never creates/updates
+// a Product, never touches an order, never calls Meta.
+router.get('/easy-orders/catalog-audit', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json(await PM.auditEasyOrdersCatalog(req.query.store_id || undefined));
+}));
+
 // ---- Product source / lock ----
 router.get('/easy-orders/search', asyncRoute(async (req, res) => {
   // §1 — the service now returns {products, ok, source, error} so a real
