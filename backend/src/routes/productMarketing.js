@@ -20,8 +20,23 @@ router.get('/stores', asyncRoute(async (req, res) => res.json({ stores: PM.listE
 // ADMIN only (stricter than this router's default ADMIN|MANAGER) — this is a
 // diagnostic tool, not a normal PMC workflow surface. Never creates/updates
 // a Product, never touches an order, never calls Meta.
+// `force_refresh=true` bypasses the shared 1h Easy-Orders-catalog cache for
+// THIS call only (still refills it with the fresh result) — the Catalog
+// Sync page always passes it so a product just added on Easy Orders shows
+// up immediately; every other caller of this same endpoint (e.g. the PMC
+// nav badge) omits it and keeps the normal cached behavior unchanged.
 router.get('/easy-orders/catalog-audit', requireRole('ADMIN'), asyncRoute(async (req, res) => {
-  res.json(await PM.auditEasyOrdersCatalog(req.query.store_id || undefined));
+  res.json(await PM.auditEasyOrdersCatalog(req.query.store_id || undefined, { forceRefresh: req.query.force_refresh === 'true' }));
+}));
+
+// ---- Create internal Products for MISSING catalog items — ADMIN only, ----
+// ---- explicit per-item action, never automatic. ----
+router.post('/easy-orders/catalog-audit/create', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!items.length) { const e = new Error('لا يوجد أي منتج محدد للإنشاء.'); e.status = 400; throw e; }
+  if (items.length > 100) { const e = new Error('حد أقصى 100 منتج في الطلب الواحد.'); e.status = 400; throw e; }
+  const safeItems = items.map((it) => ({ eoId: it?.eoId, name: typeof it?.name === 'string' ? it.name : undefined }));
+  res.json(await PM.createProductsFromEasyOrdersCatalog(req.body?.store_id || undefined, safeItems));
 }));
 
 // ---- Product source / lock ----

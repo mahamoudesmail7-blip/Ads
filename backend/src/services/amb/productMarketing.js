@@ -18,7 +18,7 @@ import { productDashboard } from './ambProducts.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
-import { exactNameKey } from '../easyOrders.js';
+import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct } from './productMarketingScoring.js';
 import * as PMAI from './productMarketingAI.js';
@@ -119,8 +119,8 @@ export function classifyCatalogProductMatch(sku, rawName, internalProducts) {
  * already relies on, so this is zero new network/integration surface —
  * only a new read-only comparison over data already being fetched.
  */
-export async function auditEasyOrdersCatalog(storeId = defaultStoreId()) {
-  const status = await getAllEasyOrdersProductsStatus(storeId);
+export async function auditEasyOrdersCatalog(storeId = defaultStoreId(), { forceRefresh = false } = {}) {
+  const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh });
   const internalProducts = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
 
   const summary = { total: status.products.length, EXACT_SKU_MATCH: 0, EXACT_NAME_MATCH: 0, MISSING: 0, AMBIGUOUS: 0 };
@@ -130,6 +130,11 @@ export async function auditEasyOrdersCatalog(storeId = defaultStoreId()) {
     return {
       eoId: p.id,
       name: p.name,
+      // Original casing/diacritics, only the "(s<number>)" store-tag suffix
+      // stripped — a MISSING item's ready-to-use suggested Product name (the
+      // lowercased/letter-unified `normalizedName` below is a comparison
+      // key, never fit to show or save as a real product name).
+      displayName: stripStoreTagSuffix(p.name),
       sku: p.sku || null,
       price: p.price ?? null,
       enabled: p.enabled ?? null,
@@ -142,6 +147,122 @@ export async function auditEasyOrdersCatalog(storeId = defaultStoreId()) {
   });
 
   return { storeId, ok: status.ok, source: status.source, error: status.error, summary, items };
+}
+
+// Per-process guard against a double-click (or a retried request) racing
+// itself into two Product rows for the same normalized name: the first
+// request to claim a name holds it in this Set until it's done (created OR
+// skipped), so a second request for the SAME name arriving while the first
+// is still in flight is rejected immediately rather than re-running the
+// same findMany-then-create check concurrently. This is the strongest
+// protection available without a schema change — the current Product table
+// has no unique constraint on product_name (only on product_code), so a
+// true cross-process/horizontal-scale race is not fully closable here; a
+// real DB-level uniqueness guarantee would need a migration, which is
+// explicitly out of scope for this feature.
+const namesBeingCreated = new Set();
+
+/**
+ * Creates internal Product rows for a batch of EasyOrders catalog items —
+ * ADMIN-triggered only, never automatic. ALWAYS re-fetches the live
+ * EasyOrders catalog with forceRefresh (never the 1h cache other consumers
+ * use) so "does this EasyOrders product still exist, and at what price" is
+ * always checked against the current truth, not a stale snapshot. Every
+ * field written comes from that fresh EasyOrders data — never trusted from
+ * the request body — except the product NAME, which the caller may override
+ * (e.g. a manual typo fix), defaulting to the same suffix-stripped
+ * displayName auditEasyOrdersCatalog() already suggests. Never invents a
+ * sku/category/cost/image/specifications/external id — those stay at the
+ * Product model's own defaults, exactly as an admin creating a
+ * bare-minimum product via products.html would leave them.
+ *
+ * Processed strictly one item at a time (never Promise.all) so two items in
+ * the SAME batch can never race each other's exact-name check either, and
+ * one item's unexpected failure (status FAILED) never aborts the rest of
+ * the batch. Idempotent by construction: re-running this with the same
+ * eoId after a successful create finds the now-existing product on the
+ * fresh exact-name re-check and returns SKIPPED_EXISTS instead of a
+ * duplicate.
+ *
+ * @param {string} storeId
+ * @param {{eoId: string, name?: string}[]} items
+ * @returns {Promise<{storeId: string, results: object[], summary: object}>}
+ */
+export async function createProductsFromEasyOrdersCatalog(storeId = defaultStoreId(), items = []) {
+  const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh: true });
+  const results = [];
+  if (!status.ok) {
+    for (const it of items) results.push({ eoId: it?.eoId, status: 'FAILED', message: status.error || 'تعذر الوصول لكتالوج Easy Orders.' });
+    return { storeId, results, summary: summarizeCreateResults(results) };
+  }
+  const catalogById = new Map(status.products.map((p) => [String(p.id), p]));
+
+  for (const item of items) {
+    const eoId = String(item?.eoId ?? '');
+    try {
+      const catalogProduct = catalogById.get(eoId);
+      if (!catalogProduct) { results.push({ eoId, status: 'NOT_FOUND' }); continue; }
+
+      // A caller that sends `name` at all is making an explicit choice — an
+      // empty/whitespace-only value there must be rejected as invalid,
+      // NEVER silently replaced by the catalog default (that would hide a
+      // real frontend bug, e.g. a cleared input, behind an
+      // unexpectedly-successful create). Only a genuinely OMITTED `name`
+      // falls back to the suffix-stripped catalog name.
+      const hasOverride = typeof item?.name === 'string';
+      const overrideName = hasOverride ? item.name.trim() : '';
+      if (hasOverride && !overrideName) { results.push({ eoId, status: 'INVALID_NAME' }); continue; }
+      const finalName = overrideName || stripStoreTagSuffix(catalogProduct.name);
+      const key = exactNameKey(finalName);
+      if (!finalName || !key) { results.push({ eoId, status: 'INVALID_NAME' }); continue; }
+
+      if (namesBeingCreated.has(key)) { results.push({ eoId, status: 'IN_PROGRESS', message: 'طلب إنشاء آخر لنفس الاسم قيد التنفيذ الآن — أعد المحاولة بعد قليل.' }); continue; }
+      namesBeingCreated.add(key);
+      try {
+        const existing = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true } });
+        const matches = existing.filter((p) => exactNameKey(p.product_name) === key);
+        if (matches.length === 1) { results.push({ eoId, status: 'SKIPPED_EXISTS', existingProductId: matches[0].id, existingProductName: matches[0].product_name }); continue; }
+        if (matches.length > 1) { results.push({ eoId, status: 'AMBIGUOUS', candidateIds: matches.map((m) => m.id) }); continue; }
+
+        // Same product_code generation rule as routes/products.js's GET
+        // /next-code (kept in sync by hand — both scan for the highest
+        // existing "PRD-NNN" and take the next number).
+        const allCodes = await prisma.product.findMany({ select: { product_code: true } });
+        let maxCode = 0;
+        for (const p of allCodes) {
+          const m = /^PRD-(\d+)$/.exec(p.product_code || '');
+          if (m) maxCode = Math.max(maxCode, Number(m[1]));
+        }
+        const product_code = `PRD-${String(maxCode + 1).padStart(3, '0')}`;
+
+        // Real EasyOrders price only — never client-supplied, never invented. sku/category/cost/image/specifications are left at the model's own defaults (never fabricated).
+        const selling_price = Number.isFinite(Number(catalogProduct.price)) ? Number(catalogProduct.price) : 0;
+        const created = await prisma.product.create({ data: { product_name: finalName, selling_price, product_code, active: true } });
+        results.push({ eoId, status: 'CREATED', product: { id: created.id, product_name: created.product_name, selling_price: created.selling_price, product_code: created.product_code } });
+      } finally {
+        namesBeingCreated.delete(key);
+      }
+    } catch (err) {
+      // One item's unexpected failure must never abort the rest of a batch
+      // the admin explicitly selected — reported, not swallowed.
+      results.push({ eoId, status: 'FAILED', message: err.message });
+    }
+  }
+  return { storeId, results, summary: summarizeCreateResults(results) };
+}
+
+function summarizeCreateResults(results) {
+  const summary = { created: 0, skippedExists: 0, ambiguous: 0, invalidName: 0, notFound: 0, inProgress: 0, failed: 0 };
+  for (const r of results) {
+    if (r.status === 'CREATED') summary.created++;
+    else if (r.status === 'SKIPPED_EXISTS') summary.skippedExists++;
+    else if (r.status === 'AMBIGUOUS') summary.ambiguous++;
+    else if (r.status === 'INVALID_NAME') summary.invalidName++;
+    else if (r.status === 'NOT_FOUND') summary.notFound++;
+    else if (r.status === 'IN_PROGRESS') summary.inProgress++;
+    else if (r.status === 'FAILED') summary.failed++;
+  }
+  return summary;
 }
 
 // BUG 3 fix — this used to be a plain Prisma `equals` (case-insensitive

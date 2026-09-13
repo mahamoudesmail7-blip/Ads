@@ -49,6 +49,7 @@ const state = {
   memory: null, actions: null, competitors: null,
   hookResult: null, postResult: null, ideaResult: null, testPackResult: null,
   genAngle: '', genTone: 'مباشر', genCategory: '',
+  catalogSyncMissing: null, // count of Easy Orders catalog products not yet in the internal Product table (nav badge -> easyorders-catalog-sync.html); null until loaded, never shown to a non-ADMIN (that page is ADMIN-only)
 };
 
 async function init() {
@@ -57,6 +58,18 @@ async function init() {
   renderNav();
   render();
   await loadStores();
+  loadCatalogSyncBadge(); // fire-and-forget — a slow/failed Easy Orders catalog fetch must never block the rest of the page
+}
+
+/** The nav badge's live count — reuses the SAME read-only audit endpoint the Catalog Sync page itself calls, so the two never disagree. Silently shows nothing on any error (wrong role, store not configured, etc.) — this is a convenience nudge, not a page a MANAGER-level user could act on anyway (that page requires ADMIN). */
+async function loadCatalogSyncBadge() {
+  try {
+    const r = await api.get('/api/product-marketing/easy-orders/catalog-audit', state.storeId ? { store_id: state.storeId } : undefined);
+    state.catalogSyncMissing = r.ok ? (r.summary?.MISSING ?? null) : null;
+  } catch {
+    state.catalogSyncMissing = null; // e.g. 403 for a non-ADMIN — badge just stays hidden
+  }
+  renderNav();
 }
 
 async function loadStores() {
@@ -87,6 +100,8 @@ function selectStore(storeId) {
   state.profile = null;
   resetWorkspace();
   render();
+  state.catalogSyncMissing = null; renderNav();
+  loadCatalogSyncBadge();
 }
 
 function renderStoreSelector() {
@@ -125,6 +140,7 @@ function renderNav() {
     </div>
     <div class="amb-nav-list">
       <a class="amb-nav-item active" href="product-marketing-center.html">💡<span>مركز التسويق الذكي</span></a>
+      <a class="amb-nav-item" href="easyorders-catalog-sync.html">🔄<span>مزامنة الكتالوج</span>${state.catalogSyncMissing ? `<span class="amb-nav-count" title="منتجات Easy Orders غير موجودة في جدول المنتجات الداخلي">${E(state.catalogSyncMissing)}</span>` : ''}</a>
       <a class="amb-nav-item" href="ai-media-buyer.html">📈<span>AI Media Buyer</span></a>
       <a class="amb-nav-item" href="creative-factory.html">✨<span>مصنع الإعلانات</span></a>
       <a class="amb-nav-item" href="product-research.html">🔍<span>البحث عن المنتجات</span></a>

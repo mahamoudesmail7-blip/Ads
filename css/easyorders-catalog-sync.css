@@ -1,0 +1,26 @@
+/* Easy Orders Catalog Sync — reuses .pmc-card/.amb-* base classes from
+   amb.css/product-marketing-center.css; only the row/table specifics below
+   are new. */
+
+.eocs-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 6px; }
+.eocs-summary-sub { font-size: 11.5px; color: var(--amb-text-dim); margin-bottom: 16px; }
+.eocs-stat { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 12px 14px; text-align: center; }
+.eocs-stat .n { font-size: 22px; font-weight: 800; }
+.eocs-stat .l { font-size: 11.5px; color: var(--amb-text-dim); margin-top: 2px; }
+.eocs-stat.missing .n { color: var(--amb-red, #d9534f); }
+.eocs-stat.matched .n { color: var(--amb-green, #15924f); }
+.eocs-stat.ambiguous .n { color: var(--amb-amber, #c98a1c); }
+
+.eocs-row { display: grid; grid-template-columns: auto 1.6fr .6fr .9fr 1fr; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--amb-border); }
+.eocs-row:last-child { border-bottom: none; }
+.eocs-row .eocs-name-orig { font-size: 11px; color: var(--amb-text-faint); margin-top: 3px; }
+.eocs-row input[type="text"] { width: 100%; border: 1px solid var(--amb-border); border-radius: 8px; padding: 7px 9px; font-family: inherit; font-size: 12.5px; background: var(--amb-surface); color: var(--amb-text); }
+.eocs-row .eocs-price { font-size: 12.5px; color: var(--amb-text-dim); white-space: nowrap; }
+.eocs-row .eocs-status { font-size: 11px; font-weight: 700; color: var(--amb-red, #d9534f); white-space: nowrap; }
+.eocs-row .eocs-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.eocs-check { display: flex; align-items: center; justify-content: center; }
+.eocs-check input { width: 16px; height: 16px; }
+
+.eocs-ambiguous-row { padding: 10px 0; border-bottom: 1px solid var(--amb-border); font-size: 12.5px; }
+.eocs-ambiguous-row:last-child { border-bottom: none; }
+.eocs-ambiguous-row .cand { color: var(--amb-text-dim); font-size: 11.5px; margin-top: 4px; }

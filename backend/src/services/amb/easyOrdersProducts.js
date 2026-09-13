@@ -104,13 +104,21 @@ export async function getEasyOrdersProducts(storeId = defaultStoreId()) {
  * EasyOrders error was being shown as "لم يتم العثور على منتجات" — this is
  * the fix). Cached 1h separately from getEasyOrdersProducts()'s own
  * thumb-only cache so neither list's staleness affects the other.
+ * `forceRefresh` (default false) skips the cache READ for this one call and
+ * always hits the live API — used only by the Catalog Sync page and the
+ * product-creation flow, where "did a product just get added on Easy
+ * Orders" must never wait out the 1h TTL. It still WRITES the fresh result
+ * back into the same cache afterward, so every other consumer (the
+ * Easy-Orders product picker, this same function's own default calls
+ * elsewhere) immediately benefits from the same fresh data too — this is
+ * a one-time bypass of a stale READ, not a second parallel cache.
  * @returns {Promise<{ok:boolean, products:object[], source:'live'|'stale_cache'|'error', error:string|null}>}
  */
-export async function getAllEasyOrdersProductsStatus(storeId = defaultStoreId()) {
+export async function getAllEasyOrdersProductsStatus(storeId = defaultStoreId(), { forceRefresh = false } = {}) {
   const key = getStoreApiKey(storeId);
   if (!key) return { ok: false, products: [], source: 'error', error: 'هذا المتجر غير مربوط بـ Easy Orders — تأكد من ضبط مفتاح API الخاص به في متغيرات البيئة.' };
   const entry = fullCache.get(storeId);
-  if (entry?.list && Date.now() - entry.at < TTL_MS) return { ok: true, products: entry.list, source: 'live', error: null };
+  if (!forceRefresh && entry?.list && Date.now() - entry.at < TTL_MS) return { ok: true, products: entry.list, source: 'live', error: null };
   try {
     const list = await fetchEasyOrdersProductsRaw(key);
     fullCache.set(storeId, { at: Date.now(), list });

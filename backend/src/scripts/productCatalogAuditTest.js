@@ -89,6 +89,7 @@ console.log('\n§2 auditEasyOrdersCatalog — full pipeline over the fake catalo
 
   const s259Item = report.items.find((i) => i.eoId === 3);
   ok('item for eoId=3 (s259) is MISSING with productId null', s259Item?.status === 'MISSING' && s259Item?.productId === null, JSON.stringify(s259Item));
+  ok('MISSING item carries a suggested displayName with the suffix stripped (original casing, not the lowercased normalizedName)', s259Item?.displayName === 'فرشاة تنظيف البشرة الكهربائية بالسيليكون', JSON.stringify(s259Item));
 
   const ambiguousItem = report.items.find((i) => i.eoId === 4);
   ok('item for eoId=4 is AMBIGUOUS and lists both candidate ids', ambiguousItem?.status === 'AMBIGUOUS' && JSON.stringify(ambiguousItem.ambiguousCandidateIds?.sort()) === JSON.stringify([60, 61]), JSON.stringify(ambiguousItem));
