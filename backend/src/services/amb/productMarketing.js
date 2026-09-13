@@ -1,7 +1,12 @@
 // AI Product Marketing Center — "مركز التسويق الذكي للمنتج". Fully isolated
 // service: only reads the EXISTING Meta / Easy Orders / Creative Factory /
-// Research pipelines and writes to its OWN pmc_* tables (see schema.prisma).
-// Never touches AmbProduct, AmbCloneBatch, CfProduct, or any Meta entity.
+// Research pipelines and writes to its OWN pmc_* tables (see schema.prisma),
+// with ONE deliberate exception: confirmMetaMapping() below, which is the
+// only place in this file allowed to touch AmbProduct/AmbProductCampaignMap
+// — and only via the SAME explicit, human-confirmed mapping architecture
+// AI Media Buyer itself already uses (services/amb/mapping.js's setMapping,
+// services/amb/ambProducts.js's createFromCatalogProduct) — never a second
+// mapping table, never an automatic write.
 //
 // Data flow (per the spec):
 //   Product Source -> Product Lock -> Product Understanding -> Meta
@@ -14,7 +19,8 @@ import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
 import { resolveWindow, entityWindowMetrics } from './metricsEngine.js';
 import { buildHierarchy, rollupMetrics } from './hierarchyAnalysis.js';
-import { productDashboard } from './ambProducts.js';
+import { productDashboard, createFromCatalogProduct } from './ambProducts.js';
+import { setMapping } from './mapping.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
@@ -23,6 +29,11 @@ import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct } from './productMarketingScoring.js';
 import * as PMAI from './productMarketingAI.js';
 import { mapProductByName } from '../../../../js/product-mapping.js';
+
+// Informative-only confidence numbers for the UI — never used to
+// auto-decide anything; the admin's checkbox + explicit "تأكيد الربط" click
+// is always the only thing that ever writes a MAPPED row.
+const MATCH_CONFIDENCE = { SLUG: 0.9, EXTERNAL_ID: 0.85, EXACT_NAME: 0.75, ALL_NAME_WORDS: 0.4 };
 
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
@@ -502,10 +513,13 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // Meta + economics, reusing the EXISTING product dashboard when this
   // profile is linked to a real AmbProduct; otherwise Meta numbers stay
   // null/honest ("no campaign mapped yet") rather than guessed.
-  let dashboard = null; let ambProduct = null;
+  let dashboard = null; let ambProduct = null; let metaMappedCampaignCount = null;
   if (effectiveProductId) {
     ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: effectiveProductId } });
-    if (ambProduct) dashboard = await productDashboard(ambProduct.id, { windowName: win }).catch((e) => { logger.warn('[ProductMarketing] productDashboard failed', { message: e.message }); return null; });
+    if (ambProduct) {
+      dashboard = await productDashboard(ambProduct.id, { windowName: win }).catch((e) => { logger.warn('[ProductMarketing] productDashboard failed', { message: e.message }); return null; });
+      metaMappedCampaignCount = await prisma.ambProductCampaignMap.count({ where: { amb_product_id: ambProduct.id, status: 'MAPPED' } });
+    }
   }
 
   // Multi-store §7 — when there's no confirmed AmbProduct mapping yet,
@@ -546,6 +560,8 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     metaMessage: metaMapped ? null : 'لا توجد حملات Meta مرتبطة بهذا المنتج.',
     metaMatchMethod: ambProduct ? 'AMB_MAPPING' : (matchedCampaignMetrics ? campaignMatch.method : null),
     metaMatchReason: ambProduct ? null : (campaignMatch && campaignMatch.status !== 'UNMAPPED' ? campaignMatch.reason : null),
+    // Only set when the numbers come from a human-confirmed AmbProductCampaignMap row (§ربط مؤكد) — never for the live slug/id/name fallback, however confident it looks.
+    metaMappedCampaignCount: ambProduct ? metaMappedCampaignCount : null,
     // Surfaced ONLY as an informational finding — never used to populate
     // real numbers (§7 "do not guess weak matches").
     possibleMetaMatch: !ambProduct && campaignMatch?.status === 'POSSIBLE_MATCH'
@@ -641,6 +657,181 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
 
   await syncActions(profile.id, snapshotData.actions);
   return deserializeSnapshot(saved, snapshotData);
+}
+
+// ---------------------------------------------------------------------------
+// Product ↔ Meta Campaign mapping — reuses AI Media Buyer's EXISTING,
+// already-trusted architecture end to end:
+//   AmbProduct + AmbProductCampaignMap (schema.prisma) — no new table.
+//   setMapping()/createFromCatalogProduct() (services/amb/mapping.js,
+//   services/amb/ambProducts.js) — no new write path.
+//   matchCampaignsToProduct() (productMarketingScoring.js) — the SAME
+//   slug/id/name matcher computeSnapshot's fallback already uses.
+// This layer only adds: (1) a read-only suggestions view scoped to one
+// locked PMC profile, and (2) a hardened confirm step that re-derives
+// everything server-side before writing a single MAPPED row per selected
+// campaign. Never auto-confirms; never touches Meta, Product, or Easy
+// Orders data.
+// ---------------------------------------------------------------------------
+
+/** Real per-campaign metrics for one product's live suggestion set, keyed the same way matchCampaignsToProduct already keys them. */
+function campaignRow(entry, status, matchMethod) {
+  return {
+    campaignId: entry.id,
+    campaignName: entry.name,
+    status, // MAPPED | SUGGESTED
+    spend: entry.metrics?.spend ?? null,
+    purchases: entry.metrics?.purchases ?? null,
+    cpa: entry.metrics?.cpa ?? null,
+    matchMethod, // MANUAL | SLUG | EXTERNAL_ID | EXACT_NAME | ALL_NAME_WORDS
+    confidence: matchMethod === 'MANUAL' ? 1 : (MATCH_CONFIDENCE[matchMethod] ?? null),
+  };
+}
+
+/**
+ * READ-ONLY — everything an admin needs to review before confirming a
+ * Product ↔ Meta mapping: today's CONFIRMED (already-MAPPED) campaigns,
+ * plus live SUGGESTED candidates from the exact-only fallback matcher.
+ * A campaign already MAPPED to a DIFFERENT AmbProduct is never suggested
+ * here — surfaced separately as a conflict so the admin can see why it's
+ * excluded, never silently re-assigned.
+ */
+export async function getMetaMappingSuggestions({ profileId }) {
+  const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
+  if (!profile) throw bad('البروفايل غير موجود.', 404);
+
+  const effectiveProductId = await resolveEffectiveProductId(profile);
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  const window = resolveWindow('last7');
+
+  if (!adAccountId) {
+    return { status: 'UNMAPPED', ambProductId: null, effectiveProductId, adAccountId: null, window, confirmedCampaigns: [], suggestedCampaigns: [], conflicts: [], reason: 'لا يوجد حساب إعلاني Meta متصل حاليًا.' };
+  }
+
+  const campaignMetricsMap = await entityWindowMetrics({ level: 'campaign', from: window.from, to: window.to, adAccountId }).catch(() => new Map());
+  const campaignEntries = [...campaignMetricsMap.values()].map((c) => ({ id: c.campaignId, name: c.campaignName, metrics: c }));
+
+  const ambProduct = effectiveProductId ? await prisma.ambProduct.findUnique({ where: { product_id: effectiveProductId } }) : null;
+
+  const confirmedRows = ambProduct ? await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: ambProduct.id, ad_account_id: adAccountId, status: 'MAPPED' } }) : [];
+  const confirmedIds = new Set(confirmedRows.map((r) => r.campaign_id));
+  const confirmedCampaigns = confirmedRows.map((r) => {
+    const live = campaignEntries.find((c) => c.id === r.campaign_id);
+    return campaignRow(live || { id: r.campaign_id, name: r.campaign_name, metrics: null }, 'MAPPED', 'MANUAL');
+  });
+
+  let suggestedCampaigns = [];
+  let conflicts = [];
+  let fallbackStatus = 'UNMAPPED';
+  let fallbackReason = 'لم يتم العثور على حملة Meta مرتبطة بهذا المنتج.';
+  if (profile.source === 'EASY_ORDERS') {
+    const { realEoId } = decodeStoreScopedId(profile.easy_orders_product_id);
+    const candidates = campaignEntries.filter((c) => !confirmedIds.has(c.id));
+    const match = matchCampaignsToProduct({ slug: profile.easy_orders_slug, easyOrdersProductId: realEoId, lockedName: profile.locked_name }, candidates);
+    fallbackStatus = match.status;
+    fallbackReason = match.reason;
+
+    if (match.campaigns.length) {
+      const candidateIds = match.campaigns.map((c) => c.id);
+      const conflictRows = await prisma.ambProductCampaignMap.findMany({ where: { ad_account_id: adAccountId, campaign_id: { in: candidateIds }, status: 'MAPPED' } });
+      const conflictByCampaign = new Map(conflictRows.filter((r) => r.amb_product_id !== ambProduct?.id).map((r) => [r.campaign_id, r.amb_product_id]));
+
+      for (const c of match.campaigns) {
+        const conflictProductId = conflictByCampaign.get(c.id);
+        if (conflictProductId) { conflicts.push({ campaignId: c.id, campaignName: c.name, mappedToAmbProductId: conflictProductId }); continue; }
+        suggestedCampaigns.push(campaignRow(c, 'SUGGESTED', match.method));
+      }
+    }
+  }
+
+  // Status precedence: any real conflict is surfaced as AMBIGUOUS regardless
+  // of how confident the fallback match otherwise looks — never auto-pick.
+  let status;
+  if (confirmedCampaigns.length) status = 'CONFIRMED';
+  else if (conflicts.length && !suggestedCampaigns.length) status = 'AMBIGUOUS';
+  else if (fallbackStatus === 'MATCHED' || fallbackStatus === 'POSSIBLE_MATCH') status = 'REVIEW_REQUIRED';
+  else status = 'UNMAPPED';
+
+  return {
+    status, ambProductId: ambProduct?.id ?? null, effectiveProductId, adAccountId, window,
+    confirmedCampaigns, suggestedCampaigns, conflicts,
+    reason: confirmedCampaigns.length ? null : fallbackReason,
+  };
+}
+
+/**
+ * The ONLY function in this file allowed to write AmbProduct/
+ * AmbProductCampaignMap. Never trusts the request body beyond WHICH
+ * campaign ids the admin checked — everything else (does the campaign
+ * still exist, is it still a legitimate suggestion for this exact product,
+ * is it already mapped elsewhere) is re-derived fresh from the real Meta
+ * data and the same matcher getMetaMappingSuggestions() just used, so a
+ * stale or tampered request can't map an arbitrary campaign. Idempotent:
+ * re-confirming an already-MAPPED campaign just re-upserts the same row
+ * (setMapping's upsert, keyed on [ad_account_id, campaign_id]).
+ */
+export async function confirmMetaMapping({ profileId, campaignIds, userId }) {
+  const ids = Array.isArray(campaignIds) ? [...new Set(campaignIds.map((c) => String(c)).filter(Boolean))] : [];
+  if (!ids.length) throw bad('لازم تحدد حملة واحدة على الأقل لتأكيد الربط.', 400);
+
+  const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
+  if (!profile) throw bad('البروفايل غير موجود.', 404);
+
+  const effectiveProductId = await resolveEffectiveProductId(profile);
+  if (!effectiveProductId) throw bad('لا يوجد منتج داخلي مرتبط بهذا البروفايل بعد — لا يمكن تأكيد ربط Meta.', 400);
+
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  if (!adAccountId) throw bad('لا يوجد حساب إعلاني Meta متصل حاليًا.', 400);
+
+  const window = resolveWindow('last7');
+  const campaignMetricsMap = await entityWindowMetrics({ level: 'campaign', from: window.from, to: window.to, adAccountId }).catch(() => new Map());
+  const liveById = new Map([...campaignMetricsMap.values()].map((c) => [c.campaignId, c]));
+
+  let suggestedIds = new Set();
+  let matchMethod = 'MANUAL';
+  let matchReason = null;
+  if (profile.source === 'EASY_ORDERS') {
+    const { realEoId } = decodeStoreScopedId(profile.easy_orders_product_id);
+    const campaignEntries = [...campaignMetricsMap.values()].map((c) => ({ id: c.campaignId, name: c.campaignName, metrics: c }));
+    const match = matchCampaignsToProduct({ slug: profile.easy_orders_slug, easyOrdersProductId: realEoId, lockedName: profile.locked_name }, campaignEntries);
+    suggestedIds = new Set(match.campaigns.map((c) => c.id));
+    matchMethod = match.method || 'MANUAL';
+    matchReason = match.reason || null;
+  }
+
+  // Resolved lazily, right before the FIRST campaign that actually passes
+  // every check below — an attempt where every submitted campaign gets
+  // REJECTED must never leave behind a newly-created (empty) AmbProduct as
+  // a side effect.
+  let ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: effectiveProductId } });
+
+  const results = [];
+  for (const campaignId of ids) {
+    const live = liveById.get(campaignId);
+    if (!live) { results.push({ campaignId, status: 'REJECTED', reason: 'هذه الحملة غير موجودة في الحساب الإعلاني الحالي — رفض الربط.' }); continue; }
+
+    const alreadyMappedHere = await prisma.ambProductCampaignMap.findUnique({ where: { ad_account_id_campaign_id: { ad_account_id: adAccountId, campaign_id: campaignId } } });
+    const isReconfirmOfSameProduct = ambProduct && alreadyMappedHere?.status === 'MAPPED' && alreadyMappedHere.amb_product_id === ambProduct.id;
+    if (!suggestedIds.has(campaignId) && !isReconfirmOfSameProduct) {
+      results.push({ campaignId, status: 'REJECTED', reason: 'هذه الحملة ليست ضمن الاقتراحات الحالية لهذا المنتج — رفض الربط لتجنّب ربط خاطئ.' });
+      continue;
+    }
+    if (alreadyMappedHere && alreadyMappedHere.status === 'MAPPED' && alreadyMappedHere.amb_product_id !== ambProduct?.id) {
+      results.push({ campaignId, status: 'REJECTED', reason: `هذه الحملة مربوطة بالفعل بمنتج AMB آخر (id=${alreadyMappedHere.amb_product_id}) — لن يتم استبدال ربطها.` });
+      continue;
+    }
+
+    if (!ambProduct) ambProduct = await createFromCatalogProduct(effectiveProductId, userId);
+    const saved = await setMapping({
+      adAccountId, campaignId, campaignName: live.campaignName || null, ambProductId: ambProduct.id,
+      status: 'MAPPED', matchSource: 'AI_SUGGESTED', matchConfidence: MATCH_CONFIDENCE[matchMethod] ?? null, aiReason: matchReason, userId,
+    });
+    results.push({ campaignId, status: 'MAPPED', campaignName: saved.campaign_name });
+  }
+
+  return { ambProductId: ambProduct?.id ?? null, results };
 }
 
 function deserializeSnapshot(row, precomputed = null) {

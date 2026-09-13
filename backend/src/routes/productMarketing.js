@@ -72,6 +72,15 @@ router.post('/profiles/:id/analyze', asyncRoute(async (req, res) => {
   res.json(await PM.computeSnapshot({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
 }));
 
+// ---- Product ↔ Meta Campaign mapping (read-only suggestions + a hardened, ADMIN-only confirm) ----
+router.get('/profiles/:id/meta-mapping', asyncRoute(async (req, res) => {
+  res.json(await PM.getMetaMappingSuggestions({ profileId: idParam(req.params.id) }));
+}));
+router.post('/profiles/:id/meta-mapping/confirm', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const campaignIds = Array.isArray(req.body?.campaignIds) ? req.body.campaignIds : [];
+  res.json(await PM.confirmMetaMapping({ profileId: idParam(req.params.id), campaignIds, userId: req.user.id }));
+}));
+
 // ---- Memory (§22) ----
 router.get('/profiles/:id/memory', asyncRoute(async (req, res) => res.json({ entries: await PM.getMemory(idParam(req.params.id)) })));
 

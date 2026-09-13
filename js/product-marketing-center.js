@@ -50,6 +50,9 @@ const state = {
   hookResult: null, postResult: null, ideaResult: null, testPackResult: null,
   genAngle: '', genTone: 'مباشر', genCategory: '',
   catalogSyncMissing: null, // count of Easy Orders catalog products not yet in the internal Product table (nav badge -> easyorders-catalog-sync.html); null until loaded, never shown to a non-ADMIN (that page is ADMIN-only)
+  // Product <-> Meta Campaign mapping (§ربط إعلانات Meta) — independent of
+  // the AI snapshot; loaded/refreshed on its own, never auto-confirmed.
+  metaMapping: null, metaMappingLoading: false, metaMappingSelected: {}, metaMappingBusy: false,
 };
 
 async function init() {
@@ -372,6 +375,7 @@ async function lockFromUpload() {
 function resetWorkspace() {
   state.tab = 'overview'; state.snapshot = null; state.memory = null; state.actions = null; state.competitors = null;
   state.hookResult = null; state.postResult = null; state.ideaResult = null; state.testPackResult = null;
+  state.metaMapping = null; state.metaMappingLoading = false; state.metaMappingSelected = {}; state.metaMappingBusy = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +399,8 @@ function renderWorkspace(mount) {
       <button class="amb-btn sm ghost" id="pmcChangeProduct">تغيير المنتج</button>
     </div>
 
+    <div id="pmcMetaMappingSection"></div>
+
     <div class="toolbar" style="margin:14px 0;justify-content:space-between;">
       <span class="amb-fgrp"><span class="fl">الفترة</span>${WINDOWS.map((w) => `<button class="amb-fbtn ${state.windowName === w.k ? 'active' : ''}" data-win="${w.k}">${E(w.label)}</button>`).join('')}</span>
       <button class="amb-btn sm" id="pmcRefresh">🔄 تحديث التحليل</button>
@@ -403,10 +409,13 @@ function renderWorkspace(mount) {
     <div class="pmc-tabs">${TABS.map((t) => `<button class="pmc-tab ${state.tab === t.k ? 'active' : ''}" data-tab="${t.k}">${E(t.label)}</button>`).join('')}</div>
     <div id="pmcTabBody"></div>`;
 
-  $('pmcChangeProduct').onclick = () => { state.profile = null; state.eoSelected = null; render(); };
+  $('pmcChangeProduct').onclick = () => { state.profile = null; state.eoSelected = null; resetWorkspace(); render(); };
   mount.querySelectorAll('[data-win]').forEach((b) => { b.onclick = () => { state.windowName = b.dataset.win; state.snapshot = null; renderWorkspace(mount); loadSnapshot(); }; });
   $('pmcRefresh').onclick = () => loadSnapshot(true);
   mount.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { state.tab = b.dataset.tab; renderTabBody(); }; });
+
+  renderMetaMappingSection();
+  if (!state.metaMapping && !state.metaMappingLoading) loadMetaMapping();
 
   if (!state.snapshot && !state.snapshotLoading) loadSnapshot();
   else renderTabBody();
@@ -447,14 +456,121 @@ function claimPill(status, reason) { const map = { GREEN: ['🟢 آمن', ''], Y
 // generic "insufficient data" for this specific case).
 function metaMatchBadgeHtml(da) {
   if (!da) return '';
+  if (da.metaMatchMethod === 'AMB_MAPPING') {
+    return `<div class="faint" style="font-size:11px;margin-top:8px;">🟢 مصدر بيانات Meta: ربط مؤكد${da.metaMappedCampaignCount ? ` — ${E(da.metaMappedCampaignCount)} حملة مرتبطة` : ''}</div>`;
+  }
   if (da.metaMatchMethod) {
-    const label = da.metaMatchMethod === 'AMB_MAPPING' ? 'مربوط' : da.metaMatchMethod === 'SLUG' ? 'مربوط (عبر Slug)' : da.metaMatchMethod === 'EXTERNAL_ID' ? 'مربوط (عبر رقم المنتج)' : 'مربوط (عبر اسم المنتج)';
-    return `<div class="faint" style="font-size:11px;margin-top:8px;">🟢 ${E(label)}${da.metaMatchReason ? ` — ${E(da.metaMatchReason)}` : ''}</div>`;
+    const label = da.metaMatchMethod === 'SLUG' ? 'اقتراح غير مؤكد (عبر Slug)' : da.metaMatchMethod === 'EXTERNAL_ID' ? 'اقتراح غير مؤكد (عبر رقم المنتج)' : 'اقتراح غير مؤكد (عبر اسم المنتج)';
+    return `<div class="faint" style="font-size:11px;margin-top:8px;">🟡 ${E(label)}${da.metaMatchReason ? ` — ${E(da.metaMatchReason)}` : ''} — راجع قسم "ربط إعلانات Meta" وأكِّده.</div>`;
   }
   if (da.possibleMetaMatch) {
     return `<div class="faint" style="font-size:11px;margin-top:8px;">🟡 تطابق محتمل — ${E(da.possibleMetaMatch.reason)} (${da.possibleMetaMatch.campaignNames.slice(0, 2).map(E).join('، ')})</div>`;
   }
   return `<div class="faint" style="font-size:11px;margin-top:8px;">⚪ غير مربوط بأي حملة Meta</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Product <-> Meta Campaign mapping — "ربط إعلانات Meta". Independent of the
+// AI snapshot: reuses AI Media Buyer's EXISTING AmbProduct/
+// AmbProductCampaignMap architecture (no new mapping system). Never
+// auto-confirms — every write happens only from an explicit admin click on
+// "تأكيد الربط" after reviewing checked campaigns.
+// ---------------------------------------------------------------------------
+const META_MAPPING_STATUS_LABEL = { CONFIRMED: '🟢 مؤكد', REVIEW_REQUIRED: '🟡 يحتاج مراجعة', UNMAPPED: '⚪ غير مربوط', AMBIGUOUS: '🔴 غامض' };
+
+async function loadMetaMapping() {
+  state.metaMappingLoading = true;
+  renderMetaMappingSection();
+  try {
+    state.metaMapping = await api.get(`/api/product-marketing/profiles/${state.profile.id}/meta-mapping`);
+    state.metaMappingSelected = {};
+  } catch (e) {
+    UI.toast(e.message || 'تعذر تحميل اقتراحات ربط Meta.', 'error');
+    state.metaMapping = null;
+  }
+  state.metaMappingLoading = false;
+  renderMetaMappingSection();
+}
+
+async function confirmSelectedMetaCampaigns() {
+  const campaignIds = Object.keys(state.metaMappingSelected).filter((id) => state.metaMappingSelected[id]);
+  if (!campaignIds.length) { UI.toast('اختر حملة واحدة على الأقل قبل تأكيد الربط.', 'error'); return; }
+  state.metaMappingBusy = true;
+  renderMetaMappingSection();
+  try {
+    const r = await api.post(`/api/product-marketing/profiles/${state.profile.id}/meta-mapping/confirm`, { campaignIds });
+    for (const row of r.results || []) {
+      if (row.status === 'MAPPED') UI.toast(`✅ تم تأكيد ربط "${row.campaignName || row.campaignId}"`, 'success');
+      else UI.toast(`⚠️ ${row.campaignId}: ${row.reason || 'رُفض الربط'}`, 'error');
+    }
+  } catch (e) {
+    UI.toast(e.message || 'فشل تأكيد الربط.', 'error');
+  }
+  state.metaMappingBusy = false;
+  await loadMetaMapping();
+  await loadSnapshot(true); // Meta metrics likely just changed — reflect it immediately in the analysis, same as any other explicit "تحديث"
+}
+
+function metaMappingRowHtml(c, selectable) {
+  const checked = !!state.metaMappingSelected[c.campaignId];
+  return `
+    <div class="pmc-mm-row">
+      ${selectable ? `<div class="pmc-mm-check"><input type="checkbox" class="pmc-mm-select" data-cid="${E(c.campaignId)}" ${checked ? 'checked' : ''} /></div>` : '<div></div>'}
+      <div>
+        <div class="pmc-mm-name">${E(c.campaignName)}</div>
+        <div class="faint" style="font-size:11px;">Campaign ID: ${E(c.campaignId)}</div>
+      </div>
+      <div class="pmc-mm-num">${fmtEGP(c.spend)}</div>
+      <div class="pmc-mm-num">${fmtNum(c.purchases)}</div>
+      <div class="pmc-mm-num">${c.cpa != null ? fmtEGP(c.cpa) : '—'}</div>
+      <div class="pmc-mm-badge ${E(c.status)}">${c.status === 'MAPPED' ? 'مؤكد' : 'مقترح'}</div>
+      <div class="faint" style="font-size:11px;">${E(c.matchMethod || '—')}${c.confidence != null ? ` · ${Math.round(c.confidence * 100)}%` : ''}</div>
+    </div>`;
+}
+
+function renderMetaMappingSection() {
+  const mount = $('pmcMetaMappingSection');
+  if (!mount) return;
+  const mm = state.metaMapping;
+
+  if (state.metaMappingLoading && !mm) { mount.innerHTML = '<div class="pmc-card" style="margin-bottom:14px;"><div class="h">📣 ربط إعلانات Meta</div><div class="amb-loading">جارِ تحميل الاقتراحات…</div></div>'; return; }
+  if (!mm) { mount.innerHTML = ''; return; }
+
+  const selectedCount = Object.values(state.metaMappingSelected).filter(Boolean).length;
+  mount.innerHTML = `
+    <div class="pmc-card" style="margin-bottom:14px;">
+      <div class="h" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <span>📣 ربط إعلانات Meta — ${META_MAPPING_STATUS_LABEL[mm.status] || mm.status}</span>
+        <button class="amb-btn sm" id="pmcMmRefresh" ${state.metaMappingBusy ? 'disabled' : ''}>🔄 تحديث الاقتراحات</button>
+      </div>
+
+      ${mm.confirmedCampaigns.length ? `
+        <div class="faint" style="font-size:11.5px;margin:6px 0;">حملات مؤكدة (${mm.confirmedCampaigns.length}) — مصدر بيانات Meta الحالي لهذا المنتج:</div>
+        ${mm.confirmedCampaigns.map((c) => metaMappingRowHtml(c, false)).join('')}
+      ` : ''}
+
+      ${mm.suggestedCampaigns.length ? `
+        <div class="faint" style="font-size:11.5px;margin:10px 0 6px;">حملات مقترحة (${mm.suggestedCampaigns.length}) — راجعها وحدد ما تريد تأكيده:</div>
+        ${mm.suggestedCampaigns.map((c) => metaMappingRowHtml(c, true)).join('')}
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <button class="amb-btn primary sm" id="pmcMmConfirm" ${state.metaMappingBusy ? 'disabled' : ''}>${state.metaMappingBusy ? 'جارِ التأكيد…' : `تأكيد الربط (${selectedCount})`}</button>
+          <button class="amb-btn sm ghost" id="pmcMmClear">إلغاء التحديد</button>
+        </div>
+      ` : ''}
+
+      ${!mm.confirmedCampaigns.length && !mm.suggestedCampaigns.length ? `<div class="pmc-empty" style="padding:10px;">${E(mm.reason || 'لا توجد حملات Meta مقترحة لهذا المنتج حاليًا.')}</div>` : ''}
+
+      ${mm.conflicts?.length ? `
+        <div class="faint" style="font-size:11px;margin-top:10px;color:var(--amb-amber);">⚠️ ${mm.conflicts.length} حملة تشبه اسم/معرّف هذا المنتج لكنها مربوطة بالفعل بمنتج AMB آخر — لن تُقترح هنا لتفادي ربط خاطئ: ${mm.conflicts.map((c) => E(c.campaignName)).join('، ')}</div>
+      ` : ''}
+    </div>`;
+
+  $('pmcMmRefresh')?.addEventListener('click', () => loadMetaMapping());
+  $('pmcMmConfirm')?.addEventListener('click', () => confirmSelectedMetaCampaigns());
+  $('pmcMmClear')?.addEventListener('click', () => { state.metaMappingSelected = {}; renderMetaMappingSection(); });
+  mount.querySelectorAll('.pmc-mm-select').forEach((cb) => {
+    cb.addEventListener('change', () => { state.metaMappingSelected[cb.dataset.cid] = cb.checked; renderMetaMappingSection(); });
+  });
 }
 
 // ---- §4/§5/§6/§20/§21 — Overview ----

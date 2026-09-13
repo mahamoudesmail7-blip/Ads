@@ -161,6 +161,16 @@
 
 .pmc-empty { text-align: center; padding: 30px 16px; color: var(--amb-text-faint); font-size: 13px; background: var(--amb-surface-2); border: 1px dashed var(--amb-border); border-radius: var(--amb-radius); }
 
+/* §ربط إعلانات Meta */
+.pmc-mm-row { display: grid; grid-template-columns: auto 1.6fr .8fr .6fr .8fr .7fr .9fr; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--amb-border); font-size: 12.5px; }
+.pmc-mm-row:last-of-type { border-bottom: none; }
+.pmc-mm-check input { width: 16px; height: 16px; }
+.pmc-mm-name { font-weight: 700; }
+.pmc-mm-num { text-align: center; font-variant-numeric: tabular-nums; }
+.pmc-mm-badge { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; text-align: center; white-space: nowrap; }
+.pmc-mm-badge.MAPPED { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-mm-badge.SUGGESTED { background: var(--amb-amber-bg); color: var(--amb-amber); }
+
 .pmc-memory-item { border-inline-start: 3px solid var(--amb-purple); padding: 8px 12px; margin-bottom: 8px; background: var(--amb-surface-2); border-radius: 0 var(--amb-radius-sm) var(--amb-radius-sm) 0; font-size: 12.5px; }
 .pmc-memory-item .lbl { font-weight: 700; color: var(--amb-purple); font-size: 11px; }
 
