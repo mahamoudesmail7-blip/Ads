@@ -10,6 +10,8 @@
 // would require inference beyond the numbers belongs in productMarketingAI.js
 // instead, explicitly labelled HYPOTHESIS or RECOMMENDATION there.
 
+import { normalizeName } from '../../../../js/product-mapping.js';
+
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
 
 // ---------------------------------------------------------------------------
@@ -184,4 +186,61 @@ export function classifyClaim(text) {
 
 export function opportunityLabelAr(label) {
   return { 'قوية': 'فرصة قوية', 'متوسطة': 'فرصة متوسطة', 'ضعيفة': 'فرصة ضعيفة' }[label] || label;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-store Product Marketing Center — Meta campaign matching by real
+// Easy Orders slug/id/name evidence found in the campaign's OWN name. This
+// is a READ-ONLY, deterministic pipeline: no fuzzy/similarity scoring, no
+// persisted mapping table (that mechanism was explicitly paused after the
+// 2026-09-13 incident) — every call recomputes fresh from real campaign
+// names + the locked product's real identity, and NEVER auto-applies a weak
+// guess. A media buyer often puts the Easy Orders product slug/id directly
+// into the campaign name (e.g. "Roller - Scale" for slug "Roller"), which
+// is exactly the strongest, least-ambiguous signal available without a
+// human-confirmed mapping.
+//
+// Priority (matches the spec exactly):
+//   1. (an existing confirmed AmbProduct mapping is checked by the CALLER
+//      before this function ever runs — see productMarketing.js computeSnapshot)
+//   2. exact Easy Orders slug/id found in the campaign name
+//   3. exact normalized product identifier (the raw Easy Orders id) found in the campaign name
+//   4. exact normalized product name found (as a full substring) in the campaign name
+//   5. every significant word of the product name present in the campaign name (order-independent, but ALL of them — not a partial-overlap score)
+//   6. otherwise UNMAPPED
+//
+// Tiers 2-4 are treated as MATCHED (strong, hard-to-coincidentally-collide
+// evidence — an exact slug or the full product name appearing verbatim).
+// Tier 5 is only ever POSSIBLE_MATCH — shown to the human, never used to
+// silently pull real performance numbers, honoring "do not guess weak
+// matches."
+function significantTokens(normalized) {
+  return normalized.split(' ').filter((t) => t.length > 2);
+}
+
+export function matchCampaignsToProduct({ slug, easyOrdersProductId, lockedName }, campaigns) {
+  const normSlug = slug ? normalizeName(slug) : null;
+  const normId = easyOrdersProductId ? normalizeName(String(easyOrdersProductId)) : null;
+  const normName = lockedName ? normalizeName(lockedName) : null;
+  const nameTokens = normName ? significantTokens(normName) : [];
+
+  const matchedBySlug = [];
+  const matchedById = [];
+  const matchedByName = [];
+  const possibleByAllTokens = [];
+
+  for (const c of campaigns || []) {
+    const normCampaign = normalizeName(c.name || '');
+    if (!normCampaign) continue;
+    if (normSlug && normSlug.length >= 2 && normCampaign.includes(normSlug)) { matchedBySlug.push(c); continue; }
+    if (normId && normId.length >= 4 && normCampaign.includes(normId)) { matchedById.push(c); continue; }
+    if (normName && normName.length >= 3 && normCampaign.includes(normName)) { matchedByName.push(c); continue; }
+    if (nameTokens.length && nameTokens.every((t) => normCampaign.includes(t))) { possibleByAllTokens.push(c); continue; }
+  }
+
+  if (matchedBySlug.length) return { status: 'MATCHED', method: 'SLUG', campaigns: matchedBySlug, reason: 'تم ربط الحملة لأن اسم الحملة يحتوي على رابط/معرّف المنتج (slug) من Easy Orders.' };
+  if (matchedById.length) return { status: 'MATCHED', method: 'EXTERNAL_ID', campaigns: matchedById, reason: 'تم ربط الحملة لأن اسم الحملة يحتوي على رقم تعريف المنتج من Easy Orders.' };
+  if (matchedByName.length) return { status: 'MATCHED', method: 'EXACT_NAME', campaigns: matchedByName, reason: 'تم ربط الحملة لأن اسم الحملة يحتوي على الاسم الكامل للمنتج.' };
+  if (possibleByAllTokens.length) return { status: 'POSSIBLE_MATCH', method: 'ALL_NAME_WORDS', campaigns: possibleByAllTokens, reason: 'اسم الحملة يحتوي على كل كلمات اسم المنتج، لكن مش تطابق تام — راجع الحملة قبل الاعتماد على أرقامها.' };
+  return { status: 'UNMAPPED', method: null, campaigns: [], reason: 'لم يتم العثور على حملة Meta مرتبطة بهذا المنتج.' };
 }

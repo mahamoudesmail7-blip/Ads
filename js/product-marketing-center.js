@@ -29,6 +29,12 @@ const TABS = [
 
 const state = {
   me: null,
+  // Multi-store — the store must be chosen BEFORE any product/catalog data
+  // loads, and switching it clears every downstream product/analysis state
+  // (see selectStore()) so Store A's data can never linger on screen after
+  // switching to Store B.
+  stores: null, storesLoading: true, storesError: null,
+  storeId: null, storeSelectorOpen: false,
   source: 'EASY_ORDERS', // EASY_ORDERS | MANUAL_UPLOAD (source-picker only, before lock)
   eoQuery: '', eoFilter: 'all', // all | newest | recent
   eoAll: null, eoLoading: false, eoError: null, // the ONE real fetch, cached client-side
@@ -50,6 +56,63 @@ async function init() {
   $('ambDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'ambDrawerOverlay') $('ambDrawerOverlay').classList.remove('open'); });
   renderNav();
   render();
+  await loadStores();
+}
+
+async function loadStores() {
+  state.storesLoading = true; state.storesError = null;
+  renderStoreSelector();
+  try {
+    const r = await api.get('/api/product-marketing/stores');
+    state.stores = r.stores || [];
+    if (!state.storeId && state.stores.length) state.storeId = state.stores[0].id;
+  } catch (e) {
+    state.storesError = e.message || 'تعذر تحميل المتاجر المتاحة.';
+    state.stores = null;
+  }
+  state.storesLoading = false;
+  render();
+}
+
+/** §6 — switching the store must clear EVERYTHING downstream: selected product, lock, Meta mapping, COD, audience, locations, angles, creative, hooks/posts, recommendations. Store A's data must never linger after switching to Store B. */
+function selectStore(storeId) {
+  if (storeId === state.storeId) { state.storeSelectorOpen = false; renderStoreSelector(); return; }
+  state.storeId = storeId;
+  state.storeSelectorOpen = false;
+  // Product source / catalog state (must reload for the new store):
+  state.eoAll = null; state.eoLoading = false; state.eoError = null;
+  state.eoQuery = ''; state.eoFilter = 'all'; state.eoVisible = 20; state.eoRecentIds = null;
+  state.eoSelected = null;
+  // Locked product + every downstream analysis result:
+  state.profile = null;
+  resetWorkspace();
+  render();
+}
+
+function renderStoreSelector() {
+  const mount = $('pmcStoreSelector');
+  if (!mount) return;
+  if (state.storesLoading) { mount.innerHTML = ''; return; } // no flash of a selector that might turn out to be single-store
+  if (state.storesError || !state.stores || !state.stores.length) {
+    mount.innerHTML = `<div class="pmc-store-box error"><div class="pmc-store-label">المتجر الحالي</div><div class="pmc-store-current">⚠️ ${E(state.storesError || 'المتجر غير مربوط بـ Easy Orders')}</div></div>`;
+    return;
+  }
+  // §1 — the selector itself (a store name + dropdown to switch) only makes
+  // sense — and should only appear — when there's actually more than one
+  // store to choose between. A single-store deployment (today's real
+  // production) sees NO new UI at all, exactly as before this feature.
+  if (state.stores.length <= 1) { mount.innerHTML = ''; return; }
+  const current = state.stores.find((s) => s.id === state.storeId) || state.stores[0];
+  mount.innerHTML = `
+    <div class="pmc-store-box">
+      <div class="pmc-store-label">المتجر الحالي</div>
+      <button class="pmc-store-current" id="pmcStoreToggle">${E(current?.name || '—')} <span class="car">▾</span></button>
+      ${state.storeSelectorOpen ? `<div class="pmc-store-dropdown">
+        ${state.stores.map((s) => `<button class="pmc-store-opt ${s.id === state.storeId ? 'active' : ''}" data-store="${E(s.id)}" ${s.enabled === false ? 'disabled' : ''}>${E(s.name)}${s.id === state.storeId ? ' ✓' : ''}</button>`).join('')}
+      </div>` : ''}
+    </div>`;
+  $('pmcStoreToggle').onclick = () => { state.storeSelectorOpen = !state.storeSelectorOpen; renderStoreSelector(); };
+  mount.querySelectorAll('[data-store]').forEach((b) => { b.onclick = () => selectStore(b.dataset.store); });
 }
 
 function renderNav() {
@@ -84,9 +147,16 @@ function render() {
         <h1>مركز التسويق الذكي للمنتج</h1>
         <div class="sub">نفهم منتجك، نكتشف له أفضل جمهور وزوايا بيع، ونحوّل البيانات إلى أفكار وكرياتيفات قابلة للاختبار.</div>
       </div>
+      <div id="pmcStoreSelector"></div>
       <div class="pmc-ai-chip">🤖 ذكاء اصطناعي مخصص لمنتجك</div>
     </div>
     <div id="pmcBody"></div>`;
+  renderStoreSelector();
+  if (state.storesLoading) { $('pmcBody').innerHTML = '<div class="amb-loading">جارِ تحميل المتاجر…</div>'; return; }
+  if (!state.stores || !state.stores.length) {
+    $('pmcBody').innerHTML = `<div class="amb-panel"><div class="pmc-eo-error"><div style="font-size:22px;">⚠️</div><div style="font-weight:700;margin:6px 0;">المتجر غير مربوط بـ Easy Orders</div><div class="detail">${E(state.storesError || 'لازم تضبط EASYORDERS_API_KEY أو EASYORDERS_STORES_JSON في متغيرات البيئة أولًا.')}</div></div></div>`;
+    return;
+  }
   if (!state.profile) renderSourcePicker($('pmcBody'));
   else renderWorkspace($('pmcBody'));
 }
@@ -138,7 +208,7 @@ async function loadEoCatalog() {
   state.eoLoading = true; state.eoError = null;
   paintEoGrid();
   try {
-    const r = await api.get('/api/product-marketing/easy-orders/search', { q: '' });
+    const r = await api.get('/api/product-marketing/easy-orders/search', { q: '', store_id: state.storeId });
     // §1 — the backend now says explicitly whether this is a REAL catalogue
     // (possibly genuinely empty) or a failure; a failure must never be
     // shown as "لم يتم العثور على منتجات" — show the real technical reason.
@@ -159,7 +229,9 @@ async function loadRecentEoIds() {
   try {
     const { profiles } = await api.get('/api/product-marketing/profiles');
     const ids = [];
-    for (const p of profiles) if (p.easyOrdersProductId && !ids.includes(p.easyOrdersProductId)) ids.push(p.easyOrdersProductId);
+    // §8 strict store isolation — "used recently" must only ever surface
+    // THIS store's own product ids, never another store's.
+    for (const p of profiles) if (p.storeId === state.storeId && p.easyOrdersProductId && !ids.includes(p.easyOrdersProductId)) ids.push(p.easyOrdersProductId);
     state.eoRecentIds = ids;
   } catch { state.eoRecentIds = []; }
 }
@@ -267,7 +339,7 @@ async function addFiles(files) {
 async function lockEasyOrders(eoId) {
   const btn = $('pmcEoConfirmPick'); if (btn) { btn.disabled = true; btn.textContent = 'جارِ التأكيد…'; }
   try {
-    state.profile = await api.post('/api/product-marketing/profiles/from-easy-orders', { eoProductId: eoId });
+    state.profile = await api.post('/api/product-marketing/profiles/from-easy-orders', { eoProductId: eoId, storeId: state.storeId });
     state.eoSelected = null;
     resetWorkspace();
     render();
@@ -297,7 +369,7 @@ function renderWorkspace(mount) {
       <div class="body">
         <div class="title">✅ المنتج المعتمد للتحليل</div>
         <div class="name">${E(p.lockedName)}</div>
-        <div class="faint" style="font-size:12px;">المصدر: ${p.source === 'EASY_ORDERS' ? 'Easy Orders' : 'رفع يدوي'}${p.sellingPrice ? ` · السعر: ${fmtEGP(p.sellingPrice)}` : ''}</div>
+        <div class="faint" style="font-size:12px;">المصدر: ${p.source === 'EASY_ORDERS' ? 'Easy Orders' : 'رفع يدوي'}${p.storeName ? ` · المتجر: ${E(p.storeName)}` : ''}${p.sellingPrice ? ` · السعر: ${fmtEGP(p.sellingPrice)}` : ''}</div>
         <div class="pmc-trait-groups">
           ${traitCol('confirmed', 'خصائص مؤكدة', p.confirmedTraits)}
           ${traitCol('potential', 'خصائص محتملة', p.potentialTraits)}
@@ -355,6 +427,20 @@ function kindPill(kind) { return kind ? `<span class="pmc-pill ${E(kind)}">${{ F
 function confPill(c) { return c ? `<span class="pmc-pill conf-${E(c)}">ثقة ${{ LOW: 'منخفضة', MEDIUM: 'متوسطة', HIGH: 'عالية' }[c] || c}</span>` : ''; }
 function claimPill(status, reason) { const map = { GREEN: ['🟢 آمن', ''], YELLOW: ['🟡 يحتاج إثبات', ''], RED: ['🔴 غير موصى به', reason || ''] }; const [label] = map[status] || ['—', '']; return `<span class="pmc-claim ${E(status)}" title="${E(reason || '')}">${label}</span>`; }
 
+// §7 — Matched / Possible Match / Unmapped, with the real reason (never a
+// generic "insufficient data" for this specific case).
+function metaMatchBadgeHtml(da) {
+  if (!da) return '';
+  if (da.metaMatchMethod) {
+    const label = da.metaMatchMethod === 'AMB_MAPPING' ? 'مربوط' : da.metaMatchMethod === 'SLUG' ? 'مربوط (عبر Slug)' : da.metaMatchMethod === 'EXTERNAL_ID' ? 'مربوط (عبر رقم المنتج)' : 'مربوط (عبر اسم المنتج)';
+    return `<div class="faint" style="font-size:11px;margin-top:8px;">🟢 ${E(label)}${da.metaMatchReason ? ` — ${E(da.metaMatchReason)}` : ''}</div>`;
+  }
+  if (da.possibleMetaMatch) {
+    return `<div class="faint" style="font-size:11px;margin-top:8px;">🟡 تطابق محتمل — ${E(da.possibleMetaMatch.reason)} (${da.possibleMetaMatch.campaignNames.slice(0, 2).map(E).join('، ')})</div>`;
+  }
+  return `<div class="faint" style="font-size:11px;margin-top:8px;">⚪ غير مربوط بأي حملة Meta</div>`;
+}
+
 // ---- §4/§5/§6/§20/§21 — Overview ----
 function renderOverview(mount, s) {
   const op = s.opportunity || {};
@@ -376,6 +462,7 @@ function renderOverview(mount, s) {
         <div class="pmc-kv"><span>معدل الاستلام</span><b>${fmtPct1(m.deliveryRate)}</b></div>
         <div class="pmc-kv"><span>Delivered CPA</span><b>${fmtEGP(m.deliveredCpa)}</b></div>
         <div class="pmc-kv"><span>صافي الربح</span><b>${fmtEGP(m.netProfit)}</b></div>
+        ${metaMatchBadgeHtml(m.dataAvailability)}
       </div>
       <div class="pmc-card">
         <div class="h">🩺 التشخيص السريع</div>

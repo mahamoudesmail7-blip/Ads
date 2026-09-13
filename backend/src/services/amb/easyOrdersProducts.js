@@ -12,9 +12,16 @@
 // outage and needs no further lookups.
 import { logger } from '../../logger.js';
 import { EASYORDERS_API_BASE } from '../easyOrders.js';
+import { getStoreApiKey, defaultStoreId } from '../easyOrdersStores.js';
 
-let cache = { at: 0, list: null };
-let fullCache = { at: 0, list: null }; // separate cache: the UN-filtered full catalogue (getAllEasyOrdersProductsStatus) — kept apart from `cache` (thumb-only, existing consumers) so neither invalidates the other
+// Multi-store (Product Marketing Center): both caches are now keyed by
+// store_id so two different stores' catalogues can never collide or
+// overwrite each other. Every existing call site that doesn't pass a
+// storeId keeps working exactly as before — it implicitly resolves to
+// defaultStoreId() (today: the one store backed by EASYORDERS_API_KEY),
+// which is the SAME single-store behavior this always had.
+let cache = new Map(); // storeId -> { at, list } — thumb-only (existing consumers: easyOrdersImageFor)
+let fullCache = new Map(); // storeId -> { at, list } — UN-filtered full catalogue (getAllEasyOrdersProductsStatus), kept apart from `cache` so neither invalidates the other
 const TTL_MS = 60 * 60 * 1000;
 
 function norm(s) {
@@ -63,18 +70,19 @@ async function fetchEasyOrdersProductsRaw(key) {
  * the existing easyOrdersImageFor() match logic below (and any other
  * caller reading only those 4) is unaffected.
  */
-export async function getEasyOrdersProducts() {
-  const key = process.env.EASYORDERS_API_KEY;
+export async function getEasyOrdersProducts(storeId = defaultStoreId()) {
+  const key = getStoreApiKey(storeId);
   if (!key) return [];
-  if (cache.list && Date.now() - cache.at < TTL_MS) return cache.list;
+  const entry = cache.get(storeId);
+  if (entry?.list && Date.now() - entry.at < TTL_MS) return entry.list;
   try {
     const list = (await fetchEasyOrdersProductsRaw(key)).filter((p) => p.thumb);
-    cache = { at: Date.now(), list };
-    logger.info('AMB EasyOrders products cached', { count: list.length });
+    cache.set(storeId, { at: Date.now(), list });
+    logger.info('AMB EasyOrders products cached', { storeId, count: list.length });
     return list;
   } catch (err) {
-    logger.warn('AMB EasyOrders products fetch failed (non-fatal)', { message: err.message });
-    return cache.list || [];
+    logger.warn('AMB EasyOrders products fetch failed (non-fatal)', { storeId, message: err.message });
+    return entry?.list || [];
   }
 }
 
@@ -88,18 +96,19 @@ export async function getEasyOrdersProducts() {
  * thumb-only cache so neither list's staleness affects the other.
  * @returns {Promise<{ok:boolean, products:object[], source:'live'|'stale_cache'|'error', error:string|null}>}
  */
-export async function getAllEasyOrdersProductsStatus() {
-  const key = process.env.EASYORDERS_API_KEY;
-  if (!key) return { ok: false, products: [], source: 'error', error: 'EASYORDERS_API_KEY غير مضبوط في متغيرات البيئة.' };
-  if (fullCache.list && Date.now() - fullCache.at < TTL_MS) return { ok: true, products: fullCache.list, source: 'live', error: null };
+export async function getAllEasyOrdersProductsStatus(storeId = defaultStoreId()) {
+  const key = getStoreApiKey(storeId);
+  if (!key) return { ok: false, products: [], source: 'error', error: 'هذا المتجر غير مربوط بـ Easy Orders — تأكد من ضبط مفتاح API الخاص به في متغيرات البيئة.' };
+  const entry = fullCache.get(storeId);
+  if (entry?.list && Date.now() - entry.at < TTL_MS) return { ok: true, products: entry.list, source: 'live', error: null };
   try {
     const list = await fetchEasyOrdersProductsRaw(key);
-    fullCache = { at: Date.now(), list };
-    logger.info('AMB EasyOrders full catalogue cached', { count: list.length });
+    fullCache.set(storeId, { at: Date.now(), list });
+    logger.info('AMB EasyOrders full catalogue cached', { storeId, count: list.length });
     return { ok: true, products: list, source: 'live', error: null };
   } catch (err) {
-    logger.error('AMB EasyOrders full catalogue fetch FAILED', { message: err.message, httpStatus: err.httpStatus || null });
-    if (fullCache.list) return { ok: true, products: fullCache.list, source: 'stale_cache', error: err.message };
+    logger.error('AMB EasyOrders full catalogue fetch FAILED', { storeId, message: err.message, httpStatus: err.httpStatus || null });
+    if (entry?.list) return { ok: true, products: entry.list, source: 'stale_cache', error: err.message };
     return { ok: false, products: [], source: 'error', error: err.message };
   }
 }
@@ -112,8 +121,8 @@ export async function getAllEasyOrdersProductsStatus() {
  * Returns null when there's no confident match (never a fuzzy guess — a
  * wrong product image is worse than a placeholder).
  */
-export async function easyOrdersImageFor({ ambProduct, catalogProduct }) {
-  const list = await getEasyOrdersProducts();
+export async function easyOrdersImageFor({ ambProduct, catalogProduct, storeId = defaultStoreId() }) {
+  const list = await getEasyOrdersProducts(storeId);
   if (!list.length) return null;
   const ref = norm(ambProduct?.external_product_ref);
   const catName = norm(catalogProduct?.product_name);

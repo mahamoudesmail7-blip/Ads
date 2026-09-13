@@ -3,7 +3,7 @@
 // validation, §26 product-lock rule). No Meta/AI/DB calls — pure functions
 // only, so this never costs a token and never touches production data.
 //   node src/scripts/productMarketingTest.js
-import { computeOpportunityScore, computeDiagnosis, rankLocations, classifyClaim } from '../services/amb/productMarketingScoring.js';
+import { computeOpportunityScore, computeDiagnosis, rankLocations, classifyClaim, matchCampaignsToProduct } from '../services/amb/productMarketingScoring.js';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
@@ -83,6 +83,35 @@ console.log('\n§11 Claim validation (hard override — never trusts the AI\'s o
   ok('"يعالج الألم نهائيًا" -> forced RED', classifyClaim('يعالج الألم نهائيًا وبيضمن نتيجة').status === 'RED');
   ok('"مريح بعد يوم طويل" -> no forced override (caller falls back to AI/default label)', classifyClaim('مريح بعد يوم طويل في الشغل') === null);
   ok('empty/undefined text -> no false positive', classifyClaim(undefined) === null && classifyClaim('') === null);
+}
+
+console.log('\n§7 Multi-store — Meta campaign matching by real slug/id/name evidence (never a fuzzy/similarity guess):');
+{
+  const campaigns = [
+    { id: 'c1', name: 'Roller - Scale - Egypt' },
+    { id: 'c2', name: 'IPL Hair Removal - Retargeting' },
+    { id: 'c3', name: 'مسدس مساج - إعلان تجريبي' },
+    { id: 'c4', name: 'Random unrelated campaign name' },
+  ];
+
+  const slugMatch = matchCampaignsToProduct({ slug: 'Roller', easyOrdersProductId: 'abc-123', lockedName: 'جهاز المساج الدوّار' }, campaigns);
+  ok('exact slug in campaign name -> MATCHED via SLUG', slugMatch.status === 'MATCHED' && slugMatch.method === 'SLUG' && slugMatch.campaigns.length === 1 && slugMatch.campaigns[0].id === 'c1');
+  ok('MATCHED reason explains WHY (mentions the slug/link)', slugMatch.reason.includes('رابط') || slugMatch.reason.includes('slug'));
+
+  const nameMatch = matchCampaignsToProduct({ slug: null, easyOrdersProductId: null, lockedName: 'مسدس مساج' }, campaigns);
+  ok('exact full product name substring in campaign name -> MATCHED via EXACT_NAME', nameMatch.status === 'MATCHED' && nameMatch.method === 'EXACT_NAME' && nameMatch.campaigns[0].id === 'c3');
+
+  const possible = matchCampaignsToProduct({ slug: null, easyOrdersProductId: null, lockedName: 'مساج مسدس' }, campaigns); // reordered tokens, not an exact phrase
+  ok('all name words present but reordered (not exact phrase) -> POSSIBLE_MATCH, never MATCHED', possible.status === 'POSSIBLE_MATCH', JSON.stringify(possible));
+
+  const none = matchCampaignsToProduct({ slug: 'zzz', easyOrdersProductId: 'nope-id', lockedName: 'منتج غير موجود إطلاقًا في الحملات' }, campaigns);
+  ok('no evidence anywhere -> UNMAPPED, never a guessed match', none.status === 'UNMAPPED' && none.campaigns.length === 0);
+
+  const empty = matchCampaignsToProduct({ slug: null, easyOrdersProductId: null, lockedName: null }, campaigns);
+  ok('no product identity at all -> UNMAPPED, never throws', empty.status === 'UNMAPPED');
+
+  const noCampaigns = matchCampaignsToProduct({ slug: 'Roller', easyOrdersProductId: null, lockedName: 'x' }, []);
+  ok('no campaigns to check against -> UNMAPPED, never throws', noCampaigns.status === 'UNMAPPED');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

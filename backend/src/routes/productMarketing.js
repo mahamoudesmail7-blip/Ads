@@ -13,15 +13,20 @@ router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
 
 function idParam(v) { const n = Number(v); if (!Number.isInteger(n) || n <= 0) { const e = new Error('مُعرّف غير صالح.'); e.status = 400; throw e; } return n; }
 
+// ---- Multi-store (§1/§2) — safe metadata only, NEVER a credential ----
+router.get('/stores', asyncRoute(async (req, res) => res.json({ stores: PM.listEasyOrdersStores() })));
+
 // ---- Product source / lock ----
 router.get('/easy-orders/search', asyncRoute(async (req, res) => {
   // §1 — the service now returns {products, ok, source, error} so a real
   // EasyOrders API/network/config failure is never indistinguishable from
   // a genuinely empty catalogue — passed straight through, not re-wrapped.
-  res.json(await PM.searchEasyOrdersProducts(req.query.q));
+  // storeId is optional — omitting it keeps every pre-multi-store caller
+  // working exactly as before (resolves to the one default store).
+  res.json(await PM.searchEasyOrdersProducts(req.query.q, req.query.store_id || undefined));
 }));
 router.post('/profiles/from-easy-orders', asyncRoute(async (req, res) => {
-  res.status(201).json(await PM.lockFromEasyOrders({ eoProductId: req.body?.eoProductId, userId: req.user.id }));
+  res.status(201).json(await PM.lockFromEasyOrders({ eoProductId: req.body?.eoProductId, storeId: req.body?.storeId || undefined, userId: req.user.id }));
 }));
 router.post('/profiles/from-images', asyncRoute(async (req, res) => {
   const images = Array.isArray(req.body?.images) ? req.body.images : [];

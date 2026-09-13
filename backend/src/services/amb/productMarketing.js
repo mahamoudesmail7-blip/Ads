@@ -12,19 +12,37 @@ import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
-import { resolveWindow } from './metricsEngine.js';
-import { buildHierarchy } from './hierarchyAnalysis.js';
+import { resolveWindow, entityWindowMetrics } from './metricsEngine.js';
+import { buildHierarchy, rollupMetrics } from './hierarchyAnalysis.js';
 import { productDashboard } from './ambProducts.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
+import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
-import { computeOpportunityScore, computeDiagnosis, rankLocations } from './productMarketingScoring.js';
+import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct } from './productMarketingScoring.js';
 import * as PMAI from './productMarketingAI.js';
 import { mapProductByName } from '../../../../js/product-mapping.js';
 
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
 const WINDOWS = ['today', 'yesterday', 'last3', 'last7'];
+
+// Multi-store (Product Marketing Center) — store_id is encoded INTO the
+// existing easy_orders_product_id string column as "storeId::realEoId"
+// rather than adding a new DB column/migration (see the final report for
+// why: this repo just recovered from a real production data-loss incident
+// caused by database tooling misuse, and per explicit instruction this
+// feature must not touch the schema unless truly unavoidable — it isn't
+// here). A profile locked before multi-store support existed has no "::"
+// in its easy_orders_product_id, so it transparently reads back as
+// defaultStoreId() — zero migration needed for old rows either.
+function encodeStoreScopedId(storeId, realEoId) { return `${storeId}::${realEoId}`; }
+function decodeStoreScopedId(value) {
+  const s = String(value || '');
+  const idx = s.indexOf('::');
+  if (idx === -1) return { storeId: defaultStoreId(), realEoId: s };
+  return { storeId: s.slice(0, idx), realEoId: s.slice(idx + 2) };
+}
 
 // ---------------------------------------------------------------------------
 // §1 — Product source, lock, understanding
@@ -39,17 +57,30 @@ const WINDOWS = ['today', 'yesterday', 'last3', 'last7'];
  * "تم استخدامها مؤخراً" filtering, plus its own progressive "تحميل المزيد"
  * paging) client-side over that one real list — no repeated round-trips.
  */
-export async function searchEasyOrdersProducts(query) {
-  const status = await getAllEasyOrdersProductsStatus();
+/**
+ * Multi-store — every store's catalogue is fetched/cached completely
+ * independently (see easyOrdersProducts.js's per-store Map caches), so
+ * Store A's products can never leak into a Store B request. `storeId`
+ * defaults to defaultStoreId() (today: the single EASYORDERS_API_KEY store)
+ * so every pre-multi-store caller keeps working unchanged.
+ */
+export async function searchEasyOrdersProducts(query, storeId = defaultStoreId()) {
+  const status = await getAllEasyOrdersProductsStatus(storeId);
   const q = String(query || '').trim().toLowerCase();
   const filtered = q ? status.products.filter((p) => p.name.toLowerCase().includes(q)) : status.products;
   return {
-    products: filtered.map((p) => ({ id: p.id, name: p.name, slug: p.slug, thumb: p.thumb, price: p.price ?? null, createdAt: p.createdAt || null })),
+    storeId,
+    products: filtered.map((p) => ({ id: p.id, storeId, name: p.name, slug: p.slug, thumb: p.thumb, price: p.price ?? null, createdAt: p.createdAt || null })),
     // §1 — a real API/network/config failure must never be presented to the
     // frontend as an indistinguishable "zero products"; ok/source/error let
     // the UI show the REAL reason (and a retry) instead of a wrong "not found".
     ok: status.ok, source: status.source, error: status.error,
   };
+}
+
+/** Safe store list for the frontend's "المتجر الحالي" selector — id/name/domain/enabled only, never a credential. */
+export function listEasyOrdersStores() {
+  return listStores();
 }
 
 // BUG 3 fix — this used to be a plain Prisma `equals` (case-insensitive
@@ -80,15 +111,24 @@ async function findInternalProductByName(name) {
   return prisma.product.findUnique({ where: { id: match.productId } });
 }
 
-/** Option A — lock a profile onto a real Easy Orders product. The EO image becomes the one true reference; never swapped, never re-guessed. */
-export async function lockFromEasyOrders({ eoProductId, userId }) {
-  const status = await getAllEasyOrdersProductsStatus();
-  if (!status.ok) throw bad(`تعذر تحميل منتجات Easy Orders: ${status.error || 'خطأ غير معروف'}`, 502);
+/**
+ * Option A — lock a profile onto a real Easy Orders product from a REAL,
+ * explicitly-selected store. The EO image becomes the one true reference;
+ * never swapped, never re-guessed. `storeId` becomes part of the locked
+ * identity (encoded into easy_orders_product_id — see decodeStoreScopedId
+ * above) so every downstream lookup (Meta matching, COD) can always tell
+ * which real store this profile came from, with zero schema change.
+ */
+export async function lockFromEasyOrders({ eoProductId, storeId = defaultStoreId(), userId }) {
+  const store = getStore(storeId);
+  if (!store) throw bad('المتجر غير مربوط بـ Easy Orders.', 404);
+  const status = await getAllEasyOrdersProductsStatus(storeId);
+  if (!status.ok) throw bad(`تعذر تحميل منتجات هذا المتجر: ${status.error || 'خطأ غير معروف'}`, 502);
   const eo = status.products.find((p) => String(p.id) === String(eoProductId));
-  if (!eo) throw bad('منتج Easy Orders غير موجود — حاول تبحث تاني.', 404);
+  if (!eo) throw bad('منتج Easy Orders غير موجود في هذا المتجر — حاول تبحث تاني.', 404);
 
   const product = await findInternalProductByName(eo.name);
-  const confirmed = [{ label: 'اسم المنتج (Easy Orders)', value: eo.name }];
+  const confirmed = [{ label: 'المتجر', value: store.name }, { label: 'المصدر', value: 'Easy Orders' }, { label: 'اسم المنتج (Easy Orders)', value: eo.name }];
   const potential = [];
   const unconfirmed = [];
   if (product) {
@@ -107,7 +147,7 @@ export async function lockFromEasyOrders({ eoProductId, userId }) {
       product_id: product?.id || null,
       source: 'EASY_ORDERS',
       locked_name: eo.name,
-      easy_orders_product_id: String(eo.id),
+      easy_orders_product_id: encodeStoreScopedId(storeId, eo.id),
       easy_orders_slug: eo.slug || null,
       selling_price: eo.price || product?.selling_price || null,
       primary_image_url: eo.thumb,
@@ -184,12 +224,16 @@ export async function getProfileImage(profileId, imageId) {
 }
 
 function serializeProfile(p, extra = {}) {
+  const { storeId, realEoId } = p.source === 'EASY_ORDERS' ? decodeStoreScopedId(p.easy_orders_product_id) : { storeId: null, realEoId: null };
+  const store = storeId ? getStore(storeId) : null;
   return {
     id: p.id,
     productId: p.product_id,
     source: p.source,
     lockedName: p.locked_name,
-    easyOrdersProductId: p.easy_orders_product_id,
+    easyOrdersProductId: realEoId ?? p.easy_orders_product_id,
+    storeId: store ? storeId : null,
+    storeName: store?.name || null,
     sellingPrice: p.selling_price,
     primaryImageUrl: p.primary_image_url || (extra.imageIds?.[0] ? `/api/product-marketing/profiles/${p.id}/images/${extra.imageIds[0]}` : null),
     confirmedTraits: j(p.confirmed_traits_json, []),
@@ -253,6 +297,24 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     if (ambProduct) dashboard = await productDashboard(ambProduct.id, { windowName: win }).catch((e) => { logger.warn('[ProductMarketing] productDashboard failed', { message: e.message }); return null; });
   }
 
+  // Multi-store §7 — when there's no confirmed AmbProduct mapping yet,
+  // fall back to a READ-ONLY campaign-name match against the locked
+  // product's real Easy Orders slug/id/name (a media buyer often puts the
+  // product slug/id directly in the campaign name). Reuses the SAME
+  // campaign-level metrics AMB's own hierarchy already computes
+  // (entityWindowMetrics/rollupMetrics) — no new Meta API call, no
+  // persisted mapping table. A MATCHED result (exact slug/id/name — never
+  // a fuzzy guess) is trusted enough to populate real numbers; a
+  // POSSIBLE_MATCH is surfaced to the human only, never auto-applied.
+  let campaignMatch = null;
+  if (!ambProduct && adAccountId && profile.source === 'EASY_ORDERS') {
+    const { realEoId } = decodeStoreScopedId(profile.easy_orders_product_id);
+    const campaignMetricsMap = await entityWindowMetrics({ level: 'campaign', from: window.from, to: window.to, adAccountId }).catch(() => new Map());
+    const campaignEntries = [...campaignMetricsMap.values()].map((c) => ({ id: c.campaignId, name: c.campaignName, metrics: c }));
+    campaignMatch = matchCampaignsToProduct({ slug: profile.easy_orders_slug, easyOrdersProductId: realEoId, lockedName: profile.locked_name }, campaignEntries);
+  }
+  const matchedCampaignMetrics = campaignMatch?.status === 'MATCHED' ? rollupMetrics(campaignMatch.campaigns.map((c) => c.metrics)) : null;
+
   // Easy Orders truth (independent of Meta mapping — real COD data whenever product_id resolves to a catalog Product with orders).
   let cod = { source: 'none', orders: null, confirmed: null, delivered: null, returned: null };
   let govRows = [];
@@ -266,30 +328,37 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // messages) travel with the snapshot so the frontend can tell "no Meta
   // campaign mapped" apart from "no Easy Orders orders in this window"
   // apart from "mapped, but the real sample is just small".
-  const metaMapped = !!ambProduct;
+  const metaMapped = !!ambProduct || !!matchedCampaignMetrics;
   const codMapped = cod.source !== 'none';
   const dataAvailability = {
     metaMapped,
     metaMessage: metaMapped ? null : 'لا توجد حملات Meta مرتبطة بهذا المنتج.',
+    metaMatchMethod: ambProduct ? 'AMB_MAPPING' : (matchedCampaignMetrics ? campaignMatch.method : null),
+    metaMatchReason: ambProduct ? null : (campaignMatch && campaignMatch.status !== 'UNMAPPED' ? campaignMatch.reason : null),
+    // Surfaced ONLY as an informational finding — never used to populate
+    // real numbers (§7 "do not guess weak matches").
+    possibleMetaMatch: !ambProduct && campaignMatch?.status === 'POSSIBLE_MATCH'
+      ? { reason: campaignMatch.reason, campaignNames: campaignMatch.campaigns.map((c) => c.name) }
+      : null,
     codMapped,
     codMessage: codMapped ? null : 'لا توجد بيانات Easy Orders مرتبطة بهذا المنتج في الفترة المحددة.',
   };
 
-  const m = dashboard?.metrics || {};
+  const m = dashboard?.metrics || matchedCampaignMetrics || {};
   const metrics = {
     windowLabel: window.label,
-    totalSpend: m.totalSpend ?? 0,
-    metaPurchases: m.metaPurchases ?? null,
+    totalSpend: m.totalSpend ?? m.spend ?? 0,
+    metaPurchases: m.metaPurchases ?? m.purchases ?? null,
     confirmedOrders: cod.confirmed,
     deliveredOrders: cod.delivered,
-    avgCpa: m.avgCpa ?? null,
+    avgCpa: m.avgCpa ?? m.cpa ?? null,
     confirmedCpa: m.confirmedCpa ?? null,
     deliveredCpa: m.deliveredCpa ?? null,
     deliveryRate: cod.confirmed ? (cod.delivered || 0) / cod.confirmed : null,
     netProfit: m.netProfit ?? null,
     netMarginPct: m.netMarginPct ?? null,
     roas: m.roas ?? null,
-    ctr: null, cpc: null, cvr: null, frequency: null, // filled below from the product's own campaign rollup when a Meta mapping exists
+    ctr: matchedCampaignMetrics?.ctr ?? null, cpc: matchedCampaignMetrics?.cpc ?? null, cvr: matchedCampaignMetrics?.conversionRate ?? null, frequency: null, // filled below from the product's own campaign rollup when an AmbProduct mapping exists
     dataAvailability,
   };
   let bestWorst = { best: null, worst: null };
