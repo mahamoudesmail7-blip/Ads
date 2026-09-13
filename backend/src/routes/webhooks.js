@@ -4,16 +4,25 @@
 // public-api-docs.easy-orders.net) — their model is push, not pull: they
 // POST here the instant an order is created or its status changes. This
 // route is deliberately NOT behind requireAuth (EasyOrders' servers can't
-// log in as one of our users) — it's authenticated instead via the shared
-// `secret` header EasyOrders sends, generated when the webhook is created
-// in their seller dashboard.
+// log in as one of our users).
+//
+// Per-payload-type secret (single store, no store_id, no DB change):
+// EasyOrders' seller dashboard actually issues a DIFFERENT secret per
+// webhook TYPE — the "Order Created" webhook and the "Order Status Update"
+// webhook are two separate registrations, each with its own secret, even
+// though both POST to the same URL. The old code compared every request
+// against one single EASYORDERS_WEBHOOK_SECRET, which only ever matched
+// one of the two — this fixes that by determining which payload TYPE
+// arrived first, then checking it against THAT type's own secret:
+//   - an order-created payload (has `id` + a `cart_items` array)
+//     -> EASYORDERS_WEBHOOK_SECRET
+//   - an order-status-update payload (`event_type === 'order-status-update'`)
+//     -> EASYORDERS_STATUS_WEBHOOK_SECRET (NEW)
+//   - anything else -> rejected before any secret is even compared, and
+//     before any ingest is attempted.
 //
 // The actual ingest/status-apply logic lives in services/easyOrders.js,
-// shared with the periodic reconciliation job (services/easyOrdersReconcile.js)
-// — added after confirming (twice, with a real order) that EasyOrders never
-// actually sends an "order-status-update" event for this store, so the
-// reconciliation job is what catches a real status change in practice. This
-// route's own logic is otherwise unchanged from before that refactor.
+// shared with the periodic reconciliation job (services/easyOrdersReconcile.js).
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../prisma.js';
@@ -25,18 +34,30 @@ const router = Router();
 
 const webhookLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
 
+/** Classifies the payload shape BEFORE any secret is checked — a request never has to guess/probe a secret just to learn its shape wasn't recognized, and an unrecognized shape is refused (no ingest) regardless of what secret it carries. */
+function classifyEasyOrdersPayload(body) {
+  if (body && body.event_type === 'order-status-update') return 'STATUS_UPDATE';
+  if (body && body.id && Array.isArray(body.cart_items)) return 'ORDER_CREATED';
+  return 'UNKNOWN';
+}
+
 router.post(
   '/easyorders',
   webhookLimiter,
   asyncRoute(async (req, res) => {
-    const configuredSecret = process.env.EASYORDERS_WEBHOOK_SECRET;
-    if (!configuredSecret || req.headers['secret'] !== configuredSecret) {
+    const body = req.body || {};
+    const type = classifyEasyOrdersPayload(body);
+
+    if (type === 'UNKNOWN') {
+      return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' });
+    }
+
+    const expectedSecret = type === 'STATUS_UPDATE' ? process.env.EASYORDERS_STATUS_WEBHOOK_SECRET : process.env.EASYORDERS_WEBHOOK_SECRET;
+    if (!expectedSecret || req.headers['secret'] !== expectedSecret) {
       return res.status(401).json({ error: 'INVALID_SECRET' });
     }
 
-    const body = req.body || {};
-
-    if (body.event_type === 'order-status-update') {
+    if (type === 'STATUS_UPDATE') {
       const existing = await prisma.easyOrdersOrder.findMany({ where: { order_id: body.order_id } });
       if (existing.length === 0) {
         const fetched = await fetchOrderById(body.order_id);
@@ -47,10 +68,7 @@ router.post(
       return res.json({ ok: true, rowsAffected: totalRows });
     }
 
-    // order-created (or any event carrying a full order object with cart_items)
-    if (!body.id || !Array.isArray(body.cart_items)) {
-      return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' });
-    }
+    // ORDER_CREATED
     await ingestOrder(body);
     logger.info('EasyOrders order ingested', { order_id: body.id, items: body.cart_items.length });
     res.json({ ok: true });
