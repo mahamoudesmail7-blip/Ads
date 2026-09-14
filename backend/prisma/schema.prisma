@@ -169,6 +169,29 @@ model EasyOrdersOrder {
   customer_government String?
   order_cost          Float?
   shipping_cost       Float?
+
+  // Customer Database (additive) — links this order-row to the deduplicated
+  // Customer it belongs to (matched by normalized phone). Nullable so
+  // pre-existing rows keep working unbackfilled until a separate, explicit
+  // backfill step links them.
+  customer_id           Int?
+  customer              Customer? @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+
+  // Fields confirmed present in Easy Orders' REAL order API response
+  // (inspected live against real production orders — see the Phase 0
+  // investigation). Deliberately does NOT include email/notes/coupon/UTM/
+  // campaign_id/ad_set_id/ad_id — confirmed ABSENT from the real payload,
+  // never fabricated here on a guess.
+  easy_orders_store_id  String? // Easy Orders' OWN real store UUID (their `store_id`) — unrelated to any internal store key
+  easy_orders_guest_id  String? // Easy Orders' per-browser/session identifier at the time of this order — a real, secondary signal only; never the Customer dedup key (that's normalized phone)
+  payment_method        String? // e.g. "cod" — Easy Orders' own field, verbatim
+  ip_address            String? // Easy Orders' own `ip` field (host:port as they send it)
+  ip_country            String?
+  total_cost            Float?  // Easy Orders' own computed total_cost (kept alongside our existing order_cost/shipping_cost, never replacing them)
+  delivery_rate_status  String? // from metadata.<phone>.delivery_rate_status — Easy Orders' own COD delivery-likelihood feature
+  delivery_rate_result  String? // from metadata.<phone>.rate_result
+  tracking_json         String? // raw metadata.tracking sub-object verbatim (referrer, pages_visited, sessions_count, visit_duration_seconds, first_visit_at, first_order_at) — Easy Orders' own on-site behavior tracking, NOT Meta ad attribution (no campaign/ad-set/ad id exists anywhere in their payload)
+
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
 
@@ -176,7 +199,47 @@ model EasyOrdersOrder {
   @@index([date])
   @@index([product_id])
   @@index([order_id])
+  @@index([customer_id])
   @@map("easyorders_orders")
+}
+
+// Customer Database (additive, new) — deduplicated by normalized Egyptian
+// phone number (spec: 010xxxxxxxx / +2010xxxxxxxx / 002010xxxxxxxx all
+// recognized as the same customer). Built ONLY from fields confirmed
+// present in Easy Orders' real order payload — no email (not sent), no
+// campaign/ad attribution fields (not sent — see EasyOrdersOrder comment
+// above). Aggregate counters (total_orders, delivered_revenue, etc.) are
+// RECOMPUTED fresh from this customer's EasyOrdersOrder rows — same "never
+// hand-incremented" philosophy as DailyOrder's recomputeDailyOrder() —
+// never drifted forward independently.
+model Customer {
+  id                    Int      @id @default(autoincrement())
+
+  normalized_phone      String?  @unique // the dedup key — E.164-ish normalized Egyptian mobile, e.g. "201012345678"
+  primary_phone         String?  // most-recently-seen raw phone, exactly as Easy Orders sent it (for display)
+  other_phones_json     String?  // JSON array of other raw phone strings actually observed that normalize to this same customer — never invented, only real variants seen
+
+  name                  String?  // latest known full_name
+  government            String?  // latest known
+  address               String?  // latest known raw address text
+  easy_orders_guest_id  String?  // latest known Easy Orders guest/session id
+
+  first_order_at        DateTime?
+  last_order_at         DateTime?
+  total_orders          Int      @default(0)
+  confirmed_orders      Int      @default(0)
+  delivered_orders      Int      @default(0)
+  returned_orders       Int      @default(0)
+  cancelled_orders      Int      @default(0)
+  total_order_value     Float    @default(0) // sum of order_cost across every order
+  delivered_revenue     Float    @default(0) // sum of order_cost for DELIVERED orders only
+
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  orders                EasyOrdersOrder[]
+
+  @@map("customers")
 }
 
 // Internal-only processing state for a real EasyOrders order whose status
