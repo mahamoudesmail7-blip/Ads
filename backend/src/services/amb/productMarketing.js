@@ -628,16 +628,11 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
 
   const locations = rankLocations(govRows);
 
-  // §11 — creative fatigue must never fire off frequency alone. Only pay
-  // for a second hierarchy pass (prior equal-length window) when frequency
-  // is actually high enough that fatigue is even in play.
-  let priorMetrics = null;
-  if (ambProduct && adAccountId && metrics.frequency != null && metrics.frequency > 3.5) {
-    const priorWindow = priorWindowOf(window);
-    const priorTree = await buildHierarchy({ adAccountId, window: priorWindow, settings }).catch(() => null);
-    const priorNode = priorTree ? (priorTree.products || []).find((x) => String(x.id) === String(ambProduct.id)) : null;
-    if (priorNode?.metrics) priorMetrics = { ctr: priorNode.metrics.ctr, avgCpa: priorNode.metrics.cpa };
-  }
+  // §11 fatigue corroboration (a second hierarchy pass over the prior
+  // window) is TEMPORARILY DISABLED — see the incident note below. Falls
+  // back to single-signal fatigue detection (already labeled LOW/WEAK
+  // confidence in that case), never silently upgraded.
+  const priorMetrics = null;
 
   const opportunityRaw = computeOpportunityScore({ metrics, settings });
   const opportunity = { ...opportunityRaw, healthBand: healthBand(opportunityRaw.score, opportunityRaw.dataSufficient) };
@@ -656,10 +651,22 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     markets = await marketsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch(() => ({ source: 'none', markets: [] }));
     buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch(() => null);
   }
-  let hookAngleIntel = { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
-  if (ambProduct && adAccountId) {
-    hookAngleIntel = await hookAndAngleIntelForProduct({ adAccountId, window, settings, ambProductId: ambProduct.id }).catch(() => hookAngleIntel);
-  }
+  // Hook/Selling-Angle Intelligence — TEMPORARILY DISABLED, see incident
+  // note below. Falls back to the same honest "no data yet" shape the
+  // frontend already renders correctly for a never-computed product.
+  const hookAngleIntel = { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
+  // INCIDENT (2026-09-14): calling hookAndAngleIntelForProduct() here (and
+  // the prior-window buildHierarchy() call above it) reproducibly crashed
+  // the production process for a real AmbProduct-mapped profile (id 36) —
+  // confirmed by isolating: profile 43 (no AmbProduct, these calls skipped
+  // entirely) completed without crashing; profile 36 (AmbProduct present,
+  // both calls active) crashed the process twice in a row, each time
+  // recovering only via Railway's auto-restart. The crash was NOT caught by
+  // this function's own .catch() handlers nor by the new global
+  // unhandledRejection handler in server.js, meaning it is not an ordinary
+  // thrown/rejected error — root cause not yet identified. Disabled here
+  // pending investigation in a lower-risk environment; re-enable only after
+  // reproducing and fixing the actual cause, not just adding another catch.
 
   const aiCtx = {
     productName: profile.locked_name,
