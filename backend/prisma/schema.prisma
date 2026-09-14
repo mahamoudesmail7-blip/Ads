@@ -68,6 +68,7 @@ model User {
   // AI Product Marketing Center — additive back-relations only (no column change on `users`).
   pmc_profiles_locked            ProductMarketingProfile[]
   pmc_actions_decided            ProductMarketingActionLog[]
+  pmc_tests_created              ProductMarketingTest[]
 
   @@map("users")
 }
@@ -2281,6 +2282,8 @@ model ProductMarketingProfile {
   snapshots ProductMarketingSnapshot[]
   memory    ProductMarketingMemoryEntry[]
   actions   ProductMarketingActionLog[]
+  tests     ProductMarketingTest[]
+  learning  ProductMarketingLearning[]
 
   @@index([product_id])
   @@map("pmc_profiles")
@@ -2323,6 +2326,18 @@ model ProductMarketingSnapshot {
   angles_json          String // sales angles incl. claim status
   winning_formula_json String? // null when data is insufficient
   actions_json         String // top AI actions, each with reason/confidence/source
+
+  // Phase 1 — Intelligence & Strategy layer (additive, all nullable; a
+  // snapshot computed before this phase simply has these as null/empty,
+  // same self-healing pattern as every other optional column here).
+  markets_json            String? // real Easy Orders governorate rows + SCALE_MARKET/KEEP_TESTING/... band
+  buyer_insights_json     String? // deterministic new-vs-repeat/AOV/co-purchase aggregates — never raw PII
+  hook_intel_json         String? // per-product real hook performance + WINNER/PROMISING/... bands
+  angle_intel_json        String? // per-product real selling-angle performance + bands
+  needs_attention_json    String? // ranked P0-P3 assembly of diagnosis + actions + winner opportunities
+  winning_components_json String? // assembled best market/hook/angle/ad/creative + why
+  market_gaps_json        String? // { observed:[...real competitor rows], gaps:[...AI hypothesis] }
+  strategist_json         String? // 14 AI-Strategist answers, each with a validated status
 
   ai_model_version String  @default("pmc-v1")
   ai_raw_json      String? // last raw Claude response — audit trail only, never shown raw to the user
@@ -2371,6 +2386,97 @@ model ProductMarketingActionLog {
 
   @@index([profile_id])
   @@map("pmc_actions")
+}
+
+// Phase 1 — Testing Lab (§17/§18/§19). A real, persisted experiment: one
+// hypothesis, one control/variation, tracked against real subsequent
+// performance. Deliberately reuses this ONE table for Offer tests too
+// (test_type:'OFFER') instead of a 4th separate Offer model — there is no
+// historical offer-performance data anywhere to mine, so Offer Intelligence
+// can only ever be "log a test, track what happens next", exactly what this
+// table already does for every other test_type.
+model ProductMarketingTest {
+  id         Int      @id @default(autoincrement())
+  profile_id Int
+  profile    ProductMarketingProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  test_type            String // AUDIENCE | HOOK | SELLING_ANGLE | CREATIVE | OFFER | COPY | MARKET_AREA | PRICE
+  hypothesis           String
+  variable             String
+  control              String
+  variation            String
+  recommended_budget   Float?
+  min_data_requirement Int?
+  success_metric       String
+  stop_condition       String?
+  expected_learning    String?
+  priority             String   @default("P2") // P0 | P1 | P2 | P3
+  status               String   @default("PLANNED") // PLANNED | RUNNING | COMPLETED | STOPPED | INCONCLUSIVE
+
+  created_by_id Int?
+  created_by    User? @relation(fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  results ProductMarketingTestResult[]
+
+  @@index([profile_id, status])
+  @@map("pmc_tests")
+}
+
+// One recorded outcome for a ProductMarketingTest, over one real date
+// window. Every metric here is the SAME real number shape computeSnapshot()
+// already produces — nothing recomputed differently for tests.
+model ProductMarketingTestResult {
+  id      Int                  @id @default(autoincrement())
+  test_id Int
+  test    ProductMarketingTest @relation(fields: [test_id], references: [id], onDelete: Cascade)
+
+  window_from      String
+  window_to        String
+  spend            Float?
+  meta_purchases   Int?
+  orders           Int?
+  confirmed_orders Int?
+  delivered_orders Int?
+  ctr              Float?
+  cpc              Float?
+  cpa              Float?
+  delivered_cpa    Float?
+  roas             Float?
+  revenue          Float?
+  net_profit       Float?
+
+  classification    String // WINNER | LOSER | NEUTRAL | INCONCLUSIVE
+  what_did_we_learn String?
+  what_next         String?
+  created_at        DateTime @default(now())
+
+  @@index([test_id])
+  @@map("pmc_test_results")
+}
+
+// Phase 1 — Marketing Memory (§20), a queryable dimension|key verdict
+// knowledge base fed by completed tests (mirrors CfLearningInsight's proven
+// shape). Distinct from ProductMarketingMemoryEntry above (that one is a
+// per-snapshot hypothesis-diff AUDIT LOG — every change, kept forever, for
+// transparency); this one is the current best-known VERDICT per dimension
+// key, upserted as evidence accumulates, and is what a new-test suggestion
+// checks first to avoid recommending something already tried and failed.
+model ProductMarketingLearning {
+  id         Int      @id @default(autoincrement())
+  profile_id Int
+  profile    ProductMarketingProfile @relation(fields: [profile_id], references: [id], onDelete: Cascade)
+
+  dimension     String // AUDIENCE | MARKET | HOOK | ANGLE | CREATIVE | OFFER | COMPETITOR
+  key           String
+  verdict       String // WORKS | DOES_NOT_WORK | INCONCLUSIVE
+  sample_size   Int      @default(0)
+  evidence_json String?
+  computed_at   DateTime @default(now())
+
+  @@unique([profile_id, dimension, key])
+  @@map("pmc_learning")
 }
 
 // ============================================================================

@@ -15,7 +15,7 @@ import { creativeLabelIndex, creativeAnalysisCoverage } from './creativeAnalysis
 import { economicsSummary, netProfitBundle } from './productEconomics.js';
 import { codCountsForProduct } from './codOrders.js';
 
-const NAME_HOOK_RULES = [
+export const NAME_HOOK_RULES = [
   { label: 'سؤال', re: /(\?|؟|هل |ليه |إزاي|ازاي|ايه )/ },
   { label: 'مشكلة/وجع', re: /(وجع|ألم|الم|بتعاني|تعبت|زهقت|مشكلة|بيوجع)/ },
   { label: 'قبل/بعد', re: /(قبل.?بعد|before.?after|النتيجة|الفرق)/i },
@@ -23,7 +23,7 @@ const NAME_HOOK_RULES = [
   { label: 'دليل اجتماعي', re: /(تجربة|رأي|reviews?|شهاد|عملاء|آراء)/i },
   { label: 'استعجال', re: /(دلوقتي|النهاردة|آخر|الكمية|limited|now)/i },
 ];
-const NAME_ANGLE_RULES = [
+export const NAME_ANGLE_RULES = [
   { label: 'راحة/سهولة', re: /(راحة|مريح|سهل|بساطة|بدون مجهود)/i },
   { label: 'أمان/حماية', re: /(أمان|حماية|آمن|خطر)/i },
   { label: 'توفير', re: /(يوفر|توفير|أرخص|وفر)/i },
@@ -100,7 +100,7 @@ function pickWinner(nodes, gate) {
 }
 
 /** Group ads by a label taken from creative analysis first, ad-name rules second. */
-function groupByCreativeLabel(ads, labelIdx, { field, nameRules, minSpend, minPurchases }) {
+export function groupByCreativeLabel(ads, labelIdx, { field, nameRules, minSpend, minPurchases }) {
   const groups = new Map();
   let labeledAds = 0, unlabeledAds = 0;
   for (const ad of ads) {

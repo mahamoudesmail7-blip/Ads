@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import * as PM from '../services/amb/productMarketing.js';
+import * as PMT from '../services/amb/productMarketingTests.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -111,5 +112,76 @@ router.get('/profiles/:id/creative-factory-readiness', asyncRoute(async (req, re
 
 // ---- Competitor Intelligence (§18) — read-only reuse of Product Research data ----
 router.get('/profiles/:id/competitors', asyncRoute(async (req, res) => res.json(await PM.competitorIntel(idParam(req.params.id)))));
+
+// ---- Phase 1 Intelligence & Strategy layer — thin slices of the ONE ----
+// ---- already-cached snapshot (see computeSnapshot()); no extra AI/DB ----
+// ---- cost per call. 404 with `stale: true` when no snapshot exists yet ----
+// ---- (mirrors GET /profiles/:id/snapshot's own contract). ----
+function snapshotSlice(field) {
+  return asyncRoute(async (req, res) => {
+    const snap = await PM.getSnapshot({ profileId: idParam(req.params.id), windowName: req.query.window });
+    if (!snap) return res.json({ stale: true, [field]: null });
+    res.json({ stale: false, [field]: snap[field] });
+  });
+}
+router.get('/profiles/:id/markets', snapshotSlice('markets'));
+router.get('/profiles/:id/buyer-insights', snapshotSlice('buyerInsights'));
+router.get('/profiles/:id/winner-intel', asyncRoute(async (req, res) => {
+  const snap = await PM.getSnapshot({ profileId: idParam(req.params.id), windowName: req.query.window });
+  if (!snap) return res.json({ stale: true, hooks: null, angles: null });
+  res.json({ stale: false, hooks: snap.hookIntel, angles: snap.angleIntel });
+}));
+router.get('/profiles/:id/needs-attention', snapshotSlice('needsAttention'));
+router.get('/profiles/:id/market-gaps', snapshotSlice('marketGaps'));
+router.get('/profiles/:id/strategist', snapshotSlice('strategist'));
+
+// ---- Testing Lab + Marketing Memory (§17-20) — serialized to camelCase for the frontend, same convention as routes/customers.js ----
+function serializeTestResult(r) {
+  return {
+    id: r.id, windowFrom: r.window_from, windowTo: r.window_to, spend: r.spend, metaPurchases: r.meta_purchases,
+    orders: r.orders, confirmedOrders: r.confirmed_orders, deliveredOrders: r.delivered_orders, ctr: r.ctr, cpc: r.cpc,
+    cpa: r.cpa, deliveredCpa: r.delivered_cpa, roas: r.roas, revenue: r.revenue, netProfit: r.net_profit,
+    classification: r.classification, whatDidWeLearn: r.what_did_we_learn, whatNext: r.what_next, createdAt: r.created_at,
+  };
+}
+function serializeTest(t) {
+  return {
+    id: t.id, testType: t.test_type, hypothesis: t.hypothesis, variable: t.variable, control: t.control, variation: t.variation,
+    recommendedBudget: t.recommended_budget, minDataRequirement: t.min_data_requirement, successMetric: t.success_metric,
+    stopCondition: t.stop_condition, expectedLearning: t.expected_learning, priority: t.priority, status: t.status,
+    createdAt: t.created_at, updatedAt: t.updated_at,
+    results: Array.isArray(t.results) ? t.results.map(serializeTestResult) : [],
+  };
+}
+router.get('/profiles/:id/tests', asyncRoute(async (req, res) => {
+  const tests = await PMT.listTests(idParam(req.params.id), { status: req.query.status });
+  res.json({ tests: tests.map(serializeTest) });
+}));
+router.post('/profiles/:id/tests', asyncRoute(async (req, res) => {
+  const b = req.body || {};
+  const test = await PMT.createTest({
+    profileId: idParam(req.params.id), testType: b.testType, hypothesis: b.hypothesis, variable: b.variable,
+    control: b.control, variation: b.variation, recommendedBudget: b.recommendedBudget, minDataRequirement: b.minDataRequirement,
+    successMetric: b.successMetric, stopCondition: b.stopCondition, expectedLearning: b.expectedLearning, priority: b.priority,
+    userId: req.user.id,
+  });
+  res.status(201).json(serializeTest({ ...test, results: [] }));
+}));
+router.post('/profiles/:id/tests/:testId/status', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const test = await PMT.updateTestStatus({ testId: idParam(req.params.testId), status: req.body?.status, userId: req.user.id });
+  res.json(serializeTest({ ...test, results: [] }));
+}));
+router.post('/profiles/:id/tests/:testId/results', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const b = req.body || {};
+  const result = await PMT.recordTestResult({
+    testId: idParam(req.params.testId), window: b.window, metrics: b.metrics || {},
+    controlValue: b.controlValue, whatDidWeLearn: b.whatDidWeLearn, whatNext: b.whatNext,
+  });
+  res.status(201).json(serializeTestResult(result));
+}));
+router.get('/profiles/:id/learning', asyncRoute(async (req, res) => {
+  const rows = await PMT.listLearning(idParam(req.params.id));
+  res.json({ learning: rows.map((l) => ({ id: l.id, dimension: l.dimension, key: l.key, verdict: l.verdict, sampleSize: l.sample_size, evidence: l.evidence_json ? JSON.parse(l.evidence_json) : null, computedAt: l.computed_at })) });
+}));
 
 export default router;

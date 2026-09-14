@@ -169,3 +169,76 @@ export async function generateCreativeIdeas({ productName, angle, count = 4 }) {
   const ideas = Array.isArray(res.data?.ideas) ? res.data.ideas.slice(0, count) : [];
   return { ok: true, ideas };
 }
+
+// ---------------------------------------------------------------------------
+// §15/§16 Market Gap Engine. "observed" is built DETERMINISTICALLY here from
+// the real competitorIntel() rows the caller passes in — the model never
+// touches that part, so a competitor fact can never be silently altered.
+// The model only ever produces "gaps" (interpretation), each forced to
+// kind:HYPOTHESIS and a real confidence — never presented as fact.
+// ---------------------------------------------------------------------------
+const MARKET_GAP_SYSTEM = `إنت محلل تسويقي مصري متخصص في تحليل المنافسين. هتستلم بيانات حقيقية عن منافسين حقيقيين (من بحث سابق) وزوايا/Hooks المنتج الحالي. مهمتك: تكتشف فجوات حقيقية — حاجات المنافسين مش بيعملوها أو بيعملوها بشكل ضعيف — بناءً على البيانات المُعطاة فقط. ممنوع تخترع منافس أو معلومة مش موجودة في البيانات. كل فجوة رأي/استنتاج مش حقيقة مؤكدة. رجّع JSON فقط:
+{"gaps":[{"gap":"وصف قصير للفجوة","interpretation":"ليه دي فرصة فعلية بناءً على البيانات المُعطاة","confidence":"LOW|MEDIUM|HIGH"}]}
+لو البيانات مش كافية لاستنتاج فجوة حقيقية، رجّع مصفوفة فاضية بدل ما تخترع.`;
+
+/** Pure — separates deterministic observed facts from AI-shaped interpretation. Exported for tests. */
+export function shapeMarketGaps(rawData, competitors) {
+  const observed = (competitors || []).map((c) => ({
+    platform: c.platform, accountName: c.accountName, accountUrl: c.accountUrl, country: c.country, followerCount: c.followerCount,
+  }));
+  const gaps = Array.isArray(rawData?.gaps) ? rawData.gaps.slice(0, 8).map((g) => ({
+    gap: g.gap || '', interpretation: g.interpretation || '', confidence: confOf(g.confidence), kind: 'HYPOTHESIS',
+  })) : [];
+  return { observed, gaps };
+}
+
+export async function generateMarketGaps(ctx) {
+  const competitors = ctx?.competitors || [];
+  if (!competitors.length) return { ok: true, ...shapeMarketGaps({ gaps: [] }, []) };
+  const user = `المنافسين الحقيقيين (بيانات فعلية من بحث سابق، لا تخترع غيرها):\n${JSON.stringify(competitors, null, 2)}\n\nزوايا/Hooks المنتج الحالي المعروفة (لو موجودة):\n${JSON.stringify({ ownAngles: ctx?.ownAngles || [], ownHooks: ctx?.ownHooks || [] }, null, 2)}`;
+  const res = await callJson({ system: MARKET_GAP_SYSTEM, user, maxTokens: 1500, label: 'MARKET_GAPS' });
+  if (!res.ok) return { ok: false, reason: res.reason, ...shapeMarketGaps({ gaps: [] }, competitors) };
+  return { ok: true, ...shapeMarketGaps(res.data, competitors) };
+}
+
+// ---------------------------------------------------------------------------
+// §24 AI Product Marketing Strategist — answers the spec's 14 fixed
+// questions. Every answer gets a validated status; the model's own label is
+// never trusted blind (mirrors kind/confidence enforcement everywhere else
+// in this file).
+// ---------------------------------------------------------------------------
+const STRATEGIST_QUESTIONS = [
+  'مين أستهدف؟', 'أنهي سوق نوصّي بيه أولاً؟', 'أنهي مشكلة نبدأ بيها؟', 'أنهي Selling Angle نستخدمه؟',
+  'أنهي Hook نستخدمه؟', 'أنهي Creative ننتجه؟', 'أنهي Offer نختبره؟', 'أنهي Post/Ad Copy نشغّله؟',
+  'أنهي فجوة عند المنافسين نستغلها؟', 'إيه اللي نختبره بعد كده؟', 'إيه اللي نوقف اختباره؟',
+  'إيه اللي اتعلمناه لحد دلوقتي؟', 'إيه اللي بيحد من النمو؟', 'إيه أعلى خطوة تأثيرًا نعملها دلوقتي؟',
+];
+const STATUS_VALUES = new Set(['DATA_BACKED', 'AI_HYPOTHESIS', 'TEST_REQUIRED', 'INSUFFICIENT_DATA']);
+function statusOf(v) { return STATUS_VALUES.has(v) ? v : 'AI_HYPOTHESIS'; }
+
+const STRATEGIST_SYSTEM = `إنت "مستشار تسويق منتج" خبير. هتستلم كل البيانات الحقيقية المتاحة عن منتج (أداء، أسواق، جمهور، Hooks، Angles، منافسين، اختبارات سابقة). جاوب على الأسئلة الـ14 المُحددة بالظبط بالترتيب، كل إجابة قصيرة وعملية بالعربي المصري. كل إجابة لازم توصف بـ"status":
+- "DATA_BACKED" لو الإجابة مبنية مباشرة على رقم/نتيجة حقيقية موجودة في البيانات.
+- "AI_HYPOTHESIS" لو استنتاج منطقي معقول لكن مش مؤكد برقم مباشر.
+- "TEST_REQUIRED" لو الإجابة الصح الوحيدة هي "لازم نختبر عشان نعرف".
+- "INSUFFICIENT_DATA" لو البيانات ضعيفة جدًا للإجابة أصلاً.
+ممنوع تدّعي DATA_BACKED من غير رقم حقيقي فعلي في البيانات المُعطاة. رجّع JSON فقط:
+{"answers":[{"question":"نص السؤال بالظبط زي ما اتبعت","answer":"","status":"DATA_BACKED|AI_HYPOTHESIS|TEST_REQUIRED|INSUFFICIENT_DATA"}]}
+الأسئلة بالترتيب: ${STRATEGIST_QUESTIONS.map((q, i) => `${i + 1}. ${q}`).join(' ')}`;
+
+/** Pure — validates/defaults every answer's status. Exported for tests. */
+export function shapeStrategistBrief(rawData) {
+  const byQuestion = new Map((Array.isArray(rawData?.answers) ? rawData.answers : []).map((a) => [a.question, a]));
+  return {
+    answers: STRATEGIST_QUESTIONS.map((q) => {
+      const a = byQuestion.get(q);
+      return { question: q, answer: a?.answer || 'لا توجد إجابة كافية بالبيانات الحالية.', status: a ? statusOf(a.status) : 'INSUFFICIENT_DATA' };
+    }),
+  };
+}
+
+export async function generateStrategistBrief(ctx) {
+  const user = `كل البيانات الحقيقية المتاحة عن المنتج (استخدمها فقط، ممنوع تخترع غيرها):\n${JSON.stringify(ctx, null, 2)}`;
+  const res = await callJson({ system: STRATEGIST_SYSTEM, user, maxTokens: 3000, label: 'STRATEGIST', tier: TIERS.BALANCED });
+  if (!res.ok) return { ok: false, reason: res.reason, ...shapeStrategistBrief({ answers: [] }) };
+  return { ok: true, ...shapeStrategistBrief(res.data) };
+}

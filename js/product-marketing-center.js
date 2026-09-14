@@ -22,10 +22,30 @@ const TABS = [
   { k: 'angles', label: 'زوايا البيع' },
   { k: 'creative', label: 'الكرياتيف' },
   { k: 'hooks', label: 'Hooks والبوستات' },
-  { k: 'locations', label: 'المناطق' },
+  { k: 'locations', label: 'الأسواق والمناطق' },
   { k: 'competitors', label: 'المنافسين' },
   { k: 'tests', label: 'الاختبارات والنتائج' },
+  { k: 'strategist', label: 'المستشار الذكي' },
 ];
+
+const HEALTH_BAND_LABEL_AR = { HEALTHY: 'ممتاز', GOOD: 'جيد', NEEDS_ATTENTION: 'يحتاج انتباه', AT_RISK: 'في خطر', CRITICAL: 'حرج', INSUFFICIENT_DATA: 'بيانات غير كافية' };
+const HEALTH_BAND_COLOR = { HEALTHY: 'green', GOOD: 'green', NEEDS_ATTENTION: 'yellow', AT_RISK: 'yellow', CRITICAL: 'red', INSUFFICIENT_DATA: 'gray' };
+function healthBandPill(band) {
+  if (!band) return '';
+  return `<span class="badge ${HEALTH_BAND_COLOR[band] || 'gray'}">${E(HEALTH_BAND_LABEL_AR[band] || band)}</span>`;
+}
+const PRIORITY_LABEL_AR = { P0: 'حرج — الآن', P1: 'فرصة فورية', P2: 'تحسين/اختبار', P3: 'بيانات ناقصة' };
+const PRIORITY_COLOR = { P0: 'red', P1: 'green', P2: 'yellow', P3: 'gray' };
+function priorityPill(p) { return p ? `<span class="badge ${PRIORITY_COLOR[p] || 'gray'}">${E(PRIORITY_LABEL_AR[p] || p)}</span>` : ''; }
+const BAND_LABEL_AR = { WINNER: '🏆 فائز', PROMISING: '📈 واعد', AVERAGE: '➖ متوسط', WEAK: '🔴 ضعيف', UNTESTED: '⚪ غير مُختبر' };
+const BAND_COLOR = { WINNER: 'green', PROMISING: 'green', AVERAGE: 'yellow', WEAK: 'red', UNTESTED: 'gray' };
+function bandPill(b) { return b ? `<span class="badge ${BAND_COLOR[b] || 'gray'}">${E(BAND_LABEL_AR[b] || b)}</span>` : ''; }
+const MARKET_BAND_LABEL_AR = { SCALE_MARKET: '🏆 وسّع', KEEP_TESTING: '🟢 استمر بالاختبار', MONITOR: '🟡 راقب', REDUCE_PRIORITY: '🔴 قلّل الأولوية', INSUFFICIENT_DATA: '⚪ بيانات غير كافية' };
+const MARKET_BAND_COLOR = { SCALE_MARKET: 'green', KEEP_TESTING: 'green', MONITOR: 'yellow', REDUCE_PRIORITY: 'red', INSUFFICIENT_DATA: 'gray' };
+function marketBandPill(b) { return b ? `<span class="badge ${MARKET_BAND_COLOR[b] || 'gray'}">${E(MARKET_BAND_LABEL_AR[b] || b)}</span>` : ''; }
+const STATUS_LABEL_AR = { DATA_BACKED: '📊 مبني على بيانات', AI_HYPOTHESIS: '🤖 فرضية ذكاء اصطناعي', TEST_REQUIRED: '🧪 يحتاج اختبار', INSUFFICIENT_DATA: '⚪ بيانات غير كافية' };
+const STATUS_COLOR = { DATA_BACKED: 'green', AI_HYPOTHESIS: 'yellow', TEST_REQUIRED: 'yellow', INSUFFICIENT_DATA: 'gray' };
+function statusPill(s) { return s ? `<span class="badge ${STATUS_COLOR[s] || 'gray'}">${E(STATUS_LABEL_AR[s] || s)}</span>` : ''; }
 
 const state = {
   me: null,
@@ -49,6 +69,8 @@ const state = {
   memory: null, actions: null, competitors: null,
   hookResult: null, postResult: null, ideaResult: null, testPackResult: null,
   genAngle: '', genTone: 'مباشر', genCategory: '',
+  // Phase 1 — Testing Lab (own tab state; tests come straight off state.snapshot elsewhere)
+  labTests: null, labTestsLoading: false, labNewTestOpen: false, labBusyId: null,
   catalogSyncMissing: null, // count of Easy Orders catalog products not yet in the internal Product table (nav badge -> easyorders-catalog-sync.html); null until loaded, never shown to a non-ADMIN (that page is ADMIN-only)
   // Product <-> Meta Campaign mapping (§ربط إعلانات Meta) — independent of
   // the AI snapshot; loaded/refreshed on its own, never auto-confirmed.
@@ -376,6 +398,7 @@ function resetWorkspace() {
   state.tab = 'overview'; state.snapshot = null; state.memory = null; state.actions = null; state.competitors = null;
   state.hookResult = null; state.postResult = null; state.ideaResult = null; state.testPackResult = null;
   state.metaMapping = null; state.metaMappingLoading = false; state.metaMappingSelected = {}; state.metaMappingBusy = false;
+  state.labTests = null; state.labTestsLoading = false; state.labNewTestOpen = false; state.labBusyId = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +467,7 @@ function renderTabBody() {
   if (!mount) return;
   if (!state.snapshot) { mount.innerHTML = '<div class="pmc-empty">مفيش تحليل متاح حاليًا.</div>'; return; }
   const s = state.snapshot;
-  const renderers = { overview: renderOverview, audience: renderAudience, angles: renderAngles, creative: renderCreative, hooks: renderHooksTab, locations: renderLocations, competitors: renderCompetitors, tests: renderTests };
+  const renderers = { overview: renderOverview, audience: renderAudience, angles: renderAngles, creative: renderCreative, hooks: renderHooksTab, locations: renderLocations, competitors: renderCompetitors, tests: renderTests, strategist: renderStrategist };
   (renderers[state.tab] || renderOverview)(mount, s);
 }
 
@@ -580,6 +603,13 @@ function renderOverview(mount, s) {
   const ring = op.score != null ? scoreRingSvg(op.score, scoreColor) : '<div class="pmc-empty" style="padding:16px;">البيانات غير كافية للحكم</div>';
   const m = s.metrics || {};
   mount.innerHTML = `
+    <div class="pmc-card" style="margin-bottom:14px;">
+      <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>🔔 يحتاج انتباهك الآن</span>${healthBandPill(op.healthBand)}
+      </div>
+      ${needsAttentionListHtml(s.needsAttention)}
+    </div>
+    ${buyerInsightsRowHtml(s.buyerInsights)}
     <div class="pmc-top-grid">
       <div class="pmc-card">
         <div class="h">💡 فرصة نجاح المنتج</div>
@@ -626,6 +656,34 @@ function renderOverview(mount, s) {
       ${s.aiFailed ? `<div class="faint" style="font-size:11.5px;margin-top:6px;">⚠️ تعذّر توليد التوصيات الذكية: ${E(s.aiFailReason || '')}</div>` : ''}
     </div>`;
   wireActionButtons(mount);
+}
+
+function needsAttentionListHtml(items) {
+  if (!items?.length) return '<div class="pmc-empty" style="padding:10px;">مفيش حاجة تحتاج انتباه حاليًا — الأرقام في نطاقها الطبيعي.</div>';
+  return items.slice(0, 6).map((it) => `<div class="pmc-diag-item">
+    <div class="dot ${it.priority === 'P0' ? 'HIGH' : it.priority === 'P1' ? 'MEDIUM' : 'INFO'}"></div>
+    <div>
+      <div class="t">${priorityPill(it.priority)} ${E(it.what)}</div>
+      <div class="e">${E(it.why || '')}</div>
+      <div class="a">↳ ${E(it.action || '')}</div>
+    </div>
+  </div>`).join('');
+}
+
+function buyerInsightsRowHtml(bi) {
+  if (!bi) return '';
+  const hasAny = bi.newCustomers != null || bi.repeatCustomers != null;
+  if (!hasAny) return '';
+  return `<div class="pmc-card" style="margin-bottom:14px;">
+    <div class="h">👤 جودة العملاء الحقيقية</div>
+    <div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
+      <div class="pmc-kv"><span>عملاء جدد</span><b>${fmtNum(bi.newCustomers)}</b></div>
+      <div class="pmc-kv"><span>عملاء متكررين</span><b>${fmtNum(bi.repeatCustomers)}</b></div>
+      <div class="pmc-kv"><span>متوسط الطلب (جديد)</span><b>${bi.aovNew != null ? fmtEGP(bi.aovNew) : '—'}</b></div>
+      <div class="pmc-kv"><span>متوسط الطلب (متكرر)</span><b>${bi.aovRepeat != null ? fmtEGP(bi.aovRepeat) : '—'}</b></div>
+    </div>
+    ${bi.topCoPurchasedProducts?.length ? `<div class="faint" style="font-size:11.5px;margin-top:8px;">غالبًا يُشترى مع: ${bi.topCoPurchasedProducts.slice(0, 3).map((p) => E(p.productName || `#${p.productId}`)).join('، ')}</div>` : ''}
+  </div>`;
 }
 
 function scoreRingSvg(score, cls) {
@@ -712,9 +770,22 @@ function renderAudience(mount, s) {
     </div>`;
 }
 
+function winnerIntelTableHtml(intel, emptyMsg) {
+  if (!intel?.dataAvailable || !intel.table?.length) return `<div class="pmc-empty" style="padding:10px;">${E(emptyMsg)}</div>`;
+  return `<div class="table-wrap"><table class="data">
+    <thead><tr><th>الاسم</th><th>الصرف</th><th>مشتريات</th><th>CPA</th><th>CTR</th><th>التصنيف</th></tr></thead>
+    <tbody>${intel.table.slice(0, 8).map((r) => `<tr><td>${E(r.label)}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${r.cpa != null ? fmtEGP(r.cpa) : '—'}</td><td>${r.ctr != null ? `${r.ctr.toFixed(1)}%` : '—'}</td><td>${bandPill(r.band)}</td></tr>`).join('')}</tbody>
+  </table></div>
+  ${intel.winner ? `<div class="faint" style="font-size:12px;margin-top:8px;">🏆 <b>${E(intel.winner.label)}</b> — ${E(intel.winner.why || '')}</div>` : ''}`;
+}
+
 // ---- §10/§11 — Sales angles ----
 function renderAngles(mount, s) {
   mount.innerHTML = `
+    <div class="pmc-card" style="margin-bottom:14px;">
+      <div class="h">📊 أداء زوايا البيع الحقيقي (من الإعلانات الجارية فعليًا)</div>
+      ${winnerIntelTableHtml(s.angleIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الزوايا بعد.')}
+    </div>
     <div class="pmc-card">
       <div class="h">🎯 أفضل زوايا بيع مقترحة</div>
       ${(s.angles || []).map((a, i) => `<div class="pmc-angle-card">
@@ -743,8 +814,24 @@ function renderAngles(mount, s) {
 }
 
 // ---- §12/§13/§14/§17 — Creative Intelligence ----
+function winningComponentsHtml(wc) {
+  if (!wc?.dataSufficient) return '';
+  const rows = [
+    wc.bestMarket && ['🏆 أفضل سوق', wc.bestMarket.government, wc.bestMarket.why],
+    wc.bestHook && ['🏆 أفضل Hook', wc.bestHook.label, wc.bestHook.why],
+    wc.bestSellingAngle && ['🏆 أفضل زاوية بيع', wc.bestSellingAngle.label, wc.bestSellingAngle.why],
+    wc.bestAd && ['🏆 أفضل إعلان', wc.bestAd.name, wc.bestAd.why],
+  ].filter(Boolean);
+  if (!rows.length) return '';
+  return `<div class="pmc-card" style="margin-bottom:14px;">
+    <div class="h">🏆 أفضل المكوّنات التسويقية الحقيقية</div>
+    ${rows.map(([label, value, why]) => `<div class="pmc-kv"><span>${E(label)}</span><b>${E(value)}</b></div><div class="faint" style="font-size:11px;margin:0 0 8px;">${E(why || '')}</div>`).join('')}
+  </div>`;
+}
+
 function renderCreative(mount, s) {
   mount.innerHTML = `
+    ${winningComponentsHtml(s.winningComponents)}
     <div class="pmc-card">
       <div class="h">🧠 ذكاء الكرياتيف</div>
       <div class="pmc-angle-fields">
@@ -784,10 +871,12 @@ function renderCreative(mount, s) {
   $('pmcGenIdeas').onclick = generateIdeas;
   $('pmcCfCheck').onclick = checkCfReadiness;
 }
+const IDEA_STATUS_LABEL_AR = { CREATE_MORE_LIKE_THIS: '🏆 اعمل زيها أكتر', REFRESH_WINNER: '📈 جدّد الفائز', NEW_TEST: '🧪 اختبار جديد', STOP_REPEATING: '🔴 وقف التكرار' };
+function ideaStatusPill(st) { return st ? `<span class="badge ${st === 'CREATE_MORE_LIKE_THIS' ? 'green' : st === 'STOP_REPEATING' ? 'red' : 'yellow'}">${E(IDEA_STATUS_LABEL_AR[st] || st)}</span>` : ''; }
 function ideasHtml(ideas) {
   if (!ideas?.length) return '';
   return ideas.map((idea) => `<div class="pmc-idea-item">
-    <div class="t">${E(idea.type)}</div>
+    <div class="t">${E(idea.type)} ${ideaStatusPill(idea.status)}</div>
     <div class="f"><b>المشهد:</b> ${E(idea.scene)}</div>
     <div class="f"><b>Hook:</b> ${E(idea.hook)}</div>
     <div class="f"><b>مكان المنتج:</b> ${E(idea.productPlacement)}</div>
@@ -815,8 +904,12 @@ async function checkCfReadiness() {
 }
 
 // ---- §15/§16 — Hook Lab & Post Generator ----
-function renderHooksTab(mount) {
+function renderHooksTab(mount, s) {
   mount.innerHTML = `
+    <div class="pmc-card" style="margin-bottom:14px;">
+      <div class="h">📊 أداء الـ Hooks الحقيقي (من الإعلانات الجارية فعليًا)</div>
+      ${winnerIntelTableHtml(s.hookIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الـ Hooks بعد.')}
+    </div>
     <div class="pmc-card">
       <div class="h">🎣 مختبر الـ Hooks</div>
       <div class="toolbar" style="margin-bottom:10px;">
@@ -851,9 +944,12 @@ function hooksHtml(hooks) {
   if (!hooks?.length) return '';
   return hooks.map((h) => `<div class="pmc-hook-item">${E(h.text)} ${claimPill(h.claimStatus, h.claimReason)}<div class="faint" style="font-size:11px;">${E(h.category || '')}</div></div>`).join('');
 }
+const POST_STATUS_LABEL_AR = { WINNING_COPY: '🏆 نص فائز', VARIATION: '📈 نسخة معدّلة', NEW_TEST: '🧪 اختبار جديد' };
+function postStatusPill(st) { return st ? `<span class="badge ${st === 'WINNING_COPY' ? 'green' : 'yellow'}">${E(POST_STATUS_LABEL_AR[st] || st)}</span>` : ''; }
 function postHtml(post) {
   if (!post) return '';
   return `<div class="pmc-hook-item">
+    <div>${postStatusPill(post.status)}</div>
     <div><b>Headline:</b> ${E(post.headline)}</div>
     <div style="margin-top:6px;"><b>قصير:</b> ${E(post.short)}</div>
     <div style="margin-top:6px;"><b>متوسط:</b> ${E(post.medium)}</div>
@@ -891,23 +987,25 @@ async function generateTestPack() {
   } catch (e) { UI.toast(e.message, 'error'); box.innerHTML = '<div class="pmc-empty">تعذّر إنشاء الحزمة.</div>'; }
 }
 
-// ---- §8 — Locations ----
+// ---- §6/§8 — Markets & Areas (real Easy Orders governorate economics) ----
 function renderLocations(mount, s) {
-  const rows = s.locations || [];
+  const markets = s.markets || [];
+  const rows = markets.length ? markets : (s.locations || []); // old cached snapshots without markets_json yet fall back gracefully
+  const rich = markets.length > 0;
   mount.innerHTML = `
     <div class="pmc-card">
-      <div class="h">📍 أفضل المحافظات — ${E(s.metrics?.windowLabel || '')}</div>
-      <div class="faint" style="font-size:11.5px;margin-bottom:10px;">الترتيب حسب: الطلبات المُستلمة فعليًا أولًا، ثم معدل الاستلام — مش عدد المشتريات على Meta فقط (مناسب لأوردرات الدفع عند الاستلام).</div>
+      <div class="h">📍 الأسواق والمناطق — ${E(s.metrics?.windowLabel || '')}</div>
+      <div class="faint" style="font-size:11.5px;margin-bottom:10px;">الترتيب حسب: الطلبات المُستلمة فعليًا أولًا، ثم معدل الاستلام — مش عدد المشتريات على Meta فقط (مناسب لأوردرات الدفع عند الاستلام). لا يوجد تصنيف "وسّع" لمجرد ارتفاع عدد الطلبات — لازم معدل استلام حقيقي كمان.</div>
       ${rows.length ? `<div class="table-wrap"><table class="data pmc-loc-table">
-        <thead><tr><th>المحافظة</th><th>الطلبات</th><th>مؤكدة</th><th>مُستلمة</th><th>مرتجعة</th><th>معدل الاستلام</th></tr></thead>
-        <tbody>${rows.map((l) => `<tr><td>${E(l.government)}</td><td>${fmtNum(l.orders)}</td><td>${fmtNum(l.confirmed)}</td><td>${fmtNum(l.delivered)}</td><td>${fmtNum(l.returned)}</td><td>${fmtPct1(l.deliveryRate)}</td></tr>`).join('')}</tbody>
+        <thead><tr><th>المحافظة</th><th>الطلبات</th><th>مؤكدة</th><th>مُستلمة</th><th>مرتجعة</th><th>معدل الاستلام</th>${rich ? '<th>الإيراد</th><th>متوسط الطلب</th><th>عملاء</th><th>متكررين</th><th>التصنيف</th>' : ''}</tr></thead>
+        <tbody>${rows.map((l) => `<tr><td>${E(l.government)}</td><td>${fmtNum(l.orders)}</td><td>${fmtNum(l.confirmed)}</td><td>${fmtNum(l.delivered)}</td><td>${fmtNum(l.returned)}</td><td>${fmtPct1(l.deliveryRate)}</td>${rich ? `<td>${fmtEGP(l.revenue)}</td><td>${l.aov != null ? fmtEGP(l.aov) : '—'}</td><td>${fmtNum(l.customerCount)}</td><td>${fmtNum(l.repeatCustomerCount)}</td><td>${marketBandPill(l.band)}</td>` : ''}</tr>`).join('')}</tbody>
       </table></div>` : `<div class="pmc-empty">${E(s.metrics?.dataAvailability?.codMessage || 'لا توجد طلبات مسجّلة بعنوان محافظة في هذه الفترة.')}</div>`}
       ${s.locationCommentary ? `<div class="faint" style="font-size:12px;margin-top:10px;">${E(s.locationCommentary)}</div>` : ''}
     </div>`;
 }
 
 // ---- §18 — Competitors ----
-async function renderCompetitors(mount) {
+async function renderCompetitors(mount, s) {
   mount.innerHTML = '<div class="pmc-empty">بنحمّل بيانات المنافسين…</div>';
   if (!state.competitors) {
     try { state.competitors = await api.get(`/api/product-marketing/profiles/${state.profile.id}/competitors`); }
@@ -915,18 +1013,154 @@ async function renderCompetitors(mount) {
   }
   const c = state.competitors;
   if (!c.available) { mount.innerHTML = `<div class="pmc-empty">${E(c.reason)}${c.reason?.includes('البحث') ? ' — <a href="product-research.html">افتح صفحة البحث عن المنتجات</a>' : ''}</div>`; return; }
+  const gaps = s.marketGaps;
   mount.innerHTML = `
     <div class="pmc-card">
       <div class="h">🏆 تحليل المنافسين</div>
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">بيانات من صفحة "البحث عن المنتجات" الحالية — مفيش بحث جديد بيتعمل هنا.</div>
       ${c.competitors.map((cc) => `<div class="pmc-kv"><span>${E(cc.accountName || cc.accountUrl)} (${E(cc.platform)})</span><b>${cc.followerCount != null ? fmtNum(cc.followerCount) + ' متابع' : 'غير متاح'}</b></div>`).join('')}
-    </div>`;
+    </div>
+    ${gaps?.gaps?.length ? `<div class="pmc-card" style="margin-top:14px;">
+      <div class="h">🎯 فجوات السوق المحتملة</div>
+      <div class="faint" style="font-size:11px;margin-bottom:8px;">استنتاج ذكاء اصطناعي مبني على البيانات الحقيقية أعلاه — مش حقيقة مؤكدة.</div>
+      ${gaps.gaps.map((g) => `<div class="pmc-diag-item"><div class="dot INFO"></div><div><div class="t">${E(g.gap)} ${confPill(g.confidence)}</div><div class="e">${E(g.interpretation)}</div></div></div>`).join('')}
+    </div>` : ''}`;
 }
 
-// ---- §21/§22/§24 — Tests & Results (memory + actions log + test pack) ----
+// ---- §17-20 — Testing Lab (real, persisted experiments) ----
+const TEST_TYPE_LABEL_AR = { AUDIENCE: 'جمهور', HOOK: 'Hook', SELLING_ANGLE: 'زاوية بيع', CREATIVE: 'كرياتيف', OFFER: 'عرض', COPY: 'نص إعلاني', MARKET_AREA: 'سوق/منطقة', PRICE: 'سعر' };
+const TEST_STATUS_LABEL_AR = { PLANNED: 'مخطَّط', RUNNING: 'جاري', COMPLETED: 'مكتمل', STOPPED: 'مُتوقف', INCONCLUSIVE: 'غير حاسم' };
+const TEST_CLASSIFICATION_LABEL_AR = { WINNER: '🏆 فائز', LOSER: '🔴 خاسر', NEUTRAL: '➖ محايد', INCONCLUSIVE: '⚪ غير حاسم' };
+
+async function loadLabTests() {
+  state.labTestsLoading = true;
+  try { state.labTests = (await api.get(`/api/product-marketing/profiles/${state.profile.id}/tests`)).tests; }
+  catch (e) { UI.toast(e.message, 'error'); state.labTests = []; }
+  state.labTestsLoading = false;
+  renderTabBody();
+}
+
+function testingLabFormHtml() {
+  if (!state.labNewTestOpen) return '';
+  return `<div class="pmc-card" style="margin:10px 0;background:var(--amb-bg-2,transparent);">
+    <div class="h" style="font-size:13px;">اختبار جديد</div>
+    <div class="pmc-lab-grid">
+      <select class="amb-select sm" id="labType">${Object.entries(TEST_TYPE_LABEL_AR).map(([k, v]) => `<option value="${k}">${E(v)}</option>`).join('')}</select>
+      <select class="amb-select sm" id="labPriority"><option value="P0">P0 — حرج</option><option value="P1">P1</option><option value="P2" selected>P2</option><option value="P3">P3</option></select>
+      <input class="amb-input sm" id="labSuccessMetric" placeholder="مقياس النجاح (مثال: ctr, cpa, deliveredCpa)" />
+      <input class="amb-input sm" id="labBudget" type="number" placeholder="ميزانية مقترحة (اختياري)" />
+    </div>
+    <textarea class="amb-input" id="labHypothesis" placeholder="الفرضية — ليه نتوقع إن ده هيشتغل؟" style="margin-top:8px;min-height:50px;"></textarea>
+    <div class="pmc-lab-grid" style="margin-top:8px;">
+      <input class="amb-input sm" id="labControl" placeholder="Control (الحالي)" />
+      <input class="amb-input sm" id="labVariation" placeholder="Variation (الجديد)" />
+    </div>
+    <input class="amb-input sm" id="labVariable" placeholder="المتغيّر اللي بنغيّره (مثال: Hook، الجمهور، السعر)" style="margin-top:8px;" />
+    <div class="toolbar" style="margin-top:10px;">
+      <button class="amb-btn sm primary" id="labCreateBtn">إنشاء الاختبار</button>
+      <button class="amb-btn sm ghost" id="labCancelBtn">إلغاء</button>
+    </div>
+  </div>`;
+}
+
+async function createLabTest() {
+  const btn = $('labCreateBtn');
+  const hypothesis = $('labHypothesis').value.trim();
+  const variable = $('labVariable').value.trim();
+  const control = $('labControl').value.trim();
+  const variation = $('labVariation').value.trim();
+  const successMetric = $('labSuccessMetric').value.trim();
+  if (!hypothesis || !variable || !control || !variation || !successMetric) { UI.toast('لازم تملأ الفرضية والمتغيّر والـControl والـVariation ومقياس النجاح.', 'error'); return; }
+  btn.disabled = true; btn.textContent = 'جارِ الإنشاء…';
+  try {
+    await api.post(`/api/product-marketing/profiles/${state.profile.id}/tests`, {
+      testType: $('labType').value, hypothesis, variable, control, variation, successMetric,
+      recommendedBudget: $('labBudget').value ? Number($('labBudget').value) : undefined,
+      priority: $('labPriority').value,
+    });
+    UI.toast('تم إنشاء الاختبار.', 'success');
+    state.labNewTestOpen = false;
+    await loadLabTests();
+  } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'إنشاء الاختبار'; }
+}
+
+async function setLabTestStatus(testId, status) {
+  state.labBusyId = testId; renderTabBody();
+  try { await api.post(`/api/product-marketing/profiles/${state.profile.id}/tests/${testId}/status`, { status }); await loadLabTests(); }
+  catch (e) { UI.toast(e.message, 'error'); state.labBusyId = null; renderTabBody(); }
+}
+
+function testCardHtml(t) {
+  const busy = state.labBusyId === t.id;
+  return `<div class="pmc-idea-item">
+    <div class="t">${E(TEST_TYPE_LABEL_AR[t.testType] || t.testType)} — ${E(TEST_STATUS_LABEL_AR[t.status] || t.status)} ${priorityPill(t.priority)}</div>
+    <div class="f"><b>الفرضية:</b> ${E(t.hypothesis)}</div>
+    <div class="f"><b>Control → Variation:</b> ${E(t.control)} → ${E(t.variation)}</div>
+    <div class="f"><b>مقياس النجاح:</b> ${E(t.successMetric)}</div>
+    ${t.results?.length ? `<div class="f"><b>آخر نتيجة:</b> ${E(TEST_CLASSIFICATION_LABEL_AR[t.results[0].classification] || t.results[0].classification)}${t.results[0].whatDidWeLearn ? ` — ${E(t.results[0].whatDidWeLearn)}` : ''}</div>` : ''}
+    <div class="toolbar" style="margin-top:8px;">
+      ${t.status === 'PLANNED' ? `<button class="amb-btn sm" data-lab-start="${t.id}" ${busy ? 'disabled' : ''}>ابدأ التشغيل</button>` : ''}
+      ${t.status === 'RUNNING' ? `<button class="amb-btn sm" data-lab-result="${t.id}" ${busy ? 'disabled' : ''}>تسجيل نتيجة</button><button class="amb-btn sm ghost" data-lab-stop="${t.id}" ${busy ? 'disabled' : ''}>إيقاف</button>` : ''}
+    </div>
+    <div id="labResultForm-${t.id}"></div>
+  </div>`;
+}
+
+function resultFormHtml(testId) {
+  return `<div class="pmc-lab-grid" style="margin-top:8px;">
+    <input class="amb-input sm" id="labResFrom-${testId}" type="date" />
+    <input class="amb-input sm" id="labResTo-${testId}" type="date" />
+    <input class="amb-input sm" id="labResSpend-${testId}" type="number" placeholder="الصرف" />
+    <input class="amb-input sm" id="labResPurchases-${testId}" type="number" placeholder="مشتريات Meta" />
+    <input class="amb-input sm" id="labResMetric-${testId}" type="number" placeholder="قيمة المقياس الفعلية" />
+    <input class="amb-input sm" id="labResControl-${testId}" type="number" placeholder="قيمة الـControl للمقارنة" />
+  </div>
+  <textarea class="amb-input sm" id="labResLearn-${testId}" placeholder="إيه اللي اتعلمناه؟" style="margin-top:6px;"></textarea>
+  <div class="toolbar" style="margin-top:6px;"><button class="amb-btn sm primary" data-lab-submit-result="${testId}">حفظ النتيجة</button></div>`;
+}
+
+async function submitLabResult(testId) {
+  const from = $(`labResFrom-${testId}`).value, to = $(`labResTo-${testId}`).value;
+  if (!from || !to) { UI.toast('لازم تحدد فترة الاختبار.', 'error'); return; }
+  const metricName = $(`labResMetric-${testId}`).closest('.pmc-idea-item')?.querySelector('.f')?.textContent || '';
+  const test = (state.labTests || []).find((t) => t.id === testId);
+  const metrics = { spend: Number($(`labResSpend-${testId}`).value) || undefined, metaPurchases: Number($(`labResPurchases-${testId}`).value) || undefined };
+  if (test) metrics[test.successMetric] = Number($(`labResMetric-${testId}`).value);
+  try {
+    await api.post(`/api/product-marketing/profiles/${state.profile.id}/tests/${testId}/results`, {
+      window: { from, to }, metrics, controlValue: Number($(`labResControl-${testId}`).value) || undefined,
+      whatDidWeLearn: $(`labResLearn-${testId}`).value.trim() || undefined,
+    });
+    UI.toast('تم تسجيل النتيجة.', 'success');
+    await loadLabTests();
+  } catch (e) { UI.toast(e.message, 'error'); }
+}
+
+function wireTestingLab(mount) {
+  $('labNewTestBtn')?.addEventListener('click', () => { state.labNewTestOpen = true; renderTabBody(); });
+  $('labCancelBtn')?.addEventListener('click', () => { state.labNewTestOpen = false; renderTabBody(); });
+  $('labCreateBtn')?.addEventListener('click', createLabTest);
+  mount.querySelectorAll('[data-lab-start]').forEach((b) => b.onclick = () => setLabTestStatus(Number(b.dataset.labStart), 'RUNNING'));
+  mount.querySelectorAll('[data-lab-stop]').forEach((b) => b.onclick = () => setLabTestStatus(Number(b.dataset.labStop), 'STOPPED'));
+  mount.querySelectorAll('[data-lab-result]').forEach((b) => b.onclick = () => {
+    const id = Number(b.dataset.labResult);
+    $(`labResultForm-${id}`).innerHTML = resultFormHtml(id);
+    $(`labResultForm-${id}`).querySelector('[data-lab-submit-result]').onclick = () => submitLabResult(id);
+  });
+}
+
+// ---- §21/§22/§24 — Tests & Results (real Testing Lab + memory + actions log) ----
 async function renderTests(mount, s) {
   mount.innerHTML = `
     <div class="pmc-card">
+      <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>🧪 مختبر الاختبارات</span>
+        ${!state.labNewTestOpen ? '<button class="amb-btn sm primary" id="labNewTestBtn">+ اختبار جديد</button>' : ''}
+      </div>
+      ${testingLabFormHtml()}
+      <div id="pmcLabList">${state.labTestsLoading ? '<div class="pmc-empty">بنحمّل الاختبارات…</div>' : (state.labTests?.length ? state.labTests.map(testCardHtml).join('') : '<div class="pmc-empty" style="padding:10px;">مفيش اختبارات مسجّلة لهذا المنتج بعد.</div>')}</div>
+    </div>
+    <div class="pmc-card" style="margin-top:14px;">
       <div class="h">⚡ سجل التوصيات</div>
       ${actionsListHtml(s.actions)}
     </div>
@@ -935,6 +1169,8 @@ async function renderTests(mount, s) {
       <div id="pmcMemoryBox" class="pmc-empty">بنحمّل السجل…</div>
     </div>`;
   wireActionButtons(mount);
+  wireTestingLab(mount);
+  if (!state.labTests && !state.labTestsLoading) loadLabTests();
   try {
     const { entries } = await api.get(`/api/product-marketing/profiles/${state.profile.id}/memory`);
     $('pmcMemoryBox').outerHTML = entries.length ? entries.map((m) => `<div class="pmc-memory-item">
@@ -944,6 +1180,22 @@ async function renderTests(mount, s) {
       <div><b>التوصية الجديدة:</b> ${E(JSON.stringify(m.new))}</div>
     </div>`).join('') : '<div class="pmc-empty" id="pmcMemoryBox">مفيش تغييرات في الافتراضات لسه — لسه أول تحليل لهذا المنتج.</div>';
   } catch { /* memory is best-effort */ }
+}
+
+// ---- §24 — AI Product Marketing Strategist ----
+function renderStrategist(mount, s) {
+  const answers = s.strategist?.answers || [];
+  mount.innerHTML = `
+    <div class="pmc-card">
+      <div class="h">🧭 المستشار الذكي للتسويق</div>
+      ${answers.length ? answers.map((a) => `<div class="pmc-diag-item">
+        <div class="dot INFO"></div>
+        <div>
+          <div class="t">${E(a.question)} ${statusPill(a.status)}</div>
+          <div class="e">${E(a.answer)}</div>
+        </div>
+      </div>`).join('') : `<div class="pmc-empty">${E(s.aiFailed ? (s.aiFailReason || 'تعذر إكمال التحليل حالياً') : 'البيانات غير كافية للحكم بعد.')}</div>`}
+    </div>`;
 }
 
 document.addEventListener('DOMContentLoaded', init);

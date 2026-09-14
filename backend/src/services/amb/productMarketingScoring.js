@@ -90,7 +90,7 @@ export function computeOpportunityScore({ metrics, settings }) {
 // §6 — Quick Diagnosis. Rule-based over real numbers, never a single vague
 // verdict. Every hit carries {problem, evidence, severity, action}.
 // ---------------------------------------------------------------------------
-export function computeDiagnosis({ metrics, creative, settings }) {
+export function computeDiagnosis({ metrics, creative, priorMetrics, settings }) {
   const out = [];
   const targetCpa = n(settings?.ambDefaultTargetCpa) ?? 120;
   const spend = n(metrics.totalSpend) || 0;
@@ -102,47 +102,68 @@ export function computeDiagnosis({ metrics, creative, settings }) {
   const cpc = n(metrics.cpc);
   const cvr = n(metrics.cvr);
   const frequency = n(metrics.frequency);
+  const ds = dataSufficiencyOf({ spend, purchases });
 
   // §3 (BUG 3) — WHY there's no Meta signal must be specific: "never mapped
   // to a campaign" is a completely different situation from "mapped, ran
   // real spend, still too little data" — never the same vague sentence.
   if (metrics.dataAvailability && !metrics.dataAvailability.metaMapped) {
-    out.push({ problem: 'لا توجد حملات Meta مرتبطة بهذا المنتج', evidence: 'المنتج لسه مش مربوط بحملة Meta حقيقية في AI Media Buyer.', severity: 'INFO', action: 'اربط المنتج بحملته في AI Media Buyer عشان تظهر بيانات الأداء الحقيقية هنا.' });
+    out.push({ problem: 'لا توجد حملات Meta مرتبطة بهذا المنتج', evidence: 'المنتج لسه مش مربوط بحملة Meta حقيقية في AI Media Buyer.', severity: 'INFO', category: 'TRACKING_MAPPING_PROBLEM', priority: 'P3', dataSufficiency: 'INSUFFICIENT', action: 'اربط المنتج بحملته في AI Media Buyer عشان تظهر بيانات الأداء الحقيقية هنا.' });
     return out;
   }
   if (spend < 100 || purchases == null) {
-    out.push({ problem: 'البيانات موجودة لكن حجم العينة غير كافٍ للحكم', evidence: `الصرف حتى الآن ${Math.round(spend)} جنيه${purchases == null ? '، مفيش مشتريات مرتبطة بعد' : ''}.`, severity: 'INFO', action: 'كمّل الصرف على الفترة الحالية قبل الحكم على المنتج.' });
+    out.push({ problem: 'البيانات موجودة لكن حجم العينة غير كافٍ للحكم', evidence: `الصرف حتى الآن ${Math.round(spend)} جنيه${purchases == null ? '، مفيش مشتريات مرتبطة بعد' : ''}.`, severity: 'INFO', category: 'INSUFFICIENT_DATA', priority: 'P3', dataSufficiency: 'INSUFFICIENT', action: 'كمّل الصرف على الفترة الحالية قبل الحكم على المنتج.' });
     return out;
   }
 
   if (ctr != null && ctr < 0.8) {
-    out.push({ problem: 'Hook ضعيف / الكرياتيف مش واقف الناس', evidence: `CTR الحالي ${ctr.toFixed(2)}% — أقل من المتوسط الصحي (~1%+).`, severity: 'HIGH', action: 'جرّب Hook جديد في أول 3 ثواني من الفيديو أو أول سطر في الصورة.' });
+    out.push({ problem: 'Hook ضعيف / الكرياتيف مش واقف الناس', evidence: `CTR الحالي ${ctr.toFixed(2)}% — أقل من المتوسط الصحي (~1%+).`, severity: 'HIGH', category: 'CREATIVE_PROBLEM', priority: 'P1', dataSufficiency: ds, action: 'جرّب Hook جديد في أول 3 ثواني من الفيديو أو أول سطر في الصورة.' });
   } else if (ctr != null && ctr >= 1.5 && cvr != null && cvr < 1) {
-    out.push({ problem: 'Good CTR لكن Conversion ضعيف', evidence: `CTR ${ctr.toFixed(2)}% كويس لكن معدل التحويل ${cvr.toFixed(2)}% ضعيف.`, severity: 'HIGH', action: 'الإعلان بيوقف الناس بس صفحة/عرض المنتج مش مقنع — راجع الـOffer والـLanding.' });
+    out.push({ problem: 'Good CTR لكن Conversion ضعيف', evidence: `CTR ${ctr.toFixed(2)}% كويس لكن معدل التحويل ${cvr.toFixed(2)}% ضعيف.`, severity: 'HIGH', category: 'CONVERSION_PROBLEM', priority: 'P1', dataSufficiency: ds, action: 'الإعلان بيوقف الناس بس صفحة/عرض المنتج مش مقنع — راجع الـOffer والـLanding.' });
   }
 
   if (cpc != null && cpc > 3) {
-    out.push({ problem: 'CPC مرتفع', evidence: `تكلفة الكليك ${cpc.toFixed(2)} جنيه.`, severity: 'MEDIUM', action: 'راجع الجمهور المستهدف — ممكن يكون واسع أو الأنسب مش هو ده.' });
+    out.push({ problem: 'CPC مرتفع', evidence: `تكلفة الكليك ${cpc.toFixed(2)} جنيه.`, severity: 'MEDIUM', category: 'TRAFFIC_PROBLEM', priority: 'P2', dataSufficiency: ds, action: 'راجع الجمهور المستهدف — ممكن يكون واسع أو الأنسب مش هو ده.' });
   }
 
   if (avgCpa != null && avgCpa > targetCpa * 1.3) {
-    out.push({ problem: 'CPA أعلى من الهدف', evidence: `CPA الحالي ${Math.round(avgCpa)} جنيه مقابل هدف ${targetCpa} جنيه.`, severity: 'HIGH', action: 'اختبر Angle أو جمهور مختلف قبل زيادة الميزانية.' });
+    out.push({ problem: 'CPA أعلى من الهدف', evidence: `CPA الحالي ${Math.round(avgCpa)} جنيه مقابل هدف ${targetCpa} جنيه.`, severity: 'HIGH', category: 'CPA_PROBLEM', priority: 'P0', dataSufficiency: ds, action: 'اختبر Angle أو جمهور مختلف قبل زيادة الميزانية.' });
   }
 
   if (deliveryRate != null && deliveryRate < 0.5 && avgCpa != null && deliveredCpa != null && avgCpa < targetCpa) {
-    out.push({ problem: 'CPA كويس على Meta لكن الاستلام ضعيف', evidence: `Meta CPA ${Math.round(avgCpa)} جنيه (كويس) لكن معدل الاستلام ${Math.round(deliveryRate * 100)}% فقط — Delivered CPA الحقيقي ${Math.round(deliveredCpa)} جنيه.`, severity: 'HIGH', action: 'المشكلة مش في الإعلان، المشكلة بعده — راجع سرعة التأكيد والتسليم أو جودة الطلبات الجاية من هذا الجمهور.' });
+    out.push({ problem: 'CPA كويس على Meta لكن الاستلام ضعيف', evidence: `Meta CPA ${Math.round(avgCpa)} جنيه (كويس) لكن معدل الاستلام ${Math.round(deliveryRate * 100)}% فقط — Delivered CPA الحقيقي ${Math.round(deliveredCpa)} جنيه.`, severity: 'HIGH', category: 'DELIVERY_PROBLEM', priority: 'P0', dataSufficiency: ds, action: 'المشكلة مش في الإعلان، المشكلة بعده — راجع سرعة التأكيد والتسليم أو جودة الطلبات الجاية من هذا الجمهور.' });
   }
 
   if (frequency != null && frequency > 3.5) {
-    out.push({ problem: 'إجهاد كرياتيف (Creative Fatigue)', evidence: `التكرار (Frequency) وصل ${frequency.toFixed(1)}.`, severity: 'MEDIUM', action: 'وقّف أو جدّد الكرياتيف الحالي — نفس الجمهور شايفه كتير.' });
+    // §11 — never call fatigue from one signal alone. Require a second
+    // corroborating trend (CTR declining or CPA rising) vs the prior equal
+    // window when available; otherwise still surface it but at LOW
+    // confidence via a WEAK dataSufficiency override, never silently upgraded.
+    let corroborated = null; // null = no prior window to compare
+    if (priorMetrics) {
+      const priorCtr = n(priorMetrics.ctr);
+      const priorCpa = n(priorMetrics.avgCpa);
+      const ctrDeclining = ctr != null && priorCtr != null && ctr < priorCtr * 0.9;
+      const cpaRising = avgCpa != null && priorCpa != null && avgCpa > priorCpa * 1.15;
+      corroborated = ctrDeclining || cpaRising;
+    }
+    if (corroborated !== false) {
+      out.push({
+        problem: 'إجهاد كرياتيف (Creative Fatigue)',
+        evidence: `التكرار (Frequency) وصل ${frequency.toFixed(1)}.${corroborated === true ? ' + انخفاض CTR أو ارتفاع CPA مقارنة بالفترة السابقة يؤكد الإجهاد.' : corroborated === null ? ' (لا توجد فترة سابقة للمقارنة — إشارة واحدة فقط)' : ''}`,
+        severity: 'MEDIUM', category: 'CREATIVE_FATIGUE', priority: 'P2',
+        dataSufficiency: corroborated === true ? ds : 'WEAK',
+        action: 'وقّف أو جدّد الكرياتيف الحالي — نفس الجمهور شايفه كتير.',
+      });
+    }
   }
 
   if (creative?.problem && creative?.mainBenefit == null) {
-    out.push({ problem: 'العرض/الفايدة مش واضحة في الكرياتيف', evidence: 'الكرياتيف الحالي مفيهوش فايدة أساسية واضحة مكتشفة.', severity: 'MEDIUM', action: 'أضف فايدة واحدة واضحة في أول 3 ثواني/أول سطر.' });
+    out.push({ problem: 'العرض/الفايدة مش واضحة في الكرياتيف', evidence: 'الكرياتيف الحالي مفيهوش فايدة أساسية واضحة مكتشفة.', severity: 'MEDIUM', category: 'OFFER_PROBLEM', priority: 'P2', dataSufficiency: ds, action: 'أضف فايدة واحدة واضحة في أول 3 ثواني/أول سطر.' });
   }
 
   if (!out.length) {
-    out.push({ problem: 'مفيش مشكلة واضحة من الأرقام الحالية', evidence: `CPA ${avgCpa != null ? Math.round(avgCpa) : '—'} جنيه، ${purchases} مشترى.`, severity: 'INFO', action: 'كمّل نفس الاتجاه، واختبر Angle إضافي لتوسيع الفرصة.' });
+    out.push({ problem: 'مفيش مشكلة واضحة من الأرقام الحالية', evidence: `CPA ${avgCpa != null ? Math.round(avgCpa) : '—'} جنيه، ${purchases} مشترى.`, severity: 'INFO', category: 'HEALTHY_PRODUCT', priority: 'P3', dataSufficiency: ds, action: 'كمّل نفس الاتجاه، واختبر Angle إضافي لتوسيع الفرصة.' });
   }
   return out;
 }
@@ -186,6 +207,90 @@ export function classifyClaim(text) {
 
 export function opportunityLabelAr(label) {
   return { 'قوية': 'فرصة قوية', 'متوسطة': 'فرصة متوسطة', 'ضعيفة': 'فرصة ضعيفة' }[label] || label;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — Health Score band. Pure banding over computeOpportunityScore()'s
+// existing score; invents no new signal. INSUFFICIENT_DATA whenever the
+// underlying score itself was withheld (dataSufficient:false).
+// ---------------------------------------------------------------------------
+export function healthBand(score, dataSufficient) {
+  if (!dataSufficient || score == null) return 'INSUFFICIENT_DATA';
+  if (score >= 85) return 'HEALTHY';
+  if (score >= 70) return 'GOOD';
+  if (score >= 50) return 'NEEDS_ATTENTION';
+  if (score >= 30) return 'AT_RISK';
+  return 'CRITICAL';
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — deterministic dataSufficiency bucketing, matching the exact
+// thresholds hierarchyAnalysis.js's rollupMetrics()/winnerDetection.js
+// already use elsewhere (spend>=300 & purchases>=5 = STRONG, spend>=150 =
+// MODERATE, else WEAK) — one shared rule, not a second invented scale.
+// ---------------------------------------------------------------------------
+export function dataSufficiencyOf({ spend, purchases }) {
+  const s = n(spend) || 0;
+  const p = n(purchases) || 0;
+  if (s >= 300 && p >= 5) return 'STRONG';
+  if (s >= 150) return 'MODERATE';
+  return 'WEAK';
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — Markets & Areas banding. Real Easy Orders governorate numbers
+// only; never ranks by order count alone (spec §6).
+// ---------------------------------------------------------------------------
+export function bandMarket({ orders, delivered, confirmed, deliveryRate, confirmationRate }, { minOrders = 10 } = {}) {
+  const o = n(orders) || 0;
+  if (o < minOrders) return 'INSUFFICIENT_DATA';
+  const dr = deliveryRate != null ? n(deliveryRate) : (confirmed > 0 ? n(delivered) / n(confirmed) : null);
+  const cr = confirmationRate != null ? n(confirmationRate) : null;
+  if (dr != null && dr < 0.35) return 'REDUCE_PRIORITY'; // high RTO signal
+  if (dr != null && dr >= 0.6 && o >= minOrders * 2) return 'SCALE_MARKET';
+  if (dr != null && dr >= 0.45) return 'KEEP_TESTING';
+  if (cr != null && cr < 0.3) return 'REDUCE_PRIORITY';
+  return 'MONITOR';
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — real-ad-performance banding for a hook/selling-angle/offer/
+// audience row from winnerDetection.js's groupByCreativeLabel() output.
+// Mirrors the same spend/purchases/CPA-vs-target gating already used by
+// computeOpportunityScore()/pickWinner() — never labels WINNER from weak data.
+// ---------------------------------------------------------------------------
+export function bandCreativeLabel(row, { targetCpa = 120, minSpend = 150, minPurchases = 5 } = {}) {
+  const spend = n(row?.spend) || 0;
+  const purchases = n(row?.purchases) || 0;
+  const cpa = n(row?.cpa);
+  if (spend < minSpend * 0.3 || purchases === 0) return 'UNTESTED';
+  if (row?.dataSufficiency === 'WEAK' || spend < minSpend) return row?.dataSufficiency === 'WEAK' && purchases > 0 ? 'AVERAGE' : 'UNTESTED';
+  if (cpa == null) return 'UNTESTED';
+  const ratio = targetCpa / cpa; // >1 = cheaper than target
+  if (ratio >= 1.15 && purchases >= minPurchases && row?.dataSufficiency === 'STRONG') return 'WINNER';
+  if (ratio >= 1.0 && purchases >= Math.max(1, Math.round(minPurchases * 0.5))) return 'PROMISING';
+  if (ratio >= 0.8) return 'AVERAGE';
+  return 'WEAK';
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — deterministic P0-P3 priority for the AI's existing `actions`
+// list, purely by cross-referencing already-computed diagnosis severity/
+// category. No new AI call, no new signal.
+// ---------------------------------------------------------------------------
+export function prioritizeActions(actions, diagnosis) {
+  const hasHighCpaOrDelivery = (diagnosis || []).some((d) => d.severity === 'HIGH' && ['CPA_PROBLEM', 'DELIVERY_PROBLEM'].includes(d.category));
+  const hasHighAny = (diagnosis || []).some((d) => d.severity === 'HIGH');
+  const hasInsufficient = (diagnosis || []).some((d) => d.category === 'INSUFFICIENT_DATA');
+  return (actions || []).map((a) => {
+    let priority = 'P2';
+    const text = `${a.actionKey || ''} ${a.title || ''} ${a.reason || ''}`.toLowerCase();
+    if (hasHighCpaOrDelivery && /(cpa|delivery|استلام|تكلفة)/i.test(text)) priority = 'P0';
+    else if (/(winner|فائز|كسب|scale|توسع)/i.test(text)) priority = 'P1';
+    else if (hasHighAny) priority = 'P1';
+    else if (hasInsufficient && /(بيانات|data)/i.test(text)) priority = 'P3';
+    return { ...a, priority };
+  });
 }
 
 // ---------------------------------------------------------------------------

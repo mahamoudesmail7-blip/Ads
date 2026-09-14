@@ -22,12 +22,15 @@ import { buildHierarchy, rollupMetrics } from './hierarchyAnalysis.js';
 import { productDashboard, createFromCatalogProduct } from './ambProducts.js';
 import { setMapping } from './mapping.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
-import { customerQualityForProduct } from './customerQuality.js';
+import { customerQualityForProduct, marketsForProduct } from './customerQuality.js';
+import { buyerInsightsForProduct } from './buyerInsights.js';
+import { hookAndAngleIntelForProduct } from './productMarketingWinnerIntel.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
 import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
-import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct } from './productMarketingScoring.js';
+import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct, healthBand, prioritizeActions } from './productMarketingScoring.js';
+import { assembleNeedsAttention, assembleWinningComponents, labelCreativeIdeas, labelPostCopy } from './productMarketingAssemblers.js';
 import * as PMAI from './productMarketingAI.js';
 import { mapProductByName } from '../../../../js/product-mapping.js';
 
@@ -39,6 +42,17 @@ const MATCH_CONFIDENCE = { SLUG: 0.9, EXTERNAL_ID: 0.85, EXACT_NAME: 0.75, ALL_N
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
 const WINDOWS = ['today', 'yesterday', 'last3', 'last7'];
+
+/** Shifts a {from,to} window back by its own length, for a same-size "prior period" comparison (fatigue corroboration only — never used for real metrics elsewhere). */
+function priorWindowOf({ from, to }) {
+  const fromDate = new Date(`${from}T00:00:00Z`);
+  const toDate = new Date(`${to}T00:00:00Z`);
+  const lengthMs = Math.max(0, toDate.getTime() - fromDate.getTime());
+  const priorTo = new Date(fromDate.getTime() - 24 * 60 * 60 * 1000);
+  const priorFrom = new Date(priorTo.getTime() - lengthMs);
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { from: fmt(priorFrom), to: fmt(priorTo) };
+}
 
 // Multi-store (Product Marketing Center) — store_id is encoded INTO the
 // existing easy_orders_product_id string column as "storeId::realEoId"
@@ -613,11 +627,39 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   }
 
   const locations = rankLocations(govRows);
-  const opportunity = computeOpportunityScore({ metrics, settings });
-  const diagnosis = computeDiagnosis({ metrics, creative: await creativeAnalysisFor(bestWorst.best?.creativeId), settings });
+
+  // §11 — creative fatigue must never fire off frequency alone. Only pay
+  // for a second hierarchy pass (prior equal-length window) when frequency
+  // is actually high enough that fatigue is even in play.
+  let priorMetrics = null;
+  if (ambProduct && adAccountId && metrics.frequency != null && metrics.frequency > 3.5) {
+    const priorWindow = priorWindowOf(window);
+    const priorTree = await buildHierarchy({ adAccountId, window: priorWindow, settings }).catch(() => null);
+    const priorNode = priorTree ? (priorTree.products || []).find((x) => String(x.id) === String(ambProduct.id)) : null;
+    if (priorNode?.metrics) priorMetrics = { ctr: priorNode.metrics.ctr, avgCpa: priorNode.metrics.cpa };
+  }
+
+  const opportunityRaw = computeOpportunityScore({ metrics, settings });
+  const opportunity = { ...opportunityRaw, healthBand: healthBand(opportunityRaw.score, opportunityRaw.dataSufficient) };
+  const diagnosis = computeDiagnosis({ metrics, creative: await creativeAnalysisFor(bestWorst.best?.creativeId), priorMetrics, settings });
 
   const bestCreative = await creativeAnalysisFor(bestWorst.best?.creativeId);
   const worstCreative = await creativeAnalysisFor(bestWorst.worst?.creativeId);
+
+  // Phase 1 — Markets & Areas (real Easy Orders governorate economics) and
+  // Buyer Insights (deterministic, never raw PII), both guarded on having a
+  // resolved catalog product; Hook/Selling-Angle Intelligence guarded on a
+  // confirmed AmbProduct mapping (needs the real ad tree).
+  let markets = { source: 'none', markets: [] };
+  let buyerInsights = null;
+  if (effectiveProductId) {
+    markets = await marketsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch(() => ({ source: 'none', markets: [] }));
+    buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch(() => null);
+  }
+  let hookAngleIntel = { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
+  if (ambProduct && adAccountId) {
+    hookAngleIntel = await hookAndAngleIntelForProduct({ adAccountId, window, settings, ambProductId: ambProduct.id }).catch(() => hookAngleIntel);
+  }
 
   const aiCtx = {
     productName: profile.locked_name,
@@ -633,6 +675,41 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   };
 
   const ai = await PMAI.buildIntelligenceReport(aiCtx);
+  const prioritizedActions = ai.ok ? prioritizeActions(ai.actions, diagnosis) : [];
+
+  const needsAttention = assembleNeedsAttention({ diagnosis, actions: prioritizedActions, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles });
+  const winningFormula = ai.ok ? ai.winningFormula : { available: false };
+  const winningComponents = assembleWinningComponents({ bestAd: aiCtx.bestAd, bestAdCreative: bestCreative, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles, markets: markets.markets, winningFormula });
+
+  // §15/§16 Market Gaps — only when real competitor data exists; the
+  // "observed" half is built deterministically from those real rows, the
+  // model only ever adds the "gaps" interpretation (see productMarketingAI.js).
+  let marketGaps = { observed: [], gaps: [] };
+  const competitors = await competitorIntel(profile.id).catch(() => ({ available: false }));
+  if (competitors?.available && competitors.competitors?.length) {
+    const gapsRes = await PMAI.generateMarketGaps({
+      productName: profile.locked_name,
+      ownAngles: (ai.ok ? ai.angles : []).map((a) => a.name).filter(Boolean),
+      ownHooks: (hookAngleIntel.hooks?.table || []).map((h) => h.label),
+      competitors: competitors.competitors,
+      insights: competitors.insights,
+    });
+    marketGaps = { observed: gapsRes.observed || [], gaps: gapsRes.gaps || [] };
+  }
+
+  // §24 AI Strategist — only attempted when the main report itself
+  // succeeded (same real context, no point spending a second AI call on a
+  // product too data-poor for the first one to have said anything useful).
+  let strategist = { answers: [] };
+  if (ai.ok) {
+    const learningRows = await prisma.productMarketingLearning.findMany({ where: { profile_id: profile.id } }).catch(() => []);
+    const strategistRes = await PMAI.generateStrategistBrief({
+      metrics, opportunity, diagnosis, markets: markets.markets, buyerInsights,
+      hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles, marketGaps,
+      learningHistory: learningRows.map((l) => ({ dimension: l.dimension, key: l.key, verdict: l.verdict })),
+    });
+    strategist = strategistRes.ok ? { answers: strategistRes.answers } : { answers: [] };
+  }
 
   const snapshotData = {
     metrics, opportunity, diagnosis, locations,
@@ -642,31 +719,35 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     diagnosisNarrative: ai.ok ? ai.diagnosisNarrative : null,
     winnerDna: ai.ok ? ai.winnerDna : { available: false },
     loserAutopsy: ai.ok ? ai.loserAutopsy : { available: false },
-    winningFormula: ai.ok ? ai.winningFormula : { available: false },
-    actions: ai.ok ? ai.actions : [],
+    winningFormula,
+    actions: prioritizedActions,
     bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd,
     aiFailed: !ai.ok, aiFailReason: ai.ok ? null : ai.reason,
+    markets: markets.markets, buyerInsights, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles,
+    needsAttention, winningComponents, marketGaps, strategist,
   };
 
   await recordMemoryDiffs(profile.id, snapshotData);
 
+  const commonJson = {
+    metrics_json: JSON.stringify(metrics), opportunity_json: JSON.stringify(opportunity), diagnosis_json: JSON.stringify(diagnosis),
+    audience_json: JSON.stringify(snapshotData.audience), locations_json: JSON.stringify(locations), angles_json: JSON.stringify(snapshotData.angles),
+    winning_formula_json: JSON.stringify(snapshotData.winningFormula), actions_json: JSON.stringify(snapshotData.actions),
+    ai_raw_json: ai.ok ? JSON.stringify({ locationCommentary: snapshotData.locationCommentary, diagnosisNarrative: snapshotData.diagnosisNarrative, winnerDna: snapshotData.winnerDna, loserAutopsy: snapshotData.loserAutopsy, bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd }) : null,
+    markets_json: JSON.stringify(snapshotData.markets),
+    buyer_insights_json: buyerInsights ? JSON.stringify(buyerInsights) : null,
+    hook_intel_json: JSON.stringify(hookAngleIntel.hooks),
+    angle_intel_json: JSON.stringify(hookAngleIntel.angles),
+    needs_attention_json: JSON.stringify(needsAttention),
+    winning_components_json: JSON.stringify(winningComponents),
+    market_gaps_json: JSON.stringify(marketGaps),
+    strategist_json: JSON.stringify(strategist),
+  };
+
   const saved = await prisma.productMarketingSnapshot.upsert({
     where: { profile_id_window_name: { profile_id: profile.id, window_name: win } },
-    create: {
-      profile_id: profile.id, window_name: win, ad_account_id: adAccountId,
-      metrics_json: JSON.stringify(metrics), opportunity_json: JSON.stringify(opportunity), diagnosis_json: JSON.stringify(diagnosis),
-      audience_json: JSON.stringify(snapshotData.audience), locations_json: JSON.stringify(locations), angles_json: JSON.stringify(snapshotData.angles),
-      winning_formula_json: JSON.stringify(snapshotData.winningFormula), actions_json: JSON.stringify(snapshotData.actions),
-      ai_raw_json: ai.ok ? JSON.stringify({ locationCommentary: snapshotData.locationCommentary, diagnosisNarrative: snapshotData.diagnosisNarrative, winnerDna: snapshotData.winnerDna, loserAutopsy: snapshotData.loserAutopsy, bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd }) : null,
-    },
-    update: {
-      ad_account_id: adAccountId,
-      metrics_json: JSON.stringify(metrics), opportunity_json: JSON.stringify(opportunity), diagnosis_json: JSON.stringify(diagnosis),
-      audience_json: JSON.stringify(snapshotData.audience), locations_json: JSON.stringify(locations), angles_json: JSON.stringify(snapshotData.angles),
-      winning_formula_json: JSON.stringify(snapshotData.winningFormula), actions_json: JSON.stringify(snapshotData.actions),
-      ai_raw_json: ai.ok ? JSON.stringify({ locationCommentary: snapshotData.locationCommentary, diagnosisNarrative: snapshotData.diagnosisNarrative, winnerDna: snapshotData.winnerDna, loserAutopsy: snapshotData.loserAutopsy, bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd }) : null,
-      computed_at: new Date(),
-    },
+    create: { profile_id: profile.id, window_name: win, ad_account_id: adAccountId, ...commonJson },
+    update: { ad_account_id: adAccountId, computed_at: new Date(), ...commonJson },
   });
 
   await syncActions(profile.id, snapshotData.actions);
@@ -869,6 +950,16 @@ function deserializeSnapshot(row, precomputed = null) {
     loserAutopsy: extra.loserAutopsy || { available: false },
     bestAd: extra.bestAd || null,
     worstAd: extra.worstAd || null,
+    // Phase 1 — additive columns; a snapshot computed before this phase
+    // simply reads these back as their honest empty defaults.
+    markets: j(row.markets_json, []),
+    buyerInsights: j(row.buyer_insights_json, null),
+    hookIntel: j(row.hook_intel_json, { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }),
+    angleIntel: j(row.angle_intel_json, { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }),
+    needsAttention: j(row.needs_attention_json, []),
+    winningComponents: j(row.winning_components_json, { dataSufficient: false }),
+    marketGaps: j(row.market_gaps_json, { observed: [], gaps: [] }),
+    strategist: j(row.strategist_json, { answers: [] }),
   };
 }
 
@@ -942,15 +1033,31 @@ export async function hookLab({ profileId, angle, category, count }) {
   const n = [5, 10, 20].includes(Number(count)) ? Number(count) : 10;
   return PMAI.generateHooks({ productName: profile.locked_name, angle, category, count: n });
 }
+/** Phase 1 — looks up the real WINNER/PROMISING/... band for this angle/hook label from the latest cached snapshot, so ephemeral AI generations can be status-labeled without a second AI call. Never throws — no cached snapshot yet just means no band info (labelCreativeIdeas/labelPostCopy fall back to NEW_TEST). */
+async function bandForAngle(profileId, angle) {
+  if (!angle) return { hookBand: null, angleBand: null };
+  const snap = await prisma.productMarketingSnapshot.findFirst({ where: { profile_id: Number(profileId) }, orderBy: { computed_at: 'desc' } });
+  if (!snap) return { hookBand: null, angleBand: null };
+  const hookTable = j(snap.hook_intel_json, { table: [] })?.table || [];
+  const angleTable = j(snap.angle_intel_json, { table: [] })?.table || [];
+  return { hookBand: hookTable.find((h) => h.label === angle)?.band || null, angleBand: angleTable.find((a) => a.label === angle)?.band || null };
+}
+
 export async function postGenerator({ profileId, angle, tone }) {
   const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
   if (!profile) throw bad('البروفايل غير موجود.', 404);
-  return PMAI.generatePost({ productName: profile.locked_name, angle, tone });
+  const res = await PMAI.generatePost({ productName: profile.locked_name, angle, tone });
+  if (!res.ok) return res;
+  const { angleBand } = await bandForAngle(profileId, angle);
+  return { ...res, post: labelPostCopy(res.post, { angleBand }) };
 }
 export async function creativeIdeas({ profileId, angle, count }) {
   const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
   if (!profile) throw bad('البروفايل غير موجود.', 404);
-  return PMAI.generateCreativeIdeas({ productName: profile.locked_name, angle, count: Math.min(Number(count) || 4, 8) });
+  const res = await PMAI.generateCreativeIdeas({ productName: profile.locked_name, angle, count: Math.min(Number(count) || 4, 8) });
+  if (!res.ok) return res;
+  const { hookBand, angleBand } = await bandForAngle(profileId, angle);
+  return { ...res, ideas: labelCreativeIdeas(res.ideas, { hookBand, angleBand }) };
 }
 /** §24 one-click test pack — composes the smaller generators into one bundle. */
 export async function testPack({ profileId, angle }) {
