@@ -641,32 +641,25 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   const bestCreative = await creativeAnalysisFor(bestWorst.best?.creativeId);
   const worstCreative = await creativeAnalysisFor(bestWorst.worst?.creativeId);
 
-  // Phase 1 — Markets & Areas (real Easy Orders governorate economics) and
-  // Buyer Insights (deterministic, never raw PII), both guarded on having a
-  // resolved catalog product; Hook/Selling-Angle Intelligence guarded on a
-  // confirmed AmbProduct mapping (needs the real ad tree).
-  let markets = { source: 'none', markets: [] };
-  let buyerInsights = null;
-  if (effectiveProductId) {
-    markets = await marketsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch(() => ({ source: 'none', markets: [] }));
-    buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch(() => null);
-  }
-  // Hook/Selling-Angle Intelligence — TEMPORARILY DISABLED, see incident
-  // note below. Falls back to the same honest "no data yet" shape the
-  // frontend already renders correctly for a never-computed product.
+  // Phase 1 real-data additions (Markets & Areas, Buyer Insights, Hook/
+  // Selling-Angle Intelligence) — ALL TEMPORARILY DISABLED. Fall back to the
+  // same honest "no data yet" shape the frontend already renders correctly.
+  //
+  // INCIDENT (2026-09-14): computeSnapshot() reproducibly crashed the
+  // production process — not just a slow/timed-out request, the whole Node
+  // process went down and Railway had to auto-restart it — for profile 36
+  // (a real AmbProduct-mapped product with substantial order/ad history).
+  // Disabling hookAndAngleIntelForProduct() + the prior-window fatigue
+  // buildHierarchy() call did NOT stop the crash on a second attempt,
+  // meaning the cause is not isolated to those two functions. Rather than
+  // continue trial-and-error against production, every Phase 1 addition
+  // that touches this specific product's real data volume is disabled here
+  // until root-caused safely (e.g. against a non-production copy). The
+  // crash was not caught by the new global unhandledRejection handler in
+  // server.js either, meaning it is not an ordinary thrown/rejected error.
+  const markets = { source: 'none', markets: [] };
+  const buyerInsights = null;
   const hookAngleIntel = { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
-  // INCIDENT (2026-09-14): calling hookAndAngleIntelForProduct() here (and
-  // the prior-window buildHierarchy() call above it) reproducibly crashed
-  // the production process for a real AmbProduct-mapped profile (id 36) —
-  // confirmed by isolating: profile 43 (no AmbProduct, these calls skipped
-  // entirely) completed without crashing; profile 36 (AmbProduct present,
-  // both calls active) crashed the process twice in a row, each time
-  // recovering only via Railway's auto-restart. The crash was NOT caught by
-  // this function's own .catch() handlers nor by the new global
-  // unhandledRejection handler in server.js, meaning it is not an ordinary
-  // thrown/rejected error — root cause not yet identified. Disabled here
-  // pending investigation in a lower-risk environment; re-enable only after
-  // reproducing and fixing the actual cause, not just adding another catch.
 
   const aiCtx = {
     productName: profile.locked_name,
