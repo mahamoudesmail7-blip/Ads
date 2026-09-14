@@ -48,14 +48,36 @@ export function resolveWindow(name) {
   }
 }
 
+// INCIDENT (2026-09-14): this query used to fetch EVERY historical snapshot
+// row in the window (one new row per entity per ~15-min sync cycle,
+// forever) and reduce to "latest per entity per day" in JS afterward. On
+// the real production account (meta_performance_snapshots has grown to
+// ~218k rows after weeks of syncing) that meant a single `level:'ad'` call
+// for a 7-day window fetched 97,904 full rows (~222MB of JSON) and took 88
+// seconds — done 3x concurrently (campaign+adset+ad) inside buildHierarchy(),
+// this reliably exhausted the server's memory and crashed the whole Node
+// process (a hard OOM kill, which is why no try/catch, .catch(), or even a
+// global unhandledRejection handler ever saw it — the OS kills the process
+// directly, bypassing JS error handling entirely).
+//
+// Fixed by pushing the SAME "latest snapshot per entity per day" reduction
+// that latestPerDayPerEntity() below already does in JS down into the SQL
+// query itself (a Postgres DISTINCT ON via Prisma's distinct+orderBy),
+// so only one row per (entity, date_start) is ever fetched — the exact
+// same rows latestPerDayPerEntity() would have kept anyway, just computed
+// by the database instead of by pulling everything into Node's memory
+// first. Return shape and every downstream function are unchanged.
 export async function loadSnapshots({ level, from, to, adAccountId }) {
+  const idField = LEVEL_ID_FIELD[level];
   return prisma.metaPerformanceSnapshot.findMany({
     where: {
       level,
       date_start: { gte: from, lte: to },
+      [idField]: { not: null }, // a null entity id can never be grouped/kept by latestPerDayPerEntity() anyway — it already skips these
       ...(adAccountId ? { ad_account_id: adAccountId } : {}),
     },
-    orderBy: { snapshot_at: 'asc' },
+    orderBy: [{ [idField]: 'asc' }, { date_start: 'asc' }, { snapshot_at: 'desc' }],
+    distinct: [idField, 'date_start'],
   });
 }
 

@@ -1188,6 +1188,16 @@ model MetaPerformanceSnapshot {
   @@index([level, campaign_id])
   @@index([adset_id])
   @@index([ad_id])
+  // Support loadSnapshots()'s "latest snapshot per entity per day" query
+  // (a DISTINCT ON campaign_id/adset_id/ad_id + date_start, ordered by
+  // snapshot_at DESC) — added after a production incident where, without a
+  // matching index, that query had to sort the ENTIRE level+window row set
+  // from scratch (tens of thousands of rows, 35-80s each) even after the
+  // row-count itself was fixed. One composite index per level's id column,
+  // matching the exact WHERE+ORDER BY shape of that query.
+  @@index([ad_account_id, level, campaign_id, date_start, snapshot_at], map: "meta_performance_snapshots_acc_lvl_campaign_date_snap_idx")
+  @@index([ad_account_id, level, adset_id, date_start, snapshot_at], map: "meta_performance_snapshots_acc_lvl_adset_date_snap_idx")
+  @@index([ad_account_id, level, ad_id, date_start, snapshot_at], map: "meta_performance_snapshots_acc_lvl_ad_date_snap_idx")
   @@map("meta_performance_snapshots")
 }
 
