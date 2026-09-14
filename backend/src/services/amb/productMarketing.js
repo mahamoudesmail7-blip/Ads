@@ -659,18 +659,29 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // actually implicated in the OOM, only disabled defensively alongside
   // everything else. Re-enabled here.
   //
-  // Block B (separate, later change) — hookAngleIntel/priorMetrics DO call
-  // buildHierarchy() and will be re-enabled one at a time, each verified
-  // against production before the next, now that the true root cause is
-  // fixed rather than merely worked around.
+  // Block B (this change, step 1 of 2) — hookAngleIntel DOES call
+  // buildHierarchy() (one more pass, current window only) and is re-enabled
+  // here first, verified against production before priorMetrics (step 2,
+  // a second buildHierarchy pass on the PRIOR window) is touched — now that
+  // the true root cause is fixed rather than merely worked around.
   let markets = { source: 'none', markets: [] };
   let buyerInsights = null;
   if (effectiveProductId) {
     markets = await marketsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] marketsForProduct failed', { message: e.message }); return { source: 'none', markets: [] }; });
     buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] buyerInsightsForProduct failed', { message: e.message }); return null; });
   }
-  // Hook/Selling-Angle Intelligence (Block B) — still disabled for now.
-  const hookAngleIntel = { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
+  // Hook/Selling-Angle Intelligence (Block B, this change) — one more
+  // buildHierarchy() call for the CURRENT window, now safe post-OOM-fix
+  // (630-675ms/level verified). Only attempted when there's a real,
+  // confirmed AmbProduct mapping (same gate as bestWorst/pickBestWorstAds
+  // above) — never guessed from a loose campaign-name match. Falls back to
+  // the same honest disabled-shape default on any failure, never throws.
+  const hookAngleIntel = (adAccountId && ambProduct)
+    ? await hookAndAngleIntelForProduct({ adAccountId, window, settings, ambProductId: ambProduct.id }).catch((e) => {
+        logger.warn('[ProductMarketing] hookAndAngleIntelForProduct failed', { message: e.message });
+        return { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
+      })
+    : { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
 
   const aiCtx = {
     productName: profile.locked_name,
