@@ -8,6 +8,7 @@
 // paused, unrelated multi-store `storeId` work).
 import { prisma } from '../../prisma.js';
 import { bandMarket } from './productMarketingScoring.js';
+import { normalizeGovernorateName } from './governorateNormalize.js';
 
 const EMPTY_RESULT = {
   source: 'none', orders: null, confirmed: null, delivered: null, returned: null, cancelled: null,
@@ -65,7 +66,7 @@ export async function customerQualityForProduct({ productId, from, to }) {
   // original orders/delivered counts. No second DB round-trip.
   const byGov = new Map();
   for (const o of orders) {
-    const gov = (o.customer_government || '').trim();
+    const gov = normalizeGovernorateName(o.customer_government);
     if (!gov) continue; // never bucket an unknown address under a fabricated label
     if (!byGov.has(gov)) byGov.set(gov, { government: gov, orders: 0, confirmed: 0, delivered: 0, returned: 0, cancelled: 0, revenue: 0, deliveredRevenue: 0, customerIds: new Set() });
     const g = byGov.get(gov);

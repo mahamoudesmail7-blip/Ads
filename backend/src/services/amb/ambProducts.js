@@ -118,10 +118,15 @@ export async function productDashboard(id, { windowName } = {}) {
     }
   }
 
-  const cod = p.product_id ? await codCountsForProduct({ productId: p.product_id, from: window.from, to: window.to }) : { source: 'none', orders: null, confirmed: null, delivered: null, returned: null };
+  const cod = p.product_id ? await codCountsForProduct({ productId: p.product_id, from: window.from, to: window.to }) : { source: 'none', orders: null, confirmed: null, delivered: null, returned: null, revenue: null, deliveredRevenue: null };
   const observed = p.product_id ? await observedRatesForProduct({ productId: p.product_id, from: window.from, to: window.to }) : { source: 'none', confirmationRate: null, deliveryRate: null };
 
-  const bundle = netProfitBundle(p, { adSpend: meta.spend, deliveredOrders: cod.delivered, returnedOrders: cod.returned });
+  // §Block A — pass the REAL delivered-order revenue (summed order_cost,
+  // from codCountsForProduct()) when it's available, so netProfitBundle()
+  // uses it instead of its price × delivered-count estimate. Falls back to
+  // the estimate exactly as before whenever real revenue isn't available
+  // (source:'daily_orders'/'none') — the fallback path is unchanged.
+  const bundle = netProfitBundle(p, { adSpend: meta.spend, deliveredOrders: cod.delivered, returnedOrders: cod.returned, actualRevenue: cod.deliveredRevenue });
   const avgCpa = meta.purchases ? meta.spend / meta.purchases : null;
   const deliveredCpa = cod.delivered ? meta.spend / cod.delivered : null;
   const confirmedCpa = cod.confirmed ? meta.spend / cod.confirmed : null;
@@ -131,7 +136,7 @@ export async function productDashboard(id, { windowName } = {}) {
     economics: econ,
     window,
     meta,
-    cod: { source: cod.source, orders: cod.orders, confirmed: cod.confirmed, delivered: cod.delivered, returned: cod.returned },
+    cod: { source: cod.source, orders: cod.orders, confirmed: cod.confirmed, delivered: cod.delivered, returned: cod.returned, revenue: cod.revenue, deliveredRevenue: cod.deliveredRevenue },
     observedRates: observed,
     metrics: {
       totalSpend: meta.spend,
@@ -139,6 +144,7 @@ export async function productDashboard(id, { windowName } = {}) {
       confirmedOrders: cod.confirmed,
       deliveredOrders: cod.delivered,
       revenue: bundle.revenue,
+      revenueSource: bundle.revenueSource,
       avgCpa,
       confirmedCpa,
       deliveredCpa,

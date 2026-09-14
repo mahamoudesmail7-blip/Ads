@@ -30,7 +30,7 @@ import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
 import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct, healthBand, prioritizeActions } from './productMarketingScoring.js';
-import { assembleNeedsAttention, assembleWinningComponents, labelCreativeIdeas, labelPostCopy } from './productMarketingAssemblers.js';
+import { assembleNeedsAttention, assembleWinningComponents, labelCreativeIdeas, labelPostCopy, assembleDataCompleteness } from './productMarketingAssemblers.js';
 import * as PMAI from './productMarketingAI.js';
 import { mapProductByName } from '../../../../js/product-mapping.js';
 
@@ -641,24 +641,33 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   const bestCreative = await creativeAnalysisFor(bestWorst.best?.creativeId);
   const worstCreative = await creativeAnalysisFor(bestWorst.worst?.creativeId);
 
-  // Phase 1 real-data additions (Markets & Areas, Buyer Insights, Hook/
-  // Selling-Angle Intelligence) — ALL TEMPORARILY DISABLED. Fall back to the
-  // same honest "no data yet" shape the frontend already renders correctly.
+  // INCIDENT (2026-09-14) HISTORY: computeSnapshot() reproducibly crashed
+  // production (a hard OOM kill, not an ordinary error) for AmbProduct-
+  // mapped profiles. Root-caused since: metricsEngine.js's loadSnapshots()
+  // was fetching every historical Meta snapshot row unbounded (97,904 rows/
+  // ~222MB for one level/window on the real account) — fixed at the source
+  // via a genuine $queryRaw DISTINCT ON + supporting indexes, verified live
+  // (630-675ms/level, zero crashes across repeated real-production tests up
+  // to 47s). That fix benefits buildHierarchy() itself, so re-enablement
+  // proceeds incrementally per-block, safest first:
   //
-  // INCIDENT (2026-09-14): computeSnapshot() reproducibly crashed the
-  // production process — not just a slow/timed-out request, the whole Node
-  // process went down and Railway had to auto-restart it — for profile 36
-  // (a real AmbProduct-mapped product with substantial order/ad history).
-  // Disabling hookAndAngleIntelForProduct() + the prior-window fatigue
-  // buildHierarchy() call did NOT stop the crash on a second attempt,
-  // meaning the cause is not isolated to those two functions. Rather than
-  // continue trial-and-error against production, every Phase 1 addition
-  // that touches this specific product's real data volume is disabled here
-  // until root-caused safely (e.g. against a non-production copy). The
-  // crash was not caught by the new global unhandledRejection handler in
-  // server.js either, meaning it is not an ordinary thrown/rejected error.
-  const markets = { source: 'none', markets: [] };
-  const buyerInsights = null;
+  // Block A (this change) — Markets & Areas and Buyer Insights are pure
+  // EasyOrdersOrder/Customer reads that never call buildHierarchy() at all
+  // (confirmed by reading both functions in full) — they were never
+  // actually implicated in the OOM, only disabled defensively alongside
+  // everything else. Re-enabled here.
+  //
+  // Block B (separate, later change) — hookAngleIntel/priorMetrics DO call
+  // buildHierarchy() and will be re-enabled one at a time, each verified
+  // against production before the next, now that the true root cause is
+  // fixed rather than merely worked around.
+  let markets = { source: 'none', markets: [] };
+  let buyerInsights = null;
+  if (effectiveProductId) {
+    markets = await marketsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] marketsForProduct failed', { message: e.message }); return { source: 'none', markets: [] }; });
+    buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] buyerInsightsForProduct failed', { message: e.message }); return null; });
+  }
+  // Hook/Selling-Angle Intelligence (Block B) — still disabled for now.
   const hookAngleIntel = { hooks: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false }, angles: { winner: null, table: [], labeledAds: 0, unlabeledAds: 0, dataAvailable: false } };
 
   const aiCtx = {
@@ -700,6 +709,17 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   const marketGaps = { observed: [], gaps: [] };
   const strategist = { answers: [] };
 
+  // Diagnostics only (spec: "do not clutter the normal UI") — computed
+  // unconditionally, even when the AI call failed, so a real AI outage
+  // never hides the fact that deterministic data itself is fine.
+  let dataCompleteness = null;
+  try {
+    dataCompleteness = assembleDataCompleteness({
+      metaMapped, metrics, cod, revenueSource: dashboard?.metrics?.revenueSource ?? null,
+      markets: markets.markets, locations, bestAd: aiCtx.bestAd, ai, hookAngleIntelEnabled: hookAngleIntel.hooks.dataAvailable,
+    });
+  } catch (e) { logger.warn('[ProductMarketing] assembleDataCompleteness failed', { message: e.message }); }
+
   const snapshotData = {
     metrics, opportunity, diagnosis, locations,
     audience: ai.ok ? ai.audience : { unavailable: true, reason: ai.reason },
@@ -713,7 +733,7 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd,
     aiFailed: !ai.ok, aiFailReason: ai.ok ? null : ai.reason,
     markets: markets.markets, buyerInsights, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles,
-    needsAttention, winningComponents, marketGaps, strategist,
+    needsAttention, winningComponents, marketGaps, strategist, dataCompleteness,
   };
 
   await recordMemoryDiffs(profile.id, snapshotData);
@@ -722,7 +742,12 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     metrics_json: JSON.stringify(metrics), opportunity_json: JSON.stringify(opportunity), diagnosis_json: JSON.stringify(diagnosis),
     audience_json: JSON.stringify(snapshotData.audience), locations_json: JSON.stringify(locations), angles_json: JSON.stringify(snapshotData.angles),
     winning_formula_json: JSON.stringify(snapshotData.winningFormula), actions_json: JSON.stringify(snapshotData.actions),
-    ai_raw_json: ai.ok ? JSON.stringify({ locationCommentary: snapshotData.locationCommentary, diagnosisNarrative: snapshotData.diagnosisNarrative, winnerDna: snapshotData.winnerDna, loserAutopsy: snapshotData.loserAutopsy, bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd }) : null,
+    // dataCompleteness (diagnostics) is included REGARDLESS of ai.ok — a
+    // real AI outage must never hide that the deterministic data is fine.
+    ai_raw_json: JSON.stringify({
+      ...(ai.ok ? { locationCommentary: snapshotData.locationCommentary, diagnosisNarrative: snapshotData.diagnosisNarrative, winnerDna: snapshotData.winnerDna, loserAutopsy: snapshotData.loserAutopsy } : {}),
+      bestAd: aiCtx.bestAd, worstAd: aiCtx.worstAd, dataCompleteness,
+    }),
     markets_json: JSON.stringify(snapshotData.markets),
     buyer_insights_json: buyerInsights ? JSON.stringify(buyerInsights) : null,
     hook_intel_json: JSON.stringify(hookAngleIntel.hooks),
@@ -979,7 +1004,7 @@ export async function confirmMetaMapping({ profileId, campaignIds, userId }) {
 }
 
 function deserializeSnapshot(row, precomputed = null) {
-  const extra = precomputed ? { locationCommentary: precomputed.locationCommentary, diagnosisNarrative: precomputed.diagnosisNarrative, winnerDna: precomputed.winnerDna, loserAutopsy: precomputed.loserAutopsy, bestAd: precomputed.bestAd, worstAd: precomputed.worstAd }
+  const extra = precomputed ? { locationCommentary: precomputed.locationCommentary, diagnosisNarrative: precomputed.diagnosisNarrative, winnerDna: precomputed.winnerDna, loserAutopsy: precomputed.loserAutopsy, bestAd: precomputed.bestAd, worstAd: precomputed.worstAd, dataCompleteness: precomputed.dataCompleteness }
     : (j(row.ai_raw_json, {}) || {});
   return {
     profileId: row.profile_id,
@@ -1009,6 +1034,7 @@ function deserializeSnapshot(row, precomputed = null) {
     winningComponents: j(row.winning_components_json, { dataSufficient: false }),
     marketGaps: j(row.market_gaps_json, { observed: [], gaps: [] }),
     strategist: j(row.strategist_json, { answers: [] }),
+    dataCompleteness: extra.dataCompleteness || null,
   };
 }
 

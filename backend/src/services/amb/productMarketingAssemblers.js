@@ -109,3 +109,56 @@ export function labelPostCopy(post, { angleBand = null } = {}) {
   else if (angleBand === 'PROMISING' || angleBand === 'AVERAGE') status = 'VARIATION';
   return { ...post, status };
 }
+
+/**
+ * PMC data-completeness diagnostic (spec: "per analysis" object covering
+ * metaPerformance/easyOrders/economics/demographics/geography/creative/
+ * hooks/competitors/experiments/ai). Pure assembly over already-computed
+ * signals — no new query, no new signal invented. Diagnostics only, never
+ * meant to clutter the normal UI; the frontend may surface it in a
+ * collapsed/debug panel only. Every dimension is AVAILABLE|PARTIAL|MISSING|ERROR
+ * plus a `reason`.
+ */
+export function assembleDataCompleteness({ metaMapped, metrics, cod, revenueSource, markets, locations, bestAd, ai, hookAngleIntelEnabled = false }) {
+  const dim = (status, reason) => ({ status, reason });
+
+  const metaPerformance = !metaMapped
+    ? dim('MISSING', 'لا توجد حملة Meta مرتبطة بهذا المنتج بعد.')
+    : (metrics?.totalSpend || 0) > 0
+      ? dim('AVAILABLE', 'بيانات إنفاق وأداء حقيقية من Meta.')
+      : dim('PARTIAL', 'الحملة مربوطة لكن لسه مفيش صرف كافي في هذه الفترة.');
+
+  const easyOrders = cod?.source === 'easyorders'
+    ? dim('AVAILABLE', 'بيانات طلبات حقيقية من Easy Orders.')
+    : cod?.source === 'daily_orders'
+      ? dim('PARTIAL', 'بيانات ملخّصة يومية فقط (بدون تفاصيل الحالة/المحافظة).')
+      : dim('MISSING', 'لا توجد بيانات Easy Orders لهذا المنتج في هذه الفترة.');
+
+  const economics = revenueSource === 'real'
+    ? dim('AVAILABLE', 'الإيراد وصافي الربح محسوبين من قيمة الطلبات الحقيقية.')
+    : revenueSource === 'estimated'
+      ? dim('PARTIAL', 'الإيراد تقديري (سعر البيع × عدد الطلبات المُستلمة) — لا توجد قيمة طلب حقيقية بعد.')
+      : dim('MISSING', 'لا يمكن حساب الاقتصاديات بدون بيانات طلبات مُستلمة.');
+
+  const demographics = dim('MISSING', 'Meta لا يوفر بيانات تقسيم الجمهور (عمر/نوع) في هذا النظام حاليًا — يحتاج تفعيل breakdowns في مزامنة Meta، غير مُفعّل الآن.');
+
+  const geography = (markets?.length || locations?.length)
+    ? dim('AVAILABLE', 'توزيع محافظات حقيقي من طلبات Easy Orders.')
+    : dim('MISSING', 'لا توجد طلبات بعنوان محافظة معروف في هذه الفترة.');
+
+  const creative = bestAd?.analysis
+    ? dim('AVAILABLE', 'تحليل كرياتيف حقيقي متاح لأفضل إعلان.')
+    : bestAd
+      ? dim('PARTIAL', 'يوجد أفضل إعلان لكن لسه مفيش تحليل كرياتيف له.')
+      : dim('MISSING', 'لا يوجد إعلان بأداء كافٍ لتحليله بعد.');
+
+  const hooks = hookAngleIntelEnabled
+    ? dim('AVAILABLE', 'تحليل Hooks/Selling Angles من الإعلانات الحقيقية الجارية.')
+    : dim('MISSING', 'تحليل Hooks/Selling Angles من الإعلانات الحقيقية معطّل مؤقتًا (قيد إعادة التفعيل التدريجي).');
+
+  const competitors = dim('PARTIAL', 'يتم تحميلها عند فتح تبويب المنافسين (بحث محفوظ سابقًا)، وليست جزء من التحليل التلقائي.');
+  const experiments = dim('PARTIAL', 'يتم تحميلها عند فتح تبويب الاختبارات، وليست جزء من التحليل التلقائي.');
+  const aiDim = ai?.ok ? dim('AVAILABLE', 'التفسير الذكي تم توليده بنجاح.') : dim('ERROR', ai?.reason || 'تعذّر توليد التفسير الذكي.');
+
+  return { metaPerformance, easyOrders, economics, demographics, geography, creative, hooks, competitors, experiments, ai: aiDim };
+}

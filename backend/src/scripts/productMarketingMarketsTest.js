@@ -72,7 +72,32 @@ console.log('\n§3 no product with any orders -> marketsForProduct returns sourc
   ok('empty markets array', Array.isArray(markets) && markets.length === 0);
 }
 
-console.log('\n§4 zero writes anywhere in this file:');
+console.log('\n§4b GOVERNORATE NORMALIZATION — the real production bug: spelling variants for the same real governorate must merge into ONE row, never split (product 126\'s real orders were found stored as "الاسكندرية", no hamza):');
+{
+  const VARIANT_ORDERS = [
+    { order_id: 'v1', status: 'DELIVERED', order_cost: 500, product_id: 2, customer_id: 400, customer_government: 'الاسكندرية' }, // no hamza — the real stored spelling
+    { order_id: 'v2', status: 'CONFIRMED', order_cost: 300, product_id: 2, customer_id: 401, customer_government: 'الإسكندرية' }, // with hamza — MSA-correct
+    { order_id: 'v3', status: 'DELIVERED', order_cost: 200, product_id: 2, customer_id: 402, customer_government: 'Alexandria' }, // English
+    { order_id: 'v4', status: 'DELIVERED', order_cost: 100, product_id: 2, customer_id: 403, customer_government: 'طنطا' }, // a real DIFFERENT city — must NOT be merged into Alexandria
+  ];
+  const origFindMany = prisma.easyOrdersOrder.findMany;
+  prisma.easyOrdersOrder.findMany = async ({ where = {} } = {}) => (where.product_id === 2 ? VARIANT_ORDERS : origFindMany({ where }));
+  const origCustFindMany = prisma.customer.findMany;
+  prisma.customer.findMany = async ({ where = {} } = {}) => (where.id?.in ? [400, 401, 402, 403].filter((id) => where.id.in.includes(id)).map((id) => ({ id, total_orders: 1 })) : []);
+
+  const { markets } = await marketsForProduct({ productId: 2, minOrders: 1 });
+  const alex = markets.find((m) => m.government === 'الإسكندرية');
+  ok('all 3 real Alexandria spelling variants (no-hamza, hamza, English) merge into ONE "الإسكندرية" row', alex && alex.orders === 3, JSON.stringify(markets));
+  ok('merged Alexandria revenue is the real sum across all 3 variants: 500+300+200=1000', alex?.revenue === 1000, String(alex?.revenue));
+  ok('merged Alexandria delivered count is correct: v1 and v3 are DELIVERED (2), v2 is only CONFIRMED', alex?.delivered === 2, String(alex?.delivered));
+  ok('طنطا (a genuinely different city) is NEVER merged into Alexandria — stays its own separate row', markets.some((m) => m.government === 'طنطا'), JSON.stringify(markets));
+  ok('exactly 2 distinct governorate rows total (الإسكندرية merged + طنطا separate), not 4', markets.length === 2, JSON.stringify(markets.map((m) => m.government)));
+
+  prisma.easyOrdersOrder.findMany = origFindMany;
+  prisma.customer.findMany = origCustFindMany;
+}
+
+console.log('\n§5 zero writes anywhere in this file:');
 ok('no guarded prisma write method was ever called', dbWriteAttempted === false);
 
 console.log(`\n${pass} passed, ${fail} failed`);

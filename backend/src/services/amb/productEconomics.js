@@ -107,9 +107,16 @@ export function netProfitBundle(p, { adSpend, deliveredOrders, returnedOrders, a
   const returned = num(returnedOrders) ?? 0;
   const spend = n0(adSpend);
   if (sp === null || delivered === null) {
-    return { revenue: null, adSpend: spend, cogs: null, shipping: null, packaging: null, rtoCost: null, otherCost: null, netProfit: null, netMarginPct: null };
+    return { revenue: null, revenueSource: null, adSpend: spend, cogs: null, shipping: null, packaging: null, rtoCost: null, otherCost: null, netProfit: null, netMarginPct: null };
   }
-  const revenue = num(actualRevenue) ?? sp * delivered;
+  // §Block A — prefer the real summed delivered-order revenue whenever the
+  // caller has it (codOrders.js's codCountsForProduct() now provides it);
+  // only fall back to a price × count ESTIMATE when real revenue is
+  // genuinely unavailable, and say so explicitly via revenueSource so
+  // callers/UI never present an estimate as a real number.
+  const hasRealRevenue = num(actualRevenue) !== null;
+  const revenue = hasRealRevenue ? num(actualRevenue) : sp * delivered;
+  const revenueSource = hasRealRevenue ? 'real' : 'estimated';
   const cogs = n0(p.product_cost) * delivered;
   const packaging = n0(p.packaging_cost) * delivered;
   const shipping = n0(p.shipping_cost) * delivered;
@@ -117,7 +124,7 @@ export function netProfitBundle(p, { adSpend, deliveredOrders, returnedOrders, a
   const rtoCost = n0(p.rto_cost) * returned;
   const netProfit = revenue - (cogs + packaging + shipping + otherCost + rtoCost + spend);
   const netMarginPct = revenue > 0 ? (netProfit / revenue) * 100 : null;
-  return { revenue, adSpend: spend, cogs, shipping, packaging, rtoCost, otherCost, netProfit, netMarginPct };
+  return { revenue, revenueSource, adSpend: spend, cogs, shipping, packaging, rtoCost, otherCost, netProfit, netMarginPct };
 }
 
 /** One flat object with every headline economics figure for a product — what the Products section and the rule engine both read. */
