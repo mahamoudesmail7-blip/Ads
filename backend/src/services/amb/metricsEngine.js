@@ -10,6 +10,7 @@
 // LATEST snapshot for (entity, date_start=D); a multi-day window sums those
 // latest-per-day rows; an intra-day trend diffs two snapshots of the same
 // (entity, today) row.
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma.js';
 
 const LEVEL_ID_FIELD = { campaign: 'campaign_id', adset: 'adset_id', ad: 'ad_id' };
@@ -62,23 +63,36 @@ export function resolveWindow(name) {
 //
 // Fixed by pushing the SAME "latest snapshot per entity per day" reduction
 // that latestPerDayPerEntity() below already does in JS down into the SQL
-// query itself (a Postgres DISTINCT ON via Prisma's distinct+orderBy),
-// so only one row per (entity, date_start) is ever fetched — the exact
-// same rows latestPerDayPerEntity() would have kept anyway, just computed
-// by the database instead of by pulling everything into Node's memory
-// first. Return shape and every downstream function are unchanged.
+// query itself — a Postgres DISTINCT ON, run as a genuine raw query rather
+// than via Prisma's findMany({distinct, orderBy}) ORM sugar. UPDATE:
+// findMany's distinct+orderBy was tried first and DID reduce the row count
+// correctly (97,904 -> 669), but a second production test still crashed —
+// EXPLAIN ANALYZE on the equivalent raw SQL showed the real query executes
+// in ~400ms, while the exact same logical query through Prisma's client
+// took 30-50 SECONDS. Prisma's `distinct` does not push a real DISTINCT ON
+// down to Postgres the way this needed; it was still paying the full
+// scan/transfer cost of every historical row under the hood. $queryRaw
+// with the identical SQL EXPLAIN already proved fast is the fix — every
+// value is parameterized (level/from/to/adAccountId), only the column NAME
+// (campaign_id/adset_id/ad_id) is interpolated via Prisma.raw(), and that
+// name only ever comes from this file's own hardcoded LEVEL_ID_FIELD map,
+// never from external input. Return shape and every downstream function
+// (latestPerDayPerEntity/aggregateRows/entityWindowMetrics) are unchanged
+// — Prisma's raw-query result rows carry the same snake_case column names
+// as the schema, same as a normal findMany() result.
 export async function loadSnapshots({ level, from, to, adAccountId }) {
   const idField = LEVEL_ID_FIELD[level];
-  return prisma.metaPerformanceSnapshot.findMany({
-    where: {
-      level,
-      date_start: { gte: from, lte: to },
-      [idField]: { not: null }, // a null entity id can never be grouped/kept by latestPerDayPerEntity() anyway — it already skips these
-      ...(adAccountId ? { ad_account_id: adAccountId } : {}),
-    },
-    orderBy: [{ [idField]: 'asc' }, { date_start: 'asc' }, { snapshot_at: 'desc' }],
-    distinct: [idField, 'date_start'],
-  });
+  const idCol = Prisma.raw(`"${idField}"`);
+  return prisma.$queryRaw`
+    SELECT DISTINCT ON (${idCol}, date_start) *
+    FROM "meta_performance_snapshots"
+    WHERE level = ${level}
+      AND date_start >= ${from}
+      AND date_start <= ${to}
+      AND ${idCol} IS NOT NULL
+      ${adAccountId ? Prisma.sql`AND ad_account_id = ${adAccountId}` : Prisma.empty}
+    ORDER BY ${idCol} ASC, date_start ASC, snapshot_at DESC
+  `;
 }
 
 /** Map<entityId, Map<date_start, latest-snapshot-row-for-that-day>>. Latest = max snapshot_at (rows arrive ordered asc, so last write wins). */

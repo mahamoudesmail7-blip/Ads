@@ -130,8 +130,17 @@ let snapshotRows = [
   // A campaign already MAPPED to a DIFFERENT AmbProduct — must show as a conflict, never a suggestion.
   snapshotRow({ level: 'campaign', campaignId: 'c7', campaignName: 'GlowBrush _ scale conflict', spend: 700, purchases: 7 }),
 ];
-prisma.metaPerformanceSnapshot.findMany = async ({ where = {} } = {}) => {
-  return snapshotRows.filter((r) => r.level === where.level && r.ad_account_id === where.ad_account_id && r.date_start >= where.date_start.gte && r.date_start <= where.date_start.lte);
+// loadSnapshots() now runs a genuine $queryRaw (a real Postgres DISTINCT
+// ON) rather than Prisma's findMany({distinct}) ORM sugar — see
+// metricsEngineSnapshotVolumeTest.js for why. `level`/`from`/`to` are the
+// only plain-string interpolated values in that query (the id-column and
+// the account-id filter are Prisma.raw()/Prisma.sql() objects, not plain
+// values), so they're recovered positionally here the same way that test
+// does. This fixture's rows are already one-per-entity (no duplicate sync
+// cycles), so no further dedup simulation is needed.
+prisma.$queryRaw = async (strings, ...values) => {
+  const [level, from, to] = values.filter((v) => typeof v === 'string');
+  return snapshotRows.filter((r) => r.level === level && r.date_start >= from && r.date_start <= to);
 };
 
 const PM = await import(pathToFileURL(join(__dirname, '../services/amb/productMarketing.js')).href);
