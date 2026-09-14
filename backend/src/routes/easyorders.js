@@ -4,10 +4,9 @@
 // directly from EasyOrdersOrder rows written by the real webhook in
 // webhooks.js; nothing is invented, randomized, or hardcoded.
 import { Router } from 'express';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { prisma } from '../prisma.js';
-import { fetchOrderById } from '../services/easyOrders.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -121,19 +120,5 @@ router.get(
     });
   })
 );
-
-// TEMPORARY, ADMIN-only diagnostic — returns ONE real order's raw Easy
-// Orders API response completely unmodified (no field selection, no
-// transformation, no DB write). Exists solely to inspect what fields Easy
-// Orders' API actually returns (email/notes/coupon/UTM/campaign_id/etc.)
-// before designing any schema for the Customer DB + deeper campaign
-// attribution work — see the "Phase 0" plan. Never used by ingestOrder()
-// or any other real code path. Candidate for removal (or promotion to a
-// permanent small ADMIN utility) once that investigation is done.
-router.get('/debug/order/:orderId', requireRole('ADMIN'), asyncRoute(async (req, res) => {
-  const raw = await fetchOrderById(req.params.orderId);
-  if (!raw) return res.status(404).json({ error: 'NOT_FOUND', message: 'تعذر جلب هذا الأوردر من Easy Orders (غير موجود أو مفتاح API غير مُهيّأ).' });
-  res.json(raw);
-}));
 
 export default router;
