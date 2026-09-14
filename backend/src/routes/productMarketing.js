@@ -132,8 +132,17 @@ router.get('/profiles/:id/winner-intel', asyncRoute(async (req, res) => {
   res.json({ stale: false, hooks: snap.hookIntel, angles: snap.angleIntel });
 }));
 router.get('/profiles/:id/needs-attention', snapshotSlice('needsAttention'));
+
+// ---- Market Gaps / AI Strategist — on demand only (own AI call each, ----
+// ---- NOT part of /analyze's compute — see computeSnapshot()'s comment). ----
 router.get('/profiles/:id/market-gaps', snapshotSlice('marketGaps'));
+router.post('/profiles/:id/market-gaps', asyncRoute(async (req, res) => {
+  res.json(await PM.computeMarketGaps({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
+}));
 router.get('/profiles/:id/strategist', snapshotSlice('strategist'));
+router.post('/profiles/:id/strategist', asyncRoute(async (req, res) => {
+  res.json(await PM.computeStrategistBrief({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
+}));
 
 // ---- Testing Lab + Marketing Memory (§17-20) — serialized to camelCase for the frontend, same convention as routes/customers.js ----
 function serializeTestResult(r) {

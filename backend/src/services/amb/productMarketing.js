@@ -681,35 +681,18 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   const winningFormula = ai.ok ? ai.winningFormula : { available: false };
   const winningComponents = assembleWinningComponents({ bestAd: aiCtx.bestAd, bestAdCreative: bestCreative, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles, markets: markets.markets, winningFormula });
 
-  // §15/§16 Market Gaps — only when real competitor data exists; the
-  // "observed" half is built deterministically from those real rows, the
-  // model only ever adds the "gaps" interpretation (see productMarketingAI.js).
-  let marketGaps = { observed: [], gaps: [] };
-  const competitors = await competitorIntel(profile.id).catch(() => ({ available: false }));
-  if (competitors?.available && competitors.competitors?.length) {
-    const gapsRes = await PMAI.generateMarketGaps({
-      productName: profile.locked_name,
-      ownAngles: (ai.ok ? ai.angles : []).map((a) => a.name).filter(Boolean),
-      ownHooks: (hookAngleIntel.hooks?.table || []).map((h) => h.label),
-      competitors: competitors.competitors,
-      insights: competitors.insights,
-    });
-    marketGaps = { observed: gapsRes.observed || [], gaps: gapsRes.gaps || [] };
-  }
-
-  // §24 AI Strategist — only attempted when the main report itself
-  // succeeded (same real context, no point spending a second AI call on a
-  // product too data-poor for the first one to have said anything useful).
-  let strategist = { answers: [] };
-  if (ai.ok) {
-    const learningRows = await prisma.productMarketingLearning.findMany({ where: { profile_id: profile.id } }).catch(() => []);
-    const strategistRes = await PMAI.generateStrategistBrief({
-      metrics, opportunity, diagnosis, markets: markets.markets, buyerInsights,
-      hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles, marketGaps,
-      learningHistory: learningRows.map((l) => ({ dimension: l.dimension, key: l.key, verdict: l.verdict })),
-    });
-    strategist = strategistRes.ok ? { answers: strategistRes.answers } : { answers: [] };
-  }
+  // §15/§16 Market Gaps and §24 AI Strategist are deliberately NOT computed
+  // here. This function already makes ONE AI call (buildIntelligenceReport)
+  // by design (see the header comment above) — chaining 2 more sequential
+  // AI calls into the same request pushed real-world latency past Railway's
+  // request timeout in production (confirmed: a single AI call ~3.5s, but
+  // buildIntelligenceReport's own large prompt plus 2 more sequential calls
+  // exceeded 25-30s and the request was dropped with "Application failed to
+  // respond"). Both are generated on demand instead, exactly like Hook Lab/
+  // Post Generator/Creative Ideas already are — see computeMarketGaps() and
+  // computeStrategistBrief() below, wired to their own POST routes.
+  const marketGaps = { observed: [], gaps: [] };
+  const strategist = { answers: [] };
 
   const snapshotData = {
     metrics, opportunity, diagnosis, locations,
@@ -752,6 +735,66 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
 
   await syncActions(profile.id, snapshotData.actions);
   return deserializeSnapshot(saved, snapshotData);
+}
+
+// ---------------------------------------------------------------------------
+// §15/§16 Market Gaps and §24 AI Strategist — on-demand only, same pattern
+// as Hook Lab/Post Generator/Creative Ideas below (never part of the cached
+// snapshot's own compute path — see the comment in computeSnapshot() for
+// why). Each reads the ALREADY-cached snapshot's deterministic fields (no
+// recomputation), makes its ONE AI call, and persists just that one column
+// via a targeted update — never touches any other snapshot field.
+// ---------------------------------------------------------------------------
+export async function computeMarketGaps({ profileId, windowName = 'last7', force = false } = {}) {
+  const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
+  if (!profile) throw bad('البروفايل غير موجود.', 404);
+  const win = WINDOWS.includes(windowName) ? windowName : 'last7';
+  const existing = await prisma.productMarketingSnapshot.findUnique({ where: { profile_id_window_name: { profile_id: profile.id, window_name: win } } });
+  if (!existing) throw bad('لازم تحلل المنتج أولاً قبل توليد فجوات السوق.', 400);
+  if (!force) {
+    const cached = j(existing.market_gaps_json, null);
+    if (cached && (cached.gaps?.length || cached.observed?.length)) return cached;
+  }
+  const competitors = await competitorIntel(profile.id).catch(() => ({ available: false }));
+  const result = { observed: [], gaps: [] };
+  if (competitors?.available && competitors.competitors?.length) {
+    const hookIntel = j(existing.hook_intel_json, { table: [] });
+    const angleIntel = j(existing.angle_intel_json, { table: [] });
+    const gapsRes = await PMAI.generateMarketGaps({
+      productName: profile.locked_name,
+      ownAngles: (angleIntel.table || []).map((a) => a.label),
+      ownHooks: (hookIntel.table || []).map((h) => h.label),
+      competitors: competitors.competitors,
+      insights: competitors.insights,
+    });
+    result.observed = gapsRes.observed || [];
+    result.gaps = gapsRes.gaps || [];
+  }
+  await prisma.productMarketingSnapshot.update({ where: { id: existing.id }, data: { market_gaps_json: JSON.stringify(result) } });
+  return result;
+}
+
+export async function computeStrategistBrief({ profileId, windowName = 'last7', force = false } = {}) {
+  const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
+  if (!profile) throw bad('البروفايل غير موجود.', 404);
+  const win = WINDOWS.includes(windowName) ? windowName : 'last7';
+  const existing = await prisma.productMarketingSnapshot.findUnique({ where: { profile_id_window_name: { profile_id: profile.id, window_name: win } } });
+  if (!existing) throw bad('لازم تحلل المنتج أولاً قبل توليد المستشار الذكي.', 400);
+  if (!force) {
+    const cached = j(existing.strategist_json, null);
+    if (cached?.answers?.length) return cached;
+  }
+  const learningRows = await prisma.productMarketingLearning.findMany({ where: { profile_id: profile.id } }).catch(() => []);
+  const res = await PMAI.generateStrategistBrief({
+    metrics: j(existing.metrics_json, {}), opportunity: j(existing.opportunity_json, {}), diagnosis: j(existing.diagnosis_json, []),
+    markets: j(existing.markets_json, []), buyerInsights: j(existing.buyer_insights_json, null),
+    hookIntel: j(existing.hook_intel_json, { table: [] }), angleIntel: j(existing.angle_intel_json, { table: [] }),
+    marketGaps: j(existing.market_gaps_json, { observed: [], gaps: [] }),
+    learningHistory: learningRows.map((l) => ({ dimension: l.dimension, key: l.key, verdict: l.verdict })),
+  });
+  const result = res.ok ? { answers: res.answers } : { answers: [] };
+  await prisma.productMarketingSnapshot.update({ where: { id: existing.id }, data: { strategist_json: JSON.stringify(result) } });
+  return result;
 }
 
 // ---------------------------------------------------------------------------

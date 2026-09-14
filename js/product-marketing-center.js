@@ -1020,11 +1020,22 @@ async function renderCompetitors(mount, s) {
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">بيانات من صفحة "البحث عن المنتجات" الحالية — مفيش بحث جديد بيتعمل هنا.</div>
       ${c.competitors.map((cc) => `<div class="pmc-kv"><span>${E(cc.accountName || cc.accountUrl)} (${E(cc.platform)})</span><b>${cc.followerCount != null ? fmtNum(cc.followerCount) + ' متابع' : 'غير متاح'}</b></div>`).join('')}
     </div>
-    ${gaps?.gaps?.length ? `<div class="pmc-card" style="margin-top:14px;">
-      <div class="h">🎯 فجوات السوق المحتملة</div>
+    <div class="pmc-card" style="margin-top:14px;">
+      <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>🎯 فجوات السوق المحتملة</span>
+        <button class="amb-btn sm" id="pmcGenGaps">${gaps?.gaps?.length ? '🔄 إعادة التوليد' : '🤖 توليد فجوات السوق'}</button>
+      </div>
       <div class="faint" style="font-size:11px;margin-bottom:8px;">استنتاج ذكاء اصطناعي مبني على البيانات الحقيقية أعلاه — مش حقيقة مؤكدة.</div>
-      ${gaps.gaps.map((g) => `<div class="pmc-diag-item"><div class="dot INFO"></div><div><div class="t">${E(g.gap)} ${confPill(g.confidence)}</div><div class="e">${E(g.interpretation)}</div></div></div>`).join('')}
-    </div>` : ''}`;
+      <div id="pmcGapsBox">${gaps?.gaps?.length ? gaps.gaps.map((g) => `<div class="pmc-diag-item"><div class="dot INFO"></div><div><div class="t">${E(g.gap)} ${confPill(g.confidence)}</div><div class="e">${E(g.interpretation)}</div></div></div>`).join('') : '<div class="pmc-empty" style="padding:10px;">لسه ما اتولّدش فجوات سوق لهذا المنتج.</div>'}</div>
+    </div>`;
+  $('pmcGenGaps').onclick = async () => {
+    const box = $('pmcGapsBox'); box.innerHTML = '<div class="pmc-empty">🤖 بنحلل فجوات السوق…</div>';
+    try {
+      const result = await api.post(`/api/product-marketing/profiles/${state.profile.id}/market-gaps`, { window: state.windowName, force: true });
+      s.marketGaps = result;
+      box.innerHTML = result.gaps?.length ? result.gaps.map((g) => `<div class="pmc-diag-item"><div class="dot INFO"></div><div><div class="t">${E(g.gap)} ${confPill(g.confidence)}</div><div class="e">${E(g.interpretation)}</div></div></div>`).join('') : '<div class="pmc-empty" style="padding:10px;">مفيش فجوات واضحة من البيانات الحالية.</div>';
+    } catch (e) { UI.toast(e.message, 'error'); box.innerHTML = '<div class="pmc-empty">تعذّر التوليد.</div>'; }
+  };
 }
 
 // ---- §17-20 — Testing Lab (real, persisted experiments) ----
@@ -1182,20 +1193,35 @@ async function renderTests(mount, s) {
   } catch { /* memory is best-effort */ }
 }
 
-// ---- §24 — AI Product Marketing Strategist ----
+// ---- §24 — AI Product Marketing Strategist (on-demand — own AI call) ----
+function strategistAnswersHtml(answers) {
+  if (!answers?.length) return '<div class="pmc-empty" style="padding:10px;">لسه ما اتولّدش استشارة لهذا المنتج.</div>';
+  return answers.map((a) => `<div class="pmc-diag-item">
+    <div class="dot INFO"></div>
+    <div>
+      <div class="t">${E(a.question)} ${statusPill(a.status)}</div>
+      <div class="e">${E(a.answer)}</div>
+    </div>
+  </div>`).join('');
+}
 function renderStrategist(mount, s) {
   const answers = s.strategist?.answers || [];
   mount.innerHTML = `
     <div class="pmc-card">
-      <div class="h">🧭 المستشار الذكي للتسويق</div>
-      ${answers.length ? answers.map((a) => `<div class="pmc-diag-item">
-        <div class="dot INFO"></div>
-        <div>
-          <div class="t">${E(a.question)} ${statusPill(a.status)}</div>
-          <div class="e">${E(a.answer)}</div>
-        </div>
-      </div>`).join('') : `<div class="pmc-empty">${E(s.aiFailed ? (s.aiFailReason || 'تعذر إكمال التحليل حالياً') : 'البيانات غير كافية للحكم بعد.')}</div>`}
+      <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>🧭 المستشار الذكي للتسويق</span>
+        <button class="amb-btn sm primary" id="pmcGenStrategist">${answers.length ? '🔄 إعادة الاستشارة' : '🤖 اطلب استشارة'}</button>
+      </div>
+      <div id="pmcStrategistBox">${strategistAnswersHtml(answers)}</div>
     </div>`;
+  $('pmcGenStrategist').onclick = async () => {
+    const box = $('pmcStrategistBox'); box.innerHTML = '<div class="pmc-empty">🤖 بنجهّز الاستشارة…</div>';
+    try {
+      const result = await api.post(`/api/product-marketing/profiles/${state.profile.id}/strategist`, { window: state.windowName, force: true });
+      s.strategist = result;
+      box.innerHTML = strategistAnswersHtml(result.answers);
+    } catch (e) { UI.toast(e.message, 'error'); box.innerHTML = '<div class="pmc-empty">تعذّر توليد الاستشارة.</div>'; }
+  };
 }
 
 document.addEventListener('DOMContentLoaded', init);
