@@ -630,11 +630,19 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
 
   const locations = rankLocations(govRows);
 
-  // §11 fatigue corroboration (a second hierarchy pass over the prior
-  // window) is TEMPORARILY DISABLED — see the incident note below. Falls
-  // back to single-signal fatigue detection (already labeled LOW/WEAK
-  // confidence in that case), never silently upgraded.
-  const priorMetrics = null;
+  // §11 fatigue corroboration (Block B step 2) — a second buildHierarchy()
+  // pass, scoped to the PRIOR window (priorWindowOf: same length, ending the
+  // day before this window starts), now safe post-OOM-fix. Only attempted
+  // with a real confirmed AmbProduct mapping (same gate as the current-
+  // window tree above) — on any failure or no prior data, falls back to
+  // null, which computeDiagnosis already treats as "single signal only",
+  // labeling fatigue at WEAK dataSufficiency rather than silently upgraded.
+  let priorMetrics = null;
+  if (adAccountId && ambProduct) {
+    const priorTree = await buildHierarchy({ adAccountId, window: priorWindowOf(window), settings }).catch((e) => { logger.warn('[ProductMarketing] prior-window buildHierarchy failed', { message: e.message }); return null; });
+    const priorNode = priorTree ? (priorTree.products || []).find((x) => String(x.id) === String(ambProduct.id)) : null;
+    priorMetrics = priorNode?.metrics ? { ctr: priorNode.metrics.ctr ?? null, avgCpa: priorNode.metrics.cpa ?? null } : null;
+  }
 
   const opportunityRaw = computeOpportunityScore({ metrics, settings });
   const opportunity = { ...opportunityRaw, healthBand: healthBand(opportunityRaw.score, opportunityRaw.dataSufficient) };
@@ -659,11 +667,12 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // actually implicated in the OOM, only disabled defensively alongside
   // everything else. Re-enabled here.
   //
-  // Block B (this change, step 1 of 2) — hookAngleIntel DOES call
-  // buildHierarchy() (one more pass, current window only) and is re-enabled
-  // here first, verified against production before priorMetrics (step 2,
-  // a second buildHierarchy pass on the PRIOR window) is touched — now that
-  // the true root cause is fixed rather than merely worked around.
+  // Block B — hookAngleIntel (step 1, current window) and priorMetrics
+  // (step 2, PRIOR window — see below) each add one more buildHierarchy()
+  // pass. Step 1 was re-enabled and verified stable against production
+  // (profile 36, the exact product that crashed twice before) prior to
+  // step 2 being touched, now that the true root cause is fixed rather than
+  // merely worked around.
   let markets = { source: 'none', markets: [] };
   let buyerInsights = null;
   if (effectiveProductId) {
