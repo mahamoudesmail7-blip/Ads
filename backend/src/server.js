@@ -27,6 +27,7 @@ import usersRoutes from './routes/users.js';
 import webhookRoutes from './routes/webhooks.js';
 import easyOrdersRoutes from './routes/easyorders.js';
 import lostOrdersRoutes from './routes/lostOrders.js';
+import customersRoutes from './routes/customers.js'; // Customer Database — search/detail views (see routes/customers.js)
 import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
@@ -78,6 +79,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes); // public — authenticated via the `secret` header EasyOrders sends, not a user session
 app.use('/api/easyorders', easyOrdersRoutes);
 app.use('/api/lost-orders', lostOrdersRoutes);
+app.use('/api/customers', customersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);

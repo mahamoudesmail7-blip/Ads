@@ -36,6 +36,7 @@ const ICON_PATHS = {
   aiintel: '<path d="M12 2a4 4 0 0 0-4 4c0 1.5.8 2.8 2 3.5V12H8a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h1v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2h1a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-2V9.5c1.2-.7 2-2 2-3.5a4 4 0 0 0-4-4z"/><circle cx="9" cy="14" r="0.5"/><circle cx="15" cy="14" r="0.5"/>',
   aimediabuyer: '<path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 5-7"/><circle cx="7" cy="15" r="1.4"/><circle cx="21" cy="7" r="1.4"/>',
   productresearch: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
+  customers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
 };
 
 function navIcon(name) {
@@ -52,6 +53,7 @@ export const NAV_ITEMS = [
   { key: 'entry', href: 'entry.html', label: 'إدخال الأوردرات', icon: navIcon('entry') },
   { key: 'easyorders', href: 'easy-orders.html', label: 'Easy Orders', icon: navIcon('easyorders') },
   { key: 'lostorders', href: 'lost-orders.html', label: 'الأوردرات المفقودة', icon: navIcon('lostorders'), badgeId: 'navLostOrdersBadge' },
+  { key: 'customers', href: 'customers.html', label: 'قاعدة العملاء', icon: navIcon('customers') },
   { key: 'aiintel', href: 'ai-intelligence.html', label: 'AI Intelligence', icon: navIcon('aiintel') },
   { key: 'aimediabuyer', href: 'ai-media-buyer.html', label: 'AI Media Buyer', icon: navIcon('aimediabuyer') },
   { key: 'creativefactory', href: 'creative-factory.html', label: 'مصنع الكرياتيفات', icon: navIcon('aimediabuyer') },
@@ -74,6 +76,7 @@ const NAV_ROLE_REQUIREMENT = {
   aimediabuyer: ['ADMIN', 'MANAGER'],
   creativefactory: ['ADMIN', 'MANAGER'],
   productresearch: ['ADMIN', 'MANAGER'],
+  customers: ['ADMIN', 'MANAGER'],
 };
 
 // 'users' (the approval queue + permissions editor) is stricter still —

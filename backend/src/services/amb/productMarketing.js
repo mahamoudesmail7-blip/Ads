@@ -22,6 +22,7 @@ import { buildHierarchy, rollupMetrics } from './hierarchyAnalysis.js';
 import { productDashboard, createFromCatalogProduct } from './ambProducts.js';
 import { setMapping } from './mapping.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
+import { customerQualityForProduct } from './customerQuality.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
 import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
@@ -543,9 +544,15 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // Easy Orders truth (independent of Meta mapping — real COD data whenever product_id resolves to a catalog Product with orders).
   let cod = { source: 'none', orders: null, confirmed: null, delivered: null, returned: null };
   let govRows = [];
+  // Product Marketing Intelligence data foundation — real Customer Database
+  // aggregates for this product (customer count, repeat-customer count,
+  // confirmation/delivery/RTO rates, revenue) — never invented, `source:
+  // 'none'` when there's nothing real to report yet.
+  let customerQuality = { source: 'none', orders: null, confirmed: null, delivered: null, returned: null, cancelled: null, confirmationRate: null, deliveryRate: null, rtoRate: null, revenue: null, deliveredRevenue: null, customerCount: null, repeatCustomerCount: null, governorates: [] };
   if (effectiveProductId) {
     cod = await codCountsForProduct({ productId: effectiveProductId, from: window.from, to: window.to });
     govRows = await codCountsByGovernorate({ productId: effectiveProductId, from: window.from, to: window.to });
+    customerQuality = await customerQualityForProduct({ productId: effectiveProductId, from: window.from, to: window.to });
   }
 
   // §3 (BUG 3) — WHY a number is missing must never collapse into one vague
@@ -587,6 +594,13 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     roas: m.roas ?? null,
     ctr: matchedCampaignMetrics?.ctr ?? null, cpc: matchedCampaignMetrics?.cpc ?? null, cvr: matchedCampaignMetrics?.conversionRate ?? null, frequency: null, // filled below from the product's own campaign rollup when an AmbProduct mapping exists
     dataAvailability,
+    // Product Marketing Intelligence data foundation (§15/§16) — real Easy
+    // Orders + Customer Database aggregates for this product. Stored inside
+    // this same JSON blob (no new DB column) — confirmation/delivery/RTO
+    // rates, revenue, real customer count, repeat-customer count, and a
+    // governorate breakdown, all `source: 'none'` (never a fabricated 0)
+    // when there's nothing real to report yet for this window.
+    customerQuality,
   };
   let bestWorst = { best: null, worst: null };
   if (adAccountId && ambProduct) {

@@ -6,6 +6,7 @@
 import { prisma } from '../prisma.js';
 import { ensureLostOrderTracking } from './lostOrders.js';
 import { normalizeName } from '../../../js/product-mapping.js';
+import { linkOrderToCustomer, recomputeCustomerStats } from './customers.js';
 
 export const EASYORDERS_API_BASE = 'https://api.easy-orders.net/api/v1/external-apps';
 
@@ -97,6 +98,13 @@ export async function ingestOrder(order) {
   const status = normalizeStatus(order.status);
   const touched = new Set();
 
+  // Fields confirmed present in Easy Orders' REAL order API response
+  // (inspected live against real production orders) — see schema.prisma's
+  // EasyOrdersOrder comment for exactly which fields were checked and
+  // confirmed absent (email/notes/coupon/UTM/campaign_id/ad_set_id/ad_id).
+  // metadata's delivery-rate sub-object is keyed by the order's own phone
+  // number, per the real payload shape.
+  const deliveryRateInfo = (order.phone && order.metadata) ? order.metadata[order.phone] : null;
   const customerFields = {
     short_id: typeof order.short_id === 'number' ? order.short_id : null,
     customer_name: order.full_name || null,
@@ -105,6 +113,15 @@ export async function ingestOrder(order) {
     customer_government: order.government || null,
     order_cost: typeof order.cost === 'number' ? order.cost : null,
     shipping_cost: typeof order.shipping_cost === 'number' ? order.shipping_cost : null,
+    easy_orders_store_id: order.store_id || null,
+    easy_orders_guest_id: order.guest_id || null,
+    payment_method: order.payment_method || null,
+    ip_address: order.ip || null,
+    ip_country: order.ip_country || null,
+    total_cost: typeof order.total_cost === 'number' ? order.total_cost : null,
+    delivery_rate_status: deliveryRateInfo?.delivery_rate_status || null,
+    delivery_rate_result: deliveryRateInfo?.rate_result || null,
+    tracking_json: order.metadata?.tracking ? JSON.stringify(order.metadata.tracking) : null,
   };
 
   for (const item of order.cart_items || []) {
@@ -136,6 +153,19 @@ export async function ingestOrder(order) {
     await recomputeDailyOrder(Number(productId), d);
   }
   await ensureLostOrderTracking(order.id);
+
+  // Customer Database — resolves/creates the Customer for this order's real
+  // phone, links every row of this order_id to it, and recomputes that
+  // customer's aggregates. Never throws: a customer-linking failure must
+  // never stop the order itself from being ingested.
+  await linkOrderToCustomer({
+    orderId: order.id,
+    rawPhone: order.phone,
+    fullName: order.full_name,
+    government: order.government,
+    address: order.address,
+    guestId: order.guest_id,
+  });
 }
 
 /** Fetches one order's current state directly via the API key — used when a status-update webhook references an order we've never seen, and by the reconciliation job below. */
@@ -161,17 +191,23 @@ export async function applyStatusToOrder(orderId, rawStatus) {
   const status = normalizeStatus(rawStatus);
   const rows = await prisma.easyOrdersOrder.findMany({ where: { order_id: orderId } });
   const touched = new Set();
+  const touchedCustomerIds = new Set();
   let changedRows = 0;
   for (const row of rows) {
     if (row.status === status) continue; // no-op — avoids an unnecessary write + recompute when nothing actually changed
     await prisma.easyOrdersOrder.update({ where: { id: row.id }, data: { status, raw_status: rawStatus } });
     changedRows++;
     if (row.product_id) touched.add(`${row.product_id}::${row.date}`);
+    if (row.customer_id) touchedCustomerIds.add(row.customer_id);
   }
   for (const key of touched) {
     const [productId, d] = key.split('::');
     await recomputeDailyOrder(Number(productId), d);
   }
+  // A status change (e.g. PENDING -> DELIVERED, or -> RETURNED) shifts this
+  // customer's confirmed/delivered/returned/cancelled counts and revenue —
+  // recomputed fresh, same as the product-level DailyOrder aggregate above.
+  for (const customerId of touchedCustomerIds) await recomputeCustomerStats(customerId);
   if (changedRows > 0) await ensureLostOrderTracking(orderId);
   return { totalRows: rows.length, changedRows };
 }
