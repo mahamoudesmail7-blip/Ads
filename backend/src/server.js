@@ -10,6 +10,20 @@ import morgan from 'morgan';
 import { logger } from './logger.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
+// Node's default behavior on an unhandled promise rejection is to crash the
+// entire process — meaning a single overlooked `.catch()` anywhere (a
+// background job, a fire-and-forget call, one buggy request handler) takes
+// down the server for every user, not just the one request that hit it.
+// Confirmed in production (2026-09-14): a bug in one PMC snapshot-compute
+// request crashed and restarted the whole app. Log and continue instead —
+// the underlying bug still needs fixing at its source, but it must never
+// have this blast radius again.
+process.on('unhandledRejection', (reason) => {
+  logger.error('[UnhandledRejection] a promise rejected without being caught — fix at the source, but this must never crash the whole server', {
+    message: reason?.message || String(reason), stack: reason?.stack,
+  });
+});
+
 import healthRoutes from './routes/health.js';
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';

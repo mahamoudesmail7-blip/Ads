@@ -675,11 +675,17 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   };
 
   const ai = await PMAI.buildIntelligenceReport(aiCtx);
-  const prioritizedActions = ai.ok ? prioritizeActions(ai.actions, diagnosis) : [];
+  let prioritizedActions = [];
+  try { prioritizedActions = ai.ok ? prioritizeActions(ai.actions, diagnosis) : []; }
+  catch (e) { logger.warn('[ProductMarketing] prioritizeActions failed — falling back to unprioritized actions', { message: e.message }); prioritizedActions = ai.ok ? ai.actions : []; }
 
-  const needsAttention = assembleNeedsAttention({ diagnosis, actions: prioritizedActions, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles });
   const winningFormula = ai.ok ? ai.winningFormula : { available: false };
-  const winningComponents = assembleWinningComponents({ bestAd: aiCtx.bestAd, bestAdCreative: bestCreative, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles, markets: markets.markets, winningFormula });
+  let needsAttention = [];
+  try { needsAttention = assembleNeedsAttention({ diagnosis, actions: prioritizedActions, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles }); }
+  catch (e) { logger.warn('[ProductMarketing] assembleNeedsAttention failed', { message: e.message }); }
+  let winningComponents = { dataSufficient: false };
+  try { winningComponents = assembleWinningComponents({ bestAd: aiCtx.bestAd, bestAdCreative: bestCreative, hookIntel: hookAngleIntel.hooks, angleIntel: hookAngleIntel.angles, markets: markets.markets, winningFormula }); }
+  catch (e) { logger.warn('[ProductMarketing] assembleWinningComponents failed', { message: e.message }); }
 
   // §15/§16 Market Gaps and §24 AI Strategist are deliberately NOT computed
   // here. This function already makes ONE AI call (buildIntelligenceReport)
