@@ -603,6 +603,8 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     confirmedCpa: m.confirmedCpa ?? null,
     deliveredCpa: m.deliveredCpa ?? null,
     deliveryRate: cod.confirmed ? (cod.delivered || 0) / cod.confirmed : null,
+    revenue: m.revenue ?? null,
+    revenueSource: m.revenueSource ?? null,
     netProfit: m.netProfit ?? null,
     netMarginPct: m.netMarginPct ?? null,
     roas: m.roas ?? null,
