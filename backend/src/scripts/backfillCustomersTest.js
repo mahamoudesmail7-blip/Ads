@@ -37,16 +37,17 @@ let easyOrders = [
 let customers = [];
 let nextCustomerId = 1;
 
-prisma.easyOrdersOrder.findMany = async ({ where = {}, distinct, skip = 0, take } = {}) => {
+prisma.easyOrdersOrder.findMany = async ({ where = {}, distinct, take } = {}) => {
   let rows = easyOrders;
   if (where.customer_id === null) rows = rows.filter((r) => r.customer_id === null);
-  if (where.order_id !== undefined) rows = rows.filter((r) => r.order_id === where.order_id);
+  if (where.order_id?.notIn) rows = rows.filter((r) => !where.order_id.notIn.includes(r.order_id));
+  else if (where.order_id !== undefined) rows = rows.filter((r) => r.order_id === where.order_id);
   if (where.customer_id !== undefined && where.customer_id !== null) rows = rows.filter((r) => r.customer_id === where.customer_id);
   if (distinct?.includes('order_id')) {
     const seen = new Set();
     rows = rows.filter((r) => { if (seen.has(r.order_id)) return false; seen.add(r.order_id); return true; });
   }
-  rows = rows.slice(skip, take ? skip + take : undefined);
+  rows = rows.slice(0, take ?? undefined);
   return rows.map((r) => ({ ...r }));
 };
 prisma.easyOrdersOrder.updateMany = async ({ where = {}, data }) => {
@@ -121,7 +122,32 @@ console.log('\n§4 failure isolation — one order throwing an unexpected error 
   prisma.customer.upsert = originalUpsert;
 }
 
-console.log('\n§5 zero writes to unrelated tables (product, dailyOrder, lostOrder*) anywhere in this file:');
+console.log('\n§6 multi-page run (250 orders, > one BATCH_SIZE of 200) — every order gets processed across pages, not just the first page:');
+{
+  // Regression test for a real bug: the original implementation advanced a
+  // `skip` cursor by the batch size regardless of how many rows LEFT the
+  // `customer_id: null` filter by successfully linking. Since almost every
+  // row here links immediately (leaving the filter), a `skip`-based second
+  // page would land past the end of the now-much-smaller remaining set and
+  // return zero rows, silently abandoning the rest of the table. The fix
+  // re-queries from the top every page (no skip) and excludes only the
+  // rows that failed to link THIS run, so the filter's natural shrinkage
+  // as rows link is exactly what makes forward progress — never skip.
+  easyOrders = [];
+  customers = [];
+  nextCustomerId = 1;
+  for (let i = 0; i < 250; i++) {
+    const phone = `010${String(10000000 + i).padStart(8, '0')}`;
+    easyOrders.push({ id: 100 + i, order_id: `bulk-${i}`, customer_id: null, customer_phone: phone, customer_name: `Bulk ${i}`, customer_government: 'القاهرة', customer_address: 'addr' });
+  }
+  const summary = await run();
+  ok('all 250 orders processed in one run (not just the first 200-row page)', summary.ordersProcessed === 250, JSON.stringify(summary));
+  ok('all 250 linked (every phone is unique and valid)', summary.ordersLinked === 250, JSON.stringify(summary));
+  ok('250 distinct customers created', summary.customersCreatedThisRun === 250, JSON.stringify(summary));
+  ok('no order was left with a null customer_id', easyOrders.every((r) => r.customer_id !== null), easyOrders.filter((r) => r.customer_id === null).length);
+}
+
+console.log('\n§7 zero writes to unrelated tables (product, dailyOrder, lostOrder*) anywhere in this file:');
 ok('no guarded prisma write method was ever called', dbWriteAttempted === false);
 
 console.log(`\n${pass} passed, ${fail} failed`);
