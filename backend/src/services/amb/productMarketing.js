@@ -24,7 +24,7 @@ import { setMapping, mappedCampaignIndex } from './mapping.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
 import { customerQualityForProduct, marketsForProduct } from './customerQuality.js';
 import { buyerInsightsForProduct } from './buyerInsights.js';
-import { hookAndAngleIntelForProduct } from './productMarketingWinnerIntel.js';
+import { hookAndAngleIntelForProduct, scopedAdsForProduct } from './productMarketingWinnerIntel.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
 import { listStores, getStore, defaultStoreId, storeConfigDiagnostics as storeConfigDiagnosticsImpl } from '../easyOrdersStores.js';
 import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
@@ -1056,6 +1056,88 @@ export async function auditUnmappedMetaActivity({ windowName = 'last30' } = {}) 
     unmapped,
     summary: { review: reviewCandidates.length, unmapped: unmapped.length, totalSpendUnmapped: unmappedCampaigns.reduce((a, c) => a + (c.spend || 0), 0) },
   };
+}
+
+/**
+ * Phase 10 — classifies EVERY synced product in one store into exactly one
+ * pipeline-health bucket, computed efficiently in a small fixed number of
+ * queries (never one HTTP/DB round-trip per product):
+ *   READY               — has real orders AND a Meta mapping with at least
+ *                          one ad carrying MODERATE/STRONG data.
+ *   NO_REAL_ORDERS       — zero EasyOrdersOrder rows for this product,
+ *                          regardless of Meta status (matches this
+ *                          engagement's own "if genuinely zero orders, say
+ *                          so" rule — takes priority over every other
+ *                          bucket since there is no real COD evidence at
+ *                          all to build on).
+ *   META_UNMAPPED        — has real orders, but no AmbProduct / no MAPPED
+ *                          campaign exists for it yet.
+ *   AD_ANALYSIS_MISSING  — has real orders AND a mapped campaign, but zero
+ *                          ads found under it in the window (e.g. the
+ *                          campaign never ran ads, or ran outside window).
+ *   INSUFFICIENT_DATA    — has real orders, a mapped campaign, and ads, but
+ *                          every one of them is still WEAK (below the
+ *                          account's own minSpend/minPurchases gate).
+ *   PROVIDER_ERROR       — Meta itself is unreachable/not connected this
+ *                          call — applies to every product uniformly since
+ *                          it's an account-level failure, not per-product.
+ * ORDERS_UNMATCHED is deliberately NOT a per-product bucket here: an
+ * unmatched EasyOrdersOrder row has product_id=null by definition, so it
+ * cannot be attributed to one specific product without a fuzzy name guess
+ * this codebase's matching philosophy explicitly refuses to make. It is
+ * reported as a STORE-LEVEL count instead (see the unmatchedOrderRows
+ * field) — a real, honest number, just not falsely pinned to one product.
+ */
+export async function classifyAllProducts({ storeId = defaultStoreId(), windowName = 'last30' } = {}) {
+  const products = await prisma.product.findMany({ where: { active: true, store_id: storeId }, select: { id: true, product_name: true } });
+  if (!products.length) return { storeId, totalProducts: 0, unmatchedOrderRows: 0, classifications: [], counts: {} };
+
+  const productIds = products.map((p) => p.id);
+  const [orderCounts, unmatchedCount, ambProducts] = await Promise.all([
+    prisma.easyOrdersOrder.groupBy({ by: ['product_id'], where: { store_id: storeId, product_id: { in: productIds } }, _count: { _all: true } }),
+    prisma.easyOrdersOrder.count({ where: { store_id: storeId, matched: false } }),
+    prisma.ambProduct.findMany({ where: { product_id: { in: productIds } }, select: { id: true, product_id: true } }),
+  ]);
+  const orderCountByProduct = new Map(orderCounts.map((r) => [r.product_id, r._count._all]));
+  const ambByProductId = new Map(ambProducts.map((a) => [a.product_id, a.id]));
+
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  let tree = null;
+  let treeError = null;
+  if (adAccountId) {
+    try {
+      const settings = await getAmbSettings();
+      const window = resolveWindow(WINDOWS.includes(windowName) ? windowName : 'last30');
+      tree = await buildHierarchy({ adAccountId, window, settings });
+    } catch (err) {
+      treeError = err.message;
+    }
+  }
+
+  const classifications = products.map((p) => {
+    const orderCount = orderCountByProduct.get(p.id) || 0;
+    if (orderCount === 0) return { productId: p.id, productName: p.product_name, status: 'NO_REAL_ORDERS', orderCount };
+
+    if (!adAccountId) return { productId: p.id, productName: p.product_name, status: 'PROVIDER_ERROR', orderCount, reason: 'لا يوجد حساب إعلاني Meta متصل حاليًا.' };
+    if (!tree) return { productId: p.id, productName: p.product_name, status: 'PROVIDER_ERROR', orderCount, reason: treeError || 'تعذّر الوصول لبيانات Meta.' };
+
+    const ambProductId = ambByProductId.get(p.id);
+    if (!ambProductId) return { productId: p.id, productName: p.product_name, status: 'META_UNMAPPED', orderCount };
+
+    const ads = scopedAdsForProduct(tree, ambProductId);
+    if (!ads.length) return { productId: p.id, productName: p.product_name, status: 'AD_ANALYSIS_MISSING', orderCount, mappedCampaigns: tree.products.find((n) => String(n.id) === String(ambProductId))?.children?.length || 0 };
+
+    const hasSufficientAd = ads.some((ad) => ad.metrics?.dataSufficiency === 'STRONG' || ad.metrics?.dataSufficiency === 'MODERATE');
+    if (!hasSufficientAd) return { productId: p.id, productName: p.product_name, status: 'INSUFFICIENT_DATA', orderCount, adsFound: ads.length };
+
+    return { productId: p.id, productName: p.product_name, status: 'READY', orderCount, adsFound: ads.length };
+  });
+
+  const counts = {};
+  for (const c of classifications) counts[c.status] = (counts[c.status] || 0) + 1;
+
+  return { storeId, totalProducts: products.length, unmatchedOrderRows: unmatchedCount, classifications, counts };
 }
 
 /**

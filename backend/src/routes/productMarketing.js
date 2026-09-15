@@ -90,6 +90,12 @@ router.post('/profiles/:id/analyze', asyncRoute(async (req, res) => {
   res.json(await PM.computeSnapshot({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
 }));
 
+// ---- Phase 10 — classify every synced product in one store's real ----
+// ---- data-pipeline health. ADMIN only, read-only. ----
+router.get('/pipeline-health', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json(await PM.classifyAllProducts({ storeId: req.query.store_id || undefined, windowName: req.query.window || undefined }));
+}));
+
 // ---- Unmapped Meta activity audit — ADMIN only. Never maps anything ----
 // ---- automatically; only classifies real spend/purchase campaigns as ----
 // ---- REVIEW (slug evidence found) or UNMAPPED (no evidence). ----
