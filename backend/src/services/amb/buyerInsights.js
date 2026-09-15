@@ -15,13 +15,14 @@ const EMPTY_RESULT = {
 };
 
 /**
- * @param {{productId:number, from?:string, to?:string}} params
+ * @param {{productId:number, storeId?:string, from?:string, to?:string}} params
  */
-export async function buyerInsightsForProduct({ productId, from, to }) {
+export async function buyerInsightsForProduct({ productId, storeId, from, to }) {
   const dateFilter = {};
   if (from) dateFilter.gte = from;
   if (to) dateFilter.lte = to;
   const where = { product_id: productId };
+  if (storeId) where.store_id = storeId;
   if (from || to) where.date = dateFilter;
 
   const rows = await prisma.easyOrdersOrder.findMany({

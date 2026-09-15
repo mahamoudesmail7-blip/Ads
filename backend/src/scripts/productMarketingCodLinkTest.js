@@ -38,13 +38,25 @@ const INTERNAL_PRODUCTS = [
   { id: 141, product_name: 'فرشاة تنظيف البشرة الكهربائية بالسيليكون', sku: null, active: true },
   { id: 48, product_name: 'جهاز قياس الضغط الذكي المنزلي', sku: '', active: true },
 ];
+// Multi-store isolation fixture — two DIFFERENT internal products sharing
+// the EXACT SAME name, each tagged to a different store. This is the
+// precise collision scenario the store_id column + OR-filtered query in
+// findInternalProductByName() exists to prevent (see §7 below).
+const STORE_TAGGED_PRODUCTS = [
+  { id: 300, product_name: 'كريم مرطب', sku: null, active: true, store_id: 'default' },
+  { id: 301, product_name: 'كريم مرطب', sku: null, active: true, store_id: 'trendy' },
+];
 let findManyCalls = 0;
 prisma.product.findMany = async ({ where } = {}) => {
   findManyCalls++;
-  if (where && 'active' in where) return INTERNAL_PRODUCTS.filter((p) => p.active === where.active);
-  return INTERNAL_PRODUCTS;
+  let pool = INTERNAL_PRODUCTS.concat(STORE_TAGGED_PRODUCTS);
+  if (where && 'active' in where) pool = pool.filter((p) => p.active === where.active);
+  if (where && where.OR) {
+    pool = pool.filter((p) => where.OR.some((cond) => (cond.store_id === null ? !p.store_id : p.store_id === cond.store_id)));
+  }
+  return pool;
 };
-prisma.product.findUnique = async ({ where }) => INTERNAL_PRODUCTS.find((p) => p.id === where.id) || null;
+prisma.product.findUnique = async ({ where }) => INTERNAL_PRODUCTS.concat(STORE_TAGGED_PRODUCTS).find((p) => p.id === where.id) || null;
 
 const PM = await import(pathToFileURL(join(__dirname, '../services/amb/productMarketing.js')).href);
 
@@ -80,7 +92,22 @@ console.log('\n§5 resolveEffectiveProductId returns null when product_id is nul
   ok('null', id === null, String(id));
 }
 
-console.log('\n§6 zero real DB writes anywhere in this file — the fix is proven in-memory-only:');
+console.log('\n§7 findInternalProductByName is store-isolated — an identically-named product in a DIFFERENT store never matches:');
+{
+  const viaDefault = await PM.findInternalProductByName('كريم مرطب', 'default');
+  ok('store "default" resolves to its OWN product (300), not trendy\'s (301)', viaDefault?.id === 300, JSON.stringify(viaDefault));
+
+  const viaTrendy = await PM.findInternalProductByName('كريم مرطب', 'trendy');
+  ok('store "trendy" resolves to its OWN product (301), not default\'s (300)', viaTrendy?.id === 301, JSON.stringify(viaTrendy));
+}
+
+console.log('\n§8 a legacy, untagged product (store_id null) remains visible to every store — backward compatibility:');
+{
+  const found = await PM.findInternalProductByName('جهاز قياس الضغط الذكي المنزلي', 'trendy');
+  ok('untagged legacy product (id 48) still matches from a store that didn\'t exist when it was created', found?.id === 48, JSON.stringify(found));
+}
+
+console.log('\n§9 zero real DB writes anywhere in this file — the fix is proven in-memory-only:');
 ok('no guarded prisma write method was ever called', dbWriteAttempted === false);
 
 console.log(`\n${pass} passed, ${fail} failed`);

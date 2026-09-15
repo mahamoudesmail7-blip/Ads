@@ -96,6 +96,17 @@ model Product {
   last_restock_date    String?
   created_at           DateTime @default(now())
 
+  // Multi-store (additive) — which configured Easy Orders store (our own
+  // internal id, e.g. "default"/"trendy-storeee" — see
+  // services/easyOrdersStores.js) this product's catalog entry was matched/
+  // created from. Nullable: every pre-multi-store row stays untagged
+  // (legacy) rather than being guessed at; findInternalProductByName()
+  // treats an untagged row as matchable from any store for backward
+  // compatibility, but a store-tagged row only matches its own store —
+  // this is what stops two stores' identically-named products from
+  // colliding onto one internal Product.
+  store_id             String?
+
   orders                       DailyOrder[]
   notes                        ProductNote[]
   action_logs                  ActionLog[]
@@ -113,6 +124,7 @@ model Product {
   @@index([active])
   @@index([product_name])
   @@index([sku])
+  @@index([store_id])
   @@map("products")
 }
 
@@ -127,11 +139,15 @@ model DailyOrder {
   notes           String?
   is_demo         Boolean  @default(false)
   source          String?
+  // Multi-store (additive) — our own internal store id (see Product.store_id
+  // above). Nullable for the same backward-compatibility reason.
+  store_id        String?
   created_at      DateTime @default(now())
   updated_at      DateTime @updatedAt
 
   @@unique([product_id, date])
   @@index([date])
+  @@index([store_id, product_id, date])
   @@map("daily_orders")
 }
 
@@ -184,6 +200,12 @@ model EasyOrdersOrder {
   // campaign_id/ad_set_id/ad_id — confirmed ABSENT from the real payload,
   // never fabricated here on a guess.
   easy_orders_store_id  String? // Easy Orders' OWN real store UUID (their `store_id`) — unrelated to any internal store key
+  // Multi-store (additive) — OUR OWN internal store id (see
+  // Product.store_id above), resolved at webhook-ingestion time from which
+  // configured store's secret matched. Distinct from easy_orders_store_id
+  // above (Easy Orders' own account UUID) — this is our own selector value
+  // (e.g. "default"/"trendy-storeee"). Nullable for pre-existing rows.
+  store_id              String?
   easy_orders_guest_id  String? // Easy Orders' per-browser/session identifier at the time of this order — a real, secondary signal only; never the Customer dedup key (that's normalized phone)
   payment_method        String? // e.g. "cod" — Easy Orders' own field, verbatim
   ip_address            String? // Easy Orders' own `ip` field (host:port as they send it)
@@ -201,6 +223,9 @@ model EasyOrdersOrder {
   @@index([product_id])
   @@index([order_id])
   @@index([customer_id])
+  @@index([store_id])
+  @@index([store_id, product_id])
+  @@index([store_id, date])
   @@map("easyorders_orders")
 }
 

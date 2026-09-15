@@ -17,6 +17,14 @@ function idParam(v) { const n = Number(v); if (!Number.isInteger(n) || n <= 0) {
 // ---- Multi-store (§1/§2) — safe metadata only, NEVER a credential ----
 router.get('/stores', asyncRoute(async (req, res) => res.json({ stores: PM.listEasyOrdersStores() })));
 
+// ---- ADMIN-only diagnostic: which Railway env var NAME each store's key/
+// secret reads from, and whether it's currently non-empty — NEVER the value
+// itself. Exists so an admin can be told exactly which Railway variable to
+// check/fix without anyone (including Claude) ever seeing the real key. ----
+router.get('/stores/diagnostics', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json({ stores: PM.storeConfigDiagnostics() });
+}));
+
 // ---- Read-only catalog-vs-internal-Product audit (decide Sync vs Mapping) ----
 // ADMIN only (stricter than this router's default ADMIN|MANAGER) — this is a
 // diagnostic tool, not a normal PMC workflow surface. Never creates/updates

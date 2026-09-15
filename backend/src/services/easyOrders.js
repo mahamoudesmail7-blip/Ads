@@ -7,6 +7,7 @@ import { prisma } from '../prisma.js';
 import { ensureLostOrderTracking } from './lostOrders.js';
 import { normalizeName } from '../../../js/product-mapping.js';
 import { linkOrderToCustomer, recomputeCustomerStats } from './customers.js';
+import { getStoreApiKey } from './easyOrdersStores.js';
 
 export const EASYORDERS_API_BASE = 'https://api.easy-orders.net/api/v1/external-apps';
 
@@ -29,8 +30,21 @@ export function toDateOnly(iso) {
   return (iso || new Date().toISOString()).slice(0, 10);
 }
 
-/** Recomputes the DailyOrder aggregate for one (product, date) from every EasyOrdersOrder row tracked for it — never hand-incremented, always derived fresh so a later status change (e.g. a return) self-corrects the aggregate instead of drifting. */
-export async function recomputeDailyOrder(productId, date) {
+/**
+ * Recomputes the DailyOrder aggregate for one (product, date) from every
+ * EasyOrdersOrder row tracked for it — never hand-incremented, always
+ * derived fresh so a later status change (e.g. a return) self-corrects the
+ * aggregate instead of drifting.
+ *
+ * Multi-store — the aggregation query itself stays scoped by product_id
+ * only (not store_id): since matchProduct()/findInternalProductByName() now
+ * keep two stores' products on separate internal product_id values, "every
+ * EasyOrdersOrder row for this product_id" is already exactly one store's
+ * rows. `storeId` here only tags the resulting DailyOrder row itself, for
+ * direct queryability — same store_id every row for this product already
+ * shares.
+ */
+export async function recomputeDailyOrder(productId, date, storeId = 'default') {
   if (!productId) return;
   const rows = await prisma.easyOrdersOrder.findMany({ where: { product_id: productId, date } });
   const sum = (statuses) => rows.filter((r) => statuses.includes(r.status)).reduce((acc, r) => acc + r.quantity, 0);
@@ -42,8 +56,8 @@ export async function recomputeDailyOrder(productId, date) {
 
   await prisma.dailyOrder.upsert({
     where: { product_id_date: { product_id: productId, date } },
-    update: { orders_count, delivered_count, returned_count, source: 'easyorders' },
-    create: { product_id: productId, date, orders_count, delivered_count, returned_count, source: 'easyorders' },
+    update: { orders_count, delivered_count, returned_count, source: 'easyorders', store_id: storeId },
+    create: { product_id: productId, date, orders_count, delivered_count, returned_count, source: 'easyorders', store_id: storeId },
   });
 }
 
@@ -78,8 +92,15 @@ export function exactNameKey(name) {
  * Never touches Product Mapping's fuzzy tier or any AI — a wrong guess here
  * would silently misattribute a real sale, which is worse than leaving it
  * unmatched for manual review.
+ *
+ * Multi-store — `storeId`, when given, is used ONLY to break a genuine name
+ * tie between two active products that otherwise match equally (preferring
+ * the one tagged to this store); it never widens or narrows the initial
+ * candidate set, so a single unambiguous global match (today's only real
+ * case, since all pre-existing products are tagged the one real store)
+ * behaves identically to before.
  */
-export async function matchProduct(sku, name) {
+export async function matchProduct(sku, name, storeId = null) {
   if (sku) {
     const bySku = await prisma.product.findFirst({ where: { sku } });
     if (bySku) return bySku;
@@ -87,13 +108,29 @@ export async function matchProduct(sku, name) {
 
   const key = exactNameKey(name);
   if (!key) return null;
-  const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
+  const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true, store_id: true } });
   const matches = candidates.filter((p) => exactNameKey(p.product_name) === key);
-  return matches.length === 1 ? matches[0] : null;
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1 && storeId) {
+    const storeMatches = matches.filter((p) => p.store_id === storeId);
+    if (storeMatches.length === 1) return storeMatches[0];
+  }
+  return null;
 }
 
-/** Upserts one EasyOrdersOrder row per cart item from a full order payload (either the original webhook body, or a Get-Order-By-ID response), then recomputes every (product, date) it touches. */
-export async function ingestOrder(order) {
+/**
+ * Upserts one EasyOrdersOrder row per cart item from a full order payload
+ * (either the original webhook body, or a Get-Order-By-ID response), then
+ * recomputes every (product, date) it touches.
+ *
+ * Multi-store — `storeId` is OUR OWN internal store id (resolved by the
+ * caller: routes/webhooks.js resolves it from which configured store's
+ * secret matched; services/easyOrdersReconcile.js already knows it from the
+ * EasyOrdersOrder row it's re-checking). Defaults to 'default' — the one
+ * real store 100% of pre-multi-store data belongs to — so any caller that
+ * hasn't been updated yet keeps today's exact behavior.
+ */
+export async function ingestOrder(order, storeId = 'default') {
   const date = toDateOnly(order.created_at);
   const status = normalizeStatus(order.status);
   const touched = new Set();
@@ -122,12 +159,18 @@ export async function ingestOrder(order) {
     delivery_rate_status: deliveryRateInfo?.delivery_rate_status || null,
     delivery_rate_result: deliveryRateInfo?.rate_result || null,
     tracking_json: order.metadata?.tracking ? JSON.stringify(order.metadata.tracking) : null,
+    // Multi-store — OUR OWN internal store id (distinct from
+    // easy_orders_store_id above, which is Easy Orders' own account UUID).
+    // An order's store never changes after creation, but writing it on
+    // every update too is harmless (idempotent) and keeps this one
+    // customerFields spread as the single source for both branches.
+    store_id: storeId,
   };
 
   for (const item of order.cart_items || []) {
     const sku = item.product?.sku || null;
     const productNameRaw = item.product?.name || null;
-    const product = await matchProduct(sku, productNameRaw);
+    const product = await matchProduct(sku, productNameRaw, storeId);
     await prisma.easyOrdersOrder.upsert({
       where: { order_id_cart_item_id: { order_id: order.id, cart_item_id: item.id } },
       update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, matched: !!product, date, ...customerFields },
@@ -150,7 +193,7 @@ export async function ingestOrder(order) {
 
   for (const key of touched) {
     const [productId, d] = key.split('::');
-    await recomputeDailyOrder(Number(productId), d);
+    await recomputeDailyOrder(Number(productId), d, storeId);
   }
   await ensureLostOrderTracking(order.id);
 
@@ -169,8 +212,16 @@ export async function ingestOrder(order) {
 }
 
 /** Fetches one order's current state directly via the API key — used when a status-update webhook references an order we've never seen, and by the reconciliation job below. */
-export async function fetchOrderById(orderId) {
-  const apiKey = process.env.EASYORDERS_API_KEY;
+/**
+ * Multi-store — `storeId`, when given, resolves that store's OWN real API
+ * key via getStoreApiKey() (each configured store's key lives in its own
+ * env var — see services/easyOrdersStores.js). Falls back to the original
+ * global EASYORDERS_API_KEY when storeId is omitted or its own key isn't
+ * configured, so every pre-multi-store caller (and a store not yet given
+ * its own key) keeps working exactly as before.
+ */
+export async function fetchOrderById(orderId, storeId = null) {
+  const apiKey = (storeId && getStoreApiKey(storeId)) || process.env.EASYORDERS_API_KEY;
   if (!apiKey) return null;
   const res = await fetch(`${EASYORDERS_API_BASE}/orders/${orderId}`, { headers: { 'Api-Key': apiKey } });
   if (!res.ok) return null;
@@ -190,19 +241,19 @@ export async function fetchOrderByShortId(shortId) {
 export async function applyStatusToOrder(orderId, rawStatus) {
   const status = normalizeStatus(rawStatus);
   const rows = await prisma.easyOrdersOrder.findMany({ where: { order_id: orderId } });
-  const touched = new Set();
+  const touched = new Map(); // "productId::date" -> that row's own already-set store_id
   const touchedCustomerIds = new Set();
   let changedRows = 0;
   for (const row of rows) {
     if (row.status === status) continue; // no-op — avoids an unnecessary write + recompute when nothing actually changed
     await prisma.easyOrdersOrder.update({ where: { id: row.id }, data: { status, raw_status: rawStatus } });
     changedRows++;
-    if (row.product_id) touched.add(`${row.product_id}::${row.date}`);
+    if (row.product_id) touched.set(`${row.product_id}::${row.date}`, row.store_id || 'default');
     if (row.customer_id) touchedCustomerIds.add(row.customer_id);
   }
-  for (const key of touched) {
+  for (const [key, rowStoreId] of touched) {
     const [productId, d] = key.split('::');
-    await recomputeDailyOrder(Number(productId), d);
+    await recomputeDailyOrder(Number(productId), d, rowStoreId);
   }
   // A status change (e.g. PENDING -> DELIVERED, or -> RETURNED) shifts this
   // customer's confirmed/delivered/returned/cancelled counts and revenue —

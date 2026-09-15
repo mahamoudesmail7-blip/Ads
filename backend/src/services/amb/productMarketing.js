@@ -26,7 +26,7 @@ import { customerQualityForProduct, marketsForProduct } from './customerQuality.
 import { buyerInsightsForProduct } from './buyerInsights.js';
 import { hookAndAngleIntelForProduct } from './productMarketingWinnerIntel.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
-import { listStores, getStore, defaultStoreId } from '../easyOrdersStores.js';
+import { listStores, getStore, defaultStoreId, storeConfigDiagnostics as storeConfigDiagnosticsImpl } from '../easyOrdersStores.js';
 import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct, healthBand, prioritizeActions } from './productMarketingScoring.js';
@@ -108,6 +108,11 @@ export async function searchEasyOrdersProducts(query, storeId = defaultStoreId()
 /** Safe store list for the frontend's "المتجر الحالي" selector — id/name/domain/enabled only, never a credential. */
 export function listEasyOrdersStores() {
   return listStores();
+}
+
+/** ADMIN-only — see easyOrdersStores.js's storeConfigDiagnostics() for exactly what this exposes (env var NAMES + presence booleans, never a value). */
+export function storeConfigDiagnostics() {
+  return storeConfigDiagnosticsImpl();
 }
 
 /**
@@ -245,7 +250,11 @@ export async function createProductsFromEasyOrdersCatalog(storeId = defaultStore
       if (namesBeingCreated.has(key)) { results.push({ eoId, status: 'IN_PROGRESS', message: 'طلب إنشاء آخر لنفس الاسم قيد التنفيذ الآن — أعد المحاولة بعد قليل.' }); continue; }
       namesBeingCreated.add(key);
       try {
-        const existing = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true } });
+        // Multi-store — only an existing product tagged to THIS store (or a
+        // legacy untagged row) counts as "already exists"; a same-named
+        // product explicitly tagged to a DIFFERENT store must never block
+        // (or get silently reused for) this store's own create.
+        const existing = await prisma.product.findMany({ where: { active: true, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true } });
         const matches = existing.filter((p) => exactNameKey(p.product_name) === key);
         if (matches.length === 1) { results.push({ eoId, status: 'SKIPPED_EXISTS', existingProductId: matches[0].id, existingProductName: matches[0].product_name }); continue; }
         if (matches.length > 1) { results.push({ eoId, status: 'AMBIGUOUS', candidateIds: matches.map((m) => m.id) }); continue; }
@@ -263,7 +272,7 @@ export async function createProductsFromEasyOrdersCatalog(storeId = defaultStore
 
         // Real EasyOrders price only — never client-supplied, never invented. sku/category/cost/image/specifications are left at the model's own defaults (never fabricated).
         const selling_price = Number.isFinite(Number(catalogProduct.price)) ? Number(catalogProduct.price) : 0;
-        const created = await prisma.product.create({ data: { product_name: finalName, selling_price, product_code, active: true } });
+        const created = await prisma.product.create({ data: { product_name: finalName, selling_price, product_code, active: true, store_id: storeId } });
         results.push({ eoId, status: 'CREATED', product: { id: created.id, product_name: created.product_name, selling_price: created.selling_price, product_code: created.product_code } });
       } finally {
         namesBeingCreated.delete(key);
@@ -320,10 +329,16 @@ function summarizeCreateResults(results) {
 // named just "اسم المنتج" — even though Catalog Sync's own audit (which DOES
 // strip it) considers them the same product. Stripping it here first makes
 // this the SAME exact-match rule used everywhere else in the app.
-export async function findInternalProductByName(name) {
+// Multi-store — `storeId`, when given, restricts candidates to that store's
+// own products plus any legacy untagged (store_id: null) row, so a
+// same-named product explicitly tagged to a DIFFERENT store can never be
+// matched here. Omitting storeId preserves the original global-search
+// behavior (kept only for any caller that genuinely has no store context).
+export async function findInternalProductByName(name, storeId = null) {
   const n = stripStoreTagSuffix(String(name || '')).trim();
   if (!n) return null;
-  const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
+  const where = storeId ? { active: true, OR: [{ store_id: storeId }, { store_id: null }] } : { active: true };
+  const candidates = await prisma.product.findMany({ where, select: { id: true, product_name: true, sku: true } });
   const match = mapProductByName(n, candidates, 0.6);
   if (!match.productId || (match.method !== 'exact_name' && match.method !== 'exact_sku')) return null;
   return prisma.product.findUnique({ where: { id: match.productId } });
@@ -342,7 +357,8 @@ export async function findInternalProductByName(name) {
  */
 export async function resolveEffectiveProductId(profile) {
   if (profile.product_id) return profile.product_id;
-  const match = await findInternalProductByName(profile.locked_name);
+  const { storeId } = decodeStoreScopedId(profile.easy_orders_product_id);
+  const match = await findInternalProductByName(profile.locked_name, storeId);
   return match?.id || null;
 }
 
@@ -362,7 +378,7 @@ export async function lockFromEasyOrders({ eoProductId, storeId = defaultStoreId
   const eo = status.products.find((p) => String(p.id) === String(eoProductId));
   if (!eo) throw bad('منتج Easy Orders غير موجود في هذا المتجر — حاول تبحث تاني.', 404);
 
-  const product = await findInternalProductByName(eo.name);
+  const product = await findInternalProductByName(eo.name, storeId);
   const confirmed = [{ label: 'المتجر', value: store.name }, { label: 'المصدر', value: 'Easy Orders' }, { label: 'اسم المنتج (Easy Orders)', value: eo.name }];
   const potential = [];
   const unconfirmed = [];
@@ -524,6 +540,11 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   const adAccountId = connection?.selected_ad_account_id || null;
 
   const effectiveProductId = await resolveEffectiveProductId(profile);
+  // Multi-store — the ONE real store this profile was locked from (encoded
+  // into easy_orders_product_id at lock time — see encodeStoreScopedId).
+  // Every real COD/customer-quality query below MUST be scoped to this
+  // store, never every configured store's orders for this product_id.
+  const { storeId: profileStoreId } = decodeStoreScopedId(profile.easy_orders_product_id);
 
   // Meta + economics, reusing the EXISTING product dashboard when this
   // profile is linked to a real AmbProduct; otherwise Meta numbers stay
@@ -564,9 +585,9 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   // 'none'` when there's nothing real to report yet.
   let customerQuality = { source: 'none', orders: null, confirmed: null, delivered: null, returned: null, cancelled: null, confirmationRate: null, deliveryRate: null, rtoRate: null, revenue: null, deliveredRevenue: null, customerCount: null, repeatCustomerCount: null, governorates: [] };
   if (effectiveProductId) {
-    cod = await codCountsForProduct({ productId: effectiveProductId, from: window.from, to: window.to });
-    govRows = await codCountsByGovernorate({ productId: effectiveProductId, from: window.from, to: window.to });
-    customerQuality = await customerQualityForProduct({ productId: effectiveProductId, from: window.from, to: window.to });
+    cod = await codCountsForProduct({ productId: effectiveProductId, storeId: profileStoreId, from: window.from, to: window.to });
+    govRows = await codCountsByGovernorate({ productId: effectiveProductId, storeId: profileStoreId, from: window.from, to: window.to });
+    customerQuality = await customerQualityForProduct({ productId: effectiveProductId, storeId: profileStoreId, from: window.from, to: window.to });
   }
 
   // §3 (BUG 3) — WHY a number is missing must never collapse into one vague
@@ -676,8 +697,8 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   let markets = { source: 'none', markets: [] };
   let buyerInsights = null;
   if (effectiveProductId) {
-    markets = await marketsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] marketsForProduct failed', { message: e.message }); return { source: 'none', markets: [] }; });
-    buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] buyerInsightsForProduct failed', { message: e.message }); return null; });
+    markets = await marketsForProduct({ productId: effectiveProductId, storeId: profileStoreId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] marketsForProduct failed', { message: e.message }); return { source: 'none', markets: [] }; });
+    buyerInsights = await buyerInsightsForProduct({ productId: effectiveProductId, storeId: profileStoreId, from: window.from, to: window.to }).catch((e) => { logger.warn('[ProductMarketing] buyerInsightsForProduct failed', { message: e.message }); return null; });
   }
   // Hook/Selling-Angle Intelligence (Block B, this change) — one more
   // buildHierarchy() call for the CURRENT window, now safe post-OOM-fix

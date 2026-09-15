@@ -22,27 +22,23 @@ const RECONCILE_INTERVAL_MS = 2 * 60 * 1000; // 2 min — well under the 40 req/
 export async function reconcileActiveOrders() {
   if (!listStores().length) return; // nothing configured to poll with — silently skip rather than log noise on every tick
 
-  // Single-store today — EasyOrdersOrder has no store_id column yet (the
-  // multi-store migration exists in prisma/migrations but is explicitly
-  // marked "PREPARED, NOT APPLIED to production"), and fetchOrderById()
-  // itself only accepts one argument and always reads the one global
-  // EASYORDERS_API_KEY. Selecting/passing store_id here was a real bug:
-  // every tick threw PrismaClientValidationError ("Unknown argument
-  // `store_id`"), silently swallowed by the .catch() in
-  // startEasyOrdersReconciliation() below — so this safety net never once
-  // ran successfully. Confirmed by direct reproduction against production
-  // before this fix. Revisit once the multi-store migration is actually
-  // applied.
+  // Multi-store — each active order re-checks against ITS OWN store's real
+  // API key, via the store_id this row was actually ingested with
+  // (services/easyOrders.js's ingestOrder() sets it on every row now).
+  // `store_id` used to not exist on this table at all (the migration
+  // existed but was unapplied) — that earlier state made this select throw
+  // PrismaClientValidationError on every tick, confirmed by direct
+  // reproduction against production; fixed once the migration was applied.
   const activeOrders = await prisma.easyOrdersOrder.findMany({
     where: { status: { in: ['PENDING', 'CONFIRMED'] } },
-    select: { order_id: true },
+    select: { order_id: true, store_id: true },
     distinct: ['order_id'],
   });
 
   let checked = 0;
   let updated = 0;
-  for (const { order_id } of activeOrders) {
-    const fetched = await fetchOrderById(order_id);
+  for (const { order_id, store_id } of activeOrders) {
+    const fetched = await fetchOrderById(order_id, store_id);
     if (!fetched) continue;
     checked++;
     const { changedRows } = await applyStatusToOrder(order_id, fetched.status);

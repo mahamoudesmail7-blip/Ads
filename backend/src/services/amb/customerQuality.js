@@ -23,13 +23,14 @@ const EMPTY_RESULT = {
  * the store, not necessarily of this exact product more than once (that
  * finer-grained signal isn't tracked per-product on Customer today).
  *
- * @param {{productId:number, from?:string, to?:string}} params (from/to = YYYY-MM-DD inclusive)
+ * @param {{productId:number, storeId?:string, from?:string, to?:string}} params (from/to = YYYY-MM-DD inclusive)
  */
-export async function customerQualityForProduct({ productId, from, to }) {
+export async function customerQualityForProduct({ productId, storeId, from, to }) {
   const dateFilter = {};
   if (from) dateFilter.gte = from;
   if (to) dateFilter.lte = to;
   const where = { product_id: productId };
+  if (storeId) where.store_id = storeId;
   if (from || to) where.date = dateFilter;
 
   const rows = await prisma.easyOrdersOrder.findMany({
@@ -112,8 +113,8 @@ export async function customerQualityForProduct({ productId, from, to }) {
  * MONITOR/REDUCE_PRIORITY/INSUFFICIENT_DATA band per row. Same real numbers,
  * no new query.
  */
-export async function marketsForProduct({ productId, from, to, minOrders = 10 } = {}) {
-  const quality = await customerQualityForProduct({ productId, from, to });
+export async function marketsForProduct({ productId, storeId, from, to, minOrders = 10 } = {}) {
+  const quality = await customerQualityForProduct({ productId, storeId, from, to });
   if (quality.source === 'none') return { source: 'none', markets: [] };
   const markets = quality.governorates
     .map((g) => ({ ...g, band: bandMarket(g, { minOrders }) }))
