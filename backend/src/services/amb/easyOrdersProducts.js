@@ -28,23 +28,91 @@ function norm(s) {
   return String(s || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
 
-/** The ONE real fetch — no Api-Key handling, no caching, just the live HTTP call + shape mapping. Both getEasyOrdersProducts() (below, thumb-only, for image matching) and getAllEasyOrdersProductsStatus() (full catalogue, for the Product Marketing Center picker) build on this — one real integration, two views over it. */
-async function fetchEasyOrdersProductsRaw(key) {
-  const res = await fetch(`${EASYORDERS_API_BASE}/products`, { headers: { 'Api-Key': key } });
+// Pagination — EasyOrders' public docs for this endpoint (confirmed live,
+// 2026-09-15) document NO page/limit parameters and show a plain-array
+// response, but the endpoint's OWN filter syntax (`field||operator||value`)
+// is the exact signature of the @nestjsx/crud library, whose standard
+// convention is `page`/`limit` query params and an optional
+// `{data,count,total,page,pageCount}` envelope. We must not assume either
+// way — see fetchEasyOrdersProductsRaw below, which handles BOTH
+// possibilities correctly without knowing in advance which is true:
+//   - if the API ignores page/limit and always returns the whole catalogue,
+//     page 1 already contains everything and the loop stops immediately
+//     (a response shorter than PAGE_LIMIT is always treated as the last
+//     page, regardless of how many total items that turns out to be).
+//   - if the API genuinely paginates, this walks every page until a short
+//     page signals the end.
+const EASYORDERS_PAGE_LIMIT = 100;
+const EASYORDERS_MAX_PAGES = 50; // hard safety bound (5,000 products ceiling) — never an unbounded loop even if the API misbehaves
+// Paces sequential page requests safely under EasyOrders' documented 40
+// req/min cap (~37/min at 1600ms). Overridable ONLY for tests, which mock
+// fetch entirely and would otherwise spend real wall-clock time on a delay
+// that's pointless against a mock — production never sets this env var.
+const EASYORDERS_PAGE_DELAY_MS = Number(process.env.EASYORDERS_PAGE_DELAY_MS_TEST_OVERRIDE) || 1600;
+
+async function fetchOnePageWithRetry(key, page, attempt = 1) {
+  const url = `${EASYORDERS_API_BASE}/products?page=${page}&limit=${EASYORDERS_PAGE_LIMIT}`;
+  const res = await fetch(url, { headers: { 'Api-Key': key } });
+  if (res.status === 429 || res.status >= 500) {
+    if (attempt >= 3) {
+      const err = new Error(`EasyOrders /products ${res.status} (page ${page}, after ${attempt} attempts)`);
+      err.httpStatus = res.status;
+      throw err;
+    }
+    await new Promise((r) => setTimeout(r, 1000 * attempt)); // 1s, 2s backoff
+    return fetchOnePageWithRetry(key, page, attempt + 1);
+  }
   if (!res.ok) {
     const bodyText = await res.text().catch(() => '');
     const err = new Error(`EasyOrders /products ${res.status}${bodyText ? `: ${bodyText.slice(0, 300)}` : ''}`);
     err.httpStatus = res.status;
     throw err;
   }
-  const raw = await res.json();
-  if (!Array.isArray(raw)) {
-    logger.warn('AMB EasyOrders products: unexpected response shape (not an array)', { sample: JSON.stringify(raw).slice(0, 300) });
-    return [];
+  return res.json();
+}
+
+/** The ONE real fetch — no Api-Key handling beyond the header, no caching, just the live HTTP call(s) + shape mapping. Both getEasyOrdersProducts() (below, thumb-only, for image matching) and getAllEasyOrdersProductsStatus() (full catalogue, for the Product Marketing Center picker) build on this — one real integration, two views over it. Walks every page (see pagination note above), bounded, rate-limited, retried, and deduplicated by EasyOrders' own stable product id — a page overlap or retry must never double-count a product. */
+async function fetchEasyOrdersProductsRaw(key) {
+  let allRows = [];
+  let page = 1;
+  let pagesFetched = 0;
+  let sawPaginationEnvelope = false;
+
+  while (page <= EASYORDERS_MAX_PAGES) {
+    let raw;
+    try {
+      raw = await fetchOnePageWithRetry(key, page);
+    } catch (err) {
+      if (page === 1) throw err; // first page failing is a real, surfaced error — unchanged from before
+      logger.warn('EasyOrders products: a later page failed after retries — stopping with what was already fetched, not discarding it', { page, message: err.message });
+      break;
+    }
+    pagesFetched++;
+    const rows = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : null);
+    if (!rows) {
+      logger.warn('AMB EasyOrders products: unexpected response shape (not an array)', { sample: JSON.stringify(raw).slice(0, 300) });
+      break;
+    }
+    if (!Array.isArray(raw)) sawPaginationEnvelope = true;
+    allRows = allRows.concat(rows);
+    const gotFullPage = rows.length === EASYORDERS_PAGE_LIMIT;
+    if (!gotFullPage) break; // a short (including empty) page always means this was the last one, whatever the total turns out to be
+    page++;
+    if (page <= EASYORDERS_MAX_PAGES) await new Promise((r) => setTimeout(r, EASYORDERS_PAGE_DELAY_MS));
   }
+  logger.info('EasyOrders products: catalogue fetch complete', { pagesFetched, totalRawRows: allRows.length, sawPaginationEnvelope, hitMaxPages: page > EASYORDERS_MAX_PAGES });
+
+  const seenIds = new Set();
+  const deduped = [];
+  for (const p of allRows) {
+    if (p?.id && seenIds.has(p.id)) continue;
+    if (p?.id) seenIds.add(p.id);
+    deduped.push(p);
+  }
+
   // A single malformed row (missing id/name, whatever) must never take the whole catalogue down — map defensively, skip only that row.
   const mapped = [];
-  for (const p of raw) {
+  for (const p of deduped) {
     try {
       mapped.push({
         id: p.id, name: p.name || '', slug: p.slug || '', thumb: p.thumb || null,
