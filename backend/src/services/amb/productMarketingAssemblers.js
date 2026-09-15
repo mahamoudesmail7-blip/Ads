@@ -152,9 +152,16 @@ export function assembleDataCompleteness({ metaMapped, metrics, cod, revenueSour
       ? dim('PARTIAL', 'يوجد أفضل إعلان لكن لسه مفيش تحليل كرياتيف له.')
       : dim('MISSING', 'لا يوجد إعلان بأداء كافٍ لتحليله بعد.');
 
+  // hookAngleIntelEnabled reflects hookAndAngleIntelForProduct()'s own
+  // dataAvailable for THIS product — it was never a system-wide feature
+  // flag, so the message must say the real, product-specific reason (no
+  // Meta mapping yet, vs. mapped but zero ads) rather than implying the
+  // whole feature is switched off.
   const hooks = hookAngleIntelEnabled
     ? dim('AVAILABLE', 'تحليل Hooks/Selling Angles من الإعلانات الحقيقية الجارية.')
-    : dim('MISSING', 'تحليل Hooks/Selling Angles من الإعلانات الحقيقية معطّل مؤقتًا (قيد إعادة التفعيل التدريجي).');
+    : !metaMapped
+      ? dim('MISSING', 'لا يمكن تحليل Hooks/Selling Angles قبل ربط المنتج بحملة Meta حقيقية.')
+      : dim('MISSING', 'الحملة مربوطة لكن لا توجد إعلانات كافية بعد لاستخراج Hooks/Selling Angles.');
 
   const competitors = dim('PARTIAL', 'يتم تحميلها عند فتح تبويب المنافسين (بحث محفوظ سابقًا)، وليست جزء من التحليل التلقائي.');
   const experiments = dim('PARTIAL', 'يتم تحميلها عند فتح تبويب الاختبارات، وليست جزء من التحليل التلقائي.');

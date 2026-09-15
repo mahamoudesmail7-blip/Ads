@@ -90,6 +90,13 @@ router.post('/profiles/:id/analyze', asyncRoute(async (req, res) => {
   res.json(await PM.computeSnapshot({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
 }));
 
+// ---- Unmapped Meta activity audit — ADMIN only. Never maps anything ----
+// ---- automatically; only classifies real spend/purchase campaigns as ----
+// ---- REVIEW (slug evidence found) or UNMAPPED (no evidence). ----
+router.get('/meta/unmapped-audit', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json(await PM.auditUnmappedMetaActivity({ windowName: req.query.window || undefined }));
+}));
+
 // ---- Product ↔ Meta Campaign mapping (read-only suggestions + a hardened, ADMIN-only confirm) ----
 router.get('/profiles/:id/meta-mapping', asyncRoute(async (req, res) => {
   res.json(await PM.getMetaMappingSuggestions({ profileId: idParam(req.params.id) }));

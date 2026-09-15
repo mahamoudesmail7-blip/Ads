@@ -20,7 +20,7 @@ import { getAmbSettings } from './settings.js';
 import { resolveWindow, entityWindowMetrics } from './metricsEngine.js';
 import { buildHierarchy, rollupMetrics } from './hierarchyAnalysis.js';
 import { productDashboard, createFromCatalogProduct } from './ambProducts.js';
-import { setMapping } from './mapping.js';
+import { setMapping, mappedCampaignIndex } from './mapping.js';
 import { codCountsForProduct, codCountsByGovernorate, observedRatesForProduct } from './codOrders.js';
 import { customerQualityForProduct, marketsForProduct } from './customerQuality.js';
 import { buyerInsightsForProduct } from './buyerInsights.js';
@@ -949,6 +949,112 @@ function campaignRow(entry, status, matchMethod) {
     cpa: entry.metrics?.cpa ?? null,
     matchMethod, // MANUAL | SLUG | EXTERNAL_ID | EXACT_NAME | ALL_NAME_WORDS
     confidence: matchMethod === 'MANUAL' ? 1 : (MATCH_CONFIDENCE[matchMethod] ?? null),
+  };
+}
+
+// Generic ad-naming filler words that appear across many unrelated
+// campaigns/slugs — never enough evidence on their own to suggest a
+// product (e.g. "Scale"/"Smart" show up in dozens of real campaign and
+// slug names in this account; treating them as a match would flood REVIEW
+// with false positives). A real product-identifying token is everything
+// else, length >= 4. Tokens carrying only the campaign's OWN slug are the
+// evidence Phase 8 needs — never a fuzzy guess from the campaign name
+// alone, and never automatically applied (see auditUnmappedMetaActivity's
+// own doc comment above for the full rationale).
+const SLUG_TOKEN_STOPLIST = new Set(['scale', 'test', 'copy', 'new', 'launch', 'promo', 'sale', 'offer', 'smart', 'ad', 'adset', 'campaign', 'v1', 'v2', 'v3']);
+function slugTokens(s) {
+  return String(s || '')
+    .toLowerCase()
+    .split(/[^a-z0-9؀-ۿ]+/)
+    .filter((t) => t.length >= 4 && !SLUG_TOKEN_STOPLIST.has(t) && !/^\d+$/.test(t));
+}
+
+/**
+ * READ-ONLY audit — every REAL Meta campaign with spend/purchases in the
+ * window that has NO product mapping at all (buildHierarchy's own
+ * unmappedCampaigns, already correctly excluding anything MAPPED). Never
+ * automatically maps anything — this only classifies each one as a REVIEW
+ * candidate (found real evidence: the campaign's name contains a product's
+ * Easy Orders SLUG, e.g. campaign "Hair-Remover _ scale 4" against product
+ * slug "Hair-Remover-Device" — confirmed as a real, common naming pattern
+ * in this account) or UNMAPPED (no evidence found at all). An admin still
+ * has to explicitly confirm a REVIEW candidate via confirmMetaMapping()
+ * (now correctly allowed even though the campaign name won't match the
+ * PRODUCT's own Arabic name/slug through matchCampaignsToProduct's
+ * separate, stricter tiers — this audit's slug-based evidence is a
+ * DIFFERENT, additional signal, still never auto-applied).
+ */
+export async function auditUnmappedMetaActivity({ windowName = 'last30' } = {}) {
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  if (!adAccountId) return { ok: false, error: 'لا يوجد حساب إعلاني Meta متصل حاليًا.', reviewCandidates: [], unmapped: [] };
+
+  const window = resolveWindow(WINDOWS.includes(windowName) ? windowName : 'last30');
+  const [campMap, campMetrics] = await Promise.all([
+    mappedCampaignIndex({ adAccountId }),
+    entityWindowMetrics({ level: 'campaign', from: window.from, to: window.to, adAccountId }),
+  ]);
+  const unmappedCampaigns = [...campMetrics.values()].filter((c) => !campMap.has(c.campaignId));
+
+  // Build a slug token index across every configured store's live catalog —
+  // the ONLY way to attribute a real product to a slug-style campaign name,
+  // never a guess from the campaign name alone. Real slugs often carry more
+  // words than the campaign name reuses (e.g. slug "Hair-Remover-Device" vs
+  // campaign "Hair-Remover _ scale 4") — a raw substring check misses this,
+  // so matching is by shared, non-generic TOKENS instead.
+  const slugIndex = [];
+  for (const store of listStores()) {
+    const status = await getAllEasyOrdersProductsStatus(store.id).catch(() => ({ ok: false, products: [] }));
+    if (!status.ok) continue;
+    for (const p of status.products) {
+      if (!p.slug) continue;
+      const tokens = slugTokens(p.slug);
+      if (!tokens.length) continue;
+      slugIndex.push({ tokens, slug: p.slug, eoId: p.id, eoName: p.name, storeId: store.id, storeName: store.name });
+    }
+  }
+  // Resolve each slug candidate's real internal product (via the same
+  // easy_orders_uuid stable identity used everywhere else) so a REVIEW row
+  // always names a concrete internal product, never just a raw EO listing.
+  const uuids = slugIndex.map((s) => s.eoId);
+  const internalByUuid = uuids.length ? new Map((await prisma.product.findMany({ where: { easy_orders_uuid: { in: uuids } }, select: { id: true, product_name: true, easy_orders_uuid: true } })).map((p) => [p.easy_orders_uuid, p])) : new Map();
+
+  const reviewCandidates = [];
+  const unmapped = [];
+  for (const c of unmappedCampaigns) {
+    const campTokens = new Set(slugTokens(c.campaignName));
+    const hits = campTokens.size ? slugIndex.filter((s) => s.tokens.some((t) => campTokens.has(t))) : [];
+    // Distinct products only — the same product can appear once per store
+    // it's synced under, but a genuine cross-store name coincidence must
+    // surface as two SEPARATE candidates, never silently collapsed.
+    const seen = new Set();
+    const candidates = [];
+    for (const hit of hits) {
+      const internal = internalByUuid.get(hit.eoId);
+      const dedupeKey = `${hit.storeId}::${internal?.id ?? hit.eoId}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const matchedToken = hit.tokens.find((t) => campTokens.has(t));
+      candidates.push({ storeId: hit.storeId, storeName: hit.storeName, productId: internal?.id ?? null, productName: internal?.product_name ?? hit.eoName, easyOrdersId: hit.eoId, matchedToken });
+    }
+    const row = { campaignId: c.campaignId, campaignName: c.campaignName, spend: c.spend ?? 0, purchases: c.purchases ?? null, impressions: c.impressions ?? null, clicks: c.clicks ?? null };
+    if (candidates.length) {
+      reviewCandidates.push({ ...row, status: 'REVIEW', evidence: candidates.map((cd) => `الكلمة "${cd.matchedToken}" مشتركة مع منتج "${cd.productName}" في ${cd.storeName}`).join(' — '), candidates });
+    } else {
+      unmapped.push({ ...row, status: 'UNMAPPED', evidence: null });
+    }
+  }
+  reviewCandidates.sort((a, b) => (b.spend || 0) - (a.spend || 0));
+  unmapped.sort((a, b) => (b.spend || 0) - (a.spend || 0));
+
+  return {
+    ok: true,
+    windowLabel: window.label,
+    adAccountId,
+    totalUnmapped: unmappedCampaigns.length,
+    reviewCandidates,
+    unmapped,
+    summary: { review: reviewCandidates.length, unmapped: unmapped.length, totalSpendUnmapped: unmappedCampaigns.reduce((a, c) => a + (c.spend || 0), 0) },
   };
 }
 
