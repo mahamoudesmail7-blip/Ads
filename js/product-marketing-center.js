@@ -17,16 +17,69 @@ const WINDOWS = [
   { k: 'last3', label: 'آخر 3 أيام' }, { k: 'last7', label: 'آخر 7 أيام' },
 ];
 const TABS = [
-  { k: 'overview', label: 'نظرة عامة' },
-  { k: 'audience', label: 'الجمهور والأسواق' },
-  { k: 'angles', label: 'زوايا البيع' },
-  { k: 'creative', label: 'الكرياتيف' },
-  { k: 'hooks', label: 'Hooks والبوستات' },
-  { k: 'locations', label: 'الأسواق والمناطق' },
-  { k: 'competitors', label: 'المنافسين' },
-  { k: 'tests', label: 'الاختبارات والنتائج' },
-  { k: 'strategist', label: 'المستشار الذكي' },
+  { k: 'overview', label: 'نظرة عامة', desc: 'ملخص شامل', icon: 'home', color: 'blue' },
+  { k: 'audience', label: 'الجمهور والأسواق', desc: 'مين بيشتري المنتج', icon: 'users', color: 'green' },
+  { k: 'angles', label: 'زوايا البيع', desc: 'كيف نبيعه', icon: 'target', color: 'amber' },
+  { k: 'creative', label: 'الكرياتيف', desc: 'أفكار تصاميم وفيديوهات', icon: 'image', color: 'purple' },
+  { k: 'hooks', label: 'Hooks والبوستات', desc: 'رسائل تجذب الانتباه', icon: 'zap', color: 'pink' },
+  { k: 'locations', label: 'الأسواق والمناطق', desc: 'توزيع الطلبات', icon: 'mappin', color: 'cyan' },
+  { k: 'competitors', label: 'المنافسين', desc: 'تحليل السوق', icon: 'barchart', color: 'green' },
+  { k: 'tests', label: 'الاختبارات والنتائج', desc: 'ما الذي يعمل أفضل', icon: 'flask', color: 'blue' },
+  { k: 'strategist', label: 'المستشار الذكي', desc: 'توصيات وخطوة قادمة', icon: 'lightbulb', color: 'yellow' },
 ];
+
+// ---------------------------------------------------------------------------
+// Local, page-scoped icon set (Phase 1 redesign) — same visual family as
+// ui-common.js's inline Feather/Lucide-style icons (24x24, currentColor
+// stroke) but kept local to this file since these icons are PMC-specific and
+// ui-common.js's ICON_PATHS/navIcon are private to the site-wide nav. Zero
+// external dependency, matches this project's zero-icon-font rule.
+// ---------------------------------------------------------------------------
+const PMC_ICON_PATHS = {
+  home: '<path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10a1 1 0 0 0 1 1h3v-6h6v6h3a1 1 0 0 0 1-1V10"/>',
+  users: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5.2"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="9" r="1.7"/><path d="M21 15l-5-5-9 9"/>',
+  zap: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
+  mappin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
+  barchart: '<path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6" rx="0.5"/><rect x="12" y="8" width="3" height="10" rx="0.5"/><rect x="17" y="5" width="3" height="13" rx="0.5"/>',
+  flask: '<path d="M9 2v6.2L4.3 17a2 2 0 0 0 1.8 2.9h11.8a2 2 0 0 0 1.8-2.9L15 8.2V2"/><path d="M8.5 2h7"/><path d="M7.2 14.5h9.6"/>',
+  lightbulb: '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a6.5 6.5 0 0 0-4.2 11.5c.9.75 1.2 1.4 1.2 2.5h6c0-1.1.3-1.75 1.2-2.5A6.5 6.5 0 0 0 12 2z"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+  upload: '<path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 20h16"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+  tag: '<path d="M20.6 12.6 12 21.2 2.8 12 2.8 2.8 12 2.8z" /><circle cx="7.5" cy="7.5" r="1.4" fill="currentColor" stroke="none"/>',
+  photo: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="10.5" r="1.6"/><path d="M21 16l-5.5-5.5-4 4-2-2L3 18"/>',
+  link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  store: '<path d="M3 9h18l-1.5-5H4.5L3 9z"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  dots: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  cart: '<circle cx="9" cy="21" r="1.4"/><circle cx="18" cy="21" r="1.4"/><path d="M2.5 3h2l2.4 12.4a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 8H6"/>',
+  coin: '<circle cx="12" cy="12" r="9"/><path d="M9 9.3c.3-1 1.4-1.6 3-1.6 1.8 0 3 .8 3 2s-1.2 1.6-3 1.9c-1.8.3-3 .8-3 2s1.4 2 3.2 1.9c1.4-.1 2.4-.7 2.8-1.6"/><path d="M12 6v1.6M12 16.4V18"/>',
+  percent: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  trend: '<path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/>',
+  megaphone: '<path d="M3 11v2a1 1 0 0 0 1 1h2l4 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M14 8a4 4 0 0 1 0 8"/><path d="M17 5a8 8 0 0 1 0 14"/>',
+};
+function pmcIcon(name, cls = '') {
+  return `<svg class="pmc-ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${PMC_ICON_PATHS[name] || ''}</svg>`;
+}
+
+/** Small local relative-time formatter (Arabic) — no such helper exists yet in ui-common.js. Used ONLY for real timestamps (snapshot.computedAt); never called with a fabricated date. */
+function timeAgoAr(dateInput) {
+  if (!dateInput) return null;
+  const d = new Date(dateInput);
+  if (Number.isNaN(d.getTime())) return null;
+  const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (diffSec < 60) return 'الآن';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `منذ ${diffMin} دقيقة`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `منذ ${diffHr} ساعة`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `منذ ${diffDay} يوم`;
+}
 
 const HEALTH_BAND_LABEL_AR = { HEALTHY: 'ممتاز', GOOD: 'جيد', NEEDS_ATTENTION: 'يحتاج انتباه', AT_RISK: 'في خطر', CRITICAL: 'حرج', INSUFFICIENT_DATA: 'بيانات غير كافية' };
 const HEALTH_BAND_COLOR = { HEALTHY: 'green', GOOD: 'green', NEEDS_ATTENTION: 'yellow', AT_RISK: 'yellow', CRITICAL: 'red', INSUFFICIENT_DATA: 'gray' };
@@ -155,29 +208,55 @@ function renderStoreSelector() {
   mount.querySelectorAll('[data-store]').forEach((b) => { b.onclick = () => selectStore(b.dataset.store); });
 }
 
+// Phase 1 redesign — the 9 PMC sections become the primary sidebar nav
+// (previously only a horizontal tab strip inside the workspace). The
+// pre-existing cross-page family links (Catalog Sync/AI Media Buyer/
+// Creative Factory/Product Research/user info/"الرجوع للنظام") are NOT
+// removed — they move into the sidebar footer, exactly as real as before.
+// Nav items are inert until a product is locked (state.profile), matching
+// the existing "no analysis without a locked product" rule — never a fake
+// active section shown before real data exists.
 function renderNav() {
   const u = state.me || {};
   const initials = (u.name || 'U').trim().split(/\s+/).map((x) => x[0]).slice(0, 2).join('').toUpperCase();
+  const locked = !!state.profile;
   $('ambNav').innerHTML = `
-    <div class="amb-nav-brand">
-      <div class="logo">💡</div>
-      <div><div class="t">مركز التسويق الذكي</div><div class="s">قرارات تسويقية أذكى لكل منتج</div></div>
+    <div class="amb-nav-brand pmc-brand">
+      <div class="logo pmc-brand-logo">${pmcIcon('lightbulb')}</div>
+      <div><div class="t">مركز التسويق الذكي</div><div class="s">للمنتجات</div></div>
     </div>
-    <div class="amb-nav-list">
-      <a class="amb-nav-item active" href="product-marketing-center.html">💡<span>مركز التسويق الذكي</span></a>
-      <a class="amb-nav-item" href="easyorders-catalog-sync.html">🔄<span>مزامنة الكتالوج</span>${state.catalogSyncMissing ? `<span class="amb-nav-count" title="منتجات Easy Orders غير موجودة في جدول المنتجات الداخلي">${E(state.catalogSyncMissing)}</span>` : ''}</a>
-      <a class="amb-nav-item" href="ai-media-buyer.html">📈<span>AI Media Buyer</span></a>
-      <a class="amb-nav-item" href="creative-factory.html">✨<span>مصنع الإعلانات</span></a>
-      <a class="amb-nav-item" href="product-research.html">🔍<span>البحث عن المنتجات</span></a>
+    <div class="amb-nav-list pmc-section-nav">
+      ${TABS.map((t) => `<button class="amb-nav-item pmc-nav-item ${locked && state.tab === t.k ? 'active' : ''} ${locked ? '' : 'disabled'}" data-pmc-tab="${t.k}" ${locked ? '' : 'disabled'}>
+        <span class="pmc-nav-ic clr-${t.color}">${pmcIcon(t.icon)}</span><span>${E(t.label)}</span>
+      </button>`).join('')}
     </div>
-    <div class="amb-nav-foot">
+    <div class="amb-nav-foot pmc-nav-foot">
+      <div class="pmc-nav-links">
+        <a class="amb-nav-link" href="easyorders-catalog-sync.html">${pmcIcon('refresh')} مزامنة الكتالوج${state.catalogSyncMissing ? `<span class="amb-nav-count" title="منتجات Easy Orders غير موجودة في جدول المنتجات الداخلي">${E(state.catalogSyncMissing)}</span>` : ''}</a>
+        <a class="amb-nav-link" href="ai-media-buyer.html">${pmcIcon('barchart')} AI Media Buyer</a>
+        <a class="amb-nav-link" href="creative-factory.html">${pmcIcon('image')} مصنع الإعلانات</a>
+        <a class="amb-nav-link" href="product-research.html">${pmcIcon('search')} البحث عن المنتجات</a>
+        <a class="amb-nav-link" href="ai-intelligence.html">${pmcIcon('lightbulb')} AI Intelligence</a>
+      </div>
       <div class="amb-nav-user">
         <div class="av">${E(initials)}</div>
         <div><div class="nm">${E(u.name || '—')}</div><div class="rl">${E({ ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' }[u.role] || u.role || '')}</div></div>
       </div>
-      <a class="amb-nav-link" href="ai-intelligence.html">🧠 AI Intelligence</a>
       <a class="amb-nav-link" href="index.html">↩︎ الرجوع للنظام</a>
     </div>`;
+  $('ambNav').querySelectorAll('[data-pmc-tab]').forEach((b) => {
+    b.onclick = () => { if (!state.profile) return; selectPmcTab(b.dataset.pmcTab); };
+  });
+}
+
+/** Switches state.tab and updates ONLY the active-state classes + the tab body — never rebuilds the sidebar/hero/nav-cards on a tab switch (perf). Shared by the sidebar nav items AND the large nav cards below the hero. */
+function selectPmcTab(tabKey) {
+  state.tab = tabKey;
+  updateActiveNav();
+  renderTabBody();
+}
+function updateActiveNav() {
+  document.querySelectorAll('[data-pmc-tab]').forEach((el) => el.classList.toggle('active', el.dataset.pmcTab === state.tab));
 }
 
 function render() {
@@ -384,6 +463,7 @@ async function lockEasyOrders(eoId) {
     state.eoSelected = null;
     resetWorkspace();
     render();
+    renderNav();
   } catch (e) { UI.toast(e.message, 'error'); if (btn) { btn.disabled = false; btn.textContent = 'تأكيد وبدء التحليل'; } }
 }
 async function lockFromUpload() {
@@ -392,6 +472,7 @@ async function lockFromUpload() {
     state.profile = await api.post('/api/product-marketing/profiles/from-images', { images });
     resetWorkspace();
     render();
+    renderNav();
   } catch (e) { UI.toast(e.message, 'error'); }
 }
 function resetWorkspace() {
@@ -404,38 +485,82 @@ function resetWorkspace() {
 // ---------------------------------------------------------------------------
 // Workspace: confirmed card + window selector + tabs
 // ---------------------------------------------------------------------------
+/** All real per-product descriptive facts, as compact pills — never invents a marketing bullet; only what confirmedTraits/potentialTraits actually contain. */
+function traitPillsHtml(items, cls) {
+  if (!items?.length) return '';
+  return items.map((t) => `<span class="pmc-trait-pill ${cls}">${E(t.label)}${t.value ? `: ${E(t.value)}` : ''}</span>`).join('');
+}
+function findTrait(items, label) { return (items || []).find((t) => t.label === label)?.value || null; }
+
+function productHeroHtml(p) {
+  const category = findTrait(p.confirmedTraits, 'الفئة') || findTrait(p.potentialTraits, 'الفئة');
+  const sourceLabel = p.source === 'EASY_ORDERS' ? 'Easy Orders' : 'رفع يدوي';
+  const imageCount = p.imageIds?.length || (p.primaryImageUrl ? 1 : 0);
+  const lastAnalysis = state.snapshot?.computedAt ? timeAgoAr(state.snapshot.computedAt) : null;
+  const gallery = (p.imageIds || []).slice(0, 4).map((id) => `<div class="pmc-hero-thumb"><img src="/api/product-marketing/profiles/${p.id}/images/${id}" onerror="this.closest('.pmc-hero-thumb').style.display='none'" /></div>`).join('');
+  return `
+    <div class="pmc-hero">
+      <div class="pmc-hero-media">
+        <div class="pmc-hero-main">${p.primaryImageUrl ? `<img src="${E(p.primaryImageUrl)}" onerror="this.style.visibility='hidden'" />` : `<div class="pmc-hero-noimg">${pmcIcon('photo')}</div>`}</div>
+        ${gallery ? `<div class="pmc-hero-thumbs">${gallery}</div>` : ''}
+      </div>
+      <div class="pmc-hero-body">
+        <div class="pmc-hero-top">
+          <span class="pmc-hero-badge">${pmcIcon('check')} منتج محدد</span>
+        </div>
+        <div class="pmc-hero-name">${E(p.lockedName)}</div>
+        <div class="pmc-hero-sub">${category ? E(category) : E(sourceLabel)}${category ? ` · ${E(sourceLabel)}` : ''}</div>
+        <div class="pmc-hero-pills">
+          ${traitPillsHtml(p.confirmedTraits, 'confirmed')}
+          ${traitPillsHtml(p.potentialTraits, 'potential')}
+        </div>
+        <div class="pmc-hero-price-row">
+          <div class="pmc-hero-price"><span class="l">السعر في السوق</span><b>${p.sellingPrice ? fmtEGP(p.sellingPrice) : '—'}</b></div>
+          <div class="pmc-hero-source"><span class="l">المصدر</span><b>${pmcIcon('store')} ${E(p.storeName || sourceLabel)}</b></div>
+        </div>
+      </div>
+      <div class="pmc-hero-side">
+        <div class="pmc-hero-actions">
+          <button class="amb-btn primary" id="pmcChangeProduct">${pmcIcon('plus')} تحليل منتج جديد</button>
+        </div>
+        <div class="pmc-quick-info">
+          <div class="h">معلومات سريعة</div>
+          ${category ? `<div class="pmc-qi-row"><span>${pmcIcon('tag')} الفئة</span><b>${E(category)}</b></div>` : ''}
+          <div class="pmc-qi-row"><span>${pmcIcon('link')} المصدر</span><b>${E(sourceLabel)}</b></div>
+          <div class="pmc-qi-row"><span>${pmcIcon('photo')} عدد صور</span><b>${imageCount || '—'}</b></div>
+          <div class="pmc-qi-row"><span>${pmcIcon('clock')} آخر تحليل</span><b>${lastAnalysis || 'لسه ما اتحللش'}</b></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function navCardsHtml() {
+  return `<div class="pmc-navcards">${TABS.map((t) => `
+    <button class="pmc-navcard ${state.tab === t.k ? 'active' : ''}" data-pmc-tab="${t.k}">
+      <span class="pmc-navcard-ic clr-${t.color}">${pmcIcon(t.icon)}</span>
+      <span class="pmc-navcard-t">${E(t.label)}</span>
+      <span class="pmc-navcard-d">${E(t.desc)}</span>
+    </button>`).join('')}</div>`;
+}
+
 function renderWorkspace(mount) {
   const p = state.profile;
   mount.innerHTML = `
-    <div class="pmc-confirm-card">
-      <img src="${E(p.primaryImageUrl || '')}" onerror="this.style.visibility='hidden'" />
-      <div class="body">
-        <div class="title">✅ المنتج المعتمد للتحليل</div>
-        <div class="name">${E(p.lockedName)}</div>
-        <div class="faint" style="font-size:12px;">المصدر: ${p.source === 'EASY_ORDERS' ? 'Easy Orders' : 'رفع يدوي'}${p.storeName ? ` · المتجر: ${E(p.storeName)}` : ''}${p.sellingPrice ? ` · السعر: ${fmtEGP(p.sellingPrice)}` : ''}</div>
-        <div class="pmc-trait-groups">
-          ${traitCol('confirmed', 'خصائص مؤكدة', p.confirmedTraits)}
-          ${traitCol('potential', 'خصائص محتملة', p.potentialTraits)}
-          ${traitCol('unconfirmed', 'غير مؤكد', p.unconfirmedTraits)}
-        </div>
-      </div>
-      <button class="amb-btn sm ghost" id="pmcChangeProduct">تغيير المنتج</button>
-    </div>
-
+    ${productHeroHtml(p)}
     <div id="pmcMetaMappingSection"></div>
+    ${navCardsHtml()}
 
-    <div class="toolbar" style="margin:14px 0;justify-content:space-between;">
+    <div class="toolbar pmc-window-toolbar">
       <span class="amb-fgrp"><span class="fl">الفترة</span>${WINDOWS.map((w) => `<button class="amb-fbtn ${state.windowName === w.k ? 'active' : ''}" data-win="${w.k}">${E(w.label)}</button>`).join('')}</span>
-      <button class="amb-btn sm" id="pmcRefresh">🔄 تحديث التحليل</button>
+      <button class="amb-btn sm" id="pmcRefresh">${pmcIcon('refresh')} تحديث التحليل</button>
     </div>
 
-    <div class="pmc-tabs">${TABS.map((t) => `<button class="pmc-tab ${state.tab === t.k ? 'active' : ''}" data-tab="${t.k}">${E(t.label)}</button>`).join('')}</div>
     <div id="pmcTabBody"></div>`;
 
-  $('pmcChangeProduct').onclick = () => { state.profile = null; state.eoSelected = null; resetWorkspace(); render(); };
+  $('pmcChangeProduct').onclick = () => { state.profile = null; state.eoSelected = null; resetWorkspace(); render(); renderNav(); };
   mount.querySelectorAll('[data-win]').forEach((b) => { b.onclick = () => { state.windowName = b.dataset.win; state.snapshot = null; renderWorkspace(mount); loadSnapshot(); }; });
   $('pmcRefresh').onclick = () => loadSnapshot(true);
-  mount.querySelectorAll('[data-tab]').forEach((b) => { b.onclick = () => { state.tab = b.dataset.tab; renderTabBody(); }; });
+  mount.querySelectorAll('[data-pmc-tab]').forEach((b) => { b.onclick = () => selectPmcTab(b.dataset.pmcTab); });
 
   renderMetaMappingSection();
   if (!state.metaMapping && !state.metaMappingLoading) loadMetaMapping();
@@ -597,12 +722,57 @@ function renderMetaMappingSection() {
 }
 
 // ---- §4/§5/§6/§20/§21 — Overview ----
+/**
+ * Phase 2 KPI row — ONLY real, non-null metrics get a card (spend/selling
+ * price default to a real 0/real price so they always show; purchases/
+ * delivered/deliveryRate/CPA/revenue/netProfit are omitted entirely, never
+ * shown as a fake "—" tile, when the underlying value is genuinely null).
+ * No trend/delta arrows anywhere: no prior-window comparison value is
+ * exposed by the API to the frontend today (see plan) — inventing one here
+ * would violate the "never fabricate a trend" rule.
+ */
+function kpiCard(icon, color, label, value, extra = '') {
+  if (value === null || value === undefined) return '';
+  return `<div class="pmc-kpi"><span class="pmc-kpi-ic clr-${color}">${pmcIcon(icon)}</span><div class="pmc-kpi-body"><b>${value}</b><span>${E(label)}</span>${extra}</div></div>`;
+}
+function kpiRowHtml(s, p) {
+  const m = s.metrics || {};
+  const cards = [
+    kpiCard('coin', 'blue', 'الإنفاق الإعلاني', fmtEGP(m.totalSpend ?? 0)),
+    kpiCard('cart', 'purple', 'مشتريات Meta', m.metaPurchases != null ? fmtNum(m.metaPurchases) : null),
+    kpiCard('check', 'green', 'طلبات مُستلمة (COD)', m.deliveredOrders != null ? fmtNum(m.deliveredOrders) : null),
+    kpiCard('percent', 'cyan', 'معدل الاستلام', m.deliveryRate != null ? fmtPct1(m.deliveryRate) : null),
+    kpiCard('target', 'amber', 'Delivered CPA', m.deliveredCpa != null ? fmtEGP(m.deliveredCpa) : null),
+    kpiCard('trend', m.netProfit != null && m.netProfit >= 0 ? 'green' : 'pink', 'صافي الربح', m.netProfit != null ? fmtEGP(m.netProfit) : null),
+    kpiCard('megaphone', 'yellow', 'الإيراد', m.revenue != null ? fmtEGP(m.revenue) : null, m.revenueSource ? `<i class="pmc-kpi-tag">${m.revenueSource === 'real' ? 'حقيقي' : 'تقديري'}</i>` : ''),
+    kpiCard('tag', 'blue', 'متوسط سعر المنتج', p?.sellingPrice ? fmtEGP(p.sellingPrice) : null),
+  ].filter(Boolean);
+  return cards.length ? `<div class="pmc-kpi-row">${cards.join('')}</div>` : '';
+}
+
+/** Real horizontal-bar visual for top governorates — same s.markets/s.locations data renderLocations() already shows as a table; bars sized by real delivered-order share. Never fabricates a location or a bar for a value that isn't real. */
+function locationsBarHtml(s) {
+  const rows = (s.markets?.length ? s.markets : s.locations) || [];
+  if (!rows.length) return '';
+  const top = [...rows].sort((a, b) => (b.delivered || 0) - (a.delivered || 0)).slice(0, 6);
+  const max = Math.max(...top.map((r) => r.delivered || 0), 1);
+  return `<div class="pmc-card">
+    <div class="h">${pmcIcon('mappin')} توزيع الطلبات حسب المحافظات</div>
+    <div class="pmc-geo-bars">${top.map((r) => `<div class="pmc-geo-row">
+      <span class="lbl">${E(r.government)}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${Math.round(((r.delivered || 0) / max) * 100)}%"></span></span>
+      <span class="val">${fmtNum(r.delivered)}</span>
+    </div>`).join('')}</div>
+  </div>`;
+}
+
 function renderOverview(mount, s) {
   const op = s.opportunity || {};
   const scoreColor = op.label === 'قوية' ? 'strong' : op.label === 'متوسطة' ? 'medium' : 'weak';
   const ring = op.score != null ? scoreRingSvg(op.score, scoreColor) : '<div class="pmc-empty" style="padding:16px;">البيانات غير كافية للحكم</div>';
   const m = s.metrics || {};
   mount.innerHTML = `
+    ${kpiRowHtml(s, state.profile)}
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
         <span>🔔 يحتاج انتباهك الآن</span>${healthBandPill(op.healthBand)}
@@ -635,10 +805,7 @@ function renderOverview(mount, s) {
         <div class="h">👥 أفضل جمهور مقترح</div>
         ${audienceSummaryHtml(s.audience)}
       </div>
-      <div class="pmc-card">
-        <div class="h">📍 أفضل المحافظات</div>
-        ${(s.locations || []).slice(0, 5).map((l) => `<div class="pmc-kv"><span>${E(l.government)}</span><b>${fmtNum(l.delivered)} مُستلم</b></div>`).join('') || `<div class="pmc-empty" style="padding:10px;">${E(m.dataAvailability?.codMessage || 'البيانات غير كافية للحكم')}</div>`}
-      </div>
+      ${locationsBarHtml(s) || `<div class="pmc-card"><div class="h">📍 أفضل المحافظات</div><div class="pmc-empty" style="padding:10px;">${E(m.dataAvailability?.codMessage || 'البيانات غير كافية للحكم')}</div></div>`}
       <div class="pmc-card">
         <div class="h">🏆 التركيبة الرابحة</div>
         ${winningFormulaHtml(s.winningFormula)}
@@ -739,34 +906,51 @@ function wireActionButtons(mount) {
 }
 
 // ---- §7/§9 — Audience & Markets ----
+/** Phase 2 — one structured fact tile instead of a plain kv row; same fields, no fabrication (kind/confidence/evidence pass through untouched). */
+function audienceFactTile(icon, color, label, value, kind, confidence, evidence) {
+  return `<div class="pmc-fact-tile">
+    <span class="pmc-fact-ic clr-${color}">${pmcIcon(icon)}</span>
+    <div class="pmc-fact-body">
+      <div class="pmc-fact-label">${E(label)}</div>
+      <div class="pmc-fact-value">${E(value || '—')} ${kindPill(kind)} ${confPill(confidence)}</div>
+      ${evidence ? `<div class="pmc-fact-evidence">${E(evidence)}</div>` : ''}
+    </div>
+  </div>`;
+}
+function segmentCardHtml(seg) {
+  return `<div class="pmc-segment-card">
+    <span class="pmc-segment-ic">${pmcIcon('users')}</span>
+    <div class="pmc-segment-body">
+      <div class="head"><span class="name">${E(seg.label)}</span>${kindPill(seg.kind)}${confPill(seg.confidence)}</div>
+      <div class="pmc-angle-fields">
+        <div class="f"><b>النوع</b>${E(seg.gender || '—')}</div>
+        <div class="f"><b>السن</b>${E(seg.ageRange || '—')}</div>
+        <div class="f"><b>المكان</b>${E(seg.location || '—')}</div>
+        <div class="f"><b>حجم البيانات</b>${E(seg.dataSize || '—')}</div>
+      </div>
+      ${seg.evidence ? `<div class="faint" style="font-size:11.5px;margin-top:8px;">الدليل: ${E(seg.evidence)}</div>` : ''}
+    </div>
+  </div>`;
+}
 function renderAudience(mount, s) {
   const a = s.audience || {};
   mount.innerHTML = `
     <div class="pmc-card">
-      <div class="h">👥 خريطة السوق والجمهور</div>
+      <div class="h">${pmcIcon('users')} خريطة السوق والجمهور</div>
       ${a.unavailable ? `<div class="pmc-empty">${E(a.reason)}</div>` : `
-        <div class="pmc-kv"><span>النوع</span><b>${E(a.gender?.value || '—')} ${kindPill(a.gender?.kind)} ${confPill(a.gender?.confidence)}</b></div>
-        <div class="faint" style="font-size:11.5px;margin:4px 0 10px;">${E(a.gender?.evidence || '')}</div>
-        <div class="pmc-kv"><span>السن</span><b>${E(a.ageRange?.value || '—')} ${kindPill(a.ageRange?.kind)} ${confPill(a.ageRange?.confidence)}</b></div>
-        <div class="faint" style="font-size:11.5px;margin:4px 0 10px;">${E(a.ageRange?.evidence || '')}</div>
-        ${a.buyerVsUser ? `<div class="pmc-kv"><span>المستخدم</span><b>${E(a.buyerVsUser.user || '—')}</b></div>
-        <div class="pmc-kv"><span>المشتري</span><b>${E(a.buyerVsUser.buyer || '—')}</b></div>
-        <div class="pmc-kv"><span>المشتري الثانوي</span><b>${E(a.buyerVsUser.secondaryBuyer || '—')}</b></div>
-        <div class="pmc-kv"><span>فرصة هدية</span><b>${E(a.buyerVsUser.giftOpportunity || '—')}</b></div>` : ''}
+        <div class="pmc-fact-grid">
+          ${audienceFactTile('users', 'green', 'النوع', a.gender?.value, a.gender?.kind, a.gender?.confidence, a.gender?.evidence)}
+          ${audienceFactTile('clock', 'amber', 'السن', a.ageRange?.value, a.ageRange?.kind, a.ageRange?.confidence, a.ageRange?.evidence)}
+          ${a.buyerVsUser?.user ? audienceFactTile('target', 'blue', 'المستخدم', a.buyerVsUser.user) : ''}
+          ${a.buyerVsUser?.buyer ? audienceFactTile('cart', 'purple', 'المشتري', a.buyerVsUser.buyer) : ''}
+          ${a.buyerVsUser?.secondaryBuyer ? audienceFactTile('users', 'cyan', 'المشتري الثانوي', a.buyerVsUser.secondaryBuyer) : ''}
+          ${a.buyerVsUser?.giftOpportunity ? audienceFactTile('tag', 'pink', 'فرصة هدية', a.buyerVsUser.giftOpportunity) : ''}
+        </div>
       `}
     </div>
     <div class="pmc-card" style="margin-top:14px;">
-      <div class="h">🎯 شرائح مقترحة</div>
-      ${(a.segments || []).map((seg) => `<div class="pmc-angle-card">
-        <div class="head"><span class="name">${E(seg.label)}</span>${kindPill(seg.kind)}${confPill(seg.confidence)}</div>
-        <div class="pmc-angle-fields">
-          <div class="f"><b>النوع</b>${E(seg.gender || '—')}</div>
-          <div class="f"><b>السن</b>${E(seg.ageRange || '—')}</div>
-          <div class="f"><b>المكان</b>${E(seg.location || '—')}</div>
-          <div class="f"><b>حجم البيانات</b>${E(seg.dataSize || '—')}</div>
-        </div>
-        ${seg.evidence ? `<div class="faint" style="font-size:11.5px;margin-top:8px;">الدليل: ${E(seg.evidence)}</div>` : ''}
-      </div>`).join('') || '<div class="pmc-empty">البيانات غير كافية للحكم</div>'}
+      <div class="h">${pmcIcon('target')} شرائح مقترحة</div>
+      ${(a.segments || []).map(segmentCardHtml).join('') || '<div class="pmc-empty">البيانات غير كافية للحكم</div>'}
     </div>`;
 }
 
@@ -782,12 +966,14 @@ function winnerIntelTableHtml(intel, emptyMsg) {
 // ---- §10/§11 — Sales angles ----
 function renderAngles(mount, s) {
   mount.innerHTML = `
+    <div class="pmc-section-badge data-backed">${pmcIcon('check')} زوايا مثبتة بالبيانات</div>
     <div class="pmc-card" style="margin-bottom:14px;">
-      <div class="h">📊 أداء زوايا البيع الحقيقي (من الإعلانات الجارية فعليًا)</div>
+      <div class="h">${pmcIcon('barchart')} أداء زوايا البيع الحقيقي (من الإعلانات الجارية فعليًا)</div>
       ${winnerIntelTableHtml(s.angleIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الزوايا بعد.')}
     </div>
+    <div class="pmc-section-badge suggested">${pmcIcon('target')} زوايا مقترحة للاختبار</div>
     <div class="pmc-card">
-      <div class="h">🎯 أفضل زوايا بيع مقترحة</div>
+      <div class="h">${pmcIcon('target')} أفضل زوايا بيع مقترحة</div>
       ${(s.angles || []).map((a, i) => `<div class="pmc-angle-card">
         <div class="head"><span class="name">${E(a.name)}</span><span class="cat">${E(a.category || '')}</span>${confPill(a.confidence)}${claimPill(a.claimStatus, a.claimReason)}</div>
         <div class="faint" style="font-size:12.5px;">${E(a.why || '')}</div>
@@ -824,7 +1010,7 @@ function winningComponentsHtml(wc) {
   ].filter(Boolean);
   if (!rows.length) return '';
   return `<div class="pmc-card" style="margin-bottom:14px;">
-    <div class="h">🏆 أفضل المكوّنات التسويقية الحقيقية</div>
+    <div class="h">${pmcIcon('image')} أفضل المكوّنات التسويقية الحقيقية</div>
     ${rows.map(([label, value, why]) => `<div class="pmc-kv"><span>${E(label)}</span><b>${E(value)}</b></div><div class="faint" style="font-size:11px;margin:0 0 8px;">${E(why || '')}</div>`).join('')}
   </div>`;
 }
@@ -833,7 +1019,7 @@ function renderCreative(mount, s) {
   mount.innerHTML = `
     ${winningComponentsHtml(s.winningComponents)}
     <div class="pmc-card">
-      <div class="h">🧠 ذكاء الكرياتيف</div>
+      <div class="h">${pmcIcon('image')} ذكاء الكرياتيف</div>
       <div class="pmc-angle-fields">
         <div class="f"><b>أفضل إعلان</b>${s.bestAd ? `${E(s.bestAd.name)} — CPA ${fmtEGP(s.bestAd.cpa)}` : 'البيانات غير كافية للحكم'}</div>
         <div class="f"><b>أضعف إعلان</b>${s.worstAd ? `${E(s.worstAd.name)} — CPA ${fmtEGP(s.worstAd.cpa)}` : 'البيانات غير كافية للحكم'}</div>
@@ -855,13 +1041,13 @@ function renderCreative(mount, s) {
     </div>
 
     <div class="pmc-card">
-      <div class="h">🎨 أفكار كرياتيف${state.genAngle ? ` — ${E(state.genAngle)}` : ''}</div>
+      <div class="h">${pmcIcon('zap')} أفكار كرياتيف${state.genAngle ? ` — ${E(state.genAngle)}` : ''}</div>
       <button class="amb-btn sm primary" id="pmcGenIdeas">توليد أفكار كرياتيف</button>
       <div id="pmcIdeasBox" style="margin-top:10px;">${ideasHtml(state.ideaResult)}</div>
     </div>
 
     <div class="pmc-card" style="margin-top:14px;">
-      <div class="h">🏭 مصنع الإعلانات</div>
+      <div class="h">${pmcIcon('image')} مصنع الإعلانات</div>
       <div class="faint" style="font-size:12px;margin-bottom:8px;">أرسل أفكار الكرياتيف مباشرة لمصنع الإعلانات لإنشاء الصور الفعلية.</div>
       <button class="amb-btn sm" id="pmcCfCheck">تحقق من الجاهزية</button>
       <div id="pmcCfStatus" style="margin-top:8px;"></div>
@@ -906,12 +1092,13 @@ async function checkCfReadiness() {
 // ---- §15/§16 — Hook Lab & Post Generator ----
 function renderHooksTab(mount, s) {
   mount.innerHTML = `
+    <div class="pmc-section-badge data-backed">${pmcIcon('check')} أداء حقيقي</div>
     <div class="pmc-card" style="margin-bottom:14px;">
-      <div class="h">📊 أداء الـ Hooks الحقيقي (من الإعلانات الجارية فعليًا)</div>
+      <div class="h">${pmcIcon('zap')} أداء الـ Hooks الحقيقي (من الإعلانات الجارية فعليًا)</div>
       ${winnerIntelTableHtml(s.hookIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الـ Hooks بعد.')}
     </div>
     <div class="pmc-card">
-      <div class="h">🎣 مختبر الـ Hooks</div>
+      <div class="h">${pmcIcon('zap')} مختبر الـ Hooks</div>
       <div class="toolbar" style="margin-bottom:10px;">
         <input class="amb-input sm" id="pmcAngleInput" placeholder="الزاوية (اختياري)" value="${E(state.genAngle)}" />
         <select class="amb-select sm" id="pmcHookCount"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option></select>
@@ -988,15 +1175,33 @@ async function generateTestPack() {
 }
 
 // ---- §6/§8 — Markets & Areas (real Easy Orders governorate economics) ----
+/** Phase 4 — summary tiles computed client-side from the SAME already-loaded rows array (no new query); each is only shown when the underlying real value exists. */
+function marketsSummaryHtml(rows, rich) {
+  if (!rows.length) return '';
+  const byDelivered = [...rows].sort((a, b) => (b.delivered || 0) - (a.delivered || 0))[0];
+  const byOrders = [...rows].sort((a, b) => (b.orders || 0) - (a.orders || 0))[0];
+  const withRate = rows.filter((r) => r.deliveryRate != null);
+  const byRate = withRate.length ? [...withRate].sort((a, b) => b.deliveryRate - a.deliveryRate)[0] : null;
+  const withRevenue = rich ? rows.filter((r) => r.revenue != null) : [];
+  const byRevenue = withRevenue.length ? [...withRevenue].sort((a, b) => b.revenue - a.revenue)[0] : null;
+  const tiles = [
+    byDelivered?.delivered ? kpiCard('check', 'green', 'أفضل محافظة (استلام)', E(byDelivered.government)) : '',
+    byRate ? kpiCard('percent', 'cyan', 'أعلى معدل استلام', `${E(byRate.government)} — ${fmtPct1(byRate.deliveryRate)}`) : '',
+    byRevenue ? kpiCard('coin', 'yellow', 'أعلى إيراد', `${E(byRevenue.government)} — ${fmtEGP(byRevenue.revenue)}`) : '',
+    byOrders?.orders ? kpiCard('cart', 'purple', 'أكبر عدد طلبات', `${E(byOrders.government)} — ${fmtNum(byOrders.orders)}`) : '',
+  ].filter(Boolean);
+  return tiles.length ? `<div class="pmc-kpi-row">${tiles.join('')}</div>` : '';
+}
 function renderLocations(mount, s) {
   const markets = s.markets || [];
   const rows = markets.length ? markets : (s.locations || []); // old cached snapshots without markets_json yet fall back gracefully
   const rich = markets.length > 0;
   mount.innerHTML = `
+    ${marketsSummaryHtml(rows, rich)}
     <div class="pmc-card">
-      <div class="h">📍 الأسواق والمناطق — ${E(s.metrics?.windowLabel || '')}</div>
+      <div class="h">${pmcIcon('mappin')} الأسواق والمناطق — ${E(s.metrics?.windowLabel || '')}</div>
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">الترتيب حسب: الطلبات المُستلمة فعليًا أولًا، ثم معدل الاستلام — مش عدد المشتريات على Meta فقط (مناسب لأوردرات الدفع عند الاستلام). لا يوجد تصنيف "وسّع" لمجرد ارتفاع عدد الطلبات — لازم معدل استلام حقيقي كمان.</div>
-      ${rows.length ? `<div class="table-wrap"><table class="data pmc-loc-table">
+      ${rows.length ? `<div class="table-wrap pmc-table-premium"><table class="data pmc-loc-table">
         <thead><tr><th>المحافظة</th><th>الطلبات</th><th>مؤكدة</th><th>مُستلمة</th><th>مرتجعة</th><th>معدل الاستلام</th>${rich ? '<th>الإيراد</th><th>متوسط الطلب</th><th>عملاء</th><th>متكررين</th><th>التصنيف</th>' : ''}</tr></thead>
         <tbody>${rows.map((l) => `<tr><td>${E(l.government)}</td><td>${fmtNum(l.orders)}</td><td>${fmtNum(l.confirmed)}</td><td>${fmtNum(l.delivered)}</td><td>${fmtNum(l.returned)}</td><td>${fmtPct1(l.deliveryRate)}</td>${rich ? `<td>${fmtEGP(l.revenue)}</td><td>${l.aov != null ? fmtEGP(l.aov) : '—'}</td><td>${fmtNum(l.customerCount)}</td><td>${fmtNum(l.repeatCustomerCount)}</td><td>${marketBandPill(l.band)}</td>` : ''}</tr>`).join('')}</tbody>
       </table></div>` : `<div class="pmc-empty">${E(s.metrics?.dataAvailability?.codMessage || 'لا توجد طلبات مسجّلة بعنوان محافظة في هذه الفترة.')}</div>`}
@@ -1016,9 +1221,16 @@ async function renderCompetitors(mount, s) {
   const gaps = s.marketGaps;
   mount.innerHTML = `
     <div class="pmc-card">
-      <div class="h">🏆 تحليل المنافسين</div>
+      <div class="h">${pmcIcon('barchart')} تحليل المنافسين</div>
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">بيانات من صفحة "البحث عن المنتجات" الحالية — مفيش بحث جديد بيتعمل هنا.</div>
-      ${c.competitors.map((cc) => `<div class="pmc-kv"><span>${E(cc.accountName || cc.accountUrl)} (${E(cc.platform)})</span><b>${cc.followerCount != null ? fmtNum(cc.followerCount) + ' متابع' : 'غير متاح'}</b></div>`).join('')}
+      ${c.competitors.map((cc) => `<div class="pmc-competitor-card">
+        <span class="pmc-competitor-ic">${pmcIcon('users')}</span>
+        <div class="pmc-competitor-body">
+          <div class="pmc-competitor-name">${E(cc.accountName || cc.accountUrl)}</div>
+          <div class="pmc-competitor-meta">${E(cc.platform)}${cc.country ? ` · ${E(cc.country)}` : ''}${cc.accountUrl ? ` · <a href="${E(cc.accountUrl)}" target="_blank" rel="noopener">${pmcIcon('link')}</a>` : ''}</div>
+        </div>
+        <div class="pmc-competitor-stat"><b>${cc.followerCount != null ? fmtNum(cc.followerCount) : '—'}</b><span>متابع</span></div>
+      </div>`).join('')}
     </div>
     <div class="pmc-card" style="margin-top:14px;">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
@@ -1161,15 +1373,29 @@ function wireTestingLab(mount) {
 }
 
 // ---- §21/§22/§24 — Tests & Results (real Testing Lab + memory + actions log) ----
+/** Phase 5 — groups the SAME real test list by its real status into a clearer "experimentation center" look; testCardHtml/wireTestingLab are completely unchanged. */
+function labListGroupedHtml(tests) {
+  if (!tests?.length) return '<div class="pmc-empty" style="padding:10px;">مفيش اختبارات مسجّلة لهذا المنتج بعد.</div>';
+  const groups = [
+    { label: 'جارية الآن', match: (t) => t.status === 'RUNNING' },
+    { label: 'مخطَّطة', match: (t) => t.status === 'PLANNED' },
+    { label: 'مكتملة / منتهية', match: (t) => ['COMPLETED', 'STOPPED', 'INCONCLUSIVE'].includes(t.status) },
+  ];
+  return groups.map((g) => {
+    const items = tests.filter(g.match);
+    if (!items.length) return '';
+    return `<div class="pmc-section-badge">${E(g.label)} (${items.length})</div>${items.map(testCardHtml).join('')}`;
+  }).join('') || tests.map(testCardHtml).join('');
+}
 async function renderTests(mount, s) {
   mount.innerHTML = `
     <div class="pmc-card">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>🧪 مختبر الاختبارات</span>
+        <span>${pmcIcon('flask')} مختبر الاختبارات</span>
         ${!state.labNewTestOpen ? '<button class="amb-btn sm primary" id="labNewTestBtn">+ اختبار جديد</button>' : ''}
       </div>
       ${testingLabFormHtml()}
-      <div id="pmcLabList">${state.labTestsLoading ? '<div class="pmc-empty">بنحمّل الاختبارات…</div>' : (state.labTests?.length ? state.labTests.map(testCardHtml).join('') : '<div class="pmc-empty" style="padding:10px;">مفيش اختبارات مسجّلة لهذا المنتج بعد.</div>')}</div>
+      <div id="pmcLabList">${state.labTestsLoading ? '<div class="pmc-empty">بنحمّل الاختبارات…</div>' : labListGroupedHtml(state.labTests)}</div>
     </div>
     <div class="pmc-card" style="margin-top:14px;">
       <div class="h">⚡ سجل التوصيات</div>
@@ -1196,9 +1422,9 @@ async function renderTests(mount, s) {
 // ---- §24 — AI Product Marketing Strategist (on-demand — own AI call) ----
 function strategistAnswersHtml(answers) {
   if (!answers?.length) return '<div class="pmc-empty" style="padding:10px;">لسه ما اتولّدش استشارة لهذا المنتج.</div>';
-  return answers.map((a) => `<div class="pmc-diag-item">
-    <div class="dot INFO"></div>
-    <div>
+  return answers.map((a) => `<div class="pmc-advisor-card">
+    <span class="pmc-advisor-ic">${pmcIcon('lightbulb')}</span>
+    <div class="pmc-advisor-body">
       <div class="t">${E(a.question)} ${statusPill(a.status)}</div>
       <div class="e">${E(a.answer)}</div>
     </div>
@@ -1209,7 +1435,7 @@ function renderStrategist(mount, s) {
   mount.innerHTML = `
     <div class="pmc-card">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>🧭 المستشار الذكي للتسويق</span>
+        <span>${pmcIcon('lightbulb')} المستشار الذكي للتسويق</span>
         <button class="amb-btn sm primary" id="pmcGenStrategist">${answers.length ? '🔄 إعادة الاستشارة' : '🤖 اطلب استشارة'}</button>
       </div>
       <div id="pmcStrategistBox">${strategistAnswersHtml(answers)}</div>

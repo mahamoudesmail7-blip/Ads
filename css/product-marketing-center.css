@@ -125,11 +125,194 @@
 .pmc-action-item .r { font-size: 12px; color: var(--amb-text-dim); margin-bottom: 8px; }
 .pmc-action-item .btns { display: flex; gap: 6px; }
 
-/* ---- Tabs ---- */
-.pmc-tabs { display: flex; gap: 4px; margin: 18px 0 14px; border-bottom: 1px solid var(--amb-border); overflow-x: auto; }
-.pmc-tab { padding: 10px 16px; font-size: 13px; font-weight: 700; color: var(--amb-text-dim); background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; font-family: inherit; }
-.pmc-tab:hover { color: var(--amb-text); }
-.pmc-tab.active { color: var(--amb-blue); border-bottom-color: var(--amb-blue); }
+/* ============================================================================
+   PHASE 1 REDESIGN — premium light SaaS shell (sidebar, hero, nav cards).
+   New tokens live ONLY here, scoped under .pmc-shell — css/amb.css (shared by
+   3 other pages) is never touched. Reuses --amb-* wherever a matching hue
+   already exists; only 3 genuinely new accents are added (cyan/pink/yellow).
+   ============================================================================ */
+.pmc-shell {
+  --pmc-navy: #10152b;
+  --pmc-navy-2: #1a2145;
+  --pmc-navy-border: #232a52;
+  --pmc-navy-text: #9aa3c4;
+  --pmc-navy-text-strong: #ffffff;
+  --pmc-cyan: #0c8599;      --pmc-cyan-bg: #e3f6f9;
+  --pmc-pink: #d6336c;      --pmc-pink-bg: #fdeef3;
+  --pmc-yellow: #b8860b;    --pmc-yellow-bg: #fdf6e3;
+}
+.pmc-ic { width: 20px; height: 20px; flex-shrink: 0; }
+
+/* ---- Sidebar: navy, icon-driven, the 9 sections as the primary nav ---- */
+.pmc-shell .amb-nav { background: var(--pmc-navy); border-inline-end: none; width: 258px; }
+.pmc-brand { padding-bottom: 20px; margin-bottom: 6px; border-bottom: 1px solid var(--pmc-navy-border); }
+.pmc-brand-logo { background: linear-gradient(135deg, var(--amb-blue), var(--pmc-cyan)); }
+.pmc-brand .t { color: var(--pmc-navy-text-strong); }
+.pmc-brand .s { color: var(--pmc-navy-text); }
+.pmc-section-nav { gap: 3px; }
+.pmc-nav-item { color: var(--pmc-navy-text); padding: 11px 12px; }
+.pmc-nav-item:hover:not(.disabled) { background: var(--pmc-navy-2); color: var(--pmc-navy-text-strong); }
+.pmc-nav-item.active { background: linear-gradient(135deg, var(--amb-blue), #4f7bff); color: #fff; box-shadow: 0 4px 14px rgba(47,107,255,.35); }
+.pmc-nav-item.disabled { opacity: .45; cursor: not-allowed; }
+.pmc-nav-ic { width: 30px; height: 30px; border-radius: 9px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--pmc-navy-2); }
+.pmc-nav-item.active .pmc-nav-ic { background: rgba(255,255,255,.18); }
+.pmc-nav-ic svg { width: 17px; height: 17px; }
+.pmc-nav-ic.clr-blue { color: #8fb1ff; } .pmc-nav-item.active .pmc-nav-ic.clr-blue { color: #fff; }
+.pmc-nav-ic.clr-green { color: #6fdba0; } .pmc-nav-ic.clr-amber { color: #f0b862; } .pmc-nav-ic.clr-purple { color: #c3aeff; }
+.pmc-nav-ic.clr-pink { color: #f28fb4; } .pmc-nav-ic.clr-cyan { color: #6fd8e8; } .pmc-nav-ic.clr-yellow { color: #f0d060; }
+.pmc-nav-foot { border-top: 1px solid var(--pmc-navy-border); }
+.pmc-nav-links { display: flex; flex-direction: column; gap: 1px; margin-bottom: 10px; }
+.pmc-nav-links .amb-nav-link { display: flex; align-items: center; gap: 8px; color: var(--pmc-navy-text); font-size: 11.5px; }
+.pmc-nav-links .amb-nav-link:hover { background: var(--pmc-navy-2); color: var(--pmc-navy-text-strong); }
+.pmc-nav-links .pmc-ic { width: 15px; height: 15px; }
+.pmc-shell .amb-nav-user .nm { color: var(--pmc-navy-text-strong); }
+.pmc-shell .amb-nav-user .rl { color: var(--pmc-navy-text); }
+.pmc-shell .pmc-nav-foot > .amb-nav-link { color: var(--pmc-navy-text); }
+.pmc-shell .pmc-nav-foot > .amb-nav-link:hover { background: var(--pmc-navy-2); color: var(--pmc-navy-text-strong); }
+
+/* ---- Product Hero ---- */
+.pmc-hero { display: grid; grid-template-columns: 220px 1fr 240px; gap: 22px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 20px; box-shadow: var(--amb-shadow); margin-bottom: 18px; }
+.pmc-hero-main { width: 100%; aspect-ratio: 1/1; border-radius: 14px; overflow: hidden; background: var(--amb-surface-2); display: flex; align-items: center; justify-content: center; }
+.pmc-hero-main img { width: 100%; height: 100%; object-fit: cover; }
+.pmc-hero-noimg { color: var(--amb-text-faint); }
+.pmc-hero-noimg svg { width: 40px; height: 40px; }
+.pmc-hero-thumbs { display: flex; gap: 6px; margin-top: 8px; }
+.pmc-hero-thumb { width: 44px; height: 44px; border-radius: 8px; overflow: hidden; border: 1px solid var(--amb-border); background: var(--amb-surface-2); }
+.pmc-hero-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.pmc-hero-body { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.pmc-hero-badge { display: inline-flex; align-items: center; gap: 5px; width: fit-content; background: var(--amb-green-bg); color: var(--amb-green); font-size: 11.5px; font-weight: 800; padding: 4px 10px; border-radius: 999px; }
+.pmc-hero-badge .pmc-ic { width: 13px; height: 13px; }
+.pmc-hero-name { font-size: 19px; font-weight: 800; color: var(--amb-text); line-height: 1.35; }
+.pmc-hero-sub { font-size: 12.5px; color: var(--amb-text-dim); }
+.pmc-hero-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.pmc-trait-pill { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: var(--amb-surface-2); color: var(--amb-text-dim); border: 1px solid var(--amb-border); }
+.pmc-trait-pill.confirmed { background: var(--amb-blue-bg); color: var(--amb-blue); border-color: transparent; }
+.pmc-hero-price-row { display: flex; gap: 24px; margin-top: auto; padding-top: 10px; }
+.pmc-hero-price .l, .pmc-hero-source .l { display: block; font-size: 11px; color: var(--amb-text-faint); margin-bottom: 2px; }
+.pmc-hero-price b { font-size: 18px; color: var(--amb-text); font-variant-numeric: tabular-nums; }
+.pmc-hero-source b { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--amb-text); }
+.pmc-hero-source .pmc-ic { width: 15px; height: 15px; color: var(--amb-text-faint); }
+.pmc-hero-side { display: flex; flex-direction: column; gap: 12px; }
+.pmc-hero-actions .amb-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.pmc-hero-actions .pmc-ic { width: 16px; height: 16px; }
+.pmc-quick-info { background: var(--amb-surface-2); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 12px 14px; }
+.pmc-quick-info .h { font-size: 11.5px; font-weight: 800; color: var(--amb-text-dim); margin-bottom: 8px; }
+.pmc-qi-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 12px; border-bottom: 1px dashed var(--amb-border); }
+.pmc-qi-row:last-child { border-bottom: none; }
+.pmc-qi-row span { display: flex; align-items: center; gap: 6px; color: var(--amb-text-dim); }
+.pmc-qi-row .pmc-ic { width: 14px; height: 14px; color: var(--amb-text-faint); }
+.pmc-qi-row b { font-weight: 700; color: var(--amb-text); }
+
+/* ---- 9 large section nav cards ---- */
+.pmc-navcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.pmc-navcard { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 16px 10px; cursor: pointer; font-family: inherit; transition: box-shadow .15s, border-color .15s, transform .15s; }
+.pmc-navcard:hover { box-shadow: var(--amb-shadow-hover); transform: translateY(-1px); border-color: var(--amb-border-strong); }
+.pmc-navcard.active { border-color: var(--amb-blue); box-shadow: 0 0 0 2px var(--amb-blue-bg); }
+.pmc-navcard-ic { width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center; }
+.pmc-navcard-ic svg { width: 22px; height: 22px; }
+.pmc-navcard-ic.clr-blue { background: var(--amb-blue-bg); color: var(--amb-blue); }
+.pmc-navcard-ic.clr-green { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-navcard-ic.clr-amber { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-navcard-ic.clr-purple { background: var(--amb-purple-bg); color: var(--amb-purple); }
+.pmc-navcard-ic.clr-pink { background: var(--pmc-pink-bg); color: var(--pmc-pink); }
+.pmc-navcard-ic.clr-cyan { background: var(--pmc-cyan-bg); color: var(--pmc-cyan); }
+.pmc-navcard-ic.clr-yellow { background: var(--pmc-yellow-bg); color: var(--pmc-yellow); }
+.pmc-navcard-t { font-size: 12.5px; font-weight: 800; color: var(--amb-text); }
+.pmc-navcard-d { font-size: 10.5px; color: var(--amb-text-faint); }
+
+.pmc-window-toolbar { justify-content: space-between; margin: 0 0 14px; }
+
+/* ============================================================================
+   PHASE 2 — Overview KPI row + real geographic bar visual.
+   ============================================================================ */
+.pmc-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.pmc-kpi { display: flex; align-items: center; gap: 10px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 13px 14px; box-shadow: var(--amb-shadow); }
+.pmc-kpi-ic { width: 38px; height: 38px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.pmc-kpi-ic svg { width: 19px; height: 19px; }
+.pmc-kpi-ic.clr-blue { background: var(--amb-blue-bg); color: var(--amb-blue); }
+.pmc-kpi-ic.clr-green { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-kpi-ic.clr-purple { background: var(--amb-purple-bg); color: var(--amb-purple); }
+.pmc-kpi-ic.clr-amber { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-kpi-ic.clr-cyan { background: var(--pmc-cyan-bg); color: var(--pmc-cyan); }
+.pmc-kpi-ic.clr-pink { background: var(--pmc-pink-bg); color: var(--pmc-pink); }
+.pmc-kpi-ic.clr-yellow { background: var(--pmc-yellow-bg); color: var(--pmc-yellow); }
+.pmc-kpi-body { min-width: 0; }
+.pmc-kpi-body b { display: block; font-size: 16px; font-weight: 800; color: var(--amb-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pmc-kpi-body span { font-size: 11px; color: var(--amb-text-faint); }
+.pmc-kpi-tag { font-style: normal; font-size: 9.5px; font-weight: 700; color: var(--amb-text-faint); margin-inline-start: 4px; }
+
+.pmc-geo-bars { display: flex; flex-direction: column; gap: 9px; }
+.pmc-geo-row { display: grid; grid-template-columns: 84px 1fr 44px; align-items: center; gap: 10px; font-size: 12px; }
+.pmc-geo-row .lbl { color: var(--amb-text-dim); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmc-geo-row .bar-track { height: 8px; border-radius: 999px; background: var(--amb-surface-2); overflow: hidden; }
+.pmc-geo-row .bar-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--pmc-cyan), var(--amb-blue)); }
+.pmc-geo-row .val { text-align: end; font-weight: 700; color: var(--amb-text); font-variant-numeric: tabular-nums; }
+
+/* ============================================================================
+   PHASE 2 — Audience structured fact tiles + segment cards.
+   ============================================================================ */
+.pmc-fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.pmc-fact-tile { display: flex; gap: 10px; background: var(--amb-surface-2); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 12px; }
+.pmc-fact-ic { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.pmc-fact-ic svg { width: 18px; height: 18px; }
+.pmc-fact-ic.clr-blue { background: var(--amb-blue-bg); color: var(--amb-blue); }
+.pmc-fact-ic.clr-green { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-fact-ic.clr-amber { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-fact-ic.clr-purple { background: var(--amb-purple-bg); color: var(--amb-purple); }
+.pmc-fact-ic.clr-cyan { background: var(--pmc-cyan-bg); color: var(--pmc-cyan); }
+.pmc-fact-ic.clr-pink { background: var(--pmc-pink-bg); color: var(--pmc-pink); }
+.pmc-fact-body { min-width: 0; }
+.pmc-fact-label { font-size: 11px; color: var(--amb-text-faint); font-weight: 700; }
+.pmc-fact-value { font-size: 13.5px; font-weight: 700; color: var(--amb-text); margin-top: 1px; }
+.pmc-fact-evidence { font-size: 11px; color: var(--amb-text-dim); margin-top: 4px; line-height: 1.5; }
+
+.pmc-segment-card { display: flex; gap: 12px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 14px 16px; margin-bottom: 12px; box-shadow: var(--amb-shadow); }
+.pmc-segment-ic { width: 40px; height: 40px; border-radius: 12px; background: var(--amb-green-bg); color: var(--amb-green); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.pmc-segment-ic svg { width: 20px; height: 20px; }
+.pmc-segment-body { flex: 1; min-width: 0; }
+
+/* ============================================================================
+   PHASE 3 — data-backed vs suggested section badges (Angles/Hooks).
+   ============================================================================ */
+.pmc-section-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; margin: 0 0 8px; color: var(--amb-text-dim); }
+.pmc-section-badge .pmc-ic { width: 15px; height: 15px; }
+.pmc-section-badge.data-backed { color: var(--amb-green); }
+.pmc-section-badge.suggested { color: var(--amb-purple); margin-top: 16px; }
+
+/* ============================================================================
+   PHASE 4 — premium table (sticky header, hover, generous rows) + competitor cards.
+   ============================================================================ */
+.pmc-table-premium table.data th { position: sticky; top: 0; z-index: 1; }
+.pmc-table-premium table.data td, .pmc-table-premium table.data th { padding: 12px 14px; }
+.pmc-table-premium table.data tbody tr { transition: background .12s; }
+.pmc-table-premium table.data tbody tr:hover { background: var(--amb-surface-2); }
+
+.pmc-competitor-card { display: flex; align-items: center; gap: 14px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--amb-shadow); }
+.pmc-competitor-ic { width: 42px; height: 42px; border-radius: 12px; background: var(--amb-green-bg); color: var(--amb-green); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.pmc-competitor-ic svg { width: 21px; height: 21px; }
+.pmc-competitor-body { flex: 1; min-width: 0; }
+.pmc-competitor-name { font-weight: 800; font-size: 13.5px; color: var(--amb-text); }
+.pmc-competitor-meta { font-size: 11.5px; color: var(--amb-text-faint); margin-top: 2px; }
+.pmc-competitor-stat { text-align: end; }
+.pmc-competitor-stat b { display: block; font-size: 15px; color: var(--amb-text); font-variant-numeric: tabular-nums; }
+.pmc-competitor-stat span { font-size: 10.5px; color: var(--amb-text-faint); }
+
+/* ============================================================================
+   PHASE 5 — Smart Advisor action cards.
+   ============================================================================ */
+.pmc-advisor-card { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--amb-border); }
+.pmc-advisor-card:last-child { border-bottom: none; }
+.pmc-advisor-ic { width: 34px; height: 34px; border-radius: 10px; background: var(--pmc-yellow-bg); color: var(--pmc-yellow); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.pmc-advisor-ic svg { width: 17px; height: 17px; }
+.pmc-advisor-body { flex: 1; min-width: 0; }
+.pmc-advisor-body .t { font-weight: 700; font-size: 13px; }
+.pmc-advisor-body .e { font-size: 12px; color: var(--amb-text-dim); margin-top: 3px; line-height: 1.6; }
+
+@media (max-width: 900px) {
+  .pmc-hero { grid-template-columns: 1fr; }
+  .pmc-hero-side { flex-direction: row; }
+  .pmc-quick-info { flex: 1; }
+}
 
 /* ---- Kind/confidence/claim pills ---- */
 .pmc-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 800; padding: 2px 8px; border-radius: 999px; }
