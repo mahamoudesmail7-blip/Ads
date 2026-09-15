@@ -90,6 +90,12 @@ router.post('/profiles/:id/analyze', asyncRoute(async (req, res) => {
   res.json(await PM.computeSnapshot({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
 }));
 
+// ---- Phase 11 — historical (deleted-from-source) product recovery. ----
+// ---- ADMIN only, dry-run by default. Never touches Easy Orders itself. ----
+router.post('/historical-recovery', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json(await PM.recoverHistoricalProduct({ storeId: req.body?.store_id, productName: req.body?.product_name, dryRun: req.body?.apply !== true }));
+}));
+
 // ---- Phase 10 — classify every synced product in one store's real ----
 // ---- data-pipeline health. ADMIN only, read-only. ----
 router.get('/pipeline-health', requireRole('ADMIN'), asyncRoute(async (req, res) => {

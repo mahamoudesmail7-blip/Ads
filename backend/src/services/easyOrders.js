@@ -122,7 +122,12 @@ export async function matchProduct(sku, name, storeId = null, easyOrdersUuid = n
 
   const key = exactNameKey(name);
   if (!key) return null;
-  const candidates = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true, store_id: true } });
+  // A historical (deleted-from-source) product is excluded from this tier
+  // — if this exact name is ever seen again on a fresh incoming order, it
+  // means the product genuinely exists in the live catalog again and must
+  // resolve through the normal catalog-creation flow into its OWN new
+  // Product, never silently reuse the old historical record.
+  const candidates = await prisma.product.findMany({ where: { active: true, is_historical: false }, select: { id: true, product_name: true, sku: true, store_id: true } });
   const matches = candidates.filter((p) => exactNameKey(p.product_name) === key);
   if (matches.length === 1) return matches[0];
   if (matches.length > 1 && storeId) {

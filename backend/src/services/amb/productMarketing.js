@@ -161,7 +161,7 @@ export async function auditEasyOrdersCatalog(storeId = defaultStoreId(), { force
   // matches against the first store's unrelated products before this fix,
   // which would have made "create missing products" silently skip real
   // products that don't exist for this store at all.
-  const internalProducts = await prisma.product.findMany({ where: { active: true, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true, sku: true } });
+  const internalProducts = await prisma.product.findMany({ where: { active: true, is_historical: false, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true, sku: true } });
 
   const summary = { total: status.products.length, EXACT_SKU_MATCH: 0, EXACT_NAME_MATCH: 0, MISSING: 0, AMBIGUOUS: 0 };
   const items = status.products.map((p) => {
@@ -305,8 +305,12 @@ export async function createProductsFromEasyOrdersCatalog(storeId = defaultStore
         // Multi-store — only an existing product tagged to THIS store (or a
         // legacy untagged row) counts as "already exists"; a same-named
         // product explicitly tagged to a DIFFERENT store must never block
-        // (or get silently reused for) this store's own create.
-        const existing = await prisma.product.findMany({ where: { active: true, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true } });
+        // (or get silently reused for) this store's own create. A
+        // historical (deleted-from-source) record is also excluded — if
+        // this exact name reappears in the live catalog, that's a
+        // genuinely new listing and must get its own new Product, never
+        // silently reuse the historical one.
+        const existing = await prisma.product.findMany({ where: { active: true, is_historical: false, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true } });
         const matches = existing.filter((p) => exactNameKey(p.product_name) === key);
         if (matches.length === 1) { results.push({ eoId, status: 'SKIPPED_EXISTS', existingProductId: matches[0].id, existingProductName: matches[0].product_name }); continue; }
         if (matches.length > 1) { results.push({ eoId, status: 'AMBIGUOUS', candidateIds: matches.map((m) => m.id) }); continue; }
@@ -389,7 +393,11 @@ function summarizeCreateResults(results) {
 export async function findInternalProductByName(name, storeId = null) {
   const n = stripStoreTagSuffix(String(name || '')).trim();
   if (!n) return null;
-  const where = storeId ? { active: true, OR: [{ store_id: storeId }, { store_id: null }] } : { active: true };
+  // A historical (deleted-from-source) record is excluded here too — this
+  // function resolves a LIVE catalog/order name string to an internal
+  // product; a live re-listing under the same name is a genuinely new
+  // product and must never silently resolve to the old historical row.
+  const where = storeId ? { active: true, is_historical: false, OR: [{ store_id: storeId }, { store_id: null }] } : { active: true, is_historical: false };
   const candidates = await prisma.product.findMany({ where, select: { id: true, product_name: true, sku: true } });
   const match = mapProductByName(n, candidates, 0.6);
   if (!match.productId || (match.method !== 'exact_name' && match.method !== 'exact_sku')) return null;
@@ -1088,6 +1096,92 @@ export async function auditUnmappedMetaActivity({ windowName = 'last30' } = {}) 
  * reported as a STORE-LEVEL count instead (see the unmatchedOrderRows
  * field) — a real, honest number, just not falsely pinned to one product.
  */
+/**
+ * Phase 11 — historical-product recovery for a batch of REAL, already-
+ *-stored order rows whose product no longer exists in the live Easy
+ * Orders catalog (deleted/discontinued at the source, not a matching bug).
+ * Dry-run by default; only ever touches rows that are genuinely
+ * unmatched (matched:false, product_id:null) for the EXACT raw name given
+ * — never a fuzzy/normalized guess, and never a row that's already
+ * correctly matched to something else.
+ *
+ * Safety, in order:
+ *   1. Refuses if the exact name exists in the store's LIVE catalog right
+ *      now (that's a real, current product — use the normal Catalog Sync
+ *      flow instead, never this historical path).
+ *   2. Refuses if more than one DISTINCT raw name would need to collapse
+ *      into "the same" product (a genuine ambiguity this function will
+ *      never silently resolve).
+ *   3. Idempotent: a second call finds the already-created historical
+ *      product (matched by exact name + store + is_historical) and simply
+ *      re-runs the backfill step, never creates a duplicate.
+ *   4. The backfill UPDATE is scoped to store_id + exact product_name_raw
+ *      + matched:false + product_id:null — a row already matched to
+ *      anything else, by anyone, for any reason, is never touched.
+ */
+export async function recoverHistoricalProduct({ storeId, productName, dryRun = true }) {
+  if (!storeId || !productName) return { ok: false, error: 'storeId و productName مطلوبين.' };
+
+  const liveStatus = await getAllEasyOrdersProductsStatus(storeId).catch(() => ({ ok: false, products: [] }));
+  const liveMatch = liveStatus.ok ? liveStatus.products.find((p) => stripStoreTagSuffix(p.name).trim() === productName.trim() || p.name.trim() === productName.trim()) : null;
+  if (liveMatch) {
+    return { ok: false, error: `هذا الاسم موجود بالفعل في كتالوج Easy Orders الحي (eoId=${liveMatch.id}) — استخدم مزامنة الكتالوج العادية، مش الاسترجاع التاريخي.`, blockedByLiveCandidate: liveMatch };
+  }
+
+  // Idempotency check FIRST — a historical product for this exact
+  // name+store may already exist from a prior run, in which case there may
+  // legitimately be zero unmatched rows left (they were all backfilled
+  // already), which must read as "already recovered", never as an error.
+  let historicalProduct = await prisma.product.findFirst({ where: { store_id: storeId, product_name: productName, is_historical: true } });
+
+  const candidateRows = await prisma.easyOrdersOrder.findMany({
+    where: { store_id: storeId, matched: false, product_id: null, product_name_raw: productName },
+    select: { id: true, order_id: true, date: true, status: true, order_cost: true },
+  });
+  if (!candidateRows.length && !historicalProduct) {
+    return { ok: false, error: 'لا توجد صفوف طلبات غير مطابقة بهذا الاسم بالضبط، ولا يوجد منتج تاريخي مُسترجَع مسبقًا.', matchingRows: 0 };
+  }
+
+  const byOrder = new Map();
+  for (const r of candidateRows) if (!byOrder.has(r.order_id)) byOrder.set(r.order_id, r);
+  const uniqueOrders = [...byOrder.values()];
+  const statusBreakdown = {};
+  for (const o of uniqueOrders) statusBreakdown[o.status] = (statusBreakdown[o.status] || 0) + 1;
+  const totalValue = uniqueOrders.reduce((a, o) => a + (o.order_cost || 0), 0);
+
+  const plan = {
+    ok: true,
+    dryRun,
+    storeId,
+    productName,
+    matchingRows: candidateRows.length,
+    uniqueOrders: uniqueOrders.length,
+    statusBreakdown,
+    totalValue,
+    alreadyRecovered: !!historicalProduct,
+    historicalProductId: historicalProduct?.id ?? null,
+  };
+  if (dryRun) return plan;
+
+  if (!historicalProduct) {
+    historicalProduct = await prisma.product.create({
+      data: {
+        product_name: productName,
+        store_id: storeId,
+        is_historical: true,
+        historical_note: `تم استرجاعه من ${uniqueOrders.length} طلب حقيقي (${candidateRows.length} صف) لم يعد موجودًا في كتالوج Easy Orders الحي وقت الاسترجاع. لا توجد بيانات SKU/سعر/فئة/صورة مُخترعة — كل الحقول غير المتاحة في الطلبات الأصلية تُركت فارغة عمدًا.`,
+      },
+    });
+  }
+
+  const backfilled = await prisma.easyOrdersOrder.updateMany({
+    where: { store_id: storeId, matched: false, product_id: null, product_name_raw: productName },
+    data: { product_id: historicalProduct.id, matched: true },
+  });
+
+  return { ...plan, dryRun: false, applied: true, productId: historicalProduct.id, rowsBackfilled: backfilled.count };
+}
+
 export async function classifyAllProducts({ storeId = defaultStoreId(), windowName = 'last30' } = {}) {
   const products = await prisma.product.findMany({ where: { active: true, store_id: storeId }, select: { id: true, product_name: true } });
   if (!products.length) return { storeId, totalProducts: 0, unmatchedOrderRows: 0, classifications: [], counts: {} };

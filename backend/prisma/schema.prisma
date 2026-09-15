@@ -120,6 +120,19 @@ model Product {
   // from a fuzzy match, only ever set from a real EasyOrders catalog id.
   easy_orders_uuid     String?
 
+  // Historical-only recovery (additive) — set ONLY by
+  // recoverHistoricalProduct() for a product whose real order history
+  // exists (proven by real EasyOrdersOrder rows) but that no longer
+  // appears in the live Easy Orders catalog (deleted/discontinued at the
+  // source). NEVER set for a normal catalog-synced product. Every catalog-
+  // matching/audit function that decides "does this live catalog item
+  // already exist internally" MUST exclude is_historical rows from its
+  // candidate set — a historical record must never be silently reused (or
+  // silently blocked) by a live catalog sync for a same-named product that
+  // might reappear later as a genuinely new listing.
+  is_historical        Boolean  @default(false)
+  historical_note      String?
+
   orders                       DailyOrder[]
   notes                        ProductNote[]
   action_logs                  ActionLog[]
