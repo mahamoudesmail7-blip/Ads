@@ -107,6 +107,19 @@ model Product {
   // colliding onto one internal Product.
   store_id             String?
 
+  // Stable product identity (additive) — Easy Orders' OWN catalog UUID for
+  // this product (their /products `id`, and the same value that appears as
+  // cart_items[].product.id on every real order — confirmed against their
+  // live API docs). This is the top-priority identity signal for matching
+  // an incoming order to this Product: a name can coincidentally collide
+  // between two unrelated products (even within one store), but this UUID
+  // never does. Scoped by store_id above (two different stores' catalogs
+  // use separate UUID namespaces) — nullable so a product created before
+  // this column existed just has no UUID recorded yet, matched by the
+  // older SKU/name tiers exactly as before; never guessed or backfilled
+  // from a fuzzy match, only ever set from a real EasyOrders catalog id.
+  easy_orders_uuid     String?
+
   orders                       DailyOrder[]
   notes                        ProductNote[]
   action_logs                  ActionLog[]
@@ -125,6 +138,7 @@ model Product {
   @@index([product_name])
   @@index([sku])
   @@index([store_id])
+  @@index([store_id, easy_orders_uuid])
   @@map("products")
 }
 
@@ -169,6 +183,13 @@ model EasyOrdersOrder {
   product             Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
   sku                 String?
   product_name_raw    String? // EasyOrders' own product name, kept even when matched==false so the UI always has a real name to show — never a fabricated placeholder for an unmatched order.
+  // Easy Orders' own stable catalog UUID for this cart item's product
+  // (cart_items[].product.id on the real order payload — confirmed present
+  // on every order via their live API docs). Stored even when matching
+  // fails, so an UNMATCHED row still carries real evidence for a later
+  // manual/automatic re-match — never silently dropped. This is now the
+  // TOP-priority signal matchProduct() checks, before SKU/name.
+  easy_orders_product_uuid String?
   date                String
   status              String // normalized: PENDING | CONFIRMED | DELIVERED | RETURNED | CANCELLED
   raw_status          String?
@@ -226,6 +247,7 @@ model EasyOrdersOrder {
   @@index([store_id])
   @@index([store_id, product_id])
   @@index([store_id, date])
+  @@index([store_id, easy_orders_product_uuid])
   @@map("easyorders_orders")
 }
 

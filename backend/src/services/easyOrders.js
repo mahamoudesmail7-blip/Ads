@@ -81,26 +81,40 @@ export function exactNameKey(name) {
 /**
  * Matches an EasyOrders cart item to our Product.
  *
- * A. Exact SKU match (unchanged from before — a real, already-trusted tier).
- * B. ONLY when SKU didn't resolve a product (missing, or present but wrong),
- *    fall back to an EXACT normalized-name match — never fuzzy, never a
- *    substring/contains check, never partial-word overlap. If more than one
- *    active internal product normalizes to the same name, that's an
- *    ambiguous data problem, not something to guess through — treated the
- *    same as no match at all (UNMAPPED).
+ * A. Exact Easy Orders product UUID match (cart_items[].product.id on the
+ *    real order payload — confirmed present via Easy Orders' own API docs).
+ *    The single most reliable signal available: unlike a name or even a
+ *    SKU, this UUID can never coincidentally collide between two unrelated
+ *    products. Scoped by store (a store's own product, or a legacy
+ *    unscoped one) so two stores' catalogs can never cross-match. Checked
+ *    FIRST, before SKU/name, per the stable-identity priority this
+ *    integration is built around.
+ * B. Exact SKU match (unchanged from before — a real, already-trusted tier)
+ *    — only reached when no UUID was given or it didn't resolve a product.
+ * C. ONLY when neither of the above resolved a product, fall back to an
+ *    EXACT normalized-name match — never fuzzy, never a substring/contains
+ *    check, never partial-word overlap. If more than one active internal
+ *    product normalizes to the same name, that's an ambiguous data
+ *    problem, not something to guess through — treated the same as no
+ *    match at all (UNMAPPED).
  *
  * Never touches Product Mapping's fuzzy tier or any AI — a wrong guess here
  * would silently misattribute a real sale, which is worse than leaving it
  * unmatched for manual review.
  *
- * Multi-store — `storeId`, when given, is used ONLY to break a genuine name
- * tie between two active products that otherwise match equally (preferring
- * the one tagged to this store); it never widens or narrows the initial
- * candidate set, so a single unambiguous global match (today's only real
- * case, since all pre-existing products are tagged the one real store)
- * behaves identically to before.
+ * Multi-store — `storeId`, when given, scopes the UUID tier directly (a
+ * store's own product or a legacy untagged one, never a different store's),
+ * and is used to break a genuine name tie in tier C between two active
+ * products that otherwise match equally; it never widens or narrows tier C's
+ * initial candidate set, so a single unambiguous global name match (today's
+ * fallback case) behaves identically to before.
  */
-export async function matchProduct(sku, name, storeId = null) {
+export async function matchProduct(sku, name, storeId = null, easyOrdersUuid = null) {
+  if (easyOrdersUuid) {
+    const byUuid = await prisma.product.findFirst({ where: { easy_orders_uuid: easyOrdersUuid, OR: [{ store_id: storeId }, { store_id: null }] } });
+    if (byUuid) return byUuid;
+  }
+
   if (sku) {
     const bySku = await prisma.product.findFirst({ where: { sku } });
     if (bySku) return bySku;
@@ -170,16 +184,18 @@ export async function ingestOrder(order, storeId = 'default') {
   for (const item of order.cart_items || []) {
     const sku = item.product?.sku || null;
     const productNameRaw = item.product?.name || null;
-    const product = await matchProduct(sku, productNameRaw, storeId);
+    const easyOrdersProductUuid = item.product?.id || null;
+    const product = await matchProduct(sku, productNameRaw, storeId, easyOrdersProductUuid);
     await prisma.easyOrdersOrder.upsert({
       where: { order_id_cart_item_id: { order_id: order.id, cart_item_id: item.id } },
-      update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, matched: !!product, date, ...customerFields },
+      update: { status, raw_status: order.status, quantity: item.quantity || 1, product_id: product?.id ?? null, sku, product_name_raw: productNameRaw, easy_orders_product_uuid: easyOrdersProductUuid, matched: !!product, date, ...customerFields },
       create: {
         order_id: order.id,
         cart_item_id: item.id,
         product_id: product?.id ?? null,
         sku,
         product_name_raw: productNameRaw,
+        easy_orders_product_uuid: easyOrdersProductUuid,
         date,
         status,
         raw_status: order.status,

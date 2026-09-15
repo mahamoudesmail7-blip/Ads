@@ -41,7 +41,7 @@ const MATCH_CONFIDENCE = { SLUG: 0.9, EXTERNAL_ID: 0.85, EXACT_NAME: 0.75, ALL_N
 
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
-const WINDOWS = ['today', 'yesterday', 'last3', 'last7'];
+const WINDOWS = ['today', 'yesterday', 'last3', 'last7', 'last14', 'last30', 'last90'];
 
 /** Shifts a {from,to} window back by its own length, for a same-size "prior period" comparison (fatigue corroboration only — never used for real metrics elsewhere). */
 function priorWindowOf({ from, to }) {
@@ -189,6 +189,49 @@ export async function auditEasyOrdersCatalog(storeId = defaultStoreId(), { force
   return { storeId, ok: status.ok, source: status.source, error: status.error, summary, items };
 }
 
+/**
+ * Backfills Product.easy_orders_uuid onto EXISTING products that the
+ * catalog audit already confirms an unambiguous match for (EXACT_SKU_MATCH
+ * or EXACT_NAME_MATCH only — never AMBIGUOUS/MISSING). This is what lets a
+ * product created BEFORE this UUID column existed start benefiting from
+ * UUID-based order matching too, without ever guessing: the exact same
+ * matching logic already trusted throughout this codebase is the sole
+ * source of truth for which product a given eoId belongs to. Never
+ * overwrites an existing non-null easy_orders_uuid (a product that already
+ * has one is left untouched, whatever this run's audit says).
+ * `dryRun` (default true) reports the proposed changes without writing —
+ * the caller decides when to actually apply them.
+ */
+export async function backfillProductEasyOrdersUuids(storeId = defaultStoreId(), { dryRun = true } = {}) {
+  const audit = await auditEasyOrdersCatalog(storeId, { forceRefresh: true });
+  if (!audit.ok) return { storeId, ok: false, error: audit.error, proposed: [], applied: 0 };
+
+  const candidates = audit.items.filter((i) => (i.status === 'EXACT_SKU_MATCH' || i.status === 'EXACT_NAME_MATCH') && i.productId);
+  const productIds = candidates.map((c) => c.productId);
+  const existing = productIds.length ? await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, easy_orders_uuid: true, product_name: true } }) : [];
+  const existingById = new Map(existing.map((p) => [p.id, p]));
+
+  const proposed = [];
+  for (const c of candidates) {
+    const p = existingById.get(c.productId);
+    if (!p) continue;
+    if (p.easy_orders_uuid) continue; // never overwrite an already-set value
+    proposed.push({ productId: c.productId, productName: p.product_name, eoId: c.eoId, matchMethod: c.status });
+  }
+
+  let applied = 0;
+  if (!dryRun) {
+    for (const item of proposed) {
+      // Re-check immediately before writing — never overwrite a value that
+      // was set by something else between the read above and now.
+      const updated = await prisma.product.updateMany({ where: { id: item.productId, easy_orders_uuid: null }, data: { easy_orders_uuid: item.eoId } });
+      applied += updated.count;
+    }
+  }
+
+  return { storeId, ok: true, dryRun, proposedCount: proposed.length, proposed, applied };
+}
+
 // Per-process guard against a double-click (or a retried request) racing
 // itself into two Product rows for the same normalized name: the first
 // request to claim a name holds it in this Set until it's done (created OR
@@ -281,7 +324,7 @@ export async function createProductsFromEasyOrdersCatalog(storeId = defaultStore
 
         // Real EasyOrders price only — never client-supplied, never invented. sku/category/cost/image/specifications are left at the model's own defaults (never fabricated).
         const selling_price = Number.isFinite(Number(catalogProduct.price)) ? Number(catalogProduct.price) : 0;
-        const created = await prisma.product.create({ data: { product_name: finalName, selling_price, product_code, active: true, store_id: storeId } });
+        const created = await prisma.product.create({ data: { product_name: finalName, selling_price, product_code, active: true, store_id: storeId, easy_orders_uuid: eoId } });
         results.push({ eoId, status: 'CREATED', product: { id: created.id, product_name: created.product_name, selling_price: created.selling_price, product_code: created.product_code } });
       } finally {
         namesBeingCreated.delete(key);
@@ -1034,22 +1077,37 @@ export async function confirmMetaMapping({ profileId, campaignIds, userId }) {
     if (!live) { results.push({ campaignId, status: 'REJECTED', reason: 'هذه الحملة غير موجودة في الحساب الإعلاني الحالي — رفض الربط.' }); continue; }
 
     const alreadyMappedHere = await prisma.ambProductCampaignMap.findUnique({ where: { ad_account_id_campaign_id: { ad_account_id: adAccountId, campaign_id: campaignId } } });
-    const isReconfirmOfSameProduct = ambProduct && alreadyMappedHere?.status === 'MAPPED' && alreadyMappedHere.amb_product_id === ambProduct.id;
-    if (!suggestedIds.has(campaignId) && !isReconfirmOfSameProduct) {
-      results.push({ campaignId, status: 'REJECTED', reason: 'هذه الحملة ليست ضمن الاقتراحات الحالية لهذا المنتج — رفض الربط لتجنّب ربط خاطئ.' });
-      continue;
-    }
     if (alreadyMappedHere && alreadyMappedHere.status === 'MAPPED' && alreadyMappedHere.amb_product_id !== ambProduct?.id) {
       results.push({ campaignId, status: 'REJECTED', reason: `هذه الحملة مربوطة بالفعل بمنتج AMB آخر (id=${alreadyMappedHere.amb_product_id}) — لن يتم استبدال ربطها.` });
       continue;
     }
 
+    // Every campaignId here was submitted by an ADMIN in an explicit,
+    // already-authenticated request — this is NEVER called automatically
+    // or in bulk (confirmed: the only caller in this whole codebase is the
+    // ADMIN-only POST route). Whether the campaign happens to also match
+    // the automatic name-based suggestion only changes how the mapping is
+    // LABELED (AI_SUGGESTED vs MANUAL), never whether a human's explicit,
+    // deliberate choice is allowed — a real campaign named without the
+    // product's slug/id/name in it (confirmed in production as a genuine,
+    // common case) must still be confirmable by someone who knows it's
+    // correct via Ads Manager/destination URL/their own knowledge. The
+    // AUTOMATIC suggestion path itself (matchCampaignsToProduct, used by
+    // getMetaMappingSuggestions to populate what's OFFERED) remains exactly
+    // as strict as before — nothing here loosens what gets suggested,
+    // only what a human is allowed to explicitly confirm.
+    const isAutoSuggested = suggestedIds.has(campaignId);
+
     if (!ambProduct) ambProduct = await createFromCatalogProduct(effectiveProductId, userId);
     const saved = await setMapping({
       adAccountId, campaignId, campaignName: live.campaignName || null, ambProductId: ambProduct.id,
-      status: 'MAPPED', matchSource: 'AI_SUGGESTED', matchConfidence: MATCH_CONFIDENCE[matchMethod] ?? null, aiReason: matchReason, userId,
+      status: 'MAPPED',
+      matchSource: isAutoSuggested ? 'AI_SUGGESTED' : 'MANUAL',
+      matchConfidence: isAutoSuggested ? (MATCH_CONFIDENCE[matchMethod] ?? null) : null,
+      aiReason: isAutoSuggested ? matchReason : null,
+      userId,
     });
-    results.push({ campaignId, status: 'MAPPED', campaignName: saved.campaign_name });
+    results.push({ campaignId, status: 'MAPPED', campaignName: saved.campaign_name, matchSource: isAutoSuggested ? 'AI_SUGGESTED' : 'MANUAL' });
   }
 
   return { ambProductId: ambProduct?.id ?? null, results };

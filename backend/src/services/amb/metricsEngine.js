@@ -45,6 +45,18 @@ export function resolveWindow(name) {
     case 'yesterday': return { from: addDaysISO(t, -1), to: addDaysISO(t, -1), label: 'أمس' };
     case 'last3': return { from: addDaysISO(t, -2), to: t, label: 'آخر 3 أيام' };
     case 'last7': return { from: addDaysISO(t, -6), to: t, label: 'آخر 7 أيام' };
+    // Longer windows (additive) — a product's real performance is often
+    // older than a week (confirmed in production: a real product's only
+    // order/DailyOrder data was ~4 weeks old, invisible to PMC no matter
+    // how correct the matching was, purely because no window could ever
+    // reach it). Safe at this scale: entityWindowMetrics() already reduces
+    // via a SQL-side DISTINCT ON per entity/day (see this file's own
+    // 2026-09-14 OOM-incident note) rather than pulling every raw snapshot
+    // into JS, so a wider date range costs proportionally more rows, not a
+    // different (unbounded) query shape.
+    case 'last14': return { from: addDaysISO(t, -13), to: t, label: 'آخر 14 يوم' };
+    case 'last30': return { from: addDaysISO(t, -29), to: t, label: 'آخر 30 يوم' };
+    case 'last90': return { from: addDaysISO(t, -89), to: t, label: 'آخر 90 يوم' };
     default: return { from: t, to: t, label: 'اليوم' };
   }
 }

@@ -15,6 +15,7 @@ const fmtPct1 = (n) => (n === null || n === undefined ? '—' : `${Math.round(n 
 const WINDOWS = [
   { k: 'today', label: 'اليوم' }, { k: 'yesterday', label: 'أمس' },
   { k: 'last3', label: 'آخر 3 أيام' }, { k: 'last7', label: 'آخر 7 أيام' },
+  { k: 'last14', label: 'آخر 14 يوم' }, { k: 'last30', label: 'آخر 30 يوم' }, { k: 'last90', label: 'آخر 90 يوم' },
 ];
 const TABS = [
   { k: 'overview', label: 'نظرة عامة', desc: 'ملخص شامل', icon: 'home', color: 'blue' },

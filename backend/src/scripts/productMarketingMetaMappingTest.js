@@ -216,12 +216,6 @@ console.log('\n§6 invalid campaign id (does not exist in live Meta data) -> REJ
   ok('REJECTED, not found', r.results[0].status === 'REJECTED', JSON.stringify(r.results[0]));
 }
 
-console.log('\n§7 a campaign that is NOT among current suggestions is rejected even if it exists in the account (prevents a tampered/stale frontend request):');
-{
-  const r = await PM.confirmMetaMapping({ profileId: 900, campaignIds: ['c9'] /* real but unrelated campaign */, userId: 1 });
-  ok('REJECTED — not a legitimate suggestion for this product', r.results[0].status === 'REJECTED', JSON.stringify(r.results[0]));
-}
-
 console.log('\n§8 single confirm — creates the AmbProduct (safe, existing createFromCatalogProduct flow) and MAPS the campaign:');
 {
   ok('no AmbProduct exists yet for product 300', (await prisma.ambProduct.findUnique({ where: { product_id: 300 } })) === null);
@@ -276,6 +270,15 @@ console.log('\n§12 Campaign -> AdSet -> Ad hierarchy stays correctly scoped to 
   ok('the unrelated campaign c9 (and its adset/ad) never appears anywhere under this product', JSON.stringify(productNode).includes('c9') === false && JSON.stringify(productNode).includes('as9') === false);
   const unmappedIds = tree.unmappedCampaigns.map((c) => c.id);
   ok('c9 correctly appears as an unmapped standalone campaign, not attributed to any product', unmappedIds.includes('c9'), unmappedIds.join(','));
+}
+
+console.log('\n§12b a real, existing campaign that is NOT among the automatic name-based suggestions can still be MANUALLY confirmed (Phase 7 fix — a merchant who knows via Ads Manager/destination URL that a differently-named campaign is real must be able to confirm it; only the AUTOMATIC suggestion path stays strict, never a rejection of a deliberate admin-only, explicit choice). Run last so it doesn\'t disturb earlier sections\' "c9 stays unmapped" fixture assumptions:');
+{
+  const r = await PM.confirmMetaMapping({ profileId: 900, campaignIds: ['c9'] /* real, existing campaign, but its name doesn't match product 300 at all — §12 just proved it's otherwise a legitimate unmapped standalone campaign */, userId: 1 });
+  ok('c9 -> MAPPED, not rejected', r.results[0].status === 'MAPPED', JSON.stringify(r.results[0]));
+  ok('recorded with matchSource MANUAL (never AI_SUGGESTED for something the algorithm never actually suggested)', r.results[0].matchSource === 'MANUAL', JSON.stringify(r.results[0]));
+  const mapRow = await prisma.ambProductCampaignMap.findUnique({ where: { ad_account_id_campaign_id: { ad_account_id: AD_ACCOUNT_ID, campaign_id: 'c9' } } });
+  ok('the stored row\'s match_source is MANUAL and carries no fabricated AI confidence/reason', mapRow?.match_source === 'MANUAL' && mapRow.match_confidence === null && mapRow.ai_reason === null, JSON.stringify(mapRow));
 }
 
 console.log('\n§13 no Meta/Product/Easy Orders writes anywhere in this file:');

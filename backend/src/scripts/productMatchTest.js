@@ -35,8 +35,14 @@ const originalProductFindMany = prisma.product.findMany.bind(prisma.product);
 
 const { stripStoreTagSuffix, exactNameKey, matchProduct } = await import(pathToFileURL(join(__dirname, '../services/easyOrders.js')).href);
 
-function mockCatalog({ bySku = {}, all = [] }) {
+function mockCatalog({ bySku = {}, byUuid = {}, all = [] }) {
   prisma.product.findFirst = async ({ where }) => {
+    if (where?.easy_orders_uuid !== undefined) {
+      const p = byUuid[where.easy_orders_uuid];
+      if (!p) return null;
+      const storeOk = where.OR.some((cond) => (cond.store_id === null ? !p.store_id : p.store_id === cond.store_id));
+      return storeOk ? p : null;
+    }
     if (where?.sku !== undefined) return bySku[where.sku] || null;
     throw new Error('unexpected findFirst call in test: ' + JSON.stringify(where));
   };
@@ -101,6 +107,38 @@ console.log('\n§7 wrong/non-matching SKU present but an otherwise-exact name ->
   mockCatalog({ bySku: { 'SKU-WRONG': null }, all: [PRODUCT_48] });
   const result = await matchProduct('SKU-WRONG', 'جهاز قياس الضغط الذكي المنزلي');
   ok('SKU lookup miss falls through to exact-name match', result?.id === 48, JSON.stringify(result));
+}
+
+console.log('\n§9 Easy Orders UUID match — the new top-priority tier:');
+{
+  const uuidProduct = { id: 200, product_name: 'اسم قابل للتغيير في أي وقت', sku: '', active: true, easy_orders_uuid: 'eo-uuid-abc', store_id: 'default' };
+  mockCatalog({ byUuid: { 'eo-uuid-abc': uuidProduct }, all: [uuidProduct] });
+  const result = await matchProduct(null, 'اسم مختلف تمامًا في الطلب', 'default', 'eo-uuid-abc');
+  ok('resolves via UUID even though sku is null and the order\'s name differs entirely', result?.id === 200, JSON.stringify(result));
+}
+
+console.log('\n§10 UUID match takes priority over SKU and name when both are also present:');
+{
+  const uuidProduct = { id: 201, product_name: 'اسم آخر', sku: 'SKU-OTHER', active: true, easy_orders_uuid: 'eo-uuid-def', store_id: 'default' };
+  const skuProduct = { id: 202, product_name: 'اسم آخر', sku: 'SKU-OTHER', active: true };
+  mockCatalog({ bySku: { 'SKU-OTHER': skuProduct }, byUuid: { 'eo-uuid-def': uuidProduct }, all: [uuidProduct, skuProduct] });
+  const result = await matchProduct('SKU-OTHER', 'اسم آخر', 'default', 'eo-uuid-def');
+  ok('UUID wins over a SKU that would have matched a DIFFERENT product', result?.id === 201, JSON.stringify(result));
+}
+
+console.log('\n§11 UUID is store-scoped — never matches a different store\'s product with the same UUID space collision:');
+{
+  const otherStoreProduct = { id: 203, product_name: 'م', sku: '', active: true, easy_orders_uuid: 'eo-uuid-ghi', store_id: 'other-store' };
+  mockCatalog({ byUuid: { 'eo-uuid-ghi': otherStoreProduct }, all: [otherStoreProduct] });
+  const result = await matchProduct(null, 'اسم غير مطابق', 'default', 'eo-uuid-ghi');
+  ok('a UUID tagged to a different store never matches here, falls through to null (no sku/name match either)', result === null, JSON.stringify(result));
+}
+
+console.log('\n§12 UUID given but not found anywhere -> falls through to SKU/name tiers, never throws:');
+{
+  mockCatalog({ bySku: {}, byUuid: {}, all: [PRODUCT_48] });
+  const result = await matchProduct(null, 'جهاز قياس الضغط الذكي المنزلي', 'default', 'eo-uuid-does-not-exist');
+  ok('unknown UUID falls through cleanly to the exact-name tier', result?.id === 48, JSON.stringify(result));
 }
 
 console.log('\n§8 zero real DB writes attempted at any point in this file:');

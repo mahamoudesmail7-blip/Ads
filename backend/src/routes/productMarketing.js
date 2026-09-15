@@ -48,6 +48,15 @@ router.post('/easy-orders/catalog-audit/create', requireRole('ADMIN'), asyncRout
   res.json(await PM.createProductsFromEasyOrdersCatalog(req.body?.store_id || undefined, safeItems));
 }));
 
+// ---- Backfill Product.easy_orders_uuid onto already-matched EXISTING ----
+// ---- products — ADMIN only, dry-run by default. Never guesses: only ----
+// ---- the same EXACT_SKU_MATCH/EXACT_NAME_MATCH the audit above already ----
+// ---- trusts. Pass apply=true to actually write (still never overwrites ----
+// ---- a product that already has a UUID recorded). ----
+router.post('/easy-orders/backfill-uuids', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json(await PM.backfillProductEasyOrdersUuids(req.body?.store_id || undefined, { dryRun: req.body?.apply !== true }));
+}));
+
 // ---- Product source / lock ----
 router.get('/easy-orders/search', asyncRoute(async (req, res) => {
   // §1 — the service now returns {products, ok, source, error} so a real
