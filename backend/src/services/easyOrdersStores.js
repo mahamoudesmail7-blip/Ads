@@ -27,6 +27,7 @@
 // webhook) — every existing single-store deployment (today's production
 // included) keeps working with ZERO config changes.
 import { logger } from '../logger.js';
+import crypto from 'node:crypto';
 
 const DEFAULT_STORE_ID = 'default';
 
@@ -102,14 +103,25 @@ export function defaultStoreId() {
   return list[0]?.id || DEFAULT_STORE_ID;
 }
 
+/** One-way, non-reversible fingerprint of a credential value — proves two values are equal or different WITHOUT exposing or being able to reconstruct either one. Truncated to 12 hex chars: enough to distinguish real keys (astronomically unlikely to collide), nowhere near enough to brute-force back to the original. */
+function fingerprint(value) {
+  if (!value) return null;
+  return crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
+}
+
 /**
  * ADMIN-only diagnostic — reports which Railway ENV VAR NAME each store's
- * key/secret is configured to read from, and whether that variable
- * currently holds a non-empty value, so an admin can be told EXACTLY which
- * Railway variable to check/fix without Claude (or anyone else) ever
- * needing to see the actual key/secret value. Never returns a credential
- * value — only variable names and presence booleans, matching this file's
- * own documented safety guarantee at the top.
+ * key/secret is configured to read from, whether that variable currently
+ * holds a non-empty value, and a one-way fingerprint of that value (see
+ * fingerprint() above) — enough to PROVE from outside whether two stores'
+ * env vars actually resolve to the same or different real credential in
+ * THIS running process, without ever exposing or being able to reconstruct
+ * the value itself. Resolves through the exact same getStoreApiKey() /
+ * getStoreWebhookSecret() path real requests use (not a raw process.env
+ * read), so this also catches a resolution bug, not just a Railway
+ * misconfiguration. An admin can be told EXACTLY which Railway variable to
+ * check/fix without Claude (or anyone else) ever needing to see the actual
+ * key/secret value.
  */
 export function storeConfigDiagnostics() {
   const configured = parseConfiguredStores();
@@ -122,6 +134,7 @@ export function storeConfigDiagnostics() {
     enabled: r.enabled,
     apiKeyEnv: r.apiKeyEnv,
     apiKeyConfigured: !!(process.env[r.apiKeyEnv] && process.env[r.apiKeyEnv].trim()),
+    apiKeyFingerprint: fingerprint(getStoreApiKey(r.id)),
     webhookSecretEnv: r.webhookSecretEnv || null,
     webhookSecretConfigured: !!(r.webhookSecretEnv && process.env[r.webhookSecretEnv] && process.env[r.webhookSecretEnv].trim()),
   }));

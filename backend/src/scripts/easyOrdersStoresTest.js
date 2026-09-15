@@ -23,7 +23,7 @@ function resetEnv() {
 // time, so a single import is actually fine — but re-importing with a
 // cache-busting query string keeps each block visually self-contained).
 const mod = await import(pathToFileURL(process.cwd() + '/src/services/easyOrdersStores.js').href);
-const { listStores, getStore, getStoreApiKey, defaultStoreId } = mod;
+const { listStores, getStore, getStoreApiKey, defaultStoreId, storeConfigDiagnostics } = mod;
 
 console.log('§B1 Backward compatibility — only EASYORDERS_API_KEY set (today\'s real production shape):');
 {
@@ -106,6 +106,42 @@ console.log('\n§M4 A store explicitly disabled:');
   process.env.EASYORDERS_STORES_JSON = JSON.stringify([{ id: 'trendy', name: 'Trendy Store', apiKeyEnv: 'EASYORDERS_API_KEY_TRENDY', enabled: false }]);
   ok('listStores() still shows it (with enabled:false) so the UI can grey it out', listStores()[0].enabled === false);
   ok('getStoreApiKey refuses to resolve a disabled store\'s key', getStoreApiKey('trendy') === null);
+}
+
+console.log('\n§M5 storeConfigDiagnostics() fingerprints prove key equality/inequality WITHOUT ever exposing the value:');
+{
+  resetEnv();
+  process.env.EASYORDERS_API_KEY_TRENDY = 'real-key-for-trendy-store-AAAA';
+  process.env.EASYORDERS_STORES_JSON = JSON.stringify([
+    { id: 'trendy', name: 'Trendy Store', apiKeyEnv: 'EASYORDERS_API_KEY_TRENDY' },
+    { id: 'other', name: 'Other Store', apiKeyEnv: 'EASYORDERS_API_KEY_OTHER' }, // unset on purpose
+  ]);
+  const diag = storeConfigDiagnostics();
+  const trendy = diag.find((d) => d.id === 'trendy');
+  const other = diag.find((d) => d.id === 'other');
+  ok('a configured, present key gets a non-null fingerprint', typeof trendy.apiKeyFingerprint === 'string' && trendy.apiKeyFingerprint.length === 12);
+  ok('the fingerprint never contains the raw key value as a substring', !trendy.apiKeyFingerprint.includes('real-key-for-trendy-store-AAAA'));
+  ok('a missing/unset key fingerprints to null, never throws', other.apiKeyFingerprint === null);
+
+  resetEnv();
+  process.env.EASYORDERS_API_KEY_TRENDY = 'same-value-both-stores';
+  process.env.EASYORDERS_API_KEY_OTHER = 'same-value-both-stores';
+  process.env.EASYORDERS_STORES_JSON = JSON.stringify([
+    { id: 'trendy', name: 'Trendy Store', apiKeyEnv: 'EASYORDERS_API_KEY_TRENDY' },
+    { id: 'other', name: 'Other Store', apiKeyEnv: 'EASYORDERS_API_KEY_OTHER' },
+  ]);
+  const diagSame = storeConfigDiagnostics();
+  ok('two DIFFERENT env vars holding the SAME real value -> identical fingerprint (proves misconfiguration detectable)', diagSame.find((d) => d.id === 'trendy').apiKeyFingerprint === diagSame.find((d) => d.id === 'other').apiKeyFingerprint);
+
+  resetEnv();
+  process.env.EASYORDERS_API_KEY_TRENDY = 'value-one';
+  process.env.EASYORDERS_API_KEY_OTHER = 'value-two';
+  process.env.EASYORDERS_STORES_JSON = JSON.stringify([
+    { id: 'trendy', name: 'Trendy Store', apiKeyEnv: 'EASYORDERS_API_KEY_TRENDY' },
+    { id: 'other', name: 'Other Store', apiKeyEnv: 'EASYORDERS_API_KEY_OTHER' },
+  ]);
+  const diagDiff = storeConfigDiagnostics();
+  ok('two genuinely different values -> different fingerprints', diagDiff.find((d) => d.id === 'trendy').apiKeyFingerprint !== diagDiff.find((d) => d.id === 'other').apiKeyFingerprint);
 }
 
 resetEnv();
