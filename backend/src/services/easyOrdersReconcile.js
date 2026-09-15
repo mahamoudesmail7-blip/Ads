@@ -15,13 +15,25 @@
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
 import { fetchOrderById, applyStatusToOrder } from './easyOrders.js';
+import { listStores } from './easyOrdersStores.js';
 
 const RECONCILE_INTERVAL_MS = 2 * 60 * 1000; // 2 min — well under the 40 req/min limit even with dozens of active orders
 
 export async function reconcileActiveOrders() {
-  if (!process.env.EASYORDERS_API_KEY) return; // nothing to poll with — silently skip rather than log noise on every tick
+  if (!listStores().length) return; // nothing configured to poll with — silently skip rather than log noise on every tick
 
-  const activeOrderIds = await prisma.easyOrdersOrder.findMany({
+  // Single-store today — EasyOrdersOrder has no store_id column yet (the
+  // multi-store migration exists in prisma/migrations but is explicitly
+  // marked "PREPARED, NOT APPLIED to production"), and fetchOrderById()
+  // itself only accepts one argument and always reads the one global
+  // EASYORDERS_API_KEY. Selecting/passing store_id here was a real bug:
+  // every tick threw PrismaClientValidationError ("Unknown argument
+  // `store_id`"), silently swallowed by the .catch() in
+  // startEasyOrdersReconciliation() below — so this safety net never once
+  // ran successfully. Confirmed by direct reproduction against production
+  // before this fix. Revisit once the multi-store migration is actually
+  // applied.
+  const activeOrders = await prisma.easyOrdersOrder.findMany({
     where: { status: { in: ['PENDING', 'CONFIRMED'] } },
     select: { order_id: true },
     distinct: ['order_id'],
@@ -29,7 +41,7 @@ export async function reconcileActiveOrders() {
 
   let checked = 0;
   let updated = 0;
-  for (const { order_id } of activeOrderIds) {
+  for (const { order_id } of activeOrders) {
     const fetched = await fetchOrderById(order_id);
     if (!fetched) continue;
     checked++;
