@@ -63,6 +63,7 @@ async function init() {
   $('cfDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'cfDrawerOverlay') closeDrawer(); });
   window.addEventListener('hashchange', route);
   renderNav();
+  UI.mountAmbMobileNav('مصنع الإعلانات', 'cfNav');
   route();
 }
 

@@ -131,6 +131,7 @@ async function init() {
   $('ambDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'ambDrawerOverlay') closeDrawer(); });
   window.addEventListener('hashchange', route);
   renderNav();
+  UI.mountAmbMobileNav('AI Media Buyer');
   route();
 }
 

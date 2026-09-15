@@ -589,6 +589,7 @@ async function rerunSearch(searchId) {
 
 // --- Init ---
 async function init() {
+  UI.renderSidebar('productresearch');
   wireChipInput('prInputAlt', 'alt');
   wireChipInput('prInputAr', 'ar');
   wireChipInput('prInputEn', 'en');

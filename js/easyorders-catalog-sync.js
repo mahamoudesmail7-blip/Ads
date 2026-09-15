@@ -40,6 +40,7 @@ const state = {
 async function init() {
   try { state.me = await api.get('/api/auth/me'); } catch { /* redirected by api-client on 401 */ }
   renderNav();
+  UI.mountAmbMobileNav('مزامنة الكتالوج');
   render();
   await loadStores();
   await loadAudit(); // auto-audit as soon as the page opens — no manual trigger needed

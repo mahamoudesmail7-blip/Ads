@@ -475,6 +475,30 @@ body { background: var(--amb-bg); }
   .amb-r-actions { margin-inline-start: 0; }
 }
 
+/* ---- mobile sidebar → off-canvas drawer (matches css/style.css's own
+   .drawer-panel convention exactly: same breakpoint, same slide-in side,
+   same transform/transition) — see js/ui-common.js's mountAmbMobileNav(). ---- */
+@media (max-width: 768px) {
+  .amb-app .amb-nav {
+    position: fixed; top: 0; bottom: 0; inset-inline-end: 0;
+    width: 280px; max-width: 85vw;
+    z-index: 210;
+    /* This app is always RTL (never toggles), so the closed-state physical
+       direction is hardcoded rather than split into a same-specificity
+       [dir="rtl"] override rule — a same-specificity override tied to the
+       .open rule below produced an unreliable cascade winner in testing.
+       inset-inline-end:0 in RTL resolves to the physical LEFT edge, so the
+       closed state slides further left (negative X). */
+    transform: translateX(-100%);
+    transition: transform 0.18s ease-out;
+    overflow-y: auto;
+  }
+  /* ID selector deliberately used for the open state so it unambiguously
+     outranks the base rule above regardless of source order. */
+  #ambNav.open { transform: translateX(0); }
+  .amb-app .amb-main { padding: 18px; padding-top: 72px; min-width: 0; }
+}
+
 /* ── AI Suggested Decisions → Winner → Scale (this section only) ─────────── */
 .amb-scale-wrap { margin-bottom: 16px; }
 .amb-scale-h { font-size: 13px; font-weight: 800; color: var(--amb-text); margin: 0 0 8px; }

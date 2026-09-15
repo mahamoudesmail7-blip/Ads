@@ -134,6 +134,7 @@ async function init() {
   try { state.me = await api.get('/api/auth/me'); } catch { /* redirected by api-client on 401 */ }
   $('ambDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'ambDrawerOverlay') $('ambDrawerOverlay').classList.remove('open'); });
   renderNav();
+  UI.mountAmbMobileNav('مركز التسويق الذكي');
   render();
   await loadStores();
   loadCatalogSyncBadge(); // fire-and-forget — a slow/failed Easy Orders catalog fetch must never block the rest of the page
@@ -1192,6 +1193,28 @@ function marketsSummaryHtml(rows, rich) {
   ].filter(Boolean);
   return tiles.length ? `<div class="pmc-kpi-row">${tiles.join('')}</div>` : '';
 }
+/** Mobile card view for the SAME governorate rows the desktop table shows — no new data, just a second display format shown only ≤768px (table shown only >768px, see .pmc-loc-table/.pmc-loc-cards CSS). */
+function locationCardHtml(l, rich) {
+  return `<div class="pmc-loc-card">
+    <div class="pmc-loc-card-head"><span>${E(l.government)}</span>${rich ? marketBandPill(l.band) : ''}</div>
+    <div class="pmc-loc-card-grid">
+      <div class="kv"><span>الطلبات</span><b>${fmtNum(l.orders)}</b></div>
+      <div class="kv"><span>مؤكدة</span><b>${fmtNum(l.confirmed)}</b></div>
+      <div class="kv"><span>مُستلمة</span><b>${fmtNum(l.delivered)}</b></div>
+      <div class="kv"><span>معدل الاستلام</span><b>${fmtPct1(l.deliveryRate)}</b></div>
+    </div>
+    ${rich ? `<details class="pmc-loc-details">
+      <summary>عرض التفاصيل</summary>
+      <div class="pmc-loc-card-grid" style="margin-top:8px;">
+        <div class="kv"><span>مرتجعة</span><b>${fmtNum(l.returned)}</b></div>
+        <div class="kv"><span>الإيراد</span><b>${fmtEGP(l.revenue)}</b></div>
+        <div class="kv"><span>متوسط الطلب</span><b>${l.aov != null ? fmtEGP(l.aov) : '—'}</b></div>
+        <div class="kv"><span>عملاء</span><b>${fmtNum(l.customerCount)}</b></div>
+        <div class="kv"><span>متكررين</span><b>${fmtNum(l.repeatCustomerCount)}</b></div>
+      </div>
+    </details>` : ''}
+  </div>`;
+}
 function renderLocations(mount, s) {
   const markets = s.markets || [];
   const rows = markets.length ? markets : (s.locations || []); // old cached snapshots without markets_json yet fall back gracefully
@@ -1201,10 +1224,11 @@ function renderLocations(mount, s) {
     <div class="pmc-card">
       <div class="h">${pmcIcon('mappin')} الأسواق والمناطق — ${E(s.metrics?.windowLabel || '')}</div>
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">الترتيب حسب: الطلبات المُستلمة فعليًا أولًا، ثم معدل الاستلام — مش عدد المشتريات على Meta فقط (مناسب لأوردرات الدفع عند الاستلام). لا يوجد تصنيف "وسّع" لمجرد ارتفاع عدد الطلبات — لازم معدل استلام حقيقي كمان.</div>
-      ${rows.length ? `<div class="table-wrap pmc-table-premium"><table class="data pmc-loc-table">
+      ${rows.length ? `<div class="table-wrap pmc-table-premium pmc-loc-table-wrap"><table class="data pmc-loc-table">
         <thead><tr><th>المحافظة</th><th>الطلبات</th><th>مؤكدة</th><th>مُستلمة</th><th>مرتجعة</th><th>معدل الاستلام</th>${rich ? '<th>الإيراد</th><th>متوسط الطلب</th><th>عملاء</th><th>متكررين</th><th>التصنيف</th>' : ''}</tr></thead>
         <tbody>${rows.map((l) => `<tr><td>${E(l.government)}</td><td>${fmtNum(l.orders)}</td><td>${fmtNum(l.confirmed)}</td><td>${fmtNum(l.delivered)}</td><td>${fmtNum(l.returned)}</td><td>${fmtPct1(l.deliveryRate)}</td>${rich ? `<td>${fmtEGP(l.revenue)}</td><td>${l.aov != null ? fmtEGP(l.aov) : '—'}</td><td>${fmtNum(l.customerCount)}</td><td>${fmtNum(l.repeatCustomerCount)}</td><td>${marketBandPill(l.band)}</td>` : ''}</tr>`).join('')}</tbody>
-      </table></div>` : `<div class="pmc-empty">${E(s.metrics?.dataAvailability?.codMessage || 'لا توجد طلبات مسجّلة بعنوان محافظة في هذه الفترة.')}</div>`}
+      </table></div>
+      <div class="pmc-loc-cards">${rows.map((l) => locationCardHtml(l, rich)).join('')}</div>` : `<div class="pmc-empty">${E(s.metrics?.dataAvailability?.codMessage || 'لا توجد طلبات مسجّلة بعنوان محافظة في هذه الفترة.')}</div>`}
       ${s.locationCommentary ? `<div class="faint" style="font-size:12px;margin-top:10px;">${E(s.locationCommentary)}</div>` : ''}
     </div>`;
 }

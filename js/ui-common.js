@@ -37,6 +37,7 @@ const ICON_PATHS = {
   aimediabuyer: '<path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 5-7"/><circle cx="7" cy="15" r="1.4"/><circle cx="21" cy="7" r="1.4"/>',
   productresearch: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
   customers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  backuprecovery: '<path d="M12 2L4 6v6c0 5 3.5 9 8 10 4.5-1 8-5 8-10V6l-8-4z"/><path d="M9 12l2 2 4-4"/>',
 };
 
 function navIcon(name) {
@@ -62,6 +63,7 @@ export const NAV_ITEMS = [
   { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: navIcon('compare') },
   { key: 'ranking', href: 'ranking.html', label: 'ترتيب الربحية', icon: navIcon('ranking') },
   { key: 'settings', href: 'settings.html', label: 'إعدادات النظام', icon: navIcon('settings') },
+  { key: 'backuprecovery', href: 'backup-recovery.html', label: 'النسخ الاحتياطي والاسترجاع', icon: navIcon('backuprecovery') },
   { key: 'users', href: 'users.html', label: 'إدارة المستخدمين', icon: navIcon('users') },
   { key: 'test', href: 'test.html', label: 'اختبارات النظام', icon: navIcon('test') },
 ];
@@ -77,6 +79,7 @@ const NAV_ROLE_REQUIREMENT = {
   creativefactory: ['ADMIN', 'MANAGER'],
   productresearch: ['ADMIN', 'MANAGER'],
   customers: ['ADMIN', 'MANAGER'],
+  backuprecovery: ['ADMIN'],
 };
 
 // 'users' (the approval queue + permissions editor) is stricter still —
@@ -187,6 +190,46 @@ function mountMobileChrome(items, activeKey, user) {
       .join('') +
     `<button type="button" class="mobile-bottom-nav-item ${!isOnBottomItem ? 'active' : ''}" id="mobileMoreBtn">${MORE_ICON}<span>المزيد</span></button>`;
   document.getElementById('mobileMoreBtn').addEventListener('click', openMobileDrawer);
+}
+
+/**
+ * Mobile-only hamburger header + off-canvas drawer for pages that use their
+ * OWN sidebar element instead of NAV_ITEMS/renderSidebar — the "AMB family"
+ * (#ambNav: AI Media Buyer, Product Marketing Center, Easy Orders Catalog
+ * Sync) and Creative Factory (#cfNav), which each style their own sidebar
+ * class differently (css/amb.css / css/creative-factory.css) but all need
+ * the identical mobile trigger. Reuses the EXISTING .mobile-header/
+ * .mobile-hamburger-btn CSS classes (already defined in css/style.css,
+ * already loaded by every one of these pages) — no new header CSS needed.
+ * The nav element itself becomes the drawer panel via that page's own CSS
+ * (a `#<navId>.open { transform: translateX(0) }` rule); this function only
+ * toggles the open state. Idempotent (safe to call once per page load).
+ * Deliberately uses its OWN overlay id (#ambNavOverlay) rather than
+ * #ambDrawerOverlay/#cfDrawerOverlay, which ai-media-buyer.js/
+ * creative-factory.js already use for a real, unrelated detail-drawer
+ * feature — reusing either would conflict with that.
+ */
+export function mountAmbMobileNav(title, navId = 'ambNav') {
+  if (!document.getElementById('ambMobileHeader')) {
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      `<div class="mobile-header" id="ambMobileHeader">
+        <div class="mobile-header-title" id="ambMobileHeaderTitle"></div>
+        <button type="button" class="mobile-hamburger-btn" id="ambHamburgerBtn" aria-label="القائمة">${HAMBURGER_ICON}</button>
+      </div>
+      <div class="drawer-overlay" id="ambNavOverlay"></div>`
+    );
+  }
+  document.getElementById('ambMobileHeaderTitle').textContent = title;
+  const nav = document.getElementById(navId);
+  const overlay = document.getElementById('ambNavOverlay');
+  const open = () => { nav?.classList.add('open'); overlay.classList.add('open'); };
+  const close = () => { nav?.classList.remove('open'); overlay.classList.remove('open'); };
+  const hamburger = document.getElementById('ambHamburgerBtn');
+  hamburger.onclick = open; // reassign rather than addEventListener — safe if this is ever called twice on the same page
+  overlay.onclick = close;
+  nav?.addEventListener('click', (e) => { if (e.target.closest('a, button')) close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
 }
 
 /**

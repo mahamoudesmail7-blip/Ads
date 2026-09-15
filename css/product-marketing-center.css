@@ -308,6 +308,29 @@
 .pmc-advisor-body .t { font-weight: 700; font-size: 13px; }
 .pmc-advisor-body .e { font-size: 12px; color: var(--amb-text-dim); margin-top: 3px; line-height: 1.6; }
 
+/* ============================================================================
+   MOBILE PASS — governorate table becomes a card list on narrow screens
+   (same data as the desktop table, second display format only); testing-lab
+   form grid (referenced in JS, had no rule at all before this).
+   ============================================================================ */
+.pmc-loc-cards { display: none; }
+.pmc-loc-card { border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 12px 14px; margin-bottom: 10px; background: var(--amb-surface); }
+.pmc-loc-card-head { display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13.5px; margin-bottom: 8px; }
+.pmc-loc-card-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 14px; }
+.pmc-loc-card-grid .kv { display: flex; justify-content: space-between; font-size: 12.5px; border-bottom: 1px dashed var(--amb-border); padding-bottom: 4px; }
+.pmc-loc-card-grid .kv b { font-variant-numeric: tabular-nums; }
+.pmc-loc-details { margin-top: 8px; }
+.pmc-loc-details summary { font-size: 12px; font-weight: 700; color: var(--amb-blue); cursor: pointer; }
+
+.pmc-lab-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+
+@media (max-width: 768px) {
+  .pmc-loc-table-wrap { display: none; }
+  .pmc-loc-cards { display: block; }
+  .pmc-hero { padding: 16px; }
+  .pmc-hero-price-row { flex-wrap: wrap; gap: 12px; }
+}
+
 @media (max-width: 900px) {
   .pmc-hero { grid-template-columns: 1fr; }
   .pmc-hero-side { flex-direction: row; }

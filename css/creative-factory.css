@@ -148,8 +148,14 @@
 .cf-collapse > summary { cursor: pointer; font-weight: 700; font-size: 13px; color: var(--cf-ink-dim); padding: 8px 0; }
 
 @media (max-width: 860px) {
-  .cf-nav { position: fixed; z-index: 40; transform: translateX(100%); }
-  .cf-main { padding: 18px 14px; }
+  /* off-canvas drawer — matches css/style.css's .drawer-panel convention
+     (same slide side, same transition); opened via
+     js/ui-common.js's mountAmbMobileNav('...', 'cfNav'). Previously this
+     rule had no way to ever add .open — the nav was permanently
+     off-screen with no trigger; fixed alongside the shared mobile-nav pass. */
+  .cf-nav { position: fixed; inset-block: 0; inset-inline-end: 0; z-index: 210; width: 280px; max-width: 85vw; transform: translateX(-100%); transition: transform 0.18s ease-out; overflow-y: auto; }
+  #cfNav.open { transform: translateX(0); }
+  .cf-main { padding: 18px 14px; padding-top: 72px; min-width: 0; }
 }
 
 /* ===== New-creation single-screen workspace ===== */
