@@ -30,14 +30,28 @@ for (const model of ['product', 'easyOrdersOrder', 'dailyOrder']) {
 }
 
 const INTERNAL_PRODUCTS = [
-  { id: 48, product_name: 'جهاز قياس الضغط الذكي المنزلي', sku: '', active: true },
-  { id: 10, product_name: 'منتج له SKU حقيقي', sku: 'SKU-REAL-10', active: true },
-  { id: 60, product_name: 'منتج مكرر الاسم', sku: '', active: true },
-  { id: 61, product_name: 'منتج مكرر الاسم', sku: '', active: true },
+  // store_id: 'default' explicitly (not left untagged) — matches real
+  // production exactly: every pre-existing product was backfilled to
+  // store_id='default' by the multi-store migration, none are left null.
+  { id: 48, product_name: 'جهاز قياس الضغط الذكي المنزلي', sku: '', active: true, store_id: 'default' },
+  { id: 10, product_name: 'منتج له SKU حقيقي', sku: 'SKU-REAL-10', active: true, store_id: 'default' },
+  { id: 60, product_name: 'منتج مكرر الاسم', sku: '', active: true, store_id: 'default' },
+  { id: 61, product_name: 'منتج مكرر الاسم', sku: '', active: true, store_id: 'default' },
+];
+// Multi-store isolation fixture — a second store's product sharing an
+// IDENTICAL name with the "default"-store product above (id 48). This is
+// the exact real-production scenario that exposed auditEasyOrdersCatalog()
+// querying internal products globally instead of store-scoped: a brand new
+// store's catalog audit was showing phantom EXACT_NAME_MATCH hits against a
+// completely different store's unrelated products.
+const OTHER_STORE_PRODUCTS = [
+  { id: 500, product_name: 'جهاز قياس الضغط الذكي المنزلي', sku: '', active: true, store_id: 'other-store' },
 ];
 prisma.product.findMany = async ({ where } = {}) => {
-  if (where && 'active' in where) return INTERNAL_PRODUCTS.filter((p) => p.active === where.active);
-  return INTERNAL_PRODUCTS;
+  let pool = INTERNAL_PRODUCTS.concat(OTHER_STORE_PRODUCTS);
+  if (where && 'active' in where) pool = pool.filter((p) => p.active === where.active);
+  if (where && where.OR) pool = pool.filter((p) => where.OR.some((cond) => (cond.store_id === null ? !p.store_id : p.store_id === cond.store_id)));
+  return pool;
 };
 
 // Never let a real network call reach Easy Orders' API — intercept ONLY
@@ -93,6 +107,30 @@ console.log('\n§2 auditEasyOrdersCatalog — full pipeline over the fake catalo
 
   const ambiguousItem = report.items.find((i) => i.eoId === 4);
   ok('item for eoId=4 is AMBIGUOUS and lists both candidate ids', ambiguousItem?.status === 'AMBIGUOUS' && JSON.stringify(ambiguousItem.ambiguousCandidateIds?.sort()) === JSON.stringify([60, 61]), JSON.stringify(ambiguousItem));
+}
+
+console.log('\n§2b Multi-store isolation — auditEasyOrdersCatalog scopes internal products by store, never matches a different store\'s product:');
+{
+  process.env.EASYORDERS_STORES_JSON = JSON.stringify([
+    { id: 'default', name: 'Default', apiKeyEnv: 'EASYORDERS_API_KEY' },
+    { id: 'other-store', name: 'Other Store', apiKeyEnv: 'EASYORDERS_API_KEY_OTHER' },
+    { id: 'brand-new-store', name: 'Brand New Store', apiKeyEnv: 'EASYORDERS_API_KEY_NEW' },
+  ]);
+  process.env.EASYORDERS_API_KEY_OTHER = 'other-store-key';
+  process.env.EASYORDERS_API_KEY_NEW = 'brand-new-store-key';
+
+  const otherReport = await PM.auditEasyOrdersCatalog('other-store');
+  const s48ViaOther = otherReport.items.find((i) => i.eoId === 1); // "جهاز قياس الضغط..." (s48) — same name as product 48 (default) AND product 500 (other-store)
+  ok('other-store\'s OWN product (500) matches, not default\'s product 48', s48ViaOther?.status === 'EXACT_NAME_MATCH' && s48ViaOther?.productId === 500, JSON.stringify(s48ViaOther));
+
+  const newReport = await PM.auditEasyOrdersCatalog('brand-new-store');
+  const s48ViaNew = newReport.items.find((i) => i.eoId === 1);
+  ok('a brand-new store with NO products of its own never phantom-matches another store\'s same-named product (this was the real production bug)', s48ViaNew?.status === 'MISSING' && s48ViaNew?.productId === null, JSON.stringify(s48ViaNew));
+
+  delete process.env.EASYORDERS_STORES_JSON;
+  delete process.env.EASYORDERS_API_KEY_OTHER;
+  delete process.env.EASYORDERS_API_KEY_NEW;
+  process.env.EASYORDERS_API_KEY = 'test-trendy-key';
 }
 
 console.log('\n§3 route smoke test — GET /api/product-marketing/easy-orders/catalog-audit requires ADMIN and returns the same audit:');

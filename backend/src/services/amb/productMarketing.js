@@ -152,7 +152,16 @@ export function classifyCatalogProductMatch(sku, rawName, internalProducts) {
  */
 export async function auditEasyOrdersCatalog(storeId = defaultStoreId(), { forceRefresh = false } = {}) {
   const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh });
-  const internalProducts = await prisma.product.findMany({ where: { active: true }, select: { id: true, product_name: true, sku: true } });
+  // Multi-store — MUST match findInternalProductByName()'s own scoping
+  // exactly (a store's own products, or a legacy untagged row). Querying
+  // globally here (as this used to) makes a store's audit report a phantom
+  // "EXACT_NAME_MATCH" against a completely different store's product that
+  // merely happens to share a generic name — confirmed in production: a
+  // brand-new second store's real catalog was showing dozens of false
+  // matches against the first store's unrelated products before this fix,
+  // which would have made "create missing products" silently skip real
+  // products that don't exist for this store at all.
+  const internalProducts = await prisma.product.findMany({ where: { active: true, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true, sku: true } });
 
   const summary = { total: status.products.length, EXACT_SKU_MATCH: 0, EXACT_NAME_MATCH: 0, MISSING: 0, AMBIGUOUS: 0 };
   const items = status.products.map((p) => {
