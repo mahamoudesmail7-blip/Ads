@@ -14,8 +14,14 @@ import * as health from '../providerHealth.js';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const REQUEST_TIMEOUT_MS = 45000; // vision + reasoning calls run longer than a plain text call
+const LARGE_OUTPUT_TIMEOUT_MS = 90000; // large-output JSON calls (e.g. pmc.report's ~4000-token report) measured taking 45-90s even on success — 45s aborted them mid-generation on every retry
+const LARGE_OUTPUT_THRESHOLD_TOKENS = 2000;
 const MAX_RETRIES = 2;
 const PROVIDER = 'openai';
+
+function requestTimeoutFor(maxOutputTokens) {
+  return maxOutputTokens >= LARGE_OUTPUT_THRESHOLD_TOKENS ? LARGE_OUTPUT_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+}
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
@@ -87,9 +93,9 @@ export function toResponsesTools(tools) {
   return tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.input_schema || { type: 'object', properties: {} }, strict: false }));
 }
 
-async function withRetry(fn) {
+async function withRetry(fn, maxRetries = MAX_RETRIES) {
   let lastErr;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const startedAt = Date.now();
     try {
       const result = await fn();
@@ -99,7 +105,7 @@ async function withRetry(fn) {
       lastErr = err;
       const errorType = err.errorType || health.classifyErrorType(err);
       health.recordError(PROVIDER, errorType, Date.now() - startedAt);
-      const canRetry = attempt < MAX_RETRIES && health.isRetryable(errorType);
+      const canRetry = attempt < maxRetries && health.isRetryable(errorType);
       logger.error('OPENAI_CALL_FAILED', { errorType, httpStatus: err.httpStatus || null, attempt, willRetry: canRetry });
       if (!canRetry) throw err;
       const backoffMs = Math.min(8000, 500 * 2 ** attempt) + Math.floor(Math.random() * 250);
@@ -125,8 +131,9 @@ async function callResponsesApi({ apiKey, model, instructions, input, tools, max
     ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
     ...(jsonMode ? { text: { format: { type: 'json_object' } } } : {}),
   };
+  const timeoutMs = requestTimeoutFor(maxOutputTokens);
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   let res;
   try {
     res = await fetch(OPENAI_RESPONSES_URL, {
@@ -137,7 +144,7 @@ async function callResponsesApi({ apiKey, model, instructions, input, tools, max
     });
   } catch (err) {
     logger.error('OPENAI_REQUEST_FAILED', { message: err.name === 'AbortError' ? 'request timed out' : err.message });
-    const wrapped = new Error(err.name === 'AbortError' ? `مقدرش أوصل لـ OpenAI API: انتهت المهلة (${REQUEST_TIMEOUT_MS / 1000}s).` : `مقدرش أوصل لـ OpenAI API: ${err.message}`);
+    const wrapped = new Error(err.name === 'AbortError' ? `مقدرش أوصل لـ OpenAI API: انتهت المهلة (${timeoutMs / 1000}s).` : `مقدرش أوصل لـ OpenAI API: ${err.message}`);
     if (err.name === 'AbortError') { wrapped.name = 'AbortError'; wrapped.errorType = 'TIMEOUT'; }
     throw wrapped;
   } finally {
@@ -184,7 +191,13 @@ export async function callOpenAiText({ system, messages, maxTokens = 1024, model
   const apiKey = apiKeyOrThrow();
   let input = toResponsesInput(messages);
   if (jsonMode) input = ensureJsonDirective(input);
-  const data = await withRetry(() => callResponsesApi({ apiKey, model, instructions: system, input, maxOutputTokens: maxTokens, jsonMode }));
+  // Large-output calls (e.g. pmc.report) get a longer per-attempt timeout
+  // (see requestTimeoutFor) but fewer retries — 2 attempts at 90s each is
+  // already a ~180s worst case for a synchronous request; 3 would risk
+  // exceeding what the deployment's reverse proxy tolerates for no benefit
+  // (a call that times out twice in a row is unlikely to succeed on a third).
+  const maxRetries = maxTokens >= LARGE_OUTPUT_THRESHOLD_TOKENS ? 1 : MAX_RETRIES;
+  const data = await withRetry(() => callResponsesApi({ apiKey, model, instructions: system, input, maxOutputTokens: maxTokens, jsonMode }), maxRetries);
   return {
     text: extractText(data),
     requestId: data.id || null,
