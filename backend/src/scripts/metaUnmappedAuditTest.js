@@ -60,6 +60,11 @@ const snapshotRows = [
   snapshotRow({ campaignId: 'c-genuinely-unmapped', campaignName: 'Q3 Generic Push Campaign', spend: 300, purchases: 3 }),
   snapshotRow({ campaignId: 'c-trendy2-slug', campaignName: 'FootFile _ scale', spend: 400, purchases: 4 }),
   snapshotRow({ campaignId: 'c-ambiguous', campaignName: 'Cleaner _ scale', spend: 200, purchases: 2 }),
+  // Real production bug fixture — shares "blower" with BOTH an unsynced
+  // live-catalog item (default) and a real, already-synced product
+  // (trendy-storeee). Must resolve to exactly ONE real candidate, never
+  // treated as ambiguous just because an unsynced phantom also matches.
+  snapshotRow({ campaignId: 'c-mixed-synced-unsynced', campaignName: 'Blower _ scale', spend: 150, purchases: 1 }),
 ];
 // loadSnapshots() runs a genuine $queryRaw (a real Postgres DISTINCT ON),
 // not Prisma's findMany ORM sugar — see metricsEngineSnapshotVolumeTest.js
@@ -83,12 +88,18 @@ globalThis.fetch = async (url, opts) => {
         { id: 'eo-hair-1', name: 'جهاز إزالة الشعر', slug: 'Hair-Remover-Device', thumb: 't', price: 500, created_at: null },
         { id: 'eo-radio-1', name: 'راديو كلاسيكي', slug: 'Fire-Radio', thumb: 't', price: 300, created_at: null },
         { id: 'eo-vacuum-1', name: 'مكنسة كهربائية', slug: 'Vacuum-Cleaner', thumb: 't', price: 700, created_at: null },
+        // Real production bug fixture — this exact item exists in the LIVE
+        // catalog (shares the "blower" token) but was NEVER synced into an
+        // internal Product. Confirmed live: this alone was silently
+        // blocking an otherwise-unambiguous match in a different store.
+        { id: 'eo-blower-unsynced', name: 'جهاز نفخ غير مُزامَن', slug: 'Blower-Fan-Device', thumb: 't', price: 400, created_at: null },
       ] };
     }
     if (key === 'key-2') {
       return { ok: true, status: 200, json: async () => [
         { id: 'eo-footfile-1', name: 'مبرد القدم', slug: 'FootFile-Pro', thumb: 't', price: 900, created_at: null },
         { id: 'eo-cleanerpro-1', name: 'جهاز تنظيف احترافي', slug: 'Cleaner-Pro', thumb: 't', price: 1200, created_at: null },
+        { id: 'eo-blower-synced', name: 'منفاخ احترافي', slug: 'Blower-Pro', thumb: 't', price: 350, created_at: null },
       ] };
     }
     return { ok: true, status: 200, json: async () => [] };
@@ -103,6 +114,7 @@ const INTERNAL_PRODUCTS = [
   { id: 305, product_name: 'مبرد القدم اليدوي', easy_orders_uuid: 'eo-footfile-1', store_id: 'trendy-storeee' },
   { id: 400, product_name: 'مكنسة كهربائية قوية', easy_orders_uuid: 'eo-vacuum-1', store_id: 'default' },
   { id: 401, product_name: 'جهاز تنظيف احترافي شامل', easy_orders_uuid: 'eo-cleanerpro-1', store_id: 'trendy-storeee' },
+  { id: 402, product_name: 'منفاخ احترافي مُزامَن', easy_orders_uuid: 'eo-blower-synced', store_id: 'trendy-storeee' },
 ];
 prisma.product.findMany = async ({ where = {} } = {}) => {
   if (where.easy_orders_uuid?.in) return INTERNAL_PRODUCTS.filter((p) => where.easy_orders_uuid.in.includes(p.easy_orders_uuid)).map((p) => ({ ...p }));
@@ -115,7 +127,7 @@ console.log('§1 auditUnmappedMetaActivity — classifies real unmapped spend in
 {
   const result = await PM.auditUnmappedMetaActivity({ windowName: 'last7' });
   ok('ok:true', result.ok === true, JSON.stringify(result));
-  ok('already-MAPPED campaign never appears in totalUnmapped', result.totalUnmapped === 5, String(result.totalUnmapped));
+  ok('already-MAPPED campaign never appears in totalUnmapped', result.totalUnmapped === 6, String(result.totalUnmapped));
 
   const hairReview = result.reviewCandidates.find((r) => r.campaignId === 'c-hairremover');
   ok('Hair-Remover campaign -> REVIEW with the correct candidate product (48) via a shared token, despite the slug carrying an extra word ("Device") the campaign name never used', hairReview?.status === 'REVIEW' && hairReview.candidates.some((c) => c.productId === 48), JSON.stringify(hairReview));
@@ -133,8 +145,12 @@ console.log('§1 auditUnmappedMetaActivity — classifies real unmapped spend in
   const ambiguousReview = result.reviewCandidates.find((r) => r.campaignId === 'c-ambiguous');
   ok('an ambiguous shared token ("cleaner") across TWO different real products in TWO different stores surfaces BOTH as candidates — never silently picks one', ambiguousReview?.candidates?.length === 2 && ambiguousReview.candidates.some((c) => c.productId === 400 && c.storeId === 'default') && ambiguousReview.candidates.some((c) => c.productId === 401 && c.storeId === 'trendy-storeee'), JSON.stringify(ambiguousReview));
 
+  const mixedReview = result.reviewCandidates.find((r) => r.campaignId === 'c-mixed-synced-unsynced');
+  ok('a token shared with an UNSYNCED live-catalog item (default) plus a real synced product (trendy-storeee) -> exactly ONE real candidate, the unsynced one never counted toward ambiguity', mixedReview?.status === 'REVIEW' && mixedReview.candidates.length === 1 && mixedReview.candidates[0].productId === 402 && mixedReview.candidates[0].storeId === 'trendy-storeee', JSON.stringify(mixedReview));
+  ok('the unsynced phantom is still surfaced as an informational note, not silently dropped', mixedReview.unsyncedNotes?.length === 1 && mixedReview.unsyncedNotes[0].storeId === 'default', JSON.stringify(mixedReview.unsyncedNotes));
+
   ok('reviewCandidates sorted by spend descending', result.reviewCandidates[0].campaignId === 'c-hairremover');
-  ok('summary counts match', result.summary.review === 4 && result.summary.unmapped === 1, JSON.stringify(result.summary));
+  ok('summary counts match', result.summary.review === 5 && result.summary.unmapped === 1, JSON.stringify(result.summary));
 }
 
 console.log('\n§2 no ad account connected -> honest error, never a fabricated empty-success:');

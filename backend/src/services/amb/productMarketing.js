@@ -1035,19 +1035,35 @@ export async function auditUnmappedMetaActivity({ windowName = 'last30' } = {}) 
     // Distinct products only — the same product can appear once per store
     // it's synced under, but a genuine cross-store name coincidence must
     // surface as two SEPARATE candidates, never silently collapsed.
+    // A hit whose eoId was never synced into an internal Product
+    // (internal is undefined, productId stays null) can NEVER actually be
+    // selected as a mapping target — it must never count toward ambiguity
+    // (that would block an otherwise-unambiguous match against a real,
+    // already-synced product just because some OTHER store's live catalog
+    // happens to share a generic slug word for an item nobody created
+    // yet). It's still surfaced, but only as an informational note.
     const seen = new Set();
     const candidates = [];
+    const unsyncedNotes = [];
     for (const hit of hits) {
       const internal = internalByUuid.get(hit.eoId);
       const dedupeKey = `${hit.storeId}::${internal?.id ?? hit.eoId}`;
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
       const matchedToken = hit.tokens.find((t) => campTokens.has(t));
-      candidates.push({ storeId: hit.storeId, storeName: hit.storeName, productId: internal?.id ?? null, productName: internal?.product_name ?? hit.eoName, easyOrdersId: hit.eoId, matchedToken });
+      if (!internal) { unsyncedNotes.push({ storeId: hit.storeId, storeName: hit.storeName, easyOrdersId: hit.eoId, productName: hit.eoName, matchedToken }); continue; }
+      candidates.push({ storeId: hit.storeId, storeName: hit.storeName, productId: internal.id, productName: internal.product_name, easyOrdersId: hit.eoId, matchedToken });
     }
     const row = { campaignId: c.campaignId, campaignName: c.campaignName, spend: c.spend ?? 0, purchases: c.purchases ?? null, impressions: c.impressions ?? null, clicks: c.clicks ?? null };
     if (candidates.length) {
-      reviewCandidates.push({ ...row, status: 'REVIEW', evidence: candidates.map((cd) => `الكلمة "${cd.matchedToken}" مشتركة مع منتج "${cd.productName}" في ${cd.storeName}`).join(' — '), candidates });
+      const evidenceParts = candidates.map((cd) => `الكلمة "${cd.matchedToken}" مشتركة مع منتج "${cd.productName}" في ${cd.storeName}`);
+      if (unsyncedNotes.length) evidenceParts.push(...unsyncedNotes.map((n) => `ملاحظة: يوجد أيضًا منتج مشابه غير مُزامَن بعد في ${n.storeName} ("${n.productName}") — لا يُحتسب كمرشح فعلي`));
+      reviewCandidates.push({ ...row, status: 'REVIEW', evidence: evidenceParts.join(' — '), candidates, unsyncedNotes });
+    } else if (unsyncedNotes.length) {
+      // Only unsynced phantom matches, no real selectable candidate at
+      // all — still genuinely UNMAPPED (nothing can be chosen today), but
+      // the note is kept so an admin can see WHY once they sync it.
+      unmapped.push({ ...row, status: 'UNMAPPED', evidence: `يوجد منتج مشابه غير مُزامَن بعد: ${unsyncedNotes.map((n) => `"${n.productName}" في ${n.storeName}`).join('، ')}`, unsyncedNotes });
     } else {
       unmapped.push({ ...row, status: 'UNMAPPED', evidence: null });
     }
