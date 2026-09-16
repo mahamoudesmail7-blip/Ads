@@ -102,6 +102,12 @@ router.get('/pipeline-health', requireRole('ADMIN'), asyncRoute(async (req, res)
   res.json(await PM.classifyAllProducts({ storeId: req.query.store_id || undefined, windowName: req.query.window || undefined }));
 }));
 
+// ---- Phase 13 — resolves ONLY strictly unambiguous Meta mappings ----
+// ---- automatically. ADMIN only, dry-run by default. ----
+router.post('/meta/auto-resolve-safe', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  res.json(await PM.autoResolveHighConfidenceMetaMappings({ windowName: req.body?.window || undefined, dryRun: req.body?.apply !== true }));
+}));
+
 // ---- Unmapped Meta activity audit — ADMIN only. Never maps anything ----
 // ---- automatically; only classifies real spend/purchase campaigns as ----
 // ---- REVIEW (slug evidence found) or UNMAPPED (no evidence). ----

@@ -1067,6 +1067,69 @@ export async function auditUnmappedMetaActivity({ windowName = 'last30' } = {}) 
 }
 
 /**
+ * Phase 13 — resolves ONLY the strictly unambiguous slice of
+ * auditUnmappedMetaActivity()'s REVIEW candidates automatically. A
+ * candidate qualifies for AUTO_SAFE ONLY when ALL of the following hold —
+ * anything else stays REVIEW, never guessed through:
+ *   - exactly ONE candidate product (no competing candidate, no
+ *     cross-store ambiguity — auditUnmappedMetaActivity already surfaces
+ *     every matching product across every store, so "length === 1" here
+ *     already means genuinely unambiguous, not just unambiguous-per-store).
+ *   - that product has no EXISTING mapping conflict (a campaign already
+ *     MAPPED to a DIFFERENT AmbProduct is refused, exactly like
+ *     confirmMetaMapping()'s own manual path — never silently reassigned).
+ * Every automatic mapping is recorded with match_source='AUTO_SLUG_MATCH'
+ * (never conflated with a human's 'MANUAL' pick or the per-profile
+ * name-suggestion's 'AI_SUGGESTED'), auditable via the same created_by_id/
+ * created_at columns, and reversible via the existing removeMapping() —
+ * no new "undo" mechanism needed, this reuses the one mapping table AI
+ * Media Buyer already has.
+ */
+export async function autoResolveHighConfidenceMetaMappings({ windowName = 'last30', dryRun = true } = {}) {
+  const audit = await auditUnmappedMetaActivity({ windowName });
+  if (!audit.ok) return { ok: false, error: audit.error };
+
+  const autoSafe = [];
+  const stillReview = [];
+  for (const c of audit.reviewCandidates) {
+    if (c.candidates.length === 1 && c.candidates[0].productId) autoSafe.push({ ...c, candidate: c.candidates[0] });
+    else stillReview.push(c);
+  }
+
+  const sumSpend = (rows) => rows.reduce((a, r) => a + (r.spend || 0), 0);
+  const plan = {
+    ok: true,
+    dryRun,
+    adAccountId: audit.adAccountId,
+    counts: { autoSafe: autoSafe.length, review: stillReview.length, unmapped: audit.unmapped.length },
+    spend: { autoSafe: sumSpend(autoSafe), review: sumSpend(stillReview), unmapped: sumSpend(audit.unmapped) },
+    autoSafeCandidates: autoSafe.map((c) => ({ campaignId: c.campaignId, campaignName: c.campaignName, spend: c.spend, purchases: c.purchases, productId: c.candidate.productId, productName: c.candidate.productName, storeId: c.candidate.storeId, matchedToken: c.candidate.matchedToken })),
+  };
+  if (dryRun) return plan;
+
+  const applied = [];
+  const skipped = [];
+  for (const c of autoSafe) {
+    const conflict = await prisma.ambProductCampaignMap.findUnique({ where: { ad_account_id_campaign_id: { ad_account_id: audit.adAccountId, campaign_id: c.campaignId } } });
+    if (conflict && conflict.status === 'MAPPED') {
+      skipped.push({ campaignId: c.campaignId, reason: `مربوطة بالفعل بمنتج AMB آخر (id=${conflict.amb_product_id}) — لن تُستبدل تلقائيًا.` });
+      continue;
+    }
+    let ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: c.candidate.productId } });
+    if (!ambProduct) ambProduct = await createFromCatalogProduct(c.candidate.productId, null);
+    const saved = await setMapping({
+      adAccountId: audit.adAccountId, campaignId: c.campaignId, campaignName: c.campaignName, ambProductId: ambProduct.id,
+      status: 'MAPPED', matchSource: 'AUTO_SLUG_MATCH', matchConfidence: null,
+      aiReason: `مطابقة تلقائية عالية الثقة: الكلمة "${c.candidate.matchedToken}" مشتركة بين اسم الحملة و slug المنتج "${c.candidate.productName}" — أعلى ثقة (مرشح وحيد بدون تعارض).`,
+      userId: null,
+    });
+    applied.push({ campaignId: c.campaignId, campaignName: saved.campaign_name, productId: c.candidate.productId, productName: c.candidate.productName, storeId: c.candidate.storeId });
+  }
+
+  return { ...plan, dryRun: false, applied, skipped };
+}
+
+/**
  * Phase 10 — classifies EVERY synced product in one store into exactly one
  * pipeline-health bucket, computed efficiently in a small fixed number of
  * queries (never one HTTP/DB round-trip per product):
@@ -1182,9 +1245,23 @@ export async function recoverHistoricalProduct({ storeId, productName, dryRun = 
   return { ...plan, dryRun: false, applied: true, productId: historicalProduct.id, rowsBackfilled: backfilled.count };
 }
 
+// Phase 12 — a store with zero orders because NOBODY EVER TOLD Easy
+// Orders where to send them (no webhookSecretEnv configured for this
+// store, and — for whichever store defaultStoreId() currently is — no
+// legacy EASYORDERS_WEBHOOK_SECRET/EASYORDERS_STATUS_WEBHOOK_SECRET
+// either) must never look identical to a store that's fully wired up and
+// genuinely just hasn't sold anything yet. Confirmed in production: this
+// was Trendy Storeee's exact real state.
+function isOrderIngestionConfigured(storeId) {
+  if (storeId === defaultStoreId() && (process.env.EASYORDERS_WEBHOOK_SECRET || process.env.EASYORDERS_STATUS_WEBHOOK_SECRET)) return true;
+  const diag = storeConfigDiagnosticsImpl().find((d) => d.id === storeId);
+  return !!diag?.webhookSecretConfigured;
+}
+
 export async function classifyAllProducts({ storeId = defaultStoreId(), windowName = 'last30' } = {}) {
+  const ingestionConfigured = isOrderIngestionConfigured(storeId);
   const products = await prisma.product.findMany({ where: { active: true, store_id: storeId }, select: { id: true, product_name: true } });
-  if (!products.length) return { storeId, totalProducts: 0, unmatchedOrderRows: 0, classifications: [], counts: {} };
+  if (!products.length) return { storeId, ingestionConfigured, totalProducts: 0, unmatchedOrderRows: 0, classifications: [], counts: {} };
 
   const productIds = products.map((p) => p.id);
   const [orderCounts, unmatchedCount, ambProducts] = await Promise.all([
@@ -1211,6 +1288,7 @@ export async function classifyAllProducts({ storeId = defaultStoreId(), windowNa
 
   const classifications = products.map((p) => {
     const orderCount = orderCountByProduct.get(p.id) || 0;
+    if (orderCount === 0 && !ingestionConfigured) return { productId: p.id, productName: p.product_name, status: 'ORDER_INGESTION_NOT_CONFIGURED', orderCount, reason: 'لا يوجد Webhook مُفعّل لهذا المتجر — صفر طلبات هنا لا يعني عدم وجود مبيعات، بل يعني إن Easy Orders لسه معندهاش عنوان يبعت له.' };
     if (orderCount === 0) return { productId: p.id, productName: p.product_name, status: 'NO_REAL_ORDERS', orderCount };
 
     if (!adAccountId) return { productId: p.id, productName: p.product_name, status: 'PROVIDER_ERROR', orderCount, reason: 'لا يوجد حساب إعلاني Meta متصل حاليًا.' };
@@ -1231,7 +1309,7 @@ export async function classifyAllProducts({ storeId = defaultStoreId(), windowNa
   const counts = {};
   for (const c of classifications) counts[c.status] = (counts[c.status] || 0) + 1;
 
-  return { storeId, totalProducts: products.length, unmatchedOrderRows: unmatchedCount, classifications, counts };
+  return { storeId, ingestionConfigured, totalProducts: products.length, unmatchedOrderRows: unmatchedCount, classifications, counts };
 }
 
 /**

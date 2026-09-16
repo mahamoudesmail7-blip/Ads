@@ -29,6 +29,22 @@ const AD_ACCOUNT_ID = 'act_pipeline_test';
 prisma.metaConnection.findUnique = async () => ({ id: 'default', status: 'CONNECTED', selected_ad_account_id: AD_ACCOUNT_ID });
 prisma.settings.findUnique = async () => null;
 
+// Matches real production's 'default' store: order ingestion IS configured
+// via the legacy webhook secret (not the newer per-store webhookSecretEnv
+// mechanism) — see isOrderIngestionConfigured()'s own doc comment. Without
+// this, product 1's genuine zero-orders case would misclassify as
+// ORDER_INGESTION_NOT_CONFIGURED instead of the NO_REAL_ORDERS this
+// section is actually testing (see §5 below for that separate case).
+process.env.EASYORDERS_WEBHOOK_SECRET = 'test-legacy-secret';
+// A second store with NO webhookSecretEnv at all — its zero orders must
+// classify as ORDER_INGESTION_NOT_CONFIGURED, never NO_REAL_ORDERS (see §5).
+process.env.EASYORDERS_STORES_JSON = JSON.stringify([
+  { id: 'default', name: 'Default', apiKeyEnv: 'EASYORDERS_API_KEY' },
+  { id: 'store-no-webhook', name: 'No Webhook Store', apiKeyEnv: 'EASYORDERS_API_KEY_2' },
+]);
+process.env.EASYORDERS_API_KEY = 'k1';
+process.env.EASYORDERS_API_KEY_2 = 'k2';
+
 // Five products covering every reachable bucket:
 //  1 = NO_REAL_ORDERS   (0 EasyOrdersOrder rows)
 //  2 = META_UNMAPPED    (has orders, no AmbProduct)
@@ -41,6 +57,7 @@ const PRODUCTS = [
   { id: 3, product_name: 'منتج بحملة بدون إعلانات', active: true, store_id: 'default' },
   { id: 4, product_name: 'منتج ببيانات ضعيفة', active: true, store_id: 'default' },
   { id: 5, product_name: 'منتج جاهز بالكامل', active: true, store_id: 'default' },
+  { id: 6, product_name: 'منتج في متجر بدون webhook', active: true, store_id: 'store-no-webhook' },
 ];
 prisma.product.findMany = async ({ where = {} } = {}) => {
   let rows = PRODUCTS;
@@ -131,6 +148,7 @@ const PM = await import(pathToFileURL(join(__dirname, '../services/amb/productMa
 console.log('§1 classifyAllProducts — every reachable bucket, computed correctly:');
 {
   const result = await PM.classifyAllProducts({ storeId: 'default', windowName: 'last30' });
+  ok('ingestionConfigured:true (legacy EASYORDERS_WEBHOOK_SECRET counts for the default store)', result.ingestionConfigured === true);
   ok('totalProducts:5', result.totalProducts === 5, String(result.totalProducts));
   ok('unmatchedOrderRows:1 — the one product_id:null row, at the STORE level, never pinned to a specific product', result.unmatchedOrderRows === 1, String(result.unmatchedOrderRows));
 
@@ -159,6 +177,16 @@ console.log('\n§3 Meta not connected -> every order-having product gets PROVIDE
   ok('product 1 (0 orders) still correctly NO_REAL_ORDERS even with Meta down — order data is independent of Meta', byId.get(1)?.status === 'NO_REAL_ORDERS');
   ok('products 2/3/4/5 (all have real orders) -> PROVIDER_ERROR while Meta is unreachable', ['2', '3', '4', '5'].every((id) => byId.get(Number(id))?.status === 'PROVIDER_ERROR'), JSON.stringify([...byId.values()]));
   prisma.metaConnection.findUnique = originalConn;
+}
+
+console.log('\n§5 Phase 12 — a store with NO webhook configured must NEVER look like a store that simply had zero sales:');
+{
+  const result = await PM.classifyAllProducts({ storeId: 'store-no-webhook' });
+  ok('ingestionConfigured:false', result.ingestionConfigured === false);
+  const p6 = result.classifications.find((c) => c.productId === 6);
+  ok('product 6 (0 orders, no webhook at all) -> ORDER_INGESTION_NOT_CONFIGURED, NOT the generic NO_REAL_ORDERS', p6?.status === 'ORDER_INGESTION_NOT_CONFIGURED', JSON.stringify(p6));
+  ok('carries a real, honest reason distinguishing this from a genuine zero-sales product', typeof p6.reason === 'string' && p6.reason.length > 10);
+  ok('counts reflect the distinct bucket', result.counts.ORDER_INGESTION_NOT_CONFIGURED === 1 && !result.counts.NO_REAL_ORDERS, JSON.stringify(result.counts));
 }
 
 console.log('\n§4 zero real DB writes anywhere in this file:');
