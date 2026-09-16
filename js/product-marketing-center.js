@@ -602,6 +602,21 @@ function kindPill(kind) { return kind ? `<span class="pmc-pill ${E(kind)}">${{ F
 function confPill(c) { return c ? `<span class="pmc-pill conf-${E(c)}">ثقة ${{ LOW: 'منخفضة', MEDIUM: 'متوسطة', HIGH: 'عالية' }[c] || c}</span>` : ''; }
 function claimPill(status, reason) { const map = { GREEN: ['🟢 آمن', ''], YELLOW: ['🟡 يحتاج إثبات', ''], RED: ['🔴 غير موصى به', reason || ''] }; const [label] = map[status] || ['—', '']; return `<span class="pmc-claim ${E(status)}" title="${E(reason || '')}">${label}</span>`; }
 
+// ---- Phase F — every tab shows real data, an AI note, or an explicit "why
+// not" reason; never a blank card. dataCompleteness (backend-computed,
+// see assembleDataCompleteness) already carries {status, reason} per
+// dimension — this just renders it consistently with a labeled source. ----
+const PMC_SRC_LABEL = { META: 'Meta', EASY_ORDERS: 'Easy Orders', AI: 'AI', CATALOG: 'الكتالوج', RESEARCH: 'بحث المنافسين' };
+const PMC_SRC_COLOR = { META: 'blue', EASY_ORDERS: 'green', AI: 'purple', CATALOG: 'amber', RESEARCH: 'cyan' };
+function pmcSourceBadge(source) { return `<span class="pmc-src-badge ${PMC_SRC_COLOR[source] || 'blue'}">${E(PMC_SRC_LABEL[source] || source)}</span>`; }
+const PMC_STATUS_CLASS = { AVAILABLE: 'ok', PARTIAL: 'partial', MISSING: 'missing', ERROR: 'error' };
+/** `sources` is one source key or an array of them (a section can be fed by more than one, e.g. Meta + AI). */
+function pmcDataStatus(dim, sources) {
+  if (!dim) return '';
+  const badges = (Array.isArray(sources) ? sources : [sources]).map(pmcSourceBadge).join('');
+  return `<div class="pmc-data-status ${PMC_STATUS_CLASS[dim.status] || 'missing'}">${badges}<span class="reason">${E(dim.reason || '')}</span></div>`;
+}
+
 // §7 — Matched / Possible Match / Unmapped, with the real reason (never a
 // generic "insufficient data" for this specific case).
 function metaMatchBadgeHtml(da) {
@@ -975,10 +990,13 @@ function segmentCardHtml(seg) {
 }
 function renderAudience(mount, s) {
   const a = s.audience || {};
+  const dc = s.dataCompleteness || {};
   mount.innerHTML = `
+    ${pmcDataStatus(dc.demographics, 'META')}
     <div class="pmc-card">
       <div class="h">${pmcIcon('users')} خريطة السوق والجمهور</div>
       ${a.unavailable ? `<div class="pmc-empty">${E(a.reason)}</div>` : `
+        <div class="faint" style="font-size:11.5px;margin-bottom:10px;">${pmcSourceBadge('AI')} فرضية تسويقية مبنية على المنتج وأدائه الحقيقي — مش هوية عملاء حقيقية أو بيانات Meta ديموغرافية (غير متاحة، شوف الملاحظة فوق).</div>
         <div class="pmc-fact-grid">
           ${audienceFactTile('users', 'green', 'النوع', a.gender?.value, a.gender?.kind, a.gender?.confidence, a.gender?.evidence)}
           ${audienceFactTile('clock', 'amber', 'السن', a.ageRange?.value, a.ageRange?.kind, a.ageRange?.confidence, a.ageRange?.evidence)}
@@ -990,8 +1008,8 @@ function renderAudience(mount, s) {
       `}
     </div>
     <div class="pmc-card" style="margin-top:14px;">
-      <div class="h">${pmcIcon('target')} شرائح مقترحة</div>
-      ${(a.segments || []).map(segmentCardHtml).join('') || '<div class="pmc-empty">البيانات غير كافية للحكم</div>'}
+      <div class="h">${pmcIcon('target')} شرائح مقترحة ${pmcSourceBadge('AI')}</div>
+      ${(a.segments || []).map(segmentCardHtml).join('') || `<div class="pmc-empty">${E(a.unavailable ? a.reason : 'البيانات غير كافية للحكم')}</div>`}
     </div>`;
 }
 
@@ -1006,15 +1024,18 @@ function winnerIntelTableHtml(intel, emptyMsg) {
 
 // ---- §10/§11 — Sales angles ----
 function renderAngles(mount, s) {
+  const dc = s.dataCompleteness || {};
   mount.innerHTML = `
     <div class="pmc-section-badge data-backed">${pmcIcon('check')} زوايا مثبتة بالبيانات</div>
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h">${pmcIcon('barchart')} أداء زوايا البيع الحقيقي (من الإعلانات الجارية فعليًا)</div>
+      ${pmcDataStatus(dc.hooks, 'META')}
       ${winnerIntelTableHtml(s.angleIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الزوايا بعد.')}
     </div>
     <div class="pmc-section-badge suggested">${pmcIcon('target')} زوايا مقترحة للاختبار</div>
     <div class="pmc-card">
       <div class="h">${pmcIcon('target')} أفضل زوايا بيع مقترحة</div>
+      ${pmcDataStatus(s.aiFailed ? { status: 'ERROR', reason: s.aiFailReason } : { status: 'AVAILABLE', reason: 'مقترحات AI مبنية على المنتج + أداء الحملات الحقيقي.' }, 'AI')}
       ${(s.angles || []).map((a, i) => `<div class="pmc-angle-card">
         <div class="head"><span class="name">${E(a.name)}</span><span class="cat">${E(a.category || '')}</span>${confPill(a.confidence)}${claimPill(a.claimStatus, a.claimReason)}</div>
         <div class="faint" style="font-size:12.5px;">${E(a.why || '')}</div>
@@ -1057,7 +1078,10 @@ function winningComponentsHtml(wc) {
 }
 
 function renderCreative(mount, s) {
+  const dc = s.dataCompleteness || {};
+  const aiUnavailReason = s.aiFailed ? s.aiFailReason : 'البيانات غير كافية للحكم بعد.';
   mount.innerHTML = `
+    ${pmcDataStatus(dc.creative, 'META')}
     ${winningComponentsHtml(s.winningComponents)}
     <div class="pmc-card">
       <div class="h">${pmcIcon('image')} ذكاء الكرياتيف</div>
@@ -1070,15 +1094,15 @@ function renderCreative(mount, s) {
     </div>
 
     <div class="pmc-winner-box">
-      <div style="font-weight:800;margin-bottom:6px;">🏆 بصمة الإعلان الرابح</div>
+      <div style="font-weight:800;margin-bottom:6px;">🏆 بصمة الإعلان الرابح ${pmcSourceBadge('AI')}</div>
       ${s.winnerDna?.available ? `<ul style="margin:0 0 8px;padding-inline-start:18px;">${(s.winnerDna.reasons || []).map((r) => `<li>${E(r)}</li>`).join('')}</ul><div class="faint" style="font-size:12.5px;">${E(s.winnerDna.narrative || '')}</div>
         <div class="toolbar" style="margin-top:10px;"><button class="amb-btn sm" id="pmcVariations3">3 Variations</button><button class="amb-btn sm" id="pmcVariations5">5 Variations</button><button class="amb-btn sm" id="pmcVariations10">10 Variations</button></div>`
-        : '<div class="faint">البيانات غير كافية للحكم بعد.</div>'}
+        : `<div class="faint">${E(aiUnavailReason)}</div>`}
     </div>
 
     <div class="pmc-loser-box">
-      <div style="font-weight:800;margin-bottom:6px;">🔬 تحليل الإعلان الضعيف</div>
-      ${s.loserAutopsy?.available ? `<div class="faint" style="font-size:12.5px;">السبب الجذري: <b>${E(s.loserAutopsy.rootCause)}</b><br/>${E(s.loserAutopsy.narrative || '')}</div>` : '<div class="faint">البيانات غير كافية للحكم بعد.</div>'}
+      <div style="font-weight:800;margin-bottom:6px;">🔬 تحليل الإعلان الضعيف ${pmcSourceBadge('AI')}</div>
+      ${s.loserAutopsy?.available ? `<div class="faint" style="font-size:12.5px;">السبب الجذري: <b>${E(s.loserAutopsy.rootCause)}</b><br/>${E(s.loserAutopsy.narrative || '')}</div>` : `<div class="faint">${E(aiUnavailReason)}</div>`}
     </div>
 
     <div class="pmc-card">
@@ -1136,10 +1160,11 @@ function renderHooksTab(mount, s) {
     <div class="pmc-section-badge data-backed">${pmcIcon('check')} أداء حقيقي</div>
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h">${pmcIcon('zap')} أداء الـ Hooks الحقيقي (من الإعلانات الجارية فعليًا)</div>
+      ${pmcDataStatus(s.dataCompleteness?.hooks, 'META')}
       ${winnerIntelTableHtml(s.hookIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الـ Hooks بعد.')}
     </div>
     <div class="pmc-card">
-      <div class="h">${pmcIcon('zap')} مختبر الـ Hooks</div>
+      <div class="h">${pmcIcon('zap')} مختبر الـ Hooks ${pmcSourceBadge('AI')}</div>
       <div class="toolbar" style="margin-bottom:10px;">
         <input class="amb-input sm" id="pmcAngleInput" placeholder="الزاوية (اختياري)" value="${E(state.genAngle)}" />
         <select class="amb-select sm" id="pmcHookCount"><option value="5">5</option><option value="10" selected>10</option><option value="20">20</option></select>
@@ -1260,6 +1285,8 @@ function renderLocations(mount, s) {
   const rows = markets.length ? markets : (s.locations || []); // old cached snapshots without markets_json yet fall back gracefully
   const rich = markets.length > 0;
   mount.innerHTML = `
+    ${pmcDataStatus(s.dataCompleteness?.geography, 'EASY_ORDERS')}
+    <div class="faint" style="font-size:11px;margin:-4px 0 10px;">هذا توزيع جغرافي من عناوين طلبات Easy Orders الحقيقية فقط — مش توزيع جمهور Meta الإعلاني (Meta لا يوفر تقسيم جغرافي في هذا النظام حاليًا).</div>
     ${marketsSummaryHtml(rows, rich)}
     <div class="pmc-card">
       <div class="h">${pmcIcon('mappin')} الأسواق والمناطق — ${E(s.metrics?.windowLabel || '')}</div>
@@ -1281,9 +1308,10 @@ async function renderCompetitors(mount, s) {
     catch (e) { state.competitors = { available: false, reason: e.message }; }
   }
   const c = state.competitors;
-  if (!c.available) { mount.innerHTML = `<div class="pmc-empty">${E(c.reason)}${c.reason?.includes('البحث') ? ' — <a href="product-research.html">افتح صفحة البحث عن المنتجات</a>' : ''}</div>`; return; }
+  if (!c.available) { mount.innerHTML = `${pmcDataStatus({ status: 'MISSING', reason: c.reason }, 'RESEARCH')}<div class="pmc-empty">${E(c.reason)}${c.reason?.includes('البحث') ? ' — <a href="product-research.html">افتح صفحة البحث عن المنتجات</a>' : ''}</div>`; return; }
   const gaps = s.marketGaps;
   mount.innerHTML = `
+    ${pmcDataStatus({ status: 'AVAILABLE', reason: 'بيانات من صفحة "البحث عن المنتجات" الحالية.' }, 'RESEARCH')}
     <div class="pmc-card">
       <div class="h">${pmcIcon('barchart')} تحليل المنافسين</div>
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">بيانات من صفحة "البحث عن المنتجات" الحالية — مفيش بحث جديد بيتعمل هنا.</div>
@@ -1451,13 +1479,37 @@ function labListGroupedHtml(tests) {
     return `<div class="pmc-section-badge">${E(g.label)} (${items.length})</div>${items.map(testCardHtml).join('')}`;
   }).join('') || tests.map(testCardHtml).join('');
 }
+/** Phase D — auto-computed campaign/ad leaderboard from the SAME real Meta
+ * data already gathered for Creatives/Angles/Hooks (bestAd/worstAd,
+ * winningComponents) — no new backend call. Distinct from the manual
+ * Testing Lab below it: this is "what already won/lost", not "what you're
+ * about to test". Never invents a winner — every row only appears when the
+ * underlying real metric exists. */
+function realResultsLeaderboardHtml(s) {
+  const rows = [
+    s.bestAd && ['🏆 أفضل إعلان (أقل CPA)', s.bestAd.name, [`CPA ${fmtEGP(s.bestAd.cpa)}`, `مشتريات ${fmtNum(s.bestAd.purchases)}`, s.bestAd.ctr != null ? `CTR ${s.bestAd.ctr.toFixed(1)}%` : null, `صرف ${fmtEGP(s.bestAd.spend)}`].filter(Boolean).join(' · ')],
+    s.worstAd && ['🔻 أضعف إعلان (أعلى CPA)', s.worstAd.name, [`CPA ${fmtEGP(s.worstAd.cpa)}`, `مشتريات ${fmtNum(s.worstAd.purchases)}`, s.worstAd.ctr != null ? `CTR ${s.worstAd.ctr.toFixed(1)}%` : null, `صرف ${fmtEGP(s.worstAd.spend)}`].filter(Boolean).join(' · ')],
+    s.winningComponents?.bestMarket && ['🏆 أفضل سوق', s.winningComponents.bestMarket.government, s.winningComponents.bestMarket.why],
+    s.winningComponents?.bestHook && ['🏆 أفضل Hook', s.winningComponents.bestHook.label, s.winningComponents.bestHook.why],
+    s.winningComponents?.bestSellingAngle && ['🏆 أفضل زاوية بيع', s.winningComponents.bestSellingAngle.label, s.winningComponents.bestSellingAngle.why],
+  ].filter(Boolean);
+  const dc = s.dataCompleteness || {};
+  return `<div class="pmc-card" style="margin-bottom:14px;">
+    <div class="h">${pmcIcon('barchart')} نتائج حقيقية — أفضل/أضعف أداء حاليًا</div>
+    ${pmcDataStatus(dc.creative, 'META')}
+    ${rows.length ? rows.map(([label, value, detail]) => `<div class="pmc-kv"><span>${E(label)}</span><b>${E(value)}</b></div><div class="faint" style="font-size:11px;margin:0 0 8px;">${E(detail || '')}</div>`).join('')
+      : `<div class="pmc-empty">${E(dc.creative?.reason || 'لا يوجد إعلان بأداء كافٍ لتحديد فائز/خاسر بعد.')}</div>`}
+  </div>`;
+}
 async function renderTests(mount, s) {
   mount.innerHTML = `
+    ${realResultsLeaderboardHtml(s)}
     <div class="pmc-card">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>${pmcIcon('flask')} مختبر الاختبارات</span>
+        <span>${pmcIcon('flask')} مختبر الاختبارات ${pmcSourceBadge('CATALOG')}</span>
         ${!state.labNewTestOpen ? '<button class="amb-btn sm primary" id="labNewTestBtn">+ اختبار جديد</button>' : ''}
       </div>
+      <div class="faint" style="font-size:11.5px;margin-bottom:8px;">سجل اختبارات يدوي تضيفه بنفسك — منفصل عن لوحة النتائج الحقيقية فوق.</div>
       ${testingLabFormHtml()}
       <div id="pmcLabList">${state.labTestsLoading ? '<div class="pmc-empty">بنحمّل الاختبارات…</div>' : labListGroupedHtml(state.labTests)}</div>
     </div>

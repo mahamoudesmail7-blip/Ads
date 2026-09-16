@@ -279,6 +279,17 @@
 .pmc-section-badge.data-backed { color: var(--amb-green); }
 .pmc-section-badge.suggested { color: var(--amb-purple); margin-top: 16px; }
 
+/* Phase F — data-source honesty badges: every tab section shows where its data comes from and why it's empty when it is. */
+.pmc-data-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.pmc-data-status .reason { font-size: 12px; color: var(--amb-text-dim); }
+.pmc-data-status.missing .reason, .pmc-data-status.error .reason { color: var(--amb-text-faint); }
+.pmc-src-badge { display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.pmc-src-badge.blue { background: var(--amb-blue-bg); color: var(--amb-blue); }
+.pmc-src-badge.green { background: var(--amb-green-bg); color: var(--amb-green); }
+.pmc-src-badge.purple { background: var(--amb-purple-bg); color: var(--amb-purple); }
+.pmc-src-badge.amber { background: var(--amb-amber-bg); color: var(--amb-amber); }
+.pmc-src-badge.cyan { background: var(--pmc-cyan-bg); color: var(--pmc-cyan); }
+
 /* ============================================================================
    PHASE 4 — premium table (sticky header, hover, generous rows) + competitor cards.
    ============================================================================ */
