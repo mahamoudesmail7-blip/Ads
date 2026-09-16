@@ -1033,6 +1033,23 @@ function audienceBreakdownBoxHtml(ab) {
   ].join('');
   return `${freshness}${warning}${tables || '<div class="pmc-empty">Meta ما رجّعتش صفوف حقيقية لأي تقسيم في هذه الفترة.</div>'}${comboStatusRowsHtml(ab.combos)}`;
 }
+/** Real, deterministic Easy-Orders-derived customer facts for THIS product — zero AI, zero Meta. Same data buyerInsightsRowHtml() shows on Overview, but honest about being empty here instead of silently disappearing (Overview treats it as a bonus row; this tab is exactly where someone asking "what does Easy Orders say" would look first). */
+function realCustomerInsightsCardHtml(bi) {
+  const hasAny = bi && (bi.newCustomers != null || bi.repeatCustomers != null);
+  return `<div class="pmc-card" style="margin-bottom:14px;">
+    <div class="h">${pmcIcon('users')} ${pmcSourceBadge('EASY_ORDERS')} جودة العملاء الحقيقية (من طلبات هذا المنتج فعليًا)</div>
+    ${hasAny ? `
+      <div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));">
+        <div class="pmc-kv"><span>عملاء جدد</span><b>${fmtNum(bi.newCustomers)}</b></div>
+        <div class="pmc-kv"><span>عملاء متكررين</span><b>${fmtNum(bi.repeatCustomers)}</b></div>
+        <div class="pmc-kv"><span>متوسط الطلب (جديد)</span><b>${bi.aovNew != null ? fmtEGP(bi.aovNew) : '—'}</b></div>
+        <div class="pmc-kv"><span>متوسط الطلب (متكرر)</span><b>${bi.aovRepeat != null ? fmtEGP(bi.aovRepeat) : '—'}</b></div>
+      </div>
+      ${bi.topCoPurchasedProducts?.length ? `<div class="faint" style="font-size:11.5px;margin-top:8px;">غالبًا يُشترى مع: ${bi.topCoPurchasedProducts.slice(0, 3).map((p) => E(p.productName || `#${p.productId}`)).join('، ')}</div>` : ''}
+    ` : `<div class="pmc-empty">لا توجد طلبات حقيقية كافية من Easy Orders لهذا المنتج في هذه الفترة — لسه مفيش عملاء نقدر نحسب منهم جديد/متكرر.</div>`}
+    <div class="faint" style="font-size:11px;margin-top:6px;">حقائق شرائية ملحوظة فقط (جديد/متكرر، قيمة الطلب، شراء مشترك) — أبدًا مفيش استنتاج عمر أو نوع من الاسم أو رقم التليفون أو العنوان.</div>
+  </div>`;
+}
 function renderAudience(mount, s) {
   const a = s.audience || {};
   const dc = s.dataCompleteness || {};
@@ -1047,6 +1064,8 @@ function renderAudience(mount, s) {
       <div class="faint" style="font-size:11.5px;margin-bottom:10px;">أداء إعلاني حقيقي موزّع حسب الشريحة اللي Meta عرض عليها الإعلان — "Meta-attributed audience performance" — مش هوية عملاء حقيقية، ومش مبني على بيانات Easy Orders. توزيع محافظات الطلبات الحقيقي موجود منفصل في تبويب "الأسواق والمناطق".</div>
       <div id="pmcAudienceBreakdownBox">${audienceBreakdownBoxHtml(ab)}</div>
     </div>
+    <div class="pmc-section-badge data-backed">${pmcIcon('check')} عملاء Easy Orders الحقيقيين</div>
+    ${realCustomerInsightsCardHtml(s.buyerInsights)}
     <div class="pmc-section-badge suggested">${pmcIcon('target')} فرضية AI مساعدة</div>
     ${pmcDataStatus(dc.demographics, 'META')}
     <div class="pmc-card">
