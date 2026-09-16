@@ -140,7 +140,13 @@ export function assembleDataCompleteness({ metaMapped, metrics, cod, revenueSour
       ? dim('PARTIAL', 'الإيراد تقديري (سعر البيع × عدد الطلبات المُستلمة) — لا توجد قيمة طلب حقيقية بعد.')
       : dim('MISSING', 'لا يمكن حساب الاقتصاديات بدون بيانات طلبات مُستلمة.');
 
-  const demographics = dim('MISSING', 'Meta لا يوفر بيانات تقسيم الجمهور (عمر/نوع) في هذا النظام حاليًا — يحتاج تفعيل breakdowns في مزامنة Meta، غير مُفعّل الآن.');
+  // Real Meta age/gender/region/country/platform breakdowns are now supported
+  // (services/amb/metaAudienceBreakdown.js) — but computed on demand from the
+  // Audience & Markets tab, not as part of this main snapshot compute (same
+  // on-demand pattern as Market Gaps/Strategist), so this function has no
+  // fresh result to report here. PARTIAL (not MISSING) — it's genuinely
+  // implemented, just not yet fetched for this exact snapshot instance.
+  const demographics = dim('PARTIAL', 'بيانات جمهور Meta الحقيقية (عمر/نوع/منطقة/دولة/منصة) متاحة عند الطلب من تبويب "الجمهور والأسواق" — لسه ما اتحسبتش لهذا التحليل تحديدًا.');
 
   const geography = (markets?.length || locations?.length)
     ? dim('AVAILABLE', 'توزيع محافظات حقيقي من طلبات Easy Orders.')

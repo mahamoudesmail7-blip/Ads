@@ -402,6 +402,58 @@ export async function getInsightsByLevel(token, adAccountId, level, dateFrom, da
 }
 
 /**
+ * Aggregated Insights for a SET of confirmed campaign ids, sliced by one or
+ * more Meta `breakdowns` dimensions, over the whole date range (no daily
+ * time_increment — one row per breakdown-value combination, already summed
+ * across every matched campaign/adset/ad). Used by the PMC Audience &
+ * Markets Meta-breakdown feature. Deliberately does NOT throw on a Graph API
+ * error — some breakdown combinations are simply not supported together
+ * (Meta returns a normal error body for that, not an outage), and the caller
+ * needs the exact reason to record/try a different combo, never to guess.
+ * Every other function in this file throws on error because a caller there
+ * has nothing useful to do with a granular failure reason; this one is the
+ * deliberate exception.
+ */
+export async function getInsightsBreakdown(token, adAccountId, { breakdowns, campaignIds, dateFrom, dateTo }) {
+  if (!Array.isArray(campaignIds) || !campaignIds.length) return { ok: false, code: null, subcode: null, message: 'لا توجد حملات مؤكدة لتصفية البيانات عليها.' };
+  const fields = ['spend', 'impressions', 'reach', 'clicks', 'ctr', 'cpc', 'actions', 'action_values', 'date_start', 'date_stop'].join(',');
+  const params = {
+    level: 'account',
+    time_range: { since: dateFrom, until: dateTo },
+    breakdowns: breakdowns.join(','),
+    filtering: [{ field: 'campaign.id', operator: 'IN', value: campaignIds }],
+    fields,
+    limit: 500,
+    access_token: token,
+  };
+  const base = `${GRAPH_BASE}/${adAccountId}/insights`;
+  const rows = [];
+  let target = (() => {
+    const u = new URL(base);
+    for (const [k, v] of Object.entries(params)) u.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+    return u.toString();
+  })();
+  let guard = 0;
+  while (target && guard++ < 20) {
+    let res, data;
+    try {
+      res = await fetch(target);
+      data = await res.json().catch(() => null);
+    } catch (err) {
+      return { ok: false, code: null, subcode: null, message: err.message || 'تعذّر الوصول إلى Meta.' };
+    }
+    if (!res.ok || data?.error) {
+      const e = data?.error || {};
+      logger.warn('Meta breakdown insights rejected', { breakdowns, adAccountId, status: res.status, code: e.code ?? null, subcode: e.error_subcode ?? null, message: e.message ?? null });
+      return { ok: false, code: e.code ?? null, subcode: e.error_subcode ?? null, httpStatus: res.status, message: e.message || `Graph API error ${res.status}` };
+    }
+    rows.push(...(data.data || []));
+    target = data.paging?.next || null;
+  }
+  return { ok: true, rows };
+}
+
+/**
  * Low-noise GET — a plain fetch that returns `null` on any error instead of
  * logging at ERROR + throwing. For best-effort probes (clone pre-flight asset
  * checks, "is this video downloadable") where a permission/existence failure

@@ -994,15 +994,65 @@ function segmentCardHtml(seg) {
     </div>
   </div>`;
 }
+// ---- Phase A — real Meta age/gender/region/country/platform/placement ----
+// ---- breakdown (confirmed campaigns only). Every number here is Meta's ----
+// ---- own ad-performance-by-segment data — an audience Meta SERVED the ----
+// ---- ad to, never a literal Easy Orders customer record. ----
+const COMBO_STATUS_LABEL_AR = { AVAILABLE: 'متاح', EMPTY: 'مفيش بيانات', UNSUPPORTED: 'Meta ما بتدعمش الدمج ده', PERMISSION_DENIED: 'صلاحية ناقصة', ERROR: 'خطأ' };
+function dimTableHtml(title, rows, unit) {
+  if (!rows?.length) return '';
+  return `<div class="pmc-card" style="margin-bottom:14px;">
+    <div class="h">${E(title)}</div>
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>${E(unit)}</th><th>الصرف</th><th>مشتريات</th><th>قيمة المشتريات</th><th>CPA</th><th>CTR</th><th>CPC</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td>${E(r.value)}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${r.purchaseValue ? fmtEGP(r.purchaseValue) : '—'}</td><td>${r.cpa != null ? fmtEGP(r.cpa) : '—'}</td><td>${r.ctr != null ? `${r.ctr.toFixed(1)}%` : '—'}</td><td>${r.cpc != null ? fmtEGP(r.cpc) : '—'}</td></tr>`).join('')}</tbody>
+    </table></div>
+  </div>`;
+}
+function comboStatusRowsHtml(combos) {
+  const entries = Object.entries(combos || {});
+  if (!entries.length) return '';
+  return `<details class="pmc-loc-details" style="margin-top:6px;">
+    <summary>حالة كل تقسيم طلبناه من Meta (${entries.length})</summary>
+    <div style="margin-top:8px;">${entries.map(([key, c]) => `<div class="pmc-kv"><span>${E(key)}</span><b>${E(COMBO_STATUS_LABEL_AR[c.status] || c.status)}</b></div>${c.reason ? `<div class="faint" style="font-size:11px;margin:0 0 8px;">${E(c.reason)}</div>` : ''}`).join('')}</div>
+  </details>`;
+}
+function audienceBreakdownBoxHtml(ab) {
+  if (!ab || !ab.available) {
+    return `<div class="pmc-empty">${E(ab?.reason || 'لسه ما اتحسبتش بيانات الجمهور الحقيقية من Meta.')}</div>${comboStatusRowsHtml(ab?.combos)}`;
+  }
+  const freshness = ab.generatedAt ? `<div class="faint" style="font-size:11px;margin-bottom:10px;">آخر تحديث: ${new Date(ab.generatedAt).toLocaleString('ar-EG')} — ${E(ab.windowLabel || '')} — ${fmtNum((ab.campaignIds || []).length)} حملة مؤكدة</div>` : '';
+  const warning = ab.sampleWarning ? `<div class="pmc-empty" style="text-align:right;background:var(--amb-amber-bg);border-color:var(--amb-amber);color:var(--amb-amber);">⚠️ ${E(ab.sampleWarning)}</div>` : '';
+  const tables = [
+    dimTableHtml('التوزيع حسب السن', ab.age, 'الفئة العمرية'),
+    dimTableHtml('التوزيع حسب النوع', ab.gender, 'النوع'),
+    dimTableHtml('أقوى المناطق (Region)', ab.region, 'المنطقة'),
+    dimTableHtml('أقوى الدول (Country)', ab.country, 'الدولة'),
+    dimTableHtml('Facebook مقابل Instagram', ab.platform, 'المنصة'),
+    dimTableHtml('أداء المواضع (Placement)', ab.placement?.map((p) => ({ ...p, value: [p.publisher_platform, p.platform_position].filter(Boolean).join(' · ') })), 'الموضع'),
+  ].join('');
+  return `${freshness}${warning}${tables || '<div class="pmc-empty">Meta ما رجّعتش صفوف حقيقية لأي تقسيم في هذه الفترة.</div>'}${comboStatusRowsHtml(ab.combos)}`;
+}
 function renderAudience(mount, s) {
   const a = s.audience || {};
   const dc = s.dataCompleteness || {};
+  const ab = s.audienceBreakdown || null;
   mount.innerHTML = `
+    <div class="pmc-section-badge data-backed">${pmcIcon('check')} جمهور Meta الحقيقي</div>
+    <div class="pmc-card" style="margin-bottom:14px;">
+      <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>${pmcIcon('users')} ${pmcSourceBadge('META')} أداء الجمهور الحقيقي على الحملات المؤكدة</span>
+        <button class="amb-btn sm primary" id="pmcRefreshAudienceBreakdown">${ab?.generatedAt ? '🔄 تحديث من Meta' : '📡 احسب من بيانات Meta'}</button>
+      </div>
+      <div class="faint" style="font-size:11.5px;margin-bottom:10px;">أداء إعلاني حقيقي موزّع حسب الشريحة اللي Meta عرض عليها الإعلان — "Meta-attributed audience performance" — مش هوية عملاء حقيقية، ومش مبني على بيانات Easy Orders. توزيع محافظات الطلبات الحقيقي موجود منفصل في تبويب "الأسواق والمناطق".</div>
+      <div id="pmcAudienceBreakdownBox">${audienceBreakdownBoxHtml(ab)}</div>
+    </div>
+    <div class="pmc-section-badge suggested">${pmcIcon('target')} فرضية AI مساعدة</div>
     ${pmcDataStatus(dc.demographics, 'META')}
     <div class="pmc-card">
       <div class="h">${pmcIcon('users')} خريطة السوق والجمهور</div>
       ${a.unavailable ? `<div class="pmc-empty">${E(a.reason)}</div>` : `
-        <div class="faint" style="font-size:11.5px;margin-bottom:10px;">${pmcSourceBadge('AI')} فرضية تسويقية مبنية على المنتج وأدائه الحقيقي — مش هوية عملاء حقيقية أو بيانات Meta ديموغرافية (غير متاحة، شوف الملاحظة فوق).</div>
+        <div class="faint" style="font-size:11.5px;margin-bottom:10px;">${pmcSourceBadge('AI')} فرضية تسويقية مبنية على المنتج وأدائه الحقيقي — مش هوية عملاء حقيقية أو بيانات Meta ديموغرافية.</div>
         <div class="pmc-fact-grid">
           ${audienceFactTile('users', 'green', 'النوع', a.gender?.value, a.gender?.kind, a.gender?.confidence, a.gender?.evidence)}
           ${audienceFactTile('clock', 'amber', 'السن', a.ageRange?.value, a.ageRange?.kind, a.ageRange?.confidence, a.ageRange?.evidence)}
@@ -1017,6 +1067,14 @@ function renderAudience(mount, s) {
       <div class="h">${pmcIcon('target')} شرائح مقترحة ${pmcSourceBadge('AI')}</div>
       ${(a.segments || []).map(segmentCardHtml).join('') || `<div class="pmc-empty">${E(a.unavailable ? a.reason : 'البيانات غير كافية للحكم')}</div>`}
     </div>`;
+  $('pmcRefreshAudienceBreakdown').onclick = async () => {
+    const box = $('pmcAudienceBreakdownBox'); box.innerHTML = '<div class="pmc-empty">📡 بنجيب بيانات الجمهور الحقيقية من Meta…</div>';
+    try {
+      const result = await api.post(`/api/product-marketing/profiles/${state.profile.id}/audience-breakdown`, { window: state.windowName, force: true });
+      s.audienceBreakdown = result;
+      box.innerHTML = audienceBreakdownBoxHtml(result);
+    } catch (e) { UI.toast(e.message, 'error'); box.innerHTML = `<div class="pmc-empty">${E(e.message)}</div>`; }
+  };
 }
 
 function winnerIntelTableHtml(intel, emptyMsg) {
@@ -1292,7 +1350,7 @@ function renderLocations(mount, s) {
   const rich = markets.length > 0;
   mount.innerHTML = `
     ${pmcDataStatus(s.dataCompleteness?.geography, 'EASY_ORDERS')}
-    <div class="faint" style="font-size:11px;margin:-4px 0 10px;">هذا توزيع جغرافي من عناوين طلبات Easy Orders الحقيقية فقط — مش توزيع جمهور Meta الإعلاني (Meta لا يوفر تقسيم جغرافي في هذا النظام حاليًا).</div>
+    <div class="faint" style="font-size:11px;margin:-4px 0 10px;">هذا توزيع جغرافي من عناوين طلبات Easy Orders الحقيقية فقط — مش توزيع جمهور Meta الإعلاني. توزيع الجمهور الجغرافي من Meta (دولة/منطقة) موجود منفصل في تبويب "الجمهور والأسواق".</div>
     ${marketsSummaryHtml(rows, rich)}
     <div class="pmc-card">
       <div class="h">${pmcIcon('mappin')} الأسواق والمناطق — ${E(s.metrics?.windowLabel || '')}</div>

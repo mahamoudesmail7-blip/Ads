@@ -8,6 +8,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import * as PM from '../services/amb/productMarketing.js';
 import * as PMT from '../services/amb/productMarketingTests.js';
+import * as MAB from '../services/amb/metaAudienceBreakdown.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -184,6 +185,14 @@ router.post('/profiles/:id/market-gaps', asyncRoute(async (req, res) => {
 router.get('/profiles/:id/strategist', snapshotSlice('strategist'));
 router.post('/profiles/:id/strategist', asyncRoute(async (req, res) => {
   res.json(await PM.computeStrategistBrief({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
+}));
+
+// ---- Phase A — real Meta age/gender/region/country/platform/placement ----
+// ---- breakdown data (confirmed campaigns only). On demand only, same ----
+// ---- pattern as Market Gaps/Strategist above — never part of /analyze. ----
+router.get('/profiles/:id/audience-breakdown', snapshotSlice('audienceBreakdown'));
+router.post('/profiles/:id/audience-breakdown', asyncRoute(async (req, res) => {
+  res.json(await MAB.computeAudienceBreakdown({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
 }));
 
 // ---- Testing Lab + Marketing Memory (§17-20) — serialized to camelCase for the frontend, same convention as routes/customers.js ----

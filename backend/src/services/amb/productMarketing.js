@@ -1561,6 +1561,7 @@ function deserializeSnapshot(row, precomputed = null) {
     winningComponents: j(row.winning_components_json, { dataSufficient: false }),
     marketGaps: j(row.market_gaps_json, { observed: [], gaps: [] }),
     strategist: j(row.strategist_json, { answers: [] }),
+    audienceBreakdown: j(row.audience_breakdown_json, { available: false, reason: 'لسه ما اتحسبتش بيانات الجمهور الحقيقية من Meta لهذا المنتج — افتح تبويب الجمهور والأسواق لحسابها.' }),
     dataCompleteness: extra.dataCompleteness || null,
   };
 }

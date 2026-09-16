@@ -2408,6 +2408,7 @@ model ProductMarketingSnapshot {
   winning_components_json String? // assembled best market/hook/angle/ad/creative + why
   market_gaps_json        String? // { observed:[...real competitor rows], gaps:[...AI hypothesis] }
   strategist_json         String? // 14 AI-Strategist answers, each with a validated status
+  audience_breakdown_json String? // Phase A — real Meta Insights `breakdowns` data (age/gender/country/region/platform/placement) for this product's confirmed campaigns; see services/amb/metaAudienceBreakdown.js
 
   ai_model_version String  @default("pmc-v1")
   ai_raw_json      String? // last raw Claude response — audit trail only, never shown raw to the user

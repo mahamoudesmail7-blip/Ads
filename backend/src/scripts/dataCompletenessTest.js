@@ -1,8 +1,10 @@
 // Regression test for the PMC data-completeness diagnostic
 // (assembleDataCompleteness). Pure function, no DB/AI — verifies every
-// dimension classifies correctly from already-known signals, and that
-// Block D's honest limitation (Meta demographics never collected) is
-// always reported as MISSING with a clear reason, never silently hidden.
+// dimension classifies correctly from already-known signals. demographics
+// is PARTIAL (real Meta breakdowns ARE implemented — see
+// services/amb/metaAudienceBreakdown.js — just computed on demand from the
+// Audience tab, not part of this main snapshot compute), never silently
+// hidden either way.
 //   node src/scripts/dataCompletenessTest.js
 import { assembleDataCompleteness } from '../services/amb/productMarketingAssemblers.js';
 
@@ -33,11 +35,11 @@ console.log('\n§3 economics — mirrors the real revenueSource flag from netPro
   ok('revenueSource null (no delivered orders known) -> MISSING', assembleDataCompleteness({ cod: {}, revenueSource: null, ai: { ok: true } }).economics.status === 'MISSING');
 }
 
-console.log('\n§4 demographics — ALWAYS MISSING with an honest reason (Block D: Meta breakdowns never collected), never fabricated or silently hidden:');
+console.log('\n§4 demographics — PARTIAL (implemented, but computed on demand — not part of this compute), points to the Audience tab, never a vague "insufficient data":');
 {
   const d = assembleDataCompleteness({ cod: {}, ai: { ok: true } });
-  ok('demographics.status is always MISSING', d.demographics.status === 'MISSING');
-  ok('reason explicitly explains WHY (Meta breakdowns not collected), not a vague "insufficient data"', d.demographics.reason.includes('breakdowns'), d.demographics.reason);
+  ok('demographics.status is PARTIAL, not MISSING (the feature exists) and not AVAILABLE (nothing fetched yet here)', d.demographics.status === 'PARTIAL');
+  ok('reason points to where the real data actually is (the Audience & Markets tab)', d.demographics.reason.includes('الجمهور والأسواق'), d.demographics.reason);
 }
 
 console.log('\n§5 geography — AVAILABLE when real markets/locations exist, MISSING otherwise:');
