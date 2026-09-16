@@ -22,6 +22,30 @@
         <input type="text" id="custSearch" placeholder="🔎 ابحث بالاسم، رقم الهاتف، أو رقم الأوردر..." style="max-width:320px" />
       </div>
 
+      <div class="card" id="unlinkedOrdersCard" style="margin-bottom:18px; display:none;">
+        <div class="section-title" style="margin-top:0; display:flex; align-items:center; gap:8px;">
+          <span>⚠️ أوردرات ببيانات عميل غير صالحة</span>
+          <span class="badge yellow" id="unlinkedOrdersCount"></span>
+        </div>
+        <p class="faint" style="font-size:12px;">أوردرات حقيقية وصلت برقم تليفون فاسد أو غير صالح كموبايل مصري — السيستم رفض عمدًا يعمل لها عميل عشان متتلخبطش قاعدة العملاء الحقيقية. منفصلة تمامًا عن "الأوردرات المفقودة" (اللي معناها أوردر رجع من التوصيل).</p>
+        <div class="table-wrap">
+          <table class="data">
+            <thead>
+              <tr>
+                <th>رقم الأوردر</th>
+                <th>الاسم الخام</th>
+                <th>الهاتف الخام</th>
+                <th>المنتج</th>
+                <th>المتجر</th>
+                <th>الحالة</th>
+                <th>السبب</th>
+              </tr>
+            </thead>
+            <tbody id="unlinkedOrdersBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="table-wrap" style="margin-top:14px;">
         <table class="data">
           <thead>

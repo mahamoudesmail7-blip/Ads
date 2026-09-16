@@ -30,6 +30,30 @@ async function init() {
   $('custDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'custDrawerOverlay') closeDrawer(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
   await load();
+  await loadUnlinkedOrders();
+}
+
+/** Real orders that arrived with a phone value normalizeEgyptianPhone() rejected — see routes/customers.js's unlinked-orders endpoint. Never masked: there's no matched real customer's privacy to protect, the raw value IS the diagnostic. Card stays hidden entirely when there's nothing to show — never an empty card taking up space. */
+async function loadUnlinkedOrders() {
+  let orders;
+  try {
+    ({ orders } = await api.get('/api/customers/unlinked-orders'));
+  } catch {
+    return; // best-effort — a failure here must never block the main customer list
+  }
+  if (!orders.length) return;
+  $('unlinkedOrdersCard').style.display = '';
+  $('unlinkedOrdersCount').textContent = orders.length;
+  $('unlinkedOrdersBody').innerHTML = orders.map((o) => `
+    <tr>
+      <td>${E(o.shortId ? `#${o.shortId}` : o.orderId.slice(0, 8) + '…')}</td>
+      <td>${E(o.name || '—')}</td>
+      <td class="ltr">${E(o.phone || '—')}</td>
+      <td>${E(o.productName || '—')}</td>
+      <td>${E(o.storeId || '—')}</td>
+      <td>${orderStatusBadge(o.status)}</td>
+      <td class="faint" style="font-size:12px;">${E(o.reason)}</td>
+    </tr>`).join('');
 }
 
 async function load() {

@@ -57,6 +57,44 @@ router.get('/', asyncRoute(async (req, res) => {
   res.json({ customers: results.map(summarize) });
 }));
 
+/**
+ * Real Easy Orders order rows that were deliberately NOT linked to a
+ * Customer — every order here has a real customer_phone value, but
+ * normalizeEgyptianPhone() rejected it as not a valid Egyptian mobile
+ * number (garbled digits, wrong length, non-numeric junk). This is the
+ * phone-normalization safety guard working as intended (a wrong merge
+ * would silently corrupt one real customer's history with another's) —
+ * never masked here (there is no real matched customer's privacy to
+ * protect; the raw value IS the diagnostic). Deliberately separate from
+ * "الأوردرات المفقودة" (lostOrders.js), which tracks a completely
+ * different real thing: an order that came back from delivery.
+ */
+router.get('/unlinked-orders', asyncRoute(async (req, res) => {
+  const rows = await prisma.easyOrdersOrder.findMany({
+    where: { customer_phone: { not: null }, customer_id: null },
+    select: {
+      order_id: true, short_id: true, customer_phone: true, customer_name: true,
+      store_id: true, status: true, date: true, created_at: true,
+      product_name_raw: true, product: { select: { product_name: true } },
+    },
+    orderBy: { created_at: 'desc' },
+  });
+  const byOrder = new Map();
+  for (const r of rows) if (!byOrder.has(r.order_id)) byOrder.set(r.order_id, r);
+  const orders = [...byOrder.values()].map((r) => ({
+    orderId: r.order_id,
+    shortId: r.short_id,
+    name: r.customer_name,
+    phone: r.customer_phone,
+    reason: normalizeEgyptianPhone(r.customer_phone) ? 'رقم صالح لكن لم يُربط لسبب آخر — يحتاج مراجعة' : 'رقم تليفون غير صالح (مش شكل موبايل مصري حقيقي)',
+    storeId: r.store_id,
+    status: r.status,
+    date: r.date,
+    productName: r.product?.product_name || r.product_name_raw || null,
+  }));
+  res.json({ orders });
+}));
+
 /** Full authorized detail view — spec §13's "Detailed authorized view". */
 router.get('/:id', asyncRoute(async (req, res) => {
   const id = Number(req.params.id);
