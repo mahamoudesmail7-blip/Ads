@@ -26,7 +26,7 @@ import { customerQualityForProduct, marketsForProduct } from './customerQuality.
 import { buyerInsightsForProduct } from './buyerInsights.js';
 import { hookAndAngleIntelForProduct, scopedAdsForProduct } from './productMarketingWinnerIntel.js';
 import { getAllEasyOrdersProductsStatus } from './easyOrdersProducts.js';
-import { listStores, getStore, defaultStoreId, storeConfigDiagnostics as storeConfigDiagnosticsImpl } from '../easyOrdersStores.js';
+import { listStores, getStore, defaultStoreId, storeConfigDiagnostics as storeConfigDiagnosticsImpl, storeConnectionsOverview as storeConnectionsOverviewImpl } from '../easyOrdersStores.js';
 import { exactNameKey, stripStoreTagSuffix } from '../easyOrders.js';
 import { analyzeProductImage } from '../productIdentityVision.js';
 import { computeOpportunityScore, computeDiagnosis, rankLocations, matchCampaignsToProduct, healthBand, prioritizeActions } from './productMarketingScoring.js';
@@ -113,6 +113,11 @@ export function listEasyOrdersStores() {
 /** ADMIN-only — see easyOrdersStores.js's storeConfigDiagnostics() for exactly what this exposes (env var NAMES + presence booleans, never a value). */
 export function storeConfigDiagnostics() {
   return storeConfigDiagnosticsImpl();
+}
+
+/** ADMIN-only — see easyOrdersStores.js's storeConnectionsOverview(). */
+export function storeConnectionsOverview() {
+  return storeConnectionsOverviewImpl();
 }
 
 /**

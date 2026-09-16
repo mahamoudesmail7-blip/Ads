@@ -38,6 +38,7 @@ const ICON_PATHS = {
   productresearch: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
   customers: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   backuprecovery: '<path d="M12 2L4 6v6c0 5 3.5 9 8 10 4.5-1 8-5 8-10V6l-8-4z"/><path d="M9 12l2 2 4-4"/>',
+  storeconnections: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
 };
 
 function navIcon(name) {
@@ -53,6 +54,7 @@ export const NAV_ITEMS = [
   { key: 'products', href: 'products.html', label: 'المنتجات', icon: navIcon('products') },
   { key: 'entry', href: 'entry.html', label: 'إدخال الأوردرات', icon: navIcon('entry') },
   { key: 'easyorders', href: 'easy-orders.html', label: 'Easy Orders', icon: navIcon('easyorders') },
+  { key: 'storeconnections', href: 'store-connections.html', label: 'ربط المتاجر', icon: navIcon('storeconnections') },
   { key: 'lostorders', href: 'lost-orders.html', label: 'الأوردرات المفقودة', icon: navIcon('lostorders'), badgeId: 'navLostOrdersBadge' },
   { key: 'customers', href: 'customers.html', label: 'قاعدة العملاء', icon: navIcon('customers') },
   { key: 'aiintel', href: 'ai-intelligence.html', label: 'AI Intelligence', icon: navIcon('aiintel') },
@@ -80,6 +82,7 @@ const NAV_ROLE_REQUIREMENT = {
   productresearch: ['ADMIN', 'MANAGER'],
   customers: ['ADMIN', 'MANAGER'],
   backuprecovery: ['ADMIN'],
+  storeconnections: ['ADMIN'],
 };
 
 // 'users' (the approval queue + permissions editor) is stricter still —

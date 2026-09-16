@@ -161,4 +161,31 @@ export function storeConfigDiagnostics() {
   }));
 }
 
+/**
+ * Full connection health for every configured store — powers the admin
+ * "ربط المتاجر" page. Never returns a credential value, same as
+ * storeConfigDiagnostics(). Adds one thing that function can't see: the
+ * DEFAULT store predates multi-store and never got a `webhookSecretEnv`
+ * entry in EASYORDERS_STORES_JSON at all — it authenticates its webhook via
+ * two SEPARATE global env vars instead (EASYORDERS_WEBHOOK_SECRET for
+ * "order created", EASYORDERS_STATUS_WEBHOOK_SECRET for "order status
+ * update" — see routes/webhooks.js's bare `/easyorders` path), so
+ * storeConfigDiagnostics() reports it as having no webhook configured even
+ * when it does. This checks the real env vars each store's webhook path
+ * actually reads, per store.
+ */
+export function storeConnectionsOverview() {
+  return storeConfigDiagnostics().map((s) => {
+    if (s.id === DEFAULT_STORE_ID) {
+      return {
+        ...s,
+        webhookMode: 'legacy-split', // one URL, two secrets (order-created vs status-update)
+        legacyOrderCreatedSecretConfigured: !!(process.env.EASYORDERS_WEBHOOK_SECRET && process.env.EASYORDERS_WEBHOOK_SECRET.trim()),
+        legacyStatusUpdateSecretConfigured: !!(process.env.EASYORDERS_STATUS_WEBHOOK_SECRET && process.env.EASYORDERS_STATUS_WEBHOOK_SECRET.trim()),
+      };
+    }
+    return { ...s, webhookMode: 'per-store' }; // one URL, one secret, both event types
+  });
+}
+
 export { DEFAULT_STORE_ID };

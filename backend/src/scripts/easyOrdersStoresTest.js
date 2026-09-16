@@ -23,7 +23,7 @@ function resetEnv() {
 // time, so a single import is actually fine — but re-importing with a
 // cache-busting query string keeps each block visually self-contained).
 const mod = await import(pathToFileURL(process.cwd() + '/src/services/easyOrdersStores.js').href);
-const { listStores, getStore, getStoreApiKey, defaultStoreId, storeConfigDiagnostics } = mod;
+const { listStores, getStore, getStoreApiKey, defaultStoreId, storeConfigDiagnostics, storeConnectionsOverview } = mod;
 
 console.log('§B1 Backward compatibility — only EASYORDERS_API_KEY set (today\'s real production shape):');
 {
@@ -142,6 +142,39 @@ console.log('\n§M5 storeConfigDiagnostics() fingerprints prove key equality/ine
   ]);
   const diagDiff = storeConfigDiagnostics();
   ok('two genuinely different values -> different fingerprints', diagDiff.find((d) => d.id === 'trendy').apiKeyFingerprint !== diagDiff.find((d) => d.id === 'other').apiKeyFingerprint);
+}
+
+console.log('\n§M6 storeConnectionsOverview() — the DEFAULT store\'s webhook secrets live in two SEPARATE global env vars (pre-multi-store), never in EASYORDERS_STORES_JSON, so this must check those directly instead of trusting storeConfigDiagnostics() alone:');
+{
+  resetEnv();
+  process.env.EASYORDERS_API_KEY_TRENDY = 'trendy-real-key';
+  process.env.EASYORDERS_STORES_JSON = JSON.stringify([
+    { id: 'default', name: 'placeholder', apiKeyEnv: 'EASYORDERS_API_KEY' },
+    { id: 'trendy', name: 'Trendy Store', apiKeyEnv: 'EASYORDERS_API_KEY_TRENDY', webhookSecretEnv: 'EASYORDERS_WEBHOOK_SECRET_TRENDY' },
+  ]);
+  process.env.EASYORDERS_WEBHOOK_SECRET_TRENDY = 'trendy-webhook-secret';
+  // Neither legacy secret is set yet.
+  let overview = storeConnectionsOverview();
+  let def = overview.find((s) => s.id === 'default');
+  let trendy = overview.find((s) => s.id === 'trendy');
+  ok('default store is tagged legacy-split mode', def.webhookMode === 'legacy-split');
+  ok('a non-default store is tagged per-store mode', trendy.webhookMode === 'per-store');
+  ok('default\'s legacy order-created secret correctly reported unset', def.legacyOrderCreatedSecretConfigured === false);
+  ok('default\'s legacy status-update secret correctly reported unset', def.legacyStatusUpdateSecretConfigured === false);
+  ok('a per-store-mode entry has no legacy fields at all', !('legacyOrderCreatedSecretConfigured' in trendy));
+  ok('per-store webhook secret presence still comes through normally', trendy.webhookSecretConfigured === true);
+
+  process.env.EASYORDERS_WEBHOOK_SECRET = 'legacy-order-created-secret';
+  overview = storeConnectionsOverview();
+  def = overview.find((s) => s.id === 'default');
+  ok('setting EASYORDERS_WEBHOOK_SECRET flips ONLY the order-created flag', def.legacyOrderCreatedSecretConfigured === true && def.legacyStatusUpdateSecretConfigured === false);
+
+  process.env.EASYORDERS_STATUS_WEBHOOK_SECRET = 'legacy-status-update-secret';
+  overview = storeConnectionsOverview();
+  def = overview.find((s) => s.id === 'default');
+  ok('setting EASYORDERS_STATUS_WEBHOOK_SECRET flips the status-update flag too, independently', def.legacyStatusUpdateSecretConfigured === true);
+
+  ok('no real secret VALUE anywhere in the output', !JSON.stringify(overview).includes('legacy-order-created-secret') && !JSON.stringify(overview).includes('legacy-status-update-secret') && !JSON.stringify(overview).includes('trendy-webhook-secret'));
 }
 
 resetEnv();

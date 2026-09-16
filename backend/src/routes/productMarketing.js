@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
+import { prisma } from '../prisma.js';
 import * as PM from '../services/amb/productMarketing.js';
 import * as PMT from '../services/amb/productMarketingTests.js';
 import * as MAB from '../services/amb/metaAudienceBreakdown.js';
@@ -24,6 +25,33 @@ router.get('/stores', asyncRoute(async (req, res) => res.json({ stores: PM.listE
 // check/fix without anyone (including Claude) ever seeing the real key. ----
 router.get('/stores/diagnostics', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   res.json({ stores: PM.storeConfigDiagnostics() });
+}));
+
+// ---- ADMIN-only "ربط المتاجر" (store connections) page — per store: is ----
+// ---- the API key set, is the webhook set, the EXACT webhook URL(s) to ----
+// ---- paste into Easy Orders, real product count, and when the last real ----
+// ---- order actually arrived. Read-only; never exposes a credential value.----
+router.get('/stores/connections', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const base = `${req.protocol}://${req.get('host')}`;
+  const overview = PM.storeConnectionsOverview();
+  const rows = await Promise.all(overview.map(async (s) => {
+    const [audit, lastOrder] = await Promise.all([
+      PM.auditEasyOrdersCatalog(s.id).catch((e) => ({ ok: false, error: e.message, summary: { total: null } })),
+      prisma.easyOrdersOrder.aggregate({ where: { store_id: s.id }, _max: { created_at: true }, _count: true }),
+    ]);
+    const webhookUrls = s.webhookMode === 'legacy-split'
+      ? { orderCreated: `${base}/api/webhooks/easyorders`, statusUpdate: `${base}/api/webhooks/easyorders` }
+      : { combined: `${base}/api/webhooks/easyorders/${s.id}` };
+    return {
+      ...s,
+      webhookUrls,
+      productCount: audit.ok === false ? null : (audit.summary?.total ?? null),
+      productCountError: audit.ok === false ? audit.error : null,
+      totalOrders: lastOrder._count,
+      lastOrderAt: lastOrder._max.created_at,
+    };
+  }));
+  res.json({ stores: rows });
 }));
 
 // ---- Read-only catalog-vs-internal-Product audit (decide Sync vs Mapping) ----
