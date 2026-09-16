@@ -737,6 +737,44 @@ function kpiCard(icon, color, label, value, extra = '') {
   if (value === null || value === undefined) return '';
   return `<div class="pmc-kpi"><span class="pmc-kpi-ic clr-${color}">${pmcIcon(icon)}</span><div class="pmc-kpi-body"><b>${value}</b><span>${E(label)}</span>${extra}</div></div>`;
 }
+// Revenue-source honesty (never merge Meta's self-reported ad-conversion
+// revenue with confirmed Easy Orders revenue — two separate cards, two
+// separate labels, always). m.revenueSource is now always explicit:
+// 'real'/'estimated' (COD-derived, from a confirmed AmbProduct's own P&L)
+// or 'meta' (Meta's own platform-reported value, unconfirmed by any real
+// order) — see productMarketing.js's deriveRevenueHonesty() for the full
+// rationale. m.codRevenue is the SAME real number the governorate/
+// customer-quality table already shows, surfaced here as its own card so
+// it's never confused with — or averaged into — Meta's figure.
+function revenueCards(m) {
+  const cards = [];
+  if (m.revenue != null) {
+    if (m.revenueSource === 'meta') {
+      cards.push(kpiCard('megaphone', 'yellow', 'إيراد Meta — غير مؤكد', fmtEGP(m.revenue)));
+    } else {
+      cards.push(kpiCard('megaphone', 'yellow', 'الإيراد', fmtEGP(m.revenue), m.revenueSource ? `<i class="pmc-kpi-tag">${m.revenueSource === 'real' ? 'حقيقي' : 'تقديري'}</i>` : ''));
+    }
+  }
+  if (m.codRevenue != null) {
+    cards.push(kpiCard('check', 'green', 'إيراد حقيقي — Easy Orders', fmtEGP(m.codRevenue)));
+  }
+  return cards;
+}
+
+// Same never-merge principle for ROAS: m.roas is ALWAYS Meta's own
+// campaign-derived figure (confirmed: never recomputed from real COD
+// revenue even with a confirmed AmbProduct mapping) — always shown as
+// "ROAS — Meta". m.realRoas is the ONLY figure ever computed from
+// confirmed Easy Orders revenue ÷ real spend — shown separately as
+// "ROAS — حقيقي (Easy Orders)", only when a real signal exists to compute
+// it from (never a fabricated placeholder).
+function roasCards(m) {
+  const cards = [];
+  if (m.roas != null) cards.push(kpiCard('trend', 'purple', 'ROAS — Meta', fmtNum(Math.round(m.roas * 100) / 100)));
+  if (m.realRoas != null) cards.push(kpiCard('trend', 'green', 'ROAS — حقيقي (Easy Orders)', fmtNum(Math.round(m.realRoas * 100) / 100)));
+  return cards;
+}
+
 function kpiRowHtml(s, p) {
   const m = s.metrics || {};
   const cards = [
@@ -746,7 +784,8 @@ function kpiRowHtml(s, p) {
     kpiCard('percent', 'cyan', 'معدل الاستلام', m.deliveryRate != null ? fmtPct1(m.deliveryRate) : null),
     kpiCard('target', 'amber', 'Delivered CPA', m.deliveredCpa != null ? fmtEGP(m.deliveredCpa) : null),
     kpiCard('trend', m.netProfit != null && m.netProfit >= 0 ? 'green' : 'pink', 'صافي الربح', m.netProfit != null ? fmtEGP(m.netProfit) : null),
-    kpiCard('megaphone', 'yellow', 'الإيراد', m.revenue != null ? fmtEGP(m.revenue) : null, m.revenueSource ? `<i class="pmc-kpi-tag">${m.revenueSource === 'real' ? 'حقيقي' : 'تقديري'}</i>` : ''),
+    ...revenueCards(m),
+    ...roasCards(m),
     kpiCard('tag', 'blue', 'متوسط سعر المنتج', p?.sellingPrice ? fmtEGP(p.sellingPrice) : null),
   ].filter(Boolean);
   return cards.length ? `<div class="pmc-kpi-row">${cards.join('')}</div>` : '';

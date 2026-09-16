@@ -583,6 +583,36 @@ async function creativeAnalysisFor(creativeId) {
   };
 }
 
+/**
+ * Revenue-source honesty — m.revenue/m.roas (from either a real AmbProduct
+ * dashboard or the live-suggested-campaign fallback) are Meta's OWN self-
+ * reported pixel/conversion values, confirmed never recomputed from real
+ * COD data even when a confirmed AmbProduct mapping exists (ambProducts.js's
+ * productDashboard() takes roas straight from the campaign hierarchy
+ * node's own metrics). Previously m.revenueSource stayed null for this
+ * path, which silently dropped the UI's "estimated" qualifier and let an
+ * unverified ad-platform number render as if it were confirmed revenue.
+ * netProfitBundle's own 'real'/'estimated' tag (COD-derived) is preserved
+ * untouched when present; anything else with a non-null revenue is now
+ * explicitly labeled 'meta'.
+ *
+ * realRoas is a SEPARATE figure, computed ONLY from confirmed Easy Orders
+ * revenue (customerQuality.revenue — the same real number the UI's
+ * governorate/customer-quality breakdown already shows, never cod.js's own
+ * separate aggregate, so it can never drift from what's displayed
+ * elsewhere) divided by real spend. null (never a fabricated 0) whenever
+ * there's no real COD revenue signal to compute it from at all, so the UI
+ * can tell "genuinely zero" apart from "not computable yet". The two
+ * revenue figures and the two ROAS figures are NEVER merged or averaged.
+ */
+export function deriveRevenueHonesty({ m, customerQuality }) {
+  const revenueSource = m.revenueSource ?? (m.revenue != null ? 'meta' : null);
+  const codRevenue = customerQuality.revenue ?? null;
+  const totalSpend = m.totalSpend ?? m.spend ?? 0;
+  const realRoas = (customerQuality.source !== 'none' && codRevenue != null && totalSpend > 0) ? codRevenue / totalSpend : null;
+  return { revenueSource, codRevenue, realRoas };
+}
+
 /** The main compute — gathers every REAL number, asks Claude ONCE to interpret them, validates the answer, diffs it against the last snapshot (self-learning memory), and caches the result. Never runs on a plain page open — only on first view of a window or an explicit refresh. */
 export async function computeSnapshot({ profileId, windowName = 'last7', force = false } = {}) {
   const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
@@ -674,6 +704,7 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
   };
 
   const m = dashboard?.metrics || matchedCampaignMetrics || {};
+  const { revenueSource, codRevenue, realRoas } = deriveRevenueHonesty({ m, customerQuality });
   const metrics = {
     windowLabel: window.label,
     totalSpend: m.totalSpend ?? m.spend ?? 0,
@@ -685,10 +716,20 @@ export async function computeSnapshot({ profileId, windowName = 'last7', force =
     deliveredCpa: m.deliveredCpa ?? null,
     deliveryRate: cod.confirmed ? (cod.delivered || 0) / cod.confirmed : null,
     revenue: m.revenue ?? null,
-    revenueSource: m.revenueSource ?? null,
+    revenueSource,
+    codRevenue,
     netProfit: m.netProfit ?? null,
     netMarginPct: m.netMarginPct ?? null,
+    // roas (above) is ALWAYS Meta's own campaign-node-derived value
+    // (confirmed: ambProducts.js's productDashboard() takes it straight
+    // from the hierarchy node's metrics, never recomputed from real COD
+    // revenue even when a confirmed AmbProduct mapping exists) — so it is
+    // unconditionally tagged 'meta', never inherited from revenueSource.
+    // realRoas (below) is the ONLY roas figure ever computed from
+    // confirmed Easy Orders revenue.
     roas: m.roas ?? null,
+    roasSource: m.roas != null ? 'meta' : null,
+    realRoas,
     ctr: matchedCampaignMetrics?.ctr ?? null, cpc: matchedCampaignMetrics?.cpc ?? null, cvr: matchedCampaignMetrics?.conversionRate ?? null, frequency: null, // filled below from the product's own campaign rollup when an AmbProduct mapping exists
     dataAvailability,
     // Product Marketing Intelligence data foundation (§15/§16) — real Easy
