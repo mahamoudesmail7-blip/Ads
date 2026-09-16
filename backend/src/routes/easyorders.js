@@ -87,15 +87,27 @@ function hourlyBreakdown(orders) {
     }));
 }
 
+// Optional store filter — omitted, empty, or "all" keeps the original
+// behavior of every store's orders mixed together, unchanged for every
+// existing caller. A real storeId scopes every query to that ONE store's
+// own orders only, matching the same store_id column the webhook itself
+// already stamps on ingestion (routes/webhooks.js). Exported for direct
+// unit testing — this is the one bit of real branching logic in this route.
+export function resolveStoreFilter(queryStoreId) {
+  const storeId = queryStoreId && queryStoreId !== 'all' ? queryStoreId : null;
+  return { storeId, where: storeId ? { store_id: storeId } : {} };
+}
+
 router.get(
   '/summary',
   asyncRoute(async (req, res) => {
     const today = req.query.date || todayUTC();
     const yesterday = shiftDate(today, -1);
+    const { where: storeWhere } = resolveStoreFilter(req.query.store_id);
 
     const [todayRows, yesterdayRows] = await Promise.all([
-      prisma.easyOrdersOrder.findMany({ where: { date: today }, include: { product: { select: { product_name: true } } }, orderBy: { created_at: 'desc' } }),
-      prisma.easyOrdersOrder.findMany({ where: { date: yesterday }, include: { product: { select: { product_name: true } } } }),
+      prisma.easyOrdersOrder.findMany({ where: { date: today, ...storeWhere }, include: { product: { select: { product_name: true } } }, orderBy: { created_at: 'desc' } }),
+      prisma.easyOrdersOrder.findMany({ where: { date: yesterday, ...storeWhere }, include: { product: { select: { product_name: true } } } }),
     ]);
 
     const todayOrders = groupByOrder(todayRows);

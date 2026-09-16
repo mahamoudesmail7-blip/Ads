@@ -16,6 +16,8 @@ import { api } from './api-client.js';
 const REFRESH_INTERVAL_MS = 15000; // webhook delivery is push-based server-side; this just keeps the open tab in sync without a manual reload.
 
 let selectedDate = null; // null = today (server decides "today" so it can't drift from the client's clock)
+let selectedStoreId = null; // null = every store's orders together (unchanged default behavior)
+let stores = []; // [{id, name, domain, enabled}] — fetched once; multi-store is optional so an empty list just means no store chips render
 let refreshTimer = null;
 let loadGeneration = 0; // guards against a stale in-flight request (e.g. from the auto-refresh timer) overwriting a just-requested range switch
 
@@ -43,9 +45,30 @@ const STATUS_BADGE_COLOR = { PENDING: 'yellow', CONFIRMED: 'green', DELIVERED: '
 async function init() {
   UI.renderSidebar('easyorders');
   renderRangeChips();
+  try {
+    ({ stores } = await api.get('/api/product-marketing/stores'));
+  } catch { stores = []; } // multi-store config is optional — a fetch failure just means no store filter shows, never blocks the page
+  renderStoreChips();
   await load();
   refreshTimer = setInterval(load, REFRESH_INTERVAL_MS);
   window.addEventListener('beforeunload', () => clearInterval(refreshTimer));
+}
+
+function renderStoreChips() {
+  const el = document.getElementById('storeChips');
+  if (!el) return;
+  if (stores.length < 2) { el.innerHTML = ''; return; } // one store (or none configured) — a filter would be pointless noise
+  el.innerHTML = [
+    `<button type="button" class="chip ${!selectedStoreId ? 'active' : ''}" data-store="">كل المتاجر</button>`,
+    ...stores.map((s) => `<button type="button" class="chip ${selectedStoreId === s.id ? 'active' : ''}" data-store="${UI.escapeHtml(s.id)}" ${s.enabled === false ? 'disabled' : ''}>${UI.escapeHtml(s.name)}</button>`),
+  ].join('');
+  el.querySelectorAll('[data-store]').forEach((btn) => {
+    btn.onclick = () => {
+      selectedStoreId = btn.dataset.store || null;
+      renderStoreChips();
+      load();
+    };
+  });
 }
 
 function renderRangeChips() {
@@ -66,6 +89,7 @@ function renderRangeChips() {
 async function load() {
   const requestId = ++loadGeneration;
   const params = selectedDate === 'yesterday' ? { date: shiftDateStr(todayUTCDateStr(), -1) } : {};
+  if (selectedStoreId) params.store_id = selectedStoreId;
 
   let data;
   try {
