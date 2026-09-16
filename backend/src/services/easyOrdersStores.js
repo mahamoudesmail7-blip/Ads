@@ -31,6 +31,27 @@ import crypto from 'node:crypto';
 
 const DEFAULT_STORE_ID = 'default';
 
+// Display-name correction, DISPLAY ONLY — never touches store id, apiKeyEnv,
+// webhookSecretEnv, domain, or routing. The user manually verified (real
+// login to each Easy Orders storefront) that EASYORDERS_STORES_JSON's own
+// `name` fields for these two ids were swapped/misleading: the "default"
+// id's real-world storefront is their "Trendy Storeee" (confirmed here by
+// its 75-product catalog), and the "trendy-storeee" id's real-world
+// storefront is actually their main "Trendy Store" (confirmed here by its
+// 328-product catalog) — the id "trendy-storeee" is just its internal key,
+// unrelated to which real brand it turned out to be. Fixing this properly
+// means editing EASYORDERS_STORES_JSON on Railway (out of reach here); this
+// override corrects only what every caller in this app actually shows a
+// human, with zero effect on which API key/webhook/catalog either id reads
+// from. Remove this once EASYORDERS_STORES_JSON itself is corrected.
+const STORE_NAME_DISPLAY_OVERRIDE = {
+  default: 'Trendy Storeee',
+  'trendy-storeee': 'Trendy Store',
+};
+function displayName(id, configuredName) {
+  return STORE_NAME_DISPLAY_OVERRIDE[id] ?? configuredName;
+}
+
 function parseConfiguredStores() {
   const raw = process.env.EASYORDERS_STORES_JSON;
   if (!raw) return null;
@@ -59,8 +80,8 @@ function parseConfiguredStores() {
 /** Every configured store, safe metadata only (id/name/domain/enabled — NEVER a key/secret value or env var name, which would leak which env var to target). */
 export function listStores() {
   const configured = parseConfiguredStores();
-  if (configured && configured.length) return configured.map(({ id, name, domain, enabled }) => ({ id, name, domain, enabled }));
-  if (process.env.EASYORDERS_API_KEY) return [{ id: DEFAULT_STORE_ID, name: 'المتجر الرئيسي', domain: null, enabled: true }];
+  if (configured && configured.length) return configured.map(({ id, name, domain, enabled }) => ({ id, name: displayName(id, name), domain, enabled }));
+  if (process.env.EASYORDERS_API_KEY) return [{ id: DEFAULT_STORE_ID, name: displayName(DEFAULT_STORE_ID, 'المتجر الرئيسي'), domain: null, enabled: true }];
   return [];
 }
 
@@ -78,7 +99,7 @@ function findStoreRecord(storeId) {
 export function getStore(storeId) {
   const rec = findStoreRecord(storeId);
   if (!rec) return null;
-  return { id: rec.id, name: rec.name, domain: rec.domain, enabled: rec.enabled };
+  return { id: rec.id, name: displayName(rec.id, rec.name), domain: rec.domain, enabled: rec.enabled };
 }
 
 /** The store's real API key, resolved server-side from its own env var. NEVER return this to a route response — callers use it only to call the Easy Orders API directly. Returns null if the store or its key is missing/misconfigured. */
@@ -130,7 +151,7 @@ export function storeConfigDiagnostics() {
     : (process.env.EASYORDERS_API_KEY ? [{ id: DEFAULT_STORE_ID, name: 'المتجر الرئيسي', apiKeyEnv: 'EASYORDERS_API_KEY', webhookSecretEnv: 'EASYORDERS_WEBHOOK_SECRET', enabled: true }] : []);
   return records.map((r) => ({
     id: r.id,
-    name: r.name,
+    name: displayName(r.id, r.name),
     enabled: r.enabled,
     apiKeyEnv: r.apiKeyEnv,
     apiKeyConfigured: !!(process.env[r.apiKeyEnv] && process.env[r.apiKeyEnv].trim()),
