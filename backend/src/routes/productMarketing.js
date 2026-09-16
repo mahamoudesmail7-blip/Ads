@@ -8,7 +8,6 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import * as PM from '../services/amb/productMarketing.js';
 import * as PMT from '../services/amb/productMarketingTests.js';
-import { probeEasyOrdersListEndpoint } from '../services/easyOrders.js'; // TEMPORARY diagnostic — see its own doc comment
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -89,12 +88,6 @@ router.get('/profiles/:id/snapshot', asyncRoute(async (req, res) => {
 }));
 router.post('/profiles/:id/analyze', asyncRoute(async (req, res) => {
   res.json(await PM.computeSnapshot({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
-}));
-
-// ---- TEMPORARY diagnostic — probes for a real bulk orders-list endpoint. ----
-// ---- ADMIN only. To be removed once the question is answered. ----
-router.get('/easy-orders/probe-list-endpoint', requireRole('ADMIN'), asyncRoute(async (req, res) => {
-  res.json(await probeEasyOrdersListEndpoint(req.query.store_id || 'trendy-storeee'));
 }));
 
 // ---- Phase 11 — historical (deleted-from-source) product recovery. ----

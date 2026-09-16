@@ -249,36 +249,15 @@ export async function fetchOrderById(orderId, storeId = null) {
   return res.json();
 }
 
-/**
- * TEMPORARY diagnostic (not a permanent feature) — empirically tests
- * whether EasyOrders' API actually exposes a bulk orders-list endpoint,
- * rather than trusting their docs' completeness (their /products endpoint
- * turned out to support undocumented page/limit params, so the same could
- * be true here). Read-only GET requests only, no side effects on their
- * data. Never returns real order content — only HTTP status + response
- * shape, so no customer PII passes through this diagnostic.
- */
-export async function probeEasyOrdersListEndpoint(storeId) {
-  const apiKey = getStoreApiKey(storeId);
-  if (!apiKey) return { ok: false, error: 'no key resolved for this store' };
-  const candidates = ['/orders', '/orders?page=1&limit=5', '/orders?limit=5', '/orders?filter=status||eq||pending'];
-  const results = [];
-  for (const path of candidates) {
-    try {
-      const res = await fetch(`${EASYORDERS_API_BASE}${path}`, { headers: { 'Api-Key': apiKey } });
-      const text = await res.text();
-      let shape = 'unparseable';
-      try {
-        const json = JSON.parse(text);
-        shape = Array.isArray(json) ? `array[${json.length}]` : (json && typeof json === 'object' ? `object{${Object.keys(json).join(',')}}` : typeof json);
-      } catch { /* keep 'unparseable' */ }
-      results.push({ path, status: res.status, shape, bodyPreview: text.slice(0, 150) });
-    } catch (err) {
-      results.push({ path, error: err.message });
-    }
-  }
-  return { ok: true, results };
-}
+// Empirically confirmed (2026-09-16, live probe against a real store's
+// key): GET /orders, /orders?page=1&limit=5, /orders?limit=5, and
+// /orders?filter=status||eq||pending ALL return 404 — EasyOrders genuinely
+// exposes no bulk orders-list/export endpoint of any kind, unlike
+// /products (which supports undocumented page/limit despite similarly
+// thin docs). This means historical orders that predate a store's webhook
+// being configured are permanently unrecoverable via their API — there is
+// no way to discover past order IDs to fetch individually, and no list to
+// page through. Not a gap in our integration; a real platform limitation.
 
 /** Same as fetchOrderById but by the human-friendly short_id (e.g. 2169 / "#2169") — what a human actually has on hand, unlike the internal UUID. Used by the Lost Orders "add manually" flow. */
 export async function fetchOrderByShortId(shortId) {
