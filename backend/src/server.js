@@ -40,6 +40,7 @@ import adminRoutes from './routes/admin.js';
 import usersRoutes from './routes/users.js';
 import webhookRoutes from './routes/webhooks.js';
 import easyOrdersRoutes from './routes/easyorders.js';
+import easyOrdersImportRoutes from './routes/easyOrdersImport.js';
 import lostOrdersRoutes from './routes/lostOrders.js';
 import customersRoutes from './routes/customers.js'; // Customer Database — search/detail views (see routes/customers.js)
 import adsIntelligenceRoutes from './routes/adsIntelligence.js';
@@ -49,6 +50,7 @@ import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
 import creativeFactoryRoutes from './routes/creativeFactory.js';
 import productMarketingRoutes from './routes/productMarketing.js';
 import aiUsageRoutes from './routes/aiUsage.js';
+import backupStatusRoutes from './routes/backupStatus.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
@@ -92,6 +94,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes); // public — authenticated via the `secret` header EasyOrders sends, not a user session
 app.use('/api/easyorders', easyOrdersRoutes);
+app.use('/api/easyorders/import', easyOrdersImportRoutes);
 app.use('/api/lost-orders', lostOrdersRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
@@ -101,6 +104,7 @@ app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new 
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
 app.use('/api/product-marketing', productMarketingRoutes); // AI Product Marketing Center — "مركز التسويق الذكي للمنتج" (see routes/productMarketing.js)
 app.use('/api/ai-usage', aiUsageRoutes); // AI Gateway admin usage/cost dashboard + health check (see routes/aiUsage.js)
+app.use('/api/backup-status', backupStatusRoutes); // Backup & Recovery status page (informational only, see routes/backupStatus.js)
 app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
 app.use('/api/product-research', productResearchRoutes);
 

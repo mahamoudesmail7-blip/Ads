@@ -82,6 +82,14 @@ function storeCardHtml(s) {
 
       <div class="section-title" style="font-size:14px;margin-top:16px;">🔌 الـ Webhook</div>
       ${webhookSectionHtml(s)}
+
+      <div class="section-title" style="font-size:14px;margin-top:16px;">📥 استيراد أوردرات قديمة من ملف Export</div>
+      <p class="faint" style="font-size:11.5px;">Easy Orders مالهاش API لسحب كل الأوردرات دفعة واحدة — الطريقة الوحيدة للأوردرات القديمة هي تصدّر ملف Excel من لوحة تحكم Easy Orders نفسها (زرار Export) وترفعه هنا. كل صف بيتعامل معاه بالظبط زي أي أوردر حقيقي بييجي من الـ webhook (نفس ربط العميل، نفس التجميعات) — آمن تكرر رفع نفس الملف من غير ما يتكرر أي أوردر.</p>
+      <div class="toolbar">
+        <input type="file" accept=".xlsx" id="importFile-${E(s.id)}" style="max-width:260px;" />
+        <button class="btn small" data-import-store="${E(s.id)}">📥 استورد</button>
+      </div>
+      <div id="importStatus-${E(s.id)}" style="margin-top:8px;"></div>
     </div>`;
 }
 
@@ -92,7 +100,7 @@ function render(body, stores) {
   }
   body.innerHTML = `
     <div class="card" style="margin-bottom:18px;">
-      <p class="faint" style="font-size:12.5px;">هنا بس تقدر تتابع حالة ربط كل متجر — مفيش تغيير في الـ IDs أو المنتجات أو الحملات أو الأوردرات من هنا. لتصحيح أي مفتاح/سر ناقص، لازم تتغيّر في متغيّرات البيئة على Railway مباشرة.</p>
+      <p class="faint" style="font-size:12.5px;">هنا تقدر تتابع حالة ربط كل متجر ومفيش تغيير في الـ IDs أو المنتجات أو الحملات من هنا — الاستثناء الوحيد هو قسم "استيراد أوردرات قديمة" في كل كارت، ده بيكتب أوردرات حقيقية عمدًا. لتصحيح أي مفتاح/سر ناقص، لازم تتغيّر في متغيّرات البيئة على Railway مباشرة.</p>
     </div>
     ${stores.map(storeCardHtml).join('')}`;
 
@@ -106,6 +114,68 @@ function render(body, stores) {
       }
     };
   });
+
+  body.querySelectorAll('[data-import-store]').forEach((btn) => {
+    btn.onclick = () => startImport(btn.dataset.importStore);
+  });
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || ''); // strip the "data:...;base64," prefix
+    reader.onerror = () => reject(reader.error || new Error('تعذّر قراءة الملف.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function startImport(storeId) {
+  const fileInput = $(`importFile-${storeId}`);
+  const statusBox = $(`importStatus-${storeId}`);
+  const file = fileInput?.files?.[0];
+  if (!file) { UI.toast('اختر ملف Excel (.xlsx) الأول.', 'error'); return; }
+
+  statusBox.innerHTML = '<p class="muted">⏳ بنقرأ الملف…</p>';
+  let started;
+  try {
+    const fileBase64 = await fileToBase64(file);
+    started = await api.post('/api/easyorders/import', { storeId, fileBase64 });
+  } catch (e) {
+    statusBox.innerHTML = `<p class="badge red">${E(e.message || 'تعذّر بدء الاستيراد.')}</p>`;
+    return;
+  }
+  if (started.parseSkippedCount) {
+    statusBox.innerHTML = `<p class="muted">📄 ${E(started.totalRows)} أوردر صالح للاستيراد (${E(started.parseSkippedCount)} صف اتجاهل — مفيهوش Order ID). بنستورد…</p>`;
+  } else {
+    statusBox.innerHTML = `<p class="muted">📄 ${E(started.totalRows)} أوردر — بنستورد…</p>`;
+  }
+  pollImportJob(storeId, started.jobId);
+}
+
+async function pollImportJob(storeId, jobId) {
+  const statusBox = $(`importStatus-${storeId}`);
+  let job;
+  try {
+    job = await api.get(`/api/easyorders/import/${jobId}`);
+  } catch (e) {
+    statusBox.innerHTML = `<p class="badge red">${E(e.message)}</p>`;
+    return;
+  }
+  const pct = job.totalRows ? Math.round((job.processed / job.totalRows) * 100) : 0;
+  if (job.status === 'RUNNING') {
+    statusBox.innerHTML = `<p class="muted">⏳ جارِ الاستيراد… ${E(job.processed)}/${E(job.totalRows)} (${pct}%) — ${E(job.imported)} تم، ${E(job.failed)} فشل</p>`;
+    setTimeout(() => pollImportJob(storeId, jobId), 1500);
+    return;
+  }
+  if (job.status === 'FAILED') {
+    statusBox.innerHTML = `<p class="badge red">فشلت العملية بالكامل: ${E(job.fatalError || 'خطأ غير معروف')}</p>`;
+    return;
+  }
+  const errorLines = job.errors?.length
+    ? `<div class="faint" style="font-size:11px;margin-top:6px;">${job.errors.slice(0, 5).map((e) => `Order ${E(e.orderId)}: ${E(e.message)}`).join('<br>')}${job.errors.length > 5 ? `<br>و${job.errors.length - 5} خطأ إضافي…` : ''}</div>`
+    : '';
+  statusBox.innerHTML = `<p class="badge ${job.failed ? 'yellow' : 'green'}">✅ خلص — ${E(job.imported)} أوردر اتستورد بنجاح${job.failed ? `، ${E(job.failed)} فشل` : ''} (من ${E(job.totalRows)})</p>${errorLines}`;
+  load(); // refresh the whole page's real order counts/last-order timestamp now that new data landed
 }
 
 document.addEventListener('DOMContentLoaded', init);
