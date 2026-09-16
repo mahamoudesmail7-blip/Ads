@@ -560,7 +560,13 @@ function renderWorkspace(mount) {
     <div id="pmcTabBody"></div>`;
 
   $('pmcChangeProduct').onclick = () => { state.profile = null; state.eoSelected = null; resetWorkspace(); render(); renderNav(); };
-  mount.querySelectorAll('[data-win]').forEach((b) => { b.onclick = () => { state.windowName = b.dataset.win; state.snapshot = null; renderWorkspace(mount); loadSnapshot(); }; });
+  // renderWorkspace's own trailing check (below) already calls loadSnapshot()
+  // whenever state.snapshot is null — calling it again here used to fire two
+  // concurrent /analyze requests for the same window. Whichever one settled
+  // LAST overwrote the cached snapshot, so a slow AI-timeout retry could
+  // clobber an already-successful result with a failure purely by finishing
+  // later. Let renderWorkspace's own check be the only trigger.
+  mount.querySelectorAll('[data-win]').forEach((b) => { b.onclick = () => { state.windowName = b.dataset.win; state.snapshot = null; renderWorkspace(mount); }; });
   $('pmcRefresh').onclick = () => loadSnapshot(true);
   mount.querySelectorAll('[data-pmc-tab]').forEach((b) => { b.onclick = () => selectPmcTab(b.dataset.pmcTab); });
 
