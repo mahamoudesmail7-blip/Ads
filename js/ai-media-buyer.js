@@ -3450,7 +3450,38 @@ function launchCurrentAssets() {
   return launchState.adAccountId ? launchState.assetsByAccount[launchState.adAccountId] : null;
 }
 
+// Persists the wizard's own configuration fields (never the video File
+// objects — those can't survive a reload anyway; video readiness is always
+// re-pulled fresh from amb_launch_video_assets via syncLaunchVideosFromBackend,
+// per the standing rule that video state is never trusted from frontend
+// memory alone) so a browser refresh mid-wizard never loses the account/
+// budget/pixel/campaign-copy choices the owner already made. Best-effort —
+// a private-browsing tab or blocked storage just means this session behaves
+// as it always did (nothing persisted), never a hard failure.
+const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
+const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'adAccountId', 'adAccountName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
+function saveLaunchSnapshot() {
+  try {
+    const snap = {};
+    for (const k of LAUNCH_PERSISTED_FIELDS) snap[k] = launchState[k];
+    localStorage.setItem(LAUNCH_STORAGE_KEY, JSON.stringify(snap));
+  } catch { /* best-effort only — never blocks the wizard */ }
+}
+function loadLaunchSnapshot() {
+  try {
+    const raw = localStorage.getItem(LAUNCH_STORAGE_KEY);
+    if (!raw) return false;
+    Object.assign(launchState, JSON.parse(raw));
+    return true;
+  } catch { return false; }
+}
+function clearLaunchSnapshot() {
+  try { localStorage.removeItem(LAUNCH_STORAGE_KEY); } catch { /* best-effort */ }
+}
+
+let launchSnapshotLoadAttempted = false;
 async function renderLaunch(panel) {
+  if (!launchSnapshotLoadAttempted) { loadLaunchSnapshot(); launchSnapshotLoadAttempted = true; }
   panel.innerHTML = `<div id="ambLaunchBody"><div class="amb-loading">جارِ التحميل…</div></div>`;
   await renderLaunchStep();
 }
@@ -3469,6 +3500,7 @@ function launchStepper() {
 async function renderLaunchStep() {
   const body = $('ambLaunchBody');
   if (!body) return;
+  saveLaunchSnapshot();
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   try {
     if (launchState.step === 1) return renderLaunchAccount(body);
@@ -3509,7 +3541,11 @@ async function renderLaunchAccount(body) {
   body.innerHTML = `
     ${launchStepper()}
     <div class="amb-panel">
-      <div class="section-title" style="margin-top:0;">اختار الحساب الإعلاني</div>
+      <div class="section-title" style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        <span>اختار الحساب الإعلاني</span>
+        ${launchState.jobId ? `<button class="amb-btn ghost sm" id="ambLaunchStartNew" title="يمسح المسودة المحفوظة محليًا في المتصفح بس — مش هيمسح أي فيديو أو طلب محفوظ على السيرفر">🗑️ بدء طلب جديد</button>` : ''}
+      </div>
+      ${launchState.jobId ? `<div class="faint" style="font-size:11.5px; margin-bottom:10px;">مكمّل طلب سابق — رقم الطلب: <code>${E(launchState.jobId)}</code>${launchState.videos.length ? ` · ${launchState.videos.length} فيديو محفوظ` : ''}</div>` : ''}
       <div class="faint" style="font-size:12px; margin-bottom:12px;">${accts.length} حساب متاح على الاتصال الحالي بـ Meta.</div>
       ${accts.length ? `<div class="amb-radio-list" style="max-height:420px; overflow:auto;">${accts.map((a) => `
         <label class="amb-radio-row ${launchState.adAccountId === a.id ? 'sel' : ''}">
@@ -3520,6 +3556,21 @@ async function renderLaunchAccount(body) {
       ${chosen ? `<div class="faint" style="font-size:12px; margin-top:12px;">العملة: ${E(chosen.currency || '—')} · التوقيت: ${E(chosen.timezoneName || '—')}</div>` : ''}
     </div>
     ${launchNav(0, 'التالي: إعداد الكامبين', !!launchState.adAccountId)}`;
+  const startNew = $('ambLaunchStartNew');
+  if (startNew) startNew.onclick = () => {
+    if (!confirm('هتبدأ طلب رفع كامبين جديد من الصفر — الفيديوهات والإعدادات المحفوظة للطلب الحالي (رقم ' + launchState.jobId + ') هتفضل موجودة على السيرفر، بس مش هتظهر هنا تاني إلا لو رجعت بنفس رقم الطلب. تكمل؟')) return;
+    clearLaunchSnapshot();
+    Object.assign(launchState, {
+      step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null,
+      baseName: 'Cup - Test', budgetMode: 'CBO', cboDailyBudget: '', aboBudgets: [], adSetsPerCampaign: 3, adsPerAdSet: 3,
+      startMode: 'SCHEDULED', startDate: '', startTime: '00:00', platforms: { facebook: true, instagram: true },
+      pageId: null, pageName: null, instagramId: null, instagramUsername: null, pixelId: null, pixelName: null,
+      conversionEvent: 'PURCHASE', perCampaignPixel: false, campaignCount: 1, copyMode: 'SAME',
+      campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
+      savedJob: null, videos: [], videosRestored: false,
+    });
+    renderLaunchStep();
+  };
   body.querySelectorAll('input[name="ambLaunchAcct"]').forEach((r) => {
     r.onchange = () => {
       if (launchState.adAccountId !== r.value) {
@@ -3889,6 +3940,7 @@ async function uploadLaunchVideo(entry) {
       await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/start`, { adAccountId: launchState.adAccountId, adAccountName: launchState.adAccountName });
       launchState.jobStarted = true;
     }
+    saveLaunchSnapshot(); // jobId is now real on the server — persist it immediately so a refresh mid-upload can still find this job's videos
     pollTimer = setInterval(async () => {
       try {
         const p = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/videos/${entry.slotKey}/progress`);
@@ -3916,21 +3968,62 @@ async function uploadLaunchVideo(entry) {
   }
 }
 
+/**
+ * The ONE place that reloads this job's video rows from the backend —
+ * amb_launch_video_assets, scoped to launchState.jobId (never a different/
+ * older job's rows, since the API route itself only ever returns the rows
+ * whose job_id matches the :jobId in the URL). Used by both the videos step
+ * (restore-on-refresh, once) and the Review step (always force-reloads, so
+ * Review can never show stale/placeholder readiness — this was the actual
+ * bug: Review never called this at all and just showed a hardcoded
+ * "not implemented yet" line even after Phase E shipped real uploads).
+ * Merges into launchState.videos by slot_key: an entry that still has its
+ * live File object (this session uploaded it) keeps that reference and
+ * just gets its status/error refreshed from the server; an entry with no
+ * local File (a slot uploaded in an earlier session/tab) is added
+ * read-only with restored:true.
+ */
+async function syncLaunchVideosFromBackend({ force = false } = {}) {
+  if (!launchState.jobId) return { job: null, videos: [] };
+  if (launchState.videosRestored && !force) return { job: null, videos: launchState.videos };
+  let job = null;
+  try {
+    job = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}`);
+    for (const v of job.videos || []) {
+      const existing = launchState.videos.find((x) => x.slotKey === v.slot_key);
+      if (existing) {
+        existing.status = v.status;
+        existing.error = v.error;
+        existing.metaVideoId = v.meta_video_id;
+        if (!existing.duration && v.duration_seconds) existing.duration = v.duration_seconds;
+      } else {
+        launchState.videos.push({ slotKey: v.slot_key, file: null, name: v.original_filename, size: v.size_bytes || 0, duration: v.duration_seconds, thumbnailUrl: null, contentHash: v.content_hash, status: v.status, progress: { sent: v.size_bytes || 0, total: v.size_bytes || 0 }, error: v.error, warning: null, dedupSlot: null, metaVideoId: v.meta_video_id, restored: true });
+      }
+    }
+    launchState.videos.sort((a, b) => launchVideoSortKey(a) - launchVideoSortKey(b));
+    launchState.jobStarted = true;
+  } catch { /* no shell job yet on the server, or a transient network miss — caller keeps whatever it already has in memory */ }
+  launchState.videosRestored = true;
+  return { job, videos: launchState.videos };
+}
+
+/** READY | PROCESSING | FAILED classification for one persisted video row, plus an aggregate summary for the Review checklist. Never trusts frontend-only memory — call sites pass backend-sourced entries (via syncLaunchVideosFromBackend). */
+function launchVideoReadiness(entry) {
+  if (entry.status === 'UPLOADED') return 'READY';
+  if (entry.status === 'FAILED') return 'FAILED';
+  return 'PROCESSING'; // PENDING | VALIDATING | UPLOADING
+}
+function summarizeLaunchVideoReadiness(videos) {
+  const total = videos.length;
+  const ready = videos.filter((v) => launchVideoReadiness(v) === 'READY').length;
+  const failed = videos.filter((v) => launchVideoReadiness(v) === 'FAILED').length;
+  const processing = total - ready - failed;
+  return { total, ready, failed, processing };
+}
+
 async function renderLaunchVideos(body) {
   // Pull back any already-registered slots from a previous session (page refresh) — shown read-only since we no longer hold their original File bytes to retry with.
-  if (launchState.jobId && !launchState.videosRestored) {
-    try {
-      const job = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}`);
-      for (const v of job.videos || []) {
-        if (!launchState.videos.some((x) => x.slotKey === v.slot_key)) {
-          launchState.videos.push({ slotKey: v.slot_key, file: null, name: v.original_filename, size: v.size_bytes || 0, duration: v.duration_seconds, thumbnailUrl: null, contentHash: v.content_hash, status: v.status, progress: { sent: v.size_bytes || 0, total: v.size_bytes || 0 }, error: v.error, warning: null, dedupSlot: null, metaVideoId: v.meta_video_id, restored: true });
-        }
-      }
-      launchState.videos.sort((a, b) => launchVideoSortKey(a) - launchVideoSortKey(b));
-      launchState.jobStarted = true;
-    } catch { /* no shell job yet on the server — nothing to restore */ }
-    launchState.videosRestored = true;
-  }
+  await syncLaunchVideosFromBackend({ force: false });
 
   body.innerHTML = `
     ${launchStepper()}
@@ -4065,6 +4158,23 @@ async function renderLaunchReview(body) {
     ? (Number(launchState.cboDailyBudget) || 0) * launchState.campaigns.length
     : launchState.aboBudgets.reduce((s, a) => s + (Number(a.dailyBudget) || 0), 0) * launchState.campaigns.length;
 
+  // Always reload from amb_launch_video_assets for THIS job_id — never trust
+  // frontend memory alone here (that was the actual bug: this step never
+  // reloaded at all and just showed a permanent placeholder). force:true so
+  // a video that finished processing since Step 5 was last open still shows
+  // up-to-date, and so a browser refresh landing straight on Review still
+  // shows the real persisted state.
+  await syncLaunchVideosFromBackend({ force: true });
+  const videoStats = summarizeLaunchVideoReadiness(launchState.videos);
+  const videoReady = videoStats.total > 0 && videoStats.ready === videoStats.total;
+  const videoLine = videoStats.total === 0
+    ? '🔴 لسه معملتش رفع أي فيديو'
+    : videoStats.failed > 0
+      ? `🔴 ${videoStats.ready}/${videoStats.total} جاهزة — ${videoStats.failed} فشل`
+      : videoReady
+        ? `🟢 ${videoStats.ready}/${videoStats.total} جاهزة`
+        : `🟡 ${videoStats.ready}/${videoStats.total} جاهزة — ${videoStats.processing} لسه بيترفع/يتعالج`;
+
   const checklist = [
     ['الحساب الإعلاني', !!launchState.adAccountId],
     ['Facebook Page', !!launchState.pageId],
@@ -4075,9 +4185,14 @@ async function renderLaunchReview(body) {
     ['الميزانية', launchState.budgetMode === 'CBO' ? egpToMinor(launchState.cboDailyBudget) > 0 : launchState.aboBudgets.every((a) => egpToMinor(a.dailyBudget) > 0)],
     ['الجدولة', launchState.startMode === 'NOW' || !!launchState.startDate],
     ['نصوص وروابط الحملات', launchState.campaigns.every((c) => c.name?.trim() && c.websiteUrl?.trim())],
-    ['الفيديوهات', 'PLACEHOLDER'],
+    ['الفيديوهات', videoLine],
   ];
-  const savable = checklist.filter(([, v]) => v !== 'PLACEHOLDER').every(([, v]) => v);
+  // Draft-saving never required videos (a draft can be saved incrementally
+  // before any upload finishes) — only the non-video fields gate "حفظ
+  // كمسودة". Full readiness (including videos) is the separate allReady
+  // signal below, which is what an eventual Publish step will gate on.
+  const savable = checklist.filter(([label]) => label !== 'الفيديوهات').every(([, v]) => v === true);
+  const allReady = savable && videoReady;
 
   body.innerHTML = `
     ${launchStepper()}
@@ -4101,8 +4216,9 @@ async function renderLaunchReview(body) {
 
       <div class="section-title">قائمة التحقق قبل النشر</div>
       <div class="amb-derived">
-        ${checklist.map(([label, v]) => `<div class="amb-derived-row"><span>${E(label)}</span><b>${v === 'PLACEHOLDER' ? '⏳ غير مفعّل بعد (Phase E)' : (v ? '🟢' : '🔴')}</b></div>`).join('')}
+        ${checklist.map(([label, v]) => `<div class="amb-derived-row"><span>${E(label)}</span><b>${typeof v === 'string' ? E(v) : (v ? '🟢' : '🔴')}</b></div>`).join('')}
       </div>
+      <div class="faint" style="font-size:11.5px; margin-top:8px;">${allReady ? '✅ كل حاجة جاهزة — الطلب مكتمل الإعداد.' : '⏳ لسه في حاجات ناقصة قبل ما يبقى جاهز بالكامل (شوف القائمة فوق).'}</div>
 
       ${launchState.savedJob ? `<div class="amb-batchnote" style="margin-top:14px;"><span>✅ اتحفظت المسودة بنجاح — رقم الطلب: <code>${E(launchState.savedJob.job_id)}</code> — الحالة: DRAFT</span></div>` : ''}
 
