@@ -626,6 +626,28 @@ router.post('/launch/jobs/:jobId/publish-test', requireRole('ADMIN'), asyncRoute
   res.json(await publish.publishSingleTestItem({ jobId: req.params.jobId, campaignIndex: Number.isFinite(Number(campaignIndex)) ? Number(campaignIndex) : 0, videoSlotKey }));
 }));
 
+// Phase G — the real bulk publish queue's explicit start/resume entry
+// point. Re-validates everything server-side before flipping the job to
+// PUBLISHING; does NOT create anything on Meta itself — the durable
+// scheduler tick (launchScheduler.js) picks PUBLISHING jobs up on its own
+// next tick, so this returns immediately. Idempotent: calling it again on
+// an already-PUBLISHING or already-COMPLETE job is a safe no-op, so a
+// double-click or a retried request never starts a second run.
+router.post('/launch/jobs/:jobId/publish', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const publish = await import('../services/amb/launchPublish.js');
+  res.json(await publish.startLaunchQueue({ jobId: req.params.jobId, userId: req.user.id }));
+}));
+
+// Live progress for the queue UI — per-campaign status plus real ad-set/ad
+// counts, computed fresh from amb_launch_object_map on every call (never
+// cached), so a browser refresh always reflects the true persisted state.
+router.get('/launch/jobs/:jobId/queue-status', asyncRoute(async (req, res) => {
+  const publish = await import('../services/amb/launchPublish.js');
+  const progress = await publish.getQueueProgress(req.params.jobId);
+  if (!progress) return res.status(404).json({ error: 'NOT_FOUND', message: 'طلب الرفع غير موجود.' });
+  res.json(progress);
+}));
+
 // ---------------------------------------------------------------------------
 // Settings — ADMIN only for writes.
 // ---------------------------------------------------------------------------

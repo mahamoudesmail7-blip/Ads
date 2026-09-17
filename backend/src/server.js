@@ -57,6 +57,7 @@ import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js
 import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startAmbCloneScheduler } from './services/amb/cloneScheduler.js';
+import { startLaunchScheduler } from './services/amb/launchScheduler.js';
 import { startCreativeFactoryScheduler } from './services/creativeFactory/scheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -148,6 +149,10 @@ startAmbOutcomeScheduler();
 // campaigns at their per-destination scheduled time. No-ops when Meta isn't
 // connected or ambCloneAutoActivate is off.
 startAmbCloneScheduler();
+// Campaign Launch Builder — Phase G bulk-publish queue, 30s tick. Only ever
+// acts on jobs already in PUBLISHING status (set exclusively by an explicit
+// user approval via startLaunchQueue()); every object it creates is PAUSED.
+startLaunchScheduler();
 // AI Creative Factory — 8s tick that drives the image-generation job worker
 // (and resumes jobs after a restart). No-ops when nothing is queued; never
 // calls the image provider unless a job needs it.

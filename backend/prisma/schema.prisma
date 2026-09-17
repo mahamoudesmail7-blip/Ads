@@ -1806,6 +1806,14 @@ model AmbLaunchJob {
   // DRAFT | VALIDATING | READY | PUBLISHING | PARTIAL | COMPLETE | FAILED | CANCELLED
   status               String    @default("DRAFT")
   error                String?
+  // Durable "wait N minutes before the next campaign" gate for the bulk
+  // publish queue (Phase G) — set to now()+5min the instant one campaign
+  // reaches COMPLETE, cleared once the next campaign actually starts. A
+  // plain DB column, not an in-process timer, so it survives a Railway
+  // restart exactly like AmbCampaignSchedule's start_at/end_at do — the
+  // server-side ticker (launchScheduler.js) is the only thing that ever
+  // acts on it.
+  next_campaign_at     DateTime?
   approved_by_id       Int?
   approved_by          User?     @relation("AmbLaunchApprover", fields: [approved_by_id], references: [id], onDelete: SetNull)
   approved_at          DateTime?

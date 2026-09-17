@@ -3421,6 +3421,8 @@ const launchState = {
   jobStarted: false,      // whether POST /launch/jobs/:jobId/start has succeeded — the shell job videos attach to
   videos: [],             // [{ slotKey, file, name, size, duration, thumbnailUrl, contentHash, status, progress:{sent,total}, error, warning, dedupSlot, metaVideoId, restored }]
   videosRestored: false,  // whether we've already pulled any already-registered slots back from a resumed session
+  queueProgress: null,    // last GET /launch/jobs/:jobId/queue-status response — the bulk publish queue's real persisted state (Phase G)
+  queuePoll: null,        // setInterval handle while the queue is PUBLISHING — cleared the moment it isn't, or when leaving Step 8
 };
 
 function launchUUID() {
@@ -4151,6 +4153,59 @@ function applyLaunchCopyField(e, multi) {
 }
 
 // ---- Step 8 · REVIEW (only real action: save draft) ----
+const LAUNCH_CAMPAIGN_STATUS_AR = {
+  PENDING: ['بالانتظار', 'gray'],
+  QUEUED: ['في الطابور', 'gray'],
+  PUBLISHING: ['قيد الإنشاء على Meta…', 'blue'],
+  CAMPAIGN_CREATED: ['الكامبين اتعمل — جاري إنشاء الـ Ad Sets…', 'blue'],
+  ADSETS_CREATED: ['جاري إنشاء الإعلانات…', 'blue'],
+  ADS_CREATED: ['جاري إنشاء الإعلانات…', 'blue'],
+  COMPLETE: ['✅ اكتمل', 'green'],
+  FAILED: ['🔴 فشل', 'red'],
+  CANCELLED: ['أُلغي', 'gray'],
+};
+
+/** Pure render of the queue's real persisted progress — called both on first paint and on every poll tick, never re-fetches video sync or anything else. */
+function launchQueueProgressHtml(progress) {
+  if (!progress) return '';
+  const rows = progress.campaigns.map((c, i) => {
+    const prev = progress.campaigns[i - 1];
+    const waitingOnPrev = c.status === 'PENDING' && prev && !['COMPLETE', 'CANCELLED'].includes(prev.status);
+    const [label, tone] = waitingOnPrev
+      ? (prev.status === 'COMPLETE' ? ['بالانتظار — هيبدأ بعد اكتمال الكامبين السابق + 5 دقايق', 'gray'] : ['بالانتظار — لسه دور الكامبين اللي قبله', 'gray'])
+      : (LAUNCH_CAMPAIGN_STATUS_AR[c.status] || [c.status, 'gray']);
+    const waitNote = c.status === 'PENDING' && i > 0 && prev?.status === 'COMPLETE' && progress.nextCampaignAt && new Date(progress.nextCampaignAt).getTime() > Date.now()
+      ? `<div class="faint" style="font-size:11px;">⏳ هيبدأ الساعة ${new Date(progress.nextCampaignAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</div>` : '';
+    return `<div class="amb-obj-row ${tone === 'green' ? 'ok' : tone === 'red' ? 'bad' : ''}" style="flex-direction:column; align-items:flex-start; gap:2px;">
+      <div style="display:flex; justify-content:space-between; width:100%;">
+        <span><b>كامبين ${i + 1}</b> — ${E(c.name)}</span>
+        <span>${E(label)}</span>
+      </div>
+      <div class="faint" style="font-size:12px;">${c.adSetsCreated}/${c.adSetsTotal} Ad Sets — ${c.adsCreated}/${c.adsTotal} إعلان${c.metaCampaignId ? ` — <code>${E(c.metaCampaignId)}</code>` : ''}</div>
+      ${c.error ? `<div class="bad" style="font-size:11.5px;">${E(c.error)}</div>` : ''}
+      ${waitNote}
+    </div>`;
+  }).join('');
+  return `<div class="section-title" style="margin-top:18px;">حالة النشر الفعلي على Meta</div><div class="amb-derived">${rows}</div>`;
+}
+
+function launchStopQueuePolling() {
+  if (launchState.queuePoll) { clearInterval(launchState.queuePoll); launchState.queuePoll = null; }
+}
+function launchStartQueuePolling() {
+  launchStopQueuePolling();
+  launchState.queuePoll = setInterval(async () => {
+    if (state.tab !== 'launch' || launchState.step !== 8 || !launchState.jobId) { launchStopQueuePolling(); return; }
+    try {
+      const fresh = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/queue-status`);
+      launchState.queueProgress = fresh;
+      const holder = $('ambLaunchQueueProgress');
+      if (holder) holder.innerHTML = launchQueueProgressHtml(fresh);
+      if (fresh.jobStatus !== 'PUBLISHING') { launchStopQueuePolling(); renderLaunchStep(); } // final state (COMPLETE/PARTIAL/FAILED) — re-render once to fix up the button
+    } catch { /* transient — keep polling */ }
+  }, 5000);
+}
+
 async function renderLaunchReview(body) {
   const assets = launchCurrentAssets() || { pages: [], instagram: [], pixels: [] };
   const platformsArr = Object.entries(launchState.platforms).filter(([, v]) => v).map(([k]) => k);
@@ -4194,6 +4249,28 @@ async function renderLaunchReview(body) {
   const savable = checklist.filter(([label]) => label !== 'الفيديوهات').every(([, v]) => v === true);
   const allReady = savable && videoReady;
 
+  // Real persisted queue state, not frontend memory — the same rule the
+  // Review video-readiness fix already established. A cheap single GET;
+  // only becomes an ongoing poll once the queue is actually PUBLISHING.
+  let queueProgress = null;
+  if (launchState.savedJob && launchState.jobId) {
+    try { queueProgress = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/queue-status`); }
+    catch { /* job might not exist yet server-side in some edge case — treat as no queue activity */ }
+  }
+  launchState.queueProgress = queueProgress;
+  const jobStatus = queueProgress?.jobStatus || null;
+  const isPublishing = jobStatus === 'PUBLISHING';
+  const isComplete = jobStatus === 'COMPLETE';
+  const isPartial = jobStatus === 'PARTIAL';
+  const totalAdSets = launchState.campaigns.length * launchState.adSetsPerCampaign;
+  const totalAds = totalAdSets * launchState.adsPerAdSet;
+
+  let publishBtnLabel = '🚀 نشر الحملات';
+  let publishBtnDisabled = !(allReady && launchState.savedJob) || launchState.busy;
+  if (isComplete) { publishBtnLabel = '✅ اكتمل النشر'; publishBtnDisabled = true; }
+  else if (isPublishing) { publishBtnLabel = '⏳ جاري النشر…'; publishBtnDisabled = true; }
+  else if (isPartial) { publishBtnLabel = '🔁 استئناف النشر'; publishBtnDisabled = !allReady || launchState.busy; }
+
   body.innerHTML = `
     ${launchStepper()}
     <div class="amb-panel amb-review">
@@ -4220,18 +4297,20 @@ async function renderLaunchReview(body) {
       </div>
       <div class="faint" style="font-size:11.5px; margin-top:8px;">${allReady ? '✅ كل حاجة جاهزة — الطلب مكتمل الإعداد.' : '⏳ لسه في حاجات ناقصة قبل ما يبقى جاهز بالكامل (شوف القائمة فوق).'}</div>
 
-      ${launchState.savedJob ? `<div class="amb-batchnote" style="margin-top:14px;"><span>✅ اتحفظت المسودة بنجاح — رقم الطلب: <code>${E(launchState.savedJob.job_id)}</code> — الحالة: DRAFT</span></div>` : ''}
+      ${launchState.savedJob && !queueProgress ? `<div class="amb-batchnote" style="margin-top:14px;"><span>✅ اتحفظت المسودة بنجاح — رقم الطلب: <code>${E(launchState.savedJob.job_id)}</code> — الحالة: DRAFT</span></div>` : ''}
+
+      <div id="ambLaunchQueueProgress">${launchQueueProgressHtml(queueProgress)}</div>
 
       <div class="amb-wizard-nav" style="margin-top:18px;">
         <button class="amb-btn ghost" id="ambLaunchBack">رجوع وتعديل</button>
         <div style="display:flex; gap:8px;">
-          <button class="amb-btn primary" id="ambLaunchSaveDraft" ${savable && !launchState.busy ? '' : 'disabled'}>💾 حفظ كمسودة</button>
-          <button class="amb-btn ghost" id="ambLaunchPublish" disabled title="النشر غير متاح بعد — هيتفعّل بعد مرحلة رفع الفيديوهات والكتابة الفعلية على Meta">🚀 نشر الحملات</button>
+          <button class="amb-btn primary" id="ambLaunchSaveDraft" ${savable && !launchState.busy && !jobStatus ? '' : 'disabled'}>💾 حفظ كمسودة</button>
+          <button class="amb-btn ${isComplete ? '' : 'danger'}" id="ambLaunchPublish" ${publishBtnDisabled ? 'disabled' : ''} ${allReady || jobStatus ? '' : 'title="لازم كل عناصر قائمة التحقق تبقى 🟢 الأول"'}>${publishBtnLabel}</button>
         </div>
       </div>
     </div>`;
 
-  $('ambLaunchBack').onclick = () => { launchState.step = 7; renderLaunchStep(); };
+  $('ambLaunchBack').onclick = () => { launchStopQueuePolling(); launchState.step = 7; renderLaunchStep(); };
   $('ambLaunchSaveDraft').onclick = async () => {
     if (!launchState.jobId) launchState.jobId = launchUUID();
     launchState.busy = true; renderLaunchStep();
@@ -4272,6 +4351,35 @@ async function renderLaunchReview(body) {
       launchState.busy = false; renderLaunchStep();
     }
   };
+
+  const publishBtn = $('ambLaunchPublish');
+  if (publishBtn) publishBtn.onclick = async () => {
+    if (!launchState.savedJob || !launchState.jobId) { UI.toast('احفظ المسودة الأول.', 'error'); return; }
+    const resuming = isPartial;
+    const ok = await UI.confirmModal({
+      title: resuming ? 'استئناف النشر' : 'تأكيد نشر الحملات',
+      message: `${resuming ? 'هيتم استئناف النشر من حيث ما وصل، من غير ما يعيد إنشاء أي حاجة اتعملت فعلاً.<br>' : ''}
+        هيتم إنشاء <b>${launchState.campaigns.length}</b> كامبين، <b>${totalAdSets}</b> Ad Set، <b>${totalAds}</b> إعلان — كلها <b>متوقفة (PAUSED)</b> على الحساب الإعلاني الحقيقي (${E(launchState.adAccountName || launchState.adAccountId)}).<br>
+        الميزانية اليومية الإجمالية المُهيّأة: <b>${fmtEGP(exposure)}</b>.<br>
+        ${launchState.campaigns.length > 1 ? 'كل كامبين هيبدأ بعد اكتمال اللي قبله بـ 5 دقايق تلقائيًا — تلقائي بالكامل من السيرفر، مش محتاج متابعة يدوية.<br>' : ''}
+        الكامبينات لن تُفعَّل تلقائيًا — هتفضل PAUSED لحد ما تفعّلها إنت بنفسك من Meta Ads Manager. متابعة؟`,
+      confirmLabel: resuming ? 'استئناف' : 'نشر الآن',
+      danger: true,
+    });
+    if (!ok) return;
+    launchState.busy = true; renderLaunchStep();
+    try {
+      await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/publish`, {});
+      UI.toast(resuming ? '🔁 استؤنف طابور النشر.' : '🚀 بدأ طابور النشر — هتلاقي التقدم الفعلي هنا لحظة بلحظة.');
+      launchStartQueuePolling();
+    } catch (e) {
+      UI.toast(e.message, 'error');
+    } finally {
+      launchState.busy = false; renderLaunchStep();
+    }
+  };
+
+  if (isPublishing) launchStartQueuePolling(); else launchStopQueuePolling();
 }
 
 init();
