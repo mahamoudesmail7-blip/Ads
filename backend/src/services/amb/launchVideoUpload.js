@@ -80,6 +80,25 @@ export async function getMetaVideoStatus(token, videoId) {
 }
 
 /**
+ * A video ad creative requires an explicit thumbnail (confirmed live: Meta
+ * rejects adcreatives creation with "Your ad needs a video thumbnail"
+ * otherwise) — Meta auto-generates several once the video finishes
+ * processing (confirmed live via GET .../{video-id}?fields=picture,
+ * thumbnails), so this just reads that back rather than uploading a new
+ * image. Returns null if the video has no thumbnail yet (still
+ * processing) — the caller must not build a creative in that case.
+ */
+export async function getMetaVideoThumbnailUrl(token, videoId) {
+  try {
+    const res = await fetch(`${GRAPH_BASE}/${videoId}?fields=picture&access_token=${encodeURIComponent(token)}`);
+    const json = await res.json();
+    return json?.picture || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Buffers just enough of an incoming Node Readable stream to serve
  * readExactly(n) calls — never the whole stream. Pauses the source once
  * more than ~16MB is buffered ahead of what's been consumed, so a fast

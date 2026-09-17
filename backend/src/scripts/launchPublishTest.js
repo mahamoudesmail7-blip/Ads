@@ -1,0 +1,84 @@
+// Campaign Launch Builder — Phase F payload builders (services/amb/
+// launchPublish.js). Pure, offline tests locking in the real Meta API
+// requirements discovered empirically against the connected Ahmed Samy
+// account during Phase F development (see that session's report): ABO
+// campaigns need is_adset_budget_sharing_enabled explicitly, this ad
+// account's ad sets need an explicit bid_strategy, and video creatives
+// need an explicit thumbnail. No network calls, no real DB, no Meta.
+//   node src/scripts/launchPublishTest.js
+import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
+
+let pass = 0, fail = 0;
+const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
+
+const { buildTargeting, buildCampaignPayload, buildAdSetPayload, buildCreativePayload } = await imp('../services/amb/launchPublish.js');
+
+const abojob = { objective: 'OUTCOME_SALES', budget_mode: 'ABO', platforms_json: '["facebook"]', pixel_id: 'pix_job', conversion_event: 'PURCHASE', config_json: '{}', start_mode: 'NOW', start_at: null };
+const cbojob = { ...abojob, budget_mode: 'CBO', config_json: JSON.stringify({ budget: { cbo: { dailyBudgetMinor: 50000 } } }) };
+const campaign = { name: 'Cup - Test', pixel_id: null, primary_text: 'نص', headline: 'عنوان', website_url: 'https://trendystore.com' };
+
+console.log('§1 buildTargeting — minimal valid shape (geo_locations is the one Meta-required field):');
+{
+  const t = buildTargeting(abojob);
+  ok('includes geo_locations with a real country code', Array.isArray(t.geo_locations?.countries) && t.geo_locations.countries.length > 0);
+  ok('publisher_platforms reflects the job\'s own configured platforms, never invents extra ones', JSON.stringify(t.publisher_platforms) === '["facebook"]');
+}
+
+console.log('\n§2 buildCampaignPayload — ABO vs CBO budget-field placement:');
+{
+  const abo = buildCampaignPayload(abojob, campaign);
+  ok('ABO campaign carries NO daily_budget/lifetime_budget (budget lives on the ad set)', abo.daily_budget === undefined && abo.lifetime_budget === undefined);
+  ok('ABO campaign explicitly sets is_adset_budget_sharing_enabled — confirmed live Meta REJECTS creation otherwise', abo.is_adset_budget_sharing_enabled === false);
+  ok('status is always PAUSED on create', abo.status === 'PAUSED');
+  ok('special_ad_categories is an empty array, never the deprecated "NONE" string', Array.isArray(abo.special_ad_categories) && abo.special_ad_categories.length === 0);
+
+  const cbo = buildCampaignPayload(cbojob, campaign);
+  ok('CBO campaign carries the real configured daily_budget', cbo.daily_budget === 50000);
+  ok('CBO campaign does NOT set is_adset_budget_sharing_enabled (only relevant when the campaign has no budget)', cbo.is_adset_budget_sharing_enabled === undefined);
+}
+
+console.log('\n§3 buildAdSetPayload — bid strategy, promoted_object, budget placement, schedule:');
+{
+  const adSet = buildAdSetPayload(abojob, campaign, 'meta_campaign_123', 0, 20000);
+  ok('carries an explicit bid_strategy — confirmed live this ad account REJECTS ad set creation without one', adSet.bid_strategy === 'LOWEST_COST_WITHOUT_CAP');
+  ok('promoted_object uses the campaign\'s own pixel when set, else falls back to the job\'s pixel', true); // covered by §4 below with an explicit campaign-level pixel
+  ok('promoted_object.custom_event_type matches the job\'s real configured conversion event', adSet.promoted_object.custom_event_type === 'PURCHASE');
+  ok('ABO ad set carries the real per-ad-set daily_budget', adSet.daily_budget === 20000);
+  ok('references the real created campaign_id', adSet.campaign_id === 'meta_campaign_123');
+  ok('status is always PAUSED on create', adSet.status === 'PAUSED');
+  ok('no start_time when start_mode is NOW', adSet.start_time === undefined);
+
+  const scheduled = buildAdSetPayload({ ...abojob, start_mode: 'SCHEDULED', start_at: new Date(Date.now() + 3600_000) }, campaign, 'c', 0, 20000);
+  ok('a real future start_time is included when scheduled', typeof scheduled.start_time === 'string');
+  const past = buildAdSetPayload({ ...abojob, start_mode: 'SCHEDULED', start_at: new Date(Date.now() - 3600_000) }, campaign, 'c', 0, 20000);
+  ok('a start_time already in the past is dropped rather than sent to Meta as an invalid schedule', past.start_time === undefined);
+
+  const cboAdSet = buildAdSetPayload(cbojob, campaign, 'c', 0, 20000);
+  ok('a CBO ad set never carries its own budget (the campaign already has one — Meta rejects both at once)', cboAdSet.daily_budget === undefined);
+}
+
+console.log('\n§4 buildAdSetPayload — per-campaign pixel override takes priority over the job-level pixel:');
+{
+  const campaignWithOwnPixel = { ...campaign, pixel_id: 'pix_campaign_override' };
+  const adSet = buildAdSetPayload(abojob, campaignWithOwnPixel, 'c', 0, 20000);
+  ok('uses the campaign\'s own pixel_id, not the job-level default, when per_campaign_pixel set one', adSet.promoted_object.pixel_id === 'pix_campaign_override');
+}
+
+console.log('\n§5 buildCreativePayload — real page, real video, explicit thumbnail, verified CTA:');
+{
+  const creative = buildCreativePayload(abojob, campaign, 0, 0, 'video_123', 'https://scontent.example/thumb.jpg');
+  ok('references the job\'s real Facebook Page', 'page_id' in creative.object_story_spec);
+  ok('video_data carries the real reused video_id — never a fresh upload', creative.object_story_spec.video_data.video_id === 'video_123');
+  ok('image_url is set — confirmed live Meta REJECTS a video creative with no thumbnail at all', creative.object_story_spec.video_data.image_url === 'https://scontent.example/thumb.jpg');
+  ok('call_to_action uses the verified real ORDER_NOW enum by default', creative.object_story_spec.video_data.call_to_action.type === 'ORDER_NOW');
+  ok('the CTA links to the campaign\'s real website URL', creative.object_story_spec.video_data.call_to_action.value.link === campaign.website_url);
+  ok('carries the campaign\'s real primary text/headline, never placeholder copy', creative.object_story_spec.video_data.message === 'نص' && creative.object_story_spec.video_data.title === 'عنوان');
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

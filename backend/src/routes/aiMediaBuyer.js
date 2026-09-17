@@ -615,6 +615,17 @@ router.get('/launch/jobs/:jobId/videos/:slotKey/progress', asyncRoute(async (req
   res.json(videoUpload.getUploadProgress(req.params.jobId, req.params.slotKey) || { bytesSent: 0, totalBytes: 0 });
 }));
 
+// Phase F — the FIRST real Meta write. Deliberately narrow: exactly one
+// Campaign -> one Ad Set -> one Creative (reusing an already-uploaded real
+// video) -> one Ad, everything created PAUSED. ADMIN-only, and gated
+// behind explicit owner approval in the UI before this is ever called —
+// this is not part of any automatic flow.
+router.post('/launch/jobs/:jobId/publish-test', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const publish = await import('../services/amb/launchPublish.js');
+  const { campaignIndex, videoSlotKey } = req.body || {};
+  res.json(await publish.publishSingleTestItem({ jobId: req.params.jobId, campaignIndex: Number.isFinite(Number(campaignIndex)) ? Number(campaignIndex) : 0, videoSlotKey }));
+}));
+
 // ---------------------------------------------------------------------------
 // Settings — ADMIN only for writes.
 // ---------------------------------------------------------------------------
