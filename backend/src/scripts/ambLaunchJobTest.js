@@ -194,9 +194,10 @@ console.log('\n§6 Video slots — idempotent registration + duplicate-content d
   try {
     await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaigns: [{ name: `${tag}_c1`, websiteUrl: 'https://trendystore.com' }] }) });
 
-    const { row: v1, duplicateOfSlotKey: dup1 } = await launch.registerVideoSlot({ jobId, slotKey: 'C1', originalFilename: 'cup-black.mp4', contentHash: 'hash-A', sizeBytes: 123 });
+    const { row: v1, duplicateOfSlotKey: dup1 } = await launch.registerVideoSlot({ jobId, slotKey: 'C1', originalFilename: 'cup-black.mp4', contentHash: 'hash-A', sizeBytes: 123, durationSeconds: 12.5 });
     ok('first video slot registered PENDING', v1.status === 'PENDING');
     ok('no duplicate flagged yet (only one file so far)', dup1 === null);
+    ok('client-probed duration is actually persisted (Phase E fix — was silently dropped before)', v1.duration_seconds === 12.5, String(v1.duration_seconds));
 
     const { row: v1again } = await launch.registerVideoSlot({ jobId, slotKey: 'C1', originalFilename: 'cup-black.mp4', contentHash: 'hash-A', sizeBytes: 123 });
     ok('re-registering the same slot_key is idempotent (same row, not a new one)', v1again.id === v1.id);
@@ -237,6 +238,35 @@ console.log('\n§7 Phase C discovery — connection-required guard + input valid
     ok('getLaunchAccountAssets with no adAccountId throws', threw);
   } finally {
     prisma.metaConnection.findUnique = origFindUnique;
+  }
+}
+
+console.log('\n§8 Phase E foundation — startLaunchJob shell + createDraftJob finalizing it later:');
+{
+  const tag = `__test_launchshell_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const shell1 = await launch.startLaunchJob({ jobId, userId: null, adAccountId: 'act_shell', adAccountName: 'Shell Account' });
+    ok('startLaunchJob creates a bare shell in DRAFT with zero campaigns', shell1.status === 'DRAFT' && shell1.ad_account_id === 'act_shell');
+
+    const shell2 = await launch.startLaunchJob({ jobId, userId: null, adAccountId: 'act_DIFFERENT', adAccountName: 'x' });
+    ok('startLaunchJob is idempotent — same jobId returns the SAME shell untouched, even with different input', shell2.id === shell1.id && shell2.ad_account_id === 'act_shell');
+
+    const rowsBeforeFinalize = await prisma.ambLaunchCampaign.count({ where: { job_id: jobId } });
+    ok('shell has zero campaign rows before finalizing', rowsBeforeFinalize === 0);
+
+    const finalized = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ adAccountId: 'act_shell', campaigns: [{ name: `${tag}_final`, websiteUrl: 'https://trendystore.com' }] }) });
+    ok('createDraftJob finalizes the existing shell (same job_id, now has real config)', finalized.job_id === jobId && finalized.pixel_id === 'pix_1');
+    ok('finalizing creates the real campaign row(s)', finalized.campaigns.length === 1 && finalized.campaigns[0].name === `${tag}_final`);
+
+    const again = await launch.createDraftJob({ jobId, userId: null, input: {} });
+    ok('calling createDraftJob again on an already-finalized job is idempotent — returns as-is, never re-validates (would have thrown on empty input otherwise)', again.id === finalized.id);
+    const campaignsAfterSecondCall = await prisma.ambLaunchCampaign.count({ where: { job_id: jobId } });
+    ok('still exactly 1 campaign row — finalizing twice never duplicates', campaignsAfterSecondCall === 1);
+  } finally {
+    await prisma.ambLaunchAudit.deleteMany({ where: { job_id: jobId } });
+    await prisma.ambLaunchCampaign.deleteMany({ where: { job_id: jobId } });
+    await prisma.ambLaunchJob.deleteMany({ where: { job_id: jobId } });
   }
 }
 

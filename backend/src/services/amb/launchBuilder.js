@@ -170,46 +170,50 @@ export function validateLaunchConfig(input) {
 
 /**
  * Idempotent by jobId — a double-click, a refreshed page re-submitting the
- * same wizard state, or a resumed session all land here with the SAME
- * client-generated jobId and get back the exact same job untouched, never a
- * second row. Only a genuinely new jobId creates anything.
+ * SAME final wizard state, or a resumed session all land here with the
+ * SAME client-generated jobId and get back the exact same job untouched,
+ * never a second row or a second validation pass — but ONLY once that job
+ * has actually been finalized (has real campaign rows). A bare shell row
+ * from startLaunchJob() below (created early so video uploads have a real
+ * job to attach to, before the rest of the wizard is filled in) has zero
+ * campaigns yet, so it gets validated and turned into a real job here
+ * exactly once — this is the ONE case where an "existing" row still gets
+ * written to, and it never re-runs for a job that already has campaigns.
  */
 export async function createDraftJob({ jobId, userId, input }) {
   if (!jobId || typeof jobId !== 'string' || !/^[a-z0-9_-]{8,80}$/i.test(jobId)) fail('jobId غير صالح.');
 
   const existing = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId }, include: { campaigns: true } });
-  if (existing) return existing;
+  if (existing && existing.campaigns.length > 0) return existing;
 
   const v = validateLaunchConfig(input);
+  const data = {
+    ad_account_id: v.adAccountId,
+    ad_account_name: v.adAccountName,
+    page_id: v.pageId,
+    page_name: v.pageName,
+    instagram_id: v.instagramId,
+    instagram_username: v.instagramUsername,
+    objective: v.objective,
+    budget_mode: v.budgetMode,
+    pixel_id: v.pixelId,
+    pixel_name: v.pixelName,
+    conversion_event: v.conversionEvent,
+    per_campaign_pixel: v.perCampaignPixel,
+    platforms_json: JSON.stringify(v.platforms),
+    ad_sets_per_campaign: v.adSetsPerCampaign,
+    ads_per_ad_set: v.adsPerAdSet,
+    campaign_count: v.campaignCount,
+    start_mode: v.startMode,
+    start_at: v.startAt,
+    timezone: v.timezone,
+    config_json: JSON.stringify(v.raw),
+  };
 
   return prisma.$transaction(async (tx) => {
-    const job = await tx.ambLaunchJob.create({
-      data: {
-        job_id: jobId,
-        ad_account_id: v.adAccountId,
-        ad_account_name: v.adAccountName,
-        page_id: v.pageId,
-        page_name: v.pageName,
-        instagram_id: v.instagramId,
-        instagram_username: v.instagramUsername,
-        objective: v.objective,
-        budget_mode: v.budgetMode,
-        pixel_id: v.pixelId,
-        pixel_name: v.pixelName,
-        conversion_event: v.conversionEvent,
-        per_campaign_pixel: v.perCampaignPixel,
-        platforms_json: JSON.stringify(v.platforms),
-        ad_sets_per_campaign: v.adSetsPerCampaign,
-        ads_per_ad_set: v.adsPerAdSet,
-        campaign_count: v.campaignCount,
-        start_mode: v.startMode,
-        start_at: v.startAt,
-        timezone: v.timezone,
-        config_json: JSON.stringify(v.raw),
-        status: 'DRAFT',
-        created_by_id: userId || null,
-      },
-    });
+    const job = existing
+      ? await tx.ambLaunchJob.update({ where: { job_id: jobId }, data })
+      : await tx.ambLaunchJob.create({ data: { job_id: jobId, status: 'DRAFT', created_by_id: userId || null, ...data } });
     for (const c of v.campaigns) {
       await tx.ambLaunchCampaign.create({
         data: {
@@ -226,9 +230,34 @@ export async function createDraftJob({ jobId, userId, input }) {
       });
     }
     await tx.ambLaunchAudit.create({
-      data: { job_id: job.job_id, event: 'JOB_CREATED', actor_id: userId || null, detail: `تم إنشاء طلب رفع كامبين بـ ${v.campaignCount} كامبين(ات).` },
+      data: { job_id: job.job_id, event: 'JOB_CREATED', actor_id: userId || null, detail: `تم ${existing ? 'استكمال' : 'إنشاء'} طلب رفع كامبين بـ ${v.campaignCount} كامبين(ات).` },
     });
     return tx.ambLaunchJob.findUnique({ where: { job_id: job.job_id }, include: { campaigns: { orderBy: { index: 'asc' } } } });
+  });
+}
+
+/**
+ * Creates the bare-minimum AmbLaunchJob row so video uploads (Phase E) have
+ * a real job_id to attach to before the rest of the wizard (budget, pixel,
+ * campaigns) is filled in — those still-missing fields are NOT required
+ * here and are only ever validated/written by createDraftJob() above, once
+ * the owner reaches Review. Idempotent by jobId like every other launch
+ * entry point: calling this again for the same jobId (a page reload while
+ * still on the videos step) just returns the existing shell untouched.
+ */
+export async function startLaunchJob({ jobId, userId, adAccountId, adAccountName }) {
+  if (!jobId || typeof jobId !== 'string' || !/^[a-z0-9_-]{8,80}$/i.test(jobId)) fail('jobId غير صالح.');
+  if (!adAccountId || typeof adAccountId !== 'string') fail('لازم تختار حساب إعلاني.');
+
+  const existing = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+  if (existing) return existing;
+
+  return prisma.$transaction(async (tx) => {
+    const job = await tx.ambLaunchJob.create({
+      data: { job_id: jobId, ad_account_id: adAccountId, ad_account_name: adAccountName || null, budget_mode: 'CBO', config_json: '{}', status: 'DRAFT', created_by_id: userId || null },
+    });
+    await tx.ambLaunchAudit.create({ data: { job_id: job.job_id, event: 'JOB_CREATED', actor_id: userId || null, detail: 'بدء طلب رفع كامبين — مسودة أولية لاستضافة الفيديوهات.' } });
+    return job;
   });
 }
 
@@ -308,10 +337,10 @@ export async function markObjectResult({ campaignId, level, localKey, destinatio
  * instead of uploading the identical file twice (spec's own dedup + "upload
  * once, reuse" requirements), without deciding that policy here.
  */
-export async function registerVideoSlot({ jobId, slotKey, originalFilename, contentHash = null, sizeBytes = null, mimeType = null }) {
+export async function registerVideoSlot({ jobId, slotKey, originalFilename, contentHash = null, sizeBytes = null, mimeType = null, durationSeconds = null }) {
   const existing = await prisma.ambLaunchVideoAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: slotKey } } });
   const row = existing || await prisma.ambLaunchVideoAsset.create({
-    data: { job_id: jobId, slot_key: slotKey, original_filename: originalFilename, content_hash: contentHash, size_bytes: sizeBytes, mime_type: mimeType, status: 'PENDING' },
+    data: { job_id: jobId, slot_key: slotKey, original_filename: originalFilename, content_hash: contentHash, size_bytes: sizeBytes, mime_type: mimeType, duration_seconds: durationSeconds, status: 'PENDING' },
   });
   let duplicateOfSlotKey = null;
   if (contentHash) {

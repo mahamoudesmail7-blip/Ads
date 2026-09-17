@@ -522,9 +522,97 @@ router.post('/launch/jobs', requireRole('ADMIN'), asyncRoute(async (req, res) =>
   const job = await launch.createDraftJob({ jobId, userId: req.user.id, input });
   res.status(201).json(job);
 }));
+// Bare-minimum job shell, created as soon as the wizard reaches the videos
+// step, so uploads have a real job_id to attach to before the rest of the
+// wizard (budget/pixel/campaigns) is filled in. The SAME jobId is reused by
+// POST /launch/jobs above once the owner reaches Review — see createDraftJob().
+router.post('/launch/jobs/:jobId/start', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  const { adAccountId, adAccountName } = req.body || {};
+  res.status(201).json(await launch.startLaunchJob({ jobId: req.params.jobId, userId: req.user.id, adAccountId, adAccountName }));
+}));
 router.post('/launch/jobs/:jobId/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   res.json(await launch.cancelJob(req.params.jobId, req.user.id));
+}));
+
+// Phase E — real video upload. Deliberately a raw binary POST (Content-Type
+// is the video's own mime type, never JSON/multipart) so the body reaches
+// this handler as an untouched stream — express.json() above only engages
+// for application/json and leaves every other content-type alone. Metadata
+// travels via headers since there's no form encoding to carry it. Streams
+// straight through to Meta's resumable upload (launchVideoUpload.js) —
+// never buffers the whole file, never lets the access token reach the
+// browser. Response is newline-delimited JSON so the frontend can read
+// live progress as it polls-free-streams; if that ever proves unreliable
+// across browsers, the /progress GET below is the fallback the frontend
+// already polls independently.
+router.post('/launch/jobs/:jobId/videos/:slotKey', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { jobId, slotKey } = req.params;
+  const originalFilename = decodeURIComponent(req.get('X-Filename') || slotKey);
+  const contentHash = req.get('X-Content-Hash') || null;
+  const fileSize = Number(req.get('Content-Length'));
+  const mimeType = req.get('Content-Type') || null;
+  const durationHeader = Number(req.get('X-Duration-Seconds'));
+  const durationSeconds = Number.isFinite(durationHeader) && durationHeader > 0 ? durationHeader : null;
+
+  const launch = await import('../services/amb/launchBuilder.js');
+  const videoUpload = await import('../services/amb/launchVideoUpload.js');
+
+  if (!Number.isFinite(fileSize) || fileSize <= 0) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'حجم الملف غير معروف — أعد المحاولة.' });
+  const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+  if (!job) return res.status(404).json({ error: 'NOT_FOUND', message: 'طلب الرفع غير موجود.' });
+
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
+
+  const { row: videoRow, duplicateOfSlotKey } = await launch.registerVideoSlot({ jobId, slotKey, originalFilename, contentHash, sizeBytes: fileSize, mimeType, durationSeconds });
+
+  // Idempotent short-circuit — already uploaded (e.g. a refreshed page retrying the same slot).
+  if (videoRow.status === 'UPLOADED' && videoRow.meta_video_id) {
+    send({ type: 'done', videoId: videoRow.meta_video_id, reused: true });
+    return res.end();
+  }
+
+  // Same file already uploaded under a different slot in this job — reuse its Meta video_id, never re-upload the identical bytes.
+  if (duplicateOfSlotKey) {
+    const dup = await prisma.ambLaunchVideoAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: duplicateOfSlotKey } } });
+    if (dup?.status === 'UPLOADED' && dup.meta_video_id) {
+      await launch.markVideoResult({ jobId, slotKey, status: 'UPLOADED', metaVideoId: dup.meta_video_id });
+      send({ type: 'done', videoId: dup.meta_video_id, reused: true, dedupedFrom: duplicateOfSlotKey });
+      return res.end();
+    }
+  }
+
+  let token;
+  try {
+    token = await videoUpload.requireLaunchToken();
+  } catch (e) {
+    await launch.markVideoResult({ jobId, slotKey, status: 'FAILED', error: e.message }).catch(() => {});
+    send({ type: 'error', message: e.message });
+    return res.end();
+  }
+
+  await launch.markVideoResult({ jobId, slotKey, status: 'UPLOADING' }).catch(() => {});
+  try {
+    const { videoId } = await videoUpload.streamUploadVideoToMeta({
+      req, adAccountId: job.ad_account_id, fileSize, token, jobId, slotKey,
+    });
+    await launch.markVideoResult({ jobId, slotKey, status: 'UPLOADED', metaVideoId: videoId });
+    send({ type: 'done', videoId });
+  } catch (err) {
+    await launch.markVideoResult({ jobId, slotKey, status: 'FAILED', error: err.metaError?.message || err.message }).catch(() => {});
+    send({ type: 'error', message: err.metaError?.message || err.message });
+  }
+  res.end();
+}));
+
+// Lightweight polling fallback for live progress — the main POST above
+// already streams progress inline, but a proxy or an older browser may
+// buffer that response; this GET reads the same in-memory tracker directly.
+router.get('/launch/jobs/:jobId/videos/:slotKey/progress', asyncRoute(async (req, res) => {
+  const videoUpload = await import('../services/amb/launchVideoUpload.js');
+  res.json(videoUpload.getUploadProgress(req.params.jobId, req.params.slotKey) || { bytesSent: 0, totalBytes: 0 });
 }));
 
 // ---------------------------------------------------------------------------

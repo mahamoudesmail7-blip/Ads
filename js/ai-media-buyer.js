@@ -3418,6 +3418,9 @@ const launchState = {
   campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
   savedJob: null,         // last successful "save draft" response
   busy: false,
+  jobStarted: false,      // whether POST /launch/jobs/:jobId/start has succeeded — the shell job videos attach to
+  videos: [],             // [{ slotKey, file, name, size, duration, thumbnailUrl, contentHash, status, progress:{sent,total}, error, warning, dedupSlot, metaVideoId, restored }]
+  videosRestored: false,  // whether we've already pulled any already-registered slots back from a resumed session
 };
 
 function launchUUID() {
@@ -3520,11 +3523,13 @@ async function renderLaunchAccount(body) {
   body.querySelectorAll('input[name="ambLaunchAcct"]').forEach((r) => {
     r.onchange = () => {
       if (launchState.adAccountId !== r.value) {
+        if (launchState.videos.length && !confirm('تغيير الحساب الإعلاني هيلغي الفيديوهات اللي رفعتها لحد دلوقتي (مرفوعة على حساب مختلف) — تكمل؟')) { renderLaunchStep(); return; }
         launchState.adAccountId = r.value;
         launchState.adAccountName = accts.find((a) => a.id === r.value)?.name || null;
         launchState.pageId = null; launchState.pageName = null;
         launchState.instagramId = null; launchState.instagramUsername = null;
         launchState.pixelId = null; launchState.pixelName = null;
+        if (launchState.videos.length) { launchState.videos = []; launchState.jobId = null; launchState.jobStarted = false; launchState.videosRestored = false; }
       }
       renderLaunchStep();
     };
@@ -3706,18 +3711,252 @@ async function renderLaunchPlatforms(body) {
   });
 }
 
-// ---- Step 5 · VIDEOS (placeholder only — no real upload in Phase D) ----
+// ---- Step 5 · VIDEOS (Phase E — real upload: browser -> this backend, streaming -> Meta resumable upload) ----
+
+// Verified directly against Meta's own Business Help Center (2026-09) — never
+// invented. Format list: "Supported video formats for ads". Size/duration:
+// "Troubleshoot video ad uploads" (4GB max, 15s-240min across placements).
+// Duration ceiling: "Video length specifications across placements" (Feed/
+// Marketplace 241 min is the most permissive of any placement). Min width:
+// same troubleshooting page ("minimum width of 600 pixels").
+const META_VIDEO_EXTENSIONS = ['3g2', '3gp', '3gpp', 'asf', 'avi', 'dat', 'divx', 'dv', 'f4v', 'flv', 'gif', 'm2ts', 'm4v', 'mkv', 'mod', 'mov', 'mp4', 'mpe', 'mpeg', 'mpeg4', 'mpg', 'mts', 'nsv', 'ogm', 'ogv', 'qt', 'tod', 'ts', 'vob', 'wmv'];
+const META_MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
+const META_MIN_DURATION_SEC = 1;
+const META_MAX_DURATION_SEC = 241 * 60;
+const META_MIN_WIDTH = 600;
+const LAUNCH_MAX_VIDEOS = 60;
+
+function naturalCompare(a, b) { return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }); }
+function launchExtOf(filename) { const m = /\.([a-z0-9]+)$/i.exec(filename || ''); return m ? m[1].toLowerCase() : ''; }
+
+/** Loads just enough of the file (metadata + one seeked frame) to get real duration/dimensions and a thumbnail — never reads the full file into JS memory. Rejects (a real corruption signal) if the browser can't decode it at all. */
+function probeLaunchVideo(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement('video');
+    v.preload = 'metadata'; v.muted = true; v.src = url;
+    const done = (fn) => { clearTimeout(timer); URL.revokeObjectURL(url); fn(); };
+    const timer = setTimeout(() => done(() => reject(new Error('timeout'))), 15000);
+    v.onloadedmetadata = () => { try { v.currentTime = Math.min(0.5, (v.duration || 1) / 2); } catch { done(() => resolve({ duration: v.duration, width: v.videoWidth, height: v.videoHeight, thumbnailUrl: null })); } };
+    v.onseeked = () => {
+      let thumbnailUrl = null;
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160; canvas.height = Math.max(1, Math.round(160 * ((v.videoHeight || 120) / (v.videoWidth || 160))));
+        canvas.getContext('2d').drawImage(v, 0, 0, canvas.width, canvas.height);
+        thumbnailUrl = canvas.toDataURL('image/jpeg', 0.6);
+      } catch { /* best-effort only */ }
+      done(() => resolve({ duration: v.duration, width: v.videoWidth, height: v.videoHeight, thumbnailUrl }));
+    };
+    v.onerror = () => done(() => reject(new Error('decode error')));
+  });
+}
+
+async function validateLaunchVideoFile(file) {
+  const ext = launchExtOf(file.name);
+  if (!META_VIDEO_EXTENSIONS.includes(ext)) return { ok: false, reason: `صيغة الملف (.${ext || '?'}) مش من صيغ الفيديو المدعومة من Meta.` };
+  if (!(file.size > 0)) return { ok: false, reason: 'الملف فارغ.' };
+  if (file.size > META_MAX_VIDEO_BYTES) return { ok: false, reason: 'حجم الملف أكبر من حد Meta الأقصى (4 جيجابايت).' };
+  let meta;
+  try { meta = await probeLaunchVideo(file); } catch { return { ok: false, reason: 'تعذّر قراءة الفيديو — الملف قد يكون تالفًا أو صيغته غير مدعومة من المتصفح.' }; }
+  if (!Number.isFinite(meta.duration) || meta.duration <= 0) return { ok: false, reason: 'تعذّر قراءة مدة الفيديو — الملف قد يكون تالفًا.' };
+  if (meta.duration < META_MIN_DURATION_SEC) return { ok: false, reason: 'الفيديو قصير جدًا.' };
+  if (meta.duration > META_MAX_DURATION_SEC) return { ok: false, reason: 'الفيديو أطول من أقصى مدة يقبلها أي موضع إعلاني عند Meta (241 دقيقة).' };
+  const warning = meta.width && meta.width < META_MIN_WIDTH ? `عرض الفيديو (${meta.width}px) أقل من حد Meta الأدنى الموصى به (600px) — ممكن يظهر بجودة رديئة.` : null;
+  return { ok: true, duration: meta.duration, width: meta.width, height: meta.height, thumbnailUrl: meta.thumbnailUrl, warning };
+}
+
+/** A practical dedup fingerprint (first 4MB + total size) — never reads a whole multi-GB file into browser memory just to hash it. */
+async function computeLaunchContentHash(file) {
+  try {
+    const buf = await file.slice(0, 4 * 1024 * 1024).arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex}:${file.size}`;
+  } catch { return null; }
+}
+
+function nextLaunchSlotKeys(count) {
+  const used = new Set(launchState.videos.map((v) => v.slotKey));
+  const keys = [];
+  for (let n = 1; keys.length < count; n++) { const k = `C${n}`; if (!used.has(k)) keys.push(k); }
+  return keys;
+}
+function launchVideoSortKey(v) { return Number(v.slotKey.slice(1)) || 0; }
+
+function updateLaunchProgressSummary() {
+  const el = $('ambLaunchProgressSummary');
+  if (!el) return;
+  const uploaded = launchState.videos.filter((v) => v.status === 'UPLOADED').length;
+  el.textContent = launchState.videos.length ? `${uploaded} / ${launchState.videos.length} تم رفعهم` : '';
+}
+
+function launchVideoStatusBadge(entry) {
+  if (entry.status === 'VALIDATING') return '<span class="badge gray">⏳ جارِ الفحص</span>';
+  if (entry.status === 'FAILED') return `<span class="badge red">❌ ${E(entry.error || 'فشل')}</span>`;
+  if (entry.status === 'PENDING') return '<span class="badge gray">في الانتظار</span>';
+  if (entry.status === 'UPLOADING') { const t = entry.progress?.total || 0; const pct = t ? Math.round((entry.progress.sent / t) * 100) : 0; return `<span class="badge blue">⏳ جارِ الرفع ${pct}%</span>`; }
+  if (entry.status === 'UPLOADED') return '<span class="badge green">✅ جاهز</span>';
+  return '';
+}
+function launchVideoCardHtml(entry) {
+  const total = entry.progress?.total || entry.size || 0;
+  const pct = entry.status === 'UPLOADED' ? 100 : (total ? Math.round((entry.progress.sent / total) * 100) : 0);
+  const showBar = entry.status === 'UPLOADING' || entry.status === 'UPLOADED';
+  return `
+  <div class="amb-panel" id="ambLaunchVid-${E(entry.slotKey)}" style="display:flex; gap:12px; align-items:center; padding:10px 12px; margin-bottom:8px;">
+    <div style="width:64px; height:48px; border-radius:8px; overflow:hidden; background:var(--amb-surface-2); flex:0 0 auto; display:flex; align-items:center; justify-content:center; font-size:20px;">
+      ${entry.thumbnailUrl ? `<img src="${entry.thumbnailUrl}" style="width:100%; height:100%; object-fit:cover;" />` : '🎬'}
+    </div>
+    <div style="flex:1; min-width:0;">
+      <div style="display:flex; gap:8px; align-items:baseline;"><b>${E(entry.slotKey)}</b><span class="faint" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${E(entry.name)}</span></div>
+      <div class="faint" style="font-size:11px;">${Number.isFinite(entry.duration) ? fmtNum(entry.duration, 1) + ' ث' : '—'} · ${((entry.size || 0) / 1024 / 1024).toFixed(1)} MB${entry.dedupSlot ? ` · 🔁 نفس فيديو ${E(entry.dedupSlot)}` : ''}${entry.warning ? ` · ⚠️ ${E(entry.warning)}` : ''}${entry.restored ? ' · (من جلسة سابقة)' : ''}</div>
+      ${showBar ? `<div style="height:5px; background:var(--amb-border); border-radius:3px; margin-top:5px; overflow:hidden;"><div style="height:100%; width:${pct}%; background:var(--amb-blue);"></div></div>` : ''}
+    </div>
+    <div>${launchVideoStatusBadge(entry)}</div>
+    <div style="display:flex; gap:4px;">
+      ${entry.status === 'FAILED' && entry.file ? `<button class="amb-btn ghost sm" data-vid-retry="${E(entry.slotKey)}">إعادة المحاولة</button>` : ''}
+      ${entry.status !== 'UPLOADING' ? `<button class="amb-btn ghost sm" data-vid-remove="${E(entry.slotKey)}">✕</button>` : ''}
+    </div>
+  </div>`;
+}
+function wireLaunchVideoCard(entry) {
+  const el = $(`ambLaunchVid-${entry.slotKey}`);
+  if (!el) return;
+  const retry = el.querySelector('[data-vid-retry]');
+  if (retry) retry.onclick = () => { entry.status = 'PENDING'; entry.error = null; renderLaunchVideoCard(entry); processLaunchUploadQueue(); };
+  const remove = el.querySelector('[data-vid-remove]');
+  if (remove) remove.onclick = () => { launchState.videos = launchState.videos.filter((v) => v.slotKey !== entry.slotKey); renderLaunchStep(); };
+}
+/** Updates just ONE card's DOM in place — keeps 60-video lists smooth under frequent progress polling instead of re-rendering the whole list. */
+function renderLaunchVideoCard(entry) {
+  const el = $(`ambLaunchVid-${entry.slotKey}`);
+  if (!el) { renderLaunchStep(); return; }
+  el.outerHTML = launchVideoCardHtml(entry);
+  wireLaunchVideoCard(entry);
+  updateLaunchProgressSummary();
+}
+
+async function addLaunchVideoFiles(fileList) {
+  const incoming = [...fileList].sort((a, b) => naturalCompare(a.name, b.name));
+  const room = LAUNCH_MAX_VIDEOS - launchState.videos.length;
+  if (room <= 0) { UI.toast(`وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS} فيديو).`, 'error'); return; }
+  const toAdd = incoming.slice(0, room);
+  if (incoming.length > toAdd.length) UI.toast(`اتضاف ${toAdd.length} بس من ${incoming.length} — وصلت للحد الأقصى ${LAUNCH_MAX_VIDEOS} فيديو.`, 'error');
+  const slotKeys = nextLaunchSlotKeys(toAdd.length);
+  const added = toAdd.map((file, i) => ({ slotKey: slotKeys[i], file, name: file.name, size: file.size, duration: null, thumbnailUrl: null, contentHash: null, status: 'VALIDATING', progress: { sent: 0, total: file.size }, error: null, warning: null, dedupSlot: null, metaVideoId: null }));
+  launchState.videos.push(...added);
+  launchState.videos.sort((a, b) => launchVideoSortKey(a) - launchVideoSortKey(b));
+  renderLaunchStep();
+
+  for (const entry of added) {
+    const [validation, hash] = await Promise.all([validateLaunchVideoFile(entry.file), computeLaunchContentHash(entry.file)]);
+    entry.contentHash = hash;
+    if (!validation.ok) {
+      entry.status = 'FAILED'; entry.error = validation.reason;
+    } else {
+      entry.duration = validation.duration; entry.thumbnailUrl = validation.thumbnailUrl; entry.warning = validation.warning || null;
+      const dup = launchState.videos.find((v) => v !== entry && v.contentHash === hash && v.status !== 'FAILED');
+      if (dup) entry.dedupSlot = dup.slotKey;
+      entry.status = 'PENDING';
+    }
+    renderLaunchVideoCard(entry);
+  }
+  processLaunchUploadQueue();
+}
+
+let launchUploadQueueRunning = false;
+async function processLaunchUploadQueue() {
+  if (launchUploadQueueRunning) return;
+  launchUploadQueueRunning = true;
+  try {
+    let next;
+    while ((next = launchState.videos.find((v) => v.status === 'PENDING'))) {
+      await uploadLaunchVideo(next);
+    }
+  } finally {
+    launchUploadQueueRunning = false;
+  }
+}
+
+async function uploadLaunchVideo(entry) {
+  entry.status = 'UPLOADING'; entry.error = null; entry.progress = { sent: 0, total: entry.size };
+  renderLaunchVideoCard(entry);
+  let pollTimer = null;
+  try {
+    if (!launchState.jobId) launchState.jobId = launchUUID();
+    if (!launchState.jobStarted) {
+      await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/start`, { adAccountId: launchState.adAccountId, adAccountName: launchState.adAccountName });
+      launchState.jobStarted = true;
+    }
+    pollTimer = setInterval(async () => {
+      try {
+        const p = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/videos/${entry.slotKey}/progress`);
+        if (p.totalBytes) { entry.progress = { sent: p.bytesSent, total: p.totalBytes }; renderLaunchVideoCard(entry); }
+      } catch { /* transient poll miss — the main request below is still authoritative */ }
+    }, 700);
+
+    const res = await fetch(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/videos/${entry.slotKey}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': entry.file.type || 'application/octet-stream', 'X-Filename': encodeURIComponent(entry.file.name), 'X-Content-Hash': entry.contentHash || '', 'X-Duration-Seconds': Number.isFinite(entry.duration) ? String(entry.duration) : '' },
+      body: entry.file,
+    });
+    const text = await res.text();
+    const lines = text.trim().split('\n').filter(Boolean);
+    let last = null;
+    for (const line of lines) { try { last = JSON.parse(line); } catch { /* ignore a malformed line, keep the last valid one */ } }
+    if (!res.ok || !last || last.type === 'error') throw new Error(last?.message || `فشل رفع الفيديو (HTTP ${res.status}).`);
+    entry.status = 'UPLOADED'; entry.metaVideoId = last.videoId; entry.progress = { sent: entry.size, total: entry.size };
+  } catch (e) {
+    entry.status = 'FAILED'; entry.error = e.message;
+  } finally {
+    if (pollTimer) clearInterval(pollTimer);
+    renderLaunchVideoCard(entry);
+  }
+}
+
 async function renderLaunchVideos(body) {
+  // Pull back any already-registered slots from a previous session (page refresh) — shown read-only since we no longer hold their original File bytes to retry with.
+  if (launchState.jobId && !launchState.videosRestored) {
+    try {
+      const job = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}`);
+      for (const v of job.videos || []) {
+        if (!launchState.videos.some((x) => x.slotKey === v.slot_key)) {
+          launchState.videos.push({ slotKey: v.slot_key, file: null, name: v.original_filename, size: v.size_bytes || 0, duration: v.duration_seconds, thumbnailUrl: null, contentHash: v.content_hash, status: v.status, progress: { sent: v.size_bytes || 0, total: v.size_bytes || 0 }, error: v.error, warning: null, dedupSlot: null, metaVideoId: v.meta_video_id, restored: true });
+        }
+      }
+      launchState.videos.sort((a, b) => launchVideoSortKey(a) - launchVideoSortKey(b));
+      launchState.jobStarted = true;
+    } catch { /* no shell job yet on the server — nothing to restore */ }
+    launchState.videosRestored = true;
+  }
+
   body.innerHTML = `
     ${launchStepper()}
     <div class="amb-panel">
       <div class="section-title" style="margin-top:0;">رفع الفيديوهات</div>
-      <div class="amb-empty" style="border:2px dashed var(--amb-border); border-radius:12px; padding:36px 10px;">
-        📤 اسحب وأسقط الفيديوهات هنا (حتى 60 فيديو)
-        <div class="faint" style="font-size:11.5px; margin-top:8px;">⏳ الرفع الفعلي للفيديوهات على Meta هيتفعّل في مرحلة قادمة (Phase E) — الخطوة دي شكل توضيحي بس دلوقتي، ومش هتمنعك من حفظ باقي إعدادات الكامبين كمسودة.</div>
+      <div id="ambLaunchDrop" class="amb-empty" style="border:2px dashed var(--amb-border); border-radius:12px; padding:28px 10px; cursor:pointer;">
+        📤 اسحب وأسقط الفيديوهات هنا أو اضغط للاختيار (حتى ${LAUNCH_MAX_VIDEOS} فيديو)
+        <div class="faint" style="font-size:11px; margin-top:6px;">الصيغ المدعومة من Meta: MP4, MOV, AVI, WMV, FLV, GIF وغيرها — حتى 4 جيجابايت لكل فيديو، مدة حتى 241 دقيقة.</div>
       </div>
+      <input type="file" id="ambLaunchFileInput" accept="video/*,.3g2,.3gp,.3gpp,.asf,.avi,.dat,.divx,.dv,.f4v,.flv,.gif,.m2ts,.m4v,.mkv,.mod,.mov,.mpe,.mpeg,.mpg,.mts,.nsv,.ogm,.ogv,.qt,.tod,.ts,.vob,.wmv" multiple style="display:none;" />
+      <div id="ambLaunchProgressSummary" class="faint" style="font-size:12px; margin:12px 0;"></div>
+      <div id="ambLaunchVideoList">${launchState.videos.map(launchVideoCardHtml).join('')}</div>
     </div>
     ${launchNav(4, 'التالي: عدد الكامبينات', true)}`;
+
+  const drop = $('ambLaunchDrop');
+  const input = $('ambLaunchFileInput');
+  drop.onclick = () => input.click();
+  input.onchange = (e) => { addLaunchVideoFiles(e.target.files); input.value = ''; };
+  drop.ondragover = (e) => { e.preventDefault(); drop.style.borderColor = 'var(--amb-blue)'; };
+  drop.ondragleave = () => { drop.style.borderColor = ''; };
+  drop.ondrop = (e) => { e.preventDefault(); drop.style.borderColor = ''; if (e.dataTransfer?.files?.length) addLaunchVideoFiles(e.dataTransfer.files); };
+  for (const v of launchState.videos) wireLaunchVideoCard(v);
+  updateLaunchProgressSummary();
+  processLaunchUploadQueue();
+
   wireLaunchNav(4, () => { launchState.step = 6; renderLaunchStep(); });
 }
 
