@@ -219,5 +219,26 @@ console.log('\n§6 Video slots — idempotent registration + duplicate-content d
   }
 }
 
+console.log('\n§7 Phase C discovery — connection-required guard + input validation (offline, no real Meta call reached):');
+{
+  const origFindUnique = prisma.metaConnection.findUnique;
+  prisma.metaConnection.findUnique = async () => null; // simulate DISCONNECTED
+  try {
+    let threw = false;
+    try { await launch.discoverLaunchAdAccounts(); } catch (e) { threw = true; ok('discoverLaunchAdAccounts refuses when not connected, in Arabic, before touching Meta', /اربط حساب/.test(e.message), e.message); }
+    ok('discoverLaunchAdAccounts throws when disconnected', threw);
+
+    threw = false;
+    try { await launch.getLaunchAccountAssets('act_123'); } catch (e) { threw = true; ok('getLaunchAccountAssets refuses when not connected', /اربط حساب/.test(e.message)); }
+    ok('getLaunchAccountAssets throws when disconnected', threw);
+
+    threw = false;
+    try { await launch.getLaunchAccountAssets(); } catch (e) { threw = true; ok('missing adAccountId rejected before even checking the connection', /adAccountId/.test(e.message)); }
+    ok('getLaunchAccountAssets with no adAccountId throws', threw);
+  } finally {
+    prisma.metaConnection.findUnique = origFindUnique;
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

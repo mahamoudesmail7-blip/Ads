@@ -492,6 +492,20 @@ router.post('/media-library/assets/:id/scaling-plan', requireRole('ADMIN'), asyn
 // that creates/cancels a job is ADMIN-only, matching the tiering used by
 // /clone/batches and /scale/execute above.
 // ---------------------------------------------------------------------------
+// Phase C — read-only Meta discovery for the wizard. Reuses the exact same
+// metaGraphClient.js helpers /clone/accounts and /clone/identities already
+// call, through the same metaAuth.js connection. No write of any kind.
+router.get('/launch/discovery/ad-accounts', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json(await launch.discoverLaunchAdAccounts());
+}));
+router.get('/launch/discovery/account-assets', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  const adAccountId = String(req.query.adAccountId || '');
+  if (!adAccountId) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'adAccountId مطلوب.' });
+  res.json(await launch.getLaunchAccountAssets(adAccountId));
+}));
+
 router.get('/launch/jobs', asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   res.json({ jobs: await launch.listJobs({ limit: req.query.limit, cursor: req.query.cursor }) });

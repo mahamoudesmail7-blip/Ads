@@ -1,15 +1,23 @@
-// Campaign Launch Builder ("رفع الكامبين") — Phase B service skeleton.
+// Campaign Launch Builder ("رفع الكامبين") — Phase B (job/state persistence)
+// + Phase C (read-only Meta asset discovery for the wizard).
 //
-// This file owns the launch-job state machine, idempotent job/campaign
-// creation, and the per-object idempotency map that a LATER phase's real
-// Meta-writing code will build on. NOTHING in this file calls Meta's Graph
-// API — every function here is pure validation/state-transition logic or a
-// plain Prisma read/write against the amb_launch_* tables added in this
-// same phase's migration. Deliberately separate from cloneEngine.js's
-// amb_clone_* tables (a launch job creates brand-new campaigns; a clone job
-// copies an existing one) — see schema.prisma's header comment on
-// AmbLaunchJob for the full rationale.
+// Phase B: the launch-job state machine, idempotent job/campaign creation,
+// and the per-object idempotency map a LATER write-capable phase builds on
+// — pure validation/state-transition logic or plain Prisma reads/writes
+// against the amb_launch_* tables, zero Meta calls. Deliberately separate
+// from cloneEngine.js's amb_clone_* tables (a launch job creates brand-new
+// campaigns; a clone job copies an existing one) — see schema.prisma's
+// header comment on AmbLaunchJob for the full rationale.
+//
+// Phase C (discoverLaunchAdAccounts / getLaunchAccountAssets below): the
+// ONLY Meta calls in this file, and they are 100% read-only GETs reusing
+// the EXISTING metaGraphClient.js helpers (the same ones Clone & Schedule's
+// /clone/accounts and /clone/identities routes already call) through the
+// SAME metaAuth.js connection — no second Meta integration, no new OAuth
+// flow, no write endpoint of any kind.
 import { prisma } from '../../prisma.js';
+import { getConnection, getDecryptedToken } from '../metaAuth.js';
+import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone } from '../metaGraphClient.js';
 
 export const JOB_STATUSES = ['DRAFT', 'VALIDATING', 'READY', 'PUBLISHING', 'PARTIAL', 'COMPLETE', 'FAILED', 'CANCELLED'];
 export const CAMPAIGN_STATUSES = ['PENDING', 'QUEUED', 'PUBLISHING', 'CAMPAIGN_CREATED', 'ADSETS_CREATED', 'ADS_CREATED', 'COMPLETE', 'FAILED', 'CANCELLED'];
@@ -319,4 +327,60 @@ export async function markVideoResult({ jobId, slotKey, status, metaVideoId = nu
     where: { job_id_slot_key: { job_id: jobId, slot_key: slotKey } },
     data: { status, meta_video_id: metaVideoId, error },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase C — read-only Meta asset discovery for the wizard. Every function
+// below only ever GETs from Meta; none of them create/update/delete
+// anything on Meta or in our own DB.
+// ---------------------------------------------------------------------------
+
+/** Same connection-required guard as cloneEngine.js's private helper — kept local rather than imported so this file never depends on cloneEngine.js's internals. */
+async function requireConnectedToken() {
+  const connection = await getConnection();
+  if (!connection || connection.status !== 'CONNECTED') { const e = new Error('اربط حساب Meta Ads الأول.'); e.status = 400; throw e; }
+  return { connection, token: await getDecryptedToken() };
+}
+
+/**
+ * Every real Meta ad account this connection is authorized to manage —
+ * "Ahmed Samy / Account 2 / Account 3" in the wizard's step 1. Reuses the
+ * exact same getAllAccessibleAdAccounts() helper Clone & Schedule's
+ * /clone/accounts already calls — already returns id, name, currency,
+ * account status, and timezone per account, so this step alone covers the
+ * wizard's account/currency/timezone requirements with zero new Graph
+ * calls invented.
+ */
+export async function discoverLaunchAdAccounts() {
+  const { connection, token } = await requireConnectedToken();
+  const accounts = await getAllAccessibleAdAccounts(token);
+  return { accounts, selectedAdAccountId: connection.selected_ad_account_id || null };
+}
+
+/**
+ * Everything the wizard's "Platforms, Page & Pixel" step needs for ONE
+ * selected ad account, in a single call: real Facebook Pages + Instagram
+ * identities (with per-item source/verified provenance, and account-level
+ * pagesVerified/instagramReadable status flags — the "relevant account/page
+ * status and permissions" the wizard needs to show), plus the account's own
+ * status/currency/timezone and its real Pixels/Datasets. Composed entirely
+ * from getAccountIdentities() and getAccountAssetsForClone() — the same
+ * calls the Clone & Schedule feature already makes for the same purpose —
+ * never a new Graph API surface.
+ */
+export async function getLaunchAccountAssets(adAccountId) {
+  if (!adAccountId || typeof adAccountId !== 'string') fail('adAccountId مطلوب.');
+  const { token } = await requireConnectedToken();
+  const [identities, assets] = await Promise.all([
+    getAccountIdentities(token, adAccountId),
+    getAccountAssetsForClone(token, adAccountId),
+  ]);
+  return {
+    account: assets.account, // { id, name, status, timezoneName, currency }
+    pages: identities.pages, // [{ id, name, source, verified }]
+    instagram: identities.instagram, // [{ id, username }]
+    pixels: assets.pixels, // [{ id, name }]
+    pagesVerified: identities.pagesVerified,
+    instagramReadable: identities.instagramReadable,
+  };
 }
