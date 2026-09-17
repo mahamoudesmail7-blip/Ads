@@ -484,6 +484,36 @@ router.post('/media-library/assets/:id/scaling-plan', requireRole('ADMIN'), asyn
 }));
 
 // ---------------------------------------------------------------------------
+// Campaign Launch Builder ("رفع الكامبين") — Phase B: job/state persistence
+// only, zero Meta writes. Creates BRAND NEW campaigns from scratch (unlike
+// /clone/* above, which copies an existing one) — see launchBuilder.js and
+// schema.prisma's AmbLaunchJob comment for the full rationale. Reads are
+// ADMIN|MANAGER (the router-level gate above already covers this); anything
+// that creates/cancels a job is ADMIN-only, matching the tiering used by
+// /clone/batches and /scale/execute above.
+// ---------------------------------------------------------------------------
+router.get('/launch/jobs', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json({ jobs: await launch.listJobs({ limit: req.query.limit, cursor: req.query.cursor }) });
+}));
+router.get('/launch/jobs/:jobId', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  const job = await launch.getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'طلب الرفع غير موجود.' });
+  res.json(job);
+}));
+router.post('/launch/jobs', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  const { jobId, ...input } = req.body || {};
+  const job = await launch.createDraftJob({ jobId, userId: req.user.id, input });
+  res.status(201).json(job);
+}));
+router.post('/launch/jobs/:jobId/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json(await launch.cancelJob(req.params.jobId, req.user.id));
+}));
+
+// ---------------------------------------------------------------------------
 // Settings — ADMIN only for writes.
 // ---------------------------------------------------------------------------
 router.get('/settings', asyncRoute(async (req, res) => res.json({ settings: await getAmbSettings(), defaults: AMB_DEFAULT_SETTINGS })));

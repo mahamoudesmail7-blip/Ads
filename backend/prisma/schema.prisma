@@ -59,6 +59,12 @@ model User {
   amb_clone_audit_entries        AmbCloneAudit[]              @relation("AmbCloneAuditActor")
   media_scalings_created         MediaLibraryScaling[]        @relation("MediaScalingCreator")
   amb_scale_decisions_reviewed   AmbScaleDecision[]
+  // AI Media Buyer — Campaign Launch Builder. Separate from Clone & Schedule
+  // (amb_clone_*) above — a launch job creates BRAND NEW campaigns from
+  // scratch, a clone job copies an existing one. Additive back-relations only.
+  amb_launch_jobs_created        AmbLaunchJob[]                @relation("AmbLaunchCreator")
+  amb_launch_jobs_approved       AmbLaunchJob[]                @relation("AmbLaunchApprover")
+  amb_launch_audit_entries       AmbLaunchAudit[]              @relation("AmbLaunchAuditActor")
   // AI Creative Factory — additive back-relations only (no column change on `users`).
   cf_products_created            CfProduct[]                  @relation("CfProductCreator")
   cf_projects_created            CfProject[]                  @relation("CfProjectCreator")
@@ -1726,6 +1732,193 @@ model AmbCloneAudit {
   @@index([batch_id])
   @@index([created_at])
   @@map("amb_clone_audit")
+}
+
+// ============================================================================
+// AI Media Buyer — CAMPAIGN LAUNCH BUILDER ("رفع الكامبين"). Creates BRAND
+// NEW Meta campaigns/ad sets/ads/creatives from a wizard the owner fills in
+// (ad account, objective, CBO/ABO budget, pixel/conversion event, videos,
+// copy, schedule) — deliberately separate from the AmbClone* tables above,
+// which only ever COPY an existing campaign's own fields. Modeled on the
+// exact same durable/idempotent/resumable shape as AmbCloneBatch/Job/
+// ObjectMap/Audit (proven safe in production for real Meta writes), but
+// never shares a table with it, per explicit instruction to keep the two
+// features' jobs separate.
+//
+// Every entity here is created PAUSED on Meta and only ever activated after
+// explicit owner approval (never on create) — see cloneEngine.js's identical
+// rule. Nothing in Phase B (this schema + the service skeleton) makes any
+// real Meta write; that begins in a later phase, gated on this session's own
+// explicit approval before each write-capable phase starts.
+//
+//   AmbLaunchJob        — one wizard submission (one or more campaigns to
+//                         create), keyed by a client-generated job_id UUID
+//                         (the idempotency key for double-click/refresh/
+//                         resume — same role as AmbCloneBatch.batch_id).
+//   AmbLaunchCampaign   — one row per campaign this job will create — the
+//                         resumable unit, same role as AmbCloneJob.
+//   AmbLaunchObjectMap  — per (campaign, level, local_key) Meta id map for
+//                         AD_SET/AD/CREATIVE, unique so a retry/resume can
+//                         never recreate an object already made. `local_key`
+//                         is a deterministic plan position (e.g. "adset:0",
+//                         "ad:0:2"), not a Meta id, since these objects don't
+//                         exist yet when the plan is first built.
+//   AmbLaunchVideoAsset — one row per uploaded video, scoped to the JOB (not
+//                         a campaign) since one uploaded video is reused by
+//                         Meta video_id across every campaign/ad in the same
+//                         launch — never re-uploaded per campaign.
+//   AmbLaunchAudit      — append-only event log, same convention as
+//                         AmbCloneAudit. Never stores a Meta access token.
+// ============================================================================
+
+model AmbLaunchJob {
+  id                   Int       @id @default(autoincrement())
+  job_id               String    @unique // client-generated UUID — idempotency key for the whole wizard submission
+  ad_account_id        String
+  ad_account_name      String?
+  page_id              String?
+  page_name            String?
+  instagram_id         String?
+  instagram_username   String?
+  objective            String    @default("OUTCOME_SALES")
+  budget_mode          String // CBO | ABO
+  // Selected Meta Pixel/Dataset — the DEFAULT for every campaign in this job
+  // unless per_campaign_pixel is true, in which case each AmbLaunchCampaign
+  // carries its own override. Never trusted from the frontend as-is at
+  // publish time — re-verified server-side against the ad account (see
+  // launchValidation.js, added in the phase that actually publishes).
+  pixel_id             String?
+  pixel_name           String?
+  conversion_event     String    @default("PURCHASE") // PURCHASE | INITIATED_CHECKOUT | ADD_TO_CART | CONTENT_VIEW — verified real Meta custom_event_type values, never invented
+  per_campaign_pixel   Boolean   @default(false)
+  platforms_json       String    @default("[\"facebook\",\"instagram\"]")
+  ad_sets_per_campaign Int       @default(1)
+  ads_per_ad_set       Int       @default(1)
+  campaign_count       Int       @default(1)
+  start_mode           String    @default("SCHEDULED") // NOW | SCHEDULED
+  start_at             DateTime? // UTC instant, resolved from timezone at wizard time
+  timezone             String    @default("Africa/Cairo")
+  // Full validated wizard snapshot not otherwise broken into a typed column
+  // above: budget amounts (CBO daily/lifetime, or per-ad-set ABO amounts),
+  // CTA, website URLs, video-to-adset/ad slot assignment plan. Never a Meta
+  // access token. Shape is checked by launchJobService.js, not by the DB.
+  config_json          String
+  // DRAFT | VALIDATING | READY | PUBLISHING | PARTIAL | COMPLETE | FAILED | CANCELLED
+  status               String    @default("DRAFT")
+  error                String?
+  approved_by_id       Int?
+  approved_by          User?     @relation("AmbLaunchApprover", fields: [approved_by_id], references: [id], onDelete: SetNull)
+  approved_at          DateTime?
+  created_by_id        Int?
+  created_by           User?     @relation("AmbLaunchCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  campaigns AmbLaunchCampaign[]
+  videos    AmbLaunchVideoAsset[]
+  audits    AmbLaunchAudit[]
+
+  @@index([status])
+  @@index([ad_account_id])
+  @@map("amb_launch_jobs")
+}
+
+model AmbLaunchCampaign {
+  id              Int          @id @default(autoincrement())
+  job_id          String
+  job             AmbLaunchJob @relation(fields: [job_id], references: [job_id], onDelete: Cascade)
+  index           Int // 0-based position among this job's campaigns — deterministic naming/order, e.g. "Cup - Test 1" = index 0
+  name            String
+  // Per-campaign pixel override, only meaningful when job.per_campaign_pixel
+  // is true. Null ⇒ use job.pixel_id (the common case).
+  pixel_id        String?
+  pixel_name      String?
+  primary_text    String?
+  headline        String?
+  website_url     String?
+  meta_campaign_id String? // set once created on Meta — null until then
+  // PENDING | QUEUED | PUBLISHING | CAMPAIGN_CREATED | ADSETS_CREATED
+  // | ADS_CREATED | COMPLETE | FAILED | CANCELLED
+  status          String       @default("PENDING")
+  attempts        Int          @default(0)
+  last_attempt_at DateTime?
+  error           String?
+  created_at      DateTime     @default(now())
+  updated_at      DateTime     @updatedAt
+
+  objects AmbLaunchObjectMap[]
+
+  @@unique([job_id, index])
+  @@index([status])
+  @@map("amb_launch_campaigns")
+}
+
+model AmbLaunchObjectMap {
+  id               Int               @id @default(autoincrement())
+  campaign_id      Int
+  campaign         AmbLaunchCampaign @relation(fields: [campaign_id], references: [id], onDelete: Cascade)
+  level            String // ADSET | AD | CREATIVE
+  local_key        String // deterministic plan position, e.g. "adset:0", "ad:0:2", "creative:0:2" — not a Meta id
+  parent_local_key String? // ad/creative -> their own adset's local_key
+  destination_id   String? // Meta id once created — null until status=CREATED
+  status           String            @default("PENDING") // PENDING | CREATED | FAILED | SKIPPED
+  payload_json     String? // the exact create payload sent to Meta, once a later phase sends one — audit/debugging
+  error            String?
+  created_at       DateTime          @default(now())
+  updated_at       DateTime          @updatedAt
+
+  @@unique([campaign_id, level, local_key])
+  @@index([campaign_id])
+  @@map("amb_launch_object_map")
+}
+
+model AmbLaunchVideoAsset {
+  id                Int          @id @default(autoincrement())
+  job_id            String
+  job               AmbLaunchJob @relation(fields: [job_id], references: [job_id], onDelete: Cascade)
+  slot_key          String // "C1".."Cn" — deterministic natural-sort order assigned at upload time
+  original_filename String
+  content_hash      String? // sha256 of the file — duplicate-file detection within the same job
+  size_bytes        Int?
+  duration_seconds  Float?
+  mime_type         String?
+  // PENDING | VALIDATING | UPLOADING | UPLOADED | FAILED
+  status            String       @default("PENDING")
+  meta_video_id     String? // set once uploaded to Meta — reused by every ad/campaign in this job, never re-uploaded
+  error             String?
+  created_at        DateTime     @default(now())
+  updated_at        DateTime     @updatedAt
+
+  @@unique([job_id, slot_key])
+  @@index([job_id, content_hash])
+  @@map("amb_launch_video_assets")
+}
+
+// Append-only audit of everything that happens to a launch job: creation,
+// validation, approval, every object created/failed, retries, cancellation,
+// completion. Never backfilled — one row at the moment it happens. Never
+// stores a Meta access token.
+model AmbLaunchAudit {
+  id             Int          @id @default(autoincrement())
+  job_id         String
+  job            AmbLaunchJob @relation(fields: [job_id], references: [job_id], onDelete: Cascade)
+  campaign_id    Int? // AmbLaunchCampaign.id when the event is campaign-scoped, null for job-level events
+  // JOB_CREATED | VALIDATION | PIXEL_SELECTED | PUBLISH_APPROVED
+  // | PUBLISH_STARTED | CAMPAIGN_CREATED | OBJECT_CREATED | OBJECT_FAILED
+  // | RETRY | CANCELLED | JOB_COMPLETE | JOB_FAILED
+  event          String
+  level          String?
+  local_key      String?
+  destination_id String?
+  detail         String?
+  data_json      String?
+  actor_id       Int?
+  actor          User?        @relation("AmbLaunchAuditActor", fields: [actor_id], references: [id], onDelete: SetNull)
+  created_at     DateTime     @default(now())
+
+  @@index([job_id])
+  @@index([created_at])
+  @@map("amb_launch_audit")
 }
 
 // ============================================================================
