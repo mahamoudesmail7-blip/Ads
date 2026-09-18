@@ -18,11 +18,13 @@
 // 5-minute gate (AmbLaunchJob.next_campaign_at, a plain column, not an
 // in-process timer) has passed. Wired into launchScheduler.js exactly like
 // cloneScheduler.js's existing 60s tick — survives a Railway restart.
+import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from './launchVideoUpload.js';
-import { createCampaign, createAdSet, createAdCreative, createAd, getEntityLive } from '../metaGraphClient.js';
+import { createCampaign, createAdSet, createAdCreative, createAd, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta } from '../metaGraphClient.js';
 import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus } from './launchBuilder.js';
+import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
 
 function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
 
@@ -35,13 +37,80 @@ function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
 // ---------------------------------------------------------------------------
 const CAMPAIGN_STATUS_ORDER = ['PENDING', 'QUEUED', 'PUBLISHING', 'CAMPAIGN_CREATED', 'ADSETS_CREATED', 'ADS_CREATED', 'COMPLETE'];
 
-// Bounded backoff for "Meta hasn't finished processing this video yet" —
-// never a terminal failure by itself. 30s, 60s, 120s, 240s, then capped at
-// 5 minutes; after MAX_TRANSIENT_RETRIES the condition is treated as a real
-// terminal failure with an actionable message rather than retrying forever.
-const MAX_TRANSIENT_RETRIES = 20;
-function transientBackoffMs(attemptNumber) {
-  return Math.min(30_000 * 2 ** Math.max(0, attemptNumber - 1), 5 * 60_000);
+// ---------------------------------------------------------------------------
+// DB-write resilience: if a Meta write just SUCCEEDED and persisting its
+// result hits a transient DB blip, we must retry the DB WRITE, never repeat
+// the Meta call (that would create a real duplicate). Bounded, short —
+// covers the same class of Neon blip already observed live in this project
+// (P1001/P2024), never used for anything except the save-immediately-after-
+// a-successful-Meta-write step.
+// ---------------------------------------------------------------------------
+async function withDbRetry(fn, label) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try { return await fn(); }
+    catch (err) {
+      lastErr = err;
+      if (classifyError(err).classification !== ERROR_CLASSES.DATABASE_TRANSIENT) throw err;
+      logger.warn('Launch queue DB write retry (Meta write already succeeded — never repeating it)', { label, attempt, message: err.message });
+      await new Promise((r) => setTimeout(r, 300 * 2 ** (attempt - 1)));
+    }
+  }
+  throw lastErr;
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation-by-name: the ONLY safe response to a genuinely ambiguous
+// outcome (a network/provider/DB error while CREATING an object — we don't
+// know if Meta's write landed before the error). Never blindly retries a
+// create in that situation; looks the object up by its own deterministic
+// name first, scoped to the exact parent (campaign/ad-account), and adopts
+// its real id if found instead of creating a duplicate.
+// ---------------------------------------------------------------------------
+async function reconcileCampaignByName(token, adAccountId, name) {
+  try {
+    const rows = await getEntitiesMeta(token, adAccountId, 'campaign');
+    return rows.find((r) => r.name === name)?.id || null;
+  } catch { return null; }
+}
+async function reconcileAdSetByName(token, metaCampaignId, name) {
+  try {
+    const rows = await getAdSetNodes(token, metaCampaignId);
+    return rows.find((r) => r.name === name)?.id || null;
+  } catch { return null; }
+}
+async function reconcileAdByName(token, metaCampaignId, name) {
+  try {
+    const rows = await getAdNodes(token, metaCampaignId);
+    return rows.find((r) => r.name === name)?.id || null;
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-instance scheduler lease (§11): whichever Railway worker's tick gets
+// here first atomically wins the right to act on this job for LEASE_TTL_MS.
+// The UPDATE's WHERE clause (lock_expires_at IS NULL OR < now()) is what
+// makes this safe under real concurrency — Postgres serializes concurrent
+// UPDATEs targeting the same row, so only one caller's statement can ever
+// still see the condition true; the loser's updateMany simply matches zero
+// rows. A worker that crashes mid-lease never wedges the job: the lease
+// itself expires and the next tick (from any worker) can take it.
+// ---------------------------------------------------------------------------
+const WORKER_ID = `worker-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+const LEASE_TTL_MS = 90 * 1000; // comfortably longer than one tick's real work (a handful of Meta calls)
+
+/** Exported for direct testing of cross-instance concurrency safety — see launchQueueTest.js. */
+export async function acquireJobLease(jobId) {
+  const now = new Date();
+  const res = await prisma.ambLaunchJob.updateMany({
+    where: { job_id: jobId, OR: [{ lock_expires_at: null }, { lock_expires_at: { lt: now } }] },
+    data: { locked_by: WORKER_ID, lock_expires_at: new Date(now.getTime() + LEASE_TTL_MS) },
+  });
+  return res.count === 1;
+}
+/** Exported for direct testing — see launchQueueTest.js. */
+export async function releaseJobLease(jobId) {
+  await prisma.ambLaunchJob.updateMany({ where: { job_id: jobId, locked_by: WORKER_ID }, data: { locked_by: null, lock_expires_at: null } }).catch(() => {});
 }
 
 async function setCampaignStatus(campaignId, status) {
@@ -166,8 +235,26 @@ export function buildCreativePayload(job, campaign, adSetIndex, adIndex, videoId
 async function ensureCampaign({ job, campaign, token, audit }) {
   if (campaign.meta_campaign_id) return campaign.meta_campaign_id;
   const payload = buildCampaignPayload(job, campaign);
+  // Only reconcile when a PRIOR real attempt at creating THIS specific
+  // campaign object already happened (attempts > 0) — never on a fresh
+  // first-ever attempt. Unlike ad sets/ads (scoped to one campaign, so a
+  // deterministic name match can only ever be this same logical object),
+  // a campaign name lookup is ACCOUNT-WIDE: doing it unconditionally risks
+  // silently adopting a real, unrelated, pre-existing campaign that just
+  // happens to share the same human-chosen name (e.g. a re-run of the
+  // wizard with the same product name). Gating on attempts>0 keeps this to
+  // its only safe use — resolving a genuinely ambiguous earlier outcome.
+  if (campaign.attempts > 0) {
+    const existingId = await reconcileCampaignByName(token, job.ad_account_id, payload.name);
+    if (existingId) {
+      await withDbRetry(() => prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { meta_campaign_id: existingId } }), 'campaign.meta_campaign_id');
+      await advanceCampaignStatus(campaign.id, 'CAMPAIGN_CREATED');
+      await audit('RECONCILED', `الكامبين موجود بالفعل على Meta من محاولة سابقة غامضة النتيجة — لم يتم إنشاء تكرار.`, { metaCampaignId: existingId });
+      return existingId;
+    }
+  }
   const res = await createCampaign(token, job.ad_account_id, payload);
-  await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { meta_campaign_id: res.id } });
+  await withDbRetry(() => prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { meta_campaign_id: res.id } }), 'campaign.meta_campaign_id');
   await advanceCampaignStatus(campaign.id, 'CAMPAIGN_CREATED');
   await audit('CAMPAIGN_CREATED', `تم إنشاء الكامبين PAUSED: ${campaign.name}`, { metaCampaignId: res.id, payload });
   return res.id;
@@ -180,9 +267,21 @@ async function ensureAdSet({ job, campaign, metaCampaignId, adSetIndex, token, a
   const cfg = JSON.parse(job.config_json || '{}');
   const dailyBudgetMinor = cfg.budget?.abo?.adSets?.[adSetIndex]?.dailyBudgetMinor || null;
   const payload = buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dailyBudgetMinor);
+  // ALWAYS reconcile by the deterministic name before creating — cheap (one
+  // list call scoped to this single campaign) and the only safe response to
+  // "did an earlier ambiguous-outcome attempt actually land on Meta or not."
+  // On a genuine first-ever attempt this simply finds nothing and falls
+  // through to create normally.
+  const existingId = await reconcileAdSetByName(token, metaCampaignId, payload.name);
+  if (existingId) {
+    await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'ADSET', localKey, destinationId: existingId, status: 'CREATED', payload }), 'adset.map');
+    if (row.status === 'FAILED') await audit('RECONCILED', `Ad Set ${adSetIndex + 1} موجود بالفعل من محاولة سابقة غامضة — لم يتم إنشاء تكرار.`, { level: 'ADSET', metaAdSetId: existingId });
+    else await audit('OBJECT_CREATED', `Ad Set ${adSetIndex + 1} PAUSED`, { level: 'ADSET', metaAdSetId: existingId, payload });
+    return existingId;
+  }
   try {
     const res = await createAdSet(token, job.ad_account_id, payload);
-    await markObjectResult({ campaignId: campaign.id, level: 'ADSET', localKey, destinationId: res.id, status: 'CREATED', payload });
+    await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'ADSET', localKey, destinationId: res.id, status: 'CREATED', payload }), 'adset.map');
     await audit('OBJECT_CREATED', `Ad Set ${adSetIndex + 1} PAUSED`, { level: 'ADSET', metaAdSetId: res.id, payload });
     return res.id;
   } catch (err) {
@@ -215,8 +314,14 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, video, token
   }
   const payload = buildCreativePayload(job, campaign, adSetIndex, adIndex, video.meta_video_id, thumbnailUrl);
   try {
+    // No cheap "list creatives for this campaign" Graph endpoint exists (creatives
+    // live on the ad account, not the campaign), so unlike campaign/ad-set/ad there
+    // is no reconciliation-by-name safety net here — an ambiguous-outcome timeout on
+    // THIS specific call is the one residual duplicate-creative risk in this engine
+    // (a wasted, unused, PAUSED-parent-less creative object, never itself spend-bearing).
+    // withDbRetry below at least removes the "Meta succeeded, DB write failed" case.
     const res = await createAdCreative(token, job.ad_account_id, payload);
-    await markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, destinationId: res.id, status: 'CREATED', payload });
+    await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, destinationId: res.id, status: 'CREATED', payload }), 'creative.map');
     await audit('OBJECT_CREATED', `Creative ${adSetIndex + 1}.${adIndex + 1} — فيديو ${video.slot_key} (${video.meta_video_id})`, { level: 'CREATIVE', metaCreativeId: res.id, payload });
     return res.id;
   } catch (err) {
@@ -226,14 +331,24 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, video, token
   }
 }
 
-async function ensureAd({ job, campaign, metaAdSetId, metaCreativeId, adSetIndex, adIndex, token, audit }) {
+async function ensureAd({ job, campaign, metaCampaignId, metaAdSetId, metaCreativeId, adSetIndex, adIndex, token, audit }) {
   const localKey = `ad:${adSetIndex}:${adIndex}`;
   const row = await getOrCreateObjectMapRow({ campaignId: campaign.id, level: 'AD', localKey, parentLocalKey: `adset:${adSetIndex}` });
   if (row.status === 'CREATED') return row.destination_id;
   const payload = { name: `${campaign.name} - Ad ${adSetIndex + 1}.${adIndex + 1}`, adset_id: metaAdSetId, creative: { creative_id: metaCreativeId }, status: 'PAUSED' };
+  // Always reconcile first — scoped to this one campaign, and the name is
+  // deterministic per (adSetIndex, adIndex), so a match can only ever be
+  // this same logical ad recovering from an earlier ambiguous outcome.
+  const existingId = await reconcileAdByName(token, metaCampaignId, payload.name);
+  if (existingId) {
+    await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'AD', localKey, destinationId: existingId, status: 'CREATED', payload }), 'ad.map');
+    if (row.status === 'FAILED') await audit('RECONCILED', `Ad ${adSetIndex + 1}.${adIndex + 1} موجود بالفعل من محاولة سابقة غامضة — لم يتم إنشاء تكرار.`, { level: 'AD', metaAdId: existingId });
+    else await audit('OBJECT_CREATED', `Ad ${adSetIndex + 1}.${adIndex + 1} PAUSED`, { level: 'AD', metaAdId: existingId, payload });
+    return existingId;
+  }
   try {
     const res = await createAd(token, job.ad_account_id, payload);
-    await markObjectResult({ campaignId: campaign.id, level: 'AD', localKey, destinationId: res.id, status: 'CREATED', payload });
+    await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'AD', localKey, destinationId: res.id, status: 'CREATED', payload }), 'ad.map');
     await audit('OBJECT_CREATED', `Ad ${adSetIndex + 1}.${adIndex + 1} PAUSED`, { level: 'AD', metaAdId: res.id, payload });
     return res.id;
   } catch (err) {
@@ -269,7 +384,7 @@ export async function publishSingleTestItem({ jobId, campaignIndex = 0, videoSlo
   const metaCampaignId = await ensureCampaign({ job, campaign, token, audit });
   const metaAdSetId = await ensureAdSet({ job, campaign, metaCampaignId, adSetIndex: 0, token, audit });
   const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex: 0, adIndex: 0, video, token, audit });
-  const metaAdId = await ensureAd({ job, campaign, metaAdSetId, metaCreativeId, adSetIndex: 0, adIndex: 0, token, audit });
+  const metaAdId = await ensureAd({ job, campaign, metaCampaignId, metaAdSetId, metaCreativeId, adSetIndex: 0, adIndex: 0, token, audit });
 
   const [campaignLive, adSetLive, adLive] = await Promise.all([
     getEntityLive(token, metaCampaignId), getEntityLive(token, metaAdSetId), getEntityLive(token, metaAdId),
@@ -330,7 +445,7 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
         const globalAdIndex = campaignIndex * job.ad_sets_per_campaign * job.ads_per_ad_set + adSetIndex * job.ads_per_ad_set + adIndex;
         const video = videos[globalAdIndex % videos.length];
         const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex, adIndex, video, token, audit });
-        await ensureAd({ job, campaign, metaAdSetId, metaCreativeId, adSetIndex, adIndex, token, audit });
+        await ensureAd({ job, campaign, metaCampaignId, metaAdSetId, metaCreativeId, adSetIndex, adIndex, token, audit });
         await advanceCampaignStatus(campaign.id, 'ADS_CREATED');
       }
     }
@@ -343,7 +458,9 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     if (!allPaused) { const e = new Error('بعض الإعلانات لم تُتحقق كـ PAUSED فعليًا على Meta بعد الإنشاء.'); e.status = 409; throw e; }
 
     await advanceCampaignStatus(campaign.id, 'COMPLETE');
-    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: null, next_retry_at: null } }); // clear any stale transient bookkeeping now that it genuinely succeeded
+    // Clear every trace of an earlier failure/wait now that it genuinely succeeded —
+    // a completed campaign must never still show as ACTION_REQUIRED or mid-retry.
+    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: null, next_retry_at: null, error_classification: null, human_action_required: false } });
     await audit('JOB_COMPLETE', `اكتمل الكامبين ${campaign.name} بالكامل: ${job.ad_sets_per_campaign} Ad Set، ${job.ad_sets_per_campaign * job.ads_per_ad_set} إعلان — كله PAUSED.`);
 
     const hasNextCampaign = job.campaigns.some((c) => c.index === campaignIndex + 1);
@@ -352,32 +469,76 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     }
     return { campaignIndex, metaCampaignId, adSetsCreated: job.ad_sets_per_campaign, adsCreated: job.ad_sets_per_campaign * job.ads_per_ad_set, complete: true };
   } catch (err) {
-    if (err.transient) {
+    // The Error Playbook Registry decides everything from here — classify
+    // once, centrally, and apply exactly the policy that classification
+    // carries. Never a blind "retry everything" or "fail everything".
+    const policy = classifyError(err);
+    const firstFailureAt = campaign.first_failure_at || new Date();
+    logger.error('Launch queue campaign step failed', { jobId, campaignIndex, classification: policy.classification, code: policy.code, subcode: policy.subcode, message: err.message });
+
+    if (policy.retryable && !policy.humanActionRequired) {
       const nextCount = (campaign.transient_retry_count || 0) + 1;
-      if (nextCount > MAX_TRANSIENT_RETRIES) {
+      const maxRetries = policy.maxRetries || 20;
+      if (nextCount > maxRetries) {
         // Bounded — stop waiting on Meta forever and surface a real, actionable failure.
         await setCampaignStatus(campaign.id, 'FAILED');
         await prisma.ambLaunchCampaign.update({
           where: { id: campaign.id },
-          data: { error: `${err.message} — تجاوزنا الحد الأقصى لإعادة المحاولة التلقائية (${MAX_TRANSIENT_RETRIES} مرة) — محتاج تدخل يدوي (تأكد من حالة الفيديو على Meta أو أعد رفعه).`, attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: null },
+          data: {
+            error: `${err.message} — تجاوزنا الحد الأقصى لإعادة المحاولة التلقائية (${maxRetries} مرة) — محتاج تدخل يدوي.`,
+            error_classification: policy.classification, human_action_required: true,
+            attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: null, first_failure_at: firstFailureAt,
+          },
         });
-        await audit('OBJECT_FAILED', 'تجاوزنا الحد الأقصى لإعادة المحاولة التلقائية على حالة مؤقتة', { transientRetryCount: nextCount });
+        await audit('OBJECT_FAILED', 'تجاوزنا الحد الأقصى لإعادة المحاولة التلقائية', { classification: policy.classification, transientRetryCount: nextCount });
         throw err;
       }
-      const delayMs = transientBackoffMs(nextCount);
+      // Meta's Graph API rate-limit errors don't carry a standard Retry-After
+      // header today, so this is always null in practice — backoffMsFor()
+      // already falls back to its own computed bounded backoff, and the
+      // parameter stays here so a real Retry-After becomes a one-line change
+      // the moment Meta (or a future retryable dependency) ever sends one.
+      const delayMs = backoffMsFor(nextCount, err.retryAfterSeconds ?? null);
       await prisma.ambLaunchCampaign.update({
         where: { id: campaign.id },
-        data: { error: err.message, attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: new Date(Date.now() + delayMs) },
+        data: { error: err.message, error_classification: policy.classification, attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: new Date(Date.now() + delayMs), first_failure_at: firstFailureAt },
       });
-      // Deliberately NOT re-thrown — this is a transient wait, not a job-level
+      // Deliberately NOT re-thrown — this is a bounded wait, not a job-level
       // failure, so the scheduler must not flip the whole job to PARTIAL over
-      // a video that just needs a few more minutes to finish processing.
-      return { campaignIndex, transientRetryScheduled: true, attempt: nextCount, retryInMs: delayMs, error: err.message };
+      // a condition (video processing, rate limit, a network/DB blip) that
+      // resolves itself given time.
+      return { campaignIndex, retryScheduled: true, classification: policy.classification, attempt: nextCount, retryInMs: delayMs, error: err.message };
     }
+
+    // Everything else — AUTH_REFRESH_REQUIRED, CONFIGURATION_REQUIRED,
+    // PERMISSION_ERROR, VALIDATION_ERROR, or a genuinely unknown TERMINAL —
+    // stops here. Never auto-retried, never auto-"fixed" by substituting a
+    // different Page/Pixel/account: that is a content decision only a human
+    // makes. Every object already created stays exactly as it is.
     await setCampaignStatus(campaign.id, 'FAILED');
-    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: err.message, attempts: { increment: 1 }, last_attempt_at: new Date(), next_retry_at: null } });
+    await prisma.ambLaunchCampaign.update({
+      where: { id: campaign.id },
+      data: { error: policy.arabicMessage || err.message, error_classification: policy.classification, human_action_required: true, attempts: { increment: 1 }, last_attempt_at: new Date(), next_retry_at: null, first_failure_at: firstFailureAt },
+    });
+    await audit('OBJECT_FAILED', policy.arabicMessage || err.message, { classification: policy.classification, humanActionRequired: true });
     throw err;
   }
+}
+
+// Computed, UI-facing "queue phase" vocabulary (§10) layered on top of the
+// existing, already-tested durable status enums (JOB_STATUSES/
+// CAMPAIGN_STATUSES) rather than replacing them — the persisted FSM stays
+// exactly as validated; this just names what it means for a human right now.
+function campaignPhase(c) {
+  if (c.status === 'COMPLETE') return 'COMPLETE';
+  if (c.status === 'CANCELLED') return 'CANCELLED';
+  if (c.human_action_required) return 'ACTION_REQUIRED';
+  if (c.status === 'FAILED') return 'FAILED_TERMINAL';
+  if (c.next_retry_at && c.next_retry_at.getTime() > Date.now()) {
+    return c.error_classification === ERROR_CLASSES.PROCESSING_WAIT ? 'WAITING_FOR_META' : 'RETRY_SCHEDULED';
+  }
+  if (c.status === 'PENDING' || c.status === 'QUEUED') return 'QUEUED';
+  return 'PUBLISHING';
 }
 
 /** Real-time progress for the UI — computed fresh from amb_launch_object_map on every call, never cached client-side. */
@@ -395,9 +556,28 @@ export async function getQueueProgress(jobId) {
       adSetsCreated, adSetsTotal: job.ad_sets_per_campaign,
       adsCreated, adsTotal: job.ad_sets_per_campaign * job.ads_per_ad_set,
       nextRetryAt: c.next_retry_at, transientRetryCount: c.transient_retry_count,
+      errorClassification: c.error_classification, humanActionRequired: c.human_action_required, firstFailureAt: c.first_failure_at,
+      phase: campaignPhase(c),
     };
   });
-  return { jobId, jobStatus: job.status, jobError: job.error, nextCampaignAt: job.next_campaign_at, campaigns };
+  return { jobId, jobStatus: job.status, jobError: job.error, nextCampaignAt: job.next_campaign_at, lockedBy: job.locked_by, campaigns };
+}
+
+/**
+ * "إعادة المحاولة الآن" — clears a pending bounded-backoff wait on the
+ * job's currently-active campaign so the next scheduler tick (≤30s) acts
+ * immediately instead of waiting out the remainder of the timer. Never
+ * creates anything itself — purely a scheduling nudge, so it is always
+ * safe to call repeatedly. Refuses when the campaign is actually parked in
+ * ACTION_REQUIRED (a human decision is what's blocking it, not time).
+ */
+export async function retryLaunchCampaignNow({ jobId, campaignIndex }) {
+  const campaign = await prisma.ambLaunchCampaign.findFirst({ where: { job_id: jobId, index: campaignIndex } });
+  if (!campaign) fail('الكامبين غير موجود.');
+  if (campaign.human_action_required) fail('الكامبين محتاج تدخل يدوي أولًا — راجع الخطأ الموضح قبل إعادة المحاولة.');
+  await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { next_retry_at: null } });
+  await prisma.ambLaunchAudit.create({ data: { job_id: jobId, campaign_id: campaign.id, event: 'RETRY', detail: 'المستخدم طلب إعادة محاولة فورية.' } });
+  return { ok: true };
 }
 
 /**
@@ -469,13 +649,16 @@ export async function runDueLaunchQueueTick() {
       }
       const lockKey = `${job.job_id}:${active.index}`;
       if (processingCampaigns.has(lockKey)) continue;
+      // Cross-instance safety FIRST — if another Railway worker already holds
+      // this job's lease, skip it this tick without touching anything.
+      if (!(await acquireJobLease(job.job_id))) continue;
       processingCampaigns.add(lockKey);
       publishCampaignFull({ jobId: job.job_id, campaignIndex: active.index })
         .catch(async (err) => {
           await prisma.ambLaunchJob.update({ where: { job_id: job.job_id }, data: { status: 'PARTIAL', error: err.message } }).catch(() => {});
           logger.error('Launch queue campaign failed', { jobId: job.job_id, campaignIndex: active.index, message: err.message });
         })
-        .finally(() => { processingCampaigns.delete(lockKey); });
+        .finally(async () => { processingCampaigns.delete(lockKey); await releaseJobLease(job.job_id); });
     } catch (err) {
       logger.error('Launch queue tick failed for job', { jobId: job.job_id, message: err.message });
     }

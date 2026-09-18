@@ -295,5 +295,123 @@ console.log('\n§8 runDueLaunchQueueTick — respects next_retry_at exactly like
   }
 }
 
+console.log('\n§9 acquireJobLease/releaseJobLease — cross-instance concurrency protection (real DB, no Meta):');
+{
+  const tag = `__test_queue9_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q Lease', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+
+    const won1 = await publish.acquireJobLease(jobId);
+    ok('the first caller (this worker) wins the lease', won1 === true);
+
+    // Simulate a SECOND Railway worker/instance trying to act on the SAME job at the same moment.
+    const won2 = await publish.acquireJobLease(jobId);
+    ok('a second concurrent attempt while the lease is still held is refused (count=0, matches the WHERE clause)', won2 === false);
+
+    const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+    ok('the lease is really persisted in the DB (not just in-memory) — real cross-instance visibility', typeof job.locked_by === 'string' && job.lock_expires_at instanceof Date);
+
+    await publish.releaseJobLease(jobId);
+    const afterRelease = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+    ok('releasing clears both columns so the NEXT tick (any worker) can acquire it again', afterRelease.locked_by === null && afterRelease.lock_expires_at === null);
+
+    const won3 = await publish.acquireJobLease(jobId);
+    ok('a fresh acquire succeeds again after release', won3 === true);
+    await publish.releaseJobLease(jobId);
+
+    // An expired (stale, e.g. from a crashed worker) lease must be stealable, never wedge the job forever.
+    await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { locked_by: 'some-crashed-worker', lock_expires_at: new Date(Date.now() - 60_000) } });
+    const wonAfterExpiry = await publish.acquireJobLease(jobId);
+    ok('a stale/expired lease from a crashed worker can be stolen by a new attempt — never wedges the job forever', wonAfterExpiry === true);
+    await publish.releaseJobLease(jobId);
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
+console.log('\n§10 retryLaunchCampaignNow — a safe scheduling nudge only, never creates anything itself:');
+{
+  const tag = `__test_queue10_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q RetryNow', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    const c0 = job.campaigns[0];
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'ADSETS_CREATED', next_retry_at: new Date(Date.now() + 4 * 60_000) } });
+
+    await publish.retryLaunchCampaignNow({ jobId, campaignIndex: 0 });
+    const after = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('next_retry_at is cleared so the next tick acts immediately', after.next_retry_at === null);
+
+    let threw = false;
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { human_action_required: true, error_classification: 'CONFIGURATION_REQUIRED', next_retry_at: null } });
+    try { await publish.retryLaunchCampaignNow({ jobId, campaignIndex: 0 }); } catch (e) { threw = true; ok('refuses with a clear message when the campaign is genuinely ACTION_REQUIRED', /تدخل يدوي/.test(e.message)); }
+    ok('retryLaunchCampaignNow throws for an ACTION_REQUIRED campaign — a human decision, not a timer, is blocking it', threw);
+
+    let threw2 = false;
+    try { await publish.retryLaunchCampaignNow({ jobId, campaignIndex: 99 }); } catch { threw2 = true; }
+    ok('retryLaunchCampaignNow throws for a campaign index that does not exist', threw2);
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
+console.log('\n§11 getQueueProgress — computed "phase" vocabulary (§10 of the self-healing spec) matches real campaign state:');
+{
+  const tag = `__test_queue11_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig() });
+    const [c0, c1] = job.campaigns;
+
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'ADSETS_CREATED', next_retry_at: new Date(Date.now() + 60_000), error_classification: 'PROCESSING_WAIT' } });
+    let progress = await publish.getQueueProgress(jobId);
+    ok('a PROCESSING_WAIT retry-in-progress campaign phases as WAITING_FOR_META', progress.campaigns[0].phase === 'WAITING_FOR_META', progress.campaigns[0].phase);
+
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { error_classification: 'RATE_LIMITED' } });
+    progress = await publish.getQueueProgress(jobId);
+    ok('a RATE_LIMITED retry-in-progress campaign phases as RETRY_SCHEDULED (distinct from a video-processing wait)', progress.campaigns[0].phase === 'RETRY_SCHEDULED', progress.campaigns[0].phase);
+
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { next_retry_at: null, status: 'FAILED', human_action_required: true, error_classification: 'AUTH_REFRESH_REQUIRED' } });
+    progress = await publish.getQueueProgress(jobId);
+    ok('a human_action_required campaign phases as ACTION_REQUIRED regardless of the underlying status', progress.campaigns[0].phase === 'ACTION_REQUIRED', progress.campaigns[0].phase);
+
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { human_action_required: false } });
+    progress = await publish.getQueueProgress(jobId);
+    ok('a plain FAILED (no human action needed, e.g. mid-exhaustion edge case) phases as FAILED_TERMINAL', progress.campaigns[0].phase === 'FAILED_TERMINAL', progress.campaigns[0].phase);
+
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'COMPLETE', error_classification: null } });
+    progress = await publish.getQueueProgress(jobId);
+    ok('COMPLETE always phases as COMPLETE even if stale classification fields were somehow left behind', progress.campaigns[0].phase === 'COMPLETE');
+
+    ok('a fresh PENDING campaign phases as QUEUED', progress.campaigns[1].phase === 'QUEUED', progress.campaigns[1].phase);
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
+console.log('\n§12 runDueLaunchQueueTick — respects the job lease: a concurrent tick never touches a job another worker already holds:');
+{
+  const tag = `__test_queue12_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q Concurrent', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { status: 'PUBLISHING' } });
+
+    // Simulate ANOTHER worker's tick already holding the lease (mid-processing).
+    await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { locked_by: 'other-worker-xyz', lock_expires_at: new Date(Date.now() + 60_000) } });
+    const c0Before = job.campaigns[0];
+
+    await publish.runDueLaunchQueueTick();
+
+    const c0After = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0Before.id } });
+    ok('the campaign is completely untouched — this tick never even attempted publishCampaignFull while another worker holds the lease', c0After.status === 'PENDING' && c0After.updated_at.getTime() === c0Before.updated_at.getTime());
+    const jobAfter = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+    ok('the lease is left exactly as the other worker set it — this tick never stole or cleared it', jobAfter.locked_by === 'other-worker-xyz');
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

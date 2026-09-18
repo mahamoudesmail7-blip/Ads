@@ -4153,16 +4153,31 @@ function applyLaunchCopyField(e, multi) {
 }
 
 // ---- Step 8 · REVIEW (only real action: save draft) ----
-const LAUNCH_CAMPAIGN_STATUS_AR = {
-  PENDING: ['بالانتظار', 'gray'],
-  QUEUED: ['في الطابور', 'gray'],
+// Self-healing engine's queue-phase vocabulary (backend: campaignPhase() in
+// launchPublish.js) — computed server-side from the real persisted status +
+// human_action_required + next_retry_at, never guessed on the frontend.
+const LAUNCH_PHASE_AR = {
+  QUEUED: ['بالانتظار', 'gray'],
   PUBLISHING: ['قيد الإنشاء على Meta…', 'blue'],
-  CAMPAIGN_CREATED: ['الكامبين اتعمل — جاري إنشاء الـ Ad Sets…', 'blue'],
-  ADSETS_CREATED: ['جاري إنشاء الإعلانات…', 'blue'],
-  ADS_CREATED: ['جاري إنشاء الإعلانات…', 'blue'],
+  WAITING_FOR_META: ['⏳ Meta لسه بيعالج الفيديو', 'blue'],
+  RETRY_SCHEDULED: ['🔁 هيُعاد المحاولة تلقائيًا', 'blue'],
+  ACTION_REQUIRED: ['🟠 محتاج تدخل منك', 'orange'],
+  FAILED_TERMINAL: ['🔴 فشل نهائي', 'red'],
   COMPLETE: ['✅ اكتمل', 'green'],
-  FAILED: ['🔴 فشل', 'red'],
   CANCELLED: ['أُلغي', 'gray'],
+};
+const LAUNCH_CLASSIFICATION_AR = {
+  PROCESSING_WAIT: 'الفيديو لسه بيتعالج على Meta',
+  TRANSIENT_RETRYABLE: 'انقطاع مؤقت في الشبكة',
+  RATE_LIMITED: 'Meta وصلت لحد الطلبات المسموح بيه مؤقتًا',
+  PROVIDER_ERROR: 'مشكلة مؤقتة في سيرفرات Meta',
+  DATABASE_TRANSIENT: 'مشكلة اتصال مؤقتة بقاعدة البيانات',
+  DUPLICATE_OR_ALREADY_CREATED: 'جاري التحقق من عنصر موجود بالفعل',
+  AUTH_REFRESH_REQUIRED: 'اتصال Meta يحتاج إعادة ربط',
+  CONFIGURATION_REQUIRED: 'مشكلة في إعدادات الحساب/الصفحة/البيكسل',
+  PERMISSION_ERROR: 'التوكن مالوش صلاحية كافية',
+  VALIDATION_ERROR: 'مشكلة في البيانات المُدخلة',
+  TERMINAL: 'خطأ غير معروف محتاج مراجعة',
 };
 
 /** Pure render of the queue's real persisted progress — called both on first paint and on every poll tick, never re-fetches video sync or anything else. */
@@ -4170,32 +4185,48 @@ function launchQueueProgressHtml(progress) {
   if (!progress) return '';
   const rows = progress.campaigns.map((c, i) => {
     const prev = progress.campaigns[i - 1];
-    const waitingOnPrev = c.status === 'PENDING' && prev && !['COMPLETE', 'CANCELLED'].includes(prev.status);
-    // A transient wait (e.g. a video still processing on Meta) never looks
-    // like a hard failure — status itself stays at its real last progress
-    // point (never forced to FAILED for this), so a future nextRetryAt is
-    // the actual signal to show an auto-retry countdown instead of an error.
-    const retryingTransiently = c.nextRetryAt && new Date(c.nextRetryAt).getTime() > Date.now();
-    let label, tone;
-    if (retryingTransiently) { label = `⏳ Meta لسه بيعالج فيديو — هتتم إعادة المحاولة تلقائيًا (محاولة ${c.transientRetryCount || 1}/20)`; tone = 'blue'; }
-    else if (waitingOnPrev) { [label, tone] = prev.status === 'COMPLETE' ? ['بالانتظار — هيبدأ بعد اكتمال الكامبين السابق + 5 دقايق', 'gray'] : ['بالانتظار — لسه دور الكامبين اللي قبله', 'gray']; }
-    else { [label, tone] = LAUNCH_CAMPAIGN_STATUS_AR[c.status] || [c.status, 'gray']; }
-    const waitNote = c.status === 'PENDING' && i > 0 && prev?.status === 'COMPLETE' && progress.nextCampaignAt && new Date(progress.nextCampaignAt).getTime() > Date.now()
+    const waitingOnPrev = c.phase === 'QUEUED' && prev && !['COMPLETE', 'CANCELLED'].includes(prev.status);
+    let [label, tone] = LAUNCH_PHASE_AR[c.phase] || [c.phase, 'gray'];
+    if (waitingOnPrev) label = prev.status === 'COMPLETE' ? 'بالانتظار — هيبدأ بعد اكتمال الكامبين السابق + 5 دقايق' : 'بالانتظار — لسه دور الكامبين اللي قبله';
+    else if (c.phase === 'WAITING_FOR_META' || c.phase === 'RETRY_SCHEDULED') label += ` (محاولة ${c.transientRetryCount || 1}/20)`;
+
+    const waitNote = waitingOnPrev && prev.status === 'COMPLETE' && progress.nextCampaignAt && new Date(progress.nextCampaignAt).getTime() > Date.now()
       ? `<div class="faint" style="font-size:11px;">⏳ هيبدأ الساعة ${new Date(progress.nextCampaignAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</div>` : '';
-    const retryNote = retryingTransiently
-      ? `<div class="faint" style="font-size:11px;">إعادة المحاولة القادمة الساعة ${new Date(c.nextRetryAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} — من غير ما يعيد إنشاء أي حاجة اتعملت</div>` : '';
-    return `<div class="amb-obj-row ${retryingTransiently ? '' : tone === 'green' ? 'ok' : tone === 'red' ? 'bad' : ''}" style="flex-direction:column; align-items:flex-start; gap:2px;">
+    const retryNote = (c.phase === 'WAITING_FOR_META' || c.phase === 'RETRY_SCHEDULED') && c.nextRetryAt
+      ? `<div class="faint" style="font-size:11px;">إعادة المحاولة القادمة الساعة ${new Date(c.nextRetryAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} — من غير ما يعيد إنشاء أي حاجة اتعملت
+          <button class="amb-btn sm ghost" data-retry-now="${c.index}" style="margin-inline-start:6px;">إعادة المحاولة الآن</button></div>` : '';
+    const actionNote = c.phase === 'ACTION_REQUIRED'
+      ? `<div class="bad" style="font-size:11.5px;">${LAUNCH_CLASSIFICATION_AR[c.errorClassification] || 'محتاج مراجعة'}: ${E(c.error || '')}<br>صحّح المشكلة يدويًا ثم اضغط "استئناف النشر" تحت — العناصر اللي اتعملت فعلاً مش هتتكرر.</div>` : '';
+    const classificationTag = c.phase !== 'ACTION_REQUIRED' && c.errorClassification && c.error
+      ? `<div class="faint" style="font-size:11px;">${E(LAUNCH_CLASSIFICATION_AR[c.errorClassification] || c.errorClassification)}</div>` : '';
+
+    return `<div class="amb-obj-row ${tone === 'green' ? 'ok' : tone === 'red' || tone === 'orange' ? 'bad' : ''}" style="flex-direction:column; align-items:flex-start; gap:2px;">
       <div style="display:flex; justify-content:space-between; width:100%;">
         <span><b>كامبين ${i + 1}</b> — ${E(c.name)}</span>
         <span>${E(label)}</span>
       </div>
       <div class="faint" style="font-size:12px;">${c.adSetsCreated}/${c.adSetsTotal} Ad Sets — ${c.adsCreated}/${c.adsTotal} إعلان${c.metaCampaignId ? ` — <code>${E(c.metaCampaignId)}</code>` : ''}</div>
-      ${c.error && !retryingTransiently ? `<div class="bad" style="font-size:11.5px;">${E(c.error)}</div>` : ''}
+      ${classificationTag}
+      ${actionNote}
+      ${c.phase === 'FAILED_TERMINAL' && c.error ? `<div class="bad" style="font-size:11.5px;">${E(c.error)}</div>` : ''}
       ${retryNote}
       ${waitNote}
     </div>`;
   }).join('');
   return `<div class="section-title" style="margin-top:18px;">حالة النشر الفعلي على Meta</div><div class="amb-derived">${rows}</div>`;
+}
+
+function launchWireQueueProgressControls(container) {
+  if (!container) return;
+  container.querySelectorAll('[data-retry-now]').forEach((btn) => {
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/campaigns/${btn.dataset.retryNow}/retry-now`, {});
+        UI.toast('✅ هتتم إعادة المحاولة خلال ثواني.');
+      } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; btn.textContent = 'إعادة المحاولة الآن'; }
+    };
+  });
 }
 
 function launchStopQueuePolling() {
@@ -4209,7 +4240,7 @@ function launchStartQueuePolling() {
       const fresh = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/queue-status`);
       launchState.queueProgress = fresh;
       const holder = $('ambLaunchQueueProgress');
-      if (holder) holder.innerHTML = launchQueueProgressHtml(fresh);
+      if (holder) { holder.innerHTML = launchQueueProgressHtml(fresh); launchWireQueueProgressControls(holder); }
       if (fresh.jobStatus !== 'PUBLISHING') { launchStopQueuePolling(); renderLaunchStep(); } // final state (COMPLETE/PARTIAL/FAILED) — re-render once to fix up the button
     } catch { /* transient — keep polling */ }
   }, 5000);
@@ -4336,6 +4367,7 @@ async function renderLaunchReview(body) {
       </div>
     </div>`;
 
+  launchWireQueueProgressControls($('ambLaunchQueueProgress'));
   $('ambLaunchBack').onclick = () => { launchStopQueuePolling(); launchState.step = 7; renderLaunchStep(); };
   $('ambLaunchSaveDraft').onclick = async () => {
     if (!launchState.jobId) launchState.jobId = launchUUID();

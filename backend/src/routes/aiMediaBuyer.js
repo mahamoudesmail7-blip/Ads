@@ -648,6 +648,15 @@ router.get('/launch/jobs/:jobId/queue-status', asyncRoute(async (req, res) => {
   res.json(progress);
 }));
 
+// "إعادة المحاولة الآن" — a safe scheduling nudge only (clears a pending
+// bounded-backoff wait so the next 30s tick acts immediately); creates
+// nothing itself and refuses when the campaign is genuinely parked
+// ACTION_REQUIRED (a human decision, not a timer, is what's blocking it).
+router.post('/launch/jobs/:jobId/campaigns/:campaignIndex/retry-now', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const publish = await import('../services/amb/launchPublish.js');
+  res.json(await publish.retryLaunchCampaignNow({ jobId: req.params.jobId, campaignIndex: Number(req.params.campaignIndex) }));
+}));
+
 // ---------------------------------------------------------------------------
 // Settings — ADMIN only for writes.
 // ---------------------------------------------------------------------------

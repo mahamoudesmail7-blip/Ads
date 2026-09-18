@@ -1814,6 +1814,17 @@ model AmbLaunchJob {
   // server-side ticker (launchScheduler.js) is the only thing that ever
   // acts on it.
   next_campaign_at     DateTime?
+  // Cross-instance scheduler lease (self-healing engine, §11): a Railway
+  // worker must atomically win this lease before acting on a job, so two
+  // instances (or two overlapping deploys) never process the same job's
+  // next operation concurrently. Acquired via a conditional UPDATE ...
+  // WHERE lock_expires_at IS NULL OR < now() (Postgres serializes
+  // concurrent UPDATEs on the same row, so only one caller's statement can
+  // ever see the condition true), released in a finally block, and treated
+  // as expired/stealable after LOCK_TTL_MS regardless — so a worker that
+  // crashed mid-lease never wedges the job forever.
+  locked_by            String?
+  lock_expires_at      DateTime?
   approved_by_id       Int?
   approved_by          User?     @relation("AmbLaunchApprover", fields: [approved_by_id], references: [id], onDelete: SetNull)
   approved_at          DateTime?
@@ -1862,6 +1873,17 @@ model AmbLaunchCampaign {
   // the same restart-survives-it reason as AmbLaunchJob.next_campaign_at.
   next_retry_at         DateTime?
   transient_retry_count Int       @default(0)
+  // Self-healing observability/routing (Error Playbook Registry): the
+  // classification classifyError() assigned to the LAST error this
+  // campaign hit (one of ERROR_CLASSES — see launchErrorPlaybook.js),
+  // when its retry loop first started (for a real "waiting since HH:MM"
+  // display, not just "how many attempts"), and whether it's parked in an
+  // ACTION_REQUIRED state that the scheduler must never auto-retry
+  // (AUTH_REFRESH_REQUIRED / CONFIGURATION_REQUIRED / VALIDATION_ERROR /
+  // PERMISSION_ERROR / an unknown TERMINAL error) until a human resumes it.
+  error_classification   String?
+  first_failure_at       DateTime?
+  human_action_required  Boolean   @default(false)
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
 
