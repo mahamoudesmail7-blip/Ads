@@ -323,13 +323,14 @@ export async function getJob(jobId) {
   });
 }
 
+/** Used by both the launch list route and the "الحملات السابقة" history panel — every scalar job field (name/budget/schedule all live there) plus enough per-campaign detail (name/status/human_action_required) to render a real summary without a second round-trip per job. */
 export async function listJobs({ limit = 25, cursor } = {}) {
   const take = Math.min(Math.max(Number(limit) || 25, 1), 100);
   return prisma.ambLaunchJob.findMany({
     take,
     ...(cursor ? { skip: 1, cursor: { id: Number(cursor) } } : {}),
     orderBy: { created_at: 'desc' },
-    include: { campaigns: { select: { id: true, status: true } } },
+    include: { campaigns: { select: { id: true, index: true, name: true, status: true, human_action_required: true }, orderBy: { index: 'asc' } } },
   });
 }
 

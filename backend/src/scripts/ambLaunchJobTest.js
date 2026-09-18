@@ -120,7 +120,9 @@ console.log('\n§3 Real DB — createDraftJob idempotency + child campaign rows:
     ok('getJob returns campaigns + videos + audits', Array.isArray(fetched.campaigns) && Array.isArray(fetched.videos) && Array.isArray(fetched.audits));
 
     const listed = await launch.listJobs({ limit: 5 });
-    ok('listJobs includes our job', listed.some((j) => j.job_id === jobId));
+    const listedJob = listed.find((j) => j.job_id === jobId);
+    ok('listJobs includes our job', !!listedJob);
+    ok('listJobs enriches each campaign with name/status/human_action_required — the "الحملات السابقة" history panel needs these for a real summary without a second round-trip', listedJob?.campaigns[0]?.name === `${tag}_c1` && listedJob?.campaigns[0]?.status === 'PENDING' && listedJob?.campaigns[0]?.human_action_required === false);
   } finally {
     await prisma.ambLaunchAudit.deleteMany({ where: { job_id: jobId } });
     await prisma.ambLaunchObjectMap.deleteMany({ where: { campaign: { job_id: jobId } } });
@@ -321,6 +323,47 @@ console.log('\n§10 validateLaunchConfig — authoritative server-side schedule 
 
   const vIg = launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000000', instagramUsername: 'trendy.store' }));
   ok('Instagram selected WITH a real identity passes and is carried through', vIg.instagramId === '17841400000000000');
+}
+
+console.log('\n§11 "➕ إنشاء كامبين جديد" — a brand-new job never touches a previous COMPLETE job\'s rows:');
+{
+  // Simulates the real scenario: Job A already reached COMPLETE (both its
+  // campaigns COMPLETE), then the user starts a completely independent Job
+  // B. Proves B gets its own distinct job_id/campaign rows and A's rows —
+  // including its terminal COMPLETE status — are byte-for-byte unchanged.
+  const tagA = `__test_jobA_${Date.now()}__`;
+  const jobIdA = `test-${tagA}`;
+  const tagB = `__test_jobB_${Date.now()}__`;
+  const jobIdB = `test-${tagB}`;
+  try {
+    const jobA = await launch.createDraftJob({ jobId: jobIdA, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: `${tagA}_c1`, websiteUrl: 'https://trendystore.com' }] }) });
+    await prisma.ambLaunchCampaign.update({ where: { id: jobA.campaigns[0].id }, data: { status: 'COMPLETE', meta_campaign_id: 'meta_A_1' } });
+    await prisma.ambLaunchJob.update({ where: { job_id: jobIdA }, data: { status: 'COMPLETE' } });
+    const jobASnapshotBefore = await launch.getJob(jobIdA);
+
+    // "New Campaign" never reuses jobIdA and never appends to it — a completely fresh id/config.
+    const jobB = await launch.createDraftJob({ jobId: jobIdB, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: `${tagB}_c1`, websiteUrl: 'https://another-store.com' }], adAccountId: 'act_different' }) });
+    ok('Job B gets a genuinely different job_id, never A\'s', jobB.job_id !== jobA.job_id && jobB.job_id === jobIdB);
+    ok('Job B starts in its own fresh DRAFT status, independent of A', jobB.status === 'DRAFT');
+    ok('Job B has exactly its own 1 campaign row, never appended to A\'s', jobB.campaigns.length === 1 && jobB.campaigns[0].name === `${tagB}_c1`);
+
+    const jobAAfter = await launch.getJob(jobIdA);
+    ok('Job A\'s status is completely untouched by creating Job B', jobAAfter.status === 'COMPLETE');
+    ok('Job A\'s campaign is still COMPLETE with its real meta_campaign_id intact', jobAAfter.campaigns[0].status === 'COMPLETE' && jobAAfter.campaigns[0].meta_campaign_id === 'meta_A_1');
+    ok('Job A still has exactly 1 campaign — nothing from B leaked into it', jobAAfter.campaigns.length === 1);
+    ok('Job A remains fully readable/viewable ("الحملات السابقة") after B exists', JSON.stringify(jobAAfter) === JSON.stringify(jobASnapshotBefore));
+
+    const listed = await launch.listJobs({ limit: 50 });
+    ok('both A and B independently appear in listJobs (the history panel source)', listed.some((j) => j.job_id === jobIdA) && listed.some((j) => j.job_id === jobIdB));
+  } finally {
+    for (const jobId of [jobIdA, jobIdB]) {
+      await prisma.ambLaunchAudit.deleteMany({ where: { job_id: jobId } });
+      await prisma.ambLaunchObjectMap.deleteMany({ where: { campaign: { job_id: jobId } } });
+      await prisma.ambLaunchVideoAsset.deleteMany({ where: { job_id: jobId } });
+      await prisma.ambLaunchCampaign.deleteMany({ where: { job_id: jobId } });
+      await prisma.ambLaunchJob.deleteMany({ where: { job_id: jobId } });
+    }
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

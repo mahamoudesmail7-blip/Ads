@@ -3501,8 +3501,64 @@ function clearLaunchSnapshot() {
 let launchSnapshotLoadAttempted = false;
 async function renderLaunch(panel) {
   if (!launchSnapshotLoadAttempted) { loadLaunchSnapshot(); launchSnapshotLoadAttempted = true; }
-  panel.innerHTML = `<div id="ambLaunchBody"><div class="amb-loading">جارِ التحميل…</div></div>`;
+  panel.innerHTML = `
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:10px;">
+      <button class="amb-btn ghost sm" id="ambLaunchHistoryBtn">📜 الحملات السابقة</button>
+      <button class="amb-btn ghost sm" id="ambLaunchNewBtn">➕ إنشاء كامبين جديد</button>
+    </div>
+    <div id="ambLaunchBody"><div class="amb-loading">جارِ التحميل…</div></div>`;
+  $('ambLaunchNewBtn').onclick = () => launchConfirmAndStartNew();
+  $('ambLaunchHistoryBtn').onclick = () => launchShowHistory();
   await renderLaunchStep();
+}
+
+/** The one true "fresh wizard" state — used by every "start new" entry point (Step 1's own button, the persistent toolbar, the Review-screen CTA) so they can never drift out of sync. */
+function launchFreshDefaults() {
+  return {
+    step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null, adAccountTimezoneName: null,
+    baseName: 'Cup - Test', budgetMode: 'CBO', cboDailyBudget: '', aboBudgets: [], adSetsPerCampaign: 3, adsPerAdSet: 3,
+    startMode: 'SCHEDULED', startDate: '', startTime: '00:00', platforms: { facebook: true, instagram: true },
+    pageId: null, pageName: null, instagramId: null, instagramUsername: null, pixelId: null, pixelName: null,
+    conversionEvent: 'PURCHASE', perCampaignPixel: false, campaignCount: 1, copyMode: 'SAME',
+    campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
+    savedJob: null, videos: [], videosRestored: false, queueProgress: null, viewingHistory: false,
+  };
+}
+
+/**
+ * Clears only the FRONTEND wizard state — never touches anything on the
+ * server. The completed/in-progress job (and every real Meta object it
+ * ever created) stays exactly as it is; it just stops being what this
+ * browser tab is currently editing. A brand-new jobId is generated lazily
+ * the same way it always has been — the first time the new session reaches
+ * "حفظ كمسودة" (see launchUUID()/ambLaunchSaveDraft) — so it's never the
+ * old job's id and nothing is ever appended to the old job.
+ */
+function launchStartFreshJobState() {
+  launchStopQueuePolling();
+  clearLaunchSnapshot();
+  Object.assign(launchState, launchFreshDefaults());
+  renderLaunchStep();
+}
+
+/**
+ * The one entry point every "➕ إنشاء كامبين جديد" control calls. No
+ * confirmation needed when the current job is already COMPLETE (starting a
+ * new one is non-destructive by definition — nothing about it can still be
+ * lost). Otherwise asks first, since the job is still DRAFT/PUBLISHING/
+ * PARTIAL/ACTION_REQUIRED and the user should know they're stepping away
+ * from it (the job itself is never touched either way — this is purely
+ * about not silently losing sight of unfinished work).
+ */
+function launchConfirmAndStartNew() {
+  const status = launchState.queueProgress?.jobStatus || null;
+  if (launchState.jobId && status !== 'COMPLETE') {
+    const msg = status
+      ? `طلب النشر الحالي (${launchState.jobId}) لسه في حالة "${status}" ومكتملش. هيفضل محفوظ زي ما هو بالظبط — تقدر ترجعله من "الحملات السابقة" — بس مش هيبقى مفتوح هنا تاني. تكمل بإنشاء كامبين جديد؟`
+      : 'هتبدأ طلب رفع كامبين جديد من الصفر. البيانات المحفوظة محليًا للطلب الحالي هتتمسح من المتصفح (أي حاجة اتحفظت فعلاً على السيرفر هتفضل موجودة). تكمل؟';
+    if (!confirm(msg)) return;
+  }
+  launchStartFreshJobState();
 }
 
 function launchStepper() {
@@ -3522,6 +3578,7 @@ async function renderLaunchStep() {
   saveLaunchSnapshot();
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   try {
+    if (launchState.viewingHistory) return renderLaunchHistory(body);
     if (launchState.step === 1) return renderLaunchAccount(body);
     if (launchState.step === 2) return renderLaunchSetup(body);
     if (launchState.step === 3) return renderLaunchAdSets(body);
@@ -3546,6 +3603,110 @@ function launchNav(backStep, nextLabel, nextEnabled) {
 function wireLaunchNav(backStep, onNext) {
   const b = $('ambLaunchBack'); if (b) b.onclick = () => { launchState.step = backStep; renderLaunchStep(); };
   const n = $('ambLaunchNext'); if (n) n.onclick = onNext;
+}
+
+// ---- Launch History ("الحملات السابقة") — read-only browsing of every past
+// launch job, never editable/publishable from here. ----
+const LAUNCH_JOB_STATUS_AR = {
+  DRAFT: 'مسودة', VALIDATING: 'قيد التحقق', READY: 'جاهز للنشر', PUBLISHING: '⏳ قيد النشر',
+  PARTIAL: '🟠 متوقف جزئيًا', COMPLETE: '✅ مكتمل', FAILED: '🔴 فشل', CANCELLED: 'أُلغي',
+};
+
+function launchShowHistory() {
+  launchState._preHistoryStep = launchState.step;
+  launchState.viewingHistory = true;
+  launchState._historyDetailJobId = null;
+  renderLaunchStep();
+}
+function launchCloseHistory() {
+  launchState.viewingHistory = false;
+  launchState._historyDetailJobId = null;
+  launchState.step = launchState._preHistoryStep || 1;
+  renderLaunchStep();
+}
+
+async function renderLaunchHistory(body) {
+  if (launchState._historyDetailJobId) return renderLaunchHistoryDetail(body, launchState._historyDetailJobId);
+
+  body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
+  let jobs = [];
+  try { jobs = (await api.get('/api/ai-media-buyer/launch/jobs', { limit: 50 })).jobs || []; }
+  catch (e) { body.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(e.message)}</div>`; return; }
+
+  const rows = jobs.map((j) => {
+    const cfg = JSON.parse(j.config_json || '{}');
+    const totalAdSets = (j.campaign_count || 0) * (j.ad_sets_per_campaign || 0);
+    const totalAds = totalAdSets * (j.ads_per_ad_set || 0);
+    const dailyBudgetEgp = j.budget_mode === 'CBO'
+      ? (cfg.budget?.cbo?.dailyBudgetMinor || 0) / 100
+      : ((cfg.budget?.abo?.adSets || []).reduce((s, a) => s + (Number(a.dailyBudgetMinor) || 0), 0) / 100) * (j.campaign_count || 1);
+    const actionNeeded = (j.campaigns || []).some((c) => c.human_action_required);
+    const statusLabel = actionNeeded ? '🟠 محتاج تدخل منك' : (LAUNCH_JOB_STATUS_AR[j.status] || j.status);
+    const campaignNames = (j.campaigns || []).map((c) => c.name).filter(Boolean).join(' + ') || '—';
+    return `<div class="amb-obj-row" style="flex-direction:column; align-items:flex-start; gap:4px; cursor:pointer;" data-history-job="${E(j.job_id)}">
+      <div style="display:flex; justify-content:space-between; width:100%;">
+        <b>${E(campaignNames)}</b>
+        <span>${E(statusLabel)}</span>
+      </div>
+      <div class="faint" style="font-size:12px;">
+        ${new Date(j.created_at).toLocaleDateString('ar-EG')} · ${E(j.ad_account_name || j.ad_account_id || '—')} ·
+        ${j.campaign_count || 0} كامبين · ${totalAdSets} Ad Set · ${totalAds} إعلان · ${fmtEGP(dailyBudgetEgp)}/يوم
+      </div>
+    </div>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        <span>📜 الحملات السابقة</span>
+        <button class="amb-btn ghost sm" id="ambLaunchHistoryClose">🔙 رجوع</button>
+      </div>
+      ${jobs.length ? `<div class="amb-derived">${rows}</div>` : '<div class="amb-empty">مفيش طلبات سابقة لسه.</div>'}
+    </div>`;
+  $('ambLaunchHistoryClose').onclick = () => launchCloseHistory();
+  body.querySelectorAll('[data-history-job]').forEach((el) => {
+    el.onclick = () => { launchState._historyDetailJobId = el.dataset.historyJob; renderLaunchStep(); };
+  });
+}
+
+async function renderLaunchHistoryDetail(body, jobId) {
+  body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
+  let job, progress;
+  try {
+    [job, progress] = await Promise.all([
+      api.get(`/api/ai-media-buyer/launch/jobs/${jobId}`),
+      api.get(`/api/ai-media-buyer/launch/jobs/${jobId}/queue-status`),
+    ]);
+  } catch (e) { body.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(e.message)}</div>`; return; }
+
+  const cfg = JSON.parse(job.config_json || '{}');
+  const dailyBudgetEgp = job.budget_mode === 'CBO'
+    ? (cfg.budget?.cbo?.dailyBudgetMinor || 0) / 100
+    : ((cfg.budget?.abo?.adSets || []).reduce((s, a) => s + (Number(a.dailyBudgetMinor) || 0), 0) / 100) * (job.campaign_count || 1);
+
+  body.innerHTML = `
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0; display:flex; justify-content:space-between; align-items:center;">
+        <span>📜 ${E(job.campaigns.map((c) => c.name).join(' + ') || job.job_id)}</span>
+        <div style="display:flex; gap:8px;">
+          <button class="amb-btn ghost sm" id="ambLaunchHistoryBackToList">🔙 قائمة الحملات</button>
+          <button class="amb-btn ghost sm" id="ambLaunchHistoryClose2">إغلاق</button>
+        </div>
+      </div>
+      <div class="faint" style="font-size:12px; margin-bottom:10px;">للاطّلاع فقط — الطلب ده مش قابل للتعديل أو النشر من هنا. رقم الطلب: <code>${E(job.job_id)}</code></div>
+      <div class="amb-review-grid">
+        <div><span class="rl">الحساب الإعلاني</span><span class="rv">${E(job.ad_account_name || job.ad_account_id)}</span></div>
+        <div><span class="rl">تاريخ الإنشاء</span><span class="rv">${new Date(job.created_at).toLocaleString('ar-EG')}</span></div>
+        <div><span class="rl">Facebook Page</span><span class="rv">${E(job.page_name || job.page_id || '—')}</span></div>
+        <div><span class="rl">Instagram</span><span class="rv">${job.instagram_id ? '@' + E(job.instagram_username || job.instagram_id) : '—'}</span></div>
+        <div><span class="rl">نوع الميزانية</span><span class="rv">${E(job.budget_mode)}</span></div>
+        <div><span class="rl">الميزانية اليومية الإجمالية</span><span class="rv">${fmtEGP(dailyBudgetEgp)}</span></div>
+        <div><span class="rl">حالة الطلب</span><span class="rv">${E(LAUNCH_JOB_STATUS_AR[job.status] || job.status)}</span></div>
+      </div>
+      ${launchQueueProgressHtml(progress)}
+    </div>`;
+  $('ambLaunchHistoryBackToList').onclick = () => { launchState._historyDetailJobId = null; renderLaunchStep(); };
+  $('ambLaunchHistoryClose2').onclick = () => launchCloseHistory();
 }
 
 // ---- Step 1 · AD ACCOUNT ----
@@ -3576,20 +3737,7 @@ async function renderLaunchAccount(body) {
     </div>
     ${launchNav(0, 'التالي: إعداد الكامبين', !!launchState.adAccountId)}`;
   const startNew = $('ambLaunchStartNew');
-  if (startNew) startNew.onclick = () => {
-    if (!confirm('هتبدأ طلب رفع كامبين جديد من الصفر — الفيديوهات والإعدادات المحفوظة للطلب الحالي (رقم ' + launchState.jobId + ') هتفضل موجودة على السيرفر، بس مش هتظهر هنا تاني إلا لو رجعت بنفس رقم الطلب. تكمل؟')) return;
-    clearLaunchSnapshot();
-    Object.assign(launchState, {
-      step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null, adAccountTimezoneName: null,
-      baseName: 'Cup - Test', budgetMode: 'CBO', cboDailyBudget: '', aboBudgets: [], adSetsPerCampaign: 3, adsPerAdSet: 3,
-      startMode: 'SCHEDULED', startDate: '', startTime: '00:00', platforms: { facebook: true, instagram: true },
-      pageId: null, pageName: null, instagramId: null, instagramUsername: null, pixelId: null, pixelName: null,
-      conversionEvent: 'PURCHASE', perCampaignPixel: false, campaignCount: 1, copyMode: 'SAME',
-      campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
-      savedJob: null, videos: [], videosRestored: false,
-    });
-    renderLaunchStep();
-  };
+  if (startNew) startNew.onclick = () => launchConfirmAndStartNew();
   body.querySelectorAll('input[name="ambLaunchAcct"]').forEach((r) => {
     r.onchange = () => {
       if (launchState.adAccountId !== r.value) {
@@ -4454,6 +4602,11 @@ async function renderLaunchReview(body) {
 
       <div id="ambLaunchQueueProgress">${launchQueueProgressHtml(queueProgress)}</div>
 
+      ${isComplete ? `<div class="amb-batchnote" style="margin-top:14px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span>✅ اكتمل نشر هذا الطلب بالكامل. عايز تبدأ كامبين جديد مستقل؟</span>
+        <button class="amb-btn primary sm" id="ambLaunchNewFromComplete">➕ إنشاء كامبين جديد</button>
+      </div>` : ''}
+
       <div class="amb-wizard-nav" style="margin-top:18px;">
         <button class="amb-btn ghost" id="ambLaunchBack">رجوع وتعديل</button>
         <div style="display:flex; gap:8px;">
@@ -4464,6 +4617,7 @@ async function renderLaunchReview(body) {
     </div>`;
 
   launchWireQueueProgressControls($('ambLaunchQueueProgress'));
+  const newFromComplete = $('ambLaunchNewFromComplete'); if (newFromComplete) newFromComplete.onclick = () => launchConfirmAndStartNew();
   $('ambLaunchBack').onclick = () => { launchStopQueuePolling(); launchState.step = 7; renderLaunchStep(); };
   $('ambLaunchSaveDraft').onclick = async () => {
     if (!launchState.jobId) launchState.jobId = launchUUID();
