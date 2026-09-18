@@ -1851,6 +1851,17 @@ model AmbLaunchCampaign {
   attempts        Int          @default(0)
   last_attempt_at DateTime?
   error           String?
+  // A transient condition (today: "Meta hasn't finished processing this
+  // video yet, so no thumbnail exists for the creative that needs it") is
+  // never a terminal failure — status/error above are left at whatever
+  // real progress was last reached (e.g. ADSETS_CREATED), and the queue
+  // scheduler just waits until next_retry_at before trying this SAME
+  // campaign again, reusing every already-created object untouched. Only
+  // once transient_retry_count exceeds the bounded cap does it become a
+  // real terminal FAILED. A plain DB column, not an in-process timer, for
+  // the same restart-survives-it reason as AmbLaunchJob.next_campaign_at.
+  next_retry_at         DateTime?
+  transient_retry_count Int       @default(0)
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
 

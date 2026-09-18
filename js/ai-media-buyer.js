@@ -4171,18 +4171,27 @@ function launchQueueProgressHtml(progress) {
   const rows = progress.campaigns.map((c, i) => {
     const prev = progress.campaigns[i - 1];
     const waitingOnPrev = c.status === 'PENDING' && prev && !['COMPLETE', 'CANCELLED'].includes(prev.status);
-    const [label, tone] = waitingOnPrev
-      ? (prev.status === 'COMPLETE' ? ['بالانتظار — هيبدأ بعد اكتمال الكامبين السابق + 5 دقايق', 'gray'] : ['بالانتظار — لسه دور الكامبين اللي قبله', 'gray'])
-      : (LAUNCH_CAMPAIGN_STATUS_AR[c.status] || [c.status, 'gray']);
+    // A transient wait (e.g. a video still processing on Meta) never looks
+    // like a hard failure — status itself stays at its real last progress
+    // point (never forced to FAILED for this), so a future nextRetryAt is
+    // the actual signal to show an auto-retry countdown instead of an error.
+    const retryingTransiently = c.nextRetryAt && new Date(c.nextRetryAt).getTime() > Date.now();
+    let label, tone;
+    if (retryingTransiently) { label = `⏳ Meta لسه بيعالج فيديو — هتتم إعادة المحاولة تلقائيًا (محاولة ${c.transientRetryCount || 1}/20)`; tone = 'blue'; }
+    else if (waitingOnPrev) { [label, tone] = prev.status === 'COMPLETE' ? ['بالانتظار — هيبدأ بعد اكتمال الكامبين السابق + 5 دقايق', 'gray'] : ['بالانتظار — لسه دور الكامبين اللي قبله', 'gray']; }
+    else { [label, tone] = LAUNCH_CAMPAIGN_STATUS_AR[c.status] || [c.status, 'gray']; }
     const waitNote = c.status === 'PENDING' && i > 0 && prev?.status === 'COMPLETE' && progress.nextCampaignAt && new Date(progress.nextCampaignAt).getTime() > Date.now()
       ? `<div class="faint" style="font-size:11px;">⏳ هيبدأ الساعة ${new Date(progress.nextCampaignAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</div>` : '';
-    return `<div class="amb-obj-row ${tone === 'green' ? 'ok' : tone === 'red' ? 'bad' : ''}" style="flex-direction:column; align-items:flex-start; gap:2px;">
+    const retryNote = retryingTransiently
+      ? `<div class="faint" style="font-size:11px;">إعادة المحاولة القادمة الساعة ${new Date(c.nextRetryAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })} — من غير ما يعيد إنشاء أي حاجة اتعملت</div>` : '';
+    return `<div class="amb-obj-row ${retryingTransiently ? '' : tone === 'green' ? 'ok' : tone === 'red' ? 'bad' : ''}" style="flex-direction:column; align-items:flex-start; gap:2px;">
       <div style="display:flex; justify-content:space-between; width:100%;">
         <span><b>كامبين ${i + 1}</b> — ${E(c.name)}</span>
         <span>${E(label)}</span>
       </div>
       <div class="faint" style="font-size:12px;">${c.adSetsCreated}/${c.adSetsTotal} Ad Sets — ${c.adsCreated}/${c.adsTotal} إعلان${c.metaCampaignId ? ` — <code>${E(c.metaCampaignId)}</code>` : ''}</div>
-      ${c.error ? `<div class="bad" style="font-size:11.5px;">${E(c.error)}</div>` : ''}
+      ${c.error && !retryingTransiently ? `<div class="bad" style="font-size:11.5px;">${E(c.error)}</div>` : ''}
+      ${retryNote}
       ${waitNote}
     </div>`;
   }).join('');

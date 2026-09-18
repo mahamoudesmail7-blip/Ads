@@ -204,5 +204,96 @@ console.log('\n§5 runDueLaunchQueueTick — a job with every campaign COMPLETE/
   }
 }
 
+console.log('\n§6 THE PRODUCTION BUG — a campaign stuck FAILED with 100% of its real objects already CREATED must be able to reach COMPLETE again:');
+{
+  // Reproduces exactly what happened live on job bfad0a63's Campaign 1: every
+  // ad set/creative/ad already exists CREATED in amb_launch_object_map (and
+  // meta_campaign_id is already set, so ensureCampaign() would short-circuit
+  // instantly on a real resume), but campaign.status itself is stuck at
+  // FAILED from an earlier transient hiccup. advanceCampaignStatus() alone
+  // can never move a FAILED campaign anywhere (FAILED isn't in its linear
+  // CAMPAIGN_STATUS_ORDER, so indexOf() is -1 and it silently no-ops) —
+  // ensurePublishingStatus() is the fix: it must run first on every entry.
+  const tag = `__test_queue6_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q Stuck', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    const c0 = job.campaigns[0];
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'FAILED', error: 'فيديو C8 لسه مفيهوش صورة مصغّرة جاهزة من Meta — جرب تاني بعد شوية.', meta_campaign_id: 'meta_stuck_campaign' } });
+
+    let stuck = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('setup: campaign really is FAILED with a real meta_campaign_id already set (matches production exactly)', stuck.status === 'FAILED' && stuck.meta_campaign_id === 'meta_stuck_campaign');
+
+    // Reproduce the BUG in isolation first: without the fix, this call is silently a no-op.
+    await publish.advanceCampaignStatus(c0.id, 'COMPLETE');
+    stuck = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('confirms the bug: advanceCampaignStatus() alone can never move a FAILED campaign — it stays FAILED forever', stuck.status === 'FAILED', stuck.status);
+
+    // Now apply the actual fix: ensurePublishingStatus() walks FAILED back onto the linear order first.
+    await publish.ensurePublishingStatus(c0.id);
+    stuck = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('ensurePublishingStatus() moves a resumed FAILED campaign to PUBLISHING', stuck.status === 'PUBLISHING', stuck.status);
+
+    await publish.advanceCampaignStatus(c0.id, 'COMPLETE');
+    stuck = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('advanceCampaignStatus() now walks all the way through to COMPLETE, exactly matching real Meta state', stuck.status === 'COMPLETE', stuck.status);
+
+    // A campaign that was never FAILED (fresh PENDING) must still work exactly as before — no regression.
+    const tag2 = `__test_queue6b_${Date.now()}__`;
+    const jobId2 = `test-${tag2}`;
+    const job2 = await launch.createDraftJob({ jobId: jobId2, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q Fresh', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    const cFresh = job2.campaigns[0];
+    await publish.ensurePublishingStatus(cFresh.id);
+    let fresh = await prisma.ambLaunchCampaign.findUnique({ where: { id: cFresh.id } });
+    ok('a fresh PENDING campaign still correctly reaches PUBLISHING (no regression from the fix)', fresh.status === 'PUBLISHING', fresh.status);
+    await publish.ensurePublishingStatus(cFresh.id);
+    fresh = await prisma.ambLaunchCampaign.findUnique({ where: { id: cFresh.id } });
+    ok('calling ensurePublishingStatus() again once already PUBLISHING is a safe no-op, never regresses', fresh.status === 'PUBLISHING', fresh.status);
+    await cleanup(jobId2);
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
+console.log('\n§7 getQueueProgress — surfaces transient-retry bookkeeping so the UI can distinguish "auto-retrying" from a real terminal failure:');
+{
+  const tag = `__test_queue7_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q Retry', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    const c0 = job.campaigns[0];
+    const retryAt = new Date(Date.now() + 90_000);
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'ADSETS_CREATED', error: 'فيديو C3 لسه Meta بيعالجه (processing) — هيتعاد المحاولة تلقائيًا لحد ما يجهز.', next_retry_at: retryAt, transient_retry_count: 3 } });
+
+    const progress = await publish.getQueueProgress(jobId);
+    ok('nextRetryAt is surfaced on the campaign', progress.campaigns[0].nextRetryAt?.getTime() === retryAt.getTime());
+    ok('transientRetryCount is surfaced on the campaign', progress.campaigns[0].transientRetryCount === 3);
+    ok('status stays at its real last progress point (ADSETS_CREATED), never forced to FAILED for a transient condition', progress.campaigns[0].status === 'ADSETS_CREATED');
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
+console.log('\n§8 runDueLaunchQueueTick — respects next_retry_at exactly like the inter-campaign gate, never hammering Meta while a video is still processing:');
+{
+  const tag = `__test_queue8_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q Backoff', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    const c0 = job.campaigns[0];
+    const beforeTick = await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'ADSETS_CREATED', next_retry_at: new Date(Date.now() + 5 * 60_000) } });
+    await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { status: 'PUBLISHING' } });
+
+    await publish.runDueLaunchQueueTick();
+
+    const after = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('the campaign is left completely untouched while next_retry_at is still in the future (no publishCampaignFull invocation attempted)', after.status === 'ADSETS_CREATED' && after.updated_at.getTime() === beforeTick.updated_at.getTime());
+    const jobAfter = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+    ok('job stays PUBLISHING — a transient backoff never flips the job to PARTIAL', jobAfter.status === 'PUBLISHING');
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

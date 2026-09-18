@@ -20,7 +20,7 @@
 // cloneScheduler.js's existing 60s tick — survives a Railway restart.
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
-import { requireLaunchToken, getMetaVideoThumbnailUrl } from './launchVideoUpload.js';
+import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from './launchVideoUpload.js';
 import { createCampaign, createAdSet, createAdCreative, createAd, getEntityLive } from '../metaGraphClient.js';
 import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus } from './launchBuilder.js';
 
@@ -35,14 +35,23 @@ function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
 // ---------------------------------------------------------------------------
 const CAMPAIGN_STATUS_ORDER = ['PENDING', 'QUEUED', 'PUBLISHING', 'CAMPAIGN_CREATED', 'ADSETS_CREATED', 'ADS_CREATED', 'COMPLETE'];
 
+// Bounded backoff for "Meta hasn't finished processing this video yet" —
+// never a terminal failure by itself. 30s, 60s, 120s, 240s, then capped at
+// 5 minutes; after MAX_TRANSIENT_RETRIES the condition is treated as a real
+// terminal failure with an actionable message rather than retrying forever.
+const MAX_TRANSIENT_RETRIES = 20;
+function transientBackoffMs(attemptNumber) {
+  return Math.min(30_000 * 2 ** Math.max(0, attemptNumber - 1), 5 * 60_000);
+}
+
 async function setCampaignStatus(campaignId, status) {
   const row = await prisma.ambLaunchCampaign.findUnique({ where: { id: campaignId } });
   if (!row || row.status === status) return;
   if (!canTransitionCampaignStatus(row.status, status)) return; // never force an invalid jump — leave the row honestly where it is
   await prisma.ambLaunchCampaign.update({ where: { id: campaignId }, data: { status } });
 }
-/** Only ever moves a campaign FORWARD along the normal progress order — safe to call repeatedly with the same or an already-passed target (a no-op then). */
-async function advanceCampaignStatus(campaignId, targetStatus) {
+/** Only ever moves a campaign FORWARD along the normal progress order — safe to call repeatedly with the same or an already-passed target (a no-op then). Exported for direct testing of the FAILED-stuck bug fix — see launchQueueTest.js. */
+export async function advanceCampaignStatus(campaignId, targetStatus) {
   const row = await prisma.ambLaunchCampaign.findUnique({ where: { id: campaignId } });
   if (!row) return;
   const curIdx = CAMPAIGN_STATUS_ORDER.indexOf(row.status);
@@ -56,8 +65,8 @@ async function advanceCampaignStatus(campaignId, targetStatus) {
     cur = next;
   }
 }
-/** Gets a campaign into PUBLISHING from wherever it currently is (PENDING, QUEUED, or a resumed FAILED) without ever attempting an invalid jump. A campaign already past PUBLISHING (CAMPAIGN_CREATED or later) is left alone — it's mid-flight, not starting fresh. */
-async function ensurePublishingStatus(campaignId) {
+/** Gets a campaign into PUBLISHING from wherever it currently is (PENDING, QUEUED, or a resumed FAILED) without ever attempting an invalid jump. A campaign already past PUBLISHING (CAMPAIGN_CREATED or later) is left alone — it's mid-flight, not starting fresh. Exported for direct testing — see launchQueueTest.js. */
+export async function ensurePublishingStatus(campaignId) {
   const row = await prisma.ambLaunchCampaign.findUnique({ where: { id: campaignId } });
   if (!row) return;
   if (row.status === 'PENDING') { await setCampaignStatus(campaignId, 'QUEUED'); await setCampaignStatus(campaignId, 'PUBLISHING'); return; }
@@ -156,7 +165,6 @@ export function buildCreativePayload(job, campaign, adSetIndex, adIndex, videoId
 
 async function ensureCampaign({ job, campaign, token, audit }) {
   if (campaign.meta_campaign_id) return campaign.meta_campaign_id;
-  await ensurePublishingStatus(campaign.id);
   const payload = buildCampaignPayload(job, campaign);
   const res = await createCampaign(token, job.ad_account_id, payload);
   await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { meta_campaign_id: res.id } });
@@ -188,8 +196,23 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, video, token
   const localKey = `creative:${adSetIndex}:${adIndex}`;
   const row = await getOrCreateObjectMapRow({ campaignId: campaign.id, level: 'CREATIVE', localKey, parentLocalKey: `adset:${adSetIndex}` });
   if (row.status === 'CREATED') return row.destination_id;
+
+  // Check Meta's own real processing status BEFORE asking for a thumbnail —
+  // "still processing" is expected and transient (Meta can take anywhere
+  // from seconds to a couple of hours per video); only a real 'error'
+  // status on the video itself is a genuine, non-retryable problem.
+  const videoStatus = await getMetaVideoStatus(token, video.meta_video_id);
+  if (videoStatus === 'error') {
+    const e = new Error(`فيديو ${video.slot_key} فشلت معالجته على Meta بشكل نهائي — محتاج إعادة رفع.`);
+    e.status = 422;
+    throw e; // terminal — no amount of waiting fixes a video Meta itself rejected
+  }
   const thumbnailUrl = await getMetaVideoThumbnailUrl(token, video.meta_video_id);
-  if (!thumbnailUrl) { const e = new Error(`فيديو ${video.slot_key} لسه مفيهوش صورة مصغّرة جاهزة من Meta — جرب تاني بعد شوية.`); e.status = 409; throw e; }
+  if (!thumbnailUrl) {
+    const e = new Error(`فيديو ${video.slot_key} لسه Meta بيعالجه (${videoStatus || 'processing'}) — هيتعاد المحاولة تلقائيًا لحد ما يجهز.`);
+    e.transient = true; // never a terminal failure by itself — see publishCampaignFull's bounded-retry handling
+    throw e;
+  }
   const payload = buildCreativePayload(job, campaign, adSetIndex, adIndex, video.meta_video_id, thumbnailUrl);
   try {
     const res = await createAdCreative(token, job.ad_account_id, payload);
@@ -274,7 +297,24 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
   if (!job.page_id) fail('لازم Facebook Page محدد قبل النشر.');
   if (!(campaign.pixel_id || job.pixel_id)) fail('لازم Meta Pixel محدد قبل النشر.');
 
-  const videos = await prisma.ambLaunchVideoAsset.findMany({ where: { job_id: jobId, status: 'UPLOADED' }, orderBy: { slot_key: 'asc' } });
+  // Unconditional — unlike ensureCampaign (which short-circuits instantly
+  // whenever meta_campaign_id already exists, e.g. every resume of this
+  // exact campaign), this must run on EVERY entry so a campaign resumed
+  // from a FAILED state (not in the linear progress order) always gets
+  // walked back onto it before advanceCampaignStatus() is asked to move it
+  // forward again. Without this, a campaign that ever failed once could
+  // finish creating 100% of its real objects on Meta and still stay
+  // stuck showing FAILED forever, because advanceCampaignStatus() only
+  // ever moves a campaign forward along that order and treats an unknown
+  // (off-order) current status as nothing to do.
+  await ensurePublishingStatus(campaign.id);
+
+  // Prisma's orderBy on slot_key is a plain string sort ("C1","C10","C11",
+  // …,"C2",…), not the natural numeric order the slot_keys ("C1".."C15")
+  // imply — sort numerically here so round-robin video assignment is
+  // predictable (C1, C2, C3, … C15) rather than silently scrambled.
+  const videos = (await prisma.ambLaunchVideoAsset.findMany({ where: { job_id: jobId, status: 'UPLOADED' } }))
+    .sort((a, b) => (parseInt(a.slot_key.slice(1), 10) || 0) - (parseInt(b.slot_key.slice(1), 10) || 0));
   if (!videos.length) fail('مفيش فيديوهات مرفوعة وجاهزة (UPLOADED) في هذا الطلب.');
 
   const token = await requireLaunchToken();
@@ -303,6 +343,7 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     if (!allPaused) { const e = new Error('بعض الإعلانات لم تُتحقق كـ PAUSED فعليًا على Meta بعد الإنشاء.'); e.status = 409; throw e; }
 
     await advanceCampaignStatus(campaign.id, 'COMPLETE');
+    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: null, next_retry_at: null } }); // clear any stale transient bookkeeping now that it genuinely succeeded
     await audit('JOB_COMPLETE', `اكتمل الكامبين ${campaign.name} بالكامل: ${job.ad_sets_per_campaign} Ad Set، ${job.ad_sets_per_campaign * job.ads_per_ad_set} إعلان — كله PAUSED.`);
 
     const hasNextCampaign = job.campaigns.some((c) => c.index === campaignIndex + 1);
@@ -311,8 +352,30 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     }
     return { campaignIndex, metaCampaignId, adSetsCreated: job.ad_sets_per_campaign, adsCreated: job.ad_sets_per_campaign * job.ads_per_ad_set, complete: true };
   } catch (err) {
+    if (err.transient) {
+      const nextCount = (campaign.transient_retry_count || 0) + 1;
+      if (nextCount > MAX_TRANSIENT_RETRIES) {
+        // Bounded — stop waiting on Meta forever and surface a real, actionable failure.
+        await setCampaignStatus(campaign.id, 'FAILED');
+        await prisma.ambLaunchCampaign.update({
+          where: { id: campaign.id },
+          data: { error: `${err.message} — تجاوزنا الحد الأقصى لإعادة المحاولة التلقائية (${MAX_TRANSIENT_RETRIES} مرة) — محتاج تدخل يدوي (تأكد من حالة الفيديو على Meta أو أعد رفعه).`, attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: null },
+        });
+        await audit('OBJECT_FAILED', 'تجاوزنا الحد الأقصى لإعادة المحاولة التلقائية على حالة مؤقتة', { transientRetryCount: nextCount });
+        throw err;
+      }
+      const delayMs = transientBackoffMs(nextCount);
+      await prisma.ambLaunchCampaign.update({
+        where: { id: campaign.id },
+        data: { error: err.message, attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: new Date(Date.now() + delayMs) },
+      });
+      // Deliberately NOT re-thrown — this is a transient wait, not a job-level
+      // failure, so the scheduler must not flip the whole job to PARTIAL over
+      // a video that just needs a few more minutes to finish processing.
+      return { campaignIndex, transientRetryScheduled: true, attempt: nextCount, retryInMs: delayMs, error: err.message };
+    }
     await setCampaignStatus(campaign.id, 'FAILED');
-    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: err.message, attempts: { increment: 1 }, last_attempt_at: new Date() } });
+    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: err.message, attempts: { increment: 1 }, last_attempt_at: new Date(), next_retry_at: null } });
     throw err;
   }
 }
@@ -331,6 +394,7 @@ export async function getQueueProgress(jobId) {
       index: c.index, name: c.name, status: c.status, error: c.error, metaCampaignId: c.meta_campaign_id,
       adSetsCreated, adSetsTotal: job.ad_sets_per_campaign,
       adsCreated, adsTotal: job.ad_sets_per_campaign * job.ads_per_ad_set,
+      nextRetryAt: c.next_retry_at, transientRetryCount: c.transient_retry_count,
     };
   });
   return { jobId, jobStatus: job.status, jobError: job.error, nextCampaignAt: job.next_campaign_at, campaigns };
@@ -399,6 +463,9 @@ export async function runDueLaunchQueueTick() {
         if (prev && prev.status === 'COMPLETE' && job.next_campaign_at && job.next_campaign_at.getTime() > Date.now()) {
           continue; // still inside the durable 5-minute gate — try again next tick
         }
+      }
+      if (active.next_retry_at && active.next_retry_at.getTime() > Date.now()) {
+        continue; // waiting out a transient condition's bounded backoff (e.g. a video still processing on Meta) — never hammer Meta every tick
       }
       const lockKey = `${job.job_id}:${active.index}`;
       if (processingCampaigns.has(lockKey)) continue;
