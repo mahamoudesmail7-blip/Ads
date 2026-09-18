@@ -55,8 +55,9 @@ console.log('\n§3 buildAdSetPayload — bid strategy, promoted_object, budget p
 
   const scheduled = buildAdSetPayload({ ...abojob, start_mode: 'SCHEDULED', start_at: new Date(Date.now() + 3600_000) }, campaign, 'c', 0, 20000);
   ok('a real future start_time is included when scheduled', typeof scheduled.start_time === 'string');
-  const past = buildAdSetPayload({ ...abojob, start_mode: 'SCHEDULED', start_at: new Date(Date.now() - 3600_000) }, campaign, 'c', 0, 20000);
-  ok('a start_time already in the past is dropped rather than sent to Meta as an invalid schedule', past.start_time === undefined);
+  // Superseded by §6 below: a past SCHEDULED start_time is now always sent
+  // honestly (never silently dropped) — see the real production bug that
+  // fix addresses. Kept only as a pointer so this history isn't lost.
 
   const cboAdSet = buildAdSetPayload(cbojob, campaign, 'c', 0, 20000);
   ok('a CBO ad set never carries its own budget (the campaign already has one — Meta rejects both at once)', cboAdSet.daily_budget === undefined);
@@ -78,6 +79,36 @@ console.log('\n§5 buildCreativePayload — real page, real video, explicit thum
   ok('call_to_action uses the verified real ORDER_NOW enum by default', creative.object_story_spec.video_data.call_to_action.type === 'ORDER_NOW');
   ok('the CTA links to the campaign\'s real website URL', creative.object_story_spec.video_data.call_to_action.value.link === campaign.website_url);
   ok('carries the campaign\'s real primary text/headline, never placeholder copy', creative.object_story_spec.video_data.message === 'نص' && creative.object_story_spec.video_data.title === 'عنوان');
+}
+
+console.log('\n§6 buildAdSetPayload — customer lifecycle strategy + always-send SCHEDULED start_time (two real production bugs fixed):');
+{
+  const adSet = buildAdSetPayload(abojob, campaign, 'meta_campaign_123', 0, 20000);
+  ok('carries existing_customer_budget_percentage:100 — confirmed real AdSet field behind Ads Manager\'s "Customer lifecycle strategy: Get conversions from all audiences"', adSet.existing_customer_budget_percentage === 100, String(adSet.existing_customer_budget_percentage));
+  ok('never a lower value — that would enable new-customer-only/retention budget restriction the wizard has no UI for', adSet.existing_customer_budget_percentage >= 100);
+
+  // The real production bug: a durable queue can create an ad set well AFTER the
+  // originally-requested SCHEDULED moment has already elapsed — start_time must
+  // still be sent, never silently omitted (which defaults Meta to "start now").
+  const pastScheduleJob = { ...abojob, start_mode: 'SCHEDULED', start_at: new Date(Date.now() - 24 * 3600_000) };
+  const pastAdSet = buildAdSetPayload(pastScheduleJob, campaign, 'c', 0, 20000);
+  ok('a SCHEDULED start_time already 24h in the past is STILL sent honestly — never silently dropped (the exact real bug: dropping it let Meta default to "now", replacing midnight with an unrelated afternoon time)', pastAdSet.start_time === pastScheduleJob.start_at.toISOString(), pastAdSet.start_time);
+
+  const futureScheduleJob = { ...abojob, start_mode: 'SCHEDULED', start_at: new Date(Date.now() + 3600_000) };
+  const futureAdSet = buildAdSetPayload(futureScheduleJob, campaign, 'c', 0, 20000);
+  ok('a future SCHEDULED start_time is sent as before (no regression)', futureAdSet.start_time === futureScheduleJob.start_at.toISOString());
+
+  ok('NOW mode never sends a start_time at all', buildAdSetPayload(abojob, campaign, 'c', 0, 20000).start_time === undefined);
+}
+
+console.log('\n§7 buildCreativePayload — Instagram identity (the real production bug: ads created with Facebook-only identity):');
+{
+  const noIg = buildCreativePayload(abojob, campaign, 0, 0, 'video_123', 'https://scontent.example/thumb.jpg');
+  ok('no instagram_user_id sent when the job has none configured — never a placeholder/empty value', noIg.object_story_spec.instagram_user_id === undefined);
+
+  const withIg = buildCreativePayload({ ...abojob, instagram_id: '17841400000000000' }, campaign, 0, 0, 'video_123', 'https://scontent.example/thumb.jpg');
+  ok('instagram_user_id is a sibling of page_id inside object_story_spec — confirmed field placement from this codebase\'s own working Clone & Schedule engine', withIg.object_story_spec.instagram_user_id === '17841400000000000');
+  ok('page_id is still present alongside it — both identities set together', 'page_id' in withIg.object_story_spec);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

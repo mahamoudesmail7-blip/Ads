@@ -90,6 +90,15 @@ console.log('§1 startLaunchQueue — server-side re-validation, never trusts th
     ok('startLaunchQueue throws on a config_json/ad_sets_per_campaign mismatch', threw);
     await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { config_json: JSON.stringify({ budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }, { dailyBudgetMinor: 20000 }] } } }) } });
 
+    // Confirmed live against real Meta: a SCHEDULED start_time already in the
+    // past is never honored (Meta substitutes the creation moment instead) —
+    // block publish rather than silently letting the schedule drift.
+    await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { start_mode: 'SCHEDULED', start_at: new Date(Date.now() - 60_000) } });
+    threw = false;
+    try { await publish.startLaunchQueue({ jobId, userId: null }); } catch (e) { threw = true; ok('rejects a SCHEDULED start already in the past — Meta itself would silently substitute "now"', /الموعد المطلوب فات/.test(e.message), e.message); }
+    ok('startLaunchQueue throws on an already-elapsed schedule', threw);
+    await prisma.ambLaunchJob.update({ where: { job_id: jobId }, data: { start_mode: 'NOW', start_at: null } });
+
     const started = await publish.startLaunchQueue({ jobId, userId: realUserId });
     ok('a fully valid job is accepted and flipped to PUBLISHING', started.status === 'PUBLISHING');
     ok('approved_by_id is stamped from the real actor, never left null', started.approved_by_id === realUserId, String(started.approved_by_id));

@@ -199,9 +199,27 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
     bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
     promoted_object: { pixel_id: campaign.pixel_id || job.pixel_id, custom_event_type: job.conversion_event || 'PURCHASE' },
     targeting: buildTargeting(job),
+    // Real Meta Ads Manager field (confirmed via developers.facebook.com's
+    // AdSet reference: existing_customer_budget_percentage, int64) behind
+    // the "Customer lifecycle strategy" UI control. 100 = no restriction on
+    // how much budget may go to existing customers = "Get conversions from
+    // all audiences" — the default this wizard must always use. Never a
+    // lower value: that would enable new-customer-only/retention-style
+    // budget restriction, which the wizard has no UI for and must never
+    // apply implicitly.
+    existing_customer_budget_percentage: 100,
   };
   if (job.budget_mode === 'ABO' && dailyBudgetMinor > 0) payload.daily_budget = dailyBudgetMinor;
-  if (job.start_mode === 'SCHEDULED' && job.start_at && job.start_at.getTime() > Date.now()) {
+  // Always send the exact requested SCHEDULED start — never conditionally
+  // omit it once it's in the past by creation time. That silent omission
+  // was a real production bug: a durable queue can create later ad sets
+  // well after the originally-requested moment has already elapsed, and
+  // Meta defaults a start_time-less ad set to "start now" — silently
+  // replacing the user's actual requested schedule with the wall-clock
+  // moment of API creation. Sending the true value honestly preserves what
+  // was asked for even if that moment has already passed (harmless: every
+  // object here is created PAUSED, so this never affects real delivery).
+  if (job.start_mode === 'SCHEDULED' && job.start_at) {
     payload.start_time = job.start_at.toISOString();
   }
   return payload;
@@ -213,6 +231,16 @@ export function buildCreativePayload(job, campaign, adSetIndex, adIndex, videoId
     name: `${campaign.name} - Creative ${adSetIndex + 1}.${adIndex + 1}`,
     object_story_spec: {
       page_id: job.page_id,
+      // Confirmed field placement from this codebase's own already-working
+      // Clone & Schedule engine (cloneEngine.js: `applyIdentity({ page_id,
+      // instagram_user_id })`) — a sibling of page_id inside
+      // object_story_spec, current field name (instagram_actor_id is
+      // deprecated). Omitted entirely when no Instagram identity was
+      // selected — never sent as an empty/placeholder value. Without this,
+      // Meta creates the ad using only the Facebook Page identity and
+      // Ads Manager prompts to "Add Instagram placement" manually, which
+      // is exactly the real production issue this fixes at the root.
+      instagram_user_id: job.instagram_id || undefined,
       video_data: {
         video_id: videoId,
         image_url: thumbnailUrl, // required by Meta (confirmed live, Phase F: "Your ad needs a video thumbnail") — reused from the video's own Meta-auto-generated picture, never a fabricated/external image
@@ -267,6 +295,16 @@ async function ensureAdSet({ job, campaign, metaCampaignId, adSetIndex, token, a
   const cfg = JSON.parse(job.config_json || '{}');
   const dailyBudgetMinor = cfg.budget?.abo?.adSets?.[adSetIndex]?.dailyBudgetMinor || null;
   const payload = buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dailyBudgetMinor);
+  // Transparency for a long-running durable queue: startLaunchQueue() already
+  // blocks publishing when the schedule has already passed, but a schedule
+  // that was still valid AT publish time can still elapse before a LATER ad
+  // set (deep in a multi-campaign queue) actually gets created — Meta itself
+  // then silently uses "now" for that one object (confirmed live; sending a
+  // past start_time is not honored). Recorded here so it's visible in the
+  // audit trail rather than a silent surprise.
+  if (job.start_mode === 'SCHEDULED' && job.start_at && job.start_at.getTime() <= Date.now() && payload.start_time) {
+    await audit('SCHEDULE_ELAPSED', `الموعد المطلوب (${job.start_at.toISOString()}) فات وقت إنشاء Ad Set ${adSetIndex + 1} — Meta هيستخدم وقت الإنشاء الفعلي بدل منه (هذا سلوك حقيقي من Meta نفسها، مش تقصير في الكود).`, { requestedStartAt: job.start_at.toISOString() });
+  }
   // ALWAYS reconcile by the deterministic name before creating — cheap (one
   // list call scoped to this single campaign) and the only safe response to
   // "did an earlier ambiguous-outcome attempt actually land on Meta or not."
@@ -597,6 +635,10 @@ export async function startLaunchQueue({ jobId, userId }) {
   if (!job.ad_account_id) fail('لازم حساب إعلاني.');
   if (!job.page_id) fail('لازم Facebook Page.');
   if (!job.pixel_id && !job.campaigns.some((c) => c.pixel_id)) fail('لازم Meta Pixel.');
+  // Instagram checked but no real identity resolved must block publish —
+  // never silently fall back to Facebook-only (the real production bug this fixes).
+  const platforms = JSON.parse(job.platforms_json || '["facebook"]');
+  if (platforms.includes('instagram') && !job.instagram_id) fail('اخترت إنستجرام كمنصة لكن لسه معملتش اختيار حساب إنستجرام حقيقي متصل بالصفحة.');
   if (!job.campaigns.length) fail('لازم كامبين واحد على الأقل.');
   for (const c of job.campaigns) {
     if (!c.name?.trim() || !c.website_url?.trim()) fail(`الكامبين "${c.name || c.index}" ناقصه اسم أو رابط الموقع.`);
@@ -608,6 +650,15 @@ export async function startLaunchQueue({ jobId, userId }) {
   } else {
     const adSets = cfg.budget?.abo?.adSets || [];
     if (adSets.length !== job.ad_sets_per_campaign || adSets.some((a) => !(a.dailyBudgetMinor > 0))) fail('لازم ميزانية صحيحة لكل Ad Set (ABO).');
+  }
+  // Confirmed live against real Meta: a SCHEDULED start_time already in the
+  // past is NOT honored by Meta itself — it silently substitutes the actual
+  // object-creation moment instead, regardless of what we send. So a
+  // requested schedule that has already elapsed by the moment publish is
+  // clicked can never be honestly delivered — block here with an
+  // actionable choice instead of silently letting it drift to "now".
+  if (job.start_mode === 'SCHEDULED' && job.start_at && job.start_at.getTime() <= Date.now()) {
+    fail('الموعد المطلوب فات بالفعل — Meta مش هيلتزم بميعاد في الماضي وهيبدأ فورًا بدل منه. عدّل الموعد لوقت في المستقبل، أو اختار "تشغيل الآن".');
   }
 
   if (job.status === 'DRAFT') { await setJobStatus(jobId, 'VALIDATING'); await setJobStatus(jobId, 'READY'); }

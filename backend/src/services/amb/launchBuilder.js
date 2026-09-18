@@ -73,6 +73,39 @@ function fail(msg) {
 }
 
 /**
+ * Real IANA-timezone-aware local wall-clock -> UTC conversion, using only
+ * built-in Intl (no external library, no hardcoded offset). Correct across
+ * DST transitions for any real ad-account timezone (Africa/Cairo has no
+ * DST, but e.g. America/New_York or Europe/London do) — the standard
+ * "resolve the zone's actual UTC offset AT that wall-clock instant" pattern:
+ * take the naive UTC guess, ask Intl what that zone's offset is at that
+ * instant, then correct by exactly that offset. Never trusts a frontend-
+ * computed UTC value or a static +N hours assumption — this is the single
+ * authoritative place a launch's requested local start time becomes UTC.
+ */
+export function localWallClockToUtcDate(dateStr, timeStr, ianaTimeZone) {
+  const [Y, M, D] = String(dateStr || '').split('-').map(Number);
+  const [h, mi] = String(timeStr || '00:00').split(':').map(Number);
+  if (!Y || !M || !D) return null;
+  const tz = ianaTimeZone || 'UTC';
+  const naiveUtcMs = Date.UTC(Y, M - 1, D, h || 0, mi || 0, 0);
+  let offsetMinutes = 0;
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const parts = dtf.formatToParts(new Date(naiveUtcMs)).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+    const hour24 = parts.hour === '24' ? '00' : parts.hour; // Intl sometimes renders midnight as "24" in hour12:false
+    const asIfUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(hour24), Number(parts.minute), Number(parts.second));
+    offsetMinutes = (asIfUtc - naiveUtcMs) / 60000;
+  } catch {
+    return null; // an unrecognized IANA zone name — caller must fail validation rather than silently guess an offset
+  }
+  return new Date(naiveUtcMs - offsetMinutes * 60000);
+}
+
+/**
  * Validates a wizard submission and returns the normalized shape this
  * service persists. Never touches Meta — purely a shape/range check, so a
  * bad submission fails fast and in Arabic before any DB write. A LATER
@@ -89,6 +122,11 @@ export function validateLaunchConfig(input) {
 
   const platforms = Array.isArray(cfg.platforms) && cfg.platforms.length ? cfg.platforms : ['facebook', 'instagram'];
   if (!platforms.every((p) => ALLOWED_PLATFORMS.includes(p))) fail('المنصات المسموح بها فيسبوك وإنستجرام فقط في هذه النسخة.');
+  // Real production bug: Instagram checked in the wizard but no real
+  // Instagram identity resolved silently fell back to Facebook-only ads,
+  // requiring a manual "Add Instagram placement" fix in Ads Manager after
+  // the fact. Never allowed again — block here instead.
+  if (platforms.includes('instagram') && !cfg.instagramId) fail('اخترت إنستجرام كمنصة لكن لسه معملتش اختيار حساب إنستجرام حقيقي متصل بالصفحة.');
 
   const adSetsPerCampaign = Number(cfg.adSetsPerCampaign);
   if (!Number.isInteger(adSetsPerCampaign) || adSetsPerCampaign < 1) fail('عدد الـ Ad Sets لازم يكون رقم صحيح 1 أو أكتر.');
@@ -123,9 +161,22 @@ export function validateLaunchConfig(input) {
   const startMode = cfg.startMode === 'NOW' ? 'NOW' : 'SCHEDULED';
   let startAt = null;
   if (startMode === 'SCHEDULED') {
-    if (!cfg.startAt) fail('لازم تحدد تاريخ ووقت بدء الاختبار، أو تختار "تشغيل الآن".');
-    startAt = new Date(cfg.startAt);
-    if (Number.isNaN(startAt.getTime())) fail('تاريخ/وقت البدء غير صالح.');
+    // Authoritative path: raw local date/time + the real ad account's IANA
+    // timezone name (never trusted pre-converted from the frontend — that
+    // was the actual root cause of a real production bug where the
+    // requested midnight became an unrelated afternoon time). Falls back to
+    // accepting an already-computed ISO instant only for older/internal
+    // callers (test scripts) that construct a config directly.
+    if (cfg.startDate && cfg.startTime) {
+      const tz = cfg.timezone || 'Africa/Cairo';
+      startAt = localWallClockToUtcDate(cfg.startDate, cfg.startTime, tz);
+      if (!startAt) fail('منطقة توقيت الحساب الإعلاني غير معروفة — تعذّر حساب موعد البدء.');
+    } else if (cfg.startAt) {
+      startAt = new Date(cfg.startAt);
+    } else {
+      fail('لازم تحدد تاريخ ووقت بدء الاختبار، أو تختار "تشغيل الآن".');
+    }
+    if (!startAt || Number.isNaN(startAt.getTime())) fail('تاريخ/وقت البدء غير صالح.');
   }
 
   return {

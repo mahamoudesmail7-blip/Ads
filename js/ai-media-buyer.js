@@ -3394,6 +3394,7 @@ const launchState = {
   accounts: null,
   adAccountId: null,
   adAccountName: null,
+  adAccountTimezoneName: null, // the real connected ad account's IANA timezone — never a hardcoded Cairo assumption
   assetsByAccount: {},  // { [adAccountId]: { account, pages, instagram, pixels, pagesVerified, instagramReadable } }
   baseName: 'Cup - Test',
   budgetMode: 'CBO',
@@ -3429,12 +3430,28 @@ function launchUUID() {
   try { return crypto.randomUUID(); } catch { return 'l-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10); }
 }
 function egpToMinor(v) { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : null; }
-/** Africa/Cairo is UTC+3 with no DST — confirmed by timezoneOffsetHours:3 on every real ad account Phase C discovered. */
-function launchCairoToUtcIso(dateStr, timeStr) {
+// Real IANA-timezone-aware local->UTC conversion — mirrors the backend's
+// authoritative launchBuilder.js:localWallClockToUtcDate() exactly (same
+// algorithm: naive UTC guess, then correct by that zone's real offset AT
+// that instant via Intl). Used here ONLY for Review's own "Meta-resolved
+// schedule" preview line — the backend recomputes this itself from the raw
+// startDate/startTime/timezone fields and is the one actually sent to Meta,
+// per the standing rule of never trusting a frontend-computed value for
+// something this consequential. Never a hardcoded Cairo +3 assumption.
+function launchLocalToUtcDate(dateStr, timeStr, ianaTimeZone) {
   const [Y, M, D] = String(dateStr || '').split('-').map(Number);
   const [h, mi] = String(timeStr || '00:00').split(':').map(Number);
   if (!Y || !M || !D) return null;
-  return new Date(Date.UTC(Y, M - 1, D, (h || 0) - 3, mi || 0)).toISOString();
+  const tz = ianaTimeZone || 'Africa/Cairo';
+  const naiveUtcMs = Date.UTC(Y, M - 1, D, h || 0, mi || 0, 0);
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const parts = dtf.formatToParts(new Date(naiveUtcMs)).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+    const hour24 = parts.hour === '24' ? '00' : parts.hour;
+    const asIfUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(hour24), Number(parts.minute), Number(parts.second));
+    const offsetMinutes = (asIfUtc - naiveUtcMs) / 60000;
+    return new Date(naiveUtcMs - offsetMinutes * 60000);
+  } catch { return null; }
 }
 
 /** Keeps launchState.campaigns in sync with campaignCount — preserves already-edited entries by index, auto-names new ones from baseName, never drops an edited entry just because the count changed and changed back. */
@@ -3461,7 +3478,7 @@ function launchCurrentAssets() {
 // a private-browsing tab or blocked storage just means this session behaves
 // as it always did (nothing persisted), never a hard failure.
 const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
-const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'adAccountId', 'adAccountName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
+const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
 function saveLaunchSnapshot() {
   try {
     const snap = {};
@@ -3563,7 +3580,7 @@ async function renderLaunchAccount(body) {
     if (!confirm('هتبدأ طلب رفع كامبين جديد من الصفر — الفيديوهات والإعدادات المحفوظة للطلب الحالي (رقم ' + launchState.jobId + ') هتفضل موجودة على السيرفر، بس مش هتظهر هنا تاني إلا لو رجعت بنفس رقم الطلب. تكمل؟')) return;
     clearLaunchSnapshot();
     Object.assign(launchState, {
-      step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null,
+      step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null, adAccountTimezoneName: null,
       baseName: 'Cup - Test', budgetMode: 'CBO', cboDailyBudget: '', aboBudgets: [], adSetsPerCampaign: 3, adsPerAdSet: 3,
       startMode: 'SCHEDULED', startDate: '', startTime: '00:00', platforms: { facebook: true, instagram: true },
       pageId: null, pageName: null, instagramId: null, instagramUsername: null, pixelId: null, pixelName: null,
@@ -3589,7 +3606,12 @@ async function renderLaunchAccount(body) {
   });
   wireLaunchNav(0, () => {
     if (!launchState.adAccountId) return;
-    launchState.adAccountName = accts.find((a) => a.id === launchState.adAccountId)?.name || launchState.adAccountName;
+    const acct = accts.find((a) => a.id === launchState.adAccountId);
+    launchState.adAccountName = acct?.name || launchState.adAccountName;
+    // The real ad account's own IANA timezone — never hardcoded Cairo. This
+    // is what makes the schedule step's local->UTC conversion authoritative
+    // instead of assuming every account is Africa/Cairo.
+    launchState.adAccountTimezoneName = acct?.timezoneName || launchState.adAccountTimezoneName || 'Africa/Cairo';
     launchState.step = 2; renderLaunchStep();
   });
 }
@@ -3693,12 +3715,39 @@ async function renderLaunchAdSets(body) {
 }
 
 // ---- Step 4 · PLATFORMS, PAGE & PIXEL ----
+// The bundled discovery (getAccountIdentities → ad-account/business-level
+// Instagram lists) can miss an Instagram account connected DIRECTLY to a
+// specific Page rather than surfaced at the ad-account/business level —
+// this was the real production bug (ads created Facebook-only, needing a
+// manual "Add Instagram placement" fix). Lazily resolves the SELECTED
+// Page's own real connected Instagram identity via the existing
+// /api/meta/page-instagram endpoint (already used successfully by Clone &
+// Schedule) and merges it in, preferring it over the bundled list.
+async function launchResolvePageInstagram(pageId) {
+  if (!pageId) return null;
+  const assets = launchCurrentAssets();
+  if (!assets) return null;
+  assets.pageInstagramCache = assets.pageInstagramCache || {};
+  if (pageId in assets.pageInstagramCache) return assets.pageInstagramCache[pageId];
+  try {
+    const r = await api.get('/api/meta/page-instagram', { pageId });
+    const ig = r?.instagram || null;
+    assets.pageInstagramCache[pageId] = ig;
+    if (ig?.id && !assets.instagram.some((g) => g.id === ig.id)) assets.instagram = [ig, ...assets.instagram];
+    return ig;
+  } catch { assets.pageInstagramCache[pageId] = null; return null; }
+}
+
 async function renderLaunchPlatforms(body) {
   if (!launchCurrentAssets()) {
     const r = await api.get('/api/ai-media-buyer/launch/discovery/account-assets', { adAccountId: launchState.adAccountId });
     launchState.assetsByAccount[launchState.adAccountId] = r;
     if (!launchState.pageId && r.pages?.length === 1) { launchState.pageId = r.pages[0].id; launchState.pageName = r.pages[0].name; }
     if (!launchState.pixelId && r.pixels?.length === 1) { launchState.pixelId = r.pixels[0].id; launchState.pixelName = r.pixels[0].name; }
+  }
+  if (launchState.pageId) {
+    const ig = await launchResolvePageInstagram(launchState.pageId);
+    if (ig?.id && !launchState.instagramId) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; }
   }
   const assets = launchCurrentAssets() || { pages: [], instagram: [], pixels: [], pagesVerified: false, instagramReadable: false };
 
@@ -3727,7 +3776,7 @@ async function renderLaunchPlatforms(body) {
                 <input type="radio" name="ambLaunchIg" value="${E(g.id)}" data-name="${E(g.username)}" ${launchState.instagramId === g.id ? 'checked' : ''} />
                 <span class="rr-main">@${E(g.username)}</span><span class="rr-sub">${E(g.id)}</span>
               </label>`).join('')}</div>`
-          : `<div class="amb-empty" style="text-align:right; padding:12px 14px; background:var(--amb-surface-2); border-radius:10px;">⚠️ ${assets.instagramReadable ? 'لا يوجد حساب إنستجرام متصل بهذا الحساب الإعلاني.' : 'تعذّر قراءة حسابات إنستجرام — راجع صلاحيات اتصال Meta.'} الإعلانات هتتنشر على إنستجرام بهوية الصفحة فقط (بدون حساب إنستجرام مخصص).</div>`
+          : `<div class="amb-empty" style="text-align:right; padding:12px 14px; background:var(--amb-surface-2); border-radius:10px;">⚠️ ${assets.instagramReadable ? 'لا يوجد حساب إنستجرام متصل بالصفحة المختارة أو بهذا الحساب الإعلاني.' : 'تعذّر قراءة حسابات إنستجرام — راجع صلاحيات اتصال Meta.'} لازم حساب إنستجرام حقيقي عشان تكمل — أو بطّل تفعيل إنستجرام من المنصات فوق لو عايز تنشر على فيسبوك بس.</div>`
       ) : '<div class="faint" style="font-size:12px;">إنستجرام غير مفعّل ضمن المنصات المختارة.</div>'}
 
       <div class="section-title">مكان التحويل</div>
@@ -3751,7 +3800,13 @@ async function renderLaunchPlatforms(body) {
 
   $('ambLaunchPlatFb').onchange = (e) => { launchState.platforms.facebook = e.target.checked; };
   $('ambLaunchPlatIg').onchange = (e) => { launchState.platforms.instagram = e.target.checked; renderLaunchStep(); };
-  body.querySelectorAll('input[name="ambLaunchPage"]').forEach((r) => { r.onchange = () => { launchState.pageId = r.value; launchState.pageName = r.dataset.name; }; });
+  body.querySelectorAll('input[name="ambLaunchPage"]').forEach((r) => { r.onchange = async () => {
+    launchState.pageId = r.value; launchState.pageName = r.dataset.name;
+    launchState.instagramId = null; launchState.instagramUsername = null; // a different Page may have a different (or no) Instagram identity
+    const ig = await launchResolvePageInstagram(r.value);
+    if (ig?.id) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; }
+    renderLaunchStep();
+  }; });
   body.querySelectorAll('input[name="ambLaunchIg"]').forEach((r) => { r.onchange = () => { launchState.instagramId = r.value; launchState.instagramUsername = r.dataset.name; }; });
   body.querySelectorAll('input[name="ambLaunchPixel"]').forEach((r) => { r.onchange = () => { launchState.pixelId = r.value; launchState.pixelName = r.dataset.name; }; });
   $('ambLaunchConvEvent').onchange = (e) => { launchState.conversionEvent = e.target.value; };
@@ -3760,6 +3815,9 @@ async function renderLaunchPlatforms(body) {
     if (!launchState.platforms.facebook && !launchState.platforms.instagram) { UI.toast('اختار منصة واحدة على الأقل.', 'error'); return; }
     if (!launchState.pageId) { UI.toast('اختيار Facebook Page مطلوب.', 'error'); return; }
     if (!launchState.pixelId) { UI.toast('اختيار Meta Pixel مطلوب.', 'error'); return; }
+    // Real production bug: Instagram checked with no real identity silently
+    // published Facebook-only ads. Block here instead of letting it through.
+    if (launchState.platforms.instagram && !launchState.instagramId) { UI.toast('اخترت إنستجرام كمنصة لكن لسه معملتش اختيار حساب إنستجرام حقيقي متصل بالصفحة.', 'error'); return; }
     launchState.step = 5; renderLaunchStep();
   });
 }
@@ -4287,15 +4345,48 @@ async function renderLaunchReview(body) {
         ? `🟢 ${videoStats.ready}/${videoStats.total} جاهزة`
         : `🟡 ${videoStats.ready}/${videoStats.total} جاهزة — ${videoStats.processing} لسه بيترفع/يتعالج`;
 
+  // Three permanent post-mortem checks (real production discrepancies found
+  // live in Ads Manager, now fixed at the payload-builder root cause and
+  // re-verified here on every Review render so they can never silently
+  // regress): customer lifecycle strategy, Facebook+Instagram placement
+  // with a real identity, and the exact requested schedule.
+  const igOk = !launchState.platforms.instagram || !!launchState.instagramId;
+  const igLine = !launchState.platforms.instagram
+    ? 'غير مفعّل ضمن المنصات'
+    : launchState.instagramId
+      ? `🟢 @${launchState.instagramUsername || launchState.instagramId}`
+      : '🔴 لازم حساب إنستجرام حقيقي متصل بالصفحة';
+
+  let scheduleLine = launchState.startMode === 'NOW' ? '🟢 تشغيل فوري (بدون جدولة)' : '🔴 لسه معملتش تحديد تاريخ/وقت';
+  let scheduleOk = launchState.startMode === 'NOW' || !!launchState.startDate;
+  if (launchState.startMode === 'SCHEDULED' && launchState.startDate) {
+    const tz = launchState.adAccountTimezoneName || 'Africa/Cairo';
+    const resolvedUtc = launchLocalToUtcDate(launchState.startDate, launchState.startTime, tz);
+    if (resolvedUtc) {
+      const requestedText = `${launchState.startDate} ${launchState.startTime} (${tz})`;
+      const resolvedText = resolvedUtc.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+      if (resolvedUtc.getTime() <= Date.now()) {
+        // Confirmed live against real Meta: a past start_time is never honored — Meta
+        // substitutes the actual creation moment instead, no matter what we send.
+        scheduleLine = `🔴 الموعد فات بالفعل (${requestedText}) — Meta هيبدأ فورًا مش في الموعد ده. عدّل الموعد أو اختار "تشغيل الآن".`;
+        scheduleOk = false;
+      } else {
+        scheduleLine = `🟢 المطلوب: ${requestedText} — Meta (UTC): ${resolvedText}`;
+        scheduleOk = true;
+      }
+    } else { scheduleLine = '🔴 منطقة توقيت غير معروفة — تعذّر حساب الموعد'; scheduleOk = false; }
+  }
+
   const checklist = [
     ['الحساب الإعلاني', !!launchState.adAccountId],
     ['Facebook Page', !!launchState.pageId],
-    ['Instagram', !launchState.platforms.instagram || true], // informational only — never blocks (honest state shown in step 4, not a hard gate for a DRAFT)
+    ['Instagram placement + identity', igLine],
     ['Meta Pixel', !!launchState.pixelId],
     ['حدث التحويل', !!launchState.conversionEvent],
     ['المنصات', platformsArr.length > 0],
     ['الميزانية', launchState.budgetMode === 'CBO' ? egpToMinor(launchState.cboDailyBudget) > 0 : launchState.aboBudgets.every((a) => egpToMinor(a.dailyBudget) > 0)],
-    ['الجدولة', launchState.startMode === 'NOW' || !!launchState.startDate],
+    ['الجدولة (المطلوب مقابل Meta)', scheduleLine],
+    ['Customer lifecycle', '🟢 All audiences (existing_customer_budget_percentage: 100)'],
     ['نصوص وروابط الحملات', launchState.campaigns.every((c) => c.name?.trim() && c.websiteUrl?.trim())],
     ['الفيديوهات', videoLine],
   ];
@@ -4303,7 +4394,12 @@ async function renderLaunchReview(body) {
   // before any upload finishes) — only the non-video fields gate "حفظ
   // كمسودة". Full readiness (including videos) is the separate allReady
   // signal below, which is what an eventual Publish step will gate on.
-  const savable = checklist.filter(([label]) => label !== 'الفيديوهات').every(([, v]) => v === true);
+  // Plain boolean rows gate normally; the string-rendered rows (videos,
+  // Instagram identity, schedule, lifecycle) carry their own explicit
+  // pass/fail booleans (videoReady/igOk/scheduleOk) ANDed in separately —
+  // lifecycle has no gate since this wizard has no UI that could ever set
+  // existing_customer_budget_percentage to anything but 100.
+  const savable = checklist.filter(([, v]) => typeof v === 'boolean').every(([, v]) => v === true) && igOk && scheduleOk;
   const allReady = savable && videoReady;
 
   // Real persisted queue state, not frontend memory — the same rule the
@@ -4391,8 +4487,14 @@ async function renderLaunchReview(body) {
       adsPerAdSet: launchState.adsPerAdSet,
       campaignCount: launchState.campaigns.length,
       startMode: launchState.startMode,
-      startAt: launchState.startMode === 'SCHEDULED' ? launchCairoToUtcIso(launchState.startDate, launchState.startTime) : null,
-      timezone: 'Africa/Cairo',
+      // Raw local date/time + the real ad account's own IANA timezone —
+      // never a pre-converted UTC value. The backend is the sole
+      // authoritative place this becomes a UTC instant (launchBuilder.js:
+      // localWallClockToUtcDate), so a stale/wrong frontend conversion can
+      // never reach Meta.
+      startDate: launchState.startMode === 'SCHEDULED' ? launchState.startDate : null,
+      startTime: launchState.startMode === 'SCHEDULED' ? launchState.startTime : null,
+      timezone: launchState.adAccountTimezoneName || 'Africa/Cairo',
       cta: 'ORDER_NOW',
       budget: launchState.budgetMode === 'CBO'
         ? { cbo: { dailyBudgetMinor: egpToMinor(launchState.cboDailyBudget) } }

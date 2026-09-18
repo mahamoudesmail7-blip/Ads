@@ -27,6 +27,8 @@ function baseConfig(overrides = {}) {
     pixelName: 'Trendy Store Pixel',
     conversionEvent: 'PURCHASE',
     platforms: ['facebook', 'instagram'],
+    instagramId: '17841400000000000',
+    instagramUsername: 'trendy.store',
     adSetsPerCampaign: 2,
     adsPerAdSet: 3,
     campaignCount: 1,
@@ -268,6 +270,57 @@ console.log('\n§8 Phase E foundation — startLaunchJob shell + createDraftJob 
     await prisma.ambLaunchCampaign.deleteMany({ where: { job_id: jobId } });
     await prisma.ambLaunchJob.deleteMany({ where: { job_id: jobId } });
   }
+}
+
+console.log('\n§9 localWallClockToUtcDate — real IANA-timezone-aware conversion, no hardcoded offset:');
+{
+  // Africa/Cairo: UTC+3 year-round, no DST — confirmed live via Meta's own
+  // timezone_offset_hours_utc on the real connected ad account.
+  const cairoMidnight = launch.localWallClockToUtcDate('2026-09-18', '00:00', 'Africa/Cairo');
+  ok('18 Sep 2026 00:00 Cairo -> 17 Sep 2026 21:00 UTC (the exact real production bug scenario)', cairoMidnight.toISOString() === '2026-09-17T21:00:00.000Z', cairoMidnight?.toISOString());
+
+  // A real DST-observing zone in summer (EDT = UTC-4) vs winter (EST = UTC-5) — proves this
+  // is a genuine timezone-database-aware conversion, not a fixed offset baked into the code.
+  const nySummer = launch.localWallClockToUtcDate('2026-07-01', '09:00', 'America/New_York');
+  ok('1 Jul 2026 09:00 New York (EDT, UTC-4 in summer) -> 13:00 UTC', nySummer.toISOString() === '2026-07-01T13:00:00.000Z', nySummer?.toISOString());
+  const nyWinter = launch.localWallClockToUtcDate('2026-01-15', '09:00', 'America/New_York');
+  ok('15 Jan 2026 09:00 New York (EST, UTC-5 in winter) -> 14:00 UTC — same local wall-clock time, DIFFERENT UTC offset than summer', nyWinter.toISOString() === '2026-01-15T14:00:00.000Z', nyWinter?.toISOString());
+
+  // A southern-hemisphere DST zone (opposite season pattern) — Sydney is UTC+11 in its summer (Jan), UTC+10 in its winter (Jul).
+  const sydneyJan = launch.localWallClockToUtcDate('2026-01-15', '10:00', 'Australia/Sydney');
+  ok('15 Jan 2026 10:00 Sydney (AEDT, UTC+11) -> 23:00 UTC (14 Jan)', sydneyJan.toISOString() === '2026-01-14T23:00:00.000Z', sydneyJan?.toISOString());
+  const sydneyJul = launch.localWallClockToUtcDate('2026-07-15', '10:00', 'Australia/Sydney');
+  ok('15 Jul 2026 10:00 Sydney (AEST, UTC+10) -> 00:00 UTC same day', sydneyJul.toISOString() === '2026-07-15T00:00:00.000Z', sydneyJul?.toISOString());
+
+  ok('an unrecognized timezone name returns null rather than guessing an offset', launch.localWallClockToUtcDate('2026-09-18', '00:00', 'Not/A_Real_Zone') === null);
+  ok('missing date returns null', launch.localWallClockToUtcDate(null, '00:00', 'Africa/Cairo') === null);
+}
+
+console.log('\n§10 validateLaunchConfig — authoritative server-side schedule + Instagram-identity validation:');
+{
+  const withSchedule = (overrides = {}) => baseConfig({ startMode: 'SCHEDULED', startDate: '2026-09-18', startTime: '00:00', timezone: 'Africa/Cairo', ...overrides });
+
+  const v = launch.validateLaunchConfig(withSchedule());
+  ok('SCHEDULED with startDate/startTime/timezone computes the exact real UTC instant server-side', v.startAt.toISOString() === '2026-09-17T21:00:00.000Z', v.startAt?.toISOString());
+
+  let threw = false;
+  try { launch.validateLaunchConfig(withSchedule({ timezone: 'Nonexistent/Zone' })); } catch (e) { threw = true; ok('an invalid ad-account timezone name is rejected, never silently defaulted', /منطقة توقيت/.test(e.message)); }
+  ok('unrecognized timezone throws', threw);
+
+  threw = false;
+  try { launch.validateLaunchConfig(baseConfig({ startMode: 'SCHEDULED' })); } catch (e) { threw = true; ok('SCHEDULED with no date/time/legacy startAt at all is rejected', /تاريخ ووقت بدء/.test(e.message)); }
+  ok('missing schedule input throws', threw);
+
+  // Backward-compat path: an already-computed ISO instant (older/internal callers) still works.
+  const vLegacy = launch.validateLaunchConfig(baseConfig({ startMode: 'SCHEDULED', startAt: '2026-09-17T21:00:00.000Z' }));
+  ok('legacy pre-computed startAt ISO string still accepted', vLegacy.startAt.toISOString() === '2026-09-17T21:00:00.000Z');
+
+  threw = false;
+  try { launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: null })); } catch (e) { threw = true; ok('Instagram selected with no resolved identity is rejected — never silently falls back to Facebook-only', /حساب إنستجرام حقيقي/.test(e.message)); }
+  ok('Instagram-without-identity throws (the real production bug this fixes)', threw);
+
+  const vIg = launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000000', instagramUsername: 'trendy.store' }));
+  ok('Instagram selected WITH a real identity passes and is carried through', vIg.instagramId === '17841400000000000');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
