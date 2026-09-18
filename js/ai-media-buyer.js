@@ -4220,6 +4220,23 @@ async function renderLaunchReview(body) {
   // up-to-date, and so a browser refresh landing straight on Review still
   // shows the real persisted state.
   await syncLaunchVideosFromBackend({ force: true });
+
+  // Same rule applied to the job itself: launchState.savedJob was only ever
+  // set in-memory by a "حفظ كمسودة" click in THIS browser session, never
+  // persisted (deliberately — it can be a large object) and never reloaded
+  // on refresh/revisit. That left the publish button permanently disabled
+  // after any reload even for a fully finalized, fully valid real draft —
+  // exactly the same class of bug as the earlier video-readiness one. Now
+  // self-healing: whenever we have a jobId, re-confirm against the real
+  // backend row whether it's actually been finalized (has real campaigns),
+  // and treat THAT as the source of truth instead of the ephemeral flag.
+  if (launchState.jobId && !launchState.savedJob) {
+    try {
+      const real = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}`);
+      if (real && Array.isArray(real.campaigns) && real.campaigns.length > 0) launchState.savedJob = real;
+    } catch { /* job may not exist yet (still on an earlier step's shell) — leave savedJob null, save-draft button stays the way forward */ }
+  }
+
   const videoStats = summarizeLaunchVideoReadiness(launchState.videos);
   const videoReady = videoStats.total > 0 && videoStats.ready === videoStats.total;
   const videoLine = videoStats.total === 0
