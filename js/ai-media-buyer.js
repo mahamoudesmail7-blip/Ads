@@ -4567,7 +4567,10 @@ async function renderLaunchReview(body) {
   const totalAds = totalAdSets * launchState.adsPerAdSet;
 
   let publishBtnLabel = '🚀 نشر الحملات';
-  let publishBtnDisabled = !(allReady && launchState.savedJob) || launchState.busy;
+  // Only gates on allReady now — a ready-but-not-yet-saved draft is auto-saved
+  // the instant Publish is clicked (see the handler below), so a fully green
+  // checklist is never blocked purely by forgetting to press "حفظ كمسودة" first.
+  let publishBtnDisabled = !allReady || launchState.busy;
   if (isComplete) { publishBtnLabel = '✅ اكتمل النشر'; publishBtnDisabled = true; }
   else if (isPublishing) { publishBtnLabel = '⏳ جاري النشر…'; publishBtnDisabled = true; }
   else if (isPartial) { publishBtnLabel = '🔁 استئناف النشر'; publishBtnDisabled = !allReady || launchState.busy; }
@@ -4619,44 +4622,45 @@ async function renderLaunchReview(body) {
   launchWireQueueProgressControls($('ambLaunchQueueProgress'));
   const newFromComplete = $('ambLaunchNewFromComplete'); if (newFromComplete) newFromComplete.onclick = () => launchConfirmAndStartNew();
   $('ambLaunchBack').onclick = () => { launchStopQueuePolling(); launchState.step = 7; renderLaunchStep(); };
+  const buildDraftPayload = () => ({
+    jobId: launchState.jobId,
+    adAccountId: launchState.adAccountId,
+    adAccountName: launchState.adAccountName,
+    pageId: launchState.pageId,
+    pageName: launchState.pageName,
+    instagramId: launchState.instagramId,
+    instagramUsername: launchState.instagramUsername,
+    objective: 'OUTCOME_SALES',
+    budgetMode: launchState.budgetMode,
+    pixelId: launchState.pixelId,
+    pixelName: launchState.pixelName,
+    conversionEvent: launchState.conversionEvent,
+    perCampaignPixel: launchState.perCampaignPixel,
+    platforms: platformsArr,
+    adSetsPerCampaign: launchState.adSetsPerCampaign,
+    adsPerAdSet: launchState.adsPerAdSet,
+    campaignCount: launchState.campaigns.length,
+    startMode: launchState.startMode,
+    // Raw local date/time + the real ad account's own IANA timezone —
+    // never a pre-converted UTC value. The backend is the sole
+    // authoritative place this becomes a UTC instant (launchBuilder.js:
+    // localWallClockToUtcDate), so a stale/wrong frontend conversion can
+    // never reach Meta.
+    startDate: launchState.startMode === 'SCHEDULED' ? launchState.startDate : null,
+    startTime: launchState.startMode === 'SCHEDULED' ? launchState.startTime : null,
+    timezone: launchState.adAccountTimezoneName || 'Africa/Cairo',
+    cta: 'ORDER_NOW',
+    budget: launchState.budgetMode === 'CBO'
+      ? { cbo: { dailyBudgetMinor: egpToMinor(launchState.cboDailyBudget) } }
+      : { abo: { adSets: launchState.aboBudgets.map((a) => ({ dailyBudgetMinor: egpToMinor(a.dailyBudget) })) } },
+    campaigns: launchState.campaigns.map((c) => ({ name: c.name, primaryText: c.primaryText, headline: c.headline, websiteUrl: c.websiteUrl, pixelId: launchState.perCampaignPixel ? c.pixelId : null })),
+  });
+
   $('ambLaunchSaveDraft').onclick = async () => {
     if (!launchState.jobId) launchState.jobId = launchUUID();
     launchState.busy = true; renderLaunchStep();
-    const payload = {
-      jobId: launchState.jobId,
-      adAccountId: launchState.adAccountId,
-      adAccountName: launchState.adAccountName,
-      pageId: launchState.pageId,
-      pageName: launchState.pageName,
-      instagramId: launchState.instagramId,
-      instagramUsername: launchState.instagramUsername,
-      objective: 'OUTCOME_SALES',
-      budgetMode: launchState.budgetMode,
-      pixelId: launchState.pixelId,
-      pixelName: launchState.pixelName,
-      conversionEvent: launchState.conversionEvent,
-      perCampaignPixel: launchState.perCampaignPixel,
-      platforms: platformsArr,
-      adSetsPerCampaign: launchState.adSetsPerCampaign,
-      adsPerAdSet: launchState.adsPerAdSet,
-      campaignCount: launchState.campaigns.length,
-      startMode: launchState.startMode,
-      // Raw local date/time + the real ad account's own IANA timezone —
-      // never a pre-converted UTC value. The backend is the sole
-      // authoritative place this becomes a UTC instant (launchBuilder.js:
-      // localWallClockToUtcDate), so a stale/wrong frontend conversion can
-      // never reach Meta.
-      startDate: launchState.startMode === 'SCHEDULED' ? launchState.startDate : null,
-      startTime: launchState.startMode === 'SCHEDULED' ? launchState.startTime : null,
-      timezone: launchState.adAccountTimezoneName || 'Africa/Cairo',
-      cta: 'ORDER_NOW',
-      budget: launchState.budgetMode === 'CBO'
-        ? { cbo: { dailyBudgetMinor: egpToMinor(launchState.cboDailyBudget) } }
-        : { abo: { adSets: launchState.aboBudgets.map((a) => ({ dailyBudgetMinor: egpToMinor(a.dailyBudget) })) } },
-      campaigns: launchState.campaigns.map((c) => ({ name: c.name, primaryText: c.primaryText, headline: c.headline, websiteUrl: c.websiteUrl, pixelId: launchState.perCampaignPixel ? c.pixelId : null })),
-    };
     try {
-      const job = await api.post('/api/ai-media-buyer/launch/jobs', payload);
+      const job = await api.post('/api/ai-media-buyer/launch/jobs', buildDraftPayload());
       launchState.savedJob = job;
       UI.toast('✅ اتحفظت المسودة بنجاح.');
     } catch (e) {
@@ -4668,7 +4672,24 @@ async function renderLaunchReview(body) {
 
   const publishBtn = $('ambLaunchPublish');
   if (publishBtn) publishBtn.onclick = async () => {
-    if (!launchState.savedJob || !launchState.jobId) { UI.toast('احفظ المسودة الأول.', 'error'); return; }
+    // A fully green checklist is publishable even if "حفظ كمسودة" was never
+    // pressed — the draft is saved automatically right here first (same
+    // payload, same idempotent createDraftJob on the backend) so a real job
+    // exists for /publish to act on. This was the actual bug behind
+    // "why isn't Publish working" — allReady was true but savedJob was
+    // still null, and the button gave no clue why it was disabled.
+    if (!launchState.jobId) launchState.jobId = launchUUID();
+    if (!launchState.savedJob) {
+      launchState.busy = true; renderLaunchStep();
+      try {
+        launchState.savedJob = await api.post('/api/ai-media-buyer/launch/jobs', buildDraftPayload());
+      } catch (e) {
+        UI.toast(e.message, 'error');
+        launchState.busy = false; renderLaunchStep();
+        return;
+      }
+      launchState.busy = false;
+    }
     const resuming = isPartial;
     const ok = await UI.confirmModal({
       title: resuming ? 'استئناف النشر' : 'تأكيد نشر الحملات',
