@@ -56,6 +56,7 @@ import productResearchExperimentalRoutes from './routes/productResearchExperimen
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
+import { startProductExperimentScheduler } from './services/amb/productExperiment.js';
 import { startAmbCloneScheduler } from './services/amb/cloneScheduler.js';
 import { startLaunchScheduler } from './services/amb/launchScheduler.js';
 import { startCreativeFactoryScheduler } from './services/creativeFactory/scheduler.js';
@@ -145,6 +146,7 @@ startEasyOrdersReconciliation();
 // actions. Both no-op cleanly when Meta isn't connected.
 startAmbSnapshotScheduler();
 startAmbOutcomeScheduler();
+startProductExperimentScheduler();
 // Campaign Clone & Schedule — 60s tick that activates cloned (PAUSED)
 // campaigns at their per-destination scheduled time. No-ops when Meta isn't
 // connected or ambCloneAutoActivate is off.

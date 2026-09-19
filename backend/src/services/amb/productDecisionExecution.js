@@ -26,6 +26,37 @@ import { resolveProductCampaigns } from './productPerformance.js';
 
 function fail(msg, status = 400) { const e = new Error(msg); e.status = status; throw e; }
 
+/**
+ * Every executed decision — real Meta write or not — becomes a trackable
+ * Experiment (Phase 9), using the EXACT same AmbActionResult H6/H12/H24
+ * checkpoint convention executor.js already uses for campaign/ad-level
+ * actions. This is what lets productExperiment.js's evaluator later find
+ * and measure it; without this row, a decision would execute but never be
+ * measured, which the user's Phase 9 requirement (every approved decision
+ * becomes an Experiment) forbids.
+ */
+async function scheduleExperimentCheckpoints({ rec, actionType, executionStatus, metaResponseJson, userId }) {
+  const action = await prisma.ambAction.create({
+    data: {
+      recommendation_id: rec.id, mode: 'APPROVAL', action_type: actionType, ad_account_id: rec.ad_account_id,
+      level: 'product', entity_id: `product:${rec.amb_product_id}`, entity_name: rec.product_name,
+      ai_reason: rec.reason, ai_confidence: rec.confidence,
+      approval_status: 'APPROVED', execution_status: executionStatus, executed_by_id: userId || null, executed_at: new Date(),
+      meta_response_json: metaResponseJson ?? null,
+    },
+  });
+  const now = Date.now();
+  await prisma.ambActionResult.createMany({
+    data: [
+      { action_id: action.id, checkpoint: 'H6', due_at: new Date(now + 6 * 3600 * 1000) },
+      { action_id: action.id, checkpoint: 'H12', due_at: new Date(now + 12 * 3600 * 1000) },
+      { action_id: action.id, checkpoint: 'H24', due_at: new Date(now + 24 * 3600 * 1000) },
+    ],
+    skipDuplicates: true,
+  });
+  return action;
+}
+
 async function loadProductRec(recId) {
   const rec = await prisma.ambRecommendation.findUnique({ where: { id: Number(recId) } });
   if (!rec || rec.level !== 'product') fail('قرار المنتج غير موجود.', 404);
@@ -96,20 +127,12 @@ export async function executeApprovedDecision({ recId, userId, confirmRealExecut
       catch (err) { results.push({ campaignId: t.campaignId, ok: false, error: err.message }); logger.error('[productDecisionExecution] pause failed', { campaignId: t.campaignId, message: err.message }); }
     }
     const allOk = results.every((r) => r.ok);
-    const action = await prisma.ambAction.create({
-      data: {
-        recommendation_id: rec.id, mode: 'APPROVAL', action_type: 'PAUSE', ad_account_id: rec.ad_account_id,
-        // A product-level pause affects MULTIPLE campaigns — AmbAction's
-        // entity_id is a required single-entity field (designed for the
-        // existing campaign/ad-level flow), so it holds a descriptive
-        // product marker here; the real per-campaign detail (every id +
-        // its own pause result) lives in meta_response_json below.
-        level: 'product', entity_id: `product:${rec.amb_product_id}`, entity_name: rec.product_name,
-        ai_reason: rec.reason, ai_confidence: rec.confidence,
-        approval_status: 'APPROVED', execution_status: allOk ? 'EXECUTED' : 'FAILED', executed_by_id: userId || null,
-        meta_response_json: JSON.stringify(results),
-      },
-    });
+    // A product-level pause affects MULTIPLE campaigns — AmbAction's
+    // entity_id is a required single-entity field (designed for the
+    // existing campaign/ad-level flow), so scheduleExperimentCheckpoints()
+    // gives it a descriptive product marker; the real per-campaign detail
+    // (every id + its own pause result) lives in meta_response_json.
+    const action = await scheduleExperimentCheckpoints({ rec, actionType: 'PAUSE', executionStatus: allOk ? 'EXECUTED' : 'FAILED', metaResponseJson: JSON.stringify(results), userId });
     await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: allOk ? 'EXECUTED' : rec.status } });
     return { ok: allOk, plan, results, actionId: action.id };
   }
@@ -119,11 +142,13 @@ export async function executeApprovedDecision({ recId, userId, confirmRealExecut
       return { ok: false, requiresConfirmation: true, plan, message: 'هيتم إنشاء مسودة رفع كامبين جديدة (بدون أي نشر فعلي على Meta) — تأكيد؟' };
     }
     if (!plan.prefill.productId) fail('تعذّر إيجاد المنتج الحقيقي المرتبط لعمل مسودة.', 400);
+    const action = await scheduleExperimentCheckpoints({ rec, actionType: 'DRAFT_PRODUCT_DECISION', executionStatus: 'EXECUTED', metaResponseJson: JSON.stringify(plan.prefill), userId });
     await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'EXECUTED' } });
-    return { ok: true, plan, prefill: plan.prefill, message: 'الخطة جاهزة — افتح "رفع الكامبين" واختار نفس المنتج؛ بيانات الكرياتيف/الجمهور الفائز موضّحة هنا كمرجع، والنشر النهائي يدوي بالكامل.' };
+    return { ok: true, plan, prefill: plan.prefill, actionId: action.id, message: 'الخطة جاهزة — افتح "رفع الكامبين" واختار نفس المنتج؛ بيانات الكرياتيف/الجمهور الفائز موضّحة هنا كمرجع، والنشر النهائي يدوي بالكامل.' };
   }
 
-  // MANUAL_NEXT_STEP: nothing on Meta for this endpoint to do — acknowledge and close the loop for Phase 9's experiment tracking to pick up later if the human acts on it elsewhere.
+  // MANUAL_NEXT_STEP: nothing on Meta for this endpoint to do, but the decision itself still becomes a measurable Experiment (Phase 9) — before/after product performance is compared regardless of whether the human's manual follow-through was on Meta or elsewhere (creative, landing page, offer).
+  const action = await scheduleExperimentCheckpoints({ rec, actionType: 'DRAFT_PRODUCT_DECISION', executionStatus: 'EXECUTED', metaResponseJson: null, userId });
   await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'EXECUTED' } });
-  return { ok: true, plan, message: 'تم تسجيل القرار — الخطوة الفعلية (كرياتيف/جمهور/عرض/صفحة) يدوية خارج هذا الإجراء.' };
+  return { ok: true, plan, actionId: action.id, message: 'تم تسجيل القرار — الخطوة الفعلية (كرياتيف/جمهور/عرض/صفحة) يدوية خارج هذا الإجراء.' };
 }

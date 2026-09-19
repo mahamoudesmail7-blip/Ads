@@ -101,6 +101,9 @@ try {
     ok('a manual-step decision succeeds immediately, no confirmation gate needed (no Meta write exists for it)', result.ok === true, JSON.stringify(result));
     const after = await prisma.ambRecommendation.findUnique({ where: { id: rec.id } });
     ok('status correctly moves to EXECUTED', after.status === 'EXECUTED');
+    const results = await prisma.ambActionResult.findMany({ where: { action_id: result.actionId } });
+    ok('Phase 9: even a manual-step decision schedules the 3 H6/H12/H24 experiment checkpoints', results.length === 3, JSON.stringify(results));
+    ok('all 3 checkpoints start unevaluated (retroactive evaluation happens later, at due_at)', results.every((r) => r.evaluated_at === null && r.result_class === null));
   }
 
   console.log('\n§7 executeApprovedDecision — SCALE_CANDIDATE prefill also requires explicit confirmation before touching anything:');
@@ -111,6 +114,21 @@ try {
     ok('without confirmation, SCALE_CANDIDATE also just returns the plan, never acts', result.ok === false && result.requiresConfirmation === true, JSON.stringify(result));
     const after = await prisma.ambRecommendation.findUnique({ where: { id: rec.id } });
     ok('status stays APPROVED, never silently EXECUTED', after.status === 'APPROVED');
+  }
+
+  console.log('\n§8 Phase 9: a confirmed SCALE_CANDIDATE (real linked AmbProduct) becomes a measurable Experiment too:');
+  {
+    const realAmbProduct = await prisma.ambProduct.findFirst({ where: { product_id: { not: null } }, select: { id: true } });
+    if (!realAmbProduct) {
+      console.log('  (skipped — no real AmbProduct linked to a Product exists in this DB)');
+    } else {
+      const rec = await prisma.ambRecommendation.create({ data: baseRecData({ decision: 'SCALE_CANDIDATE', status: 'APPROVED', amb_product_id: realAmbProduct.id }) });
+      cleanupIds.push(rec.id);
+      const result = await executeApprovedDecision({ recId: rec.id, userId: null, confirmRealExecution: true });
+      ok('a confirmed prefill decision executes (never touches real Meta — only creates a local draft reference)', result.ok === true, JSON.stringify(result));
+      const results = result.actionId ? await prisma.ambActionResult.findMany({ where: { action_id: result.actionId } }) : [];
+      ok('schedules the 3 H6/H12/H24 experiment checkpoints exactly like a real Meta write would', results.length === 3, JSON.stringify(results));
+    }
   }
 } finally {
   await cleanup();

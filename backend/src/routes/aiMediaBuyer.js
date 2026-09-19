@@ -235,6 +235,25 @@ router.post('/decision-center/:id/execute', requireRole('ADMIN'), asyncRoute(asy
   const { executeApprovedDecision } = await import('../services/amb/productDecisionExecution.js');
   res.json(await executeApprovedDecision({ recId: req.params.id, userId: req.user.id, confirmRealExecution: req.body?.confirmRealExecution === true }));
 }));
+// Phase 9 — Experiment Measurement. Mirrors the existing /outcomes/run
+// scheduler-tick shape exactly, scoped to product-level decisions only —
+// the pre-existing /outcomes/run above keeps owning every campaign/ad/adset
+// checkpoint, this never touches those.
+router.post('/product-experiments/run', asyncRoute(async (req, res) => {
+  const { evaluateProductExperiments } = await import('../services/amb/productExperiment.js');
+  res.json(await evaluateProductExperiments());
+}));
+router.get('/decision-center/:id/experiment', asyncRoute(async (req, res) => {
+  const { getProductExperiment } = await import('../services/amb/productExperiment.js');
+  res.json(await getProductExperiment({ recId: req.params.id }));
+}));
+// Phase 10 — Product Learning Memory. Reuses PMC's existing pmc_learning/
+// pmc_memory tables as-is (see productLearning.js) — a pure read view plus
+// the PROVEN/PROMISING/REJECTED/STALE presentation-layer reconciliation.
+router.get('/products/:productId/learning-memory', asyncRoute(async (req, res) => {
+  const { getProductLearningMemory } = await import('../services/amb/productLearning.js');
+  res.json(await getProductLearningMemory({ productId: req.params.productId }));
+}));
 
 // ---------------------------------------------------------------------------
 // Campaign ↔ Product mapping
