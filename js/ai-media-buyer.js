@@ -1965,9 +1965,24 @@ async function dcApproveAndExecute(panel, id) {
     const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, { confirmRealExecution: true });
     UI.toast(result.ok ? '✅ تم' : (result.message || 'حصلت مشكلة'), result.ok ? undefined : 'error');
     if (result.ok && plan.actionKind === 'LAUNCH_BUILDER_PREFILL' && result.prefill) {
-      launchState.storeId = null; launchState.productId = result.prefill.productId || null;
+      // Launch Builder's wizard has no audience/geo targeting step at all
+      // today (every campaign it creates launches BROAD; Meta's algorithm
+      // finds the audience) — so there is no real field to auto-fill the
+      // winning gender/age/governorate INTO. Being honest about that
+      // instead of pretending to configure targeting that doesn't exist:
+      // pre-select the real product (skipping the picker) and carry the
+      // winning creative/hook/audience as a visible reference banner the
+      // user applies manually once inside the wizard / in Ads Manager.
+      const dossierStoreId = dcState.dossier?.storeId || null;
+      launchState.storeId = dossierStoreId;
+      launchState.storeName = (dcState.stores || []).find((s) => s.id === dossierStoreId)?.name || null;
+      launchState.productId = result.prefill.productId || null;
+      launchState.productName = dcState.dossier?.productName || null;
+      launchState.products = null; launchState._productsLoadedForStore = null;
+      launchState.step = 1;
       launchState._prefillWinners = { creative: result.prefill.winningCreative, hook: result.prefill.winningHook, segment: result.prefill.winningSegment };
-      UI.toast('تم تجهيز بيانات الفائزين — افتح "رفع الكامبين" لاستكمال الحملة الجديدة.');
+      location.hash = 'launch';
+      UI.toast('تم فتح "رفع الكامبين" مع تجهيز المنتج — راجع بيانات الفائزين في البانر أعلى الخطوة الأولى.');
     }
   } catch (err) { UI.toast(err.message, 'error'); }
   dcReanalyzeSoft(panel);
@@ -4156,8 +4171,20 @@ async function renderLaunchProduct(body) {
     launchState._productsLoadedForStore = launchState.storeId;
   }
   const products = launchState.storeId ? (launchState.products || []) : [];
+  const winnersBanner = launchState._prefillWinners ? `
+    <div class="amb-panel" style="border-color:var(--amb-green); background:var(--amb-green-bg); margin-bottom:14px; position:relative;">
+      <button id="ambLaunchDismissWinners" style="position:absolute; top:10px; inset-inline-end:12px; background:none; border:none; cursor:pointer; font-size:14px; color:var(--amb-text-dim);">×</button>
+      <div style="font-weight:800; margin-bottom:6px;">🏆 بيانات الفائزين من مركز القرار الذكي</div>
+      <div class="faint" style="font-size:12.5px; margin-bottom:8px;">المعالج ده لسه مش بيدعم استهداف جمهور/محافظات مباشر — الحملة هتبقى Broad. استخدم البيانات دي كمرجع لما تراجع/تضبط الاستهداف في Meta Ads Manager بعد النشر.</div>
+      <div class="amb-derived">
+        <div class="amb-derived-row"><span>كرياتيف فائز</span><b>${E(String(launchState._prefillWinners.creative || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>Hook فائز</span><b>${E(String(launchState._prefillWinners.hook || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>الجمهور الأقوى</span><b>${E(launchState._prefillWinners.segment || '—')}</b></div>
+      </div>
+    </div>` : '';
   body.innerHTML = `
     ${launchStepper()}
+    ${winnersBanner}
     <div class="amb-panel">
       <div class="section-title" style="margin-top:0;">المتجر والمنتج</div>
       ${stores.length > 1 ? `
@@ -4177,6 +4204,8 @@ async function renderLaunchProduct(body) {
           </label>`).join('')}</div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
     </div>
     ${launchNav(0, 'التالي: الحساب الإعلاني', !!launchState.productId)}`;
+  const dismissWinners = $('ambLaunchDismissWinners');
+  if (dismissWinners) dismissWinners.onclick = () => { launchState._prefillWinners = null; renderLaunchStep(); };
   const storeSel = $('ambLaunchStoreSelect');
   if (storeSel) storeSel.onchange = (e) => {
     launchState.storeId = e.target.value || null;
