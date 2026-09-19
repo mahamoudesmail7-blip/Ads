@@ -202,6 +202,40 @@ router.post('/product-decision/:productId', requireRole('ADMIN'), asyncRoute(asy
   res.status(201).json({ package: pkg, recommendation: saved });
 }));
 
+// Phase 7 — the Smart Decision Center inbox + its per-card actions. رفض
+// reuses the EXISTING generic rejectRecommendation() (executor.js) as-is —
+// a plain status flip, zero execution risk regardless of level. موافقة is
+// approval-ONLY (never executes — see productDecision.js's own comment on
+// why the existing approveAndExecute() correctly refuses a draft action).
+router.get('/decision-center', asyncRoute(async (req, res) => {
+  const { listDecisionCenter } = await import('../services/amb/productDecision.js');
+  res.json(await listDecisionCenter());
+}));
+router.post('/decision-center/:id/approve', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { approveProductDecision } = await import('../services/amb/productDecision.js');
+  res.json(await approveProductDecision({ recId: req.params.id, userId: req.user.id }));
+}));
+router.post('/decision-center/:id/reject', asyncRoute(async (req, res) => {
+  res.json(await rejectRecommendation({ recId: req.params.id, userId: req.user.id }));
+}));
+router.patch('/decision-center/:id', asyncRoute(async (req, res) => {
+  const { editProductDecision } = await import('../services/amb/productDecision.js');
+  res.json(await editProductDecision({ recId: req.params.id, patch: req.body || {}, userId: req.user.id }));
+}));
+// Phase 8 — the mandatory pre-execution plan preview. Read-only: builds and
+// returns the exact concrete plan (which real Meta objects, what change)
+// WITHOUT sending anything to Meta. The actual execute endpoint requires a
+// second, explicit confirmation and is intentionally more restrictive —
+// see productDecisionExecution.js's own header for the safety boundary.
+router.get('/decision-center/:id/execution-plan', asyncRoute(async (req, res) => {
+  const { buildExecutionPlan } = await import('../services/amb/productDecisionExecution.js');
+  res.json(await buildExecutionPlan({ recId: req.params.id }));
+}));
+router.post('/decision-center/:id/execute', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { executeApprovedDecision } = await import('../services/amb/productDecisionExecution.js');
+  res.json(await executeApprovedDecision({ recId: req.params.id, userId: req.user.id, confirmRealExecution: req.body?.confirmRealExecution === true }));
+}));
+
 // ---------------------------------------------------------------------------
 // Campaign ↔ Product mapping
 // ---------------------------------------------------------------------------

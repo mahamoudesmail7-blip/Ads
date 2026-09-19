@@ -75,6 +75,7 @@ const NAV = [
   { key: 'campaigns', label: 'أداء الإعلانات', icon: 'chart' },
   { key: 'products', label: 'المنتجات', icon: 'box' },
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
+  { key: 'decisions', label: '🧠 مركز القرار الذكي', icon: 'target', badge: true },
   { key: 'winners', label: 'الأبطال', icon: 'image' },
   { key: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'grid' },
   { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
@@ -82,9 +83,9 @@ const NAV = [
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
-const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch']);
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: '🧠 مركز القرار الذكي', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
 // existing resolveWindow() keys, so every window-aware endpoint honours them.
@@ -1558,6 +1559,193 @@ function resolvedCard(r) {
     <div style="font-size:12.5px; margin-top:6px;">${E(r.resolutionNote || 'اتحلّت خارج النظام.')}</div>
     <div class="amb-rec-actions"><button class="amb-btn sm" data-rec="${r.id}" data-act="details">التفاصيل</button></div>
   </div>`;
+}
+
+// ===========================================================================
+// 🧠 مركز القرار الذكي — Smart Decision Center (Phase 7). The FINAL,
+// product-level decision inbox: one card per product, combining Health
+// Score + real funnel bottleneck + winning creative/hook/angle/audience/geo
+// + one proposed action, already computed server-side (services/amb/
+// productDecision.js — Phases 2-6). This view never computes anything
+// itself; it only reads/persists/reviews. Same visual language as
+// "القرارات الذكية" (renderPlan) above — .amb-r card, openDrawer, UI.toast.
+// ===========================================================================
+const DECISION_LABEL_AR = {
+  SCALE_CANDIDATE: '🚀 مرشّح للتوسع', KEEP_TESTING: '🧪 استمرار الاختبار', NEW_CREATIVE_TEST: '🎨 اختبار كرياتيف جديد',
+  AUDIENCE_TEST: '🎯 اختبار جمهور', GEO_TEST: '🗺️ اختبار جغرافي', LANDING_PAGE_FIX: '🔧 مراجعة صفحة المنتج',
+  OFFER_TEST: '🏷️ اختبار عرض', PAUSE_CANDIDATE: '⛔ مرشّح للإيقاف', INSUFFICIENT_DATA: '⏳ بيانات غير كافية',
+};
+const DECISION_CENTER_BUCKETS = [
+  { key: 'ready', label: 'جاهز للقرار' }, { key: 'collecting', label: 'قيد جمع البيانات' },
+  { key: 'approved', label: 'تمت الموافقة' }, { key: 'measuring', label: 'قيد القياس' },
+  { key: 'completed', label: 'مكتمل' }, { key: 'rejected', label: 'مرفوض' },
+];
+
+async function renderDecisionCenter(panel) {
+  const buckets = await api.get('/api/ai-media-buyer/decision-center');
+  const totalReady = (buckets.ready || []).length;
+  state.pendingCount = totalReady; renderNav();
+
+  panel.innerHTML = `
+    <div class="toolbar" style="margin-bottom:14px; align-items:center;">
+      <div class="field" style="max-width:280px;"><input class="amb-input" id="ambDecProductId" type="number" min="1" placeholder="رقم المنتج (Product ID)" /></div>
+      <button class="amb-btn primary" id="ambDecGenerate">🔄 تحليل منتج جديد</button>
+      <span class="faint" style="font-size:12px;">القرار مبني على بيانات آخر 30 يوم — Meta + Easy Orders الحقيقية فقط.</span>
+    </div>
+    ${DECISION_CENTER_BUCKETS.map((b) => {
+      const list = buckets[b.key] || [];
+      if (!list.length) return '';
+      return `<div style="margin-bottom:22px;"><div class="section-title">${E(b.label)} <span class="faint" style="font-weight:400;font-size:12px;">(${list.length})</span></div>${list.map(decisionCardHtml).join('')}</div>`;
+    }).join('') || '<div class="amb-panel amb-empty">مفيش قرارات منتجات لسه — استخدم "تحليل منتج جديد" فوق بإدخال رقم منتج حقيقي.</div>'}`;
+
+  $('ambDecGenerate').onclick = async () => {
+    const pid = Number($('ambDecProductId').value);
+    if (!pid) { UI.toast('لازم رقم منتج حقيقي.', 'error'); return; }
+    const btn = $('ambDecGenerate'); btn.disabled = true; btn.textContent = '… بيحلل';
+    try {
+      await api.post(`/api/ai-media-buyer/product-decision/${pid}`, {});
+      UI.toast('✅ تم توليد قرار جديد');
+      route();
+    } catch (err) { UI.toast(err.message, 'error'); btn.disabled = false; btn.textContent = '🔄 تحليل منتج جديد'; }
+  };
+  panel.querySelectorAll('[data-dec]').forEach((b) => {
+    const id = Number(b.dataset.dec);
+    const act = b.dataset.act;
+    if (act === 'view') b.onclick = () => viewDecisionAnalysis(id);
+    else if (act === 'edit') b.onclick = () => editDecisionPlan(id);
+    else if (act === 'reject') b.onclick = () => rejectDecision(id);
+    else if (act === 'approve') b.onclick = () => approveAndExecuteDecision(id);
+  });
+}
+
+function healthBandColor(band) {
+  return { HEALTHY: 'green', GOOD: 'green', NEEDS_ATTENTION: 'yellow', AT_RISK: 'red', CRITICAL: 'red', INSUFFICIENT_DATA: 'gray' }[band] || 'gray';
+}
+
+function decisionCardHtml(c) {
+  const winnersLine = [
+    c.winners?.creative ? `كرياتيف: ${E(String(c.winners.creative.label || '').slice(0, 40))}` : null,
+    c.winners?.hook ? `Hook: ${E(String(c.winners.hook.label || '').slice(0, 30))}` : null,
+    (c.winners?.gender || c.winners?.age) ? `جمهور: ${E([c.winners.gender?.segment, c.winners.age?.segment].filter(Boolean).join(' / '))}` : null,
+    c.winners?.governorate ? `منطقة: ${E(c.winners.governorate.segment)}` : null,
+  ].filter(Boolean).join(' · ') || 'مفيش فائز مؤكد بعد';
+
+  const canReview = c.status === 'PENDING' && c.decision !== 'INSUFFICIENT_DATA';
+  return `<div class="amb-r">
+    <div class="amb-r-chip ${healthBandColor(c.health?.band)}"><span class="ci">${ic('target', 'ic')}</span>${E(DECISION_LABEL_AR[c.decision] || c.decision)}</div>
+    <div class="amb-r-body">
+      <div class="amb-r-top">
+        <div class="amb-r-id"><div style="font-weight:800;">${E(c.productName || '—')}</div><div class="faint" style="font-size:12px;">Health: ${c.health?.score ?? '—'}/100${c.health?.label ? ` (${E(c.health.label)})` : ''}</div></div>
+        <div class="amb-r-when">${timeAgo(c.createdAt)}</div>
+      </div>
+      <div class="amb-r-reason" style="margin-top:6px;"><b>المشكلة الأساسية:</b> ${E(c.bottleneck?.evidence || c.reason || '—')}</div>
+      <div class="faint" style="font-size:12.5px; margin-top:6px;">${winnersLine}</div>
+      <div class="amb-r-rec" style="margin-top:6px;">${E(c.proposedChange || '—')}</div>
+      <div class="amb-r-foot">
+        <span class="amb-conf ${(CONF_AR[c.confidence] || CONF_AR.LOW)[0]}">● ${E((CONF_AR[c.confidence] || CONF_AR.LOW)[1])}</span>
+        <div class="amb-r-actions">
+          ${canReview ? `<button class="amb-btn primary" data-dec="${c.id}" data-act="approve">موافقة وتنفيذ</button>` : ''}
+          ${canReview ? `<button class="amb-btn ghost" data-dec="${c.id}" data-act="edit">تعديل الخطة</button>` : ''}
+          ${canReview ? `<button class="amb-btn ghost" data-dec="${c.id}" data-act="reject">رفض</button>` : ''}
+          <button class="amb-btn ghost" data-dec="${c.id}" data-act="view">عرض التحليل</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function viewDecisionAnalysis(id) {
+  openDrawer('<div class="drawer-section faint">جارِ التحميل…</div>');
+  const buckets = await api.get('/api/ai-media-buyer/decision-center');
+  const all = Object.values(buckets).flat();
+  const c = all.find((x) => x.id === id);
+  if (!c) { openDrawer('<div class="drawer-section">القرار مش موجود.</div>'); return; }
+
+  const losersHtml = (c.losers?.weakGovernorates || []).length
+    ? `<div class="section-title" style="font-size:13px;">مناطق ضعيفة مثبتة</div><div class="amb-derived">${c.losers.weakGovernorates.map((g) => `<div class="amb-derived-row"><span>${E(g.segment)}</span><span class="faint" style="font-size:11px;">${E(g.evidence)}</span></div>`).join('')}</div>` : '';
+  const weakCreativesHtml = (c.losers?.weakOrFatiguedCreatives || []).length
+    ? `<div class="section-title" style="font-size:13px;">كرياتيفات ضعيفة/مُتعبة</div><div class="amb-derived">${c.losers.weakOrFatiguedCreatives.map((r) => `<div class="amb-derived-row"><span>${E(String(r.label || '').slice(0, 40))}</span><span class="faint" style="font-size:11px;">${E(r.classification)}</span></div>`).join('')}</div>` : '';
+
+  openDrawer(`
+    <div class="drawer-header"><div class="drawer-title">${E(c.productName)} — تحليل القرار الذكي</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+    <div class="drawer-section">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
+        <span class="badge gray">Health: ${c.health?.score ?? '—'}/100</span>
+        <span class="badge gray">${E(DECISION_LABEL_AR[c.decision] || c.decision)}</span>
+        <span class="amb-conf ${(CONF_AR[c.confidence] || CONF_AR.LOW)[0]}">● ${E((CONF_AR[c.confidence] || CONF_AR.LOW)[1])}</span>
+      </div>
+      <div class="section-title" style="margin-top:0;">المشكلة الأساسية (Root Cause)</div>
+      <div style="font-size:13px; margin-bottom:10px;">${E(c.bottleneck?.evidence || c.reason || '—')}</div>
+      <div class="section-title" style="font-size:13px;">أفضل العناصر المثبتة</div>
+      <div class="amb-derived">
+        <div class="amb-derived-row"><span>أفضل كرياتيف</span><b>${E(String(c.winners?.creative?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل Hook</span><b>${E(String(c.winners?.hook?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل زاوية بيع</span><b>${E(String(c.winners?.angle?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل بوست (Primary Text)</span><b>${E(String(c.winners?.primaryText?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل Headline</span><b>${E(String(c.winners?.headline?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>الجمهور</span><b>${E([c.winners?.gender?.segment, c.winners?.age?.segment].filter(Boolean).join(' / ') || '—')}</b></div>
+        <div class="amb-derived-row"><span>المنطقة الجغرافية</span><b>${E(c.winners?.governorate?.segment || '—')}</b></div>
+      </div>
+      ${losersHtml}${weakCreativesHtml}
+      <div class="section-title" style="font-size:13px;">الخطة المقترحة</div>
+      <div style="font-size:13px; margin-bottom:6px;">${E(c.proposedChange || '—')}</div>
+      <div class="faint" style="font-size:12px;">مقياس النجاح: ${E(c.successMetric || '—')} · فترة التقييم: ${c.evaluationWindowDays || 7} أيام</div>
+    </div>`);
+}
+
+async function editDecisionPlan(id) {
+  const buckets = await api.get('/api/ai-media-buyer/decision-center');
+  const all = Object.values(buckets).flat();
+  const c = all.find((x) => x.id === id);
+  if (!c) return;
+  const val = prompt('عدّل الخطة المقترحة:', c.proposedChange || '');
+  if (val === null) return;
+  try { await api.patch(`/api/ai-media-buyer/decision-center/${id}`, { proposedChange: val }); UI.toast('✅ اتعدّلت الخطة'); route(); }
+  catch (err) { UI.toast(err.message, 'error'); }
+}
+
+async function rejectDecision(id) {
+  const confirmed = await UI.confirmModal({ title: 'رفض القرار', message: 'هيتحفظ كمرفوض ومش هيظهر في "جاهز للقرار" تاني. متابعة؟', confirmLabel: 'رفض' });
+  if (!confirmed) return;
+  try { await api.post(`/api/ai-media-buyer/decision-center/${id}/reject`, {}); UI.toast('تم الرفض'); route(); }
+  catch (err) { UI.toast(err.message, 'error'); }
+}
+
+/**
+ * موافقة وتنفيذ — a real, multi-step gate, never a single click straight to
+ * Meta: (1) approve-only (no Meta call), (2) fetch + show the EXACT
+ * execution plan, (3) a SECOND explicit confirmation naming the real
+ * consequence before anything touches Meta. A plan with no direct Meta
+ * action (NEW_CREATIVE_TEST/AUDIENCE_TEST/GEO_TEST/OFFER_TEST/
+ * LANDING_PAGE_FIX/KEEP_TESTING) never reaches step 3's Meta-write wording —
+ * it just closes the loop and points at the existing tool to use next.
+ */
+async function approveAndExecuteDecision(id) {
+  const approveConfirmed = await UI.confirmModal({ title: 'موافقة على القرار', message: 'هتتم الموافقة على هذا القرار (بدون أي تنفيذ فعلي على Meta لسه). بعدها هتشوف خطة التنفيذ بالتفصيل قبل أي خطوة حقيقية.', confirmLabel: 'موافقة' });
+  if (!approveConfirmed) return;
+  try { await api.post(`/api/ai-media-buyer/decision-center/${id}/approve`, {}); }
+  catch (err) { UI.toast(err.message, 'error'); return; }
+
+  let plan;
+  try { plan = await api.get(`/api/ai-media-buyer/decision-center/${id}/execution-plan`); }
+  catch (err) { UI.toast(err.message, 'error'); route(); return; }
+
+  const planMessage = plan.realMetaWrite
+    ? `⚠️ ${plan.summary}\n\nده إجراء حقيقي هيأثر على حساب Meta فعليًا.`
+    : `${plan.summary}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}` : ''}`;
+  const executeConfirmed = await UI.confirmModal({
+    title: plan.realMetaWrite ? '⚠️ تأكيد نهائي — إجراء حقيقي على Meta' : 'تأكيد الخطة',
+    message: planMessage,
+    confirmLabel: plan.realMetaWrite ? 'نفّذ فعليًا على Meta' : 'تأكيد',
+    danger: !!plan.realMetaWrite,
+  });
+  if (!executeConfirmed) { UI.toast('تمت الموافقة — التنفيذ الفعلي لسه مستني تأكيدك.'); route(); return; }
+
+  try {
+    const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, { confirmRealExecution: true });
+    UI.toast(result.ok ? '✅ تم' : (result.message || 'حصلت مشكلة'), result.ok ? undefined : 'error');
+  } catch (err) { UI.toast(err.message, 'error'); }
+  route();
 }
 
 // ---- Execution history / reports — logic UNCHANGED ----
