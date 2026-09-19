@@ -130,6 +130,22 @@ export function computeDiagnosis({ metrics, creative, priorMetrics, settings }) 
     out.push({ problem: 'CPA أعلى من الهدف', evidence: `CPA الحالي ${Math.round(avgCpa)} جنيه مقابل هدف ${targetCpa} جنيه.`, severity: 'HIGH', category: 'CPA_PROBLEM', priority: 'P0', dataSufficiency: ds, action: 'اختبر Angle أو جمهور مختلف قبل زيادة الميزانية.' });
   }
 
+  // Confirmation stage (BEFORE delivery in the real funnel — an order must
+  // be confirmed before it can ever be delivered). Deliberately conservative:
+  // a low confirmation rate is at least as likely to mean "these orders are
+  // simply too recent to have been called yet" as a genuine call-center
+  // backlog — this codebase has no per-order age breakdown at this
+  // aggregate level to tell the two apart. Gated on a real sample (never a
+  // tiny handful of orders) and reported at MEDIUM (never HIGH) severity so
+  // diagnoseFunnelBottleneck() can never mark it CONFIRMED from ambiguous
+  // evidence — always at most LIKELY, explicitly inviting a closer look
+  // rather than asserting a firm conclusion.
+  const codSample = n(metrics.codSample);
+  const confirmationRate = metrics.confirmationRate != null ? n(metrics.confirmationRate) : null;
+  if (confirmationRate != null && codSample != null && codSample >= 20 && confirmationRate < 0.2) {
+    out.push({ problem: 'نسبة كبيرة من أوردرات Easy Orders لسه معلّقة (PENDING) ومتأكدتش', evidence: `معدل التأكيد ${(confirmationRate * 100).toFixed(1)}% فقط من ${codSample} أوردر حقيقي — ممكن يكون تراكم في التأكيد، أو ببساطة أوردرات حديثة لسه محتاجة وقت لحد ما يتصل بيها. راجع توزيع تاريخ الأوردرات قبل الحكم النهائي.`, severity: 'MEDIUM', category: 'CONFIRMATION_PROBLEM', priority: 'P1', dataSufficiency: ds, action: 'راجع سرعة اتصال فريق تأكيد الأوردرات، وتأكد إن الأوردرات القديمة (أكتر من كام يوم) مش هي المتراكمة.' });
+  }
+
   if (deliveryRate != null && deliveryRate < 0.5 && avgCpa != null && deliveredCpa != null && avgCpa < targetCpa) {
     out.push({ problem: 'CPA كويس على Meta لكن الاستلام ضعيف', evidence: `Meta CPA ${Math.round(avgCpa)} جنيه (كويس) لكن معدل الاستلام ${Math.round(deliveryRate * 100)}% فقط — Delivered CPA الحقيقي ${Math.round(deliveredCpa)} جنيه.`, severity: 'HIGH', category: 'DELIVERY_PROBLEM', priority: 'P0', dataSufficiency: ds, action: 'المشكلة مش في الإعلان، المشكلة بعده — راجع سرعة التأكيد والتسليم أو جودة الطلبات الجاية من هذا الجمهور.' });
   }
@@ -166,6 +182,89 @@ export function computeDiagnosis({ metrics, creative, priorMetrics, settings }) 
     out.push({ problem: 'مفيش مشكلة واضحة من الأرقام الحالية', evidence: `CPA ${avgCpa != null ? Math.round(avgCpa) : '—'} جنيه، ${purchases} مشترى.`, severity: 'INFO', category: 'HEALTHY_PRODUCT', priority: 'P3', dataSufficiency: ds, action: 'كمّل نفس الاتجاه، واختبر Angle إضافي لتوسيع الفرصة.' });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Smart Decision Center Phase 5 — Full Funnel Diagnosis Engine. Does NOT
+// re-derive any threshold — computeDiagnosis() above already evaluates
+// every real funnel signal (CTR/CPC/CVR/CPA/delivery/fatigue) with numbers
+// already reviewed and tested. This is purely a PRIORITIZATION layer on top
+// of its output: when multiple problems fire at once (common — a weak hook
+// often ALSO shows up as a high CPA), the true root cause is usually the
+// one earliest in the funnel (CPM -> CTR -> CPC -> Conversion -> CPA ->
+// Confirmation -> Delivery -> Revenue/Profit), since an early failure
+// naturally produces every later symptom. CPM itself is reported as
+// context only — this codebase has no reviewed "bad CPM" threshold (CPM
+// alone, with no competitor/historical baseline, can't be honestly judged
+// good or bad), so it is never used to pick or block a verdict.
+// ---------------------------------------------------------------------------
+const FUNNEL_STAGE_ORDER = {
+  TRACKING_MAPPING_PROBLEM: 0,
+  INSUFFICIENT_DATA: 0,
+  CREATIVE_PROBLEM: 1,      // CTR — attention/hook stage
+  CREATIVE_FATIGUE: 1.5,    // a fading hook degrades attention over time — same funnel depth as CTR, checked second
+  TRAFFIC_PROBLEM: 2,       // CPC — traffic cost/quality stage
+  CONVERSION_PROBLEM: 3,    // CTR healthy but conversion weak — landing/offer stage
+  OFFER_PROBLEM: 3,         // the offer IS the conversion lever — same funnel depth
+  CPA_PROBLEM: 4,           // overall CPA vs target — downstream of the above
+  CONFIRMATION_PROBLEM: 4.5, // real Easy Orders confirmation — after CPA, before delivery
+  DELIVERY_PROBLEM: 5,      // post-Meta — delivery stage, after confirmation
+  HEALTHY_PRODUCT: 99,
+};
+
+/**
+ * Names ONE actual bottleneck from computeDiagnosis()'s own output (never
+ * re-derives the underlying evidence) plus an honest funnel trace for
+ * context. confidence is CONFIRMED only for a HIGH-severity, STRONG-sample
+ * signal; a real but thinner signal is LICLY; no real signal at all (or an
+ * upstream tracking/insufficient-data gate) is INSUFFICIENT_DATA — never
+ * guessed as confirmed from a weak sample; CONFIRMED requires HIGH severity
+ * + a STRONG sample, otherwise a real signal is only ever LIKELY.
+ * @param {Array} diagnosisList - computeDiagnosis()'s own return value
+ * @param {object} metrics - the SAME metrics object passed into computeDiagnosis() (for the funnel trace)
+ */
+export function diagnoseFunnelBottleneck(diagnosisList, metrics = {}) {
+  const funnelTrace = {
+    cpm: n(metrics.cpm), ctr: n(metrics.ctr), cpc: n(metrics.cpc),
+    conversionRate: n(metrics.cvr), cpa: n(metrics.avgCpa),
+    confirmationRate: metrics.confirmationRate != null ? n(metrics.confirmationRate) : null,
+    deliveryRate: metrics.deliveryRate != null ? n(metrics.deliveryRate) : null,
+    revenue: metrics.revenue != null ? n(metrics.revenue) : null,
+    netProfit: metrics.netProfit != null ? n(metrics.netProfit) : null,
+  };
+
+  if (!diagnosisList?.length) {
+    return { bottleneck: null, category: null, confidence: 'INSUFFICIENT_DATA', evidence: null, reason: 'مفيش بيانات كافية للتشخيص.', competingSignals: [], funnelTrace };
+  }
+
+  const gateCategories = ['TRACKING_MAPPING_PROBLEM', 'INSUFFICIENT_DATA'];
+  const gated = diagnosisList.find((d) => gateCategories.includes(d.category));
+  if (gated) {
+    return { bottleneck: null, category: gated.category, confidence: 'INSUFFICIENT_DATA', evidence: gated.evidence, reason: gated.problem, competingSignals: [], funnelTrace };
+  }
+
+  const real = diagnosisList.filter((d) => d.category !== 'HEALTHY_PRODUCT');
+  if (!real.length) {
+    const healthy = diagnosisList[0];
+    return { bottleneck: null, category: 'HEALTHY_PRODUCT', confidence: healthy.dataSufficiency === 'STRONG' ? 'CONFIRMED' : 'LIKELY', evidence: healthy.evidence, reason: healthy.problem, competingSignals: [], funnelTrace };
+  }
+
+  const sorted = [...real].sort((a, b) => (FUNNEL_STAGE_ORDER[a.category] ?? 50) - (FUNNEL_STAGE_ORDER[b.category] ?? 50));
+  const primary = sorted[0];
+  const confidence = primary.dataSufficiency === 'STRONG' && primary.severity === 'HIGH' ? 'CONFIRMED'
+    : primary.dataSufficiency === 'INSUFFICIENT' ? 'INSUFFICIENT_DATA'
+    : 'LIKELY';
+
+  return {
+    bottleneck: primary.problem,
+    category: primary.category,
+    confidence,
+    evidence: primary.evidence,
+    action: primary.action,
+    severity: primary.severity,
+    competingSignals: sorted.slice(1).map((d) => ({ problem: d.problem, category: d.category, severity: d.severity, evidence: d.evidence })),
+    funnelTrace,
+  };
 }
 
 // ---------------------------------------------------------------------------

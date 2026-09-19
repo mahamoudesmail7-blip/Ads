@@ -175,6 +175,13 @@ router.get('/product-performance/:productId', asyncRoute(async (req, res) => {
   res.json(await getProductPerformance({ productId: req.params.productId, windowName: req.query.window, from: req.query.from, to: req.query.to }));
 }));
 
+// Smart Decision Center Phase 5 — Full Funnel Diagnosis. Analysis only.
+router.get('/product-diagnosis/:productId', asyncRoute(async (req, res) => {
+  const { getProductDiagnosis } = await import('../services/amb/productPerformance.js');
+  const settings = await getAmbSettings();
+  res.json(await getProductDiagnosis({ productId: req.params.productId, windowName: req.query.window, settings }));
+}));
+
 // ---------------------------------------------------------------------------
 // Campaign ↔ Product mapping
 // ---------------------------------------------------------------------------

@@ -22,7 +22,8 @@
 // mapped" for a genuine zero.
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
-import { resolveWindow, entityWindowMetrics } from './metricsEngine.js';
+import { resolveWindow, addDaysISO, entityWindowMetrics } from './metricsEngine.js';
+import { computeDiagnosis, diagnoseFunnelBottleneck } from './productMarketingScoring.js';
 import { codCountsForProduct, codCountsByGovernorate } from './codOrders.js';
 
 const MIN_COD_SAMPLE = 10; // mirrors codOrders.js's observedRatesForProduct() convention
@@ -215,6 +216,73 @@ export async function getProductPerformance({ productId, windowName, from, to })
     resolvedVia, // ['LAUNCH'] | ['MAPPING'] | ['LAUNCH','MAPPING'] | []
     meta,
     easyOrders,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Adapts the Phase 2 unified dataset's field names to computeDiagnosis()'s
+ * existing expected shape — a pure reshape, never a new threshold. frequency
+ * is intentionally left null at the product (multi-campaign) rollup: it is
+ * not meaningfully summable across campaigns the way spend/impressions are,
+ * and Phase 3's own per-creative fatigue check (a real prior-window CTR
+ * comparison) is the more precise signal for creative fatigue anyway.
+ */
+function toDiagnosisMetrics(perf) {
+  const meta = perf.meta;
+  const eo = perf.easyOrders;
+  const deliveredOrders = eo.dataState === 'AVAILABLE' ? eo.delivered : null;
+  return {
+    totalSpend: meta.spend,
+    metaPurchases: meta.purchases,
+    avgCpa: meta.cpa,
+    cpm: meta.cpm,
+    deliveredCpa: meta.spend && deliveredOrders ? meta.spend / deliveredOrders : null,
+    deliveryRate: eo.deliveryRate,
+    confirmationRate: eo.confirmationRate,
+    codSample: eo.sample,
+    ctr: meta.ctr,
+    cpc: meta.cpc,
+    cvr: meta.conversionRate,
+    frequency: null,
+    revenue: meta.revenue,
+    netProfit: null, // profit needs AmbProduct economics (cost/pricing) — deliberately out of scope for this pure performance-data reshape
+    dataAvailability: { metaMapped: meta.dataState !== 'META_UNMAPPED' },
+  };
+}
+
+/**
+ * Smart Decision Center Phase 5 — Full Funnel Diagnosis for one product.
+ * Builds on Phase 2's own dataset (current window + the immediately
+ * preceding equal-length window, for real fatigue corroboration) and the
+ * existing, already-tested computeDiagnosis()/diagnoseFunnelBottleneck()
+ * engines — never a new diagnostic engine, never a new threshold.
+ * @param {{productId:number, windowName?:string, settings:object}} params
+ */
+export async function getProductDiagnosis({ productId, windowName, settings }) {
+  const current = await getProductPerformance({ productId, windowName: windowName || 'last30' });
+  const window = current.window;
+
+  let priorMetrics = null;
+  try {
+    const spanDays = (new Date(window.to) - new Date(window.from)) / 86_400_000;
+    const priorTo = addDaysISO(window.from, -1);
+    const priorFrom = addDaysISO(priorTo, -Math.round(spanDays));
+    const prior = await getProductPerformance({ productId, from: priorFrom, to: priorTo });
+    if (prior.meta.dataState === 'AVAILABLE') priorMetrics = { ctr: prior.meta.ctr, avgCpa: prior.meta.cpa };
+  } catch { priorMetrics = null; } // best-effort only — a failed prior lookup just disables fatigue corroboration
+
+  const metrics = toDiagnosisMetrics(current);
+  const diagnosis = computeDiagnosis({ metrics, creative: null, priorMetrics, settings });
+  const bottleneck = diagnoseFunnelBottleneck(diagnosis, metrics);
+
+  return {
+    productId: current.productId,
+    productName: current.productName,
+    window,
+    metrics,
+    diagnosis,
+    bottleneck,
     generatedAt: new Date().toISOString(),
   };
 }
