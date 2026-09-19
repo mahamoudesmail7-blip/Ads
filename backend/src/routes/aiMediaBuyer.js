@@ -175,6 +175,28 @@ router.get('/product-performance/:productId', asyncRoute(async (req, res) => {
   res.json(await getProductPerformance({ productId: req.params.productId, windowName: req.query.window, from: req.query.from, to: req.query.to }));
 }));
 
+// Smart Decision Center UX overhaul — Product Intelligence Inbox. Every
+// real relevant product for the current store, zero manual Product ID
+// entry. Cheap/bulk by design — see productDiscovery.js's own header.
+router.get('/decision-center/products', asyncRoute(async (req, res) => {
+  const { listSmartDecisionProducts } = await import('../services/amb/productDiscovery.js');
+  res.json(await listSmartDecisionProducts({ storeId: req.query.storeId || null, windowName: req.query.window }));
+}));
+// "تحديث البيانات" — runs the same auto-analysis pass the 30-minute
+// scheduler runs, on demand. Never a Meta write; only (re)computes and
+// persists Decision Packages for products with real linked campaigns.
+router.post('/decision-center/products/analyze-all', asyncRoute(async (req, res) => {
+  const { runAutoAnalysis } = await import('../services/amb/productAutoAnalysis.js');
+  res.json(await runAutoAnalysis());
+}));
+// The full Decision Dossier for one product — bundles Phase 2-6/9/10 into
+// one call. First open with no persisted decision yet analyzes
+// automatically; ?refresh=1 forces a fresh recompute ("إعادة التحليل").
+router.get('/decision-center/products/:productId/dossier', asyncRoute(async (req, res) => {
+  const { getProductDossier } = await import('../services/amb/productDossier.js');
+  res.json(await getProductDossier({ productId: req.params.productId, windowName: req.query.window, forceRefresh: req.query.refresh === '1' }));
+}));
+
 // Smart Decision Center Phase 5 — Full Funnel Diagnosis. Analysis only.
 router.get('/product-diagnosis/:productId', asyncRoute(async (req, res) => {
   const { getProductDiagnosis } = await import('../services/amb/productPerformance.js');

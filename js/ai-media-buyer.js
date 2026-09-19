@@ -1574,153 +1574,373 @@ const DECISION_LABEL_AR = {
   SCALE_CANDIDATE: '🚀 مرشّح للتوسع', KEEP_TESTING: '🧪 استمرار الاختبار', NEW_CREATIVE_TEST: '🎨 اختبار كرياتيف جديد',
   AUDIENCE_TEST: '🎯 اختبار جمهور', GEO_TEST: '🗺️ اختبار جغرافي', LANDING_PAGE_FIX: '🔧 مراجعة صفحة المنتج',
   OFFER_TEST: '🏷️ اختبار عرض', PAUSE_CANDIDATE: '⛔ مرشّح للإيقاف', INSUFFICIENT_DATA: '⏳ بيانات غير كافية',
+  MEASURING: '⏳ قيد القياس', UNMAPPED: '🔌 غير مربوط بحملات', NEEDS_MAPPING_REVIEW: '🔍 يحتاج مراجعة الربط', PENDING_ANALYSIS: '🆕 قيد التحليل الأول',
 };
-const DECISION_CENTER_BUCKETS = [
-  { key: 'ready', label: 'جاهز للقرار' }, { key: 'collecting', label: 'قيد جمع البيانات' },
-  { key: 'approved', label: 'تمت الموافقة' }, { key: 'measuring', label: 'قيد القياس' },
-  { key: 'completed', label: 'مكتمل' }, { key: 'rejected', label: 'مرفوض' },
+const BUCKET_BADGE_CLASS = { scale: 'scale', needsCreative: 'creative', needsImprovement: 'improve', testing: 'gray', measuring: 'purple', insufficientData: 'gray', unmapped: 'gray', needsReview: 'improve', pauseCandidate: 'pause', ready: 'gray' };
+const FILTER_CHIPS = [
+  { key: 'all', label: 'الكل', match: () => true },
+  { key: 'ready', label: 'جاهز للقرار', match: (b) => ['scale', 'needsCreative', 'needsImprovement', 'testing', 'pauseCandidate'].includes(b) },
+  { key: 'scale', label: 'Scale', match: (b) => b === 'scale' },
+  { key: 'needsImprovement', label: 'يحتاج تحسين', match: (b) => b === 'needsImprovement' },
+  { key: 'needsCreative', label: 'يحتاج كرياتيف', match: (b) => b === 'needsCreative' },
+  { key: 'testing', label: 'قيد الاختبار', match: (b) => b === 'testing' },
+  { key: 'insufficientData', label: 'بيانات غير كافية', match: (b) => b === 'insufficientData' },
+  { key: 'measuring', label: 'قيد القياس', match: (b) => b === 'measuring' },
 ];
 
-async function renderDecisionCenter(panel) {
-  const buckets = await api.get('/api/ai-media-buyer/decision-center');
-  const totalReady = (buckets.ready || []).length;
-  state.pendingCount = totalReady; renderNav();
+const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null };
 
+async function renderDecisionCenter(panel) {
+  if (!dcState.stores) {
+    try { dcState.stores = (await api.get('/api/ai-media-buyer/launch/stores')).stores || []; } catch { dcState.stores = []; }
+  }
+  if (!dcState.products) await dcLoadProducts();
+  dcRenderAll(panel);
+}
+
+async function dcLoadProducts() {
+  dcState.products = await api.get('/api/ai-media-buyer/decision-center/products', dcState.storeId ? { storeId: dcState.storeId } : undefined);
+  dcState.lastLoadedAt = new Date().toISOString();
+  const actionable = dcState.products.filter((p) => ['scale', 'needsCreative', 'needsImprovement', 'pauseCandidate'].includes(p.filterBucket)).length;
+  state.pendingCount = actionable; renderNav();
+}
+
+function dcFilteredProducts() {
+  let list = dcState.products || [];
+  const chip = FILTER_CHIPS.find((c) => c.key === dcState.filter) || FILTER_CHIPS[0];
+  list = list.filter((p) => chip.match(p.filterBucket));
+  if (dcState.search.trim()) {
+    const q = dcState.search.trim().toLowerCase();
+    list = list.filter((p) => (p.productName || '').toLowerCase().includes(q));
+  }
+  const sorters = {
+    recent: (a, b) => new Date(b.lastAnalysisAt || 0) - new Date(a.lastAnalysisAt || 0),
+    health: (a, b) => (b.healthScore ?? -1) - (a.healthScore ?? -1),
+    spend: (a, b) => (b.spend ?? -1) - (a.spend ?? -1),
+    name: (a, b) => (a.productName || '').localeCompare(b.productName || '', 'ar'),
+  };
+  return [...list].sort(sorters[dcState.sort] || sorters.recent);
+}
+
+function dcRenderAll(panel) {
+  const all = dcState.products || [];
+  const filtered = dcFilteredProducts();
   panel.innerHTML = `
     <div class="toolbar" style="margin-bottom:14px; align-items:center;">
-      <div class="field" style="max-width:280px;"><input class="amb-input" id="ambDecProductId" type="number" min="1" placeholder="رقم المنتج (Product ID)" /></div>
-      <button class="amb-btn primary" id="ambDecGenerate">🔄 تحليل منتج جديد</button>
-      <span class="faint" style="font-size:12px;">القرار مبني على بيانات آخر 30 يوم — Meta + Easy Orders الحقيقية فقط.</span>
+      ${(dcState.stores || []).length > 1 ? `<select class="amb-select" id="ambDcStore">
+        <option value="">جميع المتاجر</option>
+        ${dcState.stores.map((s) => `<option value="${E(s.id)}" ${dcState.storeId === s.id ? 'selected' : ''}>${E(s.name || s.id)}</option>`).join('')}
+      </select>` : ''}
+      <div class="amb-search"><span class="s-ic">${ic('search', 's-ic')}</span><input id="ambDcSearch" placeholder="ابحث عن منتج…" value="${E(dcState.search)}" /></div>
+      <select class="amb-select" id="ambDcSort">
+        <option value="recent" ${dcState.sort === 'recent' ? 'selected' : ''}>الأحدث تحليلًا</option>
+        <option value="health" ${dcState.sort === 'health' ? 'selected' : ''}>أعلى Health Score</option>
+        <option value="spend" ${dcState.sort === 'spend' ? 'selected' : ''}>أعلى إنفاق</option>
+        <option value="name" ${dcState.sort === 'name' ? 'selected' : ''}>أبجدي</option>
+      </select>
+      <button class="amb-btn ghost sm" id="ambDcRefresh">${ic('refresh', 'ic')} تحديث البيانات</button>
+      <span class="faint" style="font-size:11.5px;">${dcState.lastLoadedAt ? `آخر تحديث ${timeAgo(dcState.lastLoadedAt)}` : ''}</span>
     </div>
-    ${DECISION_CENTER_BUCKETS.map((b) => {
-      const list = buckets[b.key] || [];
-      if (!list.length) return '';
-      return `<div style="margin-bottom:22px;"><div class="section-title">${E(b.label)} <span class="faint" style="font-weight:400;font-size:12px;">(${list.length})</span></div>${list.map(decisionCardHtml).join('')}</div>`;
-    }).join('') || '<div class="amb-panel amb-empty">مفيش قرارات منتجات لسه — استخدم "تحليل منتج جديد" فوق بإدخال رقم منتج حقيقي.</div>'}`;
+    <div class="amb-filters" style="margin-bottom:16px;">
+      ${FILTER_CHIPS.map((c) => {
+        const count = c.key === 'all' ? all.length : all.filter((p) => c.match(p.filterBucket)).length;
+        return `<button class="amb-fbtn ${dcState.filter === c.key ? 'active' : ''}" data-dcf="${c.key}">${E(c.label)} <span class="faint">(${count})</span></button>`;
+      }).join('')}
+    </div>
+    <div class="amb-pgrid" id="ambDcGrid">
+      ${filtered.length ? filtered.map(dcCardHtml).join('') : '<div class="amb-panel amb-empty" style="grid-column:1/-1;">مفيش منتجات مطابقة للفلتر ده.</div>'}
+    </div>
+    <div id="ambDcDossier"></div>`;
 
-  $('ambDecGenerate').onclick = async () => {
-    const pid = Number($('ambDecProductId').value);
-    if (!pid) { UI.toast('لازم رقم منتج حقيقي.', 'error'); return; }
-    const btn = $('ambDecGenerate'); btn.disabled = true; btn.textContent = '… بيحلل';
-    try {
-      await api.post(`/api/ai-media-buyer/product-decision/${pid}`, {});
-      UI.toast('✅ تم توليد قرار جديد');
-      route();
-    } catch (err) { UI.toast(err.message, 'error'); btn.disabled = false; btn.textContent = '🔄 تحليل منتج جديد'; }
-  };
-  panel.querySelectorAll('[data-dec]').forEach((b) => {
-    const id = Number(b.dataset.dec);
-    const act = b.dataset.act;
-    if (act === 'view') b.onclick = () => viewDecisionAnalysis(id);
-    else if (act === 'edit') b.onclick = () => editDecisionPlan(id);
-    else if (act === 'reject') b.onclick = () => rejectDecision(id);
-    else if (act === 'approve') b.onclick = () => approveAndExecuteDecision(id);
-  });
+  const storeSel = $('ambDcStore');
+  if (storeSel) storeSel.onchange = async (e) => { dcState.storeId = e.target.value || null; dcState.selectedProductId = null; await dcLoadProducts(); dcRenderAll(panel); };
+  $('ambDcSearch').oninput = (e) => { dcState.search = e.target.value; dcRenderAll(panel); };
+  $('ambDcSort').onchange = (e) => { dcState.sort = e.target.value; dcRenderAll(panel); };
+  $('ambDcRefresh').onclick = () => dcRefreshAll(panel);
+  panel.querySelectorAll('[data-dcf]').forEach((b) => b.onclick = () => { dcState.filter = b.dataset.dcf; dcRenderAll(panel); });
+  panel.querySelectorAll('[data-dcopen]').forEach((b) => b.onclick = () => dcOpenProduct(panel, Number(b.dataset.dcopen)));
+
+  if (dcState.selectedProductId) dcRenderDossierInto($('ambDcDossier'), panel);
 }
+
+async function dcRefreshAll(panel) {
+  const btn = $('ambDcRefresh'); if (btn) { btn.disabled = true; btn.textContent = '… بيحدّث'; }
+  try {
+    await api.post('/api/ai-media-buyer/sync/run', {});
+    await api.post('/api/ai-media-buyer/decision-center/products/analyze-all', {});
+    await dcLoadProducts();
+    dcState.dossier = null;
+    UI.toast('✅ اتحدّثت البيانات');
+  } catch (err) { UI.toast(err.message, 'error'); }
+  dcRenderAll(panel);
+}
+
+function dcCardHtml(p) {
+  const sel = dcState.selectedProductId === p.productId;
+  const badgeClass = BUCKET_BADGE_CLASS[p.filterBucket] || 'gray';
+  return `<div class="amb-pcard ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">
+    <div class="amb-pcard-badge ${badgeClass}">${E(p.decisionLabel)}</div>
+    ${p.image ? `<img class="amb-pcard-img" src="${E(p.image)}" alt="" loading="lazy" />` : `<div class="amb-pcard-img ph">${ic('image', 'ic')}</div>`}
+    <div class="amb-pcard-name">${E(p.productName)}</div>
+    <div class="amb-pcard-sub">${p.healthScore != null ? `Health: ${p.healthScore}/100` : (p.mappedCampaigns ? `${p.mappedCampaigns} حملة مرتبطة` : '')}</div>
+    <div class="amb-pcard-metrics">
+      <div><b>${p.spend != null ? fmtEGP(p.spend) : '—'}</b>الإنفاق</div>
+      <div><b>${p.orders != null ? fmtNum(p.orders) : '—'}</b>طلبات</div>
+      <div><b>${p.cpa != null ? fmtEGP(p.cpa) : '—'}</b>CPA</div>
+    </div>
+    <div class="amb-pcard-foot">${p.lastAnalysisAt ? `آخر تحليل: ${timeAgo(p.lastAnalysisAt)}` : (p.decisionStatus === 'UNMAPPED' ? 'محتاج ربط بحملة' : 'اضغط للتحليل الأول')}</div>
+  </div>`;
+}
+
+async function dcOpenProduct(panel, productId) {
+  dcState.selectedProductId = productId;
+  dcState.dossier = null;
+  dcState.activeTab = 'overview';
+  dcRenderAll(panel);
+  const dossierEl = $('ambDcDossier');
+  dossierEl.innerHTML = '<div class="amb-dossier"><div class="amb-loading">جارِ تحليل المنتج…</div></div>';
+  dossierEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  try {
+    dcState.dossier = await api.get(`/api/ai-media-buyer/decision-center/products/${productId}/dossier`);
+  } catch (err) {
+    dossierEl.innerHTML = `<div class="amb-dossier amb-empty">⚠️ ${E(err.message)}</div>`;
+    return;
+  }
+  dcRenderDossierInto(dossierEl, panel);
+}
+
+async function dcReanalyze(panel, productId) {
+  const dossierEl = $('ambDcDossier');
+  dossierEl.innerHTML = '<div class="amb-dossier"><div class="amb-loading">جارِ إعادة التحليل…</div></div>';
+  try {
+    dcState.dossier = await api.get(`/api/ai-media-buyer/decision-center/products/${productId}/dossier`, { refresh: '1' });
+    await dcLoadProducts();
+    UI.toast('✅ اتحلل من جديد');
+  } catch (err) { UI.toast(err.message, 'error'); }
+  dcRenderAll(panel);
+}
+
+const DC_TABS = [
+  { key: 'overview', label: 'نظرة عامة' },
+  { key: 'audience', label: 'الجمهور والمحافظات' },
+  { key: 'creatives', label: 'الكرياتيفات والـHooks' },
+  { key: 'history', label: 'سجل القرارات' },
+  { key: 'learning', label: 'تعلم المنتج' },
+];
 
 function healthBandColor(band) {
   return { HEALTHY: 'green', GOOD: 'green', NEEDS_ATTENTION: 'yellow', AT_RISK: 'red', CRITICAL: 'red', INSUFFICIENT_DATA: 'gray' }[band] || 'gray';
 }
+function stockLabel(stock) {
+  if (!stock || stock.status === 'STOCK_UNKNOWN') return { text: 'غير معروف', cls: 'gray' };
+  if (stock.status === 'OUT_OF_STOCK') return { text: 'نفذ المخزون', cls: 'red' };
+  if (stock.status === 'LOW') return { text: `منخفض (${fmtNum(stock.currentStock)})`, cls: 'yellow' };
+  return { text: `آمن (${fmtNum(stock.currentStock)})`, cls: 'green' };
+}
 
-function decisionCardHtml(c) {
-  const winnersLine = [
-    c.winners?.creative ? `كرياتيف: ${E(String(c.winners.creative.label || '').slice(0, 40))}` : null,
-    c.winners?.hook ? `Hook: ${E(String(c.winners.hook.label || '').slice(0, 30))}` : null,
-    (c.winners?.gender || c.winners?.age) ? `جمهور: ${E([c.winners.gender?.segment, c.winners.age?.segment].filter(Boolean).join(' / '))}` : null,
-    c.winners?.governorate ? `منطقة: ${E(c.winners.governorate.segment)}` : null,
-  ].filter(Boolean).join(' · ') || 'مفيش فائز مؤكد بعد';
-
-  const canReview = c.status === 'PENDING' && c.decision !== 'INSUFFICIENT_DATA';
-  return `<div class="amb-r">
-    <div class="amb-r-chip ${healthBandColor(c.health?.band)}"><span class="ci">${ic('target', 'ic')}</span>${E(DECISION_LABEL_AR[c.decision] || c.decision)}</div>
-    <div class="amb-r-body">
-      <div class="amb-r-top">
-        <div class="amb-r-id"><div style="font-weight:800;">${E(c.productName || '—')}</div><div class="faint" style="font-size:12px;">Health: ${c.health?.score ?? '—'}/100${c.health?.label ? ` (${E(c.health.label)})` : ''}</div></div>
-        <div class="amb-r-when">${timeAgo(c.createdAt)}</div>
-      </div>
-      <div class="amb-r-reason" style="margin-top:6px;"><b>المشكلة الأساسية:</b> ${E(c.bottleneck?.evidence || c.reason || '—')}</div>
-      <div class="faint" style="font-size:12.5px; margin-top:6px;">${winnersLine}</div>
-      <div class="amb-r-rec" style="margin-top:6px;">${E(c.proposedChange || '—')}</div>
-      <div class="amb-r-foot">
-        <span class="amb-conf ${(CONF_AR[c.confidence] || CONF_AR.LOW)[0]}">● ${E((CONF_AR[c.confidence] || CONF_AR.LOW)[1])}</span>
-        <div class="amb-r-actions">
-          ${canReview ? `<button class="amb-btn primary" data-dec="${c.id}" data-act="approve">موافقة وتنفيذ</button>` : ''}
-          ${canReview ? `<button class="amb-btn ghost" data-dec="${c.id}" data-act="edit">تعديل الخطة</button>` : ''}
-          ${canReview ? `<button class="amb-btn ghost" data-dec="${c.id}" data-act="reject">رفض</button>` : ''}
-          <button class="amb-btn ghost" data-dec="${c.id}" data-act="view">عرض التحليل</button>
+function dcRenderDossierInto(el, panel) {
+  const d = dcState.dossier;
+  if (!d) return;
+  if (!d.linked) {
+    el.innerHTML = `<div class="amb-dossier">
+      <div class="amb-dossier-head"><div class="amb-dossier-title">${E(d.productName)}</div></div>
+      <div class="amb-panel amb-empty">${E(d.message)}</div>
+    </div>`;
+    return;
+  }
+  const pkg = d.package;
+  const stock = stockLabel(d.stock);
+  el.innerHTML = `<div class="amb-dossier">
+    <div class="amb-dossier-head">
+      ${d.image ? `<img class="amb-dossier-img" src="${E(d.image)}" alt="" />` : `<div class="amb-dossier-img" style="display:flex;align-items:center;justify-content:center;color:var(--amb-text-faint);">${ic('image', 'ic')}</div>`}
+      <div style="flex:1; min-width:200px;">
+        <div class="amb-dossier-title">${E(d.productName)}</div>
+        <div class="faint" style="font-size:12px; margin-top:2px;">${d.sku ? `SKU: ${E(d.sku)} · ` : ''}${d.category ? E(d.category) : ''}${d.mappedCampaigns ? ` · ${d.mappedCampaigns} حملة مرتبطة` : ''}</div>
+        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+          <span class="badge ${healthBandColor(pkg.health?.band)}">${E(DECISION_LABEL_AR[pkg.decision] || pkg.decision)}</span>
+          <span class="amb-conf ${(CONF_AR[pkg.confidence] || CONF_AR.LOW)[0]}">● ${E((CONF_AR[pkg.confidence] || CONF_AR.LOW)[1])}</span>
+          <button class="amb-btn ghost sm" id="ambDcReanalyze">${ic('refresh', 'ic')} إعادة التحليل</button>
         </div>
       </div>
+      <div class="amb-dossier-score"><div class="sv">${pkg.health?.score ?? '—'}</div><div class="sl">Health Score</div></div>
+    </div>
+    <div class="amb-healthrow">
+      <div class="amb-healthbox"><div class="hv">${pkg.health?.score ?? '—'}/100</div><div class="hl">الصحة العامة${pkg.health?.label ? ` (${E(pkg.health.label)})` : ''}</div></div>
+      <div class="amb-healthbox"><div class="hv">${pkg.diagnosis?.metrics?.confirmationRate != null ? fmtPct(pkg.diagnosis.metrics.confirmationRate * 100) : '—'}</div><div class="hl">صحة العمليات (COD)</div></div>
+      <div class="amb-healthbox"><div class="hv">${pkg.diagnosis?.metrics?.netProfit != null ? fmtEGP(pkg.diagnosis.metrics.netProfit) : '—'}</div><div class="hl">الربح الحقيقي</div></div>
+      <div class="amb-healthbox"><div class="hv" style="color:var(--amb-${stock.cls === 'green' ? 'green' : stock.cls === 'red' ? 'red' : stock.cls === 'yellow' ? 'amber' : 'text-faint'});">${E(stock.text)}</div><div class="hl">حالة المخزون</div></div>
+    </div>
+    <div class="amb-dossier-tabs">${DC_TABS.map((t) => `<button class="amb-dossier-tab ${dcState.activeTab === t.key ? 'active' : ''}" data-dctab="${t.key}">${E(t.label)}</button>`).join('')}</div>
+    <div id="ambDcTabBody">${dcTabBody(d)}</div>
+    ${dcActionPlanHtml(pkg)}
+  </div>`;
+
+  $('ambDcReanalyze').onclick = () => dcReanalyze(panel, d.productId);
+  el.querySelectorAll('[data-dctab]').forEach((b) => b.onclick = () => { dcState.activeTab = b.dataset.dctab; dcRenderDossierInto(el, panel); });
+  dcWireActionPlan(el, panel, pkg);
+}
+
+function dcTabBody(d) {
+  if (dcState.activeTab === 'audience') return dcTabAudience(d.package);
+  if (dcState.activeTab === 'creatives') return dcTabCreatives(d.package);
+  if (dcState.activeTab === 'history') return dcTabHistory(d.history);
+  if (dcState.activeTab === 'learning') return dcTabLearning(d.learning);
+  return dcTabOverview(d.package);
+}
+
+function dcTabOverview(pkg) {
+  const m = pkg.diagnosis?.metrics || {};
+  const funnelSteps = [
+    ['spend', 'الإنفاق', fmtEGP(m.totalSpend)], ['cpm', 'CPM', fmtEGP(m.cpm)], ['ctr', 'CTR', fmtPct(m.ctr)],
+    ['cpc', 'CPC', fmtEGP(m.cpc, 2)], ['purchases', 'مشتريات Meta', fmtNum(m.metaPurchases)], ['cvr', 'Conversion', fmtPct(m.cvr)],
+    ['cpa', 'CPA', fmtEGP(m.avgCpa)], ['cod', 'عينة COD', fmtNum(m.codSample)], ['conf', 'معدل التأكيد', m.confirmationRate != null ? fmtPct(m.confirmationRate * 100) : '—'],
+    ['del', 'معدل التسليم', m.deliveryRate != null ? fmtPct(m.deliveryRate * 100) : '—'], ['rev', 'الإيرادات', fmtEGP(m.revenue)], ['profit', 'الربح', m.netProfit != null ? fmtEGP(m.netProfit) : '—'],
+  ];
+  const bottleneck = pkg.diagnosis?.bottleneck;
+  return `
+    <div class="section-title" style="margin-top:0;">قمع الأداء الكامل</div>
+    <div class="amb-funnel" style="margin-bottom:18px;">${funnelSteps.map(([, l, v]) => `<div class="f-step"><div class="fv">${v}</div><div class="fl">${E(l)}</div></div>`).join('')}</div>
+    <div class="section-title">السبب الرئيسي والتشخيص</div>
+    ${bottleneck ? `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
+      <div style="font-weight:800; margin-bottom:4px;">${E(bottleneck.category || '')} — <span class="faint" style="font-weight:600;">${E(bottleneck.confidence || '')}</span></div>
+      <div style="font-size:13px;">${E(bottleneck.evidence || bottleneck.bottleneck || '')}</div>
+    </div>` : '<div class="amb-empty">مفيش مشكلة واضحة مكتشفة حاليًا.</div>'}
+    ${(pkg.diagnosis?.allSignals || []).length > 1 ? `<div class="amb-derived">${pkg.diagnosis.allSignals.map((s) => `<div class="amb-diag-row"><span>${E(s.category)}</span><span class="faint">${E(s.severity)}</span></div>`).join('')}</div>` : ''}
+    ${pkg.changeReasons?.length ? `<div class="section-title">القرار تغيّر بسبب</div><div class="amb-derived">${pkg.changeReasons.map((r) => `<div class="amb-derived-row"><span>${E(r)}</span></div>`).join('')}</div>` : ''}
+  `;
+}
+
+function dcTabAudience(pkg) {
+  const seg = pkg.segmentIntel || {};
+  const govRows = seg.governorates?.table || [];
+  const clsColor = { PROVEN_WINNER: 'green', PROMISING: 'blue', INSUFFICIENT_DATA: 'gray', PROVEN_WEAK: 'red' };
+  const bestLine = (dim, dimLabel) => {
+    const best = seg[dim]?.best;
+    if (!best) return '';
+    return `<div class="amb-winner-card"><div class="amb-winner-trophy">🏆</div><div class="amb-winner-body"><div class="amb-winner-name">${E(dimLabel)}: ${E(best.segment)}</div><div class="amb-winner-meta">${E(best.evidence || '')}</div></div></div>`;
+  };
+  return `
+    <div class="section-title" style="margin-top:0;">أفضل جمهور مثبت</div>
+    ${bestLine('gender', 'أفضل نوع')}${bestLine('age', 'أفضل عمر')}
+    ${!seg.gender?.best && !seg.age?.best ? '<div class="amb-empty">لا يوجد فائز مؤكد حتى الآن.</div>' : ''}
+    <div class="section-title">جدول المحافظات</div>
+    ${govRows.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>المحافظة</th><th>الإنفاق/الطلبات</th><th>CPA</th><th>التصنيف</th></tr></thead>
+      <tbody>${govRows.map((r) => `<tr><td>${E(r.segment)}</td><td>${r.spend != null ? fmtEGP(r.spend) : fmtNum(r.orders)}</td><td>${r.cpa != null ? fmtEGP(r.cpa) : '—'}</td><td><span class="badge ${clsColor[r.classification] || 'gray'}">${E(r.classification)}</span></td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="amb-empty">مفيش بيانات محافظات كافية لسه.</div>'}
+  `;
+}
+
+function dcTabCreatives(pkg) {
+  const ci = pkg.creativeIntel || {};
+  const dims = [['creative', 'أفضل كرياتيف'], ['hooks', 'أفضل Hook'], ['angles', 'أفضل زاوية بيع'], ['primaryTexts', 'أفضل بوست'], ['headlines', 'أفضل عنوان']];
+  const cards = dims.map(([key, label]) => {
+    const best = ci[key]?.best;
+    if (!best) return `<div class="amb-panel" style="padding:12px;"><div class="section-title" style="margin:0 0 6px;font-size:13px;">${E(label)}</div><div class="faint" style="font-size:12px;">${E(ci[key]?.bestNote || 'لا يوجد فائز مؤكد حتى الآن')}</div></div>`;
+    return `<div class="amb-panel" style="padding:12px;">
+      <div class="section-title" style="margin:0 0 6px;font-size:13px;">${E(label)}</div>
+      <div style="font-weight:700; font-size:13px; margin-bottom:6px;">${E(String(best.label || '').slice(0, 60))}</div>
+      <div class="faint" style="font-size:11.5px;">${E(best.evidence || '')}</div>
+    </div>`;
+  }).join('');
+  return `<div class="section-title" style="margin-top:0;">🏆 العناصر الفائزة</div><div class="amb-field-grid">${cards}</div>`;
+}
+
+function dcTabHistory(history) {
+  if (!history?.length) return '<div class="amb-empty">مفيش قرارات سابقة لهذا المنتج.</div>';
+  return `<div class="table-wrap"><table class="data"><thead><tr><th>التاريخ</th><th>القرار</th><th>الثقة</th><th>الحالة</th></tr></thead>
+    <tbody>${history.map((h) => `<tr><td>${fmtDT(h.created_at)}</td><td>${E(DECISION_LABEL_AR[h.decision] || h.decision)}</td><td>${E((CONF_AR[h.confidence] || CONF_AR.LOW)[1])}</td><td>${E(h.status)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function dcTabLearning(learning) {
+  if (!learning?.hasProfile || !learning.entries?.length) return '<div class="amb-empty">مفيش تعلم مُسجّل لهذا المنتج لسه — بيتراكم مع كل تجربة (Phase 9/10).</div>';
+  const stateColor = { PROVEN: 'green', PROMISING: 'blue', REJECTED: 'red', STALE: 'gray' };
+  return `<div class="amb-derived">${learning.entries.map((e) => `<div class="amb-derived-row"><span>${E(e.dimension)}: ${E(String(e.key || '').slice(0, 40))}</span><span class="badge ${stateColor[e.state] || 'gray'}">${E(e.state)}</span></div>`).join('')}</div>`;
+}
+
+function dcActionPlanHtml(pkg) {
+  const canReview = pkg.recommendationStatus === 'PENDING' && pkg.decision !== 'INSUFFICIENT_DATA';
+  return `<div class="amb-actionplan" style="margin-top:18px;">
+    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+      <span class="badge ${healthBandColor(pkg.health?.band)}" style="font-size:13px;">🎯 الخطة المقترحة: ${E(DECISION_LABEL_AR[pkg.decision] || pkg.decision)}</span>
+      <span class="amb-conf ${(CONF_AR[pkg.confidence] || CONF_AR.LOW)[0]}">● ${E((CONF_AR[pkg.confidence] || CONF_AR.LOW)[1])}</span>
+    </div>
+    <div style="font-size:13.5px; margin:10px 0;">${E(pkg.proposedChange || '—')}</div>
+    <div class="amb-actionplan-grid">
+      <div><div class="apk">أفضل جمهور</div><div class="apv">${E([pkg.winners?.gender?.segment, pkg.winners?.age?.segment].filter(Boolean).join(' / ') || '—')}</div></div>
+      <div><div class="apk">أفضل منطقة</div><div class="apv">${E(pkg.winners?.governorate?.segment || '—')}</div></div>
+      <div><div class="apk">كرياتيف</div><div class="apv">${E(String(pkg.winners?.creative?.label || '—').slice(0, 24))}</div></div>
+      <div><div class="apk">Hook</div><div class="apv">${E(String(pkg.winners?.hook?.label || '—').slice(0, 24))}</div></div>
+    </div>
+    <div class="faint" style="font-size:11.5px; margin-bottom:12px;">مقياس النجاح: ${E(pkg.successMetric || '—')} · فترة التقييم: ${pkg.evaluationWindowDays || 7} أيام</div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="amb-btn ghost sm" id="ambDcViewEvidence">📊 عرض الأدلة الكاملة</button>
+      ${canReview ? `<button class="amb-btn ghost sm" id="ambDcEditPlan">✏️ تعديل الخطة</button>` : ''}
+      ${canReview ? `<button class="amb-btn ghost sm" id="ambDcRejectPlan">❌ رفض</button>` : ''}
+      ${canReview ? `<button class="amb-btn primary sm" id="ambDcApprovePlan">✅ موافقة</button>` : ''}
     </div>
   </div>`;
 }
 
-async function viewDecisionAnalysis(id) {
-  openDrawer('<div class="drawer-section faint">جارِ التحميل…</div>');
-  const buckets = await api.get('/api/ai-media-buyer/decision-center');
-  const all = Object.values(buckets).flat();
-  const c = all.find((x) => x.id === id);
-  if (!c) { openDrawer('<div class="drawer-section">القرار مش موجود.</div>'); return; }
+function dcWireActionPlan(el, panel, pkg) {
+  const recId = pkg.recommendationId;
+  const viewBtn = $('ambDcViewEvidence');
+  if (viewBtn) viewBtn.onclick = () => dcViewEvidence(pkg);
+  const editBtn = $('ambDcEditPlan');
+  if (editBtn) editBtn.onclick = async () => {
+    const val = prompt('عدّل الخطة المقترحة:', pkg.proposedChange || '');
+    if (val === null) return;
+    try { await api.patch(`/api/ai-media-buyer/decision-center/${recId}`, { proposedChange: val }); UI.toast('✅ اتعدّلت الخطة'); dcReanalyzeSoft(panel); }
+    catch (err) { UI.toast(err.message, 'error'); }
+  };
+  const rejectBtn = $('ambDcRejectPlan');
+  if (rejectBtn) rejectBtn.onclick = async () => {
+    const confirmed = await UI.confirmModal({ title: 'رفض القرار', message: 'هيتحفظ كمرفوض. متابعة؟', confirmLabel: 'رفض' });
+    if (!confirmed) return;
+    try { await api.post(`/api/ai-media-buyer/decision-center/${recId}/reject`, {}); UI.toast('تم الرفض'); dcReanalyzeSoft(panel); }
+    catch (err) { UI.toast(err.message, 'error'); }
+  };
+  const approveBtn = $('ambDcApprovePlan');
+  if (approveBtn) approveBtn.onclick = () => dcApproveAndExecute(panel, recId);
+}
 
-  const losersHtml = (c.losers?.weakGovernorates || []).length
-    ? `<div class="section-title" style="font-size:13px;">مناطق ضعيفة مثبتة</div><div class="amb-derived">${c.losers.weakGovernorates.map((g) => `<div class="amb-derived-row"><span>${E(g.segment)}</span><span class="faint" style="font-size:11px;">${E(g.evidence)}</span></div>`).join('')}</div>` : '';
-  const weakCreativesHtml = (c.losers?.weakOrFatiguedCreatives || []).length
-    ? `<div class="section-title" style="font-size:13px;">كرياتيفات ضعيفة/مُتعبة</div><div class="amb-derived">${c.losers.weakOrFatiguedCreatives.map((r) => `<div class="amb-derived-row"><span>${E(String(r.label || '').slice(0, 40))}</span><span class="faint" style="font-size:11px;">${E(r.classification)}</span></div>`).join('')}</div>` : '';
-
+function dcViewEvidence(pkg) {
+  const losersHtml = (pkg.losers?.weakGovernorates || []).length
+    ? `<div class="section-title" style="font-size:13px;">مناطق ضعيفة مثبتة</div><div class="amb-derived">${pkg.losers.weakGovernorates.map((g) => `<div class="amb-derived-row"><span>${E(g.segment)}</span><span class="faint" style="font-size:11px;">${E(g.evidence)}</span></div>`).join('')}</div>` : '';
+  const weakCreativesHtml = (pkg.losers?.weakOrFatiguedCreatives || []).length
+    ? `<div class="section-title" style="font-size:13px;">كرياتيفات ضعيفة/مُتعبة</div><div class="amb-derived">${pkg.losers.weakOrFatiguedCreatives.map((r) => `<div class="amb-derived-row"><span>${E(String(r.label || '').slice(0, 40))}</span><span class="faint" style="font-size:11px;">${E(r.classification)}</span></div>`).join('')}</div>` : '';
   openDrawer(`
-    <div class="drawer-header"><div class="drawer-title">${E(c.productName)} — تحليل القرار الذكي</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+    <div class="drawer-header"><div class="drawer-title">${E(pkg.productName)} — الأدلة الكاملة</div><button class="drawer-close" id="ambDrawerX">×</button></div>
     <div class="drawer-section">
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;">
-        <span class="badge gray">Health: ${c.health?.score ?? '—'}/100</span>
-        <span class="badge gray">${E(DECISION_LABEL_AR[c.decision] || c.decision)}</span>
-        <span class="amb-conf ${(CONF_AR[c.confidence] || CONF_AR.LOW)[0]}">● ${E((CONF_AR[c.confidence] || CONF_AR.LOW)[1])}</span>
-      </div>
       <div class="section-title" style="margin-top:0;">المشكلة الأساسية (Root Cause)</div>
-      <div style="font-size:13px; margin-bottom:10px;">${E(c.bottleneck?.evidence || c.reason || '—')}</div>
+      <div style="font-size:13px; margin-bottom:10px;">${E(pkg.diagnosis?.bottleneck?.evidence || pkg.reason || '—')}</div>
       <div class="section-title" style="font-size:13px;">أفضل العناصر المثبتة</div>
       <div class="amb-derived">
-        <div class="amb-derived-row"><span>أفضل كرياتيف</span><b>${E(String(c.winners?.creative?.label || '—').slice(0, 50))}</b></div>
-        <div class="amb-derived-row"><span>أفضل Hook</span><b>${E(String(c.winners?.hook?.label || '—').slice(0, 50))}</b></div>
-        <div class="amb-derived-row"><span>أفضل زاوية بيع</span><b>${E(String(c.winners?.angle?.label || '—').slice(0, 50))}</b></div>
-        <div class="amb-derived-row"><span>أفضل بوست (Primary Text)</span><b>${E(String(c.winners?.primaryText?.label || '—').slice(0, 50))}</b></div>
-        <div class="amb-derived-row"><span>أفضل Headline</span><b>${E(String(c.winners?.headline?.label || '—').slice(0, 50))}</b></div>
-        <div class="amb-derived-row"><span>الجمهور</span><b>${E([c.winners?.gender?.segment, c.winners?.age?.segment].filter(Boolean).join(' / ') || '—')}</b></div>
-        <div class="amb-derived-row"><span>المنطقة الجغرافية</span><b>${E(c.winners?.governorate?.segment || '—')}</b></div>
+        <div class="amb-derived-row"><span>أفضل كرياتيف</span><b>${E(String(pkg.winners?.creative?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل Hook</span><b>${E(String(pkg.winners?.hook?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل زاوية بيع</span><b>${E(String(pkg.winners?.angle?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل بوست</span><b>${E(String(pkg.winners?.primaryText?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>أفضل Headline</span><b>${E(String(pkg.winners?.headline?.label || '—').slice(0, 50))}</b></div>
+        <div class="amb-derived-row"><span>الجمهور</span><b>${E([pkg.winners?.gender?.segment, pkg.winners?.age?.segment].filter(Boolean).join(' / ') || '—')}</b></div>
+        <div class="amb-derived-row"><span>المنطقة الجغرافية</span><b>${E(pkg.winners?.governorate?.segment || '—')}</b></div>
       </div>
       ${losersHtml}${weakCreativesHtml}
-      <div class="section-title" style="font-size:13px;">الخطة المقترحة</div>
-      <div style="font-size:13px; margin-bottom:6px;">${E(c.proposedChange || '—')}</div>
-      <div class="faint" style="font-size:12px;">مقياس النجاح: ${E(c.successMetric || '—')} · فترة التقييم: ${c.evaluationWindowDays || 7} أيام</div>
     </div>`);
 }
 
-async function editDecisionPlan(id) {
-  const buckets = await api.get('/api/ai-media-buyer/decision-center');
-  const all = Object.values(buckets).flat();
-  const c = all.find((x) => x.id === id);
-  if (!c) return;
-  const val = prompt('عدّل الخطة المقترحة:', c.proposedChange || '');
-  if (val === null) return;
-  try { await api.patch(`/api/ai-media-buyer/decision-center/${id}`, { proposedChange: val }); UI.toast('✅ اتعدّلت الخطة'); route(); }
-  catch (err) { UI.toast(err.message, 'error'); }
-}
-
-async function rejectDecision(id) {
-  const confirmed = await UI.confirmModal({ title: 'رفض القرار', message: 'هيتحفظ كمرفوض ومش هيظهر في "جاهز للقرار" تاني. متابعة؟', confirmLabel: 'رفض' });
-  if (!confirmed) return;
-  try { await api.post(`/api/ai-media-buyer/decision-center/${id}/reject`, {}); UI.toast('تم الرفض'); route(); }
-  catch (err) { UI.toast(err.message, 'error'); }
+function dcReanalyzeSoft(panel) {
+  dcState.dossier = null;
+  dcLoadProducts().then(() => dcOpenProduct(panel, dcState.selectedProductId));
 }
 
 /**
- * موافقة وتنفيذ — a real, multi-step gate, never a single click straight to
- * Meta: (1) approve-only (no Meta call), (2) fetch + show the EXACT
- * execution plan, (3) a SECOND explicit confirmation naming the real
- * consequence before anything touches Meta. A plan with no direct Meta
- * action (NEW_CREATIVE_TEST/AUDIENCE_TEST/GEO_TEST/OFFER_TEST/
- * LANDING_PAGE_FIX/KEEP_TESTING) never reaches step 3's Meta-write wording —
- * it just closes the loop and points at the existing tool to use next.
+ * موافقة — a real, multi-step gate, never a single click straight to Meta:
+ * (1) approve-only (no Meta call), (2) fetch + show the EXACT execution
+ * plan, (3) "كيف تريد تنفيذ الخطة؟" — for a real Meta-write plan, a THIRD
+ * explicit confirmation naming the real consequence before anything
+ * touches Meta. A SCALE plan's prefill (winning creative/hook/audience) is
+ * shown so the user can jump into the existing Launch Builder with it.
  */
-async function approveAndExecuteDecision(id) {
+async function dcApproveAndExecute(panel, id) {
   const approveConfirmed = await UI.confirmModal({ title: 'موافقة على القرار', message: 'هتتم الموافقة على هذا القرار (بدون أي تنفيذ فعلي على Meta لسه). بعدها هتشوف خطة التنفيذ بالتفصيل قبل أي خطوة حقيقية.', confirmLabel: 'موافقة' });
   if (!approveConfirmed) return;
   try { await api.post(`/api/ai-media-buyer/decision-center/${id}/approve`, {}); }
@@ -1728,24 +1948,29 @@ async function approveAndExecuteDecision(id) {
 
   let plan;
   try { plan = await api.get(`/api/ai-media-buyer/decision-center/${id}/execution-plan`); }
-  catch (err) { UI.toast(err.message, 'error'); route(); return; }
+  catch (err) { UI.toast(err.message, 'error'); dcReanalyzeSoft(panel); return; }
 
   const planMessage = plan.realMetaWrite
     ? `⚠️ ${plan.summary}\n\nده إجراء حقيقي هيأثر على حساب Meta فعليًا.`
     : `${plan.summary}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}` : ''}`;
   const executeConfirmed = await UI.confirmModal({
-    title: plan.realMetaWrite ? '⚠️ تأكيد نهائي — إجراء حقيقي على Meta' : 'تأكيد الخطة',
+    title: plan.realMetaWrite ? '⚠️ تأكيد نهائي — إجراء حقيقي على Meta' : 'كيف تريد تنفيذ الخطة؟',
     message: planMessage,
-    confirmLabel: plan.realMetaWrite ? 'نفّذ فعليًا على Meta' : 'تأكيد',
+    confirmLabel: plan.realMetaWrite ? 'نفّذ فعليًا على Meta' : (plan.actionKind === 'LAUNCH_BUILDER_PREFILL' ? 'إنشاء Campaign Scaling جديدة' : 'تأكيد'),
     danger: !!plan.realMetaWrite,
   });
-  if (!executeConfirmed) { UI.toast('تمت الموافقة — التنفيذ الفعلي لسه مستني تأكيدك.'); route(); return; }
+  if (!executeConfirmed) { UI.toast('تمت الموافقة — التنفيذ الفعلي لسه مستني تأكيدك.'); dcReanalyzeSoft(panel); return; }
 
   try {
     const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, { confirmRealExecution: true });
     UI.toast(result.ok ? '✅ تم' : (result.message || 'حصلت مشكلة'), result.ok ? undefined : 'error');
+    if (result.ok && plan.actionKind === 'LAUNCH_BUILDER_PREFILL' && result.prefill) {
+      launchState.storeId = null; launchState.productId = result.prefill.productId || null;
+      launchState._prefillWinners = { creative: result.prefill.winningCreative, hook: result.prefill.winningHook, segment: result.prefill.winningSegment };
+      UI.toast('تم تجهيز بيانات الفائزين — افتح "رفع الكامبين" لاستكمال الحملة الجديدة.');
+    }
   } catch (err) { UI.toast(err.message, 'error'); }
-  route();
+  dcReanalyzeSoft(panel);
 }
 
 // ---- Execution history / reports — logic UNCHANGED ----

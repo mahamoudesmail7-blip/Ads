@@ -57,6 +57,7 @@ import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js
 import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startProductExperimentScheduler } from './services/amb/productExperiment.js';
+import { startProductAutoAnalysisScheduler } from './services/amb/productAutoAnalysis.js';
 import { startAmbCloneScheduler } from './services/amb/cloneScheduler.js';
 import { startLaunchScheduler } from './services/amb/launchScheduler.js';
 import { startCreativeFactoryScheduler } from './services/creativeFactory/scheduler.js';
@@ -147,6 +148,7 @@ startEasyOrdersReconciliation();
 startAmbSnapshotScheduler();
 startAmbOutcomeScheduler();
 startProductExperimentScheduler();
+startProductAutoAnalysisScheduler();
 // Campaign Clone & Schedule — 60s tick that activates cloned (PAUSED)
 // campaigns at their per-destination scheduled time. No-ops when Meta isn't
 // connected or ambCloneAutoActivate is off.

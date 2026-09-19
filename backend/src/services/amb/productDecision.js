@@ -270,7 +270,7 @@ export async function editProductDecision({ recId, patch, userId }) {
   });
 }
 
-export async function persistProductDecision({ pkg, adAccountId, batchId }) {
+export async function persistProductDecision({ pkg, adAccountId, batchId, changeReasons }) {
   const ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: pkg.productId }, select: { id: true } });
   return prisma.ambRecommendation.create({
     data: {
@@ -288,6 +288,7 @@ export async function persistProductDecision({ pkg, adAccountId, batchId }) {
         bottleneck: pkg.diagnosis.bottleneck, winners: pkg.winners, losers: pkg.losers,
         health: pkg.health, proposedChange: pkg.proposedChange, successMetric: pkg.successMetric,
         evaluationWindowDays: pkg.evaluationWindowDays, sampleSize: pkg.sampleSize,
+        ...(changeReasons?.length ? { changeReasons } : {}),
       }),
       confidence: pkg.confidence,
       data_sufficiency: pkg.health.dataSufficient ? 'STRONG' : 'WEAK',
