@@ -104,21 +104,18 @@ export function aggregateBy(rows, dim) {
 
 const EMPTY_UNAVAILABLE = (reason) => ({ available: false, reason });
 
-async function buildResult({ profile, win }) {
-  const window = resolveWindow(win);
-  const connection = await getConnection();
-  const adAccountId = connection?.selected_ad_account_id || null;
+/**
+ * The reusable core: real Meta age/gender/region/platform breakdown for an
+ * EXPLICIT set of campaign ids + ad account, for any caller that has
+ * already resolved those the way it needs to (PMC via
+ * AmbProductCampaignMap, Smart Decision Center Phase 4 via Phase 2's own
+ * campaign resolution) — never a second Meta-breakdown implementation.
+ * Exported so Phase 4's segment intelligence can reuse it directly without
+ * requiring a ProductMarketingProfile to exist first.
+ */
+export async function fetchAudienceBreakdown({ adAccountId, campaignIds, window }) {
   if (!adAccountId) return EMPTY_UNAVAILABLE('لا يوجد حساب إعلانات Meta متصل حاليًا.');
-
-  const effectiveProductId = await resolveEffectiveProductId(profile);
-  if (!effectiveProductId) return EMPTY_UNAVAILABLE('المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.');
-
-  const ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: effectiveProductId } });
-  if (!ambProduct) return EMPTY_UNAVAILABLE('لا يوجد ربط Meta لهذا المنتج بعد — لازم تأكيد ربط حملة واحدة على الأقل أولاً.');
-
-  const mapped = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: ambProduct.id, status: 'MAPPED' }, select: { campaign_id: true } });
-  const campaignIds = mapped.map((m) => m.campaign_id);
-  if (!campaignIds.length) return EMPTY_UNAVAILABLE('لا توجد حملات Meta مؤكدة (مربوطة يدويًا) لهذا المنتج — تقسيمات الجمهور تُحسب فقط على الحملات المؤكدة، أبدًا على تخمين.');
+  if (!campaignIds?.length) return EMPTY_UNAVAILABLE('لا توجد حملات Meta مؤكدة لهذا المنتج — تقسيمات الجمهور تُحسب فقط على حملات حقيقية، أبدًا على تخمين.');
 
   let token;
   try { token = await getDecryptedToken(); } catch (e) { return EMPTY_UNAVAILABLE(e.message); }
@@ -179,6 +176,26 @@ async function buildResult({ profile, win }) {
     age, gender, country, region, platform, placement,
     sampleWarning,
   };
+}
+
+/** PMC's own entry point: resolves campaign ids the PMC way (CONFIRMED AmbProductCampaignMap rows for this profile's product), then defers to the shared fetchAudienceBreakdown() core above. */
+async function buildResult({ profile, win }) {
+  const window = resolveWindow(win);
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  if (!adAccountId) return EMPTY_UNAVAILABLE('لا يوجد حساب إعلانات Meta متصل حاليًا.');
+
+  const effectiveProductId = await resolveEffectiveProductId(profile);
+  if (!effectiveProductId) return EMPTY_UNAVAILABLE('المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.');
+
+  const ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: effectiveProductId } });
+  if (!ambProduct) return EMPTY_UNAVAILABLE('لا يوجد ربط Meta لهذا المنتج بعد — لازم تأكيد ربط حملة واحدة على الأقل أولاً.');
+
+  const mapped = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: ambProduct.id, status: 'MAPPED' }, select: { campaign_id: true } });
+  const campaignIds = mapped.map((m) => m.campaign_id);
+  if (!campaignIds.length) return EMPTY_UNAVAILABLE('لا توجد حملات Meta مؤكدة (مربوطة يدويًا) لهذا المنتج — تقسيمات الجمهور تُحسب فقط على الحملات المؤكدة، أبدًا على تخمين.');
+
+  return fetchAudienceBreakdown({ adAccountId, campaignIds, window });
 }
 
 export async function computeAudienceBreakdown({ profileId, windowName = 'last7', force = false } = {}) {

@@ -51,7 +51,7 @@ function emptyEasyOrdersBlock(dataState) {
  * Never campaign-name matching — that stays historical-review-only.
  * Returns [{ campaignId, adAccountId, via: 'LAUNCH'|'MAPPING' }], deduped by campaignId (LAUNCH wins on collision).
  */
-async function resolveProductCampaigns(productId) {
+export async function resolveProductCampaigns(productId) {
   const [launchCampaigns, ambProduct] = await Promise.all([
     prisma.ambLaunchCampaign.findMany({
       where: { job: { product_id: productId }, meta_campaign_id: { not: null } },

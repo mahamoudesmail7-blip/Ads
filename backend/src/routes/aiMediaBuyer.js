@@ -142,6 +142,27 @@ router.get('/products/:id/creative-intel', asyncRoute(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// Smart Decision Center Phase 4 — Audience / Segment Intelligence. Keyed by
+// the real catalog Product.id (matches the Phase 2 dataset, since
+// governorate COD truth is store-scoped by Product.store_id — never
+// AmbProduct.id here). Analysis only.
+// ---------------------------------------------------------------------------
+router.get('/product-segments/:productId', asyncRoute(async (req, res) => {
+  const { segmentIntelForProduct } = await import('../services/amb/segmentIntel.js');
+  const product = await prisma.product.findUnique({ where: { id: Number(req.params.productId) }, select: { store_id: true } });
+  if (!product) return res.status(404).json({ error: 'المنتج غير موجود.' });
+  const connection = await getConnection();
+  const settings = await getAmbSettings();
+  res.json(await segmentIntelForProduct({
+    productId: Number(req.params.productId),
+    storeId: product.store_id || null,
+    adAccountId: connection?.selected_ad_account_id || null,
+    windowName: req.query.window,
+    settings,
+  }));
+}));
+
+// ---------------------------------------------------------------------------
 // Smart Decision Center Phase 2 — Unified Product Performance dataset.
 // Keyed by the real catalog Product.id (NOT AmbProduct.id — see
 // productPerformance.js's own header for why). The single source of truth
