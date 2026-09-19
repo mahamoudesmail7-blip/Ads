@@ -3380,7 +3380,7 @@ async function renderHomeSchedules(mount) {
 // uploaded, no Campaign/AdSet/Ad/Creative is created on Meta anywhere in
 // this file.
 // ---------------------------------------------------------------------------
-const LAUNCH_STEPS = ['الحساب', 'إعداد الكامبين', 'Ad Sets', 'المنصات والصفحة والبيكسل', 'الفيديوهات', 'عدد الكامبينات', 'النصوص والروابط', 'مراجعة', 'النشر'];
+const LAUNCH_STEPS = ['📦 المنتج', 'الحساب', 'إعداد الكامبين', 'Ad Sets', 'المنصات والصفحة والبيكسل', 'الفيديوهات', 'عدد الكامبينات', 'النصوص والروابط', 'مراجعة', 'النشر'];
 const LAUNCH_CONVERSION_EVENTS = [
   { v: 'PURCHASE', l: 'شراء' },
   { v: 'INITIATED_CHECKOUT', l: 'بدء عملية الشراء' },
@@ -3391,6 +3391,14 @@ const LAUNCH_CONVERSION_EVENTS = [
 const launchState = {
   step: 1,
   jobId: null,          // generated once per wizard session — the idempotency key for "حفظ كمسودة"
+  // Smart Decision Center Phase 1 — the deterministic root entity, Step 1.
+  stores: null,
+  storeId: null,
+  storeName: null,
+  products: null,
+  _productsLoadedForStore: null, // guards against re-fetching products on every render while staying on the same store
+  productId: null,
+  productName: null,
   accounts: null,
   adAccountId: null,
   adAccountName: null,
@@ -3481,7 +3489,7 @@ function launchCurrentAssets() {
 // a private-browsing tab or blocked storage just means this session behaves
 // as it always did (nothing persisted), never a hard failure.
 const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
-const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
+const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
 function saveLaunchSnapshot() {
   try {
     const snap = {};
@@ -3518,7 +3526,9 @@ async function renderLaunch(panel) {
 /** The one true "fresh wizard" state — used by every "start new" entry point (Step 1's own button, the persistent toolbar, the Review-screen CTA) so they can never drift out of sync. */
 function launchFreshDefaults() {
   return {
-    step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null, adAccountTimezoneName: null,
+    step: 1, jobId: null, jobStarted: false,
+    storeId: null, storeName: null, productId: null, productName: null, products: null, _productsLoadedForStore: null,
+    adAccountId: null, adAccountName: null, adAccountTimezoneName: null,
     baseName: 'Cup - Test', budgetMode: 'CBO', cboDailyBudget: '', aboBudgets: [], adSetsPerCampaign: 3, adsPerAdSet: 3,
     startMode: 'SCHEDULED', startDate: '', startTime: '00:00', launchMode: 'PAUSED_REVIEW', biddingMode: 'AUTOMATIC', bidCapAmount: '',
     platforms: { facebook: true, instagram: true },
@@ -3568,7 +3578,7 @@ function launchConfirmAndStartNew() {
 function launchStepper() {
   return `<div class="amb-steps">${LAUNCH_STEPS.map((s, i) => {
     const n = i + 1;
-    const reachable = n <= 8; // step 9 (النشر) is not implemented yet — visible, never reachable
+    const reachable = n <= 9; // step 10 (النشر) is not implemented yet — visible, never reachable
     const cls = !reachable ? '' : launchState.step === n ? 'active' : launchState.step > n ? 'done' : '';
     return `<div class="amb-step ${cls}" style="${reachable ? '' : 'opacity:.45;'}" title="${reachable ? '' : 'غير متاح بعد'}">
       <span class="n">${launchState.step > n && reachable ? '✓' : n}</span><span class="l">${E(s)}</span>
@@ -3583,14 +3593,15 @@ async function renderLaunchStep() {
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   try {
     if (launchState.viewingHistory) return renderLaunchHistory(body);
-    if (launchState.step === 1) return renderLaunchAccount(body);
-    if (launchState.step === 2) return renderLaunchSetup(body);
-    if (launchState.step === 3) return renderLaunchAdSets(body);
-    if (launchState.step === 4) return renderLaunchPlatforms(body);
-    if (launchState.step === 5) return renderLaunchVideos(body);
-    if (launchState.step === 6) return renderLaunchCount(body);
-    if (launchState.step === 7) return renderLaunchCopy(body);
-    if (launchState.step === 8) return renderLaunchReview(body);
+    if (launchState.step === 1) return renderLaunchProduct(body);
+    if (launchState.step === 2) return renderLaunchAccount(body);
+    if (launchState.step === 3) return renderLaunchSetup(body);
+    if (launchState.step === 4) return renderLaunchAdSets(body);
+    if (launchState.step === 5) return renderLaunchPlatforms(body);
+    if (launchState.step === 6) return renderLaunchVideos(body);
+    if (launchState.step === 7) return renderLaunchCount(body);
+    if (launchState.step === 8) return renderLaunchCopy(body);
+    if (launchState.step === 9) return renderLaunchReview(body);
   } catch (err) {
     body.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(err.message || err)}</div>
       <div class="toolbar" style="margin-top:12px;"><button class="amb-btn" id="ambLaunchRetry">إعادة المحاولة</button></div>`;
@@ -3713,7 +3724,68 @@ async function renderLaunchHistoryDetail(body, jobId) {
   $('ambLaunchHistoryClose2').onclick = () => launchCloseHistory();
 }
 
-// ---- Step 1 · AD ACCOUNT ----
+// ---- Step 1 · PRODUCT (Smart Decision Center Phase 1 — the deterministic
+// root entity: Store -> Product -> everything downstream). A store-tagged
+// product only shows for its own store; an untagged (legacy) product shows
+// for every store — mirrors the exact backward-compatible convention the
+// backend itself already documents on Product.store_id. This is a UI
+// convenience list only; the real enforcement is server-side. ----
+async function renderLaunchProduct(body) {
+  if (!launchState.stores) {
+    const r = await api.get('/api/ai-media-buyer/launch/stores');
+    launchState.stores = r.stores || [];
+    if (!launchState.storeId && launchState.stores.length === 1) launchState.storeId = launchState.stores[0].id;
+  }
+  const stores = launchState.stores || [];
+  if (launchState.storeId && !launchState._productsLoadedForStore) {
+    const r = await api.get(`/api/ai-media-buyer/launch/products?storeId=${encodeURIComponent(launchState.storeId)}`);
+    launchState.products = r.products || [];
+    launchState._productsLoadedForStore = launchState.storeId;
+  }
+  const products = launchState.storeId ? (launchState.products || []) : [];
+  body.innerHTML = `
+    ${launchStepper()}
+    <div class="amb-panel">
+      <div class="section-title" style="margin-top:0;">المتجر والمنتج</div>
+      ${stores.length > 1 ? `
+        <div class="field" style="max-width:320px; margin-bottom:14px;">
+          <label>المتجر</label>
+          <select class="amb-input" id="ambLaunchStoreSelect">
+            <option value="">— اختار متجر —</option>
+            ${stores.map((s) => `<option value="${E(s.id)}" ${launchState.storeId === s.id ? 'selected' : ''}>${E(s.name || s.id)}</option>`).join('')}
+          </select>
+        </div>` : ''}
+      ${!launchState.storeId ? '<div class="amb-empty">اختار متجر الأول عشان تشوف منتجاته.</div>' : products.length ? `
+        <div class="amb-radio-list" style="max-height:420px; overflow:auto;">${products.map((p) => `
+          <label class="amb-radio-row ${launchState.productId === p.id ? 'sel' : ''}">
+            <input type="radio" name="ambLaunchProduct" value="${p.id}" ${launchState.productId === p.id ? 'checked' : ''} />
+            <span class="rr-main">${E(p.product_name)}</span>
+            <span class="rr-sub">${p.sku ? E(p.sku) : ''}</span>
+          </label>`).join('')}</div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
+    </div>
+    ${launchNav(0, 'التالي: الحساب الإعلاني', !!launchState.productId)}`;
+  const storeSel = $('ambLaunchStoreSelect');
+  if (storeSel) storeSel.onchange = (e) => {
+    launchState.storeId = e.target.value || null;
+    launchState.storeName = stores.find((s) => s.id === launchState.storeId)?.name || null;
+    launchState.productId = null; launchState.productName = null;
+    launchState.products = null; launchState._productsLoadedForStore = null;
+    renderLaunchStep();
+  };
+  body.querySelectorAll('input[name="ambLaunchProduct"]').forEach((r) => {
+    r.onchange = () => {
+      launchState.productId = Number(r.value);
+      launchState.productName = products.find((p) => p.id === launchState.productId)?.product_name || null;
+      renderLaunchStep();
+    };
+  });
+  wireLaunchNav(0, () => {
+    if (!launchState.productId) return;
+    launchState.step = 2; renderLaunchStep();
+  });
+}
+
+// ---- Step 2 · AD ACCOUNT ----
 async function renderLaunchAccount(body) {
   if (!launchState.accounts) {
     const r = await api.get('/api/ai-media-buyer/launch/discovery/ad-accounts');
@@ -3739,7 +3811,7 @@ async function renderLaunchAccount(body) {
         </label>`).join('')}</div>` : '<div class="amb-empty">مفيش حسابات إعلانية متاحة — تأكد إن اتصال Meta شغال من الإعدادات.</div>'}
       ${chosen ? `<div class="faint" style="font-size:12px; margin-top:12px;">العملة: ${E(chosen.currency || '—')} · التوقيت: ${E(chosen.timezoneName || '—')}</div>` : ''}
     </div>
-    ${launchNav(0, 'التالي: إعداد الكامبين', !!launchState.adAccountId)}`;
+    ${launchNav(1, 'التالي: إعداد الكامبين', !!launchState.adAccountId)}`;
   const startNew = $('ambLaunchStartNew');
   if (startNew) startNew.onclick = () => launchConfirmAndStartNew();
   body.querySelectorAll('input[name="ambLaunchAcct"]').forEach((r) => {
@@ -3756,7 +3828,7 @@ async function renderLaunchAccount(body) {
       renderLaunchStep();
     };
   });
-  wireLaunchNav(0, () => {
+  wireLaunchNav(1, () => {
     if (!launchState.adAccountId) return;
     const acct = accts.find((a) => a.id === launchState.adAccountId);
     launchState.adAccountName = acct?.name || launchState.adAccountName;
@@ -3764,11 +3836,11 @@ async function renderLaunchAccount(body) {
     // is what makes the schedule step's local->UTC conversion authoritative
     // instead of assuming every account is Africa/Cairo.
     launchState.adAccountTimezoneName = acct?.timezoneName || launchState.adAccountTimezoneName || 'Africa/Cairo';
-    launchState.step = 2; renderLaunchStep();
+    launchState.step = 3; renderLaunchStep();
   });
 }
 
-// ---- Step 2 · CAMPAIGN SETUP ----
+// ---- Step 3 · CAMPAIGN SETUP ----
 async function renderLaunchSetup(body) {
   body.innerHTML = `
     ${launchStepper()}
@@ -3787,19 +3859,19 @@ async function renderLaunchSetup(body) {
         <div class="faint" style="font-size:11.5px; margin-top:6px;">CBO: ميزانية واحدة على مستوى الكامبين. ABO: ميزانية منفصلة لكل Ad Set (هتحددها في الخطوة الجاية).</div>
       </div>
     </div>
-    ${launchNav(1, 'التالي: Ad Sets', !!launchState.baseName.trim())}`;
+    ${launchNav(2, 'التالي: Ad Sets', !!launchState.baseName.trim())}`;
   $('ambLaunchBaseName').oninput = (e) => { launchState.baseName = e.target.value; if (launchState.campaignCount === 1) launchState.campaigns[0].name = e.target.value; };
   body.querySelectorAll('[data-bm]').forEach((b) => { b.onclick = () => { launchState.budgetMode = b.dataset.bm; renderLaunchStep(); }; });
-  wireLaunchNav(1, () => {
+  wireLaunchNav(2, () => {
     const name = ($('ambLaunchBaseName').value || '').trim();
     if (!name) { UI.toast('اسم الكامبين مطلوب.', 'error'); return; }
     launchState.baseName = name;
     syncLaunchCampaigns();
-    launchState.step = 3; renderLaunchStep();
+    launchState.step = 4; renderLaunchStep();
   });
 }
 
-// ---- Step 3 · AD SETS (count, ads/adset, budget amounts, schedule) ----
+// ---- Step 4 · AD SETS (count, ads/adset, budget amounts, schedule) ----
 async function renderLaunchAdSets(body) {
   while (launchState.aboBudgets.length < launchState.adSetsPerCampaign) launchState.aboBudgets.push({ dailyBudget: '' });
   launchState.aboBudgets.length = launchState.adSetsPerCampaign;
@@ -3853,7 +3925,7 @@ async function renderLaunchAdSets(body) {
         </div>
       </div>
     </div>
-    ${launchNav(2, 'التالي: المنصات والصفحة والبيكسل', true)}`;
+    ${launchNav(3, 'التالي: المنصات والصفحة والبيكسل', true)}`;
 
   $('ambLaunchAdSets').onchange = (e) => { launchState.adSetsPerCampaign = Math.max(1, Number(e.target.value) || 1); renderLaunchStep(); };
   $('ambLaunchAdsPerSet').onchange = (e) => { launchState.adsPerAdSet = Math.max(1, Number(e.target.value) || 1); };
@@ -3869,7 +3941,7 @@ async function renderLaunchAdSets(body) {
   const sd = $('ambLaunchStartDate'); if (sd) sd.onchange = (e) => { launchState.startDate = e.target.value; };
   const st = $('ambLaunchStartTime'); if (st) st.onchange = (e) => { launchState.startTime = e.target.value; };
 
-  wireLaunchNav(2, () => {
+  wireLaunchNav(3, () => {
     if (launchState.budgetMode === 'CBO') {
       launchState.cboDailyBudget = $('ambLaunchCboBudget').value;
       if (!(egpToMinor(launchState.cboDailyBudget) > 0)) { UI.toast('ميزانية الكامبين اليومية مطلوبة ولازم تكون أكبر من صفر.', 'error'); return; }
@@ -3887,11 +3959,11 @@ async function renderLaunchAdSets(body) {
       if (!launchState.startDate) { UI.toast('لازم تحدد تاريخ البدء، أو تختار وضع تشغيل تاني.', 'error'); return; }
       if (!cloneStartInFuture(launchState.startDate, launchState.startTime)) { UI.toast('لازم يكون تاريخ ووقت البدء في المستقبل.', 'error'); return; }
     }
-    launchState.step = 4; renderLaunchStep();
+    launchState.step = 5; renderLaunchStep();
   });
 }
 
-// ---- Step 4 · PLATFORMS, PAGE & PIXEL ----
+// ---- Step 5 · PLATFORMS, PAGE & PIXEL ----
 // The bundled discovery (getAccountIdentities → ad-account/business-level
 // Instagram lists) can miss an Instagram account connected DIRECTLY to a
 // specific Page rather than surfaced at the ad-account/business level —
@@ -3973,7 +4045,7 @@ async function renderLaunchPlatforms(body) {
         </select>
       </div>
     </div>
-    ${launchNav(3, 'التالي: الفيديوهات', true)}`;
+    ${launchNav(4, 'التالي: الفيديوهات', true)}`;
 
   $('ambLaunchPlatFb').onchange = (e) => { launchState.platforms.facebook = e.target.checked; };
   $('ambLaunchPlatIg').onchange = (e) => { launchState.platforms.instagram = e.target.checked; renderLaunchStep(); };
@@ -3988,18 +4060,18 @@ async function renderLaunchPlatforms(body) {
   body.querySelectorAll('input[name="ambLaunchPixel"]').forEach((r) => { r.onchange = () => { launchState.pixelId = r.value; launchState.pixelName = r.dataset.name; }; });
   $('ambLaunchConvEvent').onchange = (e) => { launchState.conversionEvent = e.target.value; };
 
-  wireLaunchNav(3, () => {
+  wireLaunchNav(4, () => {
     if (!launchState.platforms.facebook && !launchState.platforms.instagram) { UI.toast('اختار منصة واحدة على الأقل.', 'error'); return; }
     if (!launchState.pageId) { UI.toast('اختيار Facebook Page مطلوب.', 'error'); return; }
     if (!launchState.pixelId) { UI.toast('اختيار Meta Pixel مطلوب.', 'error'); return; }
     // Real production bug: Instagram checked with no real identity silently
     // published Facebook-only ads. Block here instead of letting it through.
     if (launchState.platforms.instagram && !launchState.instagramId) { UI.toast('اخترت إنستجرام كمنصة لكن لسه معملتش اختيار حساب إنستجرام حقيقي متصل بالصفحة.', 'error'); return; }
-    launchState.step = 5; renderLaunchStep();
+    launchState.step = 6; renderLaunchStep();
   });
 }
 
-// ---- Step 5 · VIDEOS (Phase E — real upload: browser -> this backend, streaming -> Meta resumable upload) ----
+// ---- Step 6 · VIDEOS (Phase E — real upload: browser -> this backend, streaming -> Meta resumable upload) ----
 
 // Verified directly against Meta's own Business Help Center (2026-09) — never
 // invented. Format list: "Supported video formats for ads". Size/duration:
@@ -4174,7 +4246,7 @@ async function uploadLaunchVideo(entry) {
   try {
     if (!launchState.jobId) launchState.jobId = launchUUID();
     if (!launchState.jobStarted) {
-      await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/start`, { adAccountId: launchState.adAccountId, adAccountName: launchState.adAccountName });
+      await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/start`, { adAccountId: launchState.adAccountId, adAccountName: launchState.adAccountName, productId: launchState.productId });
       launchState.jobStarted = true;
     }
     saveLaunchSnapshot(); // jobId is now real on the server — persist it immediately so a refresh mid-upload can still find this job's videos
@@ -4274,7 +4346,7 @@ async function renderLaunchVideos(body) {
       <div id="ambLaunchProgressSummary" class="faint" style="font-size:12px; margin:12px 0;"></div>
       <div id="ambLaunchVideoList">${launchState.videos.map(launchVideoCardHtml).join('')}</div>
     </div>
-    ${launchNav(4, 'التالي: عدد الكامبينات', true)}`;
+    ${launchNav(5, 'التالي: عدد الكامبينات', true)}`;
 
   const drop = $('ambLaunchDrop');
   const input = $('ambLaunchFileInput');
@@ -4287,10 +4359,10 @@ async function renderLaunchVideos(body) {
   updateLaunchProgressSummary();
   processLaunchUploadQueue();
 
-  wireLaunchNav(4, () => { launchState.step = 6; renderLaunchStep(); });
+  wireLaunchNav(5, () => { launchState.step = 7; renderLaunchStep(); });
 }
 
-// ---- Step 6 · CAMPAIGN COUNT ----
+// ---- Step 7 · CAMPAIGN COUNT ----
 async function renderLaunchCount(body) {
   body.innerHTML = `
     ${launchStepper()}
@@ -4301,12 +4373,12 @@ async function renderLaunchCount(body) {
       </div>
       <div class="faint" style="font-size:11.5px; margin-top:10px;">كل كامبين هياخد نسخة من نفس إعدادات الميزانية والـ Ad Sets، وهتقدر تعدّل الاسم والنصوص لكل واحد في الخطوة الجاية.</div>
     </div>
-    ${launchNav(5, 'التالي: النصوص والروابط', true)}`;
+    ${launchNav(6, 'التالي: النصوص والروابط', true)}`;
   body.querySelectorAll('[data-cc]').forEach((b) => { b.onclick = () => { launchState.campaignCount = Number(b.dataset.cc); renderLaunchStep(); }; });
-  wireLaunchNav(5, () => { syncLaunchCampaigns(); launchState.step = 7; renderLaunchStep(); });
+  wireLaunchNav(6, () => { syncLaunchCampaigns(); launchState.step = 8; renderLaunchStep(); });
 }
 
-// ---- Step 7 · COPY (per campaign) ----
+// ---- Step 8 · COPY (per campaign) ----
 async function renderLaunchCopy(body) {
   syncLaunchCampaigns();
   const assets = launchCurrentAssets();
@@ -4334,7 +4406,7 @@ async function renderLaunchCopy(body) {
         </label>` : ''}
       <div id="ambLaunchCopyCards"></div>
     </div>
-    ${launchNav(6, 'التالي: مراجعة', true)}`;
+    ${launchNav(7, 'التالي: مراجعة', true)}`;
 
   body.querySelectorAll('[data-cm]').forEach((b) => { b.onclick = () => { launchState.copyMode = b.dataset.cm; renderLaunchStep(); }; });
   const ppx = $('ambLaunchPerCampPixel'); if (ppx) ppx.onchange = (e) => { launchState.perCampaignPixel = e.target.checked; renderLaunchStep(); };
@@ -4366,14 +4438,14 @@ async function renderLaunchCopy(body) {
     if (inp.tagName === 'SELECT') inp.onchange = (e) => applyLaunchCopyField(e, multi);
   });
 
-  wireLaunchNav(6, () => {
+  wireLaunchNav(7, () => {
     for (const [idx, c] of launchState.campaigns.entries()) {
       if (!c.name?.trim()) { UI.toast(`اسم الكامبين رقم ${idx + 1} مطلوب.`, 'error'); return; }
       if (!c.websiteUrl?.trim()) { UI.toast(`رابط الموقع للكامبين "${c.name}" مطلوب.`, 'error'); return; }
       try { const u = new URL(c.websiteUrl); if (!/^https?:$/.test(u.protocol)) throw 0; } catch { UI.toast(`رابط الموقع للكامبين "${c.name}" غير صالح.`, 'error'); return; }
       if (launchState.perCampaignPixel && !c.pixelId) { UI.toast(`لازم تختار Pixel للكامبين "${c.name}".`, 'error'); return; }
     }
-    launchState.step = 8; renderLaunchStep();
+    launchState.step = 9; renderLaunchStep();
   });
 }
 function applyLaunchCopyField(e, multi) {
@@ -4387,7 +4459,7 @@ function applyLaunchCopyField(e, multi) {
   }
 }
 
-// ---- Step 8 · REVIEW (only real action: save draft) ----
+// ---- Step 9 · REVIEW (only real action: save draft) ----
 // Self-healing engine's queue-phase vocabulary (backend: campaignPhase() in
 // launchPublish.js) — computed server-side from the real persisted status +
 // human_action_required + next_retry_at, never guessed on the frontend.
@@ -4479,7 +4551,7 @@ function launchStopQueuePolling() {
 function launchStartQueuePolling() {
   launchStopQueuePolling();
   launchState.queuePoll = setInterval(async () => {
-    if (state.tab !== 'launch' || launchState.step !== 8 || !launchState.jobId) { launchStopQueuePolling(); return; }
+    if (state.tab !== 'launch' || launchState.step !== 9 || !launchState.jobId) { launchStopQueuePolling(); return; }
     try {
       const fresh = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/queue-status`);
       launchState.queueProgress = fresh;
@@ -4568,6 +4640,7 @@ async function renderLaunchReview(body) {
     : '🟢 تلقائي (Highest Volume) — بدون حد أقصى للمزايدة';
 
   const checklist = [
+    ['المنتج', !!launchState.productId],
     ['الحساب الإعلاني', !!launchState.adAccountId],
     ['Facebook Page', !!launchState.pageId],
     ['Instagram placement + identity', igLine],
@@ -4622,6 +4695,7 @@ async function renderLaunchReview(body) {
     ${launchStepper()}
     <div class="amb-panel amb-review">
       <div class="amb-review-grid">
+        <div><span class="rl">المنتج</span><span class="rv">${E(launchState.productName || '—')}${launchState.storeName ? ` · ${E(launchState.storeName)}` : ''}</span></div>
         <div><span class="rl">الحساب الإعلاني</span><span class="rv">${E(launchState.adAccountName || launchState.adAccountId)}</span></div>
         <div><span class="rl">عدد الكامبينات</span><span class="rv">${launchState.campaigns.length}</span></div>
         <div><span class="rl">نوع الميزانية</span><span class="rv">${E(launchState.budgetMode)}</span></div>
@@ -4666,9 +4740,10 @@ async function renderLaunchReview(body) {
 
   launchWireQueueProgressControls($('ambLaunchQueueProgress'));
   const newFromComplete = $('ambLaunchNewFromComplete'); if (newFromComplete) newFromComplete.onclick = () => launchConfirmAndStartNew();
-  $('ambLaunchBack').onclick = () => { launchStopQueuePolling(); launchState.step = 7; renderLaunchStep(); };
+  $('ambLaunchBack').onclick = () => { launchStopQueuePolling(); launchState.step = 8; renderLaunchStep(); };
   const buildDraftPayload = () => ({
     jobId: launchState.jobId,
+    productId: launchState.productId,
     adAccountId: launchState.adAccountId,
     adAccountName: launchState.adAccountName,
     pageId: launchState.pageId,

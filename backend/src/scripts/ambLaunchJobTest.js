@@ -16,8 +16,16 @@ const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓'
 const launch = await imp('../services/amb/launchBuilder.js');
 const { prisma } = await imp('../prisma.js');
 
+// Smart Decision Center Phase 1 — validateLaunchConfig() now requires and
+// re-verifies a real Product row. Two throwaway products (one untagged, one
+// tagged to a different store) shared read-only across every section below,
+// cleaned up once at the very end of this file.
+const testProduct = await prisma.product.create({ data: { product_name: '__test_launch_product__', active: true } });
+const testProductStoreB = await prisma.product.create({ data: { product_name: '__test_launch_product_store_b__', active: true, store_id: '__test_store_b__' } });
+
 function baseConfig(overrides = {}) {
   return {
+    productId: testProduct.id,
     adAccountId: 'act_12345',
     adAccountName: 'Ahmed Samy',
     pageId: '999',
@@ -53,34 +61,34 @@ console.log('§1 State machine — valid/invalid transitions:');
 console.log('\n§2 validateLaunchConfig — rejects bad input, normalizes good input:');
 {
   let threw = false;
-  try { launch.validateLaunchConfig({}); } catch (e) { threw = true; ok('missing adAccountId rejected in Arabic', /حساب إعلاني/.test(e.message), e.message); }
+  try { await launch.validateLaunchConfig({}); } catch (e) { threw = true; ok('missing adAccountId rejected in Arabic', /حساب إعلاني/.test(e.message), e.message); }
   ok('empty config throws', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ budgetMode: 'WHATEVER' })); } catch (e) { threw = true; ok('invalid budgetMode rejected', /CBO أو ABO/.test(e.message), e.message); }
+  try { await launch.validateLaunchConfig(baseConfig({ budgetMode: 'WHATEVER' })); } catch (e) { threw = true; ok('invalid budgetMode rejected', /CBO أو ABO/.test(e.message), e.message); }
   ok('invalid budgetMode throws', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ conversionEvent: 'ViewContent' })); } catch (e) { threw = true; ok('casual/invented event spelling rejected, never silently accepted', /حدث التحويل/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ conversionEvent: 'ViewContent' })); } catch (e) { threw = true; ok('casual/invented event spelling rejected, never silently accepted', /حدث التحويل/.test(e.message)); }
   ok('made-up conversion event throws (never invents/accepts an unverified enum)', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ campaignCount: 11 })); } catch (e) { threw = true; ok('campaignCount > 10 rejected', /1 و 10/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ campaignCount: 11 })); } catch (e) { threw = true; ok('campaignCount > 10 rejected', /1 و 10/.test(e.message)); }
   ok('campaignCount out of range throws', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ campaigns: [{ name: 'x', websiteUrl: 'not-a-url' }] })); } catch (e) { threw = true; ok('invalid URL rejected', /رابط الموقع/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ campaigns: [{ name: 'x', websiteUrl: 'not-a-url' }] })); } catch (e) { threw = true; ok('invalid URL rejected', /رابط الموقع/.test(e.message)); }
   ok('invalid website URL throws', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ pixelId: null })); } catch (e) { threw = true; ok('missing pixel rejected', /Meta Pixel/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ pixelId: null })); } catch (e) { threw = true; ok('missing pixel rejected', /Meta Pixel/.test(e.message)); }
   ok('missing pixelId (perCampaignPixel off) throws', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ budgetMode: 'ABO', budget: { abo: { adSets: [{ dailyBudgetMinor: 10000 }] } } })); } catch (e) { threw = true; ok('ABO ad-set budget count mismatch rejected', /ميزانية لكل Ad Set/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ budgetMode: 'ABO', budget: { abo: { adSets: [{ dailyBudgetMinor: 10000 }] } } })); } catch (e) { threw = true; ok('ABO ad-set budget count mismatch rejected', /ميزانية لكل Ad Set/.test(e.message)); }
   ok('ABO with wrong number of per-ad-set budgets throws (adSetsPerCampaign=2 but only 1 given)', threw);
 
-  const v = launch.validateLaunchConfig(baseConfig());
+  const v = await launch.validateLaunchConfig(baseConfig());
   ok('valid config normalizes cleanly', v.adAccountId === 'act_12345' && v.campaigns.length === 1 && v.campaigns[0].index === 0);
   ok('CTA defaults to ORDER_NOW when not given', v.raw.cta === 'ORDER_NOW');
 
@@ -93,7 +101,7 @@ console.log('\n§2 validateLaunchConfig — rejects bad input, normalizes good i
       { name: 'B', websiteUrl: 'https://b.com', pixelId: 'pix_b' },
     ],
   });
-  const v2 = launch.validateLaunchConfig(perCampaignPixelCfg);
+  const v2 = await launch.validateLaunchConfig(perCampaignPixelCfg);
   ok('per-campaign pixel mode carries each campaign\'s own pixel, not the job-level one', v2.campaigns[0].pixelId === 'pix_a' && v2.campaigns[1].pixelId === 'pix_b');
 }
 
@@ -302,26 +310,26 @@ console.log('\n§10 validateLaunchConfig — authoritative server-side schedule 
 {
   const withSchedule = (overrides = {}) => baseConfig({ startMode: 'SCHEDULED', startDate: '2026-09-18', startTime: '00:00', timezone: 'Africa/Cairo', ...overrides });
 
-  const v = launch.validateLaunchConfig(withSchedule());
+  const v = await launch.validateLaunchConfig(withSchedule());
   ok('SCHEDULED with startDate/startTime/timezone computes the exact real UTC instant server-side', v.startAt.toISOString() === '2026-09-17T21:00:00.000Z', v.startAt?.toISOString());
 
   let threw = false;
-  try { launch.validateLaunchConfig(withSchedule({ timezone: 'Nonexistent/Zone' })); } catch (e) { threw = true; ok('an invalid ad-account timezone name is rejected, never silently defaulted', /منطقة توقيت/.test(e.message)); }
+  try { await launch.validateLaunchConfig(withSchedule({ timezone: 'Nonexistent/Zone' })); } catch (e) { threw = true; ok('an invalid ad-account timezone name is rejected, never silently defaulted', /منطقة توقيت/.test(e.message)); }
   ok('unrecognized timezone throws', threw);
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ startMode: 'SCHEDULED' })); } catch (e) { threw = true; ok('SCHEDULED with no date/time/legacy startAt at all is rejected', /تاريخ ووقت بدء/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ startMode: 'SCHEDULED' })); } catch (e) { threw = true; ok('SCHEDULED with no date/time/legacy startAt at all is rejected', /تاريخ ووقت بدء/.test(e.message)); }
   ok('missing schedule input throws', threw);
 
   // Backward-compat path: an already-computed ISO instant (older/internal callers) still works.
-  const vLegacy = launch.validateLaunchConfig(baseConfig({ startMode: 'SCHEDULED', startAt: '2026-09-17T21:00:00.000Z' }));
+  const vLegacy = await launch.validateLaunchConfig(baseConfig({ startMode: 'SCHEDULED', startAt: '2026-09-17T21:00:00.000Z' }));
   ok('legacy pre-computed startAt ISO string still accepted', vLegacy.startAt.toISOString() === '2026-09-17T21:00:00.000Z');
 
   threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: null })); } catch (e) { threw = true; ok('Instagram selected with no resolved identity is rejected — never silently falls back to Facebook-only', /حساب إنستجرام حقيقي/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: null })); } catch (e) { threw = true; ok('Instagram selected with no resolved identity is rejected — never silently falls back to Facebook-only', /حساب إنستجرام حقيقي/.test(e.message)); }
   ok('Instagram-without-identity throws (the real production bug this fixes)', threw);
 
-  const vIg = launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000000', instagramUsername: 'trendy.store' }));
+  const vIg = await launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000000', instagramUsername: 'trendy.store' }));
   ok('Instagram selected WITH a real identity passes and is carried through', vIg.instagramId === '17841400000000000');
 }
 
@@ -368,11 +376,11 @@ console.log('\n§11 "➕ إنشاء كامبين جديد" — a brand-new job n
 
 console.log('\n§12 Launch Mode + lead-time protection — SCHEDULED native activation is opt-in and never lets Meta silently replace an unreachable start with "now":');
 {
-  const v1 = launch.validateLaunchConfig(baseConfig());
+  const v1 = await launch.validateLaunchConfig(baseConfig());
   ok('default launch mode is PAUSED_REVIEW — the original, still-default safe behavior, never activates anything', v1.launchMode === 'PAUSED_REVIEW');
 
   let threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ launchMode: 'SCHEDULED', startMode: 'NOW' })); } catch (e) { threw = true; ok('SCHEDULED launch mode without an actual schedule is rejected', /محتاج تحديد تاريخ ووقت بدء/.test(e.message), e.message); }
+  try { await launch.validateLaunchConfig(baseConfig({ launchMode: 'SCHEDULED', startMode: 'NOW' })); } catch (e) { threw = true; ok('SCHEDULED launch mode without an actual schedule is rejected', /محتاج تحديد تاريخ ووقت بدء/.test(e.message), e.message); }
   ok('SCHEDULED launch mode requires SCHEDULED start mode', threw);
 
   // Lead-time protection: a huge launch (2 campaigns x 5 ad sets x 3 ads = 30
@@ -380,7 +388,7 @@ console.log('\n§12 Launch Mode + lead-time protection — SCHEDULED native acti
   // time — must be blocked rather than letting Meta silently use "now".
   threw = false;
   try {
-    launch.validateLaunchConfig(baseConfig({
+    await launch.validateLaunchConfig(baseConfig({
       launchMode: 'SCHEDULED', startMode: 'SCHEDULED', budgetMode: 'ABO',
       startDate: new Date(Date.now() + 60_000).toISOString().slice(0, 10), startTime: new Date(Date.now() + 60_000).toISOString().slice(11, 16), timezone: 'UTC',
       campaignCount: 2, campaigns: [{ name: 'A', websiteUrl: 'https://a.com' }, { name: 'B', websiteUrl: 'https://b.com' }],
@@ -391,7 +399,7 @@ console.log('\n§12 Launch Mode + lead-time protection — SCHEDULED native acti
 
   // The SAME launch with a genuinely distant future start must pass — lead-time protection never blocks a reasonable schedule.
   const farFuture = new Date(Date.now() + 6 * 3600_000);
-  const v2 = launch.validateLaunchConfig(baseConfig({
+  const v2 = await launch.validateLaunchConfig(baseConfig({
     launchMode: 'SCHEDULED', startMode: 'SCHEDULED', budgetMode: 'ABO',
     startDate: farFuture.toISOString().slice(0, 10), startTime: farFuture.toISOString().slice(11, 16), timezone: 'UTC',
     campaignCount: 2, campaigns: [{ name: 'A', websiteUrl: 'https://a.com' }, { name: 'B', websiteUrl: 'https://b.com' }],
@@ -405,16 +413,86 @@ console.log('\n§12 Launch Mode + lead-time protection — SCHEDULED native acti
 
 console.log('\n§13 Bidding mode — AUTOMATIC by default, Bid Cap only when explicitly chosen with a real amount:');
 {
-  const v = launch.validateLaunchConfig(baseConfig());
+  const v = await launch.validateLaunchConfig(baseConfig());
   ok('default bidding mode is AUTOMATIC — no bid cap unless explicitly requested', v.raw.bidding.mode === 'AUTOMATIC');
 
-  const vCap = launch.validateLaunchConfig(baseConfig({ bidding: { mode: 'BID_CAP', bidCapMinor: 5000 } }));
+  const vCap = await launch.validateLaunchConfig(baseConfig({ bidding: { mode: 'BID_CAP', bidCapMinor: 5000 } }));
   ok('an explicit BID_CAP mode with a real positive amount is accepted and carried through', vCap.raw.bidding.mode === 'BID_CAP' && vCap.raw.bidding.bidCapMinor === 5000);
 
   let threw = false;
-  try { launch.validateLaunchConfig(baseConfig({ bidding: { mode: 'BID_CAP', bidCapMinor: 0 } })); } catch (e) { threw = true; ok('BID_CAP with no real positive amount is rejected rather than silently defaulting to something', /حد أقصى للمزايدة/.test(e.message)); }
+  try { await launch.validateLaunchConfig(baseConfig({ bidding: { mode: 'BID_CAP', bidCapMinor: 0 } })); } catch (e) { threw = true; ok('BID_CAP with no real positive amount is rejected rather than silently defaulting to something', /حد أقصى للمزايدة/.test(e.message)); }
   ok('BID_CAP mode with a zero/missing amount throws', threw);
 }
+
+console.log('\n§14 Smart Decision Center Phase 1 — Product is the root entity, never inferred, always re-verified server-side:');
+{
+  let threw = false;
+  try { await launch.validateLaunchConfig(baseConfig({ productId: undefined })); } catch (e) { threw = true; ok('missing productId rejected in Arabic', /لازم تختار منتج/.test(e.message), e.message); }
+  ok('validateLaunchConfig throws when no product is selected at all', threw);
+
+  threw = false;
+  try { await launch.validateLaunchConfig(baseConfig({ productId: 999999999 })); } catch (e) { threw = true; ok('a nonexistent productId is rejected, never silently ignored', /غير صالح/.test(e.message), e.message); }
+  ok('validateLaunchConfig throws for a product id that does not exist', threw);
+
+  const inactive = await prisma.product.create({ data: { product_name: '__test_launch_inactive__', active: false } });
+  try {
+    threw = false;
+    try { await launch.validateLaunchConfig(baseConfig({ productId: inactive.id })); } catch (e) { threw = true; }
+    ok('an inactive product is rejected — never launched against a retired/disabled product', threw);
+  } finally { await prisma.product.delete({ where: { id: inactive.id } }); }
+
+  // Mandatory cross-store isolation guardrail (explicitly required): a
+  // store-B product must never validate under a store-A context, even
+  // bypassing the UI entirely — the server, not the dropdown, is the
+  // authorization boundary.
+  threw = false;
+  try { await launch.validateLaunchConfig(baseConfig({ productId: testProductStoreB.id, storeId: '__test_store_a__' })); } catch (e) { threw = true; ok('a store-B product under a store-A context is rejected server-side', /لا يخص هذا المتجر/.test(e.message), e.message); }
+  ok('cross-store productId/storeId mismatch is refused even bypassing the UI', threw);
+
+  const vUntagged = await launch.validateLaunchConfig(baseConfig({ productId: testProduct.id, storeId: '__test_store_a__' }));
+  ok('an untagged (legacy, store_id: null) product validates under ANY store context — the documented backward-compat carve-out', vUntagged.productId === testProduct.id);
+
+  const vSameStore = await launch.validateLaunchConfig(baseConfig({ productId: testProductStoreB.id, storeId: '__test_store_b__' }));
+  ok('a store-B product validates fine under its OWN store context', vSameStore.productId === testProductStoreB.id);
+
+  // Persistence + idempotency across the two write paths.
+  const tag = `__test_product_link_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig() });
+    ok('createDraftJob persists product_id on the job row', job.product_id === testProduct.id, job.product_id);
+
+    const again = await launch.createDraftJob({ jobId, userId: null, input: baseConfig() });
+    ok('calling createDraftJob again for an already-finalized job is a no-op — product_id untouched', again.product_id === testProduct.id);
+  } finally {
+    await prisma.ambLaunchAudit.deleteMany({ where: { job_id: jobId } });
+    await prisma.ambLaunchCampaign.deleteMany({ where: { job_id: jobId } });
+    await prisma.ambLaunchJob.deleteMany({ where: { job_id: jobId } });
+  }
+
+  const tag2 = `__test_product_link_shell_${Date.now()}__`;
+  const jobId2 = `test-${tag2}`;
+  try {
+    const shell = await launch.startLaunchJob({ jobId: jobId2, userId: null, adAccountId: 'act_12345', productId: testProduct.id });
+    ok('startLaunchJob persists an early-known product_id on the shell row', shell.product_id === testProduct.id);
+
+    const finalized = await launch.createDraftJob({ jobId: jobId2, userId: null, input: baseConfig() });
+    ok('createDraftJob finalizing that same shell keeps the same product_id — no drift between the two write paths', finalized.product_id === testProduct.id);
+  } finally {
+    await prisma.ambLaunchAudit.deleteMany({ where: { job_id: jobId2 } });
+    await prisma.ambLaunchCampaign.deleteMany({ where: { job_id: jobId2 } });
+    await prisma.ambLaunchJob.deleteMany({ where: { job_id: jobId2 } });
+  }
+
+  // Backward compatibility: listLaunchableProducts never leaks store-B into a store-A context.
+  const listA = await launch.listLaunchableProducts({ storeId: '__test_store_a__' });
+  ok('listLaunchableProducts includes the untagged (legacy) product for ANY store', listA.some((p) => p.id === testProduct.id));
+  ok('listLaunchableProducts never includes a different store\'s tagged product', !listA.some((p) => p.id === testProductStoreB.id));
+  const listB = await launch.listLaunchableProducts({ storeId: '__test_store_b__' });
+  ok('listLaunchableProducts includes store-B\'s own product under its own store context', listB.some((p) => p.id === testProductStoreB.id));
+}
+
+await prisma.product.deleteMany({ where: { id: { in: [testProduct.id, testProductStoreB.id] } } });
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

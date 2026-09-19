@@ -152,6 +152,8 @@ model Product {
   amb_product                  AmbProduct? // AI Media Buyer economics profile for this product (optional 1:1) — additive
   cf_product                   CfProduct? // AI Creative Factory profile for this product (optional 1:1) — additive
   pmc_profiles                 ProductMarketingProfile[] // AI Product Marketing Center profiles for this product — additive
+  launch_jobs                  AmbLaunchJob[] // Smart Decision Center Phase 1 — Campaign Launch Builder jobs deterministically linked to this product — additive
+  media_library_assets         MediaLibraryAsset[] // Smart Decision Center Phase 1 — additive
 
   @@index([active])
   @@index([product_name])
@@ -1842,6 +1844,14 @@ model AmbLaunchJob {
   created_by           User?     @relation("AmbLaunchCreator", fields: [created_by_id], references: [id], onDelete: SetNull)
   created_at           DateTime  @default(now())
   updated_at           DateTime  @updatedAt
+  // Smart Decision Center Phase 1 — the deterministic root-entity link:
+  // Store -> Product -> Launch Job -> Campaign -> Ad Set -> Ad -> Creative.
+  // Set exactly once, explicitly, by the human at the start of the wizard —
+  // NEVER inferred from a campaign name (that matching is historical-review
+  // only, per the standing rule). Nullable so every pre-existing real job
+  // stays exactly as it is; no backfill guess, ever.
+  product_id           Int?
+  product              Product?  @relation(fields: [product_id], references: [id], onDelete: SetNull)
 
   campaigns AmbLaunchCampaign[]
   videos    AmbLaunchVideoAsset[]
@@ -1849,6 +1859,7 @@ model AmbLaunchJob {
 
   @@index([status])
   @@index([ad_account_id])
+  @@index([product_id])
   @@map("amb_launch_jobs")
 }
 
@@ -1945,6 +1956,14 @@ model AmbLaunchVideoAsset {
   status            String       @default("PENDING")
   meta_video_id     String? // set once uploaded to Meta — reused by every ad/campaign in this job, never re-uploaded
   error             String?
+  // Smart Decision Center Phase 1 — optional per-slot identity metadata,
+  // captured at upload time when the owner already knows it. Left null
+  // otherwise (never fabricated); a later intelligence phase may backfill
+  // it opportunistically. Same vocabulary as AmbCreativeAnalysis/
+  // MediaLibraryAsset's hook/selling_angle columns, so downstream code
+  // never needs a translation layer between the two sources.
+  hook              String?
+  selling_angle     String?
   created_at        DateTime     @default(now())
   updated_at        DateTime     @updatedAt
 
@@ -2014,6 +2033,14 @@ model MediaLibraryAsset {
   asset_name      String?
   amb_product_id  Int?
   amb_product     AmbProduct? @relation(fields: [amb_product_id], references: [id], onDelete: SetNull)
+  // Smart Decision Center Phase 1 — direct root-entity link, separate from
+  // amb_product_id above (which points at the OPTIONAL AmbProduct economics
+  // profile and may be null even when a real Product is known). Set when a
+  // launch creative is registered here straight from a real
+  // AmbLaunchJob.product_id; never guessed, never backfilled for assets
+  // discovered via the pre-existing sync/clone paths.
+  product_id      Int?
+  product         Product?    @relation(fields: [product_id], references: [id], onDelete: SetNull)
   link_source     String      @default("NONE") // AUTO_CAMPAIGN_MAP | MANUAL | NONE — MANUAL is sticky, auto never overwrites it
   // Labels mirrored from AmbCreativeAnalysis (kept here so the library is
   // self-contained + correctable); refreshed opportunistically, never invented.
@@ -2037,6 +2064,7 @@ model MediaLibraryAsset {
   scalings MediaLibraryScaling[]
 
   @@index([amb_product_id])
+  @@index([product_id])
   @@index([primary_format])
   @@map("media_library_assets")
 }

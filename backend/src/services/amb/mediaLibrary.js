@@ -508,3 +508,64 @@ export async function registerClonedCreativeRef({ srcNode, destAccountId, destCr
     return null;
   }
 }
+
+/**
+ * Smart Decision Center Phase 1 — register a Campaign Launch Builder
+ * creative in the SAME Media Library that already gives discovered/cloned
+ * creatives a stable, cross-account identity (see registerClonedCreativeRef
+ * above, which this mirrors). `payload` is the exact object_story_spec-
+ * shaped object buildCreativePayload() already built for the real Meta
+ * create call — fingerprinting it needs zero extra Graph API round-trips.
+ * Never overwrites an already-set product_id/hook/selling_angle (sticky
+ * values, same convention as link_source: 'MANUAL' elsewhere in this file).
+ * Non-fatal by design: a linking failure must never fail or roll back an
+ * already-created real Meta creative.
+ */
+export async function registerLaunchCreativeRef({ payload, adAccountId, creativeId, productId = null, hook = null, sellingAngle = null }) {
+  try {
+    const fp = fingerprintCreative(payload, { adAccountId, creativeId: String(creativeId) });
+    let asset = await prisma.mediaLibraryAsset.findUnique({ where: { fingerprint: fp.fingerprint } });
+    // Opportunistic continuity with the pre-existing AmbProduct-keyed UI —
+    // only if one already exists; never create one implicitly just to fill
+    // this in (that would be an uncontrolled side effect).
+    const ambProduct = productId ? await prisma.ambProduct.findUnique({ where: { product_id: productId }, select: { id: true } }) : null;
+
+    if (!asset) {
+      asset = await prisma.mediaLibraryAsset.create({
+        data: {
+          fingerprint: fp.fingerprint, primary_format: fp.format,
+          asset_name: (fp.sampleTitle || fp.sampleBody?.slice(0, 60) || `Creative ${creativeId}`).slice(0, 200),
+          product_id: productId || null,
+          amb_product_id: ambProduct?.id || null,
+          link_source: productId ? 'AUTO_CAMPAIGN_MAP' : 'NONE',
+          hook: hook || null,
+          selling_angle: sellingAngle || null,
+          sample_body: fp.sampleBody?.slice(0, 600) || null, sample_title: fp.sampleTitle?.slice(0, 300) || null,
+          sample_cta: fp.cta || null, sample_link_url: fp.sampleLink?.slice(0, 500) || null,
+          thumbnail_url: fp.thumb || null, page_id: fp.pageId || null,
+        },
+      });
+    } else {
+      const patch = { last_seen_at: new Date() };
+      if (productId && !asset.product_id) patch.product_id = productId;
+      if (ambProduct?.id && !asset.amb_product_id && asset.link_source !== 'MANUAL') { patch.amb_product_id = ambProduct.id; patch.link_source = 'AUTO_CAMPAIGN_MAP'; }
+      if (hook && !asset.hook) patch.hook = hook;
+      if (sellingAngle && !asset.selling_angle) patch.selling_angle = sellingAngle;
+      await prisma.mediaLibraryAsset.update({ where: { id: asset.id }, data: patch });
+    }
+
+    await prisma.mediaLibraryCreativeRef.upsert({
+      where: { ad_account_id_creative_id: { ad_account_id: adAccountId, creative_id: String(creativeId) } },
+      create: {
+        asset_id: asset.id, ad_account_id: adAccountId, creative_id: String(creativeId),
+        format: fp.format, image_hashes_json: JSON.stringify(fp.imageHashes), video_ids_json: JSON.stringify(fp.videoIds),
+        origin: 'LAUNCHED',
+      },
+      update: { asset_id: asset.id, last_seen_at: new Date(), image_hashes_json: JSON.stringify(fp.imageHashes), video_ids_json: JSON.stringify(fp.videoIds) },
+    });
+    return asset.id;
+  } catch (err) {
+    logger.warn('AMB media library: registerLaunchCreativeRef failed (non-fatal)', { message: err.message });
+    return null;
+  }
+}

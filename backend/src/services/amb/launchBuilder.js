@@ -18,6 +18,7 @@
 import { prisma } from '../../prisma.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone } from '../metaGraphClient.js';
+import { listStores } from '../easyOrdersStores.js';
 
 export const JOB_STATUSES = ['DRAFT', 'VALIDATING', 'READY', 'PUBLISHING', 'PARTIAL', 'COMPLETE', 'FAILED', 'CANCELLED'];
 export const CAMPAIGN_STATUSES = ['PENDING', 'QUEUED', 'PUBLISHING', 'CAMPAIGN_CREATED', 'ADSETS_CREATED', 'ADS_CREATED', 'COMPLETE', 'FAILED', 'CANCELLED'];
@@ -142,9 +143,21 @@ export function estimateLaunchBuildMs({ campaignCount, adSetsPerCampaign, adsPer
  * means the wizard's own math is internally consistent, not that Meta will
  * accept it).
  */
-export function validateLaunchConfig(input) {
+export async function validateLaunchConfig(input) {
   const cfg = input && typeof input === 'object' ? input : {};
   if (!cfg.adAccountId || typeof cfg.adAccountId !== 'string') fail('لازم تختار حساب إعلاني.');
+
+  // Smart Decision Center Phase 1 — Product is the root entity. Never
+  // inferred from a campaign name (that matching is historical-review only,
+  // per the standing rule); the human picks it explicitly at Step 1, and it
+  // is re-verified here against the real DB row rather than trusted as-is
+  // from the frontend — same "never trust the frontend for anything
+  // consequential" principle already used for schedule/timezone below.
+  const productId = Number(cfg.productId);
+  if (!Number.isInteger(productId) || productId <= 0) fail('لازم تختار منتج.');
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, active: true, is_historical: true, store_id: true } });
+  if (!product || !product.active || product.is_historical) fail('المنتج المختار غير صالح أو غير نشط.');
+  if (cfg.storeId && product.store_id && product.store_id !== cfg.storeId) fail('المنتج المختار لا يخص هذا المتجر.');
   if (!ALLOWED_BUDGET_MODES.includes(cfg.budgetMode)) fail('نوع الميزانية لازم يكون CBO أو ABO.');
   if (!ALLOWED_CONVERSION_EVENTS.includes(cfg.conversionEvent || 'PURCHASE')) fail('حدث التحويل غير مدعوم.');
 
@@ -229,6 +242,7 @@ export function validateLaunchConfig(input) {
   if (bidding.mode === 'BID_CAP' && !bidding.bidCapMinor) fail('لازم تحدد قيمة حد أقصى للمزايدة أكبر من صفر، أو اختار "تلقائي".');
 
   return {
+    productId: product.id,
     adAccountId: cfg.adAccountId,
     adAccountName: cfg.adAccountName || null,
     pageId: cfg.pageId || null,
@@ -288,8 +302,9 @@ export async function createDraftJob({ jobId, userId, input }) {
   const existing = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId }, include: { campaigns: true } });
   if (existing && existing.campaigns.length > 0) return existing;
 
-  const v = validateLaunchConfig(input);
+  const v = await validateLaunchConfig(input);
   const data = {
+    product_id: v.productId,
     ad_account_id: v.adAccountId,
     ad_account_name: v.adAccountName,
     page_id: v.pageId,
@@ -348,16 +363,23 @@ export async function createDraftJob({ jobId, userId, input }) {
  * entry point: calling this again for the same jobId (a page reload while
  * still on the videos step) just returns the existing shell untouched.
  */
-export async function startLaunchJob({ jobId, userId, adAccountId, adAccountName }) {
+export async function startLaunchJob({ jobId, userId, adAccountId, adAccountName, productId }) {
   if (!jobId || typeof jobId !== 'string' || !/^[a-z0-9_-]{8,80}$/i.test(jobId)) fail('jobId غير صالح.');
   if (!adAccountId || typeof adAccountId !== 'string') fail('لازم تختار حساب إعلاني.');
 
   const existing = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
   if (existing) return existing;
 
+  // productId is optional here (the shell row exists purely so video uploads
+  // have somewhere to attach before the rest of the wizard is filled in) —
+  // real enforcement happens later in validateLaunchConfig()/createDraftJob()
+  // at Review. Still persisted immediately when already known so a product
+  // picked at Step 1 survives even if the owner uploads videos before
+  // reaching Review — never re-derived or guessed, just carried through.
+  const pid = Number(productId);
   return prisma.$transaction(async (tx) => {
     const job = await tx.ambLaunchJob.create({
-      data: { job_id: jobId, ad_account_id: adAccountId, ad_account_name: adAccountName || null, budget_mode: 'CBO', config_json: '{}', status: 'DRAFT', created_by_id: userId || null },
+      data: { job_id: jobId, ad_account_id: adAccountId, ad_account_name: adAccountName || null, product_id: Number.isInteger(pid) && pid > 0 ? pid : null, budget_mode: 'CBO', config_json: '{}', status: 'DRAFT', created_by_id: userId || null },
     });
     await tx.ambLaunchAudit.create({ data: { job_id: job.job_id, event: 'JOB_CREATED', actor_id: userId || null, detail: 'بدء طلب رفع كامبين — مسودة أولية لاستضافة الفيديوهات.' } });
     return job;
@@ -459,6 +481,30 @@ export async function markVideoResult({ jobId, slotKey, status, metaVideoId = nu
   return prisma.ambLaunchVideoAsset.update({
     where: { job_id_slot_key: { job_id: jobId, slot_key: slotKey } },
     data: { status, meta_video_id: metaVideoId, error },
+  });
+}
+
+/**
+ * Smart Decision Center Phase 1 — the wizard's new Step 1 "المنتج" list.
+ * Plain DB reads only, zero Meta calls. A store-tagged product only shows
+ * for its own store; an untagged (legacy, pre-multi-store) product shows for
+ * every store — the exact same backward-compatible convention already
+ * documented on Product.store_id itself. This is a UI convenience list, not
+ * the authorization boundary: the real enforcement happens server-side in
+ * validateLaunchConfig() below, which never trusts a productId the frontend
+ * sends just because it appeared in this list.
+ */
+export async function listLaunchStores() {
+  return listStores();
+}
+
+export async function listLaunchableProducts({ storeId } = {}) {
+  const where = { active: true, is_historical: false };
+  if (storeId) where.OR = [{ store_id: storeId }, { store_id: null }];
+  return prisma.product.findMany({
+    where,
+    select: { id: true, product_name: true, sku: true, store_id: true, easy_orders_uuid: true },
+    orderBy: { product_name: 'asc' },
   });
 }
 

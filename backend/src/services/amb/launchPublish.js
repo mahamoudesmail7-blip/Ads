@@ -25,6 +25,7 @@ import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from
 import { createCampaign, createAdSet, createAdCreative, createAd, getEntity, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta, setEntityStatus, getCloneJobLiveState } from '../metaGraphClient.js';
 import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus, LAUNCH_CONCURRENCY_LIMIT } from './launchBuilder.js';
 import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
+import { registerLaunchCreativeRef } from './mediaLibrary.js';
 
 function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
 
@@ -447,6 +448,11 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, video, token
     const res = await createAdCreative(token, job.ad_account_id, payload);
     await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, destinationId: res.id, status: 'CREATED', payload }), 'creative.map');
     await audit('OBJECT_CREATED', `Creative ${adSetIndex + 1}.${adIndex + 1} — فيديو ${video.slot_key} (${video.meta_video_id})`, { level: 'CREATIVE', metaCreativeId: res.id, payload });
+    // Smart Decision Center Phase 1 — stable cross-job creative identity via
+    // the existing Media Library, not a new table. Best-effort, non-fatal
+    // (registerLaunchCreativeRef never throws): a linking failure must never
+    // fail or roll back an already-created real Meta creative.
+    await registerLaunchCreativeRef({ payload, adAccountId: job.ad_account_id, creativeId: res.id, productId: job.product_id || null, hook: video.hook || null, sellingAngle: video.selling_angle || null });
     return res.id;
   } catch (err) {
     await markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, status: 'FAILED', error: err.message });

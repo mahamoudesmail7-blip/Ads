@@ -506,6 +506,19 @@ router.get('/launch/discovery/account-assets', asyncRoute(async (req, res) => {
   res.json(await launch.getLaunchAccountAssets(adAccountId));
 }));
 
+// Smart Decision Center Phase 1 — Step 1 "المنتج": Store -> Product, the
+// deterministic root-entity chain's starting point. Plain DB reads, zero
+// Meta calls.
+router.get('/launch/stores', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json({ stores: await launch.listLaunchStores() });
+}));
+router.get('/launch/products', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  const storeId = req.query.storeId ? String(req.query.storeId) : null;
+  res.json({ products: await launch.listLaunchableProducts({ storeId }) });
+}));
+
 router.get('/launch/jobs', asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   res.json({ jobs: await launch.listJobs({ limit: req.query.limit, cursor: req.query.cursor }) });
@@ -528,8 +541,8 @@ router.post('/launch/jobs', requireRole('ADMIN'), asyncRoute(async (req, res) =>
 // POST /launch/jobs above once the owner reaches Review — see createDraftJob().
 router.post('/launch/jobs/:jobId/start', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
-  const { adAccountId, adAccountName } = req.body || {};
-  res.status(201).json(await launch.startLaunchJob({ jobId: req.params.jobId, userId: req.user.id, adAccountId, adAccountName }));
+  const { adAccountId, adAccountName, productId } = req.body || {};
+  res.status(201).json(await launch.startLaunchJob({ jobId: req.params.jobId, userId: req.user.id, adAccountId, adAccountName, productId }));
 }));
 router.post('/launch/jobs/:jobId/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
