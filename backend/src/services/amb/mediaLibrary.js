@@ -285,9 +285,10 @@ export async function assetPerformance({ creativeIds, from, to }) {
 /** Product-economics profit for an asset, applied to that asset's ad spend. COD orders are product-level (not creative-attributed) — labelled as such. */
 export async function assetProfit({ ambProductId, spend, from, to }) {
   if (!ambProductId) return { netProfit: null, deliveredCpa: null, revenue: null, source: 'NO_PRODUCT' };
-  const prod = await prisma.ambProduct.findUnique({ where: { id: ambProductId } });
+  const prod = await prisma.ambProduct.findUnique({ where: { id: ambProductId }, include: { product: { select: { store_id: true } } } });
   if (!prod?.product_id) return { netProfit: null, deliveredCpa: null, revenue: null, source: 'NO_COD_LINK' };
-  const cod = await codCountsForProduct({ productId: prod.product_id, from, to });
+  // Multi-store isolation (Phase 2) — scope to this product's own store.
+  const cod = await codCountsForProduct({ productId: prod.product_id, storeId: prod.product?.store_id || undefined, from, to });
   const bundle = netProfitBundle(prod, { adSpend: spend, deliveredOrders: cod.delivered, returnedOrders: cod.returned });
   return {
     netProfit: bundle.netProfit,

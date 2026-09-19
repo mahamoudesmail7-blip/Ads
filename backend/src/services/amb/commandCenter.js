@@ -39,7 +39,7 @@ export async function getHealthScore({ windowName = 'last7' } = {}) {
   const [tree, mapState, ambProducts, snapCount] = await Promise.all([
     buildHierarchy({ adAccountId, window, settings }),
     mappingOverview({ adAccountId }).catch(() => null),
-    prisma.ambProduct.findMany({ where: { active: true } }),
+    prisma.ambProduct.findMany({ where: { active: true }, include: { product: { select: { store_id: true } } } }),
     prisma.metaPerformanceSnapshot.count({ where: { ad_account_id: adAccountId } }),
   ]);
   const allNodes = nodes(tree);
@@ -51,7 +51,8 @@ export async function getHealthScore({ windowName = 'last7' } = {}) {
   for (const p of tree.products || []) {
     const prod = ambProducts.find((x) => String(x.id) === String(p.id));
     if (!prod?.product_id) continue;
-    const cod = await codCountsForProduct({ productId: prod.product_id, from: window.from, to: window.to });
+    // Multi-store isolation (Phase 2) — scope to this product's own store.
+    const cod = await codCountsForProduct({ productId: prod.product_id, storeId: prod.product?.store_id || undefined, from: window.from, to: window.to });
     const b = netProfitBundle(prod, { adSpend: p.metrics?.spend || 0, deliveredOrders: cod.delivered, returnedOrders: cod.returned });
     if (b.netProfit !== null) { productProfit += b.netProfit; productsWithNet++; if (b.netProfit >= 0) productsProfitable++; }
   }

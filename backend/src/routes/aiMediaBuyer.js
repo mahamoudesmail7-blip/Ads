@@ -120,6 +120,19 @@ router.patch('/products/:id', asyncRoute(async (req, res) => res.json(await prod
 router.delete('/products/:id', requireRole('ADMIN'), asyncRoute(async (req, res) => res.json(await products.deleteProduct(req.params.id))));
 
 // ---------------------------------------------------------------------------
+// Smart Decision Center Phase 2 — Unified Product Performance dataset.
+// Keyed by the real catalog Product.id (NOT AmbProduct.id — see
+// productPerformance.js's own header for why). The single source of truth
+// PMC and the future Smart Decision Center both read instead of each
+// recomputing their own Meta+EasyOrders join. Strictly read-only data, no
+// AI, no Meta writes.
+// ---------------------------------------------------------------------------
+router.get('/product-performance/:productId', asyncRoute(async (req, res) => {
+  const { getProductPerformance } = await import('../services/amb/productPerformance.js');
+  res.json(await getProductPerformance({ productId: req.params.productId, windowName: req.query.window, from: req.query.from, to: req.query.to }));
+}));
+
+// ---------------------------------------------------------------------------
 // Campaign ↔ Product mapping
 // ---------------------------------------------------------------------------
 router.get('/mapping', asyncRoute(async (req, res) => {

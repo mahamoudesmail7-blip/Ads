@@ -48,7 +48,7 @@ export async function getOverview({ windowName } = {}) {
 
   const [tree, ambProducts, latestBatch] = await Promise.all([
     buildHierarchy({ adAccountId, window, settings }),
-    prisma.ambProduct.findMany({ where: { active: true } }),
+    prisma.ambProduct.findMany({ where: { active: true }, include: { product: { select: { store_id: true } } } }),
     prisma.ambRecommendation.findFirst({ where: { ad_account_id: adAccountId }, orderBy: { created_at: 'desc' }, select: { batch_id: true, created_at: true } }),
   ]);
 
@@ -62,7 +62,8 @@ export async function getOverview({ windowName } = {}) {
     revenue += p.metrics?.revenue || 0;
     const prod = ambProducts.find((x) => String(x.id) === String(p.id));
     if (prod?.product_id) {
-      const cod = await codCountsForProduct({ productId: prod.product_id, from: window.from, to: window.to });
+      // Multi-store isolation (Phase 2) — scope to this product's own store.
+      const cod = await codCountsForProduct({ productId: prod.product_id, storeId: prod.product?.store_id || undefined, from: window.from, to: window.to });
       const bundle = netProfitBundle(prod, { adSpend: p.metrics?.spend || 0, deliveredOrders: cod.delivered, returnedOrders: cod.returned });
       if (bundle.netProfit !== null) { netProfit += bundle.netProfit; hasNet = true; deliveredOrders += cod.delivered || 0; }
     }

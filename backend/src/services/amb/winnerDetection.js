@@ -159,9 +159,10 @@ export async function detectWinners({ adAccountId, window, settings }) {
   // Product-level aggregates (delivered CPA + net profit) for the winner panels.
   const productAggById = new Map();
   for (const p of tree.products || []) {
-    const prod = await prisma.ambProduct.findUnique({ where: { id: Number(p.id) } });
+    const prod = await prisma.ambProduct.findUnique({ where: { id: Number(p.id) }, include: { product: { select: { store_id: true } } } });
     if (!prod) continue;
-    const cod = prod.product_id ? await codCountsForProduct({ productId: prod.product_id, from: window.from, to: window.to }) : { delivered: null, returned: null };
+    // Multi-store isolation (Phase 2) — scope to this product's own store.
+    const cod = prod.product_id ? await codCountsForProduct({ productId: prod.product_id, storeId: prod.product?.store_id || undefined, from: window.from, to: window.to }) : { delivered: null, returned: null };
     const spend = p.metrics?.spend || 0;
     const bundle = netProfitBundle(prod, { adSpend: spend, deliveredOrders: cod.delivered, returnedOrders: cod.returned });
     productAggById.set(Number(p.id), {

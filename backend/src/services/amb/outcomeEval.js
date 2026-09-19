@@ -102,11 +102,13 @@ export async function runOutcomeEvaluation() {
       let deliveredCpaBefore = null, deliveredCpaAfter = null, profitBefore = null, profitAfter = null;
       const rec = a.recommendation;
       if (rec?.amb_product_id) {
-        const prod = await prisma.ambProduct.findUnique({ where: { id: rec.amb_product_id } });
+        const prod = await prisma.ambProduct.findUnique({ where: { id: rec.amb_product_id }, include: { product: { select: { store_id: true } } } });
         if (prod?.product_id) {
           const toISO = (ms) => new Date(ms).toISOString().slice(0, 10);
-          const cBefore = await codCountsForProduct({ productId: prod.product_id, from: toISO(execTs - hours * 3600 * 1000), to: toISO(execTs) });
-          const cAfter = await codCountsForProduct({ productId: prod.product_id, from: toISO(execTs), to: toISO(execTs + hours * 3600 * 1000) });
+          // Multi-store isolation (Phase 2) — scope to this product's own store.
+          const storeId = prod.product?.store_id || undefined;
+          const cBefore = await codCountsForProduct({ productId: prod.product_id, storeId, from: toISO(execTs - hours * 3600 * 1000), to: toISO(execTs) });
+          const cAfter = await codCountsForProduct({ productId: prod.product_id, storeId, from: toISO(execTs), to: toISO(execTs + hours * 3600 * 1000) });
           if (before && cBefore.delivered) deliveredCpaBefore = before.spend / cBefore.delivered;
           if (after && cAfter.delivered) deliveredCpaAfter = after.spend / cAfter.delivered;
           if (before) profitBefore = netProfitBundle(prod, { adSpend: before.spend, deliveredOrders: cBefore.delivered, returnedOrders: cBefore.returned }).netProfit;

@@ -173,9 +173,10 @@ export async function generateRecommendations({ windowName = null, triggeredById
   const netProfitByProduct = new Map();
   for (const p of tree.products || []) {
     const pid = Number(p.id);
-    const prod = await prisma.ambProduct.findUnique({ where: { id: pid } });
+    const prod = await prisma.ambProduct.findUnique({ where: { id: pid }, include: { product: { select: { store_id: true } } } });
     if (!prod) continue;
-    const counts = await codCountsForProduct({ productId: prod.product_id || -1, from: window.from, to: window.to });
+    // Multi-store isolation (Phase 2) — scope to this product's own store.
+    const counts = await codCountsForProduct({ productId: prod.product_id || -1, storeId: prod.product?.store_id || undefined, from: window.from, to: window.to });
     const bundle = netProfitBundle(prod, {
       adSpend: p.metrics?.spend || 0,
       deliveredOrders: counts.delivered,

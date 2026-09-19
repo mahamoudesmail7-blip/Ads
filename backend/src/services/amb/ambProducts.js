@@ -100,8 +100,13 @@ export async function createFromCatalogProduct(productId, userId) {
 
 /** Full per-product dashboard for a window. */
 export async function productDashboard(id, { windowName } = {}) {
-  const p = await prisma.ambProduct.findUnique({ where: { id: Number(id) } });
+  const p = await prisma.ambProduct.findUnique({ where: { id: Number(id) }, include: { product: { select: { store_id: true } } } });
   if (!p) { const e = new Error('المنتج مش موجود.'); e.status = 404; throw e; }
+  // Multi-store isolation (Phase 2) — scope real COD truth to the product's
+  // OWN store; an untagged (legacy) product's store_id is null, which
+  // codCountsForProduct() correctly treats as "search every store" —
+  // exactly the same backward-compatible convention used everywhere else.
+  const storeId = p.product?.store_id || undefined;
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName || (settings.ambAnalysisLookbackDays >= 7 ? 'last7' : 'last3'));
   const connection = await getConnection();
@@ -118,8 +123,8 @@ export async function productDashboard(id, { windowName } = {}) {
     }
   }
 
-  const cod = p.product_id ? await codCountsForProduct({ productId: p.product_id, from: window.from, to: window.to }) : { source: 'none', orders: null, confirmed: null, delivered: null, returned: null, revenue: null, deliveredRevenue: null };
-  const observed = p.product_id ? await observedRatesForProduct({ productId: p.product_id, from: window.from, to: window.to }) : { source: 'none', confirmationRate: null, deliveryRate: null };
+  const cod = p.product_id ? await codCountsForProduct({ productId: p.product_id, storeId, from: window.from, to: window.to }) : { source: 'none', orders: null, confirmed: null, delivered: null, returned: null, revenue: null, deliveredRevenue: null };
+  const observed = p.product_id ? await observedRatesForProduct({ productId: p.product_id, storeId, from: window.from, to: window.to }) : { source: 'none', confirmationRate: null, deliveryRate: null };
 
   // §Block A — pass the REAL delivered-order revenue (summed order_cost,
   // from codCountsForProduct()) when it's available, so netProfitBundle()
