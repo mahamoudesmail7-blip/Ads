@@ -60,5 +60,26 @@ console.log('\n§4 classifyMetaSegment — exposure gate runs before any ratio m
   ok('zero purchases is INSUFFICIENT_DATA regardless of spend', zeroPurchases.classification === 'INSUFFICIENT_DATA');
 }
 
+console.log('\n§5 classifyCodSegment — a SECOND guardrail: never blame one governorate for a product-wide confirmation backlog:');
+{
+  // The exact real scenario found while testing Product 126: near-zero
+  // confirmation EVERYWHERE (a fresh order batch, not yet called), and a
+  // governorate with a real, meaningful sample also showing 0% confirmed —
+  // without this guardrail it would wrongly look PROVEN_WEAK.
+  const cairoDuringBacklog = classifyCodSegment({ orders: 138, confirmed: 0, delivered: 0 }, { minOrders: 10, globalConfirmationRate: 0.002 });
+  ok('a governorate with 0% confirmation is NOT proven_weak when the WHOLE product is stalled (systemic backlog)', cairoDuringBacklog.classification === 'INSUFFICIENT_DATA', JSON.stringify(cairoDuringBacklog));
+  ok('the evidence explicitly names it as a product-wide issue, not this governorate\'s fault', /تراكم عام/.test(cairoDuringBacklog.evidence), cairoDuringBacklog.evidence);
+
+  // The SAME governorate, SAME numbers, but the product overall confirms
+  // normally — NOW a real 0% confirmation rate for just this one
+  // governorate genuinely is meaningful evidence of a real problem.
+  const cairoNormalConfirmation = classifyCodSegment({ orders: 138, confirmed: 0, delivered: 0 }, { minOrders: 10, globalConfirmationRate: 0.6 });
+  ok('the SAME 0%-confirmed governorate IS proven_weak once we know confirmation works fine elsewhere on this product', cairoNormalConfirmation.classification === 'PROVEN_WEAK', JSON.stringify(cairoNormalConfirmation));
+
+  // A genuinely bad DELIVERY rate is never suppressed by the backlog guard — confirmation and delivery are different funnel stages.
+  const badDeliveryDuringBacklog = classifyCodSegment({ orders: 30, confirmed: 25, delivered: 3 }, { minOrders: 10, globalConfirmationRate: 0.05 });
+  ok('a genuinely bad DELIVERY rate still reaches PROVEN_WEAK even during a product-wide confirmation backlog — different funnel stage, real evidence', badDeliveryDuringBacklog.classification === 'PROVEN_WEAK', JSON.stringify(badDeliveryDuringBacklog));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

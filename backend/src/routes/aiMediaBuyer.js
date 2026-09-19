@@ -182,6 +182,26 @@ router.get('/product-diagnosis/:productId', asyncRoute(async (req, res) => {
   res.json(await getProductDiagnosis({ productId: req.params.productId, windowName: req.query.window, settings }));
 }));
 
+// Smart Decision Center Phase 6 — Final Product Decision Package. Combines
+// Phases 2-5. GET previews without persisting; POST persists as an
+// AmbRecommendation (level=product) for the Smart Decision Center UI
+// (Phase 7) to read. No AI, no Meta write.
+router.get('/product-decision/:productId', asyncRoute(async (req, res) => {
+  const { buildProductDecisionPackage } = await import('../services/amb/productDecision.js');
+  const connection = await getConnection();
+  const settings = await getAmbSettings();
+  res.json(await buildProductDecisionPackage({ productId: req.params.productId, windowName: req.query.window, settings, adAccountId: connection?.selected_ad_account_id || null }));
+}));
+router.post('/product-decision/:productId', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { buildProductDecisionPackage, persistProductDecision } = await import('../services/amb/productDecision.js');
+  const connection = await getConnection();
+  const settings = await getAmbSettings();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  const pkg = await buildProductDecisionPackage({ productId: req.params.productId, windowName: req.query.window, settings, adAccountId });
+  const saved = await persistProductDecision({ pkg, adAccountId, batchId: req.body?.batchId });
+  res.status(201).json({ package: pkg, recommendation: saved });
+}));
+
 // ---------------------------------------------------------------------------
 // Campaign ↔ Product mapping
 // ---------------------------------------------------------------------------

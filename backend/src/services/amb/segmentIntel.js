@@ -72,7 +72,7 @@ export function classifyMetaSegment(row, { targetCpa = 120, minSpend = 150, minP
  * extended with the PROVEN_WINNER/PROMISING/INSUFFICIENT_DATA/PROVEN_WEAK
  * vocabulary Phase 4 requires.
  */
-export function classifyCodSegment(row, { minOrders = 10 } = {}) {
+export function classifyCodSegment(row, { minOrders = 10, globalConfirmationRate = null } = {}) {
   const orders = n(row.orders) || 0;
   const confirmed = n(row.confirmed) || 0;
   const delivered = n(row.delivered) || 0;
@@ -87,10 +87,17 @@ export function classifyCodSegment(row, { minOrders = 10 } = {}) {
     return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — أقل من الحد الأدنى (${minOrders} أوردر) للحكم على هذه المحافظة، سواء بالسلب أو الإيجاب.` };
   }
 
+  // A SECOND guardrail, same family as the first: never blame ONE
+  // governorate for a confirmation rate that is critically low EVERYWHERE
+  // on this product right now (a systemic call-center backlog or a batch of
+  // orders too recent to have been processed) — that would misattribute a
+  // product-wide operational issue as "this specific market is bad", the
+  // exact same class of error the sample-size guardrail exists to prevent.
+  const systemicBacklog = globalConfirmationRate != null && globalConfirmationRate < 0.1;
   if (deliveryRate != null && deliveryRate < 0.35 && orders >= minOrders * 1.5) {
     return { classification: 'PROVEN_WEAK', evidence: `${base} — معدل تسليم ضعيف حقيقي بعينة كافية (${orders} أوردر).` };
   }
-  if (confirmationRate != null && confirmationRate < 0.25 && orders >= minOrders * 1.5) {
+  if (!systemicBacklog && confirmationRate != null && confirmationRate < 0.25 && orders >= minOrders * 1.5) {
     return { classification: 'PROVEN_WEAK', evidence: `${base} — معدل تأكيد ضعيف حقيقي بعينة كافية (${orders} أوردر).` };
   }
   if (deliveryRate != null && deliveryRate >= 0.55 && orders >= minOrders * 2) {
@@ -98,6 +105,9 @@ export function classifyCodSegment(row, { minOrders = 10 } = {}) {
   }
   if ((deliveryRate != null && deliveryRate >= 0.4) || (confirmationRate != null && confirmationRate >= 0.5)) {
     return { classification: 'PROMISING', evidence: `${base} — واعدة، محتاجة عينة أكبر (حاليًا ${orders} أوردر) للتأكيد الكامل.` };
+  }
+  if (systemicBacklog && confirmationRate != null && confirmationRate < 0.25) {
+    return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — معدل التأكيد على المنتج كله منخفض جدًا حاليًا (تراكم عام، مش خاص بهذه المحافظة) — الحكم على المحافظة نفسها لسه مبكر.` };
   }
   return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — الأرقام غير حاسمة بعد.` };
 }
@@ -142,11 +152,18 @@ export async function segmentIntelForProduct({ productId, storeId, adAccountId, 
 
   const ageRows = (metaBreakdown.available ? metaBreakdown.age : []).map((r) => ({ segment: r.value, spend: r.spend, purchases: r.purchases, cpa: r.cpa, ctr: r.ctr, ...classifyMetaSegment(r, gate) }));
   const genderRows = (metaBreakdown.available ? metaBreakdown.gender : []).map((r) => ({ segment: GENDER_AR[r.value] || r.value, spend: r.spend, purchases: r.purchases, cpa: r.cpa, ctr: r.ctr, ...classifyMetaSegment(r, gate) }));
+
+  // Real product-wide confirmation rate (across every governorate row) —
+  // used only to detect a systemic backlog, never itself a per-segment verdict.
+  const totalOrders = governorates.reduce((s, r) => s + (r.orders || 0), 0);
+  const totalConfirmed = governorates.reduce((s, r) => s + (r.confirmed || 0), 0);
+  const globalConfirmationRate = totalOrders > 0 ? totalConfirmed / totalOrders : null;
+
   const governorateRows = governorates.map((r) => ({
     segment: r.government, orders: r.orders, confirmed: r.confirmed, delivered: r.delivered, returned: r.returned,
     confirmationRate: r.orders > 0 ? r.confirmed / r.orders : null,
     deliveryRate: r.confirmed > 0 ? r.delivered / r.confirmed : null,
-    ...classifyCodSegment(r, { minOrders }),
+    ...classifyCodSegment(r, { minOrders, globalConfirmationRate }),
   })).sort((a, b) => (b.orders || 0) - (a.orders || 0));
 
   const bestAge = pickBestSegment(ageRows);
