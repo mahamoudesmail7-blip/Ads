@@ -48,9 +48,9 @@ function flatten(tree) {
   const walk = (c, productName, ambProductId, econ) => {
     campaigns.push({ ...c, productName, ambProductId, econ });
     for (const as of c.children || []) {
-      adsets.push({ ...as, productName, ambProductId, econ, campaignName: c.name });
-      for (const ad of as.children || []) ads.push({ ...ad, productName, ambProductId, econ, campaignName: c.name, adsetName: as.name });
-      for (const cr of as.creatives || []) creatives.push({ ...cr, productName, ambProductId, econ, campaignName: c.name, adsetName: as.name });
+      adsets.push({ ...as, productName, ambProductId, econ, campaignId: c.id, campaignName: c.name });
+      for (const ad of as.children || []) ads.push({ ...ad, productName, ambProductId, econ, campaignId: c.id, campaignName: c.name, adsetName: as.name });
+      for (const cr of as.creatives || []) creatives.push({ ...cr, productName, ambProductId, econ, campaignId: c.id, campaignName: c.name, adsetName: as.name });
     }
   };
   for (const p of products) for (const c of p.children || []) walk(c, p.name, Number(p.id), p.economics);
@@ -117,18 +117,20 @@ export function groupByCreativeLabel(ads, labelIdx, { field, nameRules, minSpend
     if (!label) { unlabeledAds++; continue; }
     labeledAds++;
     const key = label.slice(0, 80);
-    if (!groups.has(key)) groups.set(key, { label: key, source, ads: [], spend: 0, purchases: 0, clicks: 0, impressions: 0 });
+    if (!groups.has(key)) groups.set(key, { label: key, source, ads: [], campaignIds: new Set(), spend: 0, purchases: 0, clicks: 0, impressions: 0 });
     const g = groups.get(key);
     const m = ad.metrics || {};
     g.ads.push(ad.id);
+    if (ad.campaignId) g.campaignIds.add(ad.campaignId);
     g.spend += m.spend || 0; g.purchases += m.purchases || 0; g.clicks += m.clicks || 0; g.impressions += m.impressions || 0;
     if (source === 'CREATIVE_ANALYSIS' && g.source === 'NAME_RULE') g.source = 'CREATIVE_ANALYSIS';
   }
   const rows = [...groups.values()].map((g) => ({
-    label: g.label, source: g.source, adCount: g.ads.length,
+    label: g.label, source: g.source, adCount: g.ads.length, campaignCount: g.campaignIds.size,
     spend: g.spend, purchases: g.purchases,
     cpa: g.purchases > 0 ? g.spend / g.purchases : null,
     ctr: g.impressions > 0 ? (g.clicks / g.impressions) * 100 : null,
+    cpc: g.clicks > 0 ? g.spend / g.clicks : null,
     conversionRate: g.clicks > 0 ? (g.purchases / g.clicks) * 100 : null,
     dataSufficiency: g.spend >= minSpend * 2 && g.purchases >= minPurchases ? 'STRONG' : g.spend >= minSpend ? 'MODERATE' : 'WEAK',
   })).sort((a, b) => (a.cpa === null) - (b.cpa === null) || (a.cpa - b.cpa));

@@ -21,7 +21,7 @@ export function scopedAdsForProduct(tree, ambProductId) {
   for (const c of product.children || []) {
     for (const as of c.children || []) {
       for (const ad of as.children || []) {
-        ads.push({ ...ad, productName: product.name, ambProductId: Number(product.id), campaignName: c.name, adsetName: as.name });
+        ads.push({ ...ad, productName: product.name, ambProductId: Number(product.id), campaignId: c.id, campaignName: c.name, adsetName: as.name });
       }
     }
   }

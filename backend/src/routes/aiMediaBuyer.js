@@ -120,6 +120,28 @@ router.patch('/products/:id', asyncRoute(async (req, res) => res.json(await prod
 router.delete('/products/:id', requireRole('ADMIN'), asyncRoute(async (req, res) => res.json(await products.deleteProduct(req.params.id))));
 
 // ---------------------------------------------------------------------------
+// Smart Decision Center Phase 3 — Creative / Hook / Angle / Copy
+// Intelligence, scoped to one product (keyed by AmbProduct.id, matching
+// GET /products/:id above). The Product-level output PMC (and later the
+// Smart Decision Center) can read for "أفضل كرياتيف / أفضل Hook / أفضل زاوية
+// بيع / أفضل بوست / أفضل Headline" instead of recomputing its own grouping.
+// Analysis only — no AI, no Scale/Pause recommendation, no Meta write.
+// ---------------------------------------------------------------------------
+router.get('/products/:id/creative-intel', asyncRoute(async (req, res) => {
+  const { creativeIntelForProduct } = await import('../services/amb/creativeIntel.js');
+  const connection = await getConnection();
+  if (!connection?.selected_ad_account_id) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اربط حساب Meta Ads واختار حساب إعلاني الأول.' });
+  const settings = await getAmbSettings();
+  res.json(await creativeIntelForProduct({
+    adAccountId: connection.selected_ad_account_id,
+    windowName: req.query.window,
+    settings,
+    ambProductId: Number(req.params.id),
+    compareToPrior: req.query.compareToPrior !== '0',
+  }));
+}));
+
+// ---------------------------------------------------------------------------
 // Smart Decision Center Phase 2 — Unified Product Performance dataset.
 // Keyed by the real catalog Product.id (NOT AmbProduct.id — see
 // productPerformance.js's own header for why). The single source of truth
