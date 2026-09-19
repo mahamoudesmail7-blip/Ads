@@ -457,5 +457,39 @@ console.log('\n§13 Auth self-heal recovery — a resumed ACTION_REQUIRED(AUTH_R
   }
 }
 
+console.log('\n§14 reconcileNativeScheduledLaunchCampaigns — the native-schedule safety net only ever watches, never recreates:');
+{
+  const tag = `__test_queue14_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q NativeReconcile', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } }, launchMode: 'SCHEDULED', startMode: 'SCHEDULED', startAt: new Date(Date.now() + 3600_000).toISOString() }) });
+    const c0 = job.campaigns[0];
+
+    const before = await publish.reconcileNativeScheduledLaunchCampaigns();
+    ok('a campaign with no natively_activated_at is never picked up at all', before.checked === 0, JSON.stringify(before));
+
+    // Fake meta_campaign_id (never a real Meta write) — proves the read-only
+    // reconcile pass degrades gracefully (skips, never throws, never marks
+    // "confirmed") when the live Graph read itself fails.
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'COMPLETE', meta_campaign_id: 'fake_native_campaign_id', natively_activated_at: new Date() } });
+    let threw = false;
+    let result;
+    try { result = await publish.reconcileNativeScheduledLaunchCampaigns(); } catch { threw = true; }
+    ok('a natively-activated campaign with an unreachable Meta id never throws — always degrades gracefully', !threw);
+    ok('it is genuinely picked up for watching (not silently skipped)', result && result.checked >= 1, JSON.stringify(result));
+
+    const confirmedAudit = await prisma.ambLaunchAudit.findFirst({ where: { job_id: jobId, event: 'SCHEDULE_CONFIRMED_DELIVERING' } });
+    ok('an unreachable campaign is never falsely marked as confirmed-delivering', !confirmedAudit);
+
+    // Simulate an already-confirmed campaign from an earlier tick — must be
+    // skipped entirely on the next pass (no redundant Meta reads forever).
+    await prisma.ambLaunchAudit.create({ data: { job_id: jobId, campaign_id: c0.id, event: 'SCHEDULE_CONFIRMED_DELIVERING', detail: 'test-seeded' } });
+    const after = await publish.reconcileNativeScheduledLaunchCampaigns();
+    ok('once confirmed-delivering, the SAME campaign is excluded from future watching passes', after.watching === 0 || after.checked === 0, JSON.stringify(after));
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -22,11 +22,31 @@ import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from './launchVideoUpload.js';
-import { createCampaign, createAdSet, createAdCreative, createAd, getEntity, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta } from '../metaGraphClient.js';
-import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus } from './launchBuilder.js';
+import { createCampaign, createAdSet, createAdCreative, createAd, getEntity, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta, setEntityStatus, getCloneJobLiveState } from '../metaGraphClient.js';
+import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus, LAUNCH_CONCURRENCY_LIMIT } from './launchBuilder.js';
 import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
 
 function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
+
+// Bounded-concurrency batch runner: up to `limit` items in flight at once,
+// every item always runs to settlement (success or its own caught error) —
+// never a fail-fast Promise.all, so one stuck item (e.g. a video still
+// processing on Meta) can never prevent the OTHER independent items in the
+// same batch from finishing. Used for ad sets/ads WITHIN one campaign only;
+// the 5-minute gate BETWEEN campaigns is untouched and lives elsewhere.
+export async function runBounded(items, limit, fn) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try { results[i] = { ok: true, value: await fn(items[i], i) }; }
+      catch (error) { results[i] = { ok: false, error }; }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
 
 /**
  * A cheap, genuinely read-only Graph call (never a write) used ONLY to
@@ -187,6 +207,23 @@ export function buildTargeting(job) {
   };
 }
 
+/**
+ * The wizard's bidding config (job.config_json.bidding), normalized. Default
+ * is always AUTOMATIC (Meta's own "Highest volume / no cap" auction) —
+ * BID_CAP is only ever used when explicitly chosen, and even then never
+ * derives the cap from the daily budget (a real production bug: a 200 EGP
+ * daily budget silently became a 200 EGP bid cap on every result, which is
+ * a completely different, unrequested restriction).
+ */
+function resolveBidding(job) {
+  const cfg = JSON.parse(job.config_json || '{}');
+  const bidding = cfg.bidding || {};
+  if (bidding.mode === 'BID_CAP' && Number(bidding.bidCapMinor) > 0) {
+    return { mode: 'BID_CAP', bidCapMinor: Number(bidding.bidCapMinor) };
+  }
+  return { mode: 'AUTOMATIC' };
+}
+
 export function buildCampaignPayload(job, campaign) {
   const payload = {
     name: campaign.name,
@@ -199,6 +236,20 @@ export function buildCampaignPayload(job, campaign) {
     const cfg = JSON.parse(job.config_json || '{}');
     const minor = cfg.budget?.cbo?.dailyBudgetMinor;
     if (minor > 0) payload.daily_budget = minor;
+    // Confirmed live against this real ad account: for a CBO campaign, bid
+    // strategy belongs on the CAMPAIGN, not the ad set — dozens of real
+    // working ACTIVE/PAUSED campaigns in this account carry
+    // LOWEST_COST_WITHOUT_CAP here with NO bid_amount at all. Putting it on
+    // the ad set instead (the earlier bug) made Meta demand an explicit
+    // bid_amount, which is where the unwanted "200 EGP Bid Cap" came from —
+    // this wizard must never invent a bid cap equal to the daily budget.
+    const bidding = resolveBidding(job);
+    if (bidding.mode === 'BID_CAP') {
+      payload.bid_strategy = 'LOWEST_COST_WITH_BID_CAP';
+      payload.bid_amount = bidding.bidCapMinor;
+    } else {
+      payload.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
+    }
   } else {
     // ABO — Meta REJECTS campaign creation without this whenever the campaign itself carries no
     // budget (confirmed live, Phase F). false = ad sets never share budget, matching this
@@ -231,25 +282,20 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
     payload.daily_budget = dailyBudgetMinor;
     // Confirmed live (Phase F, ABO ad set carrying its own budget):
     // LOWEST_COST_WITHOUT_CAP — Meta's auction fully automatic, no manual
-    // cap, no bid_amount needed. Verified this account rejects the ad set
-    // otherwise with "Bid Amount Or Bid Constraints Required".
-    payload.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
-  } else if (job.budget_mode === 'CBO') {
-    // Confirmed live: a CBO ad set (budget lives on the campaign, none
-    // here) REJECTS LOWEST_COST_WITHOUT_CAP outright — Meta's real error:
-    // "Bid Amount Required For The Bid Strategy Provided" (error_subcode
-    // 1815857), for both an explicit LOWEST_COST_WITHOUT_CAP and no
-    // bid_strategy field at all. LOWEST_COST_WITH_BID_CAP + an explicit
-    // bid_amount is the confirmed-working alternative. The cap itself is
-    // set to the campaign's own full daily budget — high enough that no
-    // real single result could ever hit it (a non-binding ceiling, the
-    // closest equivalent to "uncapped" that this bid strategy allows),
-    // never a manual budget/bidding decision this wizard doesn't expose.
-    const cfg = JSON.parse(job.config_json || '{}');
-    const cboDailyBudgetMinor = Number(cfg.budget?.cbo?.dailyBudgetMinor) || 0;
-    payload.bid_strategy = 'LOWEST_COST_WITH_BID_CAP';
-    payload.bid_amount = cboDailyBudgetMinor > 0 ? cboDailyBudgetMinor : 100000;
+    // cap, no bid_amount needed by default. BID_CAP is only ever applied
+    // when the wizard's bidding mode is explicitly set to it.
+    const bidding = resolveBidding(job);
+    if (bidding.mode === 'BID_CAP') {
+      payload.bid_strategy = 'LOWEST_COST_WITH_BID_CAP';
+      payload.bid_amount = bidding.bidCapMinor;
+    } else {
+      payload.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
+    }
   }
+  // CBO: bid_strategy/bid_amount deliberately NEVER set here — they live on
+  // the campaign (buildCampaignPayload above). Confirmed live: an ad set
+  // under a CBO campaign that already carries a campaign-level bid_strategy
+  // needs no bid fields of its own at all; it correctly inherits.
   // Always send the exact requested SCHEDULED start — never conditionally
   // omit it once it's in the past by creation time. That silent omission
   // was a real production bug: a durable queue can create later ad sets
@@ -533,17 +579,45 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
   try {
     const metaCampaignId = await ensureCampaign({ job, campaign, token, audit });
 
+    // Ad sets are independent of each other (each only needs metaCampaignId,
+    // already known) — create them with bounded concurrency instead of one
+    // at a time. Ad sets never depend on video processing, so a plain
+    // fail-fast is fine here: a real ad-set failure is rare and, unlike a
+    // stuck video, has no "unrelated work that could still proceed" to protect.
+    const adSetIndices = Array.from({ length: job.ad_sets_per_campaign }, (_, i) => i);
+    const adSetResults = await runBounded(adSetIndices, LAUNCH_CONCURRENCY_LIMIT, (adSetIndex) =>
+      ensureAdSet({ job, campaign, metaCampaignId, adSetIndex, token, audit }));
+    const firstAdSetFailure = adSetResults.find((r) => !r.ok);
+    if (firstAdSetFailure) throw firstAdSetFailure.error;
+    const metaAdSetIds = adSetResults.map((r) => r.value);
+    await advanceCampaignStatus(campaign.id, 'ADSETS_CREATED');
+
+    // Ads (creative+ad) across ALL ad sets in this campaign, also bounded-
+    // concurrent. Critically: every slot in the batch always runs to
+    // settlement, so one video still WAITING_FOR_META on Meta's side can
+    // never block unrelated, already-ready videos' ads from being created in
+    // this same pass — they no longer have to wait for the next retry tick.
+    const adSlots = [];
     for (let adSetIndex = 0; adSetIndex < job.ad_sets_per_campaign; adSetIndex++) {
-      const metaAdSetId = await ensureAdSet({ job, campaign, metaCampaignId, adSetIndex, token, audit });
-      await advanceCampaignStatus(campaign.id, 'ADSETS_CREATED');
-      for (let adIndex = 0; adIndex < job.ads_per_ad_set; adIndex++) {
-        const globalAdIndex = campaignIndex * job.ad_sets_per_campaign * job.ads_per_ad_set + adSetIndex * job.ads_per_ad_set + adIndex;
-        const video = videos[globalAdIndex % videos.length];
-        const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex, adIndex, video, token, audit });
-        await ensureAd({ job, campaign, metaCampaignId, metaAdSetId, metaCreativeId, adSetIndex, adIndex, token, audit });
-        await advanceCampaignStatus(campaign.id, 'ADS_CREATED');
-      }
+      for (let adIndex = 0; adIndex < job.ads_per_ad_set; adIndex++) adSlots.push({ adSetIndex, adIndex });
     }
+    const adResults = await runBounded(adSlots, LAUNCH_CONCURRENCY_LIMIT, async ({ adSetIndex, adIndex }) => {
+      const globalAdIndex = campaignIndex * job.ad_sets_per_campaign * job.ads_per_ad_set + adSetIndex * job.ads_per_ad_set + adIndex;
+      const video = videos[globalAdIndex % videos.length];
+      const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex, adIndex, video, token, audit });
+      return ensureAd({ job, campaign, metaCampaignId, metaAdSetId: metaAdSetIds[adSetIndex], metaCreativeId, adSetIndex, adIndex, token, audit });
+    });
+    const adFailures = adResults.filter((r) => !r.ok);
+    if (adFailures.length) {
+      // Everything that succeeded this batch is already safely persisted
+      // (idempotent object-map rows) and will be skipped instantly on the
+      // next pass — only genuinely still-pending slots get retried. A hard
+      // (non-retryable) failure still stops the campaign, exactly matching
+      // the existing single-object policy the outer catch below applies.
+      const hardFailure = adFailures.find((r) => { const p = classifyError(r.error); return !(p.retryable && !p.humanActionRequired); });
+      throw (hardFailure || adFailures[0]).error;
+    }
+    await advanceCampaignStatus(campaign.id, 'ADS_CREATED');
 
     // Live verification straight from Meta before declaring COMPLETE — never trust our own DB alone.
     const objects = await prisma.ambLaunchObjectMap.findMany({ where: { campaign_id: campaign.id } });
@@ -557,6 +631,31 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     // a completed campaign must never still show as ACTION_REQUIRED or mid-retry.
     await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: null, next_retry_at: null, error_classification: null, human_action_required: false } });
     await audit('JOB_COMPLETE', `اكتمل الكامبين ${campaign.name} بالكامل: ${job.ad_sets_per_campaign} Ad Set، ${job.ad_sets_per_campaign * job.ads_per_ad_set} إعلان — كله PAUSED.`);
+
+    // Native Meta scheduling (launch_mode=SCHEDULED only, confirmed with the
+    // user before adding this — NOW/PAUSED_REVIEW never reach here and stay
+    // PAUSED forever). The structure is now 100% verified complete; flip
+    // campaign → ad sets → ads to ACTIVE top-down in one pass. Every ad set
+    // already carries the real future start_time from creation, so Meta
+    // reviews now and withholds all delivery/spend until that exact moment
+    // — no manual Resume/Activate needed. Re-running this on an already
+    // partially-activated campaign is safe: setting an object that's
+    // already ACTIVE to ACTIVE again is a harmless no-op on Meta's side.
+    if (job.launch_mode === 'SCHEDULED' && !campaign.natively_activated_at) {
+      const adsetRows = objects.filter((o) => o.level === 'ADSET' && o.status === 'CREATED');
+      const orderedIds = [metaCampaignId, ...adsetRows.map((r) => r.destination_id), ...adRows.map((r) => r.destination_id)];
+      const activationErrors = [];
+      for (const id of orderedIds) {
+        try { await setEntityStatus(token, id, 'ACTIVE'); }
+        catch (activationErr) { activationErrors.push(`${id}: ${activationErr.message}`); }
+      }
+      if (activationErrors.length) {
+        await audit('ACTIVATION_FAILED', `فشل تفعيل الجدولة الأصلية جزئيًا: ${activationErrors.join(' | ')}`);
+        throw new Error(`تم بناء الكامبين بالكامل PAUSED بنجاح، لكن فشل تفعيله للجدولة الأصلية: ${activationErrors[0]}`);
+      }
+      await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { natively_activated_at: new Date() } });
+      await audit('SCHEDULE_NATIVE_ARMED', `تم تفعيل الكامبين + ${adsetRows.length} Ad Set + ${adRows.length} إعلان (ACTIVE) — موعد البدء الحقيقي ${job.start_at?.toISOString() || ''}. Meta يراجع الآن ويحجز التسليم حتى الموعد بدون أي إجراء يدوي.`);
+    }
 
     const hasNextCampaign = job.campaigns.some((c) => c.index === campaignIndex + 1);
     if (hasNextCampaign) {
@@ -653,9 +752,10 @@ export async function getQueueProgress(jobId) {
       nextRetryAt: c.next_retry_at, transientRetryCount: c.transient_retry_count,
       errorClassification: c.error_classification, humanActionRequired: c.human_action_required, firstFailureAt: c.first_failure_at,
       phase: campaignPhase(c),
+      nativelyActivatedAt: c.natively_activated_at,
     };
   });
-  return { jobId, jobStatus: job.status, jobError: job.error, nextCampaignAt: job.next_campaign_at, lockedBy: job.locked_by, campaigns };
+  return { jobId, jobStatus: job.status, jobError: job.error, launchMode: job.launch_mode, startAt: job.start_at, nextCampaignAt: job.next_campaign_at, lockedBy: job.locked_by, campaigns };
 }
 
 /**
@@ -771,4 +871,80 @@ export async function runDueLaunchQueueTick() {
       logger.error('Launch queue tick failed for job', { jobId: job.job_id, message: err.message });
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Native-schedule reconciliation (§5 safety net) — mirrors cloneEngine.js's
+// reconcileNativeScheduledJobs() exactly. A campaign with natively_activated_at
+// set is already ACTIVE on Meta with a real future start_time on every ad
+// set — Meta reviews now and withholds delivery/spend on its own until that
+// instant. This pass (same scheduler tick) only WATCHES: it never recreates
+// or re-publishes anything. It catches a stray Meta-side pause (flips it back
+// ACTIVE), surfaces a genuine Meta rejection, and — once the real start_at
+// has passed — confirms delivery actually began. A campaign whose delivery
+// was already confirmed on an earlier tick is skipped (no relation column
+// needed: SCHEDULE_CONFIRMED_DELIVERING is written to the existing audit
+// trail exactly once and checked for here, avoiding yet another schema
+// migration for a single boolean).
+export async function reconcileNativeScheduledLaunchCampaigns() {
+  const campaigns = await prisma.ambLaunchCampaign.findMany({
+    where: { natively_activated_at: { not: null }, status: 'COMPLETE' },
+    include: { objects: true },
+    take: 50,
+  });
+  if (!campaigns.length) return { checked: 0 };
+
+  const confirmed = new Set(
+    (await prisma.ambLaunchAudit.findMany({
+      where: { campaign_id: { in: campaigns.map((c) => c.id) }, event: 'SCHEDULE_CONFIRMED_DELIVERING' },
+      select: { campaign_id: true },
+    })).map((a) => a.campaign_id)
+  );
+  const pending = campaigns.filter((c) => !confirmed.has(c.id));
+  if (!pending.length) return { checked: campaigns.length, watching: 0 };
+
+  let token;
+  try { token = await requireLaunchToken(); } catch { return { checked: campaigns.length, skipped: 'NO_TOKEN' }; }
+
+  let delivering = 0, rejected = 0, fixed = 0;
+  for (const campaign of pending) {
+    if (!campaign.meta_campaign_id) continue;
+    const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: campaign.job_id } });
+    if (!job) continue;
+    const audit = (event, detail, extra = {}) => prisma.ambLaunchAudit.create({ data: { job_id: campaign.job_id, campaign_id: campaign.id, event, detail, data_json: JSON.stringify(extra) } });
+    const adsetIds = campaign.objects.filter((o) => o.level === 'ADSET' && o.status === 'CREATED').map((o) => o.destination_id);
+    const adIds = campaign.objects.filter((o) => o.level === 'AD' && o.status === 'CREATED').map((o) => o.destination_id);
+
+    let state;
+    try { state = await getCloneJobLiveState(token, { campaignId: campaign.meta_campaign_id, adsetIds, adIds }); }
+    catch (err) { logger.warn('AMB launch native reconcile read failed', { campaignId: campaign.id, message: err.message }); continue; }
+    if (!state) continue; // transient read failure or campaign genuinely gone — never guess, just retry next tick
+
+    if (state.reviewStatus === 'REJECTED') {
+      const fb = state.rejectedFeedback ? JSON.stringify(state.rejectedFeedback).slice(0, 600) : 'بدون تفاصيل من Meta';
+      await audit('SCHEDULE_NATIVE_REJECTED', `Meta رفض الإعلان بعد الجدولة الأصلية: ${fb}`);
+      rejected++;
+      continue;
+    }
+
+    // Safety net: something Meta shows as configured-PAUSED that we never
+    // paused (e.g. a policy auto-pause, or a manual mistake) — flip it back
+    // ACTIVE so the native schedule still fires. Only this campaign's own ids.
+    const strays = [state.campaign, ...state.adsets, ...state.ads].filter((e) => e && (e.configuredStatus || '').toUpperCase() === 'PAUSED');
+    for (const e of strays) {
+      try { await setEntityStatus(token, e.id, 'ACTIVE'); fixed++; }
+      catch (err) { logger.warn('AMB launch native reconcile re-activate failed', { id: e.id, message: err.message }); }
+    }
+    if (strays.length) await audit('SCHEDULE_NATIVE_REPAIR', `أعدنا تفعيل ${strays.length} عنصر وجدناه متوقفًا قبل الموعد المجدول.`);
+
+    const started = job.start_at && new Date(job.start_at).getTime() <= Date.now();
+    if (started && (state.deliveryStatus === 'DELIVERING' || state.reviewStatus === 'APPROVED')) {
+      await audit('SCHEDULE_CONFIRMED_DELIVERING', `تأكد بدء التسليم الفعلي حسب الجدولة الأصلية (${state.deliveryStatus}) — من غير أي تدخل يدوي.`);
+      delivering++;
+    }
+    // else: before start_at, or still IN_REVIEW at/after it — leave it be;
+    // Meta delivers automatically the moment it approves and the time arrives.
+  }
+  if (delivering || rejected || fixed) logger.info('AMB launch native schedule reconcile', { delivering, rejected, fixed, checked: pending.length });
+  return { checked: pending.length, delivering, rejected, fixed };
 }

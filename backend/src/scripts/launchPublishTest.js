@@ -16,7 +16,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
 
-const { buildTargeting, buildCampaignPayload, buildAdSetPayload, buildCreativePayload } = await imp('../services/amb/launchPublish.js');
+const { buildTargeting, buildCampaignPayload, buildAdSetPayload, buildCreativePayload, runBounded } = await imp('../services/amb/launchPublish.js');
 
 const abojob = { objective: 'OUTCOME_SALES', budget_mode: 'ABO', platforms_json: '["facebook"]', pixel_id: 'pix_job', conversion_event: 'PURCHASE', config_json: '{}', start_mode: 'NOW', start_at: null };
 const cbojob = { ...abojob, budget_mode: 'CBO', config_json: JSON.stringify({ budget: { cbo: { dailyBudgetMinor: 50000 } } }) };
@@ -40,6 +40,16 @@ console.log('\n§2 buildCampaignPayload — ABO vs CBO budget-field placement:')
   const cbo = buildCampaignPayload(cbojob, campaign);
   ok('CBO campaign carries the real configured daily_budget', cbo.daily_budget === 50000);
   ok('CBO campaign does NOT set is_adset_budget_sharing_enabled (only relevant when the campaign has no budget)', cbo.is_adset_budget_sharing_enabled === undefined);
+  // Confirmed live against this real ad account (dozens of real working
+  // ACTIVE/PAUSED campaigns): for CBO, bid_strategy belongs on the
+  // CAMPAIGN, never the ad set — the earlier "ad-set-level bid_strategy"
+  // approach was corrected after it silently manufactured an unwanted
+  // 200 EGP Bid Cap the user never asked for.
+  ok('CBO campaign defaults to LOWEST_COST_WITHOUT_CAP (Meta\'s "Automatic / Highest volume", no manual cap) — confirmed live, dozens of real working campaigns in this exact account use exactly this', cbo.bid_strategy === 'LOWEST_COST_WITHOUT_CAP', cbo.bid_strategy);
+  ok('never a bid_amount by default — no bid cap unless explicitly requested', cbo.bid_amount === undefined);
+
+  const cboBidCap = buildCampaignPayload({ ...cbojob, config_json: JSON.stringify({ budget: { cbo: { dailyBudgetMinor: 50000 } }, bidding: { mode: 'BID_CAP', bidCapMinor: 15000 } }) }, campaign);
+  ok('an EXPLICITLY chosen Bid Cap mode uses LOWEST_COST_WITH_BID_CAP with the user\'s own real amount — never derived from the daily budget', cboBidCap.bid_strategy === 'LOWEST_COST_WITH_BID_CAP' && cboBidCap.bid_amount === 15000, JSON.stringify({ s: cboBidCap.bid_strategy, a: cboBidCap.bid_amount }));
 }
 
 console.log('\n§3 buildAdSetPayload — bid strategy, promoted_object, budget placement, schedule:');
@@ -61,11 +71,16 @@ console.log('\n§3 buildAdSetPayload — bid strategy, promoted_object, budget p
 
   const cboAdSet = buildAdSetPayload(cbojob, campaign, 'c', 0, 20000);
   ok('a CBO ad set never carries its own budget (the campaign already has one — Meta rejects both at once)', cboAdSet.daily_budget === undefined);
-  ok('a CBO ad set uses LOWEST_COST_WITH_BID_CAP, never LOWEST_COST_WITHOUT_CAP — confirmed live Meta REJECTS the latter for a CBO ad set with "Bid Amount Required"', cboAdSet.bid_strategy === 'LOWEST_COST_WITH_BID_CAP', cboAdSet.bid_strategy);
-  ok('a CBO ad set carries an explicit bid_amount equal to the campaign\'s real daily budget — a non-binding cap, never a manual bidding decision this wizard doesn\'t expose', cboAdSet.bid_amount === 50000, cboAdSet.bid_amount);
+  // Real production bug, now fixed: bid_strategy/bid_amount used to be set
+  // HERE (ad-set level) for CBO, which made Meta demand a bid_amount —
+  // sending the daily budget as that amount created an unwanted 200 EGP Bid
+  // Cap the user never asked for. Confirmed live: a CBO ad set needs NO bid
+  // fields of its own at all — it inherits from the campaign.
+  ok('a CBO ad set carries NO bid_strategy of its own — inherits from the campaign, confirmed live', cboAdSet.bid_strategy === undefined, cboAdSet.bid_strategy);
+  ok('a CBO ad set NEVER carries a bid_amount — this is exactly how the unwanted 200 EGP Bid Cap bug happened', cboAdSet.bid_amount === undefined, cboAdSet.bid_amount);
 
-  const cboNoBudgetConfigured = buildAdSetPayload({ ...cbojob, config_json: '{}' }, campaign, 'c', 0, 20000);
-  ok('a CBO ad set with no configured budget still gets a safe non-zero bid_amount fallback rather than 0 (Meta would reject a zero bid cap)', cboNoBudgetConfigured.bid_amount > 0);
+  const aboBidCap = buildAdSetPayload({ ...abojob, config_json: JSON.stringify({ bidding: { mode: 'BID_CAP', bidCapMinor: 8000 } }) }, campaign, 'c', 0, 20000);
+  ok('an ABO ad set with Bid Cap explicitly chosen uses LOWEST_COST_WITH_BID_CAP + the real user amount, never the daily budget', aboBidCap.bid_strategy === 'LOWEST_COST_WITH_BID_CAP' && aboBidCap.bid_amount === 8000, JSON.stringify({ s: aboBidCap.bid_strategy, a: aboBidCap.bid_amount }));
 }
 
 console.log('\n§4 buildAdSetPayload — per-campaign pixel override takes priority over the job-level pixel:');
@@ -114,6 +129,37 @@ console.log('\n§7 buildCreativePayload — Instagram identity (the real product
   const withIg = buildCreativePayload({ ...abojob, instagram_id: '17841400000000000' }, campaign, 0, 0, 'video_123', 'https://scontent.example/thumb.jpg');
   ok('instagram_user_id is a sibling of page_id inside object_story_spec — confirmed field placement from this codebase\'s own working Clone & Schedule engine', withIg.object_story_spec.instagram_user_id === '17841400000000000');
   ok('page_id is still present alongside it — both identities set together', 'page_id' in withIg.object_story_spec);
+}
+
+console.log('\n§8 runBounded — the new within-campaign speed engine: bounded concurrency, never fail-fast, every slot always settles:');
+{
+  let concurrentNow = 0, maxConcurrent = 0;
+  const order = [];
+  const items = Array.from({ length: 12 }, (_, i) => i);
+  const results = await runBounded(items, 5, async (i) => {
+    concurrentNow++; maxConcurrent = Math.max(maxConcurrent, concurrentNow);
+    await new Promise((r) => setTimeout(r, 5));
+    order.push(i);
+    concurrentNow--;
+    return i * 10;
+  });
+  ok('never runs more than the given concurrency limit at once', maxConcurrent <= 5, String(maxConcurrent));
+  ok('every item still eventually runs — nothing silently dropped', order.length === 12);
+  ok('successful results are returned in the original slot order, not completion order', results.every((r, i) => r.ok && r.value === i * 10));
+
+  // A stuck/failing slot (e.g. one video still processing) must never
+  // prevent OTHER independent slots in the same batch from completing —
+  // exactly the production inefficiency this refactor fixes.
+  let ranAfterFailure = 0;
+  const mixed = await runBounded([0, 1, 2, 3, 4, 5], 2, async (i) => {
+    if (i === 1) throw new Error('slot 1 is still WAITING_FOR_META');
+    await new Promise((r) => setTimeout(r, 2));
+    ranAfterFailure++;
+    return i;
+  });
+  ok('a thrown slot is captured as {ok:false} rather than aborting the whole batch', mixed[1].ok === false && mixed[1].error.message.includes('WAITING_FOR_META'));
+  ok('every OTHER slot in the same batch still completes despite the failure', ranAfterFailure === 5, String(ranAfterFailure));
+  ok('every non-failing slot reports its own real success', mixed.filter((r, i) => i !== 1).every((r) => r.ok === true));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

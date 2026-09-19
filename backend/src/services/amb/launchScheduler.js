@@ -6,7 +6,7 @@
 // lives in the amb_launch_jobs/amb_launch_campaigns rows themselves, read
 // fresh on every tick by runDueLaunchQueueTick().
 import { logger } from '../../logger.js';
-import { runDueLaunchQueueTick } from './launchPublish.js';
+import { runDueLaunchQueueTick, reconcileNativeScheduledLaunchCampaigns } from './launchPublish.js';
 
 let timer = null;
 
@@ -16,6 +16,8 @@ export function startLaunchScheduler() {
   const tick = async () => {
     try { await runDueLaunchQueueTick(); }
     catch (err) { logger.error('AMB launch queue scheduler tick failed', { message: err.message }); }
+    try { await reconcileNativeScheduledLaunchCampaigns(); }
+    catch (err) { logger.error('AMB launch native schedule reconcile tick failed', { message: err.message }); }
   };
   timer = setInterval(tick, TICK_MS);
   logger.info('AMB launch (Campaign Launch Builder) bulk-publish scheduler started (30s tick)');

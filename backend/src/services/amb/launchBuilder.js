@@ -105,6 +105,34 @@ export function localWallClockToUtcDate(dateStr, timeStr, ianaTimeZone) {
   return new Date(naiveUtcMs - offsetMinutes * 60000);
 }
 
+export const ALLOWED_LAUNCH_MODES = ['NOW', 'SCHEDULED', 'PAUSED_REVIEW'];
+export const ALLOWED_BIDDING_MODES = ['AUTOMATIC', 'BID_CAP'];
+
+// Heuristic build-time estimate for the lead-time protection check — never
+// a guaranteed exact timing (real Meta latency varies), just a conservative
+// bound used to decide "is the requested schedule even reachable". Reflects
+// the bounded-concurrency publish engine: independent ad sets within one
+// campaign build CONCURRENCY_LIMIT at a time, each ad set's own ads also
+// bounded-concurrent; only campaigns themselves are strictly sequential
+// (plus the mandatory 5-minute gap between them).
+export const LAUNCH_CONCURRENCY_LIMIT = 5;
+const AVG_META_CALL_MS = 900; // one real Graph API write, conservatively
+const FIXED_OVERHEAD_MS = 15_000; // campaign creation + live verification + reconciliation reads
+const SAFETY_BUFFER_MS = 5 * 60_000; // never cut it exactly to the wire
+
+export function estimateLaunchBuildMs({ campaignCount, adSetsPerCampaign, adsPerAdSet }) {
+  // Per campaign: 1 campaign create (sequential) + ad sets in bounded-concurrent
+  // batches, each batch's ads also bounded-concurrent (creative + ad = 2 calls/ad).
+  const adSetBatches = Math.ceil(adSetsPerCampaign / LAUNCH_CONCURRENCY_LIMIT);
+  const adBatchesPerAdSet = Math.ceil(adsPerAdSet / LAUNCH_CONCURRENCY_LIMIT);
+  const perCampaignMs = AVG_META_CALL_MS // campaign
+    + adSetBatches * AVG_META_CALL_MS // ad set batches
+    + adSetsPerCampaign * adBatchesPerAdSet * AVG_META_CALL_MS * 2 // each ad set's own ad batches (creative + ad per call-pair)
+    + FIXED_OVERHEAD_MS;
+  const interCampaignGateMs = Math.max(0, campaignCount - 1) * 5 * 60_000;
+  return campaignCount * perCampaignMs + interCampaignGateMs + SAFETY_BUFFER_MS;
+}
+
 /**
  * Validates a wizard submission and returns the normalized shape this
  * service persists. Never touches Meta — purely a shape/range check, so a
@@ -179,6 +207,27 @@ export function validateLaunchConfig(input) {
     if (!startAt || Number.isNaN(startAt.getTime())) fail('تاريخ/وقت البدء غير صالح.');
   }
 
+  const launchMode = ALLOWED_LAUNCH_MODES.includes(cfg.launchMode) ? cfg.launchMode : 'PAUSED_REVIEW';
+  if (launchMode === 'SCHEDULED' && startMode !== 'SCHEDULED') fail('وضع "تشغيل في موعد محدد" محتاج تحديد تاريخ ووقت بدء فعلي.');
+  if (launchMode === 'SCHEDULED' && startAt) {
+    // Lead-time protection: never let Meta silently replace an unreachable
+    // requested start with "now" (confirmed live elsewhere in this file —
+    // Meta ignores a past start_time outright). A heuristic, clearly-bounded
+    // estimate of how long this exact launch will take to BUILD, compared
+    // against how far away the requested moment actually is.
+    const neededMs = estimateLaunchBuildMs({ campaignCount, adSetsPerCampaign, adsPerAdSet });
+    const availableMs = startAt.getTime() - Date.now();
+    if (availableMs < neededMs) {
+      const neededMin = Math.ceil(neededMs / 60_000);
+      fail(`الموعد المطلوب قريب جدًا — الطلب ده (${campaignCount} كامبين، ${adSetsPerCampaign * campaignCount} Ad Set، ${adSetsPerCampaign * adsPerAdSet * campaignCount} إعلان) محتاج حوالي ${neededMin} دقيقة على الأقل عشان يتبني بالكامل قبل الموعد. اختار موعد بعيد شوية، أو قلل عدد العناصر.`);
+    }
+  }
+
+  const bidding = cfg.bidding && ALLOWED_BIDDING_MODES.includes(cfg.bidding.mode) && cfg.bidding.mode === 'BID_CAP'
+    ? { mode: 'BID_CAP', bidCapMinor: Number(cfg.bidding.bidCapMinor) > 0 ? Number(cfg.bidding.bidCapMinor) : null }
+    : { mode: 'AUTOMATIC' };
+  if (bidding.mode === 'BID_CAP' && !bidding.bidCapMinor) fail('لازم تحدد قيمة حد أقصى للمزايدة أكبر من صفر، أو اختار "تلقائي".');
+
   return {
     adAccountId: cfg.adAccountId,
     adAccountName: cfg.adAccountName || null,
@@ -198,6 +247,7 @@ export function validateLaunchConfig(input) {
     campaignCount,
     startMode,
     startAt,
+    launchMode,
     timezone: cfg.timezone || 'Africa/Cairo',
     campaigns: campaigns.map((c, i) => ({
       index: i,
@@ -215,6 +265,7 @@ export function validateLaunchConfig(input) {
       budget: cfg.budget || null,
       cta: cfg.cta || 'ORDER_NOW',
       videoPlan: cfg.videoPlan || null,
+      bidding,
     },
   };
 }
@@ -257,6 +308,7 @@ export async function createDraftJob({ jobId, userId, input }) {
     campaign_count: v.campaignCount,
     start_mode: v.startMode,
     start_at: v.startAt,
+    launch_mode: v.launchMode,
     timezone: v.timezone,
     config_json: JSON.stringify(v.raw),
   };

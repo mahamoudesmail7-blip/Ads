@@ -3405,6 +3405,9 @@ const launchState = {
   startMode: 'SCHEDULED', // NOW | SCHEDULED
   startDate: '',
   startTime: '00:00',
+  launchMode: 'PAUSED_REVIEW', // NOW | SCHEDULED | PAUSED_REVIEW — see launchBuilder.js: only SCHEDULED ever auto-activates
+  biddingMode: 'AUTOMATIC',    // AUTOMATIC | BID_CAP — AUTOMATIC (no cap) is Meta's own default, never derived from the daily budget
+  bidCapAmount: '',
   platforms: { facebook: true, instagram: true },
   pageId: null,
   pageName: null,
@@ -3478,7 +3481,7 @@ function launchCurrentAssets() {
 // a private-browsing tab or blocked storage just means this session behaves
 // as it always did (nothing persisted), never a hard failure.
 const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
-const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
+const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
 function saveLaunchSnapshot() {
   try {
     const snap = {};
@@ -3517,7 +3520,8 @@ function launchFreshDefaults() {
   return {
     step: 1, jobId: null, jobStarted: false, adAccountId: null, adAccountName: null, adAccountTimezoneName: null,
     baseName: 'Cup - Test', budgetMode: 'CBO', cboDailyBudget: '', aboBudgets: [], adSetsPerCampaign: 3, adsPerAdSet: 3,
-    startMode: 'SCHEDULED', startDate: '', startTime: '00:00', platforms: { facebook: true, instagram: true },
+    startMode: 'SCHEDULED', startDate: '', startTime: '00:00', launchMode: 'PAUSED_REVIEW', biddingMode: 'AUTOMATIC', bidCapAmount: '',
+    platforms: { facebook: true, instagram: true },
     pageId: null, pageName: null, instagramId: null, instagramUsername: null, pixelId: null, pixelName: null,
     conversionEvent: 'PURCHASE', perCampaignPixel: false, campaignCount: 1, copyMode: 'SAME',
     campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
@@ -3800,7 +3804,13 @@ async function renderLaunchAdSets(body) {
   while (launchState.aboBudgets.length < launchState.adSetsPerCampaign) launchState.aboBudgets.push({ dailyBudget: '' });
   launchState.aboBudgets.length = launchState.adSetsPerCampaign;
 
-  const scheduled = launchState.startMode === 'SCHEDULED';
+  const scheduled = launchState.launchMode === 'SCHEDULED';
+  const bidCap = launchState.biddingMode === 'BID_CAP';
+  const launchModeHint = {
+    NOW: '🟢 هيتبني بالكامل دلوقتي، لكن هيفضل متوقف (PAUSED) — إنت اللي هتفعّله يدويًا لما تكون جاهز. (زي دلوقتي بالظبط)',
+    PAUSED_REVIEW: '🟡 هيتبني بالكامل، ويفضل متوقف (PAUSED) للمراجعة — مفيش أي تفعيل تلقائي أبدًا.',
+    SCHEDULED: '🔵 هيتبني بالكامل قبل الموعد بوقت كافي (تقدر تشوفه على Meta فورًا)، وهيبدأ تلقائيًا بالظبط في الموعد المحدد من غير أي تدخل يدوي.',
+  }[launchState.launchMode];
   body.innerHTML = `
     ${launchStepper()}
     <div class="amb-panel">
@@ -3820,11 +3830,22 @@ async function renderLaunchAdSets(body) {
           ${launchState.aboBudgets.map((a, i) => `<div class="amb-derived-row"><span>Ad Set ${i + 1}</span><input class="amb-input sm" style="max-width:120px;" type="number" min="1" data-abo="${i}" value="${E(a.dailyBudget)}" /></div>`).join('')}
         </div>`}
 
-      <div class="section-title">تاريخ ووقت بدء الاختبار</div>
+      <div class="section-title">استراتيجية عرض السعر (Bid Strategy)</div>
       <div class="toolbar" style="margin-bottom:10px;">
-        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchStart" value="NOW" ${!scheduled ? 'checked' : ''} /><span class="rr-main">تشغيل الآن</span></label>
-        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchStart" value="SCHEDULED" ${scheduled ? 'checked' : ''} /><span class="rr-main">جدولة موعد</span></label>
+        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchBidding" value="AUTOMATIC" ${!bidCap ? 'checked' : ''} /><span class="rr-main">تلقائي (Highest Volume) — الافتراضي</span></label>
+        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchBidding" value="BID_CAP" ${bidCap ? 'checked' : ''} /><span class="rr-main">حد أقصى للمزايدة (Bid Cap)</span></label>
       </div>
+      <div id="ambLaunchBidCapFields" style="${bidCap ? '' : 'display:none;'} margin-bottom:10px;">
+        <div class="field" style="max-width:220px;"><label>الحد الأقصى (جنيه)</label><input class="amb-input" type="number" min="1" id="ambLaunchBidCapAmount" value="${E(launchState.bidCapAmount)}" placeholder="مثال: 15" /></div>
+      </div>
+
+      <div class="section-title">وضع التشغيل (Launch Mode)</div>
+      <div class="toolbar" style="margin-bottom:10px; flex-wrap:wrap;">
+        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchMode" value="NOW" ${launchState.launchMode === 'NOW' ? 'checked' : ''} /><span class="rr-main">تشغيل الآن</span></label>
+        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchMode" value="SCHEDULED" ${scheduled ? 'checked' : ''} /><span class="rr-main">تشغيل في موعد محدد</span></label>
+        <label class="amb-radio-row" style="display:inline-flex; width:auto; padding:8px 14px;"><input type="radio" name="ambLaunchMode" value="PAUSED_REVIEW" ${launchState.launchMode === 'PAUSED_REVIEW' ? 'checked' : ''} /><span class="rr-main">إنشاء متوقف للمراجعة</span></label>
+      </div>
+      <div class="amb-empty" style="text-align:right; padding:10px 14px; background:var(--amb-surface-2); border-radius:10px; margin-bottom:10px;">${launchModeHint}</div>
       <div id="ambLaunchStartFields" style="${scheduled ? '' : 'display:none;'}">
         <div class="amb-field-grid" style="grid-template-columns:1fr 1fr; gap:14px; max-width:400px;">
           <div class="field"><label>التاريخ (القاهرة)</label><input class="amb-input" type="date" id="ambLaunchStartDate" min="${E(cairoDateStr(0))}" value="${E(launchState.startDate || cairoDateStr(1))}" /></div>
@@ -3838,8 +3859,12 @@ async function renderLaunchAdSets(body) {
   $('ambLaunchAdsPerSet').onchange = (e) => { launchState.adsPerAdSet = Math.max(1, Number(e.target.value) || 1); };
   const cbo = $('ambLaunchCboBudget'); if (cbo) cbo.oninput = (e) => { launchState.cboDailyBudget = e.target.value; };
   body.querySelectorAll('[data-abo]').forEach((inp) => { inp.oninput = (e) => { launchState.aboBudgets[Number(e.target.dataset.abo)].dailyBudget = e.target.value; }; });
-  body.querySelectorAll('input[name="ambLaunchStart"]').forEach((r) => {
-    r.onchange = () => { launchState.startMode = r.value; $('ambLaunchStartFields').style.display = r.value === 'SCHEDULED' ? '' : 'none'; };
+  body.querySelectorAll('input[name="ambLaunchBidding"]').forEach((r) => {
+    r.onchange = () => { launchState.biddingMode = r.value; renderLaunchStep(); };
+  });
+  const bca = $('ambLaunchBidCapAmount'); if (bca) bca.oninput = (e) => { launchState.bidCapAmount = e.target.value; };
+  body.querySelectorAll('input[name="ambLaunchMode"]').forEach((r) => {
+    r.onchange = () => { launchState.launchMode = r.value; launchState.startMode = r.value === 'SCHEDULED' ? 'SCHEDULED' : 'NOW'; renderLaunchStep(); };
   });
   const sd = $('ambLaunchStartDate'); if (sd) sd.onchange = (e) => { launchState.startDate = e.target.value; };
   const st = $('ambLaunchStartTime'); if (st) st.onchange = (e) => { launchState.startTime = e.target.value; };
@@ -3852,10 +3877,14 @@ async function renderLaunchAdSets(body) {
       const bad = launchState.aboBudgets.some((a) => !(egpToMinor(a.dailyBudget) > 0));
       if (bad) { UI.toast('كل Ad Set لازم ميزانية أكبر من صفر.', 'error'); return; }
     }
-    if (launchState.startMode === 'SCHEDULED') {
+    if (launchState.biddingMode === 'BID_CAP') {
+      launchState.bidCapAmount = $('ambLaunchBidCapAmount').value;
+      if (!(egpToMinor(launchState.bidCapAmount) > 0)) { UI.toast('لازم تحدد قيمة حد أقصى للمزايدة أكبر من صفر، أو اختار "تلقائي".', 'error'); return; }
+    }
+    if (launchState.launchMode === 'SCHEDULED') {
       launchState.startDate = $('ambLaunchStartDate').value;
       launchState.startTime = $('ambLaunchStartTime').value;
-      if (!launchState.startDate) { UI.toast('لازم تحدد تاريخ البدء، أو تختار تشغيل الآن.', 'error'); return; }
+      if (!launchState.startDate) { UI.toast('لازم تحدد تاريخ البدء، أو تختار وضع تشغيل تاني.', 'error'); return; }
       if (!cloneStartInFuture(launchState.startDate, launchState.startTime)) { UI.toast('لازم يكون تاريخ ووقت البدء في المستقبل.', 'error'); return; }
     }
     launchState.step = 4; renderLaunchStep();
@@ -4405,6 +4434,14 @@ function launchQueueProgressHtml(progress) {
       ? `<div class="bad" style="font-size:11.5px;">${LAUNCH_CLASSIFICATION_AR[c.errorClassification] || 'محتاج مراجعة'}: ${E(c.error || '')}<br>صحّح المشكلة يدويًا ثم اضغط "استئناف النشر" تحت — العناصر اللي اتعملت فعلاً مش هتتكرر.</div>` : '';
     const classificationTag = c.phase !== 'ACTION_REQUIRED' && c.errorClassification && c.error
       ? `<div class="faint" style="font-size:11px;">${E(LAUNCH_CLASSIFICATION_AR[c.errorClassification] || c.errorClassification)}</div>` : '';
+    // Native-scheduling status (§5): a SCHEDULED-mode campaign that finished
+    // COMPLETE was flipped ACTIVE the moment its structure was verified, but
+    // Meta withholds all delivery until the real requested start_at — make
+    // that distinction explicit so "الحالة: مجدول" is never confused with
+    // "already delivering".
+    const scheduleArmedNote = progress.launchMode === 'SCHEDULED' && c.nativelyActivatedAt && progress.startAt
+      ? `<div class="ok" style="font-size:11.5px;">تم الإنشاء على Meta ✅ — الحالة: مجدول (Scheduled) — سيبدأ تلقائيًا: ${new Date(progress.startAt).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo', dateStyle: 'medium', timeStyle: 'short' })} (القاهرة)</div>`
+      : '';
 
     return `<div class="amb-obj-row ${tone === 'green' ? 'ok' : tone === 'red' || tone === 'orange' ? 'bad' : ''}" style="flex-direction:column; align-items:flex-start; gap:2px;">
       <div style="display:flex; justify-content:space-between; width:100%;">
@@ -4417,6 +4454,7 @@ function launchQueueProgressHtml(progress) {
       ${c.phase === 'FAILED_TERMINAL' && c.error ? `<div class="bad" style="font-size:11.5px;">${E(c.error)}</div>` : ''}
       ${retryNote}
       ${waitNote}
+      ${scheduleArmedNote}
     </div>`;
   }).join('');
   return `<div class="section-title" style="margin-top:18px;">حالة النشر الفعلي على Meta</div><div class="amb-derived">${rows}</div>`;
@@ -4505,7 +4543,8 @@ async function renderLaunchReview(body) {
       ? `🟢 @${launchState.instagramUsername || launchState.instagramId}`
       : '🔴 لازم حساب إنستجرام حقيقي متصل بالصفحة';
 
-  let scheduleLine = launchState.startMode === 'NOW' ? '🟢 تشغيل فوري (بدون جدولة)' : '🔴 لسه معملتش تحديد تاريخ/وقت';
+  const launchModeLabel = { NOW: '🟢 تشغيل الآن (يتبني فورًا، يفضل PAUSED للتفعيل اليدوي)', PAUSED_REVIEW: '🟡 إنشاء متوقف للمراجعة (يفضل PAUSED للتفعيل اليدوي)', SCHEDULED: null }[launchState.launchMode];
+  let scheduleLine = launchState.startMode === 'NOW' ? launchModeLabel : '🔴 لسه معملتش تحديد تاريخ/وقت';
   let scheduleOk = launchState.startMode === 'NOW' || !!launchState.startDate;
   if (launchState.startMode === 'SCHEDULED' && launchState.startDate) {
     const tz = launchState.adAccountTimezoneName || 'Africa/Cairo';
@@ -4516,14 +4555,17 @@ async function renderLaunchReview(body) {
       if (resolvedUtc.getTime() <= Date.now()) {
         // Confirmed live against real Meta: a past start_time is never honored — Meta
         // substitutes the actual creation moment instead, no matter what we send.
-        scheduleLine = `🔴 الموعد فات بالفعل (${requestedText}) — Meta هيبدأ فورًا مش في الموعد ده. عدّل الموعد أو اختار "تشغيل الآن".`;
+        scheduleLine = `🔴 الموعد فات بالفعل (${requestedText}) — Meta هيبدأ فورًا مش في الموعد ده. عدّل الموعد أو اختار وضع تشغيل تاني.`;
         scheduleOk = false;
       } else {
-        scheduleLine = `🟢 المطلوب: ${requestedText} — Meta (UTC): ${resolvedText}`;
+        scheduleLine = `🟢 هيتبني قبل الموعد ويبقى ظاهر على Meta فورًا، ويبدأ تلقائيًا بالظبط الساعة: ${requestedText} (Meta UTC: ${resolvedText}) — من غير أي تفعيل يدوي.`;
         scheduleOk = true;
       }
     } else { scheduleLine = '🔴 منطقة توقيت غير معروفة — تعذّر حساب الموعد'; scheduleOk = false; }
   }
+  const biddingLine = launchState.biddingMode === 'BID_CAP'
+    ? `🟡 Bid Cap يدوي: ${E(launchState.bidCapAmount)} جنيه`
+    : '🟢 تلقائي (Highest Volume) — بدون حد أقصى للمزايدة';
 
   const checklist = [
     ['الحساب الإعلاني', !!launchState.adAccountId],
@@ -4533,7 +4575,8 @@ async function renderLaunchReview(body) {
     ['حدث التحويل', !!launchState.conversionEvent],
     ['المنصات', platformsArr.length > 0],
     ['الميزانية', launchState.budgetMode === 'CBO' ? egpToMinor(launchState.cboDailyBudget) > 0 : launchState.aboBudgets.every((a) => egpToMinor(a.dailyBudget) > 0)],
-    ['الجدولة (المطلوب مقابل Meta)', scheduleLine],
+    ['استراتيجية عرض السعر', biddingLine],
+    ['وضع التشغيل والجدولة', scheduleLine],
     ['Customer lifecycle', '🟢 All audiences (existing_customer_budget_percentage: 100)'],
     ['نصوص وروابط الحملات', launchState.campaigns.every((c) => c.name?.trim() && c.websiteUrl?.trim())],
     ['الفيديوهات', videoLine],
@@ -4590,7 +4633,9 @@ async function renderLaunchReview(body) {
         <div><span class="rl">Instagram</span><span class="rv">${launchState.instagramId ? '@' + E(launchState.instagramUsername) : (launchState.platforms.instagram ? '⚠️ بدون حساب مخصص (هوية الصفحة فقط)' : '—')}</span></div>
         <div><span class="rl">Meta Pixel</span><span class="rv">${E(launchState.pixelName || '—')}</span></div>
         <div><span class="rl">حدث التحويل</span><span class="rv">${E(LAUNCH_CONVERSION_EVENTS.find((c) => c.v === launchState.conversionEvent)?.l || launchState.conversionEvent)}</span></div>
-        <div><span class="rl">البداية</span><span class="rv">${launchState.startMode === 'NOW' ? 'تشغيل الآن' : `${E(launchState.startDate)} ${E(launchState.startTime)} (القاهرة)`}</span></div>
+        <div><span class="rl">وضع التشغيل</span><span class="rv">${{ NOW: 'تشغيل الآن', PAUSED_REVIEW: 'إنشاء متوقف للمراجعة', SCHEDULED: 'تشغيل في موعد محدد' }[launchState.launchMode]}</span></div>
+        <div><span class="rl">البداية</span><span class="rv">${launchState.startMode === 'NOW' ? 'فورًا (يفضل PAUSED)' : `${E(launchState.startDate)} ${E(launchState.startTime)} (القاهرة) — تفعيل تلقائي`}</span></div>
+        <div><span class="rl">استراتيجية عرض السعر</span><span class="rv">${launchState.biddingMode === 'BID_CAP' ? `Bid Cap — ${E(launchState.bidCapAmount)} جنيه` : 'تلقائي (بدون حد أقصى)'}</span></div>
         <div><span class="rl">CTA</span><span class="rv">Order Now</span></div>
         <div><span class="rl">إجمالي الميزانية اليومية المحددة</span><span class="rv" style="font-weight:800;">${fmtEGP(exposure)}</span></div>
       </div>
@@ -4649,6 +4694,10 @@ async function renderLaunchReview(body) {
     startDate: launchState.startMode === 'SCHEDULED' ? launchState.startDate : null,
     startTime: launchState.startMode === 'SCHEDULED' ? launchState.startTime : null,
     timezone: launchState.adAccountTimezoneName || 'Africa/Cairo',
+    launchMode: launchState.launchMode,
+    bidding: launchState.biddingMode === 'BID_CAP'
+      ? { mode: 'BID_CAP', bidCapMinor: egpToMinor(launchState.bidCapAmount) }
+      : { mode: 'AUTOMATIC' },
     cta: 'ORDER_NOW',
     budget: launchState.budgetMode === 'CBO'
       ? { cbo: { dailyBudgetMinor: egpToMinor(launchState.cboDailyBudget) } }

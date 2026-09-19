@@ -1798,6 +1798,16 @@ model AmbLaunchJob {
   start_mode           String    @default("SCHEDULED") // NOW | SCHEDULED
   start_at             DateTime? // UTC instant, resolved from timezone at wizard time
   timezone             String    @default("Africa/Cairo")
+  // Launch Mode — deliberately confirmed with the user before adding this:
+  // NOW and PAUSED_REVIEW both keep the original, still-default behavior
+  // (every object built PAUSED, stays PAUSED forever, only a human
+  // activates anything in Ads Manager). SCHEDULED is the one real
+  // exception: once a campaign's structure is 100% verified complete, it
+  // is flipped ACTIVE top-down (campaign → ad sets → ads) with its real
+  // future start_time already set, so Meta's own native scheduling reviews
+  // now and holds all delivery/spend until that exact moment — no manual
+  // Resume/Activate needed. Never touches an object this job didn't create.
+  launch_mode          String    @default("PAUSED_REVIEW")
   // Full validated wizard snapshot not otherwise broken into a typed column
   // above: budget amounts (CBO daily/lifetime, or per-ad-set ABO amounts),
   // CTA, website URLs, video-to-adset/ad slot assignment plan. Never a Meta
@@ -1884,6 +1894,14 @@ model AmbLaunchCampaign {
   error_classification   String?
   first_failure_at       DateTime?
   human_action_required  Boolean   @default(false)
+  // Set the instant this campaign's real Meta objects were flipped ACTIVE
+  // top-down under launch_mode=SCHEDULED (never for NOW/PAUSED_REVIEW —
+  // those campaigns stay PAUSED and this stays null forever). Meta itself
+  // withholds delivery/spend until the job's real start_at, already set on
+  // every ad set at creation time — this column only marks that the
+  // one-time activation step ran, so the reconciliation tick knows which
+  // campaigns to keep watching for a stray Meta-side pause or rejection.
+  natively_activated_at  DateTime?
   created_at      DateTime     @default(now())
   updated_at      DateTime     @updatedAt
 

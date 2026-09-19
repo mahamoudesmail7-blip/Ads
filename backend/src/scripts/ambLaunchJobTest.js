@@ -366,5 +366,55 @@ console.log('\n§11 "➕ إنشاء كامبين جديد" — a brand-new job n
   }
 }
 
+console.log('\n§12 Launch Mode + lead-time protection — SCHEDULED native activation is opt-in and never lets Meta silently replace an unreachable start with "now":');
+{
+  const v1 = launch.validateLaunchConfig(baseConfig());
+  ok('default launch mode is PAUSED_REVIEW — the original, still-default safe behavior, never activates anything', v1.launchMode === 'PAUSED_REVIEW');
+
+  let threw = false;
+  try { launch.validateLaunchConfig(baseConfig({ launchMode: 'SCHEDULED', startMode: 'NOW' })); } catch (e) { threw = true; ok('SCHEDULED launch mode without an actual schedule is rejected', /محتاج تحديد تاريخ ووقت بدء/.test(e.message), e.message); }
+  ok('SCHEDULED launch mode requires SCHEDULED start mode', threw);
+
+  // Lead-time protection: a huge launch (2 campaigns x 5 ad sets x 3 ads = 30
+  // ads) requested to start in just 1 minute can never really be built in
+  // time — must be blocked rather than letting Meta silently use "now".
+  threw = false;
+  try {
+    launch.validateLaunchConfig(baseConfig({
+      launchMode: 'SCHEDULED', startMode: 'SCHEDULED', budgetMode: 'ABO',
+      startDate: new Date(Date.now() + 60_000).toISOString().slice(0, 10), startTime: new Date(Date.now() + 60_000).toISOString().slice(11, 16), timezone: 'UTC',
+      campaignCount: 2, campaigns: [{ name: 'A', websiteUrl: 'https://a.com' }, { name: 'B', websiteUrl: 'https://b.com' }],
+      adSetsPerCampaign: 5, budget: { abo: { adSets: Array.from({ length: 5 }, () => ({ dailyBudgetMinor: 10000 })) } },
+    }));
+  } catch (e) { threw = true; ok('a schedule far too close for the real size of the launch is rejected with an actionable message', /قريب جدًا/.test(e.message), e.message); }
+  ok('lead-time protection throws when the requested start is unreachable', threw);
+
+  // The SAME launch with a genuinely distant future start must pass — lead-time protection never blocks a reasonable schedule.
+  const farFuture = new Date(Date.now() + 6 * 3600_000);
+  const v2 = launch.validateLaunchConfig(baseConfig({
+    launchMode: 'SCHEDULED', startMode: 'SCHEDULED', budgetMode: 'ABO',
+    startDate: farFuture.toISOString().slice(0, 10), startTime: farFuture.toISOString().slice(11, 16), timezone: 'UTC',
+    campaignCount: 2, campaigns: [{ name: 'A', websiteUrl: 'https://a.com' }, { name: 'B', websiteUrl: 'https://b.com' }],
+    adSetsPerCampaign: 5, budget: { abo: { adSets: Array.from({ length: 5 }, () => ({ dailyBudgetMinor: 10000 })) } },
+  }));
+  ok('a genuinely distant (6h) future schedule for the same real-sized launch passes cleanly', v2.launchMode === 'SCHEDULED');
+
+  ok('estimateLaunchBuildMs scales up with more campaigns/ad sets/ads (a bigger launch legitimately needs more lead time)', launch.estimateLaunchBuildMs({ campaignCount: 2, adSetsPerCampaign: 5, adsPerAdSet: 3 }) > launch.estimateLaunchBuildMs({ campaignCount: 1, adSetsPerCampaign: 1, adsPerAdSet: 1 }));
+  ok('estimateLaunchBuildMs always includes the mandatory 5-minute inter-campaign gate for multi-campaign launches', launch.estimateLaunchBuildMs({ campaignCount: 2, adSetsPerCampaign: 1, adsPerAdSet: 1 }) - launch.estimateLaunchBuildMs({ campaignCount: 1, adSetsPerCampaign: 1, adsPerAdSet: 1 }) >= 5 * 60_000);
+}
+
+console.log('\n§13 Bidding mode — AUTOMATIC by default, Bid Cap only when explicitly chosen with a real amount:');
+{
+  const v = launch.validateLaunchConfig(baseConfig());
+  ok('default bidding mode is AUTOMATIC — no bid cap unless explicitly requested', v.raw.bidding.mode === 'AUTOMATIC');
+
+  const vCap = launch.validateLaunchConfig(baseConfig({ bidding: { mode: 'BID_CAP', bidCapMinor: 5000 } }));
+  ok('an explicit BID_CAP mode with a real positive amount is accepted and carried through', vCap.raw.bidding.mode === 'BID_CAP' && vCap.raw.bidding.bidCapMinor === 5000);
+
+  let threw = false;
+  try { launch.validateLaunchConfig(baseConfig({ bidding: { mode: 'BID_CAP', bidCapMinor: 0 } })); } catch (e) { threw = true; ok('BID_CAP with no real positive amount is rejected rather than silently defaulting to something', /حد أقصى للمزايدة/.test(e.message)); }
+  ok('BID_CAP mode with a zero/missing amount throws', threw);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
