@@ -51,7 +51,12 @@ const META_VALIDATION_CODES = new Set([100, 2635]);
 // Real subcodes seen for "this business object can't be used" (disabled ad
 // account, unpublished Page, deleted Pixel) — distinct from a pure
 // permission problem: the user must pick/fix a different object, we can't.
-const META_CONFIG_SUBCODES = new Set([1487390, 1487056, 1815857, 2446381, 1885299]);
+// 1815857 was REMOVED after a real production incident: it's actually
+// Meta's subcode for "Bid Amount Required For The Bid Strategy Provided"
+// (a payload/bid-strategy validation issue, not an unusable Page/Pixel/
+// account) — confirmed live; it had never been individually verified
+// before being added here. Falls through to VALIDATION_ERROR (code 100) instead.
+const META_CONFIG_SUBCODES = new Set([1487390, 1487056, 2446381, 1885299]);
 
 function isMetaRateLimited(err) {
   if (err.isMetaRateLimit) return true;
@@ -82,13 +87,30 @@ export function classifyError(err) {
   const subcode = err.graphSubcode ?? null;
   const base = { code, subcode, graphType: err.graphType ?? null, fbtraceId: err.fbtraceId ?? null };
 
+  // 0. A caller that already knows the exact classification (e.g. the auth
+  // self-heal probe in launchPublish.js, which throws a plain local Error
+  // with no Meta diagnostic fields to classify from) — trust it directly
+  // rather than falling through to the generic/unknown TERMINAL case.
+  if (err.classification === ERROR_CLASSES.AUTH_REFRESH_REQUIRED) {
+    return { ...base, classification: ERROR_CLASSES.AUTH_REFRESH_REQUIRED, retryable: false, maxRetries: 0, humanActionRequired: true, arabicMessage: err.message };
+  }
+
   // 1. Our own explicit "still processing" signal (ensureCreative) — always wins first.
   if (err.transient) {
     return { ...base, classification: ERROR_CLASSES.PROCESSING_WAIT, retryable: true, maxRetries: 20, humanActionRequired: false, arabicMessage: err.message };
   }
 
   // 2. Auth — never endlessly retried; needs a human to re-connect Meta.
-  if (err.graphType === 'OAuthException' || META_AUTH_CODES.has(Number(code))) {
+  // Confirmed live in production: Meta's error "type" field is "OAuthException"
+  // for MANY unrelated error kinds (e.g. a plain "Bid Amount Required" payload
+  // validation error came back with type:"OAuthException", code:100,
+  // error_subcode:1815857 — nothing to do with auth at all). type alone is
+  // NOT a reliable auth signal; only the specific code 190 documented at
+  // developers.facebook.com/docs/graph-api/guides/error-handling genuinely
+  // means an expired/invalid/revoked token. Trusting "type" here caused a
+  // real incident: a validation error was misdiagnosed as "reconnect Meta",
+  // which the user did (successfully) and it could never have fixed this.
+  if (META_AUTH_CODES.has(Number(code))) {
     return { ...base, classification: ERROR_CLASSES.AUTH_REFRESH_REQUIRED, retryable: false, maxRetries: 0, humanActionRequired: true, arabicMessage: 'اتصال Meta يحتاج إعادة ربط — التوكن منتهي أو اتلغى. اربط حساب Meta Ads تاني ثم استأنف النشر.' };
   }
 

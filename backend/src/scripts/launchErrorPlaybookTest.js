@@ -104,6 +104,42 @@ console.log('\n§8 Expired/revoked Meta auth — must NOT be endlessly retried:'
   ok('Arabic message tells the user to reconnect Meta', /إعادة ربط/.test(c.arabicMessage));
 }
 
+console.log('\n§8b REAL production incident — a plain bid-strategy validation error is NEVER misclassified as an auth problem:');
+{
+  // Confirmed live: Meta's "Bid Amount Required For The Bid Strategy
+  // Provided" error comes back with type:"OAuthException" even though it
+  // has nothing to do with authentication — code is a plain 100 (invalid
+  // parameter). The classifier used to trust "type" alone and told the
+  // user to reconnect Meta, which they did (successfully) and it could
+  // never have fixed a payload problem. type must never be trusted without
+  // the specific code 190 that actually means "expired/invalid token".
+  const e = metaErr('Invalid parameter', { type: 'OAuthException', code: 100, subcode: 1815857 });
+  const c = classifyError(e);
+  ok('NEVER classified as AUTH_REFRESH_REQUIRED just because type is "OAuthException"', c.classification !== ERROR_CLASSES.AUTH_REFRESH_REQUIRED, c.classification);
+  ok('classified VALIDATION_ERROR instead (a real payload problem, code 100)', c.classification === ERROR_CLASSES.VALIDATION_ERROR, c.classification);
+  ok('still flags human action required (never auto-retried) — just the RIGHT classification, not the wrong one', c.humanActionRequired === true);
+
+  // A genuine auth error (real code 190) must still classify correctly.
+  const realAuth = metaErr('Error validating access token', { type: 'OAuthException', code: 190 });
+  ok('a REAL code-190 error is still correctly classified AUTH_REFRESH_REQUIRED', classifyError(realAuth).classification === ERROR_CLASSES.AUTH_REFRESH_REQUIRED);
+}
+
+console.log('\n§8c Auth self-heal probe — a pre-classified local Error (no Meta diagnostic fields) is trusted directly, never falls through to TERMINAL:');
+{
+  // launchPublish.js's probeMetaAuth() throws a plain local Error (nothing
+  // from Meta to classify from) when a resumed ACTION_REQUIRED campaign's
+  // connection genuinely still fails a fresh read-only check. classifyError
+  // must recognize this explicit override rather than treating it as an
+  // unknown/TERMINAL error.
+  const e = new Error('اتصال Meta لسه مش شغال — التوكن الحالي رفضته Meta فعليًا.');
+  e.classification = ERROR_CLASSES.AUTH_REFRESH_REQUIRED;
+  const c = classifyError(e);
+  ok('trusts the pre-set classification directly', c.classification === ERROR_CLASSES.AUTH_REFRESH_REQUIRED);
+  ok('never retried automatically', c.retryable === false);
+  ok('flags human action required', c.humanActionRequired === true);
+  ok('carries the real probe failure message, not a generic one', c.arabicMessage === e.message);
+}
+
 console.log('\n§9 Invalid Page / invalid Pixel / disabled Ad Account (configuration, not our code):');
 {
   const c1 = classifyError(metaErr('Invalid parameter', { code: 100, subcode: 1487390 }));

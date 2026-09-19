@@ -22,11 +22,33 @@ import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from './launchVideoUpload.js';
-import { createCampaign, createAdSet, createAdCreative, createAd, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta } from '../metaGraphClient.js';
+import { createCampaign, createAdSet, createAdCreative, createAd, getEntity, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta } from '../metaGraphClient.js';
 import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus } from './launchBuilder.js';
 import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
 
 function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
+
+/**
+ * A cheap, genuinely read-only Graph call (never a write) used ONLY to
+ * verify a token that was previously flagged AUTH_REFRESH_REQUIRED is
+ * really working again before spending a real object-creation attempt on
+ * it. Every real Meta write already resolves its token completely fresh
+ * from the single MetaConnection row on every call (getConnection() has no
+ * caching, no module-level token variable — see metaAuth.js) — this probe
+ * is not a workaround for a stale-token bug (there isn't one); it's a
+ * cheap way to distinguish "still genuinely broken" from "fixed" WITHOUT
+ * attempting a real write first, so a still-broken connection doesn't
+ * silently consume a retry attempt or get misreported as a different
+ * failure.
+ */
+async function probeMetaAuth(token) {
+  try {
+    const me = await getEntity(token, 'me', 'id,name');
+    return !!me?.id;
+  } catch {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Status transition helpers — thin wrappers around the Phase B state
@@ -193,10 +215,6 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
     status: 'PAUSED',
     billing_event: 'IMPRESSIONS',
     optimization_goal: 'OFFSITE_CONVERSIONS',
-    // Confirmed live (Phase F): this ad account's default bid strategy requires an explicit bid
-    // amount/constraint unless told otherwise. LOWEST_COST_WITHOUT_CAP = Meta's auction fully
-    // automatic, no manual cap, the simplest valid strategy needing no extra bid_amount/roas field.
-    bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
     promoted_object: { pixel_id: campaign.pixel_id || job.pixel_id, custom_event_type: job.conversion_event || 'PURCHASE' },
     targeting: buildTargeting(job),
     // Real Meta Ads Manager field (confirmed via developers.facebook.com's
@@ -209,7 +227,29 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
     // apply implicitly.
     existing_customer_budget_percentage: 100,
   };
-  if (job.budget_mode === 'ABO' && dailyBudgetMinor > 0) payload.daily_budget = dailyBudgetMinor;
+  if (job.budget_mode === 'ABO' && dailyBudgetMinor > 0) {
+    payload.daily_budget = dailyBudgetMinor;
+    // Confirmed live (Phase F, ABO ad set carrying its own budget):
+    // LOWEST_COST_WITHOUT_CAP — Meta's auction fully automatic, no manual
+    // cap, no bid_amount needed. Verified this account rejects the ad set
+    // otherwise with "Bid Amount Or Bid Constraints Required".
+    payload.bid_strategy = 'LOWEST_COST_WITHOUT_CAP';
+  } else if (job.budget_mode === 'CBO') {
+    // Confirmed live: a CBO ad set (budget lives on the campaign, none
+    // here) REJECTS LOWEST_COST_WITHOUT_CAP outright — Meta's real error:
+    // "Bid Amount Required For The Bid Strategy Provided" (error_subcode
+    // 1815857), for both an explicit LOWEST_COST_WITHOUT_CAP and no
+    // bid_strategy field at all. LOWEST_COST_WITH_BID_CAP + an explicit
+    // bid_amount is the confirmed-working alternative. The cap itself is
+    // set to the campaign's own full daily budget — high enough that no
+    // real single result could ever hit it (a non-binding ceiling, the
+    // closest equivalent to "uncapped" that this bid strategy allows),
+    // never a manual budget/bidding decision this wizard doesn't expose.
+    const cfg = JSON.parse(job.config_json || '{}');
+    const cboDailyBudgetMinor = Number(cfg.budget?.cbo?.dailyBudgetMinor) || 0;
+    payload.bid_strategy = 'LOWEST_COST_WITH_BID_CAP';
+    payload.bid_amount = cboDailyBudgetMinor > 0 ? cboDailyBudgetMinor : 100000;
+  }
   // Always send the exact requested SCHEDULED start — never conditionally
   // omit it once it's in the past by creation time. That silent omission
   // was a real production bug: a durable queue can create later ad sets
@@ -472,6 +512,23 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
 
   const token = await requireLaunchToken();
   const audit = async (event, detail, extra = {}) => prisma.ambLaunchAudit.create({ data: { job_id: jobId, campaign_id: campaign.id, event, detail, data_json: JSON.stringify(extra) } });
+
+  // Self-heal auth recovery: resuming a campaign that was previously parked
+  // ACTION_REQUIRED specifically because of a (real or misclassified) auth
+  // problem — verify the connection genuinely works BEFORE spending a real
+  // write attempt on it. A stale "reconnect Meta" banner must never survive
+  // a successful probe; if it's still genuinely broken, fail fast with the
+  // real reason instead of a confusing write-side error.
+  if (campaign.error_classification === ERROR_CLASSES.AUTH_REFRESH_REQUIRED) {
+    const authOk = await probeMetaAuth(token);
+    if (!authOk) {
+      const e = new Error('اتصال Meta لسه مش شغال — التوكن الحالي رفضته Meta فعليًا. أعد الربط من الإعدادات ثم استأنف النشر.');
+      e.classification = ERROR_CLASSES.AUTH_REFRESH_REQUIRED; // pre-classified — the catch below trusts this directly instead of re-running classifyError() on a plain local Error with no Meta diagnostic fields
+      throw e;
+    }
+    await prisma.ambLaunchCampaign.update({ where: { id: campaign.id }, data: { error: null, error_classification: null, human_action_required: false } });
+    await audit('RECONCILED', 'اتصال Meta اتأكد إنه شغال (auth probe نجح) — تم مسح حالة "محتاج تدخل" القديمة، واستؤنف النشر من نفس النقطة.');
+  }
 
   try {
     const metaCampaignId = await ensureCampaign({ job, campaign, token, audit });

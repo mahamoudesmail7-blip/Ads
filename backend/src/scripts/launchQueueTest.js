@@ -422,5 +422,40 @@ console.log('\n§12 runDueLaunchQueueTick — respects the job lease: a concurre
   }
 }
 
+console.log('\n§13 Auth self-heal recovery — a resumed ACTION_REQUIRED(AUTH_REFRESH_REQUIRED) campaign runs a real read-only probe FIRST and clears stale state on success:');
+{
+  // Real production incident: a plain Meta payload-validation error had been
+  // misclassified as AUTH_REFRESH_REQUIRED (fixed separately in
+  // launchErrorPlaybook.js), and the user reconnected Meta multiple times
+  // with zero effect — because the underlying problem was never auth. This
+  // proves the NEW recovery gate itself: given a campaign resuming from a
+  // stale AUTH_REFRESH_REQUIRED flag, publishCampaignFull() runs a real
+  // (read-only, no write) probe against the REAL currently-connected Meta
+  // account BEFORE attempting anything else, and — since this environment's
+  // real connection genuinely works — clears the stale flags immediately,
+  // proven via the RECONCILED audit row, never requiring a second reconnect.
+  const tag = `__test_queue13_${Date.now()}__`;
+  const jobId = `test-${tag}`;
+  try {
+    const job = await launch.createDraftJob({ jobId, userId: null, input: baseConfig({ campaignCount: 1, campaigns: [{ name: 'Q AuthHeal', websiteUrl: 'https://trendystore.com' }], adSetsPerCampaign: 1, budget: { abo: { adSets: [{ dailyBudgetMinor: 20000 }] } } }) });
+    const c0 = job.campaigns[0];
+    await prisma.ambLaunchCampaign.update({ where: { id: c0.id }, data: { status: 'FAILED', error: 'اتصال Meta يحتاج إعادة ربط — التوكن منتهي أو اتلغى.', error_classification: 'AUTH_REFRESH_REQUIRED', human_action_required: true } });
+    await prisma.ambLaunchVideoAsset.create({ data: { job_id: jobId, slot_key: 'C1', original_filename: 'v.mp4', status: 'UPLOADED', meta_video_id: 'vid_1' } });
+
+    // ad_account_id is deliberately fake (baseConfig's 'act_queue_test') so the
+    // REAL Meta write attempt right after the probe fails harmlessly and
+    // predictably — the point of this test is only what happens BEFORE that.
+    try { await publish.publishCampaignFull({ jobId, campaignIndex: 0 }); } catch { /* expected — fake ad account id */ }
+
+    const audits = await prisma.ambLaunchAudit.findMany({ where: { job_id: jobId, event: 'RECONCILED' } });
+    ok('a RECONCILED audit row proves the real auth probe ran and succeeded against the live connected account', audits.some((a) => /auth probe نجح|اتأكد إنه شغال/.test(a.detail || '')), JSON.stringify(audits.map((a) => a.detail)));
+
+    const after = await prisma.ambLaunchCampaign.findUnique({ where: { id: c0.id } });
+    ok('the campaign is NEVER left showing the stale AUTH_REFRESH_REQUIRED classification once the probe has succeeded — whatever happens next gets its own fresh, correct classification', after.error_classification !== 'AUTH_REFRESH_REQUIRED', after.error_classification);
+  } finally {
+    await cleanup(jobId);
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

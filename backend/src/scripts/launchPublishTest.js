@@ -61,6 +61,11 @@ console.log('\n§3 buildAdSetPayload — bid strategy, promoted_object, budget p
 
   const cboAdSet = buildAdSetPayload(cbojob, campaign, 'c', 0, 20000);
   ok('a CBO ad set never carries its own budget (the campaign already has one — Meta rejects both at once)', cboAdSet.daily_budget === undefined);
+  ok('a CBO ad set uses LOWEST_COST_WITH_BID_CAP, never LOWEST_COST_WITHOUT_CAP — confirmed live Meta REJECTS the latter for a CBO ad set with "Bid Amount Required"', cboAdSet.bid_strategy === 'LOWEST_COST_WITH_BID_CAP', cboAdSet.bid_strategy);
+  ok('a CBO ad set carries an explicit bid_amount equal to the campaign\'s real daily budget — a non-binding cap, never a manual bidding decision this wizard doesn\'t expose', cboAdSet.bid_amount === 50000, cboAdSet.bid_amount);
+
+  const cboNoBudgetConfigured = buildAdSetPayload({ ...cbojob, config_json: '{}' }, campaign, 'c', 0, 20000);
+  ok('a CBO ad set with no configured budget still gets a safe non-zero bid_amount fallback rather than 0 (Meta would reject a zero bid cap)', cboNoBudgetConfigured.bid_amount > 0);
 }
 
 console.log('\n§4 buildAdSetPayload — per-campaign pixel override takes priority over the job-level pixel:');
