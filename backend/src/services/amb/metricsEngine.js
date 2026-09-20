@@ -95,8 +95,24 @@ export function resolveWindow(name) {
 export async function loadSnapshots({ level, from, to, adAccountId }) {
   const idField = LEVEL_ID_FIELD[level];
   const idCol = Prisma.raw(`"${idField}"`);
+  // An explicit column list, never `SELECT *` — a `SELECT *` raw query is
+  // vulnerable to Postgres/the connection pooler's cached-plan-by-exact-text
+  // behavior: after a schema migration adds/removes a column, an already-
+  // pooled backend connection that had this EXACT query text cached from
+  // before the migration starts throwing "cached plan must not change
+  // result type" for every request routed to it, until that connection is
+  // torn down — a real production incident this caused once (fixed here by
+  // making `*` never appear in this query again, so future additive
+  // migrations can never trigger the same class of outage).
   return prisma.$queryRaw`
-    SELECT DISTINCT ON (${idCol}, date_start) *
+    SELECT DISTINCT ON (${idCol}, date_start)
+      id, sync_run_id, snapshot_at, ad_account_id, level, date_start, date_stop,
+      campaign_id, campaign_name, campaign_status, campaign_objective, campaign_budget, campaign_budget_type,
+      adset_id, adset_name, adset_status, adset_budget, adset_budget_type,
+      ad_id, ad_name, ad_status, creative_id,
+      spend, impressions, reach, frequency, clicks, ctr, cpc, cpm,
+      meta_purchases, landing_page_views, meta_revenue, cost_per_purchase, conversion_rate,
+      roas, results, result_indicator, actions_json, created_at
     FROM "meta_performance_snapshots"
     WHERE level = ${level}
       AND date_start >= ${from}
