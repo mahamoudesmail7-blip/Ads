@@ -1603,6 +1603,54 @@ async function dcLoadProducts() {
   dcState.lastLoadedAt = new Date().toISOString();
   const actionable = dcState.products.filter((p) => ['scale', 'needsCreative', 'needsImprovement', 'pauseCandidate'].includes(p.filterBucket)).length;
   state.pendingCount = actionable; renderNav();
+  try { dcState.mappingOverview = await api.get('/api/ai-media-buyer/mapping'); } catch { dcState.mappingOverview = null; }
+}
+
+/**
+ * "🔍 حملات تحتاج ربط بمنتج" — real campaigns with real spend that have NO
+ * deterministic Product link (reuses the existing mapping.js overview
+ * as-is; never a second mapping engine). A fuzzy name-match suggestion, if
+ * any, is shown as a SUGGESTION ONLY — never pre-applied — the user always
+ * picks/confirms explicitly before anything is persisted.
+ */
+async function dcOpenMappingReview() {
+  const ov = dcState.mappingOverview;
+  if (!ov) { UI.toast('تعذّر تحميل حالة الربط.', 'error'); return; }
+  let productsList;
+  try { productsList = await api.get('/api/ai-media-buyer/products'); } catch { productsList = []; }
+  const rows = ov.unmapped || [];
+  openDrawer(`
+    <div class="drawer-header"><div class="drawer-title">🔍 حملات تحتاج ربط بمنتج (${rows.length})</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+    <div class="drawer-section">
+      ${!rows.length ? '<div class="amb-empty">كل الحملات النشطة مربوطة بمنتج.</div>' : rows.map((c, i) => `
+        <div class="amb-panel" style="padding:12px; margin-bottom:10px;">
+          <div style="font-weight:800; margin-bottom:4px;">${E(c.campaignName || c.campaignId)}</div>
+          <div class="faint" style="font-size:11.5px; margin-bottom:8px;">${fmtEGP(c.spend)} إنفاق · ${fmtNum(c.impressions)} ظهور · ${fmtNum(c.clicks)} نقرة${c.purchases != null ? ` · ${fmtNum(c.purchases)} شراء` : ''}</div>
+          ${c.suggestion ? `<div class="faint" style="font-size:11.5px; margin-bottom:8px;">💡 اقتراح (غير مؤكد): ${E(c.suggestion.productName || '')} — ثقة ${Math.round((c.suggestion.confidence || 0) * 100)}%</div>` : ''}
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select class="amb-input sm" id="ambMapSel${i}" style="flex:1;">
+              <option value="">— اختار المنتج —</option>
+              ${productsList.map((p) => `<option value="${p.id}" ${c.suggestion?.ambProductId === p.id ? 'selected' : ''}>${E(p.product_name)}</option>`).join('')}
+            </select>
+            <button class="amb-btn primary sm" data-mapconfirm="${i}">تأكيد الربط</button>
+          </div>
+        </div>`).join('')}
+    </div>`);
+  rows.forEach((c, i) => {
+    const btn = document.querySelector(`[data-mapconfirm="${i}"]`);
+    if (!btn) return;
+    btn.onclick = async () => {
+      const ambProductId = Number($(`ambMapSel${i}`).value);
+      if (!ambProductId) { UI.toast('لازم تختار منتج.', 'error'); return; }
+      try {
+        await api.post('/api/ai-media-buyer/mapping', { campaignId: c.campaignId, campaignName: c.campaignName, ambProductId, matchSource: 'MANUAL' });
+        UI.toast('✅ تم ربط الحملة بالمنتج');
+        document.getElementById('ambDrawerOverlay')?.classList.remove('open');
+        await dcLoadProducts();
+        dcRenderAll($('ambSecPanel'));
+      } catch (err) { UI.toast(err.message, 'error'); }
+    };
+  });
 }
 
 function dcFilteredProducts() {
@@ -1639,6 +1687,7 @@ function dcRenderAll(panel) {
         <option value="name" ${dcState.sort === 'name' ? 'selected' : ''}>أبجدي</option>
       </select>
       <button class="amb-btn ghost sm" id="ambDcRefresh">${ic('refresh', 'ic')} تحديث البيانات</button>
+      ${dcState.mappingOverview?.counts?.unmapped ? `<button class="amb-btn ghost sm" id="ambDcMappingReview" style="color:var(--amb-amber);">🔍 يحتاج ربط (${dcState.mappingOverview.counts.unmapped})</button>` : ''}
       <span class="faint" style="font-size:11.5px;">${dcState.lastLoadedAt ? `آخر تحديث ${timeAgo(dcState.lastLoadedAt)}` : ''}</span>
     </div>
     <div class="amb-filters" style="margin-bottom:16px;">
@@ -1657,6 +1706,7 @@ function dcRenderAll(panel) {
   $('ambDcSearch').oninput = (e) => { dcState.search = e.target.value; dcRenderAll(panel); };
   $('ambDcSort').onchange = (e) => { dcState.sort = e.target.value; dcRenderAll(panel); };
   $('ambDcRefresh').onclick = () => dcRefreshAll(panel);
+  const mapBtn = $('ambDcMappingReview'); if (mapBtn) mapBtn.onclick = () => dcOpenMappingReview();
   panel.querySelectorAll('[data-dcf]').forEach((b) => b.onclick = () => { dcState.filter = b.dataset.dcf; dcRenderAll(panel); });
   panel.querySelectorAll('[data-dcopen]').forEach((b) => b.onclick = () => dcOpenProduct(panel, Number(b.dataset.dcopen)));
 
