@@ -2279,9 +2279,13 @@ function primaryCtaHtml(ap) {
   if (ap.canApprove) {
     return `<button class="amb-btn primary" id="ambApApprove" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:12px;">${E(ap.primaryAction.label)}</button>`;
   }
-  const reason = ap.isViewOnly ? 'ارجع للفترة التشغيلية لتجهيز الحملة' : 'القرار الحالي مش في حالة تسمح بالتجهيز الآن';
-  return `<button class="amb-btn primary" disabled title="${E(reason)}" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:6px; opacity:0.5; cursor:not-allowed;">${E(ap.primaryAction.label)}</button>
-    <div class="faint" style="font-size:12px; margin-bottom:12px; text-align:center;">⚠️ ${E(reason)}</div>`;
+  if (ap.isViewOnly) {
+    return `<button class="amb-btn primary" disabled style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:6px; opacity:0.5; cursor:not-allowed;">${E(ap.primaryAction.label)}</button>
+      <div class="faint" style="font-size:12.5px; margin-bottom:8px; text-align:center;">👁️ هذه فترة عرض فقط — اضغط "العودة للفترة التشغيلية" لتجهيز الاختبار</div>
+      <button class="amb-btn ghost" id="ambApBackToOperational" style="width:100%; margin-bottom:12px;">↩️ العودة للفترة التشغيلية</button>`;
+  }
+  return `<button class="amb-btn primary" disabled title="القرار الحالي مش في حالة تسمح بالتجهيز الآن" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:6px; opacity:0.5; cursor:not-allowed;">${E(ap.primaryAction.label)}</button>
+    <div class="faint" style="font-size:12px; margin-bottom:12px; text-align:center;">⚠️ القرار الحالي مش في حالة تسمح بالتجهيز الآن</div>`;
 }
 
 /**
@@ -2339,6 +2343,10 @@ function dcWireActionPlanTab(el, panel, pkg) {
   const ap = pkg.actionPlan;
   if (!ap) return;
   const recId = pkg.recommendationId;
+
+  const backBtn = $('ambApBackToOperational');
+  if (backBtn) backBtn.onclick = () => dcChangeWindow(panel, pkg.productId, null);
+
   const budgetEl = $('ambApBudget'), dateEl = $('ambApStartDate'), timeEl = $('ambApStartTime');
   const syncInputs = () => { dcState.actionPlanInputs = { budget: budgetEl?.value, startDate: dateEl?.value, startTime: timeEl?.value }; };
   if (budgetEl) budgetEl.onchange = syncInputs;

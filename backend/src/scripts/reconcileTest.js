@@ -22,6 +22,8 @@ let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
 
 const { reconcilePendingRecommendations } = await imp('../services/amb/reconcile.js');
+const { getCurrentRecommendations } = await imp('../services/amb/recommendationEngine.js');
+const { getConnection } = await imp('../services/metaAuth.js');
 const { prisma } = await imp('../prisma.js');
 
 const cleanupIds = [];
@@ -101,6 +103,23 @@ try {
     const afterB = await prisma.ambRecommendation.findUnique({ where: { id: productB.id } });
     ok('Product A stays PENDING despite Product B\'s different batch_id existing', afterA.status === 'PENDING', JSON.stringify(afterA));
     ok('Product B stays PENDING too — product-level rows are never batch-collapsed against each other', afterB.status === 'PENDING', JSON.stringify(afterB));
+  }
+  console.log('\n§4 CRITICAL FIX — the SAME bug also lived in recommendationEngine.js\'s getCurrentRecommendations() (the classic recommendations inbox) — twice: its own "newest batch" resolution AND its stale-batch self-heal collapse both now exclude level:\'product\' too:');
+  {
+    const connection = await getConnection();
+    if (!connection?.selected_ad_account_id) {
+      console.log('  (skipped — no real connected Meta account in this environment)');
+    } else {
+      const adAccountId = connection.selected_ad_account_id;
+      const productRec = await prisma.ambRecommendation.create({ data: baseData({ ad_account_id: adAccountId, batch_id: `product-batch-getcur-${Date.now()}`, product_name: 'Test Product GetCur', amb_product_id: null }) });
+      cleanupIds.push(productRec.id);
+
+      const result = await getCurrentRecommendations({ reconcile: true });
+      ok('getCurrentRecommendations() runs successfully against the real connected account', result.ok === true, JSON.stringify(result).slice(0, 200));
+
+      const after = await prisma.ambRecommendation.findUnique({ where: { id: productRec.id } });
+      ok('a real product-level PENDING decision survives a full getCurrentRecommendations() call untouched, even when it is the account\'s overall newest row', after.status === 'PENDING', JSON.stringify(after));
+    }
   }
 } finally {
   await cleanup();

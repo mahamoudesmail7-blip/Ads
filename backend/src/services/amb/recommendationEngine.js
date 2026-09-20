@@ -249,8 +249,14 @@ export async function generateRecommendations({ windowName = null, triggeredById
   const narration = await narrateRecommendations(candidates, { history });
 
   // Supersede the previous still-open batch for this account, then persist.
+  // SCOPE FIX: this classic campaign/adset/ad-level engine's own batches
+  // must never touch Smart Decision Center's product-level decisions
+  // (level:'product') — those use their own independent per-product
+  // batch_id and are never meant to be superseded by an unrelated
+  // account-wide classic-engine run. Missing this filter silently hid
+  // every product-level "تجهيز" CTA (canApprove requires status==='PENDING').
   await prisma.ambRecommendation.updateMany({
-    where: { ad_account_id: adAccountId, status: 'PENDING' },
+    where: { ad_account_id: adAccountId, level: { not: 'product' }, status: 'PENDING' },
     data: { status: 'SUPERSEDED' },
   });
 
@@ -338,8 +344,15 @@ export async function getCurrentRecommendations({ reconcile = true } = {}) {
     await reconcilePendingRecommendations({ adAccountId }).catch((err) => logger.warn('AMB reconcile in getCurrentRecommendations failed', { message: err.message }));
   }
 
+  // SCOPE FIX: this "newest batch" must be the classic engine's own newest
+  // batch — excluding level:'product' — otherwise, whenever a product-level
+  // decision happens to be the account's overall most-recently-created row
+  // (routine; Smart Decision Center creates these far more often than the
+  // classic engine runs), this whole inbox would match against a product's
+  // batch_id that no classic recommendation shares, returning an empty/wrong
+  // active set here.
   const newest = await prisma.ambRecommendation.findFirst({
-    where: { ad_account_id: adAccountId },
+    where: { ad_account_id: adAccountId, level: { not: 'product' } },
     orderBy: { created_at: 'desc' },
     select: { batch_id: true, created_at: true },
   });
@@ -349,8 +362,13 @@ export async function getCurrentRecommendations({ reconcile = true } = {}) {
   // definition (a newer analysis exists) — collapse it to SUPERSEDED so it
   // can never leak into an active count or a stale UI. Guards against a
   // generate() whose supersede step didn't fully commit (Neon pooler hiccup).
+  // SCOPE FIX: excludes level:'product' — see the same fix in generate()
+  // above and in reconcile.js's reconcilePendingRecommendations(). This
+  // "newest batch" is the classic engine's own account-wide batch; a
+  // product-level decision's independent per-product batch_id will always
+  // legitimately differ from it, and must never be collapsed because of that.
   await prisma.ambRecommendation.updateMany({
-    where: { ad_account_id: adAccountId, status: 'PENDING', batch_id: { not: newest.batch_id } },
+    where: { ad_account_id: adAccountId, level: { not: 'product' }, status: 'PENDING', batch_id: { not: newest.batch_id } },
     data: { status: 'SUPERSEDED' },
   }).catch((err) => logger.warn('AMB stale-batch supersede failed', { message: err.message }));
 

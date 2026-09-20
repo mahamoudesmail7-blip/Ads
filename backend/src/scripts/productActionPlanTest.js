@@ -324,6 +324,29 @@ try {
     ok('PAUSE_CANDIDATE never gets a campaign preview (a pause is not a new campaign)', plan.campaignPreview === null);
     ok('primary CTA label matches the requested wording', plan.primaryAction.label.includes('تجهيز الإيقاف'), plan.primaryAction.label);
   }
+
+  console.log('\n§15 CRITICAL EXECUTION GATE FIX — test-readiness is NOT the same as scale-readiness: a low Campaign Readiness score (thin evidence) must NEVER block AUDIENCE_TEST/GEO_TEST/CREATIVE_TEST, only NEW_SCALING_CAMPAIGN:');
+  {
+    // Exactly Smart-Tank's real shape: VERIFIED data quality but zero proven
+    // audience/geo/creative/copy evidence -> a real low readiness score
+    // (~35/100, "تحتاج بيانات أكثر") that must still leave a TEST fully
+    // prepareable — the whole POINT of a test is collecting the missing evidence.
+    const thinEvidencePkg = {
+      window: { label: 'آخر 7 أيام' }, decision: 'AUDIENCE_TEST', reason: 'تكلفة الكليك مرتفعة',
+      dataQuality: { status: 'VERIFIED' }, recommendationStatus: 'PENDING', successMetric: 'CPC', evaluationWindowDays: 7,
+      winners: {},
+    };
+    const plan = await buildActionPlan({ pkg: thinEvidencePkg, productId: -9994, productName: 'Thin Evidence Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('readiness score is genuinely low (thin evidence), exactly like Smart-Tank\'s real 35/100', plan.readiness.score < 60 && plan.readiness.status === 'تحتاج بيانات أكثر', JSON.stringify(plan.readiness));
+    ok('AUDIENCE_TEST STILL resolves as the primary type despite low readiness — never downgraded to WAIT_FOR_DATA', plan.primaryAction.type === 'AUDIENCE_TEST', JSON.stringify(plan.primaryAction));
+    ok('canPrepare stays TRUE for a test decision regardless of the low readiness score — test-readiness and scale-readiness are independent gates', plan.primaryAction.canPrepare === true);
+    ok('a real campaign preview is still built for the test (Broad wherever unproven, never blocked by the readiness score)', !!plan.campaignPreview);
+
+    // The ONLY thing a low/blocked readiness legitimately gates is a SCALE decision.
+    const scalePkg = { ...thinEvidencePkg, decision: 'SCALE_CANDIDATE' };
+    const scalePlanBlocked = await buildActionPlan({ pkg: { ...scalePkg, dataQuality: { status: 'DECISION_BLOCKED_DATA_QUALITY' } }, productId: -9993, productName: 'Blocked Scale Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('a genuinely DATA-QUALITY-BLOCKED product correctly downgrades a SCALE attempt to WAIT_FOR_DATA (scale-readiness gate still works)', scalePlanBlocked.primaryAction.type === 'WAIT_FOR_DATA', JSON.stringify(scalePlanBlocked.primaryAction));
+  }
 } finally {
   await cleanup();
 }
