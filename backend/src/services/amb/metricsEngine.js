@@ -123,8 +123,8 @@ export function latestPerDayPerEntity(rows, level) {
 /** Aggregate an array of (already latest-per-day) snapshot rows into one metrics object. Ratios are null when their inputs are absent — never a misleading 0. */
 export function aggregateRows(dayRows) {
   if (!dayRows || dayRows.length === 0) return null;
-  let spend = 0, impressions = 0, reach = 0, clicks = 0, purchases = 0, revenue = 0, results = 0;
-  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasResults = false;
+  let spend = 0, impressions = 0, reach = 0, clicks = 0, purchases = 0, revenue = 0, results = 0, landingPageViews = 0;
+  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasResults = false, hasLpv = false;
   let lastFreq = null;
   const sorted = [...dayRows].sort((a, b) => (a.date_start < b.date_start ? -1 : 1));
   for (const r of sorted) {
@@ -135,6 +135,7 @@ export function aggregateRows(dayRows) {
     if (n(r.meta_purchases) !== null) { purchases += n(r.meta_purchases); hasPurch = true; }
     if (n(r.meta_revenue) !== null) { revenue += n(r.meta_revenue); hasRev = true; }
     if (n(r.results) !== null) { results += n(r.results); hasResults = true; }
+    if (n(r.landing_page_views) !== null) { landingPageViews += n(r.landing_page_views); hasLpv = true; }
     if (n(r.frequency) !== null) lastFreq = n(r.frequency);
   }
   const last = sorted[sorted.length - 1];
@@ -147,6 +148,7 @@ export function aggregateRows(dayRows) {
     purchases: hasPurch ? purchases : null,
     revenue: hasRev ? revenue : null,
     results: hasResults ? results : null,
+    landingPageViews: hasLpv ? landingPageViews : null,
     frequency: lastFreq,
     cpa: hasPurch && purchases > 0 ? spend / purchases : null,
     cpr: hasResults && results > 0 ? spend / results : null,

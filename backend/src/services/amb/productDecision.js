@@ -17,6 +17,41 @@ export const PRODUCT_DECISIONS = [
   'GEO_TEST', 'LANDING_PAGE_FIX', 'OFFER_TEST', 'PAUSE_CANDIDATE', 'INSUFFICIENT_DATA',
 ];
 
+const PRICE_TEST_CVR_THRESHOLD = 6; // % — the exact business rule threshold the user specified
+const PRICE_TEST_MIN_ORDERS = 10; // never flag a price-test opportunity off a lucky handful of orders
+const PRICE_TEST_MIN_LPV = 100;
+
+/**
+ * A high real Conversion Rate (Orders/LPV) is evidence a PRICE TEST is worth
+ * running — it is NEVER evidence to raise the price directly. Deliberately
+ * additive/independent of decideProductAction()'s main decision: a product
+ * can simultaneously be SCALE_CANDIDATE (marketing verdict) AND carry a
+ * price-test opportunity (a separate, orthogonal economics signal) — see
+ * the Action Plan's own point 3 in the spec, listed alongside the main
+ * decision, not instead of it.
+ */
+export function detectPriceTestOpportunity({ businessConversionRate }) {
+  if (businessConversionRate?.dataState !== 'AVAILABLE') {
+    return { detected: false, reason: 'معدل التحويل الحقيقي (Orders/LPV) غير متاح لهذه الفترة.' };
+  }
+  const { value, ordersNumerator, lpvDenominator } = businessConversionRate;
+  if (ordersNumerator < PRICE_TEST_MIN_ORDERS || lpvDenominator < PRICE_TEST_MIN_LPV) {
+    return { detected: false, reason: `عينة صغيرة جدًا (${ordersNumerator} أوردر / ${lpvDenominator} LPV) — أي استنتاج هنا غير موثوق.` };
+  }
+  if (value <= PRICE_TEST_CVR_THRESHOLD) {
+    return { detected: false, reason: `معدل التحويل الحقيقي ${value.toFixed(1)}% — عند أو تحت الحد (${PRICE_TEST_CVR_THRESHOLD}%).` };
+  }
+  return {
+    detected: true,
+    decision: 'PRICE_TEST_OPPORTUNITY',
+    conversionRate: value,
+    threshold: PRICE_TEST_CVR_THRESHOLD,
+    ordersNumerator, lpvDenominator,
+    evidence: `معدل التحويل الحقيقي ${value.toFixed(1)}% أعلى من ${PRICE_TEST_CVR_THRESHOLD}% (${ordersNumerator} أوردر / ${lpvDenominator} مشاهدة صفحة) — دليل كافٍ لتجربة سعر أعلى، مش دليل إنك تزود السعر مباشرة.`,
+    proposedChange: 'اختبر سعرًا أعلى بشكل محدود ومُقاس (A/B أو فترة قصيرة) قبل أي تغيير دائم — معدل تحويل عالي وحده لا يثبت إن سعر أعلى هيزود الربح.',
+  };
+}
+
 function hasWinner(dim) {
   const cls = dim?.best?.classification;
   return cls === 'WINNER' || cls === 'PROVEN_WINNER';
@@ -171,6 +206,7 @@ export async function buildProductDecisionPackage({ productId, windowName, setti
   const health = { score: opportunity.score, label: opportunity.label, band: healthBand(opportunity.score, opportunity.dataSufficient), components: opportunity.components, dataSufficient: opportunity.dataSufficient };
 
   const action = decideProductAction({ diagnosis, creativeIntel, segmentIntel });
+  const priceTestOpportunity = detectPriceTestOpportunity({ businessConversionRate: diagnosis.businessConversionRate });
 
   return {
     productId: diagnosis.productId,
@@ -178,6 +214,8 @@ export async function buildProductDecisionPackage({ productId, windowName, setti
     window: diagnosis.window,
     health,
     diagnosis: { bottleneck: diagnosis.bottleneck, allSignals: diagnosis.diagnosis, metrics: diagnosis.metrics },
+    businessConversionRate: diagnosis.businessConversionRate,
+    priceTestOpportunity,
     creativeIntel,
     segmentIntel,
     decision: action.decision,
@@ -288,6 +326,7 @@ export async function persistProductDecision({ pkg, adAccountId, batchId, change
         bottleneck: pkg.diagnosis.bottleneck, winners: pkg.winners, losers: pkg.losers,
         health: pkg.health, proposedChange: pkg.proposedChange, successMetric: pkg.successMetric,
         evaluationWindowDays: pkg.evaluationWindowDays, sampleSize: pkg.sampleSize,
+        businessConversionRate: pkg.businessConversionRate, priceTestOpportunity: pkg.priceTestOpportunity,
         ...(changeReasons?.length ? { changeReasons } : {}),
       }),
       confidence: pkg.confidence,

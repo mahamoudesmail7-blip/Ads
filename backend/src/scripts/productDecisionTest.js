@@ -17,7 +17,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
 
-const { decideProductAction, PRODUCT_DECISIONS } = await imp('../services/amb/productDecision.js');
+const { decideProductAction, PRODUCT_DECISIONS, detectPriceTestOpportunity } = await imp('../services/amb/productDecision.js');
 
 function diag(category, confidence, evidence = 'evidence text', metaMapped = true, totalSpend = 5000) {
   return { bottleneck: { category, confidence, evidence, competingSignals: [] }, metrics: { dataAvailability: { metaMapped }, totalSpend } };
@@ -88,6 +88,26 @@ console.log('\n§4 GEO_TEST-eligible signal: a promising (not yet proven) govern
 {
   const audienceWithPromising = decideProductAction({ diagnosis: diag('TRAFFIC_PROBLEM', 'LIKELY'), creativeIntel: noWinners, segmentIntel: withPromisingSegment() });
   ok('a promising governorate is named in the proposed change when traffic is the bottleneck', /الجيزة/.test(audienceWithPromising.proposedChange), audienceWithPromising.proposedChange);
+}
+
+console.log('\n§5 detectPriceTestOpportunity — high real Conversion Rate is a TEST signal, never a direct price change:');
+{
+  // Spec test case F: Orders=70, LPV=1000 -> 7% -> PRICE_TEST_OPPORTUNITY.
+  const f = detectPriceTestOpportunity({ businessConversionRate: { dataState: 'AVAILABLE', value: 7, ordersNumerator: 70, lpvDenominator: 1000 } });
+  ok('7% (>6%) with a real sample -> detected', f.detected === true && f.decision === 'PRICE_TEST_OPPORTUNITY', JSON.stringify(f));
+  ok('the proposed action says TEST a higher price, never "raise the price" as a guaranteed conclusion', /اختبر/.test(f.proposedChange) && !/زوّد السعر|ارفع السعر/.test(f.proposedChange), f.proposedChange);
+
+  const atThreshold = detectPriceTestOpportunity({ businessConversionRate: { dataState: 'AVAILABLE', value: 6, ordersNumerator: 70, lpvDenominator: 1000 } });
+  ok('exactly at the 6% threshold does NOT trigger (strictly greater-than)', atThreshold.detected === false, JSON.stringify(atThreshold));
+
+  const smallSample = detectPriceTestOpportunity({ businessConversionRate: { dataState: 'AVAILABLE', value: 20, ordersNumerator: 2, lpvDenominator: 5 } });
+  ok('a tiny sample never triggers a price-test opportunity even with a very high raw rate', smallSample.detected === false, JSON.stringify(smallSample));
+
+  const unavailable = detectPriceTestOpportunity({ businessConversionRate: { dataState: 'CONVERSION_RATE_UNAVAILABLE', value: null } });
+  ok('an unavailable conversion rate never fabricates a price-test opportunity', unavailable.detected === false, JSON.stringify(unavailable));
+
+  const low = detectPriceTestOpportunity({ businessConversionRate: { dataState: 'AVAILABLE', value: 3, ordersNumerator: 50, lpvDenominator: 1500 } });
+  ok('a genuinely low conversion rate never triggers', low.detected === false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

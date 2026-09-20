@@ -1788,18 +1788,32 @@ function dcTabBody(d) {
   return dcTabOverview(d.package);
 }
 
+function businessCvrCell(bcr) {
+  if (bcr?.dataState === 'AVAILABLE') return fmtPct(bcr.value);
+  return 'غير متاح'; // LPV or Easy Orders count missing — never a fabricated 0%
+}
+
 function dcTabOverview(pkg) {
   const m = pkg.diagnosis?.metrics || {};
+  const bcr = pkg.businessConversionRate;
   const funnelSteps = [
     ['spend', 'الإنفاق', fmtEGP(m.totalSpend)], ['cpm', 'CPM', fmtEGP(m.cpm)], ['ctr', 'CTR', fmtPct(m.ctr)],
-    ['cpc', 'CPC', fmtEGP(m.cpc, 2)], ['purchases', 'مشتريات Meta', fmtNum(m.metaPurchases)], ['cvr', 'Conversion', fmtPct(m.cvr)],
+    ['cpc', 'CPC', fmtEGP(m.cpc, 2)], ['purchases', 'مشتريات Meta', fmtNum(m.metaPurchases)],
+    ['cvr', 'Conversion (Orders/LPV)', businessCvrCell(bcr)],
     ['cpa', 'CPA', fmtEGP(m.avgCpa)], ['cod', 'عينة COD', fmtNum(m.codSample)], ['conf', 'معدل التأكيد', m.confirmationRate != null ? fmtPct(m.confirmationRate * 100) : '—'],
     ['del', 'معدل التسليم', m.deliveryRate != null ? fmtPct(m.deliveryRate * 100) : '—'], ['rev', 'الإيرادات', fmtEGP(m.revenue)], ['profit', 'الربح', m.netProfit != null ? fmtEGP(m.netProfit) : '—'],
   ];
   const bottleneck = pkg.diagnosis?.bottleneck;
+  const pto = pkg.priceTestOpportunity;
   return `
     <div class="section-title" style="margin-top:0;">قمع الأداء الكامل</div>
-    <div class="amb-funnel" style="margin-bottom:18px;">${funnelSteps.map(([, l, v]) => `<div class="f-step"><div class="fv">${v}</div><div class="fl">${E(l)}</div></div>`).join('')}</div>
+    <div class="amb-funnel" style="margin-bottom:6px;">${funnelSteps.map(([, l, v]) => `<div class="f-step"><div class="fv">${v}</div><div class="fl">${E(l)}</div></div>`).join('')}</div>
+    ${bcr?.dataState === 'AVAILABLE' ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion = (${fmtNum(bcr.ordersNumerator)} أوردر × 100) ÷ ${fmtNum(bcr.lpvDenominator)} مشاهدة صفحة</div>` : bcr ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion Rate غير متاح: ${E(bcr.reason || 'LPV أو عدد الأوردرات غير متاح لهذه الفترة')}</div>` : ''}
+    ${pto?.detected ? `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px; border-color:var(--amb-purple); background:var(--amb-purple-bg);">
+      <div style="font-weight:800; margin-bottom:4px;">💰 فرصة اختبار سعر (PRICE_TEST_OPPORTUNITY)</div>
+      <div style="font-size:13px;">${E(pto.evidence)}</div>
+      <div class="faint" style="font-size:12px; margin-top:4px;">${E(pto.proposedChange)}</div>
+    </div>` : ''}
     <div class="section-title">السبب الرئيسي والتشخيص</div>
     ${bottleneck ? `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
       <div style="font-weight:800; margin-bottom:4px;">${E(bottleneck.category || '')} — <span class="faint" style="font-weight:600;">${E(bottleneck.confidence || '')}</span></div>

@@ -72,12 +72,20 @@ function indexEntitiesMeta(list, level, currency) {
   return map;
 }
 
+/** Meta's real `landing_page_view` action count from the SAME `actions` array already fetched for every insight row — never a substitute for Clicks/Impressions/Purchases. */
+function extractLandingPageViews(row) {
+  const entry = (row.actions || []).find((a) => a.action_type === 'landing_page_view');
+  const n = entry ? Number(entry.value) : null;
+  return Number.isFinite(n) ? Math.round(n) : null;
+}
+
 /** One insight row (+ merged metadata) → a MetaPerformanceSnapshot create payload. */
 function toSnapshotRow(row, level, meta, adAccountId) {
   const { results, resultIndicator, revenue } = extractResults(row);
   const spend = toNum(row.spend) ?? 0;
   const clicks = toNum(row.clicks);
   const purchases = PURCHASE_ACTION_TYPES.has(resultIndicator) ? Math.round(results ?? 0) : null;
+  const landingPageViews = extractLandingPageViews(row);
   const roasRaw = row.purchase_roas?.[0]?.value ? toNum(row.purchase_roas[0].value) : null;
 
   const campMeta = level === 'campaign' ? meta.campaign.get(row.campaign_id) : meta.campaign.get(row.campaign_id);
@@ -113,6 +121,7 @@ function toSnapshotRow(row, level, meta, adAccountId) {
     cpc: toNum(row.cpc),
     cpm: toNum(row.cpm),
     meta_purchases: purchases,
+    landing_page_views: landingPageViews,
     meta_revenue: revenue,
     cost_per_purchase: purchases && spend ? spend / purchases : null,
     conversion_rate: clicks && purchases !== null ? (purchases / clicks) * 100 : null,

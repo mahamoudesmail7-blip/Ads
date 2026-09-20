@@ -834,4 +834,34 @@ router.post('/launch/jobs/:jobId/campaigns/:campaignIndex/retry-now', requireRol
 router.get('/settings', asyncRoute(async (req, res) => res.json({ settings: await getAmbSettings(), defaults: AMB_DEFAULT_SETTINGS })));
 router.put('/settings', requireRole('ADMIN'), asyncRoute(async (req, res) => res.json({ settings: await saveAmbSettings(req.body || {}) })));
 
+// ---------------------------------------------------------------------------
+// Budget Bump Engine — "📈 زيادة الميزانية". A precise, evidence-gated,
+// compounding +25%/rollback-to-exact-prior business rule at Ad Set level,
+// feeding the EXISTING INCREASE_BUDGET/DECREASE_BUDGET approve/execute
+// pipeline (approveAndExecute/previewExecution above) — never a new
+// publisher. OFF by default (settings.ambBumpEnabled).
+// ---------------------------------------------------------------------------
+router.get('/budget-bumps', asyncRoute(async (req, res) => {
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id;
+  if (!adAccountId) return res.json({ pending: [], approved: [], executed: [], rejected: [] });
+  const rows = await prisma.ambRecommendation.findMany({
+    where: { level: 'adset', ad_account_id: adAccountId, decision: { in: ['BUMP_ADSET_25', 'ROLLBACK_BUMP'] } },
+    orderBy: { created_at: 'desc' }, take: 100,
+  });
+  const buckets = { pending: [], approved: [], executed: [], rejected: [] };
+  for (const r of rows) {
+    const card = { id: r.id, decision: r.decision, adsetName: r.adset_name, campaignName: r.campaign_name, productName: r.product_name, currentBudget: r.current_budget, recommendedBudget: r.recommended_budget, budgetChangePct: r.budget_change_pct, reason: r.reason, confidence: r.confidence, status: r.status, createdAt: r.created_at };
+    if (r.status === 'PENDING') buckets.pending.push(card);
+    else if (r.status === 'APPROVED') buckets.approved.push(card);
+    else if (r.status === 'EXECUTED') buckets.executed.push(card);
+    else if (r.status === 'REJECTED') buckets.rejected.push(card);
+  }
+  res.json(buckets);
+}));
+router.post('/budget-bumps/run', asyncRoute(async (req, res) => {
+  const { runBudgetBumpAnalysis } = await import('../services/amb/budgetBumpOrchestrator.js');
+  res.json(await runBudgetBumpAnalysis());
+}));
+
 export default router;

@@ -32,7 +32,7 @@ function emptyMetaBlock(dataState) {
   return {
     dataState,
     spend: null, impressions: null, reach: null, clicks: null, ctr: null, cpc: null, cpm: null,
-    purchases: null, cpa: null, conversionRate: null, revenue: null,
+    purchases: null, cpa: null, conversionRate: null, revenue: null, landingPageViews: null,
     campaignIds: [], lastSyncAt: null,
   };
 }
@@ -78,8 +78,8 @@ export async function resolveProductCampaigns(productId) {
 }
 
 function sumMetaAggregates(aggs) {
-  let spend = 0, impressions = 0, reach = 0, clicks = 0, purchases = 0, revenue = 0;
-  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false;
+  let spend = 0, impressions = 0, reach = 0, clicks = 0, purchases = 0, revenue = 0, landingPageViews = 0;
+  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasLpv = false;
   for (const a of aggs) {
     spend += a.spend || 0;
     if (a.impressions != null) { impressions += a.impressions; hasImpr = true; }
@@ -87,6 +87,7 @@ function sumMetaAggregates(aggs) {
     if (a.clicks != null) { clicks += a.clicks; hasClicks = true; }
     if (a.purchases != null) { purchases += a.purchases; hasPurch = true; }
     if (a.revenue != null) { revenue += a.revenue; hasRev = true; }
+    if (a.landingPageViews != null) { landingPageViews += a.landingPageViews; hasLpv = true; }
   }
   return {
     spend,
@@ -95,6 +96,7 @@ function sumMetaAggregates(aggs) {
     clicks: hasClicks ? clicks : null,
     purchases: hasPurch ? purchases : null,
     revenue: hasRev ? revenue : null,
+    landingPageViews: hasLpv ? landingPageViews : null,
     ctr: hasClicks && hasImpr && impressions > 0 ? (clicks / impressions) * 100 : null,
     cpc: hasClicks && clicks > 0 ? spend / clicks : null,
     cpm: hasImpr && impressions > 0 ? (spend / impressions) * 1000 : null,
@@ -186,6 +188,30 @@ async function buildEasyOrdersBlock(productId, storeId, window) {
   }
 }
 
+const BUSINESS_CVR_FORMULA = '(Easy Orders Orders × 100) / Meta Landing Page Views';
+
+/**
+ * The business Conversion Rate the user explicitly requires:
+ * (Easy Orders Orders × 100) / Meta Landing Page Views. This NEVER
+ * substitutes Clicks/Link Clicks/Meta Purchases/Impressions for Landing
+ * Page Views — if the real denominator (or numerator) is genuinely
+ * unavailable, this returns CONVERSION_RATE_UNAVAILABLE with the exact
+ * reason rather than fabricating a 0% or silently swapping in a different
+ * metric. Exported standalone (not folded into the meta/easyOrders blocks)
+ * because it is the one figure that legitimately crosses both sources.
+ */
+export function computeBusinessConversionRate({ meta, easyOrders }) {
+  const lpv = meta?.dataState === 'AVAILABLE' ? meta.landingPageViews : null;
+  const orders = easyOrders?.dataState === 'AVAILABLE' ? easyOrders.orders : null;
+  const reasons = [];
+  if (lpv == null || lpv <= 0) reasons.push('Meta Landing Page Views غير متاحة أو صفر لهذه الفترة.');
+  if (orders == null) reasons.push('عدد أوردرات Easy Orders غير متاح لهذه الفترة.');
+  if (reasons.length) {
+    return { dataState: 'CONVERSION_RATE_UNAVAILABLE', value: null, ordersNumerator: orders, lpvDenominator: lpv, formula: BUSINESS_CVR_FORMULA, reason: reasons.join(' ') };
+  }
+  return { dataState: 'AVAILABLE', value: (orders * 100) / lpv, ordersNumerator: orders, lpvDenominator: lpv, formula: BUSINESS_CVR_FORMULA };
+}
+
 /**
  * The Unified Product Performance dataset — one Product, one time window,
  * every genuinely-available Meta + Easy Orders metric with an explicit
@@ -216,6 +242,7 @@ export async function getProductPerformance({ productId, windowName, from, to })
     resolvedVia, // ['LAUNCH'] | ['MAPPING'] | ['LAUNCH','MAPPING'] | []
     meta,
     easyOrders,
+    businessConversionRate: computeBusinessConversionRate({ meta, easyOrders }),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -283,6 +310,7 @@ export async function getProductDiagnosis({ productId, windowName, settings }) {
     metrics,
     diagnosis,
     bottleneck,
+    businessConversionRate: current.businessConversionRate,
     generatedAt: new Date().toISOString(),
   };
 }

@@ -39,6 +39,19 @@ export const AMB_DEFAULT_SETTINGS = {
   // Media Asset Library
   ambMediaLibraryAutoDiscover: true,        // fold new creatives into the library on every sync
   ambMediaLibraryScanDays: 30,              // how far back a discovery pass looks for creatives
+  // Budget Bump Engine — "قواعد التشغيل" (all editable; Bump/Autopilot itself stays OFF unless ambBumpEnabled is explicitly turned on)
+  ambBumpEnabled: false,
+  ambBumpCpaSuccessThreshold: 80,           // EGP — below this, with enough evidence, propose +bumpPct%
+  ambBumpPct: 25,
+  ambBumpRollbackCpaThreshold: 100,         // EGP — above this post-bump, with enough evidence, propose restoring the exact prior budget
+  ambBumpMinPurchases: 5,
+  ambBumpMinSpend: 150,                     // EGP
+  ambBumpMinEvalHours: 6,
+  ambBumpMaxPerDay: 1,
+  ambBumpCooldownHours: 24,
+  ambBumpRollbackCooldownHours: 48,
+  ambBumpMaxDailyBudget: null,              // EGP — no cap unless set
+  ambBumpAutopilot: false,                  // reserved for a future per-rule autopilot toggle — NEVER silently enabled by this build
 };
 
 /** Merged AMB settings — DEFAULTS <- whatever the owner saved. Only the `amb…` keys are returned. */

@@ -1240,14 +1240,15 @@ model MetaPerformanceSnapshot {
   ctr               Float?
   cpc               Float?
   cpm               Float?
-  meta_purchases    Int?
-  meta_revenue      Float?
-  cost_per_purchase Float?
-  conversion_rate   Float? // purchases / clicks * 100
-  roas              Float?
-  results           Int?
-  result_indicator  String?
-  actions_json      String? // raw Meta actions array (JSON) — kept for later re-derivation, never shown raw
+  meta_purchases     Int?
+  meta_revenue       Float?
+  cost_per_purchase  Float?
+  conversion_rate    Float? // purchases / clicks * 100 — the existing CTR-funnel definition; NOT the business Conversion Rate (orders/LPV), which is computed separately and never substitutes this
+  landing_page_views Int? // raw Meta `landing_page_view` action count — the ONLY correct denominator for the business Conversion Rate; nullable/never backfilled by fabrication for rows synced before this column existed (re-derivable from actions_json where present)
+  roas               Float?
+  results            Int?
+  result_indicator   String?
+  actions_json       String? // raw Meta actions array (JSON) — kept for later re-derivation, never shown raw
 
   created_at DateTime @default(now())
 
