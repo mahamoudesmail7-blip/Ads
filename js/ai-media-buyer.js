@@ -2268,6 +2268,23 @@ function secondaryActionsHtml(secondaryActions) {
 }
 
 /**
+ * The primary CTA — MUST always render something for a canPrepare decision,
+ * never silently disappear. Enabled only for the real OPERATIONAL Action
+ * Plan (canApprove:true). A historical/custom VIEW_ONLY window, or any
+ * other non-PENDING state, gets a clearly DISABLED button explaining why —
+ * never just hidden.
+ */
+function primaryCtaHtml(ap) {
+  if (!ap.primaryAction.canPrepare) return '';
+  if (ap.canApprove) {
+    return `<button class="amb-btn primary" id="ambApApprove" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:12px;">${E(ap.primaryAction.label)}</button>`;
+  }
+  const reason = ap.isViewOnly ? 'ارجع للفترة التشغيلية لتجهيز الحملة' : 'القرار الحالي مش في حالة تسمح بالتجهيز الآن';
+  return `<button class="amb-btn primary" disabled title="${E(reason)}" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:6px; opacity:0.5; cursor:not-allowed;">${E(ap.primaryAction.label)}</button>
+    <div class="faint" style="font-size:12px; margin-bottom:12px; text-align:center;">⚠️ ${E(reason)}</div>`;
+}
+
+/**
  * Fast-scan layout, top to bottom (per the mandatory redesign):
  * القرار الحالي → الأعلى حاليًا → الفائزون المثبتون → ما سيتم استخدامه فعلًا
  * → ما الناقص → الحملة/الإجراء المقترح → الميزانية+التاريخ+الوقت → أزرار.
@@ -2293,7 +2310,7 @@ function dcTabActionPlan(pkg) {
     ${readinessHtml(ap.readiness)}
     ${preparedActionHtml(ap)}
     ${secondaryActionsHtml(ap.secondaryActions)}
-    ${ap.canApprove && ap.primaryAction.canPrepare ? `<button class="amb-btn primary" id="ambApApprove" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:12px;">${E(ap.primaryAction.label)}</button>` : ''}
+    ${primaryCtaHtml(ap)}
     <details style="margin-bottom:14px;">
       <summary style="cursor:pointer; font-size:12.5px; font-weight:700; color:var(--amb-text-dim);">📂 التفاصيل الكاملة لكل بُعد (الأعلى حاليًا مقابل ما سيُستخدم فعليًا)</summary>
       <div class="amb-field-grid" style="margin-top:10px;">

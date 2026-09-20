@@ -102,20 +102,33 @@ export async function reconcilePendingRecommendations({ adAccountId }) {
   // Collapse any PENDING rec that isn't in the newest batch — a newer
   // analysis supersedes it. (Defensive: covers a generate() whose supersede
   // step didn't fully commit.)
+  //
+  // CRITICAL SCOPE FIX: this whole batch-collapse step belongs ONLY to the
+  // classic campaign/adset/ad-level recommendation engine, which really
+  // does generate one shared batch_id per account per run. Smart Decision
+  // Center's product-level decisions (level:'product') use their own
+  // independent PER-PRODUCT batch_id (see productDecision.js's
+  // persistProductDecision) — their batch_id is never expected to match
+  // this account-wide "newest" one. Before this fix, `level` was never
+  // filtered here, so the very next classic-engine run (or Meta sync, or
+  // GET /recommendations) silently marked EVERY pending product-level
+  // decision account-wide as SUPERSEDED, which then hid every "تجهيز" CTA
+  // in the Action Plan tab (canApprove requires status==='PENDING') even
+  // though nothing had actually superseded that product's real decision.
   const newest = await prisma.ambRecommendation.findFirst({
-    where: { ad_account_id: adAccountId }, orderBy: { created_at: 'desc' }, select: { batch_id: true },
+    where: { ad_account_id: adAccountId, level: { not: 'product' } }, orderBy: { created_at: 'desc' }, select: { batch_id: true },
   });
   let stale = 0;
   if (newest) {
     const s = await prisma.ambRecommendation.updateMany({
-      where: { ad_account_id: adAccountId, status: 'PENDING', batch_id: { not: newest.batch_id } },
+      where: { ad_account_id: adAccountId, level: { not: 'product' }, status: 'PENDING', batch_id: { not: newest.batch_id } },
       data: { status: 'SUPERSEDED' },
     }).catch(() => ({ count: 0 }));
     stale = s.count;
   }
 
   const pending = await prisma.ambRecommendation.findMany({
-    where: { ad_account_id: adAccountId, status: 'PENDING', ...(newest ? { batch_id: newest.batch_id } : {}) },
+    where: { ad_account_id: adAccountId, level: { not: 'product' }, status: 'PENDING', ...(newest ? { batch_id: newest.batch_id } : {}) },
   });
   if (pending.length === 0) return { ok: true, checked: 0, staleSuperseded: stale, resolvedExternally: 0, noLongerApplicable: 0, details: [] };
 
