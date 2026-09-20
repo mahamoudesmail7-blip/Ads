@@ -23,9 +23,79 @@ import { logger } from '../../logger.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { setEntityStatus } from '../metaGraphClient.js';
 import { resolveProductCampaigns } from './productPerformance.js';
-import { buildWinningStack, resolveTrackingIdentity } from './productActionPlan.js';
+import { buildWinningStack, resolveTrackingIdentity, buildObservationStack } from './productActionPlan.js';
+import { segmentIntelForProduct } from './segmentIntel.js';
+import { searchLaunchGeoLocations } from './launchBuilder.js';
+import { getAmbSettings } from './settings.js';
 
 function fail(msg, status = 400) { const e = new Error(msg); e.status = status; throw e; }
+
+const GENDER_TO_META = { 'رجال': 'MALE', 'نساء': 'FEMALE' };
+/** Meta's own real age-breakdown bucket strings ("18-24".."55-64", "65+") — never a guess, sourced from the SAME metaAudienceBreakdown.js values segmentIntel.js already classifies. */
+export function parseMetaAgeBucket(label) {
+  const range = /^(\d+)-(\d+)$/.exec(String(label || ''));
+  if (range) return { ageMin: Number(range[1]), ageMax: Number(range[2]) };
+  if (/^65\+$/.test(String(label || ''))) return { ageMin: 65, ageMax: 65 };
+  return null;
+}
+
+/**
+ * Real Meta ad-set targeting, built ONLY from PROVEN/PROMISING targeting
+ * values by default — an Early Signal is NEVER silently promoted into a
+ * restrictive targeting choice. The one exception: the human explicitly
+ * opts in per-dimension (useEarlySignal{Gender,Age,Geo}:true), in which case
+ * THAT SPECIFIC dimension uses the real current-leader value instead of
+ * Broad — clearly tagged EARLY_SIGNAL_TEST in `sources` so the UI/handoff
+ * message never claims it as proven. Geo resolution is the ONE real,
+ * read-only Meta Graph call in this whole file (Meta assigns region keys
+ * internally; there is no table to invent from) — it only ever runs at
+ * "preview/prepare" time, a deliberate human action, never on a passive
+ * dossier read.
+ */
+export async function resolveRealTargeting({ stack, earlySignals, useEarlySignalGender, useEarlySignalAge, useEarlySignalGeo }) {
+  const genderPick = stack.gender ? { value: stack.gender.value, tag: 'AI_RECOMMENDED' }
+    : (useEarlySignalGender && earlySignals?.gender?.value) ? { value: earlySignals.gender.value, tag: 'EARLY_SIGNAL_TEST' } : null;
+  const agePick = stack.age ? { value: stack.age.value, tag: 'AI_RECOMMENDED' }
+    : (useEarlySignalAge && earlySignals?.age?.value) ? { value: earlySignals.age.value, tag: 'EARLY_SIGNAL_TEST' } : null;
+  const geoPick = stack.governorate ? { value: stack.governorate.value, tag: 'AI_RECOMMENDED' }
+    : (useEarlySignalGeo && earlySignals?.governorate?.value) ? { value: earlySignals.governorate.value, tag: 'EARLY_SIGNAL_TEST' } : null;
+
+  const genders = genderPick ? (GENDER_TO_META[genderPick.value] || 'ALL') : 'ALL';
+  const ageRange = agePick ? parseMetaAgeBucket(agePick.value) : null;
+
+  let geoRegions = [];
+  if (geoPick) {
+    try {
+      const matches = await searchLaunchGeoLocations(geoPick.value);
+      if (matches[0]) geoRegions = [{ key: matches[0].key, name: matches[0].name }];
+    } catch (err) { logger.warn('[productDecisionExecution] geo region resolution failed', { governorate: geoPick.value, message: err.message }); }
+  }
+
+  const anyCustom = genders !== 'ALL' || !!ageRange || geoRegions.length > 0;
+  return {
+    targeting: anyCustom ? { mode: 'CUSTOM', genders, ageMin: ageRange?.ageMin ?? 18, ageMax: ageRange?.ageMax ?? 65, geoRegions, placementsMode: 'AUTOMATIC' } : null,
+    sources: { gender: genderPick?.tag || null, age: agePick?.tag || null, geo: geoPick?.tag || null },
+  };
+}
+
+/** The REAL current leader for gender/age/governorate (however early) — for display in the Action Plan's "استخدام الإشارة المبكرة في اختبار منفصل" control, and for resolveRealTargeting() above when the human opts in. Recomputed fresh at prepare time, scoped to the SAME window the decision itself was based on — never a second, competing evidence threshold (buildObservationStack is the exact same Step 3 function the dossier's Winning Stack already uses). */
+async function loadEarlySignals(rec, realProductId) {
+  if (!realProductId) return { gender: null, age: null, governorate: null };
+  try {
+    const [product, settings] = await Promise.all([
+      prisma.product.findUnique({ where: { id: realProductId }, select: { store_id: true } }),
+      getAmbSettings(),
+    ]);
+    const segmentIntel = await segmentIntelForProduct({
+      productId: realProductId, storeId: product?.store_id || null, adAccountId: rec.ad_account_id,
+      from: rec.time_window_from, to: rec.time_window_to, windowLabel: rec.time_window_label, settings,
+    });
+    return buildObservationStack(segmentIntel, {});
+  } catch (err) {
+    logger.warn('[productDecisionExecution] early signal load failed', { recId: rec.id, message: err.message });
+    return { gender: null, age: null, governorate: null };
+  }
+}
 
 /**
  * Every executed decision — real Meta write or not — becomes a trackable
@@ -91,7 +161,7 @@ const CAMPAIGN_PURPOSE_SUMMARY = {
   CREATIVE_TEST: 'إنشاء مسودة "اختبار كرياتيف" في رفع الكامبين — تستخدم أي كرياتيف/Hook مثبت متاح حاليًا كمرجع؛ لو محتاج كرياتيف جديد بالكامل، استخدم "مصنع الكرياتيف" بشكل صريح بعد كده — هذا الإجراء لا يشغّل أي توليد مدفوع بالـ AI تلقائيًا أبدًا.',
 };
 
-export async function buildExecutionPlan({ recId }) {
+export async function buildExecutionPlan({ recId, useEarlySignalGender = false, useEarlySignalAge = false, useEarlySignalGeo = false }) {
   const rec = await loadProductRec(recId);
   const facts = JSON.parse(rec.reason_facts_json || '{}');
   const realProductId = await realProductIdFor(rec);
@@ -110,12 +180,25 @@ export async function buildExecutionPlan({ recId }) {
   const campaignPurpose = LAUNCH_BUILDER_DECISIONS[rec.decision];
   if (campaignPurpose) {
     const stack = buildWinningStack(facts.winners);
-    const tracking = await resolveTrackingIdentity({ productId: realProductId, adAccountId: rec.ad_account_id });
+    const [tracking, earlySignals] = await Promise.all([
+      resolveTrackingIdentity({ productId: realProductId, adAccountId: rec.ad_account_id }),
+      loadEarlySignals(rec, realProductId),
+    ]);
+    const { targeting, sources } = await resolveRealTargeting({ stack, earlySignals, useEarlySignalGender, useEarlySignalAge, useEarlySignalGeo });
     const noProvenCreative = !stack.creative;
     return {
       ...base, actionKind: 'LAUNCH_BUILDER_PREFILL', realMetaWrite: false, campaignPurpose,
-      summary: `${CAMPAIGN_PURPOSE_SUMMARY[campaignPurpose]} الميزانية/التاريخ/الـ Pixel/الصفحة تُعبّأ تلقائيًا لأنها حقول حقيقية في المعالج، والجمهور/الكرياتيف المثبت (لو موجود) يظهر كمرجع لتطبيقه يدويًا (المعالج الحالي لا يحتوي خطوة استهداف جمهور حقيقية). تحتاج مراجعتك واستكمال باقي خطوات المعالج ثم ضغط "نشر" بنفسك. لا يتم نشر أي حاجة تلقائيًا.`,
+      summary: `${CAMPAIGN_PURPOSE_SUMMARY[campaignPurpose]} الميزانية/التاريخ/الـ Pixel/الصفحة/الجمهور/المحافظات المثبتة تُعبّأ تلقائيًا كحقول حقيقية في المعالج. تحتاج مراجعتك واستكمال باقي خطوات المعالج (الكرياتيف/النصوص) ثم ضغط "نشر" بنفسك. لا يتم نشر أي حاجة تلقائيًا.`,
       needsCreativeFactory: campaignPurpose === 'CREATIVE_TEST' && noProvenCreative,
+      // The real current leader for gender/age/governorate, however early —
+      // for the UI's "استخدام الإشارة المبكرة في اختبار منفصل" control. NEVER
+      // used for targeting unless the human explicitly opts in per-dimension
+      // (see resolveRealTargeting above / useEarlySignal* params below).
+      earlySignals: {
+        gender: earlySignals?.gender?.status && earlySignals.gender.status !== 'NO_DATA' ? { value: earlySignals.gender.value, status: earlySignals.gender.status } : null,
+        age: earlySignals?.age?.status && earlySignals.age.status !== 'NO_DATA' ? { value: earlySignals.age.value, status: earlySignals.age.status } : null,
+        governorate: earlySignals?.governorate?.status && earlySignals.governorate.status !== 'NO_DATA' ? { value: earlySignals.governorate.value, status: earlySignals.governorate.status } : null,
+      },
       prefill: {
         productId: realProductId,
         winningCreative: stack.creative?.value || null,
@@ -128,6 +211,9 @@ export async function buildExecutionPlan({ recId }) {
         pixelId: tracking.pixel_id || null, pixelName: tracking.pixel_name || null, conversionEvent: tracking.conversion_event || 'PURCHASE',
         pageId: tracking.page_id || null, pageName: tracking.page_name || null,
         instagramId: tracking.instagram_id || null, instagramUsername: tracking.instagram_username || null,
+        // The REAL targeting object Launch Builder's wizard will receive —
+        // null means Broad (Meta's own default), exactly as it always was.
+        targeting, targetingSources: sources,
       },
     };
   }
@@ -149,11 +235,14 @@ export async function buildExecutionPlan({ recId }) {
  * confirmRealExecution:true explicitly for a real Meta write — this file
  * NEVER defaults that flag, NEVER infers it from approval alone.
  */
-export async function executeApprovedDecision({ recId, userId, confirmRealExecution = false, budget = null, startDate = null, startTime = null }) {
+export async function executeApprovedDecision({
+  recId, userId, confirmRealExecution = false, budget = null, startDate = null, startTime = null,
+  useEarlySignalGender = false, useEarlySignalAge = false, useEarlySignalGeo = false,
+}) {
   const rec = await loadProductRec(recId);
   if (rec.status !== 'APPROVED') fail(`القرار في حالة ${rec.status} — لازم تتم الموافقة عليه أولاً قبل التنفيذ.`, 409);
 
-  const plan = await buildExecutionPlan({ recId });
+  const plan = await buildExecutionPlan({ recId, useEarlySignalGender, useEarlySignalAge, useEarlySignalGeo });
   // User-entered budget/start date/time — the ONLY inputs the Action Plan
   // requires from a human — merged into the LAUNCH_BUILDER_PREFILL plan's
   // real prefill object. Never defaulted/guessed; a caller that omits them

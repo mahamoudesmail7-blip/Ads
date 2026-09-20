@@ -17,7 +17,7 @@
 // flow, no write endpoint of any kind.
 import { prisma } from '../../prisma.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
-import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone } from '../metaGraphClient.js';
+import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone, searchAdGeoLocations } from '../metaGraphClient.js';
 import { listStores } from '../easyOrdersStores.js';
 
 export const JOB_STATUSES = ['DRAFT', 'VALIDATING', 'READY', 'PUBLISHING', 'PARTIAL', 'COMPLETE', 'FAILED', 'CANCELLED'];
@@ -33,6 +33,15 @@ export const VIDEO_STATUSES = ['PENDING', 'VALIDATING', 'UPLOADING', 'UPLOADED',
 export const ALLOWED_CONVERSION_EVENTS = ['PURCHASE', 'INITIATED_CHECKOUT', 'ADD_TO_CART', 'CONTENT_VIEW'];
 export const ALLOWED_PLATFORMS = ['facebook', 'instagram'];
 export const ALLOWED_BUDGET_MODES = ['CBO', 'ABO'];
+// Final core execution step — real ad-set targeting. 'ALL' genders and
+// 'AUTOMATIC' placements are Meta's own Broad/Advantage+ defaults (omitted
+// from the real payload entirely — see buildTargeting() in launchPublish.js);
+// mode defaults to 'BROAD' (targeting omitted from config_json.raw entirely,
+// byte-identical to every job created before this feature existed) unless
+// the human explicitly opts into 'CUSTOM'.
+export const ALLOWED_TARGETING_MODES = ['BROAD', 'CUSTOM'];
+export const ALLOWED_GENDERS = ['ALL', 'MALE', 'FEMALE'];
+export const ALLOWED_PLACEMENTS_MODES = ['AUTOMATIC', 'FEED_ONLY'];
 
 // Finite state machine — every legal transition, nothing else. Used by both
 // this file and every later phase that moves a job/campaign forward, so an
@@ -241,6 +250,8 @@ export async function validateLaunchConfig(input) {
     : { mode: 'AUTOMATIC' };
   if (bidding.mode === 'BID_CAP' && !bidding.bidCapMinor) fail('لازم تحدد قيمة حد أقصى للمزايدة أكبر من صفر، أو اختار "تلقائي".');
 
+  const targeting = validateTargeting(cfg.targeting);
+
   return {
     productId: product.id,
     adAccountId: cfg.adAccountId,
@@ -280,8 +291,32 @@ export async function validateLaunchConfig(input) {
       cta: cfg.cta || 'ORDER_NOW',
       videoPlan: cfg.videoPlan || null,
       bidding,
+      targeting,
     },
   };
+}
+
+/**
+ * Real Meta ad-set targeting override — validated the same "fail fast, in
+ * Arabic, before any DB write" way as everything else in this function.
+ * Returns null for BROAD (or an absent/malformed input) — buildTargeting()
+ * in launchPublish.js treats null EXACTLY as it always has (Egypt-wide,
+ * Broad age/gender, Advantage+ automatic placements), so every job that
+ * never touches this feature is completely unaffected.
+ */
+function validateTargeting(t) {
+  if (!t || t.mode !== 'CUSTOM') return null;
+  const genders = ALLOWED_GENDERS.includes(t.genders) ? t.genders : 'ALL';
+  let ageMin = Number.isInteger(Number(t.ageMin)) ? Number(t.ageMin) : 18;
+  let ageMax = Number.isInteger(Number(t.ageMax)) ? Number(t.ageMax) : 65;
+  ageMin = Math.min(65, Math.max(13, ageMin)); // Meta's own real bounds for age_min/age_max
+  ageMax = Math.min(65, Math.max(13, ageMax));
+  if (ageMin > ageMax) fail('نطاق العمر المستهدف غير صالح — الحد الأدنى أكبر من الحد الأقصى.');
+  const geoRegions = Array.isArray(t.geoRegions)
+    ? t.geoRegions.filter((r) => r && typeof r.key === 'string' && r.key).map((r) => ({ key: r.key, name: r.name || r.key }))
+    : [];
+  const placementsMode = ALLOWED_PLACEMENTS_MODES.includes(t.placementsMode) ? t.placementsMode : 'AUTOMATIC';
+  return { mode: 'CUSTOM', genders, ageMin, ageMax, geoRegions, placementsMode };
 }
 
 /**
@@ -562,4 +597,18 @@ export async function getLaunchAccountAssets(adAccountId) {
     pagesVerified: identities.pagesVerified,
     instagramReadable: identities.instagramReadable,
   };
+}
+
+/**
+ * Real Meta region-targeting keys for a governorate/city name search — the
+ * wizard's "🎯 الجمهور والمواضع" step search-as-you-type control, and the
+ * Action Plan handoff's own one-time resolution of an evidence-backed
+ * governorate. Never a hardcoded id table (Meta assigns these internally;
+ * there is no stable public mapping to invent from) — always a real,
+ * read-only Graph call.
+ */
+export async function searchLaunchGeoLocations(q) {
+  if (!q || typeof q !== 'string' || !q.trim()) return [];
+  const { token } = await requireConnectedToken();
+  return searchAdGeoLocations(token, { q: q.trim(), countryCode: 'EG' });
 }

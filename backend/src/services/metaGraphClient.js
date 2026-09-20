@@ -75,6 +75,20 @@ export async function graphFetch(path, params, token) {
   return data;
 }
 
+/**
+ * Real Meta "region" targeting keys (the `key` a real ad set's
+ * `targeting.geo_locations.regions` entry requires) for an Egyptian
+ * governorate name — Meta's Marketing API `/search?type=adgeolocation`
+ * endpoint, never a hardcoded/guessed id table (Meta assigns these
+ * internally; there is no public, stable mapping to invent from). A
+ * read-only Graph call — never writes anything, safe to call at "prepare a
+ * campaign" time.
+ */
+export async function searchAdGeoLocations(token, { q, locationTypes = ['region'], countryCode = 'EG' } = {}) {
+  const data = await graphFetch('/search', { type: 'adgeolocation', q, location_types: locationTypes, country_code: countryCode }, token);
+  return Array.isArray(data?.data) ? data.data.map((r) => ({ key: r.key, name: r.name, type: r.type, countryCode: r.country_code })) : [];
+}
+
 /** Exchanges a real OAuth "code" (from the callback redirect) for a short-lived user access token. No access_token param on this call — the code itself is the credential. */
 export async function exchangeCodeForToken({ code, appId, appSecret, redirectUri }) {
   const url = new URL(`${GRAPH_BASE}/oauth/access_token`);

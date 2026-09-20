@@ -2001,7 +2001,7 @@ function dcTabCreatives(pkg) {
 
 // ---- 🚀 أكشن بلان tab ----
 const STACK_STATUS_BADGE = { PROVEN: 'green', PROMISING: 'blue', EARLY_SIGNAL: 'yellow', NOT_PROVEN: 'gray' };
-const STACK_STATUS_AR = { PROVEN: 'PROVEN ✅', PROMISING: 'PROMISING', EARLY_SIGNAL: 'EARLY SIGNAL', NOT_PROVEN: 'غير مثبت' };
+const STACK_STATUS_AR = { PROVEN: 'AI recommended ✅', PROMISING: 'AI recommended', EARLY_SIGNAL: 'إشارة مبكرة', NOT_PROVEN: 'Broad — الأدلة غير كافية' };
 
 /** One Winning Stack / Campaign Preview field — a null field NEVER becomes a guess, it stays honestly "Broad". */
 function stackFieldHtml(field, label) {
@@ -2019,6 +2019,42 @@ function stackFieldHtml(field, label) {
   </div>`;
 }
 
+/**
+ * A targeting-relevant field (gender/age/governorate) with the optional
+ * "استخدام الإشارة المبكرة في اختبار منفصل" control. Three real states:
+ * AI recommended (a real PROVEN/PROMISING pick — toggle irrelevant, never
+ * shown), Broad (nothing proven, toggle OFFERED if a real early signal
+ * exists), or "معدّل يدويًا" (the human explicitly opted the early signal
+ * INTO this test's targeting — never silently promoted, always visibly
+ * tagged as a deliberate test choice, never a proven winner).
+ */
+function targetingFieldWithToggleHtml(targetingField, observationField, label, inputKey) {
+  if (targetingField) return stackFieldHtml(targetingField, label);
+  const overridden = !!dcState.actionPlanInputs?.[inputKey];
+  const hasEarlySignal = observationField && observationField.status !== 'NO_DATA';
+  if (overridden && hasEarlySignal) {
+    return `<div class="amb-panel" style="padding:10px 12px;">
+      <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
+        <div style="font-size:12px; font-weight:700;">${E(label)}</div>
+        <span class="badge yellow" style="font-size:10px;">معدّل يدويًا</span>
+      </div>
+      <div style="font-size:13px; font-weight:600; margin-top:4px;">${E(String(observationField.value || '').slice(0, 60))}</div>
+      <div class="faint" style="font-size:10.5px; margin-top:2px; color:var(--amb-amber);">إشارة مبكرة (${E(LADDER_LABEL_AR[observationField.status] || observationField.status)}) — هذا اختبار، مش قرار Scale.</div>
+      <label class="amb-check-row" style="margin-top:6px; font-size:11px;"><input type="checkbox" data-early-signal="${inputKey}" checked /><span class="rr-main">استخدام الإشارة المبكرة في اختبار منفصل</span></label>
+    </div>`;
+  }
+  return `<div class="amb-panel" style="padding:10px 12px;">
+    <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
+      <div style="font-size:12px; font-weight:700;">${E(label)}</div>
+      <span class="badge gray" style="font-size:10px;">Broad — الأدلة غير كافية</span>
+    </div>
+    ${hasEarlySignal ? `
+      <div class="faint" style="font-size:11px; margin-top:4px;">الأعلى حاليًا: <b>${E(String(observationField.value || '').slice(0, 40))}</b> (${E(LADDER_LABEL_AR[observationField.status] || observationField.status)})</div>
+      <label class="amb-check-row" style="margin-top:6px; font-size:11px;"><input type="checkbox" data-early-signal="${inputKey}" /><span class="rr-main">استخدام الإشارة المبكرة في اختبار منفصل</span></label>
+    ` : '<div class="faint" style="font-size:11px; margin-top:4px;">لا توجد بيانات كافية بعد</div>'}
+  </div>`;
+}
+
 // Step 3 — CURRENT LEADER / EARLY SIGNAL vs PROVEN WINNER. Every Winning
 // Stack card now shows BOTH: "الأعلى حاليًا" (the real current leader, from
 // the SAME topObserved data the Audience/Creative tabs already show —
@@ -2030,7 +2066,8 @@ function stackFieldHtml(field, label) {
 const LADDER_BADGE_COLOR = { NO_DATA: 'gray', OBSERVED: 'gray', EARLY_SIGNAL: 'yellow', PROMISING: 'blue', PROVEN_WINNER: 'green', PROVEN_NEGATIVE: 'red' };
 const LADDER_LABEL_AR = { NO_DATA: 'لا توجد بيانات', OBSERVED: 'تم رصده', EARLY_SIGNAL: 'إشارة مبكرة', PROMISING: 'واعد', PROVEN_WINNER: 'فائز مثبت', PROVEN_NEGATIVE: 'ضعف مؤكد' };
 const TARGETING_BADGE = { PROVEN: 'green', PROMISING: 'blue', NOT_PROVEN: 'gray' };
-const TARGETING_LABEL = { PROVEN: 'PROVEN ✅', PROMISING: 'PROMISING', NOT_PROVEN: 'افتراضي' };
+const TARGETING_LABEL = { PROVEN: 'AI recommended ✅', PROMISING: 'AI recommended', NOT_PROVEN: 'Broad — الأدلة غير كافية' };
+const CAMPAIGN_TYPE_LABEL_AR = { NEW_SCALING_CAMPAIGN: 'Scaling Campaign', AUDIENCE_TEST: 'اختبار جمهور', GEO_TEST: 'اختبار محافظات', CREATIVE_TEST: 'اختبار كرياتيف' };
 
 /** One Winning Stack card — always shows the real current leader (however early) AND, separately, what will actually be used for campaign targeting. An Early Signal is NEVER promoted into the targeting line. */
 function dualStackFieldHtml(field, label) {
@@ -2115,6 +2152,62 @@ function campaignPreviewHtml(cp) {
   </div>`;
 }
 
+/**
+ * The REAL, compact, editable campaign builder — every field readable in
+ * seconds: Product/Objective/Audience/Geo/Placements/Creative/Hook/Angle/
+ * Post/Headline/Pixel/Page/Instagram, each tagged AI recommended / Broad /
+ * معدّل يدويًا. Gender/Age/Geo carry the optional "استخدام الإشارة المبكرة"
+ * control (targetingFieldWithToggleHtml) — every other field stays a
+ * read-only reference (Launch Builder has no "reuse an old creative" picker
+ * to actually select INTO, so a fake selectable list here would misrepresent
+ * a capability that doesn't exist).
+ */
+function campaignBuilderHtml(ap) {
+  const cp = ap.campaignPreview;
+  const stack = ap.winningStack;
+  return `<div class="amb-panel" style="padding:14px; margin-bottom:12px;">
+    <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px;">
+      ${cp.image ? `<img src="${E(cp.image)}" style="width:52px;height:52px;border-radius:8px;object-fit:cover;" alt="" />` : ''}
+      <div><div style="font-weight:800; font-size:14px;">${E(cp.productName)}</div><div class="faint" style="font-size:11.5px;">${E(CAMPAIGN_TYPE_LABEL_AR[ap.primaryAction.type] || '')} · Objective: ${E(cp.objective)} · Conversion: ${E(cp.conversionEvent)}</div></div>
+    </div>
+    <div class="amb-field-grid">
+      ${targetingFieldWithToggleHtml(cp.audience?.gender, stack.gender?.observation, 'النوع', 'useEarlySignalGender')}
+      ${targetingFieldWithToggleHtml(cp.audience?.age, stack.age?.observation, 'العمر', 'useEarlySignalAge')}
+      ${targetingFieldWithToggleHtml(cp.governorate, stack.governorate?.observation, 'المحافظة', 'useEarlySignalGeo')}
+      ${stackFieldHtml(cp.placements, 'المواضع')}
+      ${stackFieldHtml(cp.creative, 'الكرياتيف')}
+      ${stackFieldHtml(cp.hook, 'Hook')}
+      ${stackFieldHtml(cp.angle, 'زاوية البيع')}
+      ${stackFieldHtml(cp.primaryText, 'البوست')}
+      ${stackFieldHtml(cp.headline, 'العنوان')}
+    </div>
+    <div class="amb-derived" style="margin-top:10px;">
+      <div class="amb-derived-row"><span>Pixel</span><b>${cp.pixel ? E(cp.pixel.name || cp.pixel.id) : 'غير محدد بعد — يُختار عند فتح رفع الكامبين'}</b></div>
+      <div class="amb-derived-row"><span>صفحة فيسبوك</span><b>${cp.page ? E(cp.page.name || cp.page.id) : 'غير محدد بعد'}</b></div>
+      <div class="amb-derived-row"><span>إنستجرام</span><b>${cp.instagram ? E('@' + (cp.instagram.username || cp.instagram.id)) : 'غير محدد بعد'}</b></div>
+    </div>
+  </div>`;
+}
+
+/**
+ * "🚀 الإجراء المقترح" — MANDATORY, ALWAYS rendered directly below Campaign
+ * Readiness, regardless of decision type. A campaign-producing decision gets
+ * the full editable builder + budget/date/time; PAUSE_CANDIDATE gets the
+ * real pause target list; KEEP_TESTING/WAIT_FOR_DATA gets the honest missing
+ * evidence + next-evaluation timing — NEVER a fabricated campaign.
+ */
+function preparedActionHtml(ap) {
+  let body;
+  if (ap.campaignPreview) {
+    body = `${campaignBuilderHtml(ap)}${needsCreativeFactoryHtml(ap)}${!ap.isViewOnly ? budgetDateInputsHtml() : ''}`;
+  } else if (ap.pausePreview) {
+    body = pausePreviewHtml(ap.pausePreview);
+  } else {
+    body = `${missingEvidenceHtml(ap.formingPlan)}${nextEvaluationHtml(ap)}`;
+  }
+  return `<div class="section-title" style="margin-top:0;">🚀 الإجراء المقترح</div>${body}`;
+}
+
 /** "الفائزون المثبتون" — ONLY dimensions that actually cleared PROVEN/PROMISING (never observation-only signals). */
 function provenWinnersHtml(provenWinners) {
   if (!provenWinners?.length) return `<div class="amb-empty" style="margin-bottom:14px;">لا يوجد فائز مثبت حتى الآن — كل الاستهداف الفعلي هيفضل Broad لحد ما تكتمل الأدلة.</div>`;
@@ -2189,9 +2282,6 @@ function dcTabActionPlan(pkg) {
   const viewBanner = ap.isViewOnly ? `<div class="amb-panel" style="padding:10px 14px; margin-bottom:12px; border-color:var(--amb-amber); background:var(--amb-amber-bg);">
     <b>👁️ معاينة أكشن بلان لهذه الفترة (VIEW ONLY)</b> — معاينة لفترة العرض المختارة فقط، ولن تُحفظ أو تُغيّر خطة المنتج التشغيلية الحالية.
   </div>` : '';
-  const usedInCampaignHtml = ap.campaignPreview ? campaignPreviewHtml(ap.campaignPreview)
-    : ap.pausePreview ? pausePreviewHtml(ap.pausePreview)
-    : `<div class="amb-empty" style="margin-bottom:14px;">لا يوجد إجراء حملة مُجهّز حاليًا — الاستهداف الفعلي هيفضل Broad لحد ما تتوفر أدلة كافية.</div>`;
   return `
     ${viewBanner}
     <div class="section-title" style="margin-top:0;">🎯 القرار الحالي</div>
@@ -2200,16 +2290,12 @@ function dcTabActionPlan(pkg) {
     ${currentLeadersHtml(ap.formingPlan)}
     <div class="section-title">🏆 الفائزون المثبتون</div>
     ${provenWinnersHtml(ap.provenWinners)}
-    <div class="section-title">✅ ما سيتم استخدامه فعلًا في الحملة</div>
-    ${usedInCampaignHtml}
-    <div class="section-title">🧩 ما الناقص</div>
-    ${missingEvidenceHtml(ap.formingPlan)}
-    ${needsCreativeFactoryHtml(ap)}
-    ${nextEvaluationHtml(ap)}
+    ${readinessHtml(ap.readiness)}
+    ${preparedActionHtml(ap)}
     ${secondaryActionsHtml(ap.secondaryActions)}
-    ${ap.campaignPreview && !ap.isViewOnly ? `<div class="section-title">💰 الميزانية و📅 التاريخ والوقت</div>${budgetDateInputsHtml()}` : ''}
+    ${ap.canApprove && ap.primaryAction.canPrepare ? `<button class="amb-btn primary" id="ambApApprove" style="width:100%; font-size:15px; font-weight:800; padding:14px; margin-bottom:12px;">${E(ap.primaryAction.label)}</button>` : ''}
     <details style="margin-bottom:14px;">
-      <summary style="cursor:pointer; font-size:12.5px; font-weight:700; color:var(--amb-text-dim);">📂 التفاصيل الكاملة لكل بُعد (الأعلى حاليًا مقابل ما سيُستخدم فعليًا) + جاهزية الحملة</summary>
+      <summary style="cursor:pointer; font-size:12.5px; font-weight:700; color:var(--amb-text-dim);">📂 التفاصيل الكاملة لكل بُعد (الأعلى حاليًا مقابل ما سيُستخدم فعليًا)</summary>
       <div class="amb-field-grid" style="margin-top:10px;">
         ${dualStackFieldHtml(stack.gender, 'النوع')}
         ${dualStackFieldHtml(stack.age, 'العمر')}
@@ -2221,7 +2307,6 @@ function dcTabActionPlan(pkg) {
         ${dualStackFieldHtml(stack.primaryText, 'البوست')}
         ${dualStackFieldHtml(stack.headline, 'العنوان')}
       </div>
-      ${readinessHtml(ap.readiness)}
     </details>
     <div class="faint" style="font-size:11.5px; margin-bottom:12px;">مقياس النجاح: ${E(ap.successMetric || '—')} · فترة التقييم: ${ap.evaluationWindowDays} أيام · مبني على: ${E(ap.windowLabel || '—')}</div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -2229,7 +2314,6 @@ function dcTabActionPlan(pkg) {
       ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApEdit">✏️ تعديل</button>` : ''}
       ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApSaveDraft">💾 حفظ كمسودة</button>` : ''}
       ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApReject">❌ رفض</button>` : ''}
-      ${ap.canApprove && ap.primaryAction.canPrepare ? `<button class="amb-btn primary sm" id="ambApApprove">${E(ap.primaryAction.label)}</button>` : ''}
     </div>
   `;
 }
@@ -2262,6 +2346,11 @@ function dcWireActionPlanTab(el, panel, pkg) {
     try { await api.post(`/api/ai-media-buyer/decision-center/${recId}/reject`, {}); UI.toast('تم الرفض'); dcReanalyzeSoft(panel); }
     catch (err) { UI.toast(err.message, 'error'); }
   };
+  el.querySelectorAll('[data-early-signal]').forEach((cb) => cb.onchange = (e) => {
+    dcState.actionPlanInputs = { ...dcState.actionPlanInputs, [cb.dataset.earlySignal]: e.target.checked };
+    dcRenderDossierInto(el, panel);
+  });
+
   const approveBtn = $('ambApApprove');
   if (approveBtn) approveBtn.onclick = () => {
     const budget = Number(budgetEl?.value);
@@ -2269,7 +2358,12 @@ function dcWireActionPlanTab(el, panel, pkg) {
       if (!budget || budget <= 0) { UI.toast('حدد ميزانية يومية صحيحة أولاً.', 'error'); return; }
       if (!dateEl?.value) { UI.toast('حدد تاريخ التشغيل أولاً.', 'error'); return; }
     }
-    dcApproveAndExecute(panel, recId, { budget: budget || null, startDate: dateEl?.value || null, startTime: timeEl?.value || null });
+    dcApproveAndExecute(panel, recId, {
+      budget: budget || null, startDate: dateEl?.value || null, startTime: timeEl?.value || null,
+      useEarlySignalGender: !!dcState.actionPlanInputs?.useEarlySignalGender,
+      useEarlySignalAge: !!dcState.actionPlanInputs?.useEarlySignalAge,
+      useEarlySignalGeo: !!dcState.actionPlanInputs?.useEarlySignalGeo,
+    });
   };
 
   el.querySelectorAll('[data-ap-bump]').forEach((b) => b.onclick = async () => {
@@ -2385,7 +2479,7 @@ async function dcApproveAndExecute(panel, id, extra = {}) {
   try { plan = await api.get(`/api/ai-media-buyer/decision-center/${id}/execution-plan`); }
   catch (err) { UI.toast(err.message, 'error'); dcReanalyzeSoft(panel); return; }
 
-const CAMPAIGN_PURPOSE_CONFIRM_LABEL = { SCALE: 'إنشاء مسودة Scaling Campaign', AUDIENCE_TEST: 'إنشاء مسودة اختبار جمهور', GEO_TEST: 'إنشاء مسودة اختبار محافظات', CREATIVE_TEST: 'إنشاء مسودة اختبار كرياتيف' };
+  const CAMPAIGN_PURPOSE_CONFIRM_LABEL = { SCALE: 'إنشاء مسودة Scaling Campaign', AUDIENCE_TEST: 'إنشاء مسودة اختبار جمهور', GEO_TEST: 'إنشاء مسودة اختبار محافظات', CREATIVE_TEST: 'إنشاء مسودة اختبار كرياتيف' };
   const planMessage = plan.realMetaWrite
     ? `⚠️ ${plan.summary}\n\nده إجراء حقيقي هيأثر على حساب Meta فعليًا.`
     : `${plan.summary}${plan.needsCreativeFactory ? '\n\n🎨 محتاج كرياتيف جديد بالكامل؟ استخدم مصنع الكرياتيف بشكل صريح — مفيش توليد مدفوع بيحصل تلقائيًا هنا.' : ''}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}${extra.budget ? `\nالميزانية: ${extra.budget} ج/يوم` : ''}${extra.startDate ? `\nالبدء: ${extra.startDate} ${extra.startTime || ''}` : ''}` : ''}`;
@@ -2398,16 +2492,17 @@ const CAMPAIGN_PURPOSE_CONFIRM_LABEL = { SCALE: 'إنشاء مسودة Scaling C
   if (!executeConfirmed) { UI.toast('تمت الموافقة — التنفيذ الفعلي لسه مستني تأكيدك.'); dcReanalyzeSoft(panel); return; }
 
   try {
-    const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, { confirmRealExecution: true, budget: extra.budget || null, startDate: extra.startDate || null, startTime: extra.startTime || null });
+    const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, {
+      confirmRealExecution: true, budget: extra.budget || null, startDate: extra.startDate || null, startTime: extra.startTime || null,
+      useEarlySignalGender: !!extra.useEarlySignalGender, useEarlySignalAge: !!extra.useEarlySignalAge, useEarlySignalGeo: !!extra.useEarlySignalGeo,
+    });
     UI.toast(result.ok ? '✅ تم' : (result.message || 'حصلت مشكلة'), result.ok ? undefined : 'error');
     if (result.ok && plan.actionKind === 'LAUNCH_BUILDER_PREFILL' && result.prefill) {
-      // Launch Builder's wizard has no audience/geo TARGETING step at all
-      // today (every campaign it creates launches BROAD; Meta's algorithm
-      // finds the audience) — so gender/age/governorate can only ever be a
-      // visible reference banner, never a real field. Budget/schedule/
-      // Pixel/Page/Instagram, however, ARE real wizard fields (steps 3 and
-      // 5) — so those get a REAL, honest prefill straight into launchState,
-      // not just a reference.
+      // Budget/schedule/Pixel/Page/Instagram AND now real Gender/Age/Geo/
+      // Placements targeting (final core execution step) all become REAL
+      // Launch Builder fields — never just a reference banner. Creative/
+      // Hook/Angle/Text/Headline stay reference-only (Launch Builder has no
+      // "reuse an old creative" picker to select them INTO).
       const dossierStoreId = dcState.dossier?.storeId || null;
       launchState.storeId = dossierStoreId;
       launchState.storeName = (dcState.stores || []).find((s) => s.id === dossierStoreId)?.name || null;
@@ -2423,10 +2518,11 @@ const CAMPAIGN_PURPOSE_CONFIRM_LABEL = { SCALE: 'إنشاء مسودة Scaling C
       if (result.prefill.pixelId) { launchState.pixelId = result.prefill.pixelId; launchState.pixelName = result.prefill.pixelName; launchState.conversionEvent = result.prefill.conversionEvent || 'PURCHASE'; }
       if (result.prefill.pageId) { launchState.pageId = result.prefill.pageId; launchState.pageName = result.prefill.pageName; }
       if (result.prefill.instagramId) { launchState.instagramId = result.prefill.instagramId; launchState.instagramUsername = result.prefill.instagramUsername; }
+      if (result.prefill.targeting) launchState.targeting = result.prefill.targeting;
       if (extra.budget) { launchState.budgetMode = 'CBO'; launchState.cboDailyBudget = extra.budget; }
       if (extra.startDate) { launchState.startMode = 'SCHEDULED'; launchState.startDate = extra.startDate; launchState.startTime = extra.startTime || '00:00'; launchState.launchMode = 'SCHEDULED'; }
       location.hash = 'launch';
-      UI.toast('تم فتح "رفع الكامبين" من أكشن بلان مركز القرار الذكي — الميزانية/التاريخ/الـ Pixel/الصفحة مُعبّأة، والجمهور/الكرياتيف الفائز موضّح كمرجع في البانر أعلى الخطوة الأولى.');
+      UI.toast('تم فتح "رفع الكامبين" من أكشن بلان مركز القرار الذكي — الميزانية/التاريخ/الـ Pixel/الصفحة/الجمهور/المحافظات مُعبّأة فعليًا؛ راجعها في خطوة "المنصات والصفحة والجمهور" ثم أكمل.');
     }
   } catch (err) { UI.toast(err.message, 'error'); }
   dcReanalyzeSoft(panel);
@@ -4252,7 +4348,7 @@ async function renderHomeSchedules(mount) {
 // uploaded, no Campaign/AdSet/Ad/Creative is created on Meta anywhere in
 // this file.
 // ---------------------------------------------------------------------------
-const LAUNCH_STEPS = ['📦 المنتج', 'الحساب', 'إعداد الكامبين', 'Ad Sets', 'المنصات والصفحة والبيكسل', 'الفيديوهات', 'عدد الكامبينات', 'النصوص والروابط', 'مراجعة', 'النشر'];
+const LAUNCH_STEPS = ['📦 المنتج', 'الحساب', 'إعداد الكامبين', 'Ad Sets', 'المنصات والصفحة والجمهور', 'الفيديوهات', 'عدد الكامبينات', 'النصوص والروابط', 'مراجعة', 'النشر'];
 const LAUNCH_CONVERSION_EVENTS = [
   { v: 'PURCHASE', l: 'شراء' },
   { v: 'INITIATED_CHECKOUT', l: 'بدء عملية الشراء' },
@@ -4297,6 +4393,11 @@ const launchState = {
   pixelName: null,
   conversionEvent: 'PURCHASE',
   perCampaignPixel: false,
+  // Final core execution step — real ad-set targeting. 'BROAD' (the default
+  // for every wizard session, including every one before this feature
+  // existed) sends NOTHING extra to the backend — buildTargeting() on the
+  // server treats it exactly like no targeting at all.
+  targeting: { mode: 'BROAD', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: [], placementsMode: 'AUTOMATIC' },
   campaignCount: 1,
   copyMode: 'SAME',       // SAME | DIFFERENT
   campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
@@ -4361,7 +4462,7 @@ function launchCurrentAssets() {
 // a private-browsing tab or blocked storage just means this session behaves
 // as it always did (nothing persisted), never a hard failure.
 const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
-const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'campaignCount', 'copyMode', 'campaigns'];
+const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'targeting', 'campaignCount', 'copyMode', 'campaigns'];
 function saveLaunchSnapshot() {
   try {
     const snap = {};
@@ -4930,6 +5031,47 @@ async function renderLaunchPlatforms(body) {
           ${LAUNCH_CONVERSION_EVENTS.map((c) => `<option value="${c.v}" ${launchState.conversionEvent === c.v ? 'selected' : ''}>${E(c.l)}</option>`).join('')}
         </select>
       </div>
+
+      <div class="section-title">🎯 الجمهور والمواضع</div>
+      ${launchState._prefillWinners ? `<div class="faint" style="font-size:11.5px; margin-bottom:8px;">مُجهّز من أكشن بلان مركز القرار الذكي — راجع وعدّل بحرية قبل النشر.</div>` : ''}
+      <div class="amb-radio-list" style="flex-direction:row; gap:10px; margin-bottom:12px;">
+        <label class="amb-radio-row ${launchState.targeting.mode === 'BROAD' ? 'sel' : ''}" style="width:auto;">
+          <input type="radio" name="ambLaunchTargetingMode" value="BROAD" ${launchState.targeting.mode === 'BROAD' ? 'checked' : ''} />
+          <span class="rr-main">Broad (تلقائي بالكامل)</span>
+        </label>
+        <label class="amb-radio-row ${launchState.targeting.mode === 'CUSTOM' ? 'sel' : ''}" style="width:auto;">
+          <input type="radio" name="ambLaunchTargetingMode" value="CUSTOM" ${launchState.targeting.mode === 'CUSTOM' ? 'checked' : ''} />
+          <span class="rr-main">تخصيص الجمهور</span>
+        </label>
+      </div>
+      ${launchState.targeting.mode === 'CUSTOM' ? `
+        <div class="amb-field-grid">
+          <div class="field"><label>النوع</label>
+            <select class="amb-input" id="ambLaunchTargetGender">
+              <option value="ALL" ${launchState.targeting.genders === 'ALL' ? 'selected' : ''}>الكل</option>
+              <option value="MALE" ${launchState.targeting.genders === 'MALE' ? 'selected' : ''}>رجال</option>
+              <option value="FEMALE" ${launchState.targeting.genders === 'FEMALE' ? 'selected' : ''}>نساء</option>
+            </select>
+          </div>
+          <div class="field"><label>أقل عمر</label><input class="amb-input" type="number" min="13" max="65" id="ambLaunchAgeMin" value="${E(launchState.targeting.ageMin)}" /></div>
+          <div class="field"><label>أكبر عمر</label><input class="amb-input" type="number" min="13" max="65" id="ambLaunchAgeMax" value="${E(launchState.targeting.ageMax)}" /></div>
+          <div class="field"><label>المواضع</label>
+            <select class="amb-input" id="ambLaunchPlacementsMode">
+              <option value="AUTOMATIC" ${launchState.targeting.placementsMode === 'AUTOMATIC' ? 'selected' : ''}>تلقائي (Advantage+)</option>
+              <option value="FEED_ONLY" ${launchState.targeting.placementsMode === 'FEED_ONLY' ? 'selected' : ''}>الفيد فقط</option>
+            </select>
+          </div>
+        </div>
+        <div class="section-title" style="font-size:13px;">المحافظات</div>
+        <div style="position:relative; max-width:320px;">
+          <input class="amb-input" id="ambLaunchGeoSearch" placeholder="اكتب اسم محافظة... مثال: القاهرة" autocomplete="off" />
+          <div id="ambLaunchGeoResults" style="display:none; position:absolute; z-index:20; top:100%; right:0; left:0; background:var(--amb-surface); border:1px solid var(--amb-border); border-radius:8px; box-shadow:var(--amb-shadow); max-height:220px; overflow:auto; margin-top:4px;"></div>
+        </div>
+        <div id="ambLaunchGeoChips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+          ${(launchState.targeting.geoRegions || []).map((r, i) => `<span class="badge blue" data-geo-remove="${i}" style="cursor:pointer;">${E(r.name)} ✕</span>`).join('')}
+        </div>
+        ${!launchState.targeting.geoRegions?.length ? '<div class="faint" style="font-size:11px; margin-top:4px;">لو مفيش محافظة مختارة، هيفضل الاستهداف الجغرافي مصر بالكامل.</div>' : ''}
+      ` : ''}
     </div>
     ${launchNav(4, 'التالي: الفيديوهات', true)}`;
 
@@ -4945,6 +5087,37 @@ async function renderLaunchPlatforms(body) {
   body.querySelectorAll('input[name="ambLaunchIg"]').forEach((r) => { r.onchange = () => { launchState.instagramId = r.value; launchState.instagramUsername = r.dataset.name; }; });
   body.querySelectorAll('input[name="ambLaunchPixel"]').forEach((r) => { r.onchange = () => { launchState.pixelId = r.value; launchState.pixelName = r.dataset.name; }; });
   $('ambLaunchConvEvent').onchange = (e) => { launchState.conversionEvent = e.target.value; };
+
+  body.querySelectorAll('input[name="ambLaunchTargetingMode"]').forEach((r) => { r.onchange = () => { launchState.targeting.mode = r.value; renderLaunchStep(); }; });
+  if (launchState.targeting.mode === 'CUSTOM') {
+    $('ambLaunchTargetGender').onchange = (e) => { launchState.targeting.genders = e.target.value; };
+    $('ambLaunchAgeMin').onchange = (e) => { launchState.targeting.ageMin = Math.min(65, Math.max(13, Number(e.target.value) || 18)); };
+    $('ambLaunchAgeMax').onchange = (e) => { launchState.targeting.ageMax = Math.min(65, Math.max(13, Number(e.target.value) || 65)); };
+    $('ambLaunchPlacementsMode').onchange = (e) => { launchState.targeting.placementsMode = e.target.value; };
+    let geoSearchTimer = null;
+    $('ambLaunchGeoSearch').oninput = (e) => {
+      clearTimeout(geoSearchTimer);
+      const q = e.target.value.trim();
+      const box = $('ambLaunchGeoResults');
+      if (!q) { box.style.display = 'none'; return; }
+      geoSearchTimer = setTimeout(async () => {
+        try {
+          const { results } = await api.get('/api/ai-media-buyer/launch/geo-search', { q });
+          box.innerHTML = results.length
+            ? results.slice(0, 8).map((r) => `<div data-geo-key="${E(r.key)}" data-geo-name="${E(r.name)}" style="padding:8px 12px; cursor:pointer; font-size:12.5px;" class="amb-geo-opt">${E(r.name)}</div>`).join('')
+            : '<div class="faint" style="padding:8px 12px; font-size:12px;">لا توجد نتائج</div>';
+          box.style.display = 'block';
+          box.querySelectorAll('.amb-geo-opt').forEach((el) => el.onmouseenter = () => { el.style.background = 'var(--amb-surface-2)'; });
+          box.querySelectorAll('[data-geo-key]').forEach((el) => el.onclick = () => {
+            const key = el.dataset.geoKey, name = el.dataset.geoName;
+            if (!launchState.targeting.geoRegions.some((r) => r.key === key)) launchState.targeting.geoRegions.push({ key, name });
+            renderLaunchStep();
+          });
+        } catch { box.style.display = 'none'; }
+      }, 350);
+    };
+    body.querySelectorAll('[data-geo-remove]').forEach((el) => el.onclick = () => { launchState.targeting.geoRegions.splice(Number(el.dataset.geoRemove), 1); renderLaunchStep(); });
+  }
 
   wireLaunchNav(4, () => {
     if (!launchState.platforms.facebook && !launchState.platforms.instagram) { UI.toast('اختار منصة واحدة على الأقل.', 'error'); return; }
@@ -5593,6 +5766,9 @@ async function renderLaunchReview(body) {
         <div><span class="rl">Instagram</span><span class="rv">${launchState.instagramId ? '@' + E(launchState.instagramUsername) : (launchState.platforms.instagram ? '⚠️ بدون حساب مخصص (هوية الصفحة فقط)' : '—')}</span></div>
         <div><span class="rl">Meta Pixel</span><span class="rv">${E(launchState.pixelName || '—')}</span></div>
         <div><span class="rl">حدث التحويل</span><span class="rv">${E(LAUNCH_CONVERSION_EVENTS.find((c) => c.v === launchState.conversionEvent)?.l || launchState.conversionEvent)}</span></div>
+        <div><span class="rl">الجمهور</span><span class="rv">${launchState.targeting.mode === 'CUSTOM' ? `${{ ALL: 'الكل', MALE: 'رجال', FEMALE: 'نساء' }[launchState.targeting.genders]} · ${launchState.targeting.ageMin}-${launchState.targeting.ageMax}` : 'Broad'}</span></div>
+        <div><span class="rl">المحافظات</span><span class="rv">${launchState.targeting.mode === 'CUSTOM' && launchState.targeting.geoRegions?.length ? launchState.targeting.geoRegions.map((r) => E(r.name)).join(' + ') : 'مصر بالكامل'}</span></div>
+        <div><span class="rl">المواضع</span><span class="rv">${launchState.targeting.mode === 'CUSTOM' && launchState.targeting.placementsMode === 'FEED_ONLY' ? 'الفيد فقط' : 'تلقائي (Advantage+)'}</span></div>
         <div><span class="rl">وضع التشغيل</span><span class="rv">${{ NOW: 'تشغيل الآن', PAUSED_REVIEW: 'إنشاء متوقف للمراجعة', SCHEDULED: 'تشغيل في موعد محدد' }[launchState.launchMode]}</span></div>
         <div><span class="rl">البداية</span><span class="rv">${launchState.startMode === 'NOW' ? 'فورًا (يفضل PAUSED)' : `${E(launchState.startDate)} ${E(launchState.startTime)} (القاهرة) — تفعيل تلقائي`}</span></div>
         <div><span class="rl">استراتيجية عرض السعر</span><span class="rv">${launchState.biddingMode === 'BID_CAP' ? `Bid Cap — ${E(launchState.bidCapAmount)} جنيه` : 'تلقائي (بدون حد أقصى)'}</span></div>
@@ -5659,6 +5835,7 @@ async function renderLaunchReview(body) {
     bidding: launchState.biddingMode === 'BID_CAP'
       ? { mode: 'BID_CAP', bidCapMinor: egpToMinor(launchState.bidCapAmount) }
       : { mode: 'AUTOMATIC' },
+    targeting: launchState.targeting,
     cta: 'ORDER_NOW',
     budget: launchState.budgetMode === 'CBO'
       ? { cbo: { dailyBudgetMinor: egpToMinor(launchState.cboDailyBudget) } }

@@ -29,6 +29,26 @@ console.log('§1 buildTargeting — minimal valid shape (geo_locations is the on
   ok('publisher_platforms reflects the job\'s own configured platforms, never invents extra ones', JSON.stringify(t.publisher_platforms) === '["facebook"]');
 }
 
+console.log('\n§1b Final core execution step — CUSTOM targeting override, and the mandatory "no targeting -> exact same Broad default as before" guarantee:');
+{
+  const customJob = { ...abojob, config_json: JSON.stringify({ targeting: { mode: 'CUSTOM', genders: 'FEMALE', ageMin: 20, ageMax: 35, geoRegions: [{ key: '1001', name: 'Cairo Governorate' }], placementsMode: 'FEED_ONLY' } }) };
+  const t = buildTargeting(customJob);
+  ok('CUSTOM targeting sets real genders (FEMALE -> [2])', JSON.stringify(t.genders) === '[2]', JSON.stringify(t));
+  ok('CUSTOM targeting sets real age_min/age_max', t.age_min === 20 && t.age_max === 35);
+  ok('CUSTOM targeting overrides geo_locations with the real resolved region key, never the country-wide default', JSON.stringify(t.geo_locations) === JSON.stringify({ regions: [{ key: '1001', country: 'EG' }] }), JSON.stringify(t.geo_locations));
+  ok('FEED_ONLY placements sets real facebook/instagram position arrays', JSON.stringify(t.facebook_positions) === '["feed"]' && JSON.stringify(t.instagram_positions) === '["stream"]');
+
+  const broadJob = { ...abojob, config_json: JSON.stringify({ targeting: { mode: 'BROAD' } }) };
+  const broadT = buildTargeting(broadJob);
+  ok('an EXPLICIT BROAD mode is byte-identical to a job with no targeting key at all — never a silent narrowing', JSON.stringify(broadT) === JSON.stringify(buildTargeting(abojob)));
+
+  const allGendersJob = { ...abojob, config_json: JSON.stringify({ targeting: { mode: 'CUSTOM', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: [], placementsMode: 'AUTOMATIC' } }) };
+  const allT = buildTargeting(allGendersJob);
+  ok('CUSTOM mode with genders:ALL omits the genders key entirely (Meta\'s own Broad default), never fabricates [1,2]', allT.genders === undefined, JSON.stringify(allT));
+  ok('CUSTOM mode with an empty geoRegions array falls back to the country-wide default, never an empty/broken regions list', JSON.stringify(allT.geo_locations) === JSON.stringify({ countries: ['EG'] }));
+  ok('AUTOMATIC placements never sets facebook_positions/instagram_positions', allT.facebook_positions === undefined && allT.instagram_positions === undefined);
+}
+
 console.log('\n§2 buildCampaignPayload — ABO vs CBO budget-field placement:');
 {
   const abo = buildCampaignPayload(abojob, campaign);

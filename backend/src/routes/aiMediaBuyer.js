@@ -256,13 +256,17 @@ router.patch('/decision-center/:id', asyncRoute(async (req, res) => {
 // see productDecisionExecution.js's own header for the safety boundary.
 router.get('/decision-center/:id/execution-plan', asyncRoute(async (req, res) => {
   const { buildExecutionPlan } = await import('../services/amb/productDecisionExecution.js');
-  res.json(await buildExecutionPlan({ recId: req.params.id }));
+  res.json(await buildExecutionPlan({
+    recId: req.params.id,
+    useEarlySignalGender: req.query.useEarlySignalGender === '1', useEarlySignalAge: req.query.useEarlySignalAge === '1', useEarlySignalGeo: req.query.useEarlySignalGeo === '1',
+  }));
 }));
 router.post('/decision-center/:id/execute', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const { executeApprovedDecision } = await import('../services/amb/productDecisionExecution.js');
   res.json(await executeApprovedDecision({
     recId: req.params.id, userId: req.user.id, confirmRealExecution: req.body?.confirmRealExecution === true,
     budget: req.body?.budget ?? null, startDate: req.body?.startDate || null, startTime: req.body?.startTime || null,
+    useEarlySignalGender: req.body?.useEarlySignalGender === true, useEarlySignalAge: req.body?.useEarlySignalAge === true, useEarlySignalGeo: req.body?.useEarlySignalGeo === true,
   }));
 }));
 // Phase 9 — Experiment Measurement. Mirrors the existing /outcomes/run
@@ -670,6 +674,13 @@ router.get('/launch/discovery/account-assets', asyncRoute(async (req, res) => {
   const adAccountId = String(req.query.adAccountId || '');
   if (!adAccountId) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'adAccountId مطلوب.' });
   res.json(await launch.getLaunchAccountAssets(adAccountId));
+}));
+// Final core execution step — real Meta region-targeting search (never a
+// hardcoded governorate->key table). Used by the wizard's audience/geo step
+// and by the Action Plan handoff's own one-time governorate resolution.
+router.get('/launch/geo-search', asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json({ results: await launch.searchLaunchGeoLocations(String(req.query.q || '')) });
 }));
 
 // Smart Decision Center Phase 1 — Step 1 "المنتج": Store -> Product, the

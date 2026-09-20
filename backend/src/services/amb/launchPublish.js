@@ -199,13 +199,40 @@ export async function setJobStatus(jobId, status) {
 // Meta during Phase F development, never guessed.
 // ---------------------------------------------------------------------------
 
-/** Minimal valid targeting for a fresh (non-cloned) ad set — geo_locations is the one genuinely required field; age/gender/interests are deliberately left unset (Meta's own broad Advantage+ default) since the wizard never collected them. Country fixed to Egypt to match this business. */
+/**
+ * Targeting for a fresh (non-cloned) ad set. Default (job.config_json has no
+ * CUSTOM targeting — every job before this feature existed, and every new
+ * job that leaves this wizard step untouched) is EXACTLY what this function
+ * has always returned: Egypt-wide, age/gender/interests unset (Meta's own
+ * broad Advantage+ default), platforms from the wizard's own platform
+ * choice. A CUSTOM override (final core execution step) only ever narrows
+ * what was already validated server-side in launchBuilder.js's
+ * validateTargeting() — genders/age/geoRegions/placementsMode — never
+ * something invented here.
+ */
 export function buildTargeting(job) {
   const platforms = JSON.parse(job.platforms_json || '["facebook"]');
-  return {
+  const base = {
     geo_locations: { countries: ['EG'] },
     publisher_platforms: platforms,
   };
+  const cfg = JSON.parse(job.config_json || '{}');
+  const t = cfg.targeting;
+  if (!t || t.mode !== 'CUSTOM') return base;
+
+  const out = { ...base };
+  if (t.geoRegions?.length) out.geo_locations = { regions: t.geoRegions.map((r) => ({ key: r.key, country: 'EG' })) };
+  if (t.genders === 'MALE') out.genders = [1];
+  else if (t.genders === 'FEMALE') out.genders = [2];
+  // 'ALL' -> genders omitted entirely, Meta's own Broad default.
+  if (Number.isInteger(t.ageMin)) out.age_min = t.ageMin;
+  if (Number.isInteger(t.ageMax)) out.age_max = t.ageMax;
+  if (t.placementsMode === 'FEED_ONLY') {
+    out.facebook_positions = ['feed'];
+    out.instagram_positions = ['stream'];
+  }
+  // 'AUTOMATIC' -> no facebook_positions/instagram_positions keys at all, Meta's own Advantage+ default.
+  return out;
 }
 
 /**
