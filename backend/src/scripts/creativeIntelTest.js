@@ -127,5 +127,23 @@ console.log('\n§6 pickBest — the explicit "لا يوجد فائز مؤكد ح
   ok('NO_WINNER_MSG is the exact Arabic string the user specified', NO_WINNER_MSG === 'لا يوجد فائز مؤكد حتى الآن');
 }
 
+console.log('\n§7 OBSERVATION vs WINNER CLASSIFICATION — signalStrength is never hidden behind INSUFFICIENT_DATA/TESTING:');
+{
+  const oneRealPurchase = classifyCandidate({ spend: 200, purchases: 1, cpa: 200, ctr: 3, dataSufficiency: 'MODERATE' }, { targetCpa: 120, minSpend: 150, minPurchases: 5 });
+  ok('exactly 1 real purchase -> signalStrength OBSERVED', oneRealPurchase.signalStrength === 'OBSERVED', JSON.stringify(oneRealPurchase));
+
+  const fewPurchases = classifyCandidate({ spend: 300, purchases: 3, cpa: 100, ctr: 3, dataSufficiency: 'MODERATE' }, { targetCpa: 120, minSpend: 150, minPurchases: 5 });
+  ok('3 real purchases (below minPurchases=5) -> signalStrength EARLY_SIGNAL', fewPurchases.signalStrength === 'EARLY_SIGNAL', JSON.stringify(fewPurchases));
+
+  const realSpendZeroPurchase = classifyCandidate({ spend: 400, purchases: 0, cpa: null, ctr: 2 }, { targetCpa: 120, minSpend: 150, minPurchases: 5 });
+  ok('real spend, zero purchases -> EXPOSED_NO_CONVERSION, never silently dropped', realSpendZeroPurchase.signalStrength === 'EXPOSED_NO_CONVERSION', JSON.stringify(realSpendZeroPurchase));
+
+  const zeroEverything = classifyCandidate({ spend: 0, purchases: 0, cpa: null }, { targetCpa: 120, minSpend: 150, minPurchases: 5 });
+  ok('literally nothing spent/observed -> NO_SIGNAL', zeroEverything.signalStrength === 'NO_SIGNAL');
+
+  const realWinner = classifyCandidate({ spend: 5000, purchases: 40, cpa: 90, ctr: 4, dataSufficiency: 'STRONG' }, { targetCpa: 120, minSpend: 150, minPurchases: 5 });
+  ok('once a real WINNER is reached, signalStrength is null (classification already carries the strongest signal)', realWinner.signalStrength === null && realWinner.classification === 'WINNER', JSON.stringify(realWinner));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

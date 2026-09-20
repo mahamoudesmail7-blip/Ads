@@ -41,6 +41,7 @@ function packageFromPersistedRow(row, productId) {
     proposedChange: facts.proposedChange || null, successMetric: facts.successMetric || null,
     evaluationWindowDays: facts.evaluationWindowDays || null,
     businessConversionRate: facts.businessConversionRate || null, priceTestOpportunity: facts.priceTestOpportunity || null,
+    dataQuality: facts.dataQuality || null,
     changeReasons: facts.changeReasons || null,
     recommendationId: row.id, recommendationStatus: row.status,
     generatedAt: row.created_at,

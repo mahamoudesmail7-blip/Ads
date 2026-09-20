@@ -7,10 +7,11 @@
 // convention: Claude may narrate a reason in a LATER phase, never choose
 // the decision). No Meta write anywhere in this file.
 import { prisma } from '../../prisma.js';
-import { getProductDiagnosis } from './productPerformance.js';
+import { getProductDiagnosis, resolveProductCampaigns } from './productPerformance.js';
 import { creativeIntelForProduct } from './creativeIntel.js';
 import { segmentIntelForProduct } from './segmentIntel.js';
 import { computeOpportunityScore, healthBand } from './productMarketingScoring.js';
+import { computeDataQualityGate } from './dataQualityGate.js';
 
 export const PRODUCT_DECISIONS = [
   'SCALE_CANDIDATE', 'KEEP_TESTING', 'NEW_CREATIVE_TEST', 'AUDIENCE_TEST',
@@ -208,11 +209,15 @@ export async function buildProductDecisionPackage({ productId, windowName, setti
   const action = decideProductAction({ diagnosis, creativeIntel, segmentIntel });
   const priceTestOpportunity = detectPriceTestOpportunity({ businessConversionRate: diagnosis.businessConversionRate });
 
+  const campaigns = await resolveProductCampaigns(Number(productId)).catch(() => []);
+  const dataQuality = computeDataQualityGate({ product, campaigns, meta: diagnosis.meta, easyOrders: diagnosis.easyOrders, window: diagnosis.window });
+
   return {
     productId: diagnosis.productId,
     productName: diagnosis.productName,
     window: diagnosis.window,
     health,
+    dataQuality,
     diagnosis: { bottleneck: diagnosis.bottleneck, allSignals: diagnosis.diagnosis, metrics: diagnosis.metrics },
     businessConversionRate: diagnosis.businessConversionRate,
     priceTestOpportunity,
@@ -291,6 +296,11 @@ export async function approveProductDecision({ recId, userId }) {
   const rec = await prisma.ambRecommendation.findUnique({ where: { id: Number(recId) } });
   if (!rec || rec.level !== 'product') { const e = new Error('قرار المنتج غير موجود.'); e.status = 404; throw e; }
   if (rec.status !== 'PENDING') { const e = new Error(`القرار في حالة ${rec.status} — مش قابل للموافقة.`); e.status = 409; throw e; }
+  const facts = JSON.parse(rec.reason_facts_json || '{}');
+  if (facts.dataQuality?.status === 'DECISION_BLOCKED_DATA_QUALITY') {
+    const reasons = (facts.dataQuality.criticalFailures || []).map((c) => c.reason).join(' · ');
+    const e = new Error(`الموافقة متوقفة — جودة البيانات غير كافية لهذا القرار: ${reasons}`); e.status = 409; throw e;
+  }
   return prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'APPROVED', reviewed_by_id: userId || null, reviewed_at: new Date() } });
 }
 
@@ -327,6 +337,7 @@ export async function persistProductDecision({ pkg, adAccountId, batchId, change
         health: pkg.health, proposedChange: pkg.proposedChange, successMetric: pkg.successMetric,
         evaluationWindowDays: pkg.evaluationWindowDays, sampleSize: pkg.sampleSize,
         businessConversionRate: pkg.businessConversionRate, priceTestOpportunity: pkg.priceTestOpportunity,
+        dataQuality: pkg.dataQuality,
         ...(changeReasons?.length ? { changeReasons } : {}),
       }),
       confidence: pkg.confidence,

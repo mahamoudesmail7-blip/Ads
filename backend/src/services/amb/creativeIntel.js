@@ -88,6 +88,13 @@ export function groupAdsByKey(ads, keyFn) {
  * optional; FATIGUED is only ever reached with a real prior-window CTR
  * decline, matching computeDiagnosis()'s "never one signal alone" rule.
  */
+/** Same OBSERVATION-vs-WINNER-CLASSIFICATION split as segmentIntel.js's metaSignalStrength — never hidden behind INSUFFICIENT_DATA/TESTING. */
+function creativeSignalStrength(spend, purchases, minPurchases) {
+  if (purchases >= minPurchases) return null;
+  if (purchases >= 1) return purchases === 1 ? 'OBSERVED' : 'EARLY_SIGNAL';
+  return spend > 0 ? 'EXPOSED_NO_CONVERSION' : 'NO_SIGNAL';
+}
+
 export function classifyCandidate(row, { targetCpa = 120, minSpend = 150, minPurchases = 5, priorRow = null } = {}) {
   const spend = row.spend || 0;
   const purchases = row.purchases || 0;
@@ -97,25 +104,28 @@ export function classifyCandidate(row, { targetCpa = 120, minSpend = 150, minPur
   if (ctr != null) parts.push(`CTR ${ctr.toFixed(2)}%`);
   if (cpa != null) parts.push(`CPA ${Math.round(cpa)} ج`);
   const base = parts.join(' · ');
+  const signalStrength = creativeSignalStrength(spend, purchases, minPurchases);
 
   // Gate 1 — sample too small for ANY judgement. Checked before CPA/ratio
   // logic can run at all, so a tiny-spend lucky CPA can never look like a
-  // WINNER (explicit requirement).
+  // WINNER (explicit requirement). signalStrength above still reports the
+  // real OBSERVED/EARLY_SIGNAL/EXPOSED_NO_CONVERSION from this row's own
+  // real spend/purchases — only the WINNER verdict is withheld here.
   if (spend < minSpend * 0.3 || purchases < 1) {
-    return { classification: 'INSUFFICIENT_DATA', confidence: 'LOW', sampleSize: purchases, evidence: `${base} — عينة صغيرة جدًا (أقل من ${Math.round(minSpend * 0.3)} ج صرف أو مفيش مشتريات) — أي حكم هنا غير موثوق.` };
+    return { classification: 'INSUFFICIENT_DATA', confidence: 'LOW', sampleSize: purchases, signalStrength, evidence: `${base} — عينة صغيرة جدًا (أقل من ${Math.round(minSpend * 0.3)} ج صرف أو مفيش مشتريات) — أي حكم هنا غير موثوق.` };
   }
   if (row.dataSufficiency === 'WEAK') {
-    return { classification: 'INSUFFICIENT_DATA', confidence: 'LOW', sampleSize: purchases, evidence: `${base} — أقل من الحد الأدنى الموثوق (${minSpend} ج صرف / ${minPurchases} شراء).` };
+    return { classification: 'INSUFFICIENT_DATA', confidence: 'LOW', sampleSize: purchases, signalStrength, evidence: `${base} — أقل من الحد الأدنى الموثوق (${minSpend} ج صرف / ${minPurchases} شراء).` };
   }
 
   // Gate 2 — fatigue: a real, corroborated decline vs the prior window.
   if (priorRow && priorRow.ctr != null && ctr != null && priorRow.dataSufficiency !== 'WEAK' && ctr < priorRow.ctr * 0.85) {
     const decline = Math.round((1 - ctr / priorRow.ctr) * 100);
-    return { classification: 'FATIGUED', confidence: row.dataSufficiency === 'STRONG' ? 'HIGH' : 'MEDIUM', sampleSize: purchases, evidence: `${base} — CTR انخفض ${decline}% عن الفترة السابقة (${priorRow.ctr.toFixed(2)}% ← ${ctr.toFixed(2)}%) — إشارة إجهاد كرياتيف حقيقية.` };
+    return { classification: 'FATIGUED', confidence: row.dataSufficiency === 'STRONG' ? 'HIGH' : 'MEDIUM', sampleSize: purchases, signalStrength, evidence: `${base} — CTR انخفض ${decline}% عن الفترة السابقة (${priorRow.ctr.toFixed(2)}% ← ${ctr.toFixed(2)}%) — إشارة إجهاد كرياتيف حقيقية.` };
   }
 
   if (cpa == null) {
-    return { classification: 'TESTING', confidence: 'LOW', sampleSize: purchases, evidence: `${base} — لسه مفيش مشتريات كفاية لحساب CPA موثوق.` };
+    return { classification: 'TESTING', confidence: 'LOW', sampleSize: purchases, signalStrength, evidence: `${base} — لسه مفيش مشتريات كفاية لحساب CPA موثوق.` };
   }
 
   const ratio = targetCpa / cpa; // >1 = cheaper than target = better
@@ -123,18 +133,18 @@ export function classifyCandidate(row, { targetCpa = 120, minSpend = 150, minPur
   const highCtrWeakConv = ctr != null && ctr >= 1.5 && ratio < 0.85;
 
   if (row.dataSufficiency === 'STRONG' && ratio >= 1.15 && purchases >= minPurchases) {
-    return { classification: 'WINNER', confidence: 'HIGH', sampleSize: purchases, evidence: `${base} — أرخص من الهدف (${targetCpa} ج) بـ${Math.round((ratio - 1) * 100)}%، بعينة قوية (${purchases} شراء، ${Math.round(spend)} ج صرف).` };
+    return { classification: 'WINNER', confidence: 'HIGH', sampleSize: purchases, signalStrength, evidence: `${base} — أرخص من الهدف (${targetCpa} ج) بـ${Math.round((ratio - 1) * 100)}%، بعينة قوية (${purchases} شراء، ${Math.round(spend)} ج صرف).` };
   }
   if (highCtrWeakConv) {
-    return { classification: 'WEAK', confidence: row.dataSufficiency === 'STRONG' ? 'MEDIUM' : 'LOW', sampleSize: purchases, evidence: `${base} — CTR قوي (بيوقف الناس ويجذب الانتباه) لكن معدل التحويل ضعيف (CPA ${Math.round(cpa)} ج مقابل هدف ${targetCpa} ج) — بيجذب مشاهدين مش بالضرورة عملاء مؤهلين.` };
+    return { classification: 'WEAK', confidence: row.dataSufficiency === 'STRONG' ? 'MEDIUM' : 'LOW', sampleSize: purchases, signalStrength, evidence: `${base} — CTR قوي (بيوقف الناس ويجذب الانتباه) لكن معدل التحويل ضعيف (CPA ${Math.round(cpa)} ج مقابل هدف ${targetCpa} ج) — بيجذب مشاهدين مش بالضرورة عملاء مؤهلين.` };
   }
   if (ratio >= 1.0 && purchases >= Math.max(1, Math.round(minPurchases * 0.5))) {
-    return { classification: 'GOOD', confidence: row.dataSufficiency === 'STRONG' ? 'HIGH' : 'MEDIUM', sampleSize: purchases, evidence: `${base} — قريب من هدف الـCPA (${targetCpa} ج) بعينة معقولة، لسه مش بالقوة الكافية لتصنيف WINNER.` };
+    return { classification: 'GOOD', confidence: row.dataSufficiency === 'STRONG' ? 'HIGH' : 'MEDIUM', sampleSize: purchases, signalStrength, evidence: `${base} — قريب من هدف الـCPA (${targetCpa} ج) بعينة معقولة، لسه مش بالقوة الكافية لتصنيف WINNER.` };
   }
   if (ratio >= 0.8) {
-    return { classification: 'TESTING', confidence: 'MEDIUM', sampleSize: purchases, evidence: `${base} — أداء متوسط، محتاج مزيد من البيانات/الوقت قبل حكم نهائي.` };
+    return { classification: 'TESTING', confidence: 'MEDIUM', sampleSize: purchases, signalStrength, evidence: `${base} — أداء متوسط، محتاج مزيد من البيانات/الوقت قبل حكم نهائي.` };
   }
-  return { classification: 'WEAK', confidence: row.dataSufficiency === 'STRONG' ? 'MEDIUM' : 'LOW', sampleSize: purchases, evidence: `${base} — أعلى من هدف الـCPA (${targetCpa} ج) بشكل واضح.` };
+  return { classification: 'WEAK', confidence: row.dataSufficiency === 'STRONG' ? 'MEDIUM' : 'LOW', sampleSize: purchases, signalStrength, evidence: `${base} — أعلى من هدف الـCPA (${targetCpa} ج) بشكل واضح.` };
 }
 
 const CLASS_RANK = { WINNER: 5, GOOD: 4, TESTING: 3, WEAK: 2, FATIGUED: 1, INSUFFICIENT_DATA: 0 };
@@ -228,7 +238,17 @@ export async function creativeIntelForProduct({ adAccountId, windowName, setting
     const priorByKey = priorRowsResult ? new Map(priorRowsResult.rows.map((r) => [r.id || r.label, r])) : null;
     const classified = classifyRows(rowsResult.rows, gate, priorByKey);
     const best = pickBest(classified);
-    return { table: classified, best, bestNote: best ? null : NO_WINNER_MSG, coverage: { keyedAds: rowsResult.keyedAds, unkeyedAds: rowsResult.unkeyedAds } };
+    // topObserved: the real leader by raw purchases right now — a pure
+    // OBSERVATION callout, NEVER a winner claim. winnerStatus is explicit
+    // about whether this same row also independently proved itself above.
+    const withPurchases = classified.filter((r) => (r.purchases || 0) > 0);
+    const topObserved = withPurchases.length
+      ? (() => {
+          const top = [...withPurchases].sort((a, b) => (b.purchases || 0) - (a.purchases || 0))[0];
+          return { label: top.label, purchases: top.purchases, signalStrength: top.signalStrength, winnerStatus: top.classification === 'WINNER' ? 'PROVEN_WINNER' : 'NOT_PROVEN_YET' };
+        })()
+      : null;
+    return { table: classified, best, bestNote: best ? null : NO_WINNER_MSG, topObserved, coverage: { keyedAds: rowsResult.keyedAds, unkeyedAds: rowsResult.unkeyedAds } };
   }
 
   const creativeRows = groupAdsByKey(ads, keyFns.creative);

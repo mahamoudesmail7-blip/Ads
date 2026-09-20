@@ -1874,6 +1874,20 @@ function dcTabOverview(pkg) {
   `;
 }
 
+const SIGNAL_BADGE = { NO_SIGNAL: 'gray', OBSERVED: 'gray', EARLY_SIGNAL: 'yellow', EXPOSED_NO_CONVERSION: 'gray' };
+function signalBadgeHtml(signalStrength) {
+  if (!signalStrength) return ''; // null = real evidence-gated classification already carries the strongest signal, no redundant badge
+  return `<span class="badge ${SIGNAL_BADGE[signalStrength] || 'gray'}" style="font-size:10px;">${E(signalStrength)}</span>`;
+}
+/** OBSERVATION vs WINNER CLASSIFICATION — mandatory, explicit split. Never erases a real observed value behind "غير كافي". */
+function topObservedHtml(topObserved, dimLabel, unitLabel) {
+  if (!topObserved) return '';
+  return `<div class="amb-panel" style="padding:10px 14px; margin-bottom:10px; background:var(--amb-surface-2);">
+    <div style="font-size:12.5px;"><b>${E(dimLabel)} حاليًا:</b> ${E(topObserved.segment || topObserved.label)}</div>
+    <div class="faint" style="font-size:11.5px; margin-top:2px;">${unitLabel}: ${fmtNum(topObserved.count ?? topObserved.purchases)} ${signalBadgeHtml(topObserved.signalStrength)} · Winner status: ${topObserved.winnerStatus === 'PROVEN_WINNER' ? 'PROVEN_WINNER ✅' : 'NOT_PROVEN_YET'}</div>
+  </div>`;
+}
+
 function dcTabAudience(pkg) {
   const seg = pkg.segmentIntel || {};
   const govRows = seg.governorates?.table || [];
@@ -1884,16 +1898,27 @@ function dcTabAudience(pkg) {
     return `<div class="amb-winner-card"><div class="amb-winner-trophy">🏆</div><div class="amb-winner-body"><div class="amb-winner-name">${E(dimLabel)}: ${E(best.segment)}</div><div class="amb-winner-meta">${E(best.evidence || '')}</div></div></div>`;
   };
   return `
-    <div class="section-title" style="margin-top:0;">أفضل جمهور مثبت</div>
+    <div class="section-title" style="margin-top:0;">أفضل جمهور مثبت (Winner)</div>
     ${bestLine('gender', 'أفضل نوع')}${bestLine('age', 'أفضل عمر')}
-    ${!seg.gender?.best && !seg.age?.best ? '<div class="amb-empty">لا يوجد فائز مؤكد حتى الآن.</div>' : ''}
-    <div class="section-title">جدول المحافظات</div>
-    ${govRows.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>المحافظة</th><th>الإنفاق/الطلبات</th><th>CPA</th><th>التصنيف</th></tr></thead>
-      <tbody>${govRows.map((r) => `<tr><td>${E(r.segment)}</td><td>${r.spend != null ? fmtEGP(r.spend) : fmtNum(r.orders)}</td><td>${r.cpa != null ? fmtEGP(r.cpa) : '—'}</td><td><span class="badge ${clsColor[r.classification] || 'gray'}">${E(r.classification)}</span></td></tr>`).join('')}</tbody></table></div>`
-      : '<div class="amb-empty">مفيش بيانات محافظات كافية لسه.</div>'}
+    ${!seg.gender?.best && !seg.age?.best ? '<div class="amb-empty">لا يوجد Winner مؤكد حتى الآن.</div>' : ''}
+    <div class="section-title">الملاحظ حاليًا (Observation)</div>
+    ${topObservedHtml(seg.gender?.topObserved, 'أعلى نوع', 'Purchases')}
+    ${topObservedHtml(seg.age?.topObserved, 'أعلى عمر', 'Purchases')}
+    ${topObservedHtml(seg.governorates?.topObserved, 'أعلى محافظة', 'Orders')}
+    <div class="section-title">جدول المحافظات — كل الأرقام الملاحظة، مش بس اللي أثبتت</div>
+    ${govRows.length ? `<div class="table-wrap"><table class="data"><thead><tr><th>المحافظة</th><th>Orders</th><th>الإشارة</th><th>Winner Classification</th></tr></thead>
+      <tbody>${govRows.map((r) => `<tr><td>${E(r.segment)}</td><td>${fmtNum(r.orders)}</td><td>${signalBadgeHtml(r.signalStrength) || '—'}</td><td><span class="badge ${clsColor[r.classification] || 'gray'}">${E(r.classification)}</span></td></tr>`).join('')}</tbody></table></div>`
+      : '<div class="amb-empty">مفيش أوردرات لسه لهذا المنتج.</div>'}
+    <div class="section-title">جدول العمر</div>
+    ${(seg.age?.table || []).length ? `<div class="table-wrap"><table class="data"><thead><tr><th>العمر</th><th>الإنفاق</th><th>Purchases</th><th>الإشارة</th><th>Winner Classification</th></tr></thead>
+      <tbody>${seg.age.table.map((r) => `<tr><td>${E(r.segment)}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${signalBadgeHtml(r.signalStrength) || '—'}</td><td><span class="badge ${clsColor[r.classification] || 'gray'}">${E(r.classification)}</span></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <div class="section-title">جدول النوع</div>
+    ${(seg.gender?.table || []).length ? `<div class="table-wrap"><table class="data"><thead><tr><th>النوع</th><th>الإنفاق</th><th>Purchases</th><th>الإشارة</th><th>Winner Classification</th></tr></thead>
+      <tbody>${seg.gender.table.map((r) => `<tr><td>${E(r.segment)}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${signalBadgeHtml(r.signalStrength) || '—'}</td><td><span class="badge ${clsColor[r.classification] || 'gray'}">${E(r.classification)}</span></td></tr>`).join('')}</tbody></table></div>` : ''}
   `;
 }
 
+const CREATIVE_CLS_COLOR = { WINNER: 'green', GOOD: 'blue', TESTING: 'gray', WEAK: 'red', FATIGUED: 'yellow', INSUFFICIENT_DATA: 'gray' };
 function dcTabCreatives(pkg) {
   const ci = pkg.creativeIntel || {};
   const dims = [['creative', 'أفضل كرياتيف'], ['hooks', 'أفضل Hook'], ['angles', 'أفضل زاوية بيع'], ['primaryTexts', 'أفضل بوست'], ['headlines', 'أفضل عنوان']];
@@ -1906,7 +1931,18 @@ function dcTabCreatives(pkg) {
       <div class="faint" style="font-size:11.5px;">${E(best.evidence || '')}</div>
     </div>`;
   }).join('');
-  return `<div class="section-title" style="margin-top:0;">🏆 العناصر الفائزة</div><div class="amb-field-grid">${cards}</div>`;
+
+  const leaderboards = dims.map(([key, label]) => {
+    const table = ci[key]?.table || [];
+    if (!table.length) return '';
+    const rows = [...table].sort((a, b) => (b.purchases || 0) - (a.purchases || 0));
+    return `<div class="section-title" style="font-size:13px;">${E(label)} — كل الملاحظ (Observation)</div>
+      ${ci[key]?.topObserved ? `<div class="faint" style="font-size:11.5px; margin-bottom:6px;">أعلى ${E(label)} حاليًا: ${E(String(ci[key].topObserved.label || '').slice(0, 50))} — ${fmtNum(ci[key].topObserved.purchases)} شراء ${signalBadgeHtml(ci[key].topObserved.signalStrength)} · Winner status: ${ci[key].topObserved.winnerStatus === 'PROVEN_WINNER' ? 'PROVEN_WINNER ✅' : 'NOT_PROVEN_YET'}</div>` : ''}
+      <div class="table-wrap" style="margin-bottom:16px;"><table class="data"><thead><tr><th>${E(label)}</th><th>الإنفاق</th><th>Purchases</th><th>الإشارة</th><th>Winner Classification</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr><td>${E(String(r.label || '').slice(0, 40))}</td><td>${fmtEGP(r.spend)}</td><td>${fmtNum(r.purchases)}</td><td>${signalBadgeHtml(r.signalStrength) || '—'}</td><td><span class="badge ${CREATIVE_CLS_COLOR[r.classification] || 'gray'}">${E(r.classification)}</span></td></tr>`).join('')}</tbody></table></div>`;
+  }).join('');
+
+  return `<div class="section-title" style="margin-top:0;">🏆 العناصر الفائزة (Winner)</div><div class="amb-field-grid">${cards}</div>${leaderboards}`;
 }
 
 function dcTabHistory(history) {

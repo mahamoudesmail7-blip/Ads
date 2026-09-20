@@ -311,6 +311,7 @@ export async function getProductDiagnosis({ productId, windowName, settings }) {
     diagnosis,
     bottleneck,
     businessConversionRate: current.businessConversionRate,
+    meta: current.meta, easyOrders: current.easyOrders, // raw blocks — needed by dataQualityGate.js, which crosses both sources
     generatedAt: new Date().toISOString(),
   };
 }

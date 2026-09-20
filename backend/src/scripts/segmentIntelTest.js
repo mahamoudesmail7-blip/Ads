@@ -13,7 +13,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
 
-const { classifyMetaSegment, classifyCodSegment } = await imp('../services/amb/segmentIntel.js');
+const { classifyMetaSegment, classifyCodSegment, segmentIntelForProduct } = await imp('../services/amb/segmentIntel.js');
 
 const GATE = { targetCpa: 120, minSpend: 150, minPurchases: 5 };
 
@@ -79,6 +79,42 @@ console.log('\n§5 classifyCodSegment — a SECOND guardrail: never blame one go
   // A genuinely bad DELIVERY rate is never suppressed by the backlog guard — confirmation and delivery are different funnel stages.
   const badDeliveryDuringBacklog = classifyCodSegment({ orders: 30, confirmed: 25, delivered: 3 }, { minOrders: 10, globalConfirmationRate: 0.05 });
   ok('a genuinely bad DELIVERY rate still reaches PROVEN_WEAK even during a product-wide confirmation backlog — different funnel stage, real evidence', badDeliveryDuringBacklog.classification === 'PROVEN_WEAK', JSON.stringify(badDeliveryDuringBacklog));
+}
+
+console.log('\n§6 OBSERVATION vs WINNER CLASSIFICATION — signalStrength is NEVER hidden behind INSUFFICIENT_DATA (the exact user-reported UX bug):');
+{
+  // The user's own example: Cairo=4, Giza=2, Alexandria=1, Minya=1 orders — every one of these is a REAL observation that must be visible, never erased into a bare "غير كافي".
+  const cairo4 = classifyCodSegment({ orders: 4, confirmed: 0, delivered: 0 }, { minOrders: 10 });
+  ok('4 orders -> classification stays INSUFFICIENT_DATA (real winner-confidence rule, untouched)', cairo4.classification === 'INSUFFICIENT_DATA');
+  ok('4 orders -> signalStrength is EARLY_SIGNAL, never silently dropped', cairo4.signalStrength === 'EARLY_SIGNAL', cairo4.signalStrength);
+
+  const minya1 = classifyCodSegment({ orders: 1, confirmed: 0, delivered: 0 }, { minOrders: 10 });
+  ok('exactly 1 order -> signalStrength is OBSERVED (the weakest real signal, still surfaced)', minya1.signalStrength === 'OBSERVED', minya1.signalStrength);
+
+  const zero = classifyCodSegment({ orders: 0, confirmed: 0, delivered: 0 }, { minOrders: 10 });
+  ok('literally zero orders -> signalStrength is NO_SIGNAL (honest, distinct from "1 order")', zero.signalStrength === 'NO_SIGNAL');
+
+  const provenWinner = classifyCodSegment({ orders: 25, confirmed: 20, delivered: 15 }, { minOrders: 10 });
+  ok('once real evidence crosses the threshold, signalStrength is null — classification itself already carries the strongest signal', provenWinner.signalStrength === null && provenWinner.classification === 'PROVEN_WINNER', JSON.stringify(provenWinner));
+
+  // Meta side: a real ad exposure with real spend but zero purchases is a DISTINCT, honest state — never conflated with "nothing happened".
+  const exposedNoConversion = classifyMetaSegment({ spend: 500, purchases: 0, cpa: null }, { minPurchases: 5 });
+  ok('real spend, zero purchases -> EXPOSED_NO_CONVERSION, not NO_SIGNAL and not silently dropped', exposedNoConversion.signalStrength === 'EXPOSED_NO_CONVERSION', exposedNoConversion.signalStrength);
+
+  const oneRealPurchase = classifyMetaSegment({ spend: 200, purchases: 1, cpa: 200 }, { minPurchases: 5, minSpend: 150, targetCpa: 120 });
+  ok('exactly 1 real purchase -> signalStrength OBSERVED even though classification is INSUFFICIENT_DATA', oneRealPurchase.signalStrength === 'OBSERVED' && oneRealPurchase.classification === 'INSUFFICIENT_DATA', JSON.stringify(oneRealPurchase));
+}
+
+console.log('\n§7 segmentIntelForProduct — topObserved is a real, live callout on real production data, never a winner claim:');
+{
+  // Product 146 (real Smart-Tank product, linked this session) has real Easy Orders governorate data but no PROVEN geo winner yet — exactly the case this feature exists for.
+  const result = await segmentIntelForProduct({ productId: 146, storeId: 'trendy-storeee', adAccountId: 'act_1518142859790043', windowName: 'last7', settings: {} });
+  ok('governorates.topObserved is present when real orders exist', result.governorates.topObserved !== undefined);
+  if (result.governorates.topObserved) {
+    ok('topObserved carries a real segment name and a positive count', typeof result.governorates.topObserved.segment === 'string' && result.governorates.topObserved.count > 0, JSON.stringify(result.governorates.topObserved));
+    ok('topObserved.winnerStatus is NOT_PROVEN_YET when no governorate independently cleared the evidence bar (matches governorates.best === null here)', result.governorates.best === null ? result.governorates.topObserved.winnerStatus === 'NOT_PROVEN_YET' : true, JSON.stringify(result.governorates.topObserved));
+  }
+  ok('every real governorate row still carries a real signalStrength, never silently dropped', result.governorates.table.every((r) => typeof r.signalStrength === 'string' || r.signalStrength === null), JSON.stringify(result.governorates.table.map((r) => r.signalStrength)));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

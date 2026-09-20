@@ -33,6 +33,37 @@ function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
 const GENDER_AR = { male: 'رجال', female: 'نساء', unknown: 'غير معروف' };
 
 /**
+ * OBSERVATION vs WINNER CLASSIFICATION — a mandatory, explicit separation.
+ * `classification` (PROVEN_WINNER/PROMISING/INSUFFICIENT_DATA/PROVEN_WEAK)
+ * answers "is this a statistically proven winner?" and stays exactly as
+ * evidence-gated as before — untouched by this. `signalStrength` answers a
+ * DIFFERENT question: "how much have we actually observed here, regardless
+ * of whether it's enough to call a winner yet?" — and is NEVER hidden
+ * behind INSUFFICIENT_DATA. A segment with exactly 1 real order/purchase is
+ * OBSERVED; a handful more is EARLY_SIGNAL; once the real evidence
+ * threshold is crossed, `classification` itself already carries the
+ * strongest signal (PROVEN_WINNER/PROMISING/PROVEN_WEAK), so signalStrength
+ * returns null rather than a redundant second label.
+ */
+function codSignalStrength(orders, minOrders) {
+  if (!orders || orders <= 0) return 'NO_SIGNAL';
+  if (orders >= minOrders) return null;
+  return orders === 1 ? 'OBSERVED' : 'EARLY_SIGNAL';
+}
+function metaSignalStrength(spend, purchases, minPurchases) {
+  if (purchases >= minPurchases) return null;
+  if (purchases >= 1) return purchases === 1 ? 'OBSERVED' : 'EARLY_SIGNAL';
+  return spend > 0 ? 'EXPOSED_NO_CONVERSION' : 'NO_SIGNAL';
+}
+/** The single row with the most real observations in a table, regardless of winner classification — the "أعلى محافظة حاليًا" callout the user requires, never itself a winner claim. */
+function computeTopObserved(rows, countField) {
+  const withCount = rows.filter((r) => (r[countField] || 0) > 0);
+  if (!withCount.length) return null;
+  const top = [...withCount].sort((a, b) => (b[countField] || 0) - (a[countField] || 0))[0];
+  return { segment: top.segment, count: top[countField], signalStrength: top.signalStrength, winnerStatus: top.classification === 'PROVEN_WINNER' ? 'PROVEN_WINNER' : 'NOT_PROVEN_YET' };
+}
+
+/**
  * Meta-side segment (age/gender/platform) — real spend/purchases/CPA
  * attribution from Meta Insights. Exposure-gated on spend+purchases before
  * any CPA-ratio reasoning, exactly like Phase 3's creative classifier.
@@ -42,26 +73,27 @@ export function classifyMetaSegment(row, { targetCpa = 120, minSpend = 150, minP
   const purchases = n(row.purchases) || 0;
   const cpa = n(row.cpa);
   const base = `صرف ${Math.round(spend)} ج · ${purchases} شراء${cpa != null ? ` · CPA ${Math.round(cpa)} ج` : ''}`;
+  const signalStrength = metaSignalStrength(spend, purchases, minPurchases);
 
   if (spend < minSpend * 0.3 || purchases < 1) {
-    return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — تعرض غير كافٍ (أقل من ${Math.round(minSpend * 0.3)} ج صرف أو مفيش مشتريات) لأي حكم، سواء بالسلب أو الإيجاب.` };
+    return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — تعرض غير كافٍ (أقل من ${Math.round(minSpend * 0.3)} ج صرف أو مفيش مشتريات) لأي حكم، سواء بالسلب أو الإيجاب.` };
   }
   if (spend < minSpend) {
-    return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — أقل من الحد الأدنى الموثوق (${minSpend} ج صرف).` };
+    return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — أقل من الحد الأدنى الموثوق (${minSpend} ج صرف).` };
   }
-  if (cpa == null) return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — لسه مفيش CPA محسوب.` };
+  if (cpa == null) return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — لسه مفيش CPA محسوب.` };
 
   const ratio = targetCpa / cpa;
   if (ratio >= 1.15 && purchases >= minPurchases && spend >= minSpend * 2) {
-    return { classification: 'PROVEN_WINNER', evidence: `${base} — أرخص من الهدف (${targetCpa} ج) بـ${Math.round((ratio - 1) * 100)}%، بعينة قوية.` };
+    return { classification: 'PROVEN_WINNER', signalStrength, evidence: `${base} — أرخص من الهدف (${targetCpa} ج) بـ${Math.round((ratio - 1) * 100)}%، بعينة قوية.` };
   }
   if (ratio >= 0.9) {
-    return { classification: 'PROMISING', evidence: `${base} — قريب من أو أفضل من الهدف (${targetCpa} ج)، واعد لكن العينة لسه محتاجة تكبر للتأكيد الكامل.` };
+    return { classification: 'PROMISING', signalStrength, evidence: `${base} — قريب من أو أفضل من الهدف (${targetCpa} ج)، واعد لكن العينة لسه محتاجة تكبر للتأكيد الكامل.` };
   }
   if (ratio < 0.6 && spend >= minSpend * 2 && purchases >= minPurchases) {
-    return { classification: 'PROVEN_WEAK', evidence: `${base} — أعلى من الهدف (${targetCpa} ج) بشكل كبير وواضح بعينة كافية — ضعف حقيقي مؤكد.` };
+    return { classification: 'PROVEN_WEAK', signalStrength, evidence: `${base} — أعلى من الهدف (${targetCpa} ج) بشكل كبير وواضح بعينة كافية — ضعف حقيقي مؤكد.` };
   }
-  return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — الأداء متوسط والعينة لسه مش كافية لحسم التصنيف.` };
+  return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — الأداء متوسط والعينة لسه مش كافية لحسم التصنيف.` };
 }
 
 /**
@@ -79,12 +111,17 @@ export function classifyCodSegment(row, { minOrders = 10, globalConfirmationRate
   const confirmationRate = orders > 0 ? confirmed / orders : null;
   const deliveryRate = confirmed > 0 ? delivered / confirmed : null;
   const base = `${orders} أوردر${confirmationRate != null ? ` · تأكيد ${Math.round(confirmationRate * 100)}%` : ''}${deliveryRate != null ? ` · تسليم ${Math.round(deliveryRate * 100)}%` : ''}`;
+  const signalStrength = codSignalStrength(orders, minOrders);
 
   // The mandatory guardrail, enforced structurally: under minOrders, NEVER
   // proceeds to outcome-based reasoning — this is the exact "Minya has 1
-  // order so it's bad" mistake, made structurally impossible here.
+  // order so it's bad" mistake, made structurally impossible here. This
+  // NEVER hides the real observed order count — signalStrength above still
+  // reports OBSERVED/EARLY_SIGNAL from the same real orders/confirmed/
+  // delivered numbers already on this row; only the WINNER verdict is
+  // withheld here, never the underlying observation.
   if (orders < minOrders) {
-    return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — أقل من الحد الأدنى (${minOrders} أوردر) للحكم على هذه المحافظة، سواء بالسلب أو الإيجاب.` };
+    return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — أقل من الحد الأدنى (${minOrders} أوردر) للحكم على هذه المحافظة، سواء بالسلب أو الإيجاب.` };
   }
 
   // A SECOND guardrail, same family as the first: never blame ONE
@@ -95,21 +132,21 @@ export function classifyCodSegment(row, { minOrders = 10, globalConfirmationRate
   // exact same class of error the sample-size guardrail exists to prevent.
   const systemicBacklog = globalConfirmationRate != null && globalConfirmationRate < 0.1;
   if (deliveryRate != null && deliveryRate < 0.35 && orders >= minOrders * 1.5) {
-    return { classification: 'PROVEN_WEAK', evidence: `${base} — معدل تسليم ضعيف حقيقي بعينة كافية (${orders} أوردر).` };
+    return { classification: 'PROVEN_WEAK', signalStrength, evidence: `${base} — معدل تسليم ضعيف حقيقي بعينة كافية (${orders} أوردر).` };
   }
   if (!systemicBacklog && confirmationRate != null && confirmationRate < 0.25 && orders >= minOrders * 1.5) {
-    return { classification: 'PROVEN_WEAK', evidence: `${base} — معدل تأكيد ضعيف حقيقي بعينة كافية (${orders} أوردر).` };
+    return { classification: 'PROVEN_WEAK', signalStrength, evidence: `${base} — معدل تأكيد ضعيف حقيقي بعينة كافية (${orders} أوردر).` };
   }
   if (deliveryRate != null && deliveryRate >= 0.55 && orders >= minOrders * 2) {
-    return { classification: 'PROVEN_WINNER', evidence: `${base} — معدل تسليم قوي من عينة كبيرة (${orders} أوردر) — شريحة مثبتة.` };
+    return { classification: 'PROVEN_WINNER', signalStrength, evidence: `${base} — معدل تسليم قوي من عينة كبيرة (${orders} أوردر) — شريحة مثبتة.` };
   }
   if ((deliveryRate != null && deliveryRate >= 0.4) || (confirmationRate != null && confirmationRate >= 0.5)) {
-    return { classification: 'PROMISING', evidence: `${base} — واعدة، محتاجة عينة أكبر (حاليًا ${orders} أوردر) للتأكيد الكامل.` };
+    return { classification: 'PROMISING', signalStrength, evidence: `${base} — واعدة، محتاجة عينة أكبر (حاليًا ${orders} أوردر) للتأكيد الكامل.` };
   }
   if (systemicBacklog && confirmationRate != null && confirmationRate < 0.25) {
-    return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — معدل التأكيد على المنتج كله منخفض جدًا حاليًا (تراكم عام، مش خاص بهذه المحافظة) — الحكم على المحافظة نفسها لسه مبكر.` };
+    return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — معدل التأكيد على المنتج كله منخفض جدًا حاليًا (تراكم عام، مش خاص بهذه المحافظة) — الحكم على المحافظة نفسها لسه مبكر.` };
   }
-  return { classification: 'INSUFFICIENT_DATA', evidence: `${base} — الأرقام غير حاسمة بعد.` };
+  return { classification: 'INSUFFICIENT_DATA', signalStrength, evidence: `${base} — الأرقام غير حاسمة بعد.` };
 }
 
 const RANK = { PROVEN_WINNER: 3, PROMISING: 2, INSUFFICIENT_DATA: 1, PROVEN_WEAK: 0 };
@@ -194,9 +231,13 @@ export async function segmentIntelForProduct({ productId, storeId, adAccountId, 
     window,
     metaAvailable: metaBreakdown.available,
     metaUnavailableReason: metaBreakdown.available ? null : metaBreakdown.reason,
-    age: { table: ageRows, best: bestAge, bestNote: bestAge ? null : NO_SEGMENT_MSG },
-    gender: { table: genderRows, best: bestGender, bestNote: bestGender ? null : NO_SEGMENT_MSG },
-    governorates: { table: governorateRows, best: bestGovernorate, bestNote: bestGovernorate ? null : NO_SEGMENT_MSG },
+    // topObserved is a pure OBSERVATION callout (highest raw purchases/
+    // orders right now) — it is NEVER a winner claim; winnerStatus inside it
+    // is explicitly NOT_PROVEN_YET unless that same row also independently
+    // cleared the real evidence bar as PROVEN_WINNER above.
+    age: { table: ageRows, best: bestAge, bestNote: bestAge ? null : NO_SEGMENT_MSG, topObserved: computeTopObserved(ageRows, 'purchases') },
+    gender: { table: genderRows, best: bestGender, bestNote: bestGender ? null : NO_SEGMENT_MSG, topObserved: computeTopObserved(genderRows, 'purchases') },
+    governorates: { table: governorateRows, best: bestGovernorate, bestNote: bestGovernorate ? null : NO_SEGMENT_MSG, topObserved: computeTopObserved(governorateRows, 'orders') },
     audienceSignal,
   };
 }
