@@ -48,7 +48,8 @@ export async function runAutoAnalysis() {
   const adAccountId = connection?.selected_ad_account_id;
   if (!adAccountId) return { scanned: 0, analyzed: 0, changed: 0, reason: 'NO_AD_ACCOUNT' };
   const settings = await getAmbSettings();
-  const windowName = Number(settings.ambAnalysisLookbackDays) >= 30 ? 'last30' : 'last7';
+  const { resolveOperationalWindowName } = await import('./productDossier.js');
+  const windowName = resolveOperationalWindowName(settings);
 
   const ambProducts = await prisma.ambProduct.findMany({ where: { product_id: { not: null }, active: true }, select: { id: true, product_id: true } });
   let scanned = 0, analyzed = 0, changed = 0;

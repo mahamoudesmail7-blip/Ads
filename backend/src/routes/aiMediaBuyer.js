@@ -192,9 +192,14 @@ router.post('/decision-center/products/analyze-all', asyncRoute(async (req, res)
 // The full Decision Dossier for one product — bundles Phase 2-6/9/10 into
 // one call. First open with no persisted decision yet analyzes
 // automatically; ?refresh=1 forces a fresh recompute ("إعادة التحليل").
+// ?window=today|yesterday|last3|last7|last14|last30|last90|since_launch
+// selects a VIEW window; ?from=&to= selects a custom range. Any window
+// other than the real operational one is always computed fresh and NEVER
+// persisted as the product's live decision (see productDossier.js's own
+// VIEW WINDOW vs OPERATIONAL DECISION WINDOW header comment).
 router.get('/decision-center/products/:productId/dossier', asyncRoute(async (req, res) => {
   const { getProductDossier } = await import('../services/amb/productDossier.js');
-  res.json(await getProductDossier({ productId: req.params.productId, windowName: req.query.window, forceRefresh: req.query.refresh === '1' }));
+  res.json(await getProductDossier({ productId: req.params.productId, windowName: req.query.window, from: req.query.from, to: req.query.to, forceRefresh: req.query.refresh === '1' }));
 }));
 
 // Smart Decision Center Phase 5 — Full Funnel Diagnosis. Analysis only.

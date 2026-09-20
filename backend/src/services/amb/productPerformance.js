@@ -284,10 +284,17 @@ function toDiagnosisMetrics(perf) {
  * preceding equal-length window, for real fatigue corroboration) and the
  * existing, already-tested computeDiagnosis()/diagnoseFunnelBottleneck()
  * engines — never a new diagnostic engine, never a new threshold.
- * @param {{productId:number, windowName?:string, settings:object}} params
+ * `from`/`to`, when given, are used VERBATIM instead of re-resolving
+ * `windowName` — lets a caller (productDossier.js) pin this to an EXACT
+ * date range (a persisted decision's frozen window, or an explicit
+ * historical/custom VIEW window) rather than whatever `windowName` would
+ * resolve to right now.
+ * @param {{productId:number, windowName?:string, from?:string, to?:string, settings:object}} params
  */
-export async function getProductDiagnosis({ productId, windowName, settings }) {
-  const current = await getProductPerformance({ productId, windowName: windowName || 'last30' });
+export async function getProductDiagnosis({ productId, windowName, from, to, settings }) {
+  const current = (from || to)
+    ? await getProductPerformance({ productId, from, to })
+    : await getProductPerformance({ productId, windowName: windowName || 'last30' });
   const window = current.window;
 
   let priorMetrics = null;

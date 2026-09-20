@@ -1588,7 +1588,7 @@ const FILTER_CHIPS = [
   { key: 'measuring', label: 'قيد القياس', match: (b) => b === 'measuring' },
 ];
 
-const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null };
+const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null } };
 
 async function renderDecisionCenter(panel) {
   if (!dcState.stores) {
@@ -1742,16 +1742,33 @@ function dcCardHtml(p) {
   </div>`;
 }
 
+const DOSSIER_WINDOW_CHIPS = [
+  { key: 'today', label: 'اليوم' }, { key: 'yesterday', label: 'أمس' }, { key: 'last3', label: 'آخر 3 أيام' },
+  { key: 'last7', label: 'آخر 7 أيام' }, { key: 'last14', label: 'آخر 14 يوم' }, { key: 'last30', label: 'آخر 30 يوم' },
+  { key: 'last90', label: 'آخر 90 يوم' }, { key: 'custom', label: 'فترة مخصصة' },
+];
+
 async function dcOpenProduct(panel, productId) {
   dcState.selectedProductId = productId;
   dcState.dossier = null;
   dcState.activeTab = 'overview';
+  dcState.dossierWindow = { key: null }; // null = "just open normally" -> operational window
   dcRenderAll(panel);
+  await dcFetchDossier(panel, productId);
+}
+
+/** Fetches the dossier for whatever window is currently selected in dcState.dossierWindow — null key = operational/default open. */
+async function dcFetchDossier(panel, productId, opts = {}) {
   const dossierEl = $('ambDcDossier');
-  dossierEl.innerHTML = '<div class="amb-dossier"><div class="amb-loading">جارِ تحليل المنتج…</div></div>';
+  dossierEl.innerHTML = `<div class="amb-dossier"><div class="amb-loading">${opts.refresh ? 'جارِ إعادة التحليل…' : 'جارِ تحليل المنتج…'}</div></div>`;
   dossierEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const w = dcState.dossierWindow || {};
+  const params = { refresh: opts.refresh ? '1' : undefined };
+  if (w.key === 'custom' && w.from && w.to) { params.from = w.from; params.to = w.to; }
+  else if (w.key === 'since_launch') { params.window = 'since_launch'; }
+  else if (w.key) { params.window = w.key; }
   try {
-    dcState.dossier = await api.get(`/api/ai-media-buyer/decision-center/products/${productId}/dossier`);
+    dcState.dossier = await api.get(`/api/ai-media-buyer/decision-center/products/${productId}/dossier`, params);
   } catch (err) {
     dossierEl.innerHTML = `<div class="amb-dossier amb-empty">⚠️ ${E(err.message)}</div>`;
     return;
@@ -1759,14 +1776,24 @@ async function dcOpenProduct(panel, productId) {
   dcRenderDossierInto(dossierEl, panel);
 }
 
+/** Changing the date range reloads + recalculates everything for THAT exact window — it never touches the product's real operational decision (see backend's VIEW WINDOW vs OPERATIONAL DECISION WINDOW separation). */
+async function dcChangeWindow(panel, productId, key) {
+  if (key === 'custom') {
+    const from = prompt('من (YYYY-MM-DD):', dcState.dossierWindow?.from || '');
+    if (!from) return;
+    const to = prompt('إلى (YYYY-MM-DD):', dcState.dossierWindow?.to || '');
+    if (!to) return;
+    dcState.dossierWindow = { key: 'custom', from, to };
+  } else {
+    dcState.dossierWindow = { key };
+  }
+  await dcFetchDossier(panel, productId);
+}
+
 async function dcReanalyze(panel, productId) {
-  const dossierEl = $('ambDcDossier');
-  dossierEl.innerHTML = '<div class="amb-dossier"><div class="amb-loading">جارِ إعادة التحليل…</div></div>';
-  try {
-    dcState.dossier = await api.get(`/api/ai-media-buyer/decision-center/products/${productId}/dossier`, { refresh: '1' });
-    await dcLoadProducts();
-    UI.toast('✅ اتحلل من جديد');
-  } catch (err) { UI.toast(err.message, 'error'); }
+  await dcFetchDossier(panel, productId, { refresh: true });
+  await dcLoadProducts();
+  UI.toast('✅ اتحلل من جديد');
   dcRenderAll(panel);
 }
 
@@ -1800,7 +1827,21 @@ function dcRenderDossierInto(el, panel) {
   }
   const pkg = d.package;
   const stock = stockLabel(d.stock);
+  const activeKey = dcState.dossierWindow?.key || 'operational';
   el.innerHTML = `<div class="amb-dossier">
+    <div class="amb-filters" style="margin-bottom:4px;">
+      <span class="faint" style="font-size:12px; font-weight:700; align-self:center;">الفترة:</span>
+      <button class="amb-fbtn ${activeKey === 'operational' ? 'active' : ''}" data-dcwin="operational">التشغيلية (${E(d.operationalDecision?.window?.label || '—')})</button>
+      ${DOSSIER_WINDOW_CHIPS.map((c) => `<button class="amb-fbtn ${activeKey === c.key ? 'active' : ''}" data-dcwin="${c.key}">${E(c.label)}</button>`).join('')}
+      ${d.sinceLaunchAvailable ? `<button class="amb-fbtn ${activeKey === 'since_launch' ? 'active' : ''}" data-dcwin="since_launch">منذ إطلاق الحملة</button>` : ''}
+    </div>
+    <div class="faint" style="font-size:11.5px; margin-bottom:10px;">
+      الفترة المستخدمة في هذا التحليل: <b>${E(pkg.window?.label || '')}</b> — من: ${E(pkg.window?.from || '—')} — إلى: ${E(pkg.window?.to || '—')}
+      <br/>Meta آخر مزامنة: ${d.freshness?.metaLastSync ? fmtDT(d.freshness.metaLastSync) : 'غير متاح'} · Easy Orders آخر مزامنة: ${d.freshness?.easyOrdersLastSync ? fmtDT(d.freshness.easyOrdersLastSync) : 'غير متاح'} · آخر إعادة حساب للقرار: ${d.operationalDecision?.lastRecalculatedAt ? fmtDT(d.operationalDecision.lastRecalculatedAt) : 'غير متاح'}
+    </div>
+    ${!d.isViewingOperational ? `<div class="amb-panel" style="padding:10px 14px; margin-bottom:12px; border-color:var(--amb-amber); background:var(--amb-amber-bg);">
+      <b>👁️ أنت تستعرض فترة سابقة/مخصصة (${E(pkg.window?.label || '')})</b> — القرار التشغيلي الحالي للمنتج (${E(DECISION_LABEL_AR[d.operationalDecision?.decision] || d.operationalDecision?.decision || '—')}, فترة ${E(d.operationalDecision?.window?.label || '—')}) يظل كما هو ولن يتغير بمجرد الاستعراض هنا.
+    </div>` : ''}
     <div class="amb-dossier-head">
       ${d.image ? `<img class="amb-dossier-img" src="${E(d.image)}" alt="" />` : `<div class="amb-dossier-img" style="display:flex;align-items:center;justify-content:center;color:var(--amb-text-faint);">${ic('image', 'ic')}</div>`}
       <div style="flex:1; min-width:200px;">
@@ -1827,6 +1868,10 @@ function dcRenderDossierInto(el, panel) {
 
   $('ambDcReanalyze').onclick = () => dcReanalyze(panel, d.productId);
   el.querySelectorAll('[data-dctab]').forEach((b) => b.onclick = () => { dcState.activeTab = b.dataset.dctab; dcRenderDossierInto(el, panel); });
+  el.querySelectorAll('[data-dcwin]').forEach((b) => b.onclick = () => {
+    const key = b.dataset.dcwin;
+    dcChangeWindow(panel, d.productId, key === 'operational' ? null : key);
+  });
   dcWireActionPlan(el, panel, pkg);
 }
 

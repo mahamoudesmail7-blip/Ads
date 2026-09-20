@@ -66,6 +66,48 @@ try {
     ok('a new recommendation row was created', after === before + 1, `${before} -> ${after}`);
     ok('the returned package reflects the freshly-created row\'s id', d.package.recommendationId != null);
   }
+
+  console.log('\n§5 VIEW WINDOW vs OPERATIONAL DECISION WINDOW — mandatory separation (real Smart-Tank product 146):');
+  {
+    const opBefore = await prisma.ambRecommendation.count({ where: { level: 'product' } });
+
+    // Viewing "last30" (almost certainly NOT the operational window, since operational defaults to last7) must NEVER persist a new recommendation.
+    const view30 = await getProductDossier({ productId: 146, windowName: 'last30' });
+    const opAfterView = await prisma.ambRecommendation.count({ where: { level: 'product' } });
+    ok('viewing a non-operational window (last30) creates ZERO new recommendation rows', opAfterView === opBefore, `${opBefore} -> ${opAfterView}`);
+    ok('the view package is explicitly marked VIEW_ONLY, never claims to be a real persisted decision', view30.package.recommendationStatus === 'VIEW_ONLY' && view30.package.recommendationId === null, JSON.stringify({ status: view30.package.recommendationStatus, id: view30.package.recommendationId }));
+    ok('isViewingOperational is false for this explicit non-operational window', view30.isViewingOperational === false);
+    ok('the view window is really last30 (~30 days span), not silently coerced to the operational one', (new Date(view30.package.window.to) - new Date(view30.package.window.from)) / 86400000 >= 28, JSON.stringify(view30.package.window));
+
+    // The operationalDecision block must still reflect the REAL, unchanged, currently-persisted decision — completely independent of what window was just viewed.
+    ok('operationalDecision is still present and reflects the real persisted decision, untouched by the view above', view30.operationalDecision != null && view30.operationalDecision.recommendationId != null);
+
+    const opAfterAll = await prisma.ambRecommendation.count({ where: { level: 'product' } });
+    ok('after viewing a historical window, the total recommendation count is still completely unchanged', opAfterAll === opBefore, `${opBefore} -> ${opAfterAll}`);
+  }
+
+  console.log('\n§6 explicit window selection is honored consistently across EVERY dimension (funnel/segment/creative) for a real product:');
+  {
+    const viewToday = await getProductDossier({ productId: 146, windowName: 'today' });
+    ok('package.window is really "today" (single-day span)', viewToday.package.window.from === viewToday.package.window.to, JSON.stringify(viewToday.package.window));
+    ok('segmentIntel.window matches the SAME single-day span as the funnel', viewToday.package.segmentIntel.window.from === viewToday.package.window.from && viewToday.package.segmentIntel.window.to === viewToday.package.window.to, JSON.stringify({ pkg: viewToday.package.window, seg: viewToday.package.segmentIntel.window }));
+    ok('creativeIntel.window matches the SAME single-day span as the funnel', viewToday.package.creativeIntel.window.from === viewToday.package.window.from && viewToday.package.creativeIntel.window.to === viewToday.package.window.to, JSON.stringify({ pkg: viewToday.package.window, cre: viewToday.package.creativeIntel.window }));
+
+    const viewCustom = await getProductDossier({ productId: 146, from: '2026-09-10', to: '2026-09-12' });
+    ok('a custom from/to range is used verbatim, never coerced to a named window', viewCustom.package.window.from === '2026-09-10' && viewCustom.package.window.to === '2026-09-12', JSON.stringify(viewCustom.package.window));
+    ok('every dimension shares the SAME custom range', viewCustom.package.segmentIntel.window.from === '2026-09-10' && viewCustom.package.creativeIntel.window.from === '2026-09-10');
+  }
+
+  console.log('\n§7 freshness + since-launch metadata are real, never fabricated:');
+  {
+    const d = await getProductDossier({ productId: 146 });
+    ok('freshness block is present with real (or honestly null) sync timestamps', 'metaLastSync' in d.freshness && 'easyOrdersLastSync' in d.freshness, JSON.stringify(d.freshness));
+    ok('sinceLaunchAvailable is a real boolean, computed from the actual AmbLaunchJob link (product 146 has one)', d.sinceLaunchAvailable === true, d.sinceLaunchAvailable);
+
+    const sinceLaunch = await getProductDossier({ productId: 146, windowName: 'since_launch' });
+    ok('since_launch resolves to a real window with a real "منذ الإطلاق" label', sinceLaunch.package.window.label === 'منذ الإطلاق', JSON.stringify(sinceLaunch.package.window));
+    ok('since_launch is also a VIEW, never persisted as the operational decision', sinceLaunch.package.recommendationStatus === 'VIEW_ONLY');
+  }
 } finally {
   await prisma.$disconnect?.().catch(() => {});
 }

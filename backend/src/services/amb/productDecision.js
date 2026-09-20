@@ -190,17 +190,31 @@ export function decideProductAction({ diagnosis, creativeIntel, segmentIntel }) 
  * persistProductDecision() below for that, kept separate so a caller can
  * preview a package without writing a row.
  */
-export async function buildProductDecisionPackage({ productId, windowName, settings, adAccountId }) {
-  const diagnosis = await getProductDiagnosis({ productId, windowName, settings });
+/**
+ * `from`/`to`, when given, are used VERBATIM for the diagnosis instead of
+ * re-resolving `windowName`. Every other dimension below (segmentIntel/
+ * creativeIntel) is then locked to THAT SAME resolved `diagnosis.window`
+ * (never re-derived from the original `windowName`/`from`/`to` inputs
+ * separately) — this is what guarantees every dimension of one Decision
+ * Package always shares the identical date range, with no drift possible
+ * regardless of how the window was originally specified.
+ */
+export async function buildProductDecisionPackage({ productId, windowName, from, to, windowLabel, settings, adAccountId }) {
+  const diagnosis = await getProductDiagnosis({ productId, windowName, from, to, settings });
+  // getProductPerformance() attaches no human label for an explicit from/to
+  // range (it has no way to know WHY that range was chosen) — an explicit
+  // windowLabel from the caller (e.g. "منذ الإطلاق"/"فترة مخصصة") fills
+  // that in, propagated to EVERY dimension below via this one `w`.
+  const w = windowLabel ? { ...diagnosis.window, label: windowLabel } : diagnosis.window;
 
   const ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: Number(productId) }, select: { id: true } });
   const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { store_id: true } });
 
   const [creativeIntel, segmentIntel] = await Promise.all([
     ambProduct && adAccountId
-      ? creativeIntelForProduct({ adAccountId, windowName, settings, ambProductId: ambProduct.id, compareToPrior: true }).catch(() => ({ dataAvailable: false }))
+      ? creativeIntelForProduct({ adAccountId, from: w.from, to: w.to, windowLabel: w.label, settings, ambProductId: ambProduct.id, compareToPrior: true }).catch(() => ({ dataAvailable: false }))
       : Promise.resolve({ dataAvailable: false }),
-    segmentIntelForProduct({ productId: Number(productId), storeId: product?.store_id || null, adAccountId, windowName, settings }).catch(() => ({ metaAvailable: false, age: {}, gender: {}, governorates: {} })),
+    segmentIntelForProduct({ productId: Number(productId), storeId: product?.store_id || null, adAccountId, from: w.from, to: w.to, windowLabel: w.label, settings }).catch(() => ({ metaAvailable: false, age: {}, gender: {}, governorates: {} })),
   ]);
 
   const opportunity = computeOpportunityScore({ metrics: diagnosis.metrics, settings });
@@ -210,12 +224,12 @@ export async function buildProductDecisionPackage({ productId, windowName, setti
   const priceTestOpportunity = detectPriceTestOpportunity({ businessConversionRate: diagnosis.businessConversionRate });
 
   const campaigns = await resolveProductCampaigns(Number(productId)).catch(() => []);
-  const dataQuality = computeDataQualityGate({ product, campaigns, meta: diagnosis.meta, easyOrders: diagnosis.easyOrders, window: diagnosis.window });
+  const dataQuality = computeDataQualityGate({ product, campaigns, meta: diagnosis.meta, easyOrders: diagnosis.easyOrders, window: w });
 
   return {
     productId: diagnosis.productId,
     productName: diagnosis.productName,
-    window: diagnosis.window,
+    window: w,
     health,
     dataQuality,
     diagnosis: { bottleneck: diagnosis.bottleneck, allSignals: diagnosis.diagnosis, metrics: diagnosis.metrics },
