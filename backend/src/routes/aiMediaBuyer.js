@@ -260,7 +260,10 @@ router.get('/decision-center/:id/execution-plan', asyncRoute(async (req, res) =>
 }));
 router.post('/decision-center/:id/execute', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const { executeApprovedDecision } = await import('../services/amb/productDecisionExecution.js');
-  res.json(await executeApprovedDecision({ recId: req.params.id, userId: req.user.id, confirmRealExecution: req.body?.confirmRealExecution === true }));
+  res.json(await executeApprovedDecision({
+    recId: req.params.id, userId: req.user.id, confirmRealExecution: req.body?.confirmRealExecution === true,
+    budget: req.body?.budget ?? null, startDate: req.body?.startDate || null, startTime: req.body?.startTime || null,
+  }));
 }));
 // Phase 9 — Experiment Measurement. Mirrors the existing /outcomes/run
 // scheduler-tick shape exactly, scoped to product-level decisions only —

@@ -1,0 +1,204 @@
+// Smart Decision Center — "🚀 أكشن بلان" tab (services/amb/productActionPlan.js).
+// Real throwaway DB rows where DB access is involved (tagged, cleaned up
+// after). Proves the mandatory rules from the spec: never fake a complete
+// Winning Stack, readiness score components are transparent and traceable,
+// the primary action type never oversells a data-quality-blocked plan as
+// scale-ready, and tracking identity/bump-candidate lookups never invent
+// data that doesn't exist.
+//   node src/scripts/productActionPlanTest.js
+import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
+
+let pass = 0, fail = 0;
+const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
+
+const {
+  reconcileStackStatus, buildWinningStack, computeCampaignReadiness, derivePrimaryActionType,
+  getExistingBumpCandidates, resolveTrackingIdentity, buildActionPlan,
+} = await imp('../services/amb/productActionPlan.js');
+const { prisma } = await imp('../prisma.js');
+
+const cleanupRecIds = [];
+const cleanupJobIds = [];
+async function cleanup() {
+  for (const id of cleanupRecIds) await prisma.ambRecommendation.deleteMany({ where: { id } });
+  for (const id of cleanupJobIds) await prisma.ambLaunchJob.deleteMany({ where: { id } });
+}
+
+try {
+  console.log('§1 reconcileStackStatus — pure vocabulary mapping over ALREADY-GATED classifications, never a new judgement:');
+  ok('PROVEN_WINNER (segment) -> PROVEN', reconcileStackStatus('PROVEN_WINNER', null) === 'PROVEN');
+  ok('WINNER (creative) -> PROVEN', reconcileStackStatus('WINNER', null) === 'PROVEN');
+  ok('PROMISING (segment) -> PROMISING', reconcileStackStatus('PROMISING', null) === 'PROMISING');
+  ok('GOOD (creative) -> PROMISING', reconcileStackStatus('GOOD', null) === 'PROMISING');
+  ok('INSUFFICIENT_DATA + EARLY_SIGNAL -> EARLY_SIGNAL, never hidden', reconcileStackStatus('INSUFFICIENT_DATA', 'EARLY_SIGNAL') === 'EARLY_SIGNAL');
+  ok('TESTING + OBSERVED -> EARLY_SIGNAL', reconcileStackStatus('TESTING', 'OBSERVED') === 'EARLY_SIGNAL');
+  ok('INSUFFICIENT_DATA + no signal -> NOT_PROVEN', reconcileStackStatus('INSUFFICIENT_DATA', 'NO_SIGNAL') === 'NOT_PROVEN');
+  ok('a real proven-NEGATIVE (PROVEN_WEAK) is NEVER put into the winning stack -> NOT_PROVEN', reconcileStackStatus('PROVEN_WEAK', null) === 'NOT_PROVEN');
+  ok('WEAK/FATIGUED creative -> NOT_PROVEN', reconcileStackStatus('WEAK', null) === 'NOT_PROVEN' && reconcileStackStatus('FATIGUED', null) === 'NOT_PROVEN');
+
+  console.log('\n§2 buildWinningStack — NEVER fakes a complete stack:');
+  {
+    const winners = {
+      gender: { segment: 'نساء', classification: 'PROVEN_WINNER', evidence: 'صرف 1000 ج · 8 شراء', sampleSize: 8 },
+      creative: { label: 'C7', classification: 'GOOD', evidence: 'قريب من الهدف', sampleSize: 6, meta: { thumbnailUrl: 'https://x/c7.jpg' } },
+      age: null, // no real proven/promising age winner
+      governorate: null,
+    };
+    const stack = buildWinningStack(winners);
+    ok('a real PROVEN_WINNER segment becomes PROVEN with its own real evidence', stack.gender?.status === 'PROVEN' && stack.gender.evidence.includes('8 شراء'), JSON.stringify(stack.gender));
+    ok('a real GOOD creative becomes PROMISING and keeps its thumbnail', stack.creative?.status === 'PROMISING' && stack.creative.thumbnailUrl === 'https://x/c7.jpg');
+    ok('age has NO real winner -> null, never invented (renders as Broad)', stack.age === null);
+    ok('governorate has NO real winner -> null, never invented', stack.governorate === null);
+    ok('placements always defaults to Meta automatic/Advantage+, honestly NOT_PROVEN (no placement intelligence pipeline exists)', stack.placements.status === 'NOT_PROVEN' && stack.placements.value.includes('Advantage'));
+  }
+  {
+    const stack = buildWinningStack({});
+    ok('an entirely empty winners object -> every targetable dimension is null, zero fabrication', ['gender', 'age', 'governorate', 'creative', 'hook', 'angle', 'primaryText', 'headline'].every((k) => stack[k] === null));
+  }
+
+  console.log('\n§3 computeCampaignReadiness — every point traceable to a real input, never an arbitrary AI number:');
+  {
+    const fullStack = buildWinningStack({
+      gender: { segment: 'نساء', classification: 'PROVEN_WINNER', evidence: 'e' },
+      age: { segment: '20-35', classification: 'PROVEN_WINNER', evidence: 'e' },
+      governorate: { segment: 'القاهرة', classification: 'PROVEN_WINNER', evidence: 'e' },
+      creative: { label: 'C7', classification: 'WINNER', evidence: 'e' },
+      hook: { label: 'H3', classification: 'WINNER', evidence: 'e' },
+    });
+    const r = computeCampaignReadiness({ dataQuality: { status: 'VERIFIED' }, stack: fullStack, hasTrackingReady: true });
+    ok('a fully-proven stack + VERIFIED data quality + tracking ready scores the maximum (100)', r.score === 100, JSON.stringify(r));
+    ok('status is جاهزة للمراجعة at >=85', r.status === 'جاهزة للمراجعة');
+    ok('every component names its own real max and points (auditable, not opaque)', r.components.every((c) => typeof c.points === 'number' && typeof c.max === 'number'));
+  }
+  {
+    const emptyStack = buildWinningStack({});
+    const r = computeCampaignReadiness({ dataQuality: { status: 'VERIFIED' }, stack: emptyStack, hasTrackingReady: false });
+    ok('zero real winners + no tracking -> only the data-quality points remain, "تحتاج بيانات أكثر"', r.score === 20 && r.status === 'تحتاج بيانات أكثر', JSON.stringify(r));
+  }
+  {
+    const anyStack = buildWinningStack({ gender: { segment: 'نساء', classification: 'PROVEN_WINNER', evidence: 'e' } });
+    const r = computeCampaignReadiness({ dataQuality: { status: 'DECISION_BLOCKED_DATA_QUALITY' }, stack: anyStack, hasTrackingReady: true });
+    ok('DECISION_BLOCKED_DATA_QUALITY always overrides the status to محظورة بسبب جودة البيانات, regardless of score', r.status === 'محظورة بسبب جودة البيانات', JSON.stringify(r));
+  }
+
+  console.log('\n§4 derivePrimaryActionType — pure mapping from the EXISTING decision engine verdict, with one honesty safety net:');
+  ok('SCALE_CANDIDATE + healthy readiness -> NEW_SCALING_CAMPAIGN', derivePrimaryActionType('SCALE_CANDIDATE', { status: 'جاهزة للمراجعة' }) === 'NEW_SCALING_CAMPAIGN');
+  ok('SCALE_CANDIDATE + BLOCKED data quality -> never oversold as ready, falls back to WAIT_FOR_DATA', derivePrimaryActionType('SCALE_CANDIDATE', { status: 'محظورة بسبب جودة البيانات' }) === 'WAIT_FOR_DATA');
+  ok('AUDIENCE_TEST -> AUDIENCE_TEST', derivePrimaryActionType('AUDIENCE_TEST', { status: 'تحتاج بيانات أكثر' }) === 'AUDIENCE_TEST');
+  ok('GEO_TEST -> GEO_TEST', derivePrimaryActionType('GEO_TEST', {}) === 'GEO_TEST');
+  ok('NEW_CREATIVE_TEST -> CREATIVE_TEST', derivePrimaryActionType('NEW_CREATIVE_TEST', {}) === 'CREATIVE_TEST');
+  ok('INSUFFICIENT_DATA -> WAIT_FOR_DATA', derivePrimaryActionType('INSUFFICIENT_DATA', {}) === 'WAIT_FOR_DATA');
+  ok('PAUSE_CANDIDATE stays its own honest type, even though not in the user-supplied vocabulary list (never mislabeled as KEEP_TESTING)', derivePrimaryActionType('PAUSE_CANDIDATE', {}) === 'PAUSE_CANDIDATE');
+  ok('an unrecognized/legacy decision falls back to KEEP_TESTING rather than crashing', derivePrimaryActionType('SOME_FUTURE_DECISION', {}) === 'KEEP_TESTING');
+
+  console.log('\n§5 getExistingBumpCandidates — real persisted PENDING bump/rollback recs for THIS product\'s own campaigns only:');
+  {
+    const batchId = `test-actionplan-${Date.now()}`;
+    const recA = await prisma.ambRecommendation.create({ data: {
+      batch_id: batchId, ad_account_id: 'act_test_ap', level: 'adset', entity_id: 'adset_A', entity_name: 'AdSet A',
+      campaign_id: 'camp_A', campaign_name: 'Camp A', adset_id: 'adset_A', adset_name: 'AdSet A',
+      decision: 'BUMP_ADSET_25', action_type: 'INCREASE_BUDGET', executable: true,
+      current_budget: 200, recommended_budget: 250, reason: 'CPA منخفض بعينة كافية', confidence: 'HIGH', status: 'PENDING', source: 'FALLBACK',
+    } });
+    cleanupRecIds.push(recA.id);
+    const recOtherCampaign = await prisma.ambRecommendation.create({ data: {
+      batch_id: batchId, ad_account_id: 'act_test_ap', level: 'adset', entity_id: 'adset_B', entity_name: 'AdSet B',
+      campaign_id: 'camp_UNRELATED', campaign_name: 'Camp Unrelated', adset_id: 'adset_B', adset_name: 'AdSet B',
+      decision: 'BUMP_ADSET_25', action_type: 'INCREASE_BUDGET', executable: true,
+      current_budget: 300, recommended_budget: 375, reason: 'unrelated', confidence: 'HIGH', status: 'PENDING', source: 'FALLBACK',
+    } });
+    cleanupRecIds.push(recOtherCampaign.id);
+    const recApproved = await prisma.ambRecommendation.create({ data: {
+      batch_id: batchId, ad_account_id: 'act_test_ap', level: 'adset', entity_id: 'adset_C', entity_name: 'AdSet C',
+      campaign_id: 'camp_A', campaign_name: 'Camp A', adset_id: 'adset_C', adset_name: 'AdSet C',
+      decision: 'BUMP_ADSET_25', action_type: 'INCREASE_BUDGET', executable: true,
+      current_budget: 100, recommended_budget: 125, reason: 'already approved', confidence: 'HIGH', status: 'APPROVED', source: 'FALLBACK',
+    } });
+    cleanupRecIds.push(recApproved.id);
+
+    const candidates = await getExistingBumpCandidates([{ campaignId: 'camp_A' }]);
+    ok('finds the real PENDING bump for this product\'s own campaign', candidates.some((c) => c.recommendationId === recA.id), JSON.stringify(candidates));
+    ok('never leaks a bump from an unrelated campaign', !candidates.some((c) => c.recommendationId === recOtherCampaign.id));
+    ok('never surfaces an already-APPROVED one as a pending secondary action', !candidates.some((c) => c.recommendationId === recApproved.id));
+    ok('carries the real current/proposed budget for display', candidates.find((c) => c.recommendationId === recA.id)?.currentBudget === 200);
+
+    const none = await getExistingBumpCandidates([]);
+    ok('no campaigns -> empty array, never a crash', Array.isArray(none) && none.length === 0);
+  }
+
+  console.log('\n§6 resolveTrackingIdentity — real prior Launch Builder config only, product-specific takes priority, never invented:');
+  {
+    // product_id is a real FK on AmbLaunchJob — reuse a real Product row
+    // that has NO existing AmbLaunchJob yet (read-only reference, never
+    // modified), so the "falls back to account-level" assertion below is
+    // never accidentally confused by pre-existing real launch history.
+    const launchedProductIds = (await prisma.ambLaunchJob.findMany({ where: { product_id: { not: null } }, select: { product_id: true }, distinct: ['product_id'] })).map((r) => r.product_id);
+    const anyRealProduct = await prisma.product.findFirst({ where: { id: { notIn: launchedProductIds } }, select: { id: true } });
+    const fakeProductId = anyRealProduct.id;
+    const fakeAdAccountId = 'act_test_tracking';
+    const accountJob = await prisma.ambLaunchJob.create({ data: {
+      job_id: `test-track-account-${Date.now()}`, ad_account_id: fakeAdAccountId, budget_mode: 'CBO', config_json: '{}',
+      pixel_id: 'px_account', pixel_name: 'Account Pixel', conversion_event: 'PURCHASE', page_id: 'pg_account', page_name: 'Account Page',
+    } });
+    cleanupJobIds.push(accountJob.id);
+
+    const accountLevel = await resolveTrackingIdentity({ productId: fakeProductId, adAccountId: fakeAdAccountId });
+    ok('no product-specific launch yet -> falls back to the account\'s real launch history', accountLevel.pixel_id === 'px_account' && accountLevel.source === 'ACCOUNT_LAUNCH_HISTORY', JSON.stringify(accountLevel));
+
+    const productJob = await prisma.ambLaunchJob.create({ data: {
+      job_id: `test-track-product-${Date.now()}`, ad_account_id: fakeAdAccountId, product_id: fakeProductId, budget_mode: 'CBO', config_json: '{}',
+      pixel_id: 'px_product', pixel_name: 'Product Pixel', conversion_event: 'PURCHASE', page_id: 'pg_product', page_name: 'Product Page', instagram_id: 'ig_product', instagram_username: 'product_ig',
+    } });
+    cleanupJobIds.push(productJob.id);
+
+    const productLevel = await resolveTrackingIdentity({ productId: fakeProductId, adAccountId: fakeAdAccountId });
+    ok('a real product-specific launch takes priority over the account-level fallback', productLevel.pixel_id === 'px_product' && productLevel.source === 'PRODUCT_LAUNCH_HISTORY', JSON.stringify(productLevel));
+
+    const neverLaunched = await resolveTrackingIdentity({ productId: -9999, adAccountId: 'act_never_used' });
+    ok('a product/account with NO real prior launch -> honestly null, never a guessed pixel/page', neverLaunched.pixel_id === null && neverLaunched.page_id === null && neverLaunched.source === null, JSON.stringify(neverLaunched));
+    ok('conversion event still defaults to PURCHASE (the same real default AmbLaunchJob itself uses)', neverLaunched.conversion_event === 'PURCHASE');
+  }
+
+  console.log('\n§7 buildActionPlan — full integration, VIEW WINDOW safety honored:');
+  {
+    const pkgProven = {
+      window: { label: 'آخر 7 أيام' }, decision: 'SCALE_CANDIDATE', reason: 'منتج صحي وكرياتيف مثبت',
+      dataQuality: { status: 'VERIFIED' }, recommendationStatus: 'PENDING', successMetric: 'صافي الربح / CPA', evaluationWindowDays: 7,
+      winners: {
+        gender: { segment: 'نساء', classification: 'PROVEN_WINNER', evidence: 'e1' },
+        age: { segment: '20-35', classification: 'PROVEN_WINNER', evidence: 'e2' },
+        governorate: { segment: 'القاهرة', classification: 'PROMISING', evidence: 'e3' },
+        creative: { label: 'C7', classification: 'WINNER', evidence: 'e4' },
+        hook: { label: 'H3', classification: 'GOOD', evidence: 'e5' },
+      },
+    };
+    const plan = await buildActionPlan({ pkg: pkgProven, productId: -9999, productName: 'Test Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('a real proven stack + VERIFIED quality -> primary action is NEW_SCALING_CAMPAIGN', plan.primaryAction.type === 'NEW_SCALING_CAMPAIGN', JSON.stringify(plan.primaryAction));
+    ok('a NEW_SCALING_CAMPAIGN plan carries a real campaign preview', !!plan.campaignPreview);
+    ok('campaign preview never invents a pixel/page for a product that never launched', plan.campaignPreview.pixel === null && plan.campaignPreview.page === null);
+    ok('canApprove reflects the pkg\'s own PENDING status', plan.canApprove === true && plan.isViewOnly === false);
+
+    const pkgViewOnly = { ...pkgProven, recommendationStatus: 'VIEW_ONLY' };
+    const viewPlan = await buildActionPlan({ pkg: pkgViewOnly, productId: -9999, productName: 'Test Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('a VIEW_ONLY package (historical window) never claims to be approvable', viewPlan.canApprove === false && viewPlan.isViewOnly === true);
+
+    const pkgThin = {
+      window: { label: 'اليوم' }, decision: 'AUDIENCE_TEST', reason: 'عينة صغيرة لسه',
+      dataQuality: { status: 'DATA_QUALITY_WARNING' }, recommendationStatus: 'PENDING', successMetric: 'CPC', evaluationWindowDays: 7,
+      winners: {},
+    };
+    const thinPlan = await buildActionPlan({ pkg: pkgThin, productId: -9998, productName: 'Smart-Tank-like', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('a thin/early product is honestly NOT presented as a scaling campaign', thinPlan.primaryAction.type !== 'NEW_SCALING_CAMPAIGN', JSON.stringify(thinPlan.primaryAction));
+    ok('every winning stack field is null (Broad) when there is truly no evidence — never fabricated', Object.entries(thinPlan.winningStack).filter(([k]) => k !== 'placements').every(([, v]) => v === null));
+  }
+} finally {
+  await cleanup();
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

@@ -23,6 +23,7 @@ import { logger } from '../../logger.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { setEntityStatus } from '../metaGraphClient.js';
 import { resolveProductCampaigns } from './productPerformance.js';
+import { buildWinningStack, resolveTrackingIdentity } from './productActionPlan.js';
 
 function fail(msg, status = 400) { const e = new Error(msg); e.status = status; throw e; }
 
@@ -91,10 +92,24 @@ export async function buildExecutionPlan({ recId }) {
     };
   }
   if (rec.decision === 'SCALE_CANDIDATE') {
+    const stack = buildWinningStack(facts.winners);
+    const tracking = await resolveTrackingIdentity({ productId: realProductId, adAccountId: rec.ad_account_id });
     return {
       ...base, actionKind: 'LAUNCH_BUILDER_PREFILL', realMetaWrite: false,
-      summary: 'إنشاء مسودة جديدة في رفع الكامبين (Campaign Launch Builder) مبنية على الكرياتيف/الجمهور الفائز — تحتاج مراجعتك واستكمال باقي خطوات المعالج ثم ضغط "نشر" بنفسك. لا يتم نشر أي حاجة تلقائيًا.',
-      prefill: { productId: realProductId, winningCreative: facts.winners?.creative?.label || null, winningHook: facts.winners?.hook?.label || null, winningSegment: [facts.winners?.gender?.segment, facts.winners?.age?.segment].filter(Boolean).join(' / ') || facts.winners?.governorate?.segment || null },
+      summary: 'إنشاء مسودة جديدة في رفع الكامبين (Campaign Launch Builder) مبنية على "أكشن بلان" — الميزانية/التاريخ/الـ Pixel/الصفحة تُعبّأ تلقائيًا لأنها حقول حقيقية في المعالج، والجمهور/الكرياتيف الفائز يظهر كمرجع لتطبيقه يدويًا (المعالج الحالي لا يحتوي خطوة استهداف جمهور حقيقية). تحتاج مراجعتك واستكمال باقي خطوات المعالج ثم ضغط "نشر" بنفسك. لا يتم نشر أي حاجة تلقائيًا.',
+      prefill: {
+        productId: realProductId,
+        winningCreative: stack.creative?.value || null,
+        winningHook: stack.hook?.value || null,
+        winningAngle: stack.angle?.value || null,
+        winningPrimaryText: stack.primaryText?.value || null,
+        winningHeadline: stack.headline?.value || null,
+        winningSegment: [stack.gender?.value, stack.age?.value].filter(Boolean).join(' / ') || stack.governorate?.value || null,
+        winningGovernorate: stack.governorate?.value || null,
+        pixelId: tracking.pixel_id || null, pixelName: tracking.pixel_name || null, conversionEvent: tracking.conversion_event || 'PURCHASE',
+        pageId: tracking.page_id || null, pageName: tracking.page_name || null,
+        instagramId: tracking.instagram_id || null, instagramUsername: tracking.instagram_username || null,
+      },
     };
   }
   return {
@@ -109,11 +124,21 @@ export async function buildExecutionPlan({ recId }) {
  * confirmRealExecution:true explicitly for a real Meta write — this file
  * NEVER defaults that flag, NEVER infers it from approval alone.
  */
-export async function executeApprovedDecision({ recId, userId, confirmRealExecution = false }) {
+export async function executeApprovedDecision({ recId, userId, confirmRealExecution = false, budget = null, startDate = null, startTime = null }) {
   const rec = await loadProductRec(recId);
   if (rec.status !== 'APPROVED') fail(`القرار في حالة ${rec.status} — لازم تتم الموافقة عليه أولاً قبل التنفيذ.`, 409);
 
   const plan = await buildExecutionPlan({ recId });
+  // User-entered budget/start date/time — the ONLY inputs the Action Plan
+  // requires from a human — merged into the LAUNCH_BUILDER_PREFILL plan's
+  // real prefill object. Never defaulted/guessed; a caller that omits them
+  // simply leaves those specific wizard fields for the user to fill inside
+  // Launch Builder as before.
+  if (plan.actionKind === 'LAUNCH_BUILDER_PREFILL' && plan.prefill) {
+    if (budget != null) plan.prefill.budget = Number(budget) || null;
+    if (startDate) plan.prefill.startDate = String(startDate);
+    if (startTime) plan.prefill.startTime = String(startTime);
+  }
 
   if (plan.actionKind === 'META_WRITE') {
     if (!confirmRealExecution) {

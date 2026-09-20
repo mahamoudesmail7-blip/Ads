@@ -1588,7 +1588,7 @@ const FILTER_CHIPS = [
   { key: 'measuring', label: 'قيد القياس', match: (b) => b === 'measuring' },
 ];
 
-const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null } };
+const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null }, actionPlanInputs: {} };
 
 async function renderDecisionCenter(panel) {
   if (!dcState.stores) {
@@ -1753,6 +1753,7 @@ async function dcOpenProduct(panel, productId) {
   dcState.dossier = null;
   dcState.activeTab = 'overview';
   dcState.dossierWindow = { key: null }; // null = "just open normally" -> operational window
+  dcState.actionPlanInputs = {};
   dcRenderAll(panel);
   await dcFetchDossier(panel, productId);
 }
@@ -1801,6 +1802,7 @@ const DC_TABS = [
   { key: 'overview', label: 'نظرة عامة' },
   { key: 'audience', label: 'الجمهور والمحافظات' },
   { key: 'creatives', label: 'الكرياتيفات والـHooks' },
+  { key: 'actionplan', label: '🚀 أكشن بلان' },
   { key: 'history', label: 'سجل القرارات' },
   { key: 'learning', label: 'تعلم المنتج' },
 ];
@@ -1863,7 +1865,7 @@ function dcRenderDossierInto(el, panel) {
     </div>
     <div class="amb-dossier-tabs">${DC_TABS.map((t) => `<button class="amb-dossier-tab ${dcState.activeTab === t.key ? 'active' : ''}" data-dctab="${t.key}">${E(t.label)}</button>`).join('')}</div>
     <div id="ambDcTabBody">${dcTabBody(d)}</div>
-    ${dcActionPlanHtml(pkg)}
+    ${dcState.activeTab === 'actionplan' ? '' : dcActionPlanHtml(pkg)}
   </div>`;
 
   $('ambDcReanalyze').onclick = () => dcReanalyze(panel, d.productId);
@@ -1872,12 +1874,14 @@ function dcRenderDossierInto(el, panel) {
     const key = b.dataset.dcwin;
     dcChangeWindow(panel, d.productId, key === 'operational' ? null : key);
   });
-  dcWireActionPlan(el, panel, pkg);
+  if (dcState.activeTab === 'actionplan') dcWireActionPlanTab(el, panel, pkg);
+  else dcWireActionPlan(el, panel, pkg);
 }
 
 function dcTabBody(d) {
   if (dcState.activeTab === 'audience') return dcTabAudience(d.package);
   if (dcState.activeTab === 'creatives') return dcTabCreatives(d.package);
+  if (dcState.activeTab === 'actionplan') return dcTabActionPlan(d.package);
   if (dcState.activeTab === 'history') return dcTabHistory(d.history);
   if (dcState.activeTab === 'learning') return dcTabLearning(d.learning);
   return dcTabOverview(d.package);
@@ -1995,6 +1999,171 @@ function dcTabCreatives(pkg) {
   return `<div class="section-title" style="margin-top:0;">🏆 العناصر الفائزة (Winner)</div><div class="amb-field-grid">${cards}</div>${leaderboards}`;
 }
 
+// ---- 🚀 أكشن بلان tab ----
+const STACK_STATUS_BADGE = { PROVEN: 'green', PROMISING: 'blue', EARLY_SIGNAL: 'yellow', NOT_PROVEN: 'gray' };
+const STACK_STATUS_AR = { PROVEN: 'PROVEN ✅', PROMISING: 'PROMISING', EARLY_SIGNAL: 'EARLY SIGNAL', NOT_PROVEN: 'غير مثبت' };
+
+/** One Winning Stack / Campaign Preview field — a null field NEVER becomes a guess, it stays honestly "Broad". */
+function stackFieldHtml(field, label) {
+  if (!field) {
+    return `<div class="amb-panel" style="padding:10px 12px;"><div style="font-size:12px; font-weight:700;">${E(label)}</div><div class="faint" style="font-size:12px; margin-top:2px;">Broad — لا يوجد دليل كافٍ بعد</div></div>`;
+  }
+  return `<div class="amb-panel" style="padding:10px 12px;">
+    <div style="display:flex; justify-content:space-between; gap:6px; align-items:center;">
+      <div style="font-size:12px; font-weight:700;">${E(label)}</div>
+      <span class="badge ${STACK_STATUS_BADGE[field.status] || 'gray'}" style="font-size:10px;">${E(STACK_STATUS_AR[field.status] || field.status)}</span>
+    </div>
+    <div style="font-size:13px; font-weight:600; margin-top:4px;">${E(String(field.value || '').slice(0, 60))}</div>
+    ${field.evidence ? `<div class="faint" style="font-size:11px; margin-top:2px;">${E(field.evidence)}</div>` : ''}
+    <div class="faint" style="font-size:10px; margin-top:2px;">مصدر الاختيار: ${E(field.source || '—')}${field.sampleSize != null ? ` · عينة: ${fmtNum(field.sampleSize)}` : ''}</div>
+  </div>`;
+}
+
+const READINESS_COLOR = { 'جاهزة للمراجعة': 'green', 'جاهزة مع بعض الافتراضات': 'blue', 'تحتاج بيانات أكثر': 'yellow', 'محظورة بسبب جودة البيانات': 'red' };
+function readinessHtml(readiness) {
+  return `<div class="section-title">📊 جاهزية الحملة</div>
+  <div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+      <div style="font-weight:800; font-size:14px;">${fmtNum(readiness.score)}/100</div>
+      <span class="badge ${READINESS_COLOR[readiness.status] || 'gray'}">${E(readiness.status)}</span>
+    </div>
+    <div style="margin-top:8px; display:grid; gap:4px;">
+      ${readiness.components.map((c) => `<div style="display:flex; justify-content:space-between; font-size:11.5px;"><span class="faint">${E(c.label)}</span><span>${c.points}/${c.max}</span></div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function campaignPreviewHtml(cp) {
+  if (!cp) return '';
+  return `<div class="section-title">🚀 الحملة المقترحة</div>
+  <div class="amb-panel" style="padding:14px; margin-bottom:14px;">
+    <div style="display:flex; gap:12px; align-items:center; margin-bottom:10px;">
+      ${cp.image ? `<img src="${E(cp.image)}" style="width:48px;height:48px;border-radius:8px;object-fit:cover;" alt="" />` : ''}
+      <div><div style="font-weight:800;">${E(cp.productName)}</div><div class="faint" style="font-size:11px;">Objective: ${E(cp.objective)} · Conversion Event: ${E(cp.conversionEvent)}</div></div>
+    </div>
+    <div class="amb-field-grid">
+      ${stackFieldHtml(cp.audience?.gender, 'النوع')}
+      ${stackFieldHtml(cp.audience?.age, 'العمر')}
+      ${stackFieldHtml(cp.governorate, 'المحافظة')}
+      ${stackFieldHtml(cp.placements, 'المواضع')}
+      ${stackFieldHtml(cp.creative, 'الكرياتيف')}
+      ${stackFieldHtml(cp.hook, 'Hook')}
+      ${stackFieldHtml(cp.angle, 'زاوية البيع')}
+      ${stackFieldHtml(cp.primaryText, 'البوست (Primary Text)')}
+      ${stackFieldHtml(cp.headline, 'العنوان (Headline)')}
+    </div>
+    <div class="amb-derived" style="margin-top:10px;">
+      <div class="amb-derived-row"><span>Pixel</span><b>${cp.pixel ? E(cp.pixel.name || cp.pixel.id) : 'غير محدد بعد — يُختار عند فتح رفع الكامبين'}</b></div>
+      <div class="amb-derived-row"><span>صفحة فيسبوك</span><b>${cp.page ? E(cp.page.name || cp.page.id) : 'غير محدد بعد'}</b></div>
+      <div class="amb-derived-row"><span>إنستجرام</span><b>${cp.instagram ? E('@' + (cp.instagram.username || cp.instagram.id)) : 'غير محدد بعد'}</b></div>
+    </div>
+  </div>`;
+}
+
+function budgetDateInputsHtml() {
+  const inp = dcState.actionPlanInputs || {};
+  return `<div class="section-title">💰 الميزانية و📅 تاريخ التشغيل</div>
+  <div class="amb-field-grid" style="margin-bottom:14px;">
+    <div class="field"><label>الميزانية اليومية (ج.م)</label><input class="amb-input" type="number" min="1" id="ambApBudget" value="${E(inp.budget || '')}" placeholder="مثال: 700" /></div>
+    <div class="field"><label>تاريخ التشغيل</label><input class="amb-input" type="date" id="ambApStartDate" value="${E(inp.startDate || '')}" /></div>
+    <div class="field"><label>وقت التشغيل</label><input class="amb-input" type="time" id="ambApStartTime" value="${E(inp.startTime || '')}" /></div>
+  </div>`;
+}
+
+function actionPlanHeaderHtml(ap) {
+  return `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
+    <div style="font-weight:800; font-size:14px;">🎯 الإجراء الأساسي المقترح: ${E(ap.primaryAction.label)}</div>
+    <div style="font-size:12.5px; margin-top:4px;">${E(ap.primaryAction.reason || '')}</div>
+    ${ap.secondaryActions.length ? `<div class="section-title" style="font-size:12.5px; margin-top:10px;">إجراءات ثانوية</div>${ap.secondaryActions.map((s) => `
+      <div class="amb-panel" style="padding:8px 10px; margin-top:6px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+        <div><div style="font-size:12px; font-weight:700;">${E(s.label)}</div><div class="faint" style="font-size:11px;">${E(s.evidence || '')} — ${fmtEGP(s.currentBudget)} ← ${fmtEGP(s.proposedBudget)}</div></div>
+        <button class="amb-btn ghost sm" data-ap-bump="${s.recommendationId}">✅ اعتماد</button>
+      </div>`).join('')}` : ''}
+  </div>`;
+}
+
+function dcTabActionPlan(pkg) {
+  const ap = pkg.actionPlan;
+  if (!ap) return '<div class="amb-empty">تعذّر تجهيز أكشن بلان لهذا المنتج حاليًا.</div>';
+  const stack = ap.winningStack;
+  const viewBanner = ap.isViewOnly ? `<div class="amb-panel" style="padding:10px 14px; margin-bottom:12px; border-color:var(--amb-amber); background:var(--amb-amber-bg);">
+    <b>👁️ معاينة أكشن بلان لهذه الفترة (VIEW ONLY)</b> — معاينة لفترة العرض المختارة فقط، ولن تُحفظ أو تُغيّر خطة المنتج التشغيلية الحالية.
+  </div>` : '';
+  return `
+    ${viewBanner}
+    ${actionPlanHeaderHtml(ap)}
+    <div class="section-title" style="margin-top:0;">🏆 Winning Stack</div>
+    <div class="amb-field-grid">
+      ${stackFieldHtml(stack.gender, 'النوع')}
+      ${stackFieldHtml(stack.age, 'العمر')}
+      ${stackFieldHtml(stack.governorate, 'المحافظة')}
+      ${stackFieldHtml(stack.placements, 'المواضع')}
+      ${stackFieldHtml(stack.creative, 'الكرياتيف')}
+      ${stackFieldHtml(stack.hook, 'Hook')}
+      ${stackFieldHtml(stack.angle, 'زاوية البيع')}
+      ${stackFieldHtml(stack.primaryText, 'البوست')}
+      ${stackFieldHtml(stack.headline, 'العنوان')}
+    </div>
+    ${campaignPreviewHtml(ap.campaignPreview)}
+    ${ap.campaignPreview && !ap.isViewOnly ? budgetDateInputsHtml() : ''}
+    ${readinessHtml(ap.readiness)}
+    <div class="faint" style="font-size:11.5px; margin-bottom:12px;">مقياس النجاح: ${E(ap.successMetric || '—')} · فترة التقييم: ${ap.evaluationWindowDays} أيام · مبني على: ${E(ap.windowLabel || '—')}</div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="amb-btn ghost sm" id="ambApViewEvidence">📊 عرض الأدلة</button>
+      ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApEdit">✏️ تعديل الخطة</button>` : ''}
+      ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApSaveDraft">💾 حفظ كمسودة</button>` : ''}
+      ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApReject">❌ رفض</button>` : ''}
+      ${ap.canApprove ? `<button class="amb-btn primary sm" id="ambApApprove">✅ اعتماد الخطة</button>` : ''}
+    </div>
+  `;
+}
+
+function dcWireActionPlanTab(el, panel, pkg) {
+  const ap = pkg.actionPlan;
+  if (!ap) return;
+  const recId = pkg.recommendationId;
+  const budgetEl = $('ambApBudget'), dateEl = $('ambApStartDate'), timeEl = $('ambApStartTime');
+  const syncInputs = () => { dcState.actionPlanInputs = { budget: budgetEl?.value, startDate: dateEl?.value, startTime: timeEl?.value }; };
+  if (budgetEl) budgetEl.onchange = syncInputs;
+  if (dateEl) dateEl.onchange = syncInputs;
+  if (timeEl) timeEl.onchange = syncInputs;
+
+  const viewBtn = $('ambApViewEvidence');
+  if (viewBtn) viewBtn.onclick = () => dcViewEvidence(pkg);
+  const editBtn = $('ambApEdit');
+  if (editBtn) editBtn.onclick = async () => {
+    const val = prompt('عدّل الخطة المقترحة:', pkg.proposedChange || '');
+    if (val === null) return;
+    try { await api.patch(`/api/ai-media-buyer/decision-center/${recId}`, { proposedChange: val }); UI.toast('✅ اتعدّلت الخطة'); dcReanalyzeSoft(panel); }
+    catch (err) { UI.toast(err.message, 'error'); }
+  };
+  const draftBtn = $('ambApSaveDraft');
+  if (draftBtn) draftBtn.onclick = () => UI.toast('الخطة محفوظة بالفعل كمسودة قابلة للمراجعة — استخدم "اعتماد الخطة" لما تكون جاهز.');
+  const rejectBtn = $('ambApReject');
+  if (rejectBtn) rejectBtn.onclick = async () => {
+    const confirmed = await UI.confirmModal({ title: 'رفض الخطة', message: 'هيتحفظ كمرفوضة. متابعة؟', confirmLabel: 'رفض' });
+    if (!confirmed) return;
+    try { await api.post(`/api/ai-media-buyer/decision-center/${recId}/reject`, {}); UI.toast('تم الرفض'); dcReanalyzeSoft(panel); }
+    catch (err) { UI.toast(err.message, 'error'); }
+  };
+  const approveBtn = $('ambApApprove');
+  if (approveBtn) approveBtn.onclick = () => {
+    const budget = Number(budgetEl?.value);
+    if (ap.campaignPreview) {
+      if (!budget || budget <= 0) { UI.toast('حدد ميزانية يومية صحيحة أولاً.', 'error'); return; }
+      if (!dateEl?.value) { UI.toast('حدد تاريخ التشغيل أولاً.', 'error'); return; }
+    }
+    dcApproveAndExecute(panel, recId, { budget: budget || null, startDate: dateEl?.value || null, startTime: timeEl?.value || null });
+  };
+
+  el.querySelectorAll('[data-ap-bump]').forEach((b) => b.onclick = async () => {
+    const confirmed = await UI.confirmModal({ title: 'اعتماد زيادة الميزانية', message: 'هيتم اعتماد توصية الزيادة لهذا الـ Ad Set (+25%) — التنفيذ الفعلي يمر عبر نفس نظام الموافقة/التنفيذ الحالي.', confirmLabel: 'اعتماد' });
+    if (!confirmed) return;
+    try { await api.post(`/api/ai-media-buyer/recommendations/${b.dataset.apBump}/approve`, {}); UI.toast('✅ تم اعتماد الزيادة'); dcReanalyzeSoft(panel); }
+    catch (err) { UI.toast(err.message, 'error'); }
+  });
+}
+
 function dcTabHistory(history) {
   if (!history?.length) return '<div class="amb-empty">مفيش قرارات سابقة لهذا المنتج.</div>';
   return `<div class="table-wrap"><table class="data"><thead><tr><th>التاريخ</th><th>القرار</th><th>الثقة</th><th>الحالة</th></tr></thead>
@@ -2090,7 +2259,7 @@ function dcReanalyzeSoft(panel) {
  * touches Meta. A SCALE plan's prefill (winning creative/hook/audience) is
  * shown so the user can jump into the existing Launch Builder with it.
  */
-async function dcApproveAndExecute(panel, id) {
+async function dcApproveAndExecute(panel, id, extra = {}) {
   const approveConfirmed = await UI.confirmModal({ title: 'موافقة على القرار', message: 'هتتم الموافقة على هذا القرار (بدون أي تنفيذ فعلي على Meta لسه). بعدها هتشوف خطة التنفيذ بالتفصيل قبل أي خطوة حقيقية.', confirmLabel: 'موافقة' });
   if (!approveConfirmed) return;
   try { await api.post(`/api/ai-media-buyer/decision-center/${id}/approve`, {}); }
@@ -2102,7 +2271,7 @@ async function dcApproveAndExecute(panel, id) {
 
   const planMessage = plan.realMetaWrite
     ? `⚠️ ${plan.summary}\n\nده إجراء حقيقي هيأثر على حساب Meta فعليًا.`
-    : `${plan.summary}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}` : ''}`;
+    : `${plan.summary}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}${extra.budget ? `\nالميزانية: ${extra.budget} ج/يوم` : ''}${extra.startDate ? `\nالبدء: ${extra.startDate} ${extra.startTime || ''}` : ''}` : ''}`;
   const executeConfirmed = await UI.confirmModal({
     title: plan.realMetaWrite ? '⚠️ تأكيد نهائي — إجراء حقيقي على Meta' : 'كيف تريد تنفيذ الخطة؟',
     message: planMessage,
@@ -2112,17 +2281,16 @@ async function dcApproveAndExecute(panel, id) {
   if (!executeConfirmed) { UI.toast('تمت الموافقة — التنفيذ الفعلي لسه مستني تأكيدك.'); dcReanalyzeSoft(panel); return; }
 
   try {
-    const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, { confirmRealExecution: true });
+    const result = await api.post(`/api/ai-media-buyer/decision-center/${id}/execute`, { confirmRealExecution: true, budget: extra.budget || null, startDate: extra.startDate || null, startTime: extra.startTime || null });
     UI.toast(result.ok ? '✅ تم' : (result.message || 'حصلت مشكلة'), result.ok ? undefined : 'error');
     if (result.ok && plan.actionKind === 'LAUNCH_BUILDER_PREFILL' && result.prefill) {
-      // Launch Builder's wizard has no audience/geo targeting step at all
+      // Launch Builder's wizard has no audience/geo TARGETING step at all
       // today (every campaign it creates launches BROAD; Meta's algorithm
-      // finds the audience) — so there is no real field to auto-fill the
-      // winning gender/age/governorate INTO. Being honest about that
-      // instead of pretending to configure targeting that doesn't exist:
-      // pre-select the real product (skipping the picker) and carry the
-      // winning creative/hook/audience as a visible reference banner the
-      // user applies manually once inside the wizard / in Ads Manager.
+      // finds the audience) — so gender/age/governorate can only ever be a
+      // visible reference banner, never a real field. Budget/schedule/
+      // Pixel/Page/Instagram, however, ARE real wizard fields (steps 3 and
+      // 5) — so those get a REAL, honest prefill straight into launchState,
+      // not just a reference.
       const dossierStoreId = dcState.dossier?.storeId || null;
       launchState.storeId = dossierStoreId;
       launchState.storeName = (dcState.stores || []).find((s) => s.id === dossierStoreId)?.name || null;
@@ -2130,9 +2298,18 @@ async function dcApproveAndExecute(panel, id) {
       launchState.productName = dcState.dossier?.productName || null;
       launchState.products = null; launchState._productsLoadedForStore = null;
       launchState.step = 1;
-      launchState._prefillWinners = { creative: result.prefill.winningCreative, hook: result.prefill.winningHook, segment: result.prefill.winningSegment };
+      launchState._prefillWinners = {
+        creative: result.prefill.winningCreative, hook: result.prefill.winningHook, angle: result.prefill.winningAngle,
+        primaryText: result.prefill.winningPrimaryText, headline: result.prefill.winningHeadline,
+        segment: result.prefill.winningSegment, governorate: result.prefill.winningGovernorate,
+      };
+      if (result.prefill.pixelId) { launchState.pixelId = result.prefill.pixelId; launchState.pixelName = result.prefill.pixelName; launchState.conversionEvent = result.prefill.conversionEvent || 'PURCHASE'; }
+      if (result.prefill.pageId) { launchState.pageId = result.prefill.pageId; launchState.pageName = result.prefill.pageName; }
+      if (result.prefill.instagramId) { launchState.instagramId = result.prefill.instagramId; launchState.instagramUsername = result.prefill.instagramUsername; }
+      if (extra.budget) { launchState.budgetMode = 'CBO'; launchState.cboDailyBudget = extra.budget; }
+      if (extra.startDate) { launchState.startMode = 'SCHEDULED'; launchState.startDate = extra.startDate; launchState.startTime = extra.startTime || '00:00'; launchState.launchMode = 'SCHEDULED'; }
       location.hash = 'launch';
-      UI.toast('تم فتح "رفع الكامبين" مع تجهيز المنتج — راجع بيانات الفائزين في البانر أعلى الخطوة الأولى.');
+      UI.toast('تم فتح "رفع الكامبين" من أكشن بلان مركز القرار الذكي — الميزانية/التاريخ/الـ Pixel/الصفحة مُعبّأة، والجمهور/الكرياتيف الفائز موضّح كمرجع في البانر أعلى الخطوة الأولى.');
     }
   } catch (err) { UI.toast(err.message, 'error'); }
   dcReanalyzeSoft(panel);

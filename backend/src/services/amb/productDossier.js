@@ -22,6 +22,7 @@ import { segmentIntelForProduct } from './segmentIntel.js';
 import { creativeIntelForProduct } from './creativeIntel.js';
 import { resolveWindow } from './metricsEngine.js';
 import { getSyncStatus } from './snapshotSync.js';
+import { buildActionPlan } from './productActionPlan.js';
 
 /** The SAME window productAutoAnalysis.js's scheduler uses to compute/persist the LIVE operational decision — exported so both files derive it from one place and can never drift apart. */
 export function resolveOperationalWindowName(settings) {
@@ -166,6 +167,14 @@ export async function getProductDossier({ productId, windowName, from, to, force
   ]);
 
   const sinceLaunchAvailable = await resolveSinceLaunchWindow(pid).then((w) => !!w).catch(() => false);
+
+  // "🚀 أكشن بلان" tab — a pure synthesis of the SAME pkg.winners/dataQuality
+  // already computed above, honoring the exact same VIEW WINDOW safety this
+  // whole function already enforces: a VIEW_ONLY pkg produces a VIEW_ONLY
+  // (canApprove:false) action plan, never silently treated as operational.
+  pkg.actionPlan = await buildActionPlan({
+    pkg, productId: pid, productName: product.product_name, image: ambProduct?.image_url || null, adAccountId, campaigns,
+  }).catch((err) => { logger.warn('[productDossier] action plan build failed', { productId: pid, message: err.message }); return null; });
 
   return {
     ...base, linked: true, mappedCampaigns: campaigns.length, package: pkg, history, learning, experiment,
