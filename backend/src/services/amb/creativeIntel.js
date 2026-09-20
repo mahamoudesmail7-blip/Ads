@@ -170,8 +170,15 @@ function classifyRows(rows, gate, priorByKey) {
  * immediately-preceding equal-length window to detect real fatigue.
  * @param {{adAccountId:string, windowName?:string, settings:object, ambProductId:number, compareToPrior?:boolean}} params
  */
-export async function creativeIntelForProduct({ adAccountId, windowName, settings, ambProductId, compareToPrior = true }) {
-  const window = resolveWindow(windowName || 'last30');
+/**
+ * `from`/`to`, when given, are used VERBATIM instead of re-resolving
+ * `windowName` — lets productDossier.js's fast path force this dimension
+ * onto the EXACT SAME frozen window as an already-persisted decision's
+ * funnel/diagnosis, so tabs of one dossier can never silently drift onto
+ * different date ranges.
+ */
+export async function creativeIntelForProduct({ adAccountId, windowName, from, to, windowLabel, settings, ambProductId, compareToPrior = true }) {
+  const window = (from || to) ? { from: from || null, to: to || null, label: windowLabel || null } : resolveWindow(windowName || 'last30');
   const gate = {
     targetCpa: Number(settings?.ambDefaultTargetCpa) || 120,
     minSpend: Number(settings?.ambMinSpendBeforeDecision) || 150,

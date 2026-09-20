@@ -1846,17 +1846,22 @@ function businessCvrCell(bcr) {
 function dcTabOverview(pkg) {
   const m = pkg.diagnosis?.metrics || {};
   const bcr = pkg.businessConversionRate;
+  // Meta Purchases and Easy Orders Product Orders are TWO SEPARATE, never-
+  // conflated populations (no attribution key links one specific Meta
+  // purchase to one specific Easy Orders order) — every label below says
+  // its real source explicitly, never a bare "Purchases"/"Orders".
   const funnelSteps = [
-    ['spend', 'الإنفاق', fmtEGP(m.totalSpend)], ['cpm', 'CPM', fmtEGP(m.cpm)], ['ctr', 'CTR', fmtPct(m.ctr)],
-    ['cpc', 'CPC', fmtEGP(m.cpc, 2)], ['purchases', 'مشتريات Meta', fmtNum(m.metaPurchases)],
+    ['spend', 'الإنفاق (مصدر: Meta)', fmtEGP(m.totalSpend)], ['cpm', 'CPM (Meta)', fmtEGP(m.cpm)], ['ctr', 'CTR (Meta)', fmtPct(m.ctr)],
+    ['cpc', 'CPC (Meta)', fmtEGP(m.cpc, 2)], ['purchases', 'Meta Purchases', fmtNum(m.metaPurchases)],
     ['cvr', 'Conversion (Orders/LPV)', businessCvrCell(bcr)],
-    ['cpa', 'CPA', fmtEGP(m.avgCpa)], ['cod', 'عينة COD', fmtNum(m.codSample)], ['conf', 'معدل التأكيد', m.confirmationRate != null ? fmtPct(m.confirmationRate * 100) : '—'],
-    ['del', 'معدل التسليم', m.deliveryRate != null ? fmtPct(m.deliveryRate * 100) : '—'], ['rev', 'الإيرادات', fmtEGP(m.revenue)], ['profit', 'الربح', m.netProfit != null ? fmtEGP(m.netProfit) : '—'],
+    ['cpa', 'CPA (Meta)', fmtEGP(m.avgCpa)], ['cod', 'Easy Orders Product Orders', fmtNum(m.codSample)], ['conf', 'معدل التأكيد (Easy Orders)', m.confirmationRate != null ? fmtPct(m.confirmationRate * 100) : '—'],
+    ['del', 'معدل التسليم (Easy Orders)', m.deliveryRate != null ? fmtPct(m.deliveryRate * 100) : '—'], ['rev', 'الإيرادات', fmtEGP(m.revenue)], ['profit', 'الربح', m.netProfit != null ? fmtEGP(m.netProfit) : '—'],
   ];
   const bottleneck = pkg.diagnosis?.bottleneck;
   const pto = pkg.priceTestOpportunity;
   return `
     <div class="section-title" style="margin-top:0;">قمع الأداء الكامل</div>
+    <div class="faint" style="font-size:11px; margin-bottom:8px;">النطاق الزمني لكل تبويبات هذا التحليل: <b>${E(pkg.window?.label || '')}</b> (${E(pkg.window?.from || '')} → ${E(pkg.window?.to || '')}) — نفس النطاق مستخدم في الجمهور/المحافظات والكرياتيفات، بدون أي اختلاف.</div>
     <div class="amb-funnel" style="margin-bottom:6px;">${funnelSteps.map(([, l, v]) => `<div class="f-step"><div class="fv">${v}</div><div class="fl">${E(l)}</div></div>`).join('')}</div>
     ${bcr?.dataState === 'AVAILABLE' ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion = (${fmtNum(bcr.ordersNumerator)} أوردر × 100) ÷ ${fmtNum(bcr.lpvDenominator)} مشاهدة صفحة</div>` : bcr ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion Rate غير متاح: ${E(bcr.reason || 'LPV أو عدد الأوردرات غير متاح لهذه الفترة')}</div>` : ''}
     ${pto?.detected ? `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px; border-color:var(--amb-purple); background:var(--amb-purple-bg);">

@@ -165,10 +165,15 @@ const NO_SEGMENT_MSG = 'لا يوجد جمهور/منطقة مثبتة بأدل�
  * honest, NEVER-fabricated combined "audienceSignal" that only ever
  * descriptively pairs a proven Meta audience with a proven COD geography,
  * clearly labeled by source, never claimed as one verified joint segment.
- * @param {{productId:number, storeId?:string, adAccountId:string, windowName?:string, settings:object}} params
+ * `from`/`to`, when given, are used VERBATIM instead of re-resolving
+ * `windowName` — this is what lets a caller (productDossier.js's fast path)
+ * force this dimension onto the EXACT SAME frozen window as an already-
+ * persisted decision's funnel/diagnosis, so no two tabs of one dossier can
+ * ever silently drift onto different date ranges.
+ * @param {{productId:number, storeId?:string, adAccountId:string, windowName?:string, from?:string, to?:string, settings:object}} params
  */
-export async function segmentIntelForProduct({ productId, storeId, adAccountId, windowName, settings }) {
-  const window = resolveWindow(windowName || 'last30');
+export async function segmentIntelForProduct({ productId, storeId, adAccountId, windowName, from, to, windowLabel, settings }) {
+  const window = (from || to) ? { from: from || null, to: to || null, label: windowLabel || null } : resolveWindow(windowName || 'last30');
   const gate = {
     targetCpa: Number(settings?.ambDefaultTargetCpa) || 120,
     minSpend: Number(settings?.ambMinSpendBeforeDecision) || 150,

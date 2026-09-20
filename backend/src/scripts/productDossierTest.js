@@ -47,6 +47,15 @@ try {
     ok('stock summary is present and honest (STOCK_UNKNOWN when Product.current_stock is null, never a fabricated number)', ['SAFE', 'LOW', 'OUT_OF_STOCK', 'STOCK_UNKNOWN'].includes(d.stock.status));
     ok('the fast path still freshly attaches segmentIntel for the Audience/Geo tab (not just the persisted decision facts)', d.package.segmentIntel && typeof d.package.segmentIntel === 'object', JSON.stringify(Object.keys(d.package.segmentIntel || {})));
     ok('the fast path still freshly attaches creativeIntel for the Creative Leaderboard tab', d.package.creativeIntel && typeof d.package.creativeIntel === 'object', JSON.stringify(Object.keys(d.package.creativeIntel || {})));
+
+    // MANDATORY window-alignment check: every tab of one dossier must be
+    // computed for the EXACT SAME date range as the persisted funnel/
+    // diagnosis — never a freshly re-resolved "last7" that silently drifts
+    // away from the frozen decision window after a day boundary passes.
+    ok('segmentIntel.window.from matches the persisted package window exactly', d.package.segmentIntel.window?.from === d.package.window.from, JSON.stringify({ pkg: d.package.window, seg: d.package.segmentIntel.window }));
+    ok('segmentIntel.window.to matches the persisted package window exactly', d.package.segmentIntel.window?.to === d.package.window.to);
+    ok('creativeIntel.window.from matches the persisted package window exactly', d.package.creativeIntel.window?.from === d.package.window.from, JSON.stringify({ pkg: d.package.window, cre: d.package.creativeIntel.window }));
+    ok('creativeIntel.window.to matches the persisted package window exactly', d.package.creativeIntel.window?.to === d.package.window.to);
   }
 
   console.log('\n§4 forceRefresh:true always recomputes and persists a fresh recommendation ("إعادة التحليل"):');

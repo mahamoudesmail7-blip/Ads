@@ -84,9 +84,18 @@ export async function getProductDossier({ productId, windowName, forceRefresh = 
     // endpoints, so they're always freshly recomputed here rather than
     // bloating every persisted recommendation with full segment/creative
     // tables it doesn't need for its own decision record.
+    //
+    // CRITICAL: this MUST use pkg.window's own frozen from/to (the exact
+    // dates the persisted funnel/diagnosis/health were computed for), never
+    // a freshly re-resolved windowName — resolveWindow('last7') shifts by a
+    // day every midnight, so re-resolving here would silently drift this
+    // tab's date range away from the Overview tab's the moment a day
+    // boundary passes, producing mixed-window numbers in one dossier
+    // without any label change to warn about it. A real incident this
+    // caused: fixed by locking every dimension to the SAME window.
     const [segmentIntel, creativeIntel] = await Promise.all([
-      segmentIntelForProduct({ productId: pid, storeId: product.store_id, adAccountId, windowName: windowNameResolved, settings }).catch(() => ({ metaAvailable: false })),
-      ambProduct && adAccountId ? creativeIntelForProduct({ adAccountId, windowName: windowNameResolved, settings, ambProductId: ambProduct.id, compareToPrior: true }).catch(() => ({ dataAvailable: false })) : Promise.resolve({ dataAvailable: false }),
+      segmentIntelForProduct({ productId: pid, storeId: product.store_id, adAccountId, from: pkg.window.from, to: pkg.window.to, windowLabel: pkg.window.label, settings }).catch(() => ({ metaAvailable: false })),
+      ambProduct && adAccountId ? creativeIntelForProduct({ adAccountId, from: pkg.window.from, to: pkg.window.to, windowLabel: pkg.window.label, settings, ambProductId: ambProduct.id, compareToPrior: true }).catch(() => ({ dataAvailable: false })) : Promise.resolve({ dataAvailable: false }),
     ]);
     pkg.segmentIntel = segmentIntel;
     pkg.creativeIntel = creativeIntel;
