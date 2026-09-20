@@ -36,7 +36,7 @@ function fail(msg, status = 400) { const e = new Error(msg); e.status = status; 
  * measured, which the user's Phase 9 requirement (every approved decision
  * becomes an Experiment) forbids.
  */
-async function scheduleExperimentCheckpoints({ rec, actionType, executionStatus, metaResponseJson, userId }) {
+async function scheduleExperimentCheckpoints({ rec, actionType, executionStatus, metaResponseJson, userId, evaluationWindowDays }) {
   const action = await prisma.ambAction.create({
     data: {
       recommendation_id: rec.id, mode: 'APPROVAL', action_type: actionType, ad_account_id: rec.ad_account_id,
@@ -47,14 +47,20 @@ async function scheduleExperimentCheckpoints({ rec, actionType, executionStatus,
     },
   });
   const now = Date.now();
-  await prisma.ambActionResult.createMany({
-    data: [
-      { action_id: action.id, checkpoint: 'H6', due_at: new Date(now + 6 * 3600 * 1000) },
-      { action_id: action.id, checkpoint: 'H12', due_at: new Date(now + 12 * 3600 * 1000) },
-      { action_id: action.id, checkpoint: 'H24', due_at: new Date(now + 24 * 3600 * 1000) },
-    ],
-    skipDuplicates: true,
-  });
+  const checkpoints = [
+    { action_id: action.id, checkpoint: 'H6', due_at: new Date(now + 6 * 3600 * 1000) },
+    { action_id: action.id, checkpoint: 'H12', due_at: new Date(now + 12 * 3600 * 1000) },
+    { action_id: action.id, checkpoint: 'H24', due_at: new Date(now + 24 * 3600 * 1000) },
+  ];
+  // The decision's OWN configured evaluation window (e.g. 7 days for most
+  // decisions) — a 4th, longer checkpoint alongside the fixed H6/H12/H24
+  // ones, so a real trend has time to form before the final verdict. Same
+  // table, same evaluator (evaluateProductExperiments() computes its own
+  // before/after span from due_at - executed_at, so this needs no special
+  // casing there), just a later due_at.
+  const windowDays = Number(evaluationWindowDays) || 7;
+  if (windowDays > 1) checkpoints.push({ action_id: action.id, checkpoint: 'EVAL_WINDOW', due_at: new Date(now + windowDays * 24 * 3600 * 1000) });
+  await prisma.ambActionResult.createMany({ data: checkpoints, skipDuplicates: true });
   return action;
 }
 
@@ -76,12 +82,22 @@ async function realProductIdFor(rec) {
  * "some campaigns"), or the concrete next-step for every other decision
  * type. This is what the UI's "عرض الخطة قبل التنفيذ" step shows.
  */
+/** Decisions that result in a REAL prepared campaign via the existing Launch Builder — a Scale, an Audience Test, a Geo Test, and a Creative Test are all, mechanically, "launch a campaign built from whatever evidence exists" — the ONLY difference is how much of the Winning Stack is proven (a test decision naturally has a sparser proven stack than a scale decision) and the framing text shown to the user. One shared code path, never duplicated per decision type. */
+const LAUNCH_BUILDER_DECISIONS = { SCALE_CANDIDATE: 'SCALE', AUDIENCE_TEST: 'AUDIENCE_TEST', GEO_TEST: 'GEO_TEST', NEW_CREATIVE_TEST: 'CREATIVE_TEST' };
+const CAMPAIGN_PURPOSE_SUMMARY = {
+  SCALE: 'إنشاء مسودة "Scaling Campaign" في رفع الكامبين (Campaign Launch Builder) مبنية على Winning Stack المثبت.',
+  AUDIENCE_TEST: 'إنشاء مسودة "اختبار جمهور" في رفع الكامبين — تستخدم أي جمهور مثبت/واعد متاح، وتترك الباقي Broad حتى تكتمل الأدلة.',
+  GEO_TEST: 'إنشاء مسودة "اختبار محافظات" في رفع الكامبين — تستخدم أي محافظة مثبتة/واعدة متاحة، وتترك الباقي Broad حتى تكتمل الأدلة.',
+  CREATIVE_TEST: 'إنشاء مسودة "اختبار كرياتيف" في رفع الكامبين — تستخدم أي كرياتيف/Hook مثبت متاح حاليًا كمرجع؛ لو محتاج كرياتيف جديد بالكامل، استخدم "مصنع الكرياتيف" بشكل صريح بعد كده — هذا الإجراء لا يشغّل أي توليد مدفوع بالـ AI تلقائيًا أبدًا.',
+};
+
 export async function buildExecutionPlan({ recId }) {
   const rec = await loadProductRec(recId);
   const facts = JSON.parse(rec.reason_facts_json || '{}');
   const realProductId = await realProductIdFor(rec);
+  const evaluationWindowDays = facts.evaluationWindowDays || 7;
 
-  const base = { decision: rec.decision, productName: rec.product_name, recommendationStatus: rec.status, proposedChange: facts.proposedChange || null };
+  const base = { decision: rec.decision, productName: rec.product_name, recommendationStatus: rec.status, proposedChange: facts.proposedChange || null, evaluationWindowDays };
 
   if (rec.decision === 'PAUSE_CANDIDATE') {
     const campaigns = realProductId ? await resolveProductCampaigns(realProductId) : [];
@@ -91,12 +107,15 @@ export async function buildExecutionPlan({ recId }) {
       targets: campaigns.map((c) => ({ campaignId: c.campaignId, adAccountId: c.adAccountId, via: c.via })),
     };
   }
-  if (rec.decision === 'SCALE_CANDIDATE') {
+  const campaignPurpose = LAUNCH_BUILDER_DECISIONS[rec.decision];
+  if (campaignPurpose) {
     const stack = buildWinningStack(facts.winners);
     const tracking = await resolveTrackingIdentity({ productId: realProductId, adAccountId: rec.ad_account_id });
+    const noProvenCreative = !stack.creative;
     return {
-      ...base, actionKind: 'LAUNCH_BUILDER_PREFILL', realMetaWrite: false,
-      summary: 'إنشاء مسودة جديدة في رفع الكامبين (Campaign Launch Builder) مبنية على "أكشن بلان" — الميزانية/التاريخ/الـ Pixel/الصفحة تُعبّأ تلقائيًا لأنها حقول حقيقية في المعالج، والجمهور/الكرياتيف الفائز يظهر كمرجع لتطبيقه يدويًا (المعالج الحالي لا يحتوي خطوة استهداف جمهور حقيقية). تحتاج مراجعتك واستكمال باقي خطوات المعالج ثم ضغط "نشر" بنفسك. لا يتم نشر أي حاجة تلقائيًا.',
+      ...base, actionKind: 'LAUNCH_BUILDER_PREFILL', realMetaWrite: false, campaignPurpose,
+      summary: `${CAMPAIGN_PURPOSE_SUMMARY[campaignPurpose]} الميزانية/التاريخ/الـ Pixel/الصفحة تُعبّأ تلقائيًا لأنها حقول حقيقية في المعالج، والجمهور/الكرياتيف المثبت (لو موجود) يظهر كمرجع لتطبيقه يدويًا (المعالج الحالي لا يحتوي خطوة استهداف جمهور حقيقية). تحتاج مراجعتك واستكمال باقي خطوات المعالج ثم ضغط "نشر" بنفسك. لا يتم نشر أي حاجة تلقائيًا.`,
+      needsCreativeFactory: campaignPurpose === 'CREATIVE_TEST' && noProvenCreative,
       prefill: {
         productId: realProductId,
         winningCreative: stack.creative?.value || null,
@@ -112,9 +131,15 @@ export async function buildExecutionPlan({ recId }) {
       },
     };
   }
+  // KEEP_TESTING / INSUFFICIENT_DATA / LANDING_PAGE_FIX / OFFER_TEST — never
+  // a fake campaign. Names the real missing evidence (already computed by
+  // the Action Plan's own formingPlan) and states honestly WHEN this gets
+  // re-evaluated: the existing 30-min auto-analysis scheduler, or sooner if
+  // the human manually re-analyzes.
   return {
     ...base, actionKind: 'MANUAL_NEXT_STEP', realMetaWrite: false,
     summary: facts.proposedChange || 'مفيش إجراء مباشر على Meta لهذا القرار — الخطوة التالية يدوية.',
+    nextEvaluation: 'هيتم إعادة تقييم هذا القرار تلقائيًا مع كل تحليل تشغيلي جديد للمنتج (كل ~30 دقيقة)، أو فورًا لو ضغطت "إعادة التحليل" — أي أدلة جديدة (مشتريات/أوردرات إضافية) هتظهر في المرة الجاية.',
   };
 }
 
@@ -157,7 +182,7 @@ export async function executeApprovedDecision({ recId, userId, confirmRealExecut
     // existing campaign/ad-level flow), so scheduleExperimentCheckpoints()
     // gives it a descriptive product marker; the real per-campaign detail
     // (every id + its own pause result) lives in meta_response_json.
-    const action = await scheduleExperimentCheckpoints({ rec, actionType: 'PAUSE', executionStatus: allOk ? 'EXECUTED' : 'FAILED', metaResponseJson: JSON.stringify(results), userId });
+    const action = await scheduleExperimentCheckpoints({ rec, actionType: 'PAUSE', executionStatus: allOk ? 'EXECUTED' : 'FAILED', metaResponseJson: JSON.stringify(results), userId, evaluationWindowDays: plan.evaluationWindowDays });
     await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: allOk ? 'EXECUTED' : rec.status } });
     return { ok: allOk, plan, results, actionId: action.id };
   }
@@ -167,13 +192,13 @@ export async function executeApprovedDecision({ recId, userId, confirmRealExecut
       return { ok: false, requiresConfirmation: true, plan, message: 'هيتم إنشاء مسودة رفع كامبين جديدة (بدون أي نشر فعلي على Meta) — تأكيد؟' };
     }
     if (!plan.prefill.productId) fail('تعذّر إيجاد المنتج الحقيقي المرتبط لعمل مسودة.', 400);
-    const action = await scheduleExperimentCheckpoints({ rec, actionType: 'DRAFT_PRODUCT_DECISION', executionStatus: 'EXECUTED', metaResponseJson: JSON.stringify(plan.prefill), userId });
+    const action = await scheduleExperimentCheckpoints({ rec, actionType: 'DRAFT_PRODUCT_DECISION', executionStatus: 'EXECUTED', metaResponseJson: JSON.stringify(plan.prefill), userId, evaluationWindowDays: plan.evaluationWindowDays });
     await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'EXECUTED' } });
     return { ok: true, plan, prefill: plan.prefill, actionId: action.id, message: 'الخطة جاهزة — افتح "رفع الكامبين" واختار نفس المنتج؛ بيانات الكرياتيف/الجمهور الفائز موضّحة هنا كمرجع، والنشر النهائي يدوي بالكامل.' };
   }
 
   // MANUAL_NEXT_STEP: nothing on Meta for this endpoint to do, but the decision itself still becomes a measurable Experiment (Phase 9) — before/after product performance is compared regardless of whether the human's manual follow-through was on Meta or elsewhere (creative, landing page, offer).
-  const action = await scheduleExperimentCheckpoints({ rec, actionType: 'DRAFT_PRODUCT_DECISION', executionStatus: 'EXECUTED', metaResponseJson: null, userId });
+  const action = await scheduleExperimentCheckpoints({ rec, actionType: 'DRAFT_PRODUCT_DECISION', executionStatus: 'EXECUTED', metaResponseJson: null, userId, evaluationWindowDays: plan.evaluationWindowDays });
   await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'EXECUTED' } });
   return { ok: true, plan, actionId: action.id, message: 'تم تسجيل القرار — الخطوة الفعلية (كرياتيف/جمهور/عرض/صفحة) يدوية خارج هذا الإجراء.' };
 }

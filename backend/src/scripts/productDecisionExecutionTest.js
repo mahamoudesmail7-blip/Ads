@@ -102,8 +102,8 @@ try {
     const after = await prisma.ambRecommendation.findUnique({ where: { id: rec.id } });
     ok('status correctly moves to EXECUTED', after.status === 'EXECUTED');
     const results = await prisma.ambActionResult.findMany({ where: { action_id: result.actionId } });
-    ok('Phase 9: even a manual-step decision schedules the 3 H6/H12/H24 experiment checkpoints', results.length === 3, JSON.stringify(results));
-    ok('all 3 checkpoints start unevaluated (retroactive evaluation happens later, at due_at)', results.every((r) => r.evaluated_at === null && r.result_class === null));
+    ok('Phase 9: even a manual-step decision schedules H6/H12/H24 + the decision\'s own longer EVAL_WINDOW checkpoint', results.length === 4 && results.some((r) => r.checkpoint === 'EVAL_WINDOW'), JSON.stringify(results));
+    ok('all checkpoints start unevaluated (retroactive evaluation happens later, at due_at)', results.every((r) => r.evaluated_at === null && r.result_class === null));
   }
 
   console.log('\n§7 executeApprovedDecision — SCALE_CANDIDATE prefill also requires explicit confirmation before touching anything:');
@@ -127,7 +127,39 @@ try {
       const result = await executeApprovedDecision({ recId: rec.id, userId: null, confirmRealExecution: true });
       ok('a confirmed prefill decision executes (never touches real Meta — only creates a local draft reference)', result.ok === true, JSON.stringify(result));
       const results = result.actionId ? await prisma.ambActionResult.findMany({ where: { action_id: result.actionId } }) : [];
-      ok('schedules the 3 H6/H12/H24 experiment checkpoints exactly like a real Meta write would', results.length === 3, JSON.stringify(results));
+      ok('schedules H6/H12/H24 + EVAL_WINDOW experiment checkpoints exactly like a real Meta write would', results.length === 4, JSON.stringify(results));
+    }
+  }
+
+  console.log('\n§9 Final core step — AUDIENCE_TEST/GEO_TEST/NEW_CREATIVE_TEST now ALSO get a real prepared Launch Builder plan (not just SCALE_CANDIDATE), using the SAME mechanism:');
+  {
+    for (const [decision, expectedPurpose] of [['AUDIENCE_TEST', 'AUDIENCE_TEST'], ['GEO_TEST', 'GEO_TEST'], ['NEW_CREATIVE_TEST', 'CREATIVE_TEST']]) {
+      const rec = await prisma.ambRecommendation.create({ data: baseRecData({ decision, amb_product_id: null }) });
+      cleanupIds.push(rec.id);
+      const plan = await buildExecutionPlan({ recId: rec.id });
+      ok(`${decision} now resolves to LAUNCH_BUILDER_PREFILL (a real prepared campaign), never a vague manual step`, plan.actionKind === 'LAUNCH_BUILDER_PREFILL' && plan.campaignPurpose === expectedPurpose, JSON.stringify(plan));
+      ok(`${decision} never claims a real Meta write — still a draft only`, plan.realMetaWrite === false);
+      ok(`${decision} carries the decision's own evaluationWindowDays through to the plan`, plan.evaluationWindowDays === 7);
+    }
+  }
+
+  console.log('\n§10 Final core step — NEW_CREATIVE_TEST with NO proven creative flags needsCreativeFactory, never auto-triggers generation:');
+  {
+    const rec = await prisma.ambRecommendation.create({ data: baseRecData({ decision: 'NEW_CREATIVE_TEST', amb_product_id: null, reason_facts_json: JSON.stringify({ proposedChange: 'test', successMetric: 'CTR', winners: {}, losers: {} }) }) });
+    cleanupIds.push(rec.id);
+    const plan = await buildExecutionPlan({ recId: rec.id });
+    ok('a creative test with zero proven creative flags needsCreativeFactory:true, guiding the user to the separate, explicit Creative Factory tool', plan.needsCreativeFactory === true, JSON.stringify(plan));
+    ok('the plan text explicitly states no paid generation is auto-triggered', /مصنع الكرياتيف|توليد مدفوع/.test(plan.summary), plan.summary);
+  }
+
+  console.log('\n§11 Final core step — KEEP_TESTING/INSUFFICIENT_DATA never fake a campaign, and honestly state when the decision gets re-evaluated:');
+  {
+    for (const decision of ['KEEP_TESTING', 'INSUFFICIENT_DATA', 'LANDING_PAGE_FIX', 'OFFER_TEST']) {
+      const rec = await prisma.ambRecommendation.create({ data: baseRecData({ decision, amb_product_id: null }) });
+      cleanupIds.push(rec.id);
+      const plan = await buildExecutionPlan({ recId: rec.id });
+      ok(`${decision} stays MANUAL_NEXT_STEP — never a fake campaign`, plan.actionKind === 'MANUAL_NEXT_STEP' && !plan.prefill, JSON.stringify(plan));
+      ok(`${decision} states a real, honest next-evaluation timing`, typeof plan.nextEvaluation === 'string' && plan.nextEvaluation.length > 10);
     }
   }
 } finally {

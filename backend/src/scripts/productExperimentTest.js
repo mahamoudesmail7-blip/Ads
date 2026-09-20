@@ -76,6 +76,7 @@ try {
       ok('result_class is either a real verdict or explicitly null (never a fabricated guess)', after.result_class === null || ['SUCCESSFUL', 'NEUTRAL', 'FAILED'].includes(after.result_class), after.result_class);
       const notes = JSON.parse(after.notes_json || '{}');
       ok('notes explain which field/direction were used for this decision\'s own successMetric', notes.field === 'cpa' && notes.direction === 'LOWER_BETTER', JSON.stringify(notes));
+      ok('notes carry a FULL before/after metrics snapshot (Spend/CPM/CTR/CPC/LPV/Purchases/CPA/EasyOrders/Conversion/Confirmation/Delivery/Revenue) for transparency, not just the one driving field', notes.fullMetrics && 'spend' in notes.fullMetrics.before && 'cpm' in notes.fullMetrics.before && 'easyOrders' in notes.fullMetrics.before && 'conversionRate' in notes.fullMetrics.before, JSON.stringify(notes.fullMetrics));
 
       console.log('\n§2 experimentOutcomeLabel — pure vocabulary translation, never a second classification:');
       ok('SUCCESSFUL -> IMPROVED', experimentOutcomeLabel('SUCCESSFUL') === 'IMPROVED');
@@ -113,6 +114,30 @@ try {
     ok('the unresolvable row is still marked evaluated (closed out, not stuck forever)', evaluated >= 1);
     const after = await prisma.ambActionResult.findUnique({ where: { id: result.id } });
     ok('evaluated_at set, result_class explicitly null (no real product to measure against)', after.evaluated_at !== null && after.result_class === null, JSON.stringify(after));
+  }
+
+  console.log('\n§7 Final core step — the decision\'s own longer EVAL_WINDOW checkpoint is evaluated using its REAL elapsed span, and getProductExperiment surfaces it as a real 4th checkpoint:');
+  {
+    const realAmbProduct = await prisma.ambProduct.findFirst({ where: { product_id: { not: null } }, select: { id: true, product_name: true } });
+    if (!realAmbProduct) {
+      console.log('  (skipped — no real AmbProduct linked to a Product exists in this DB)');
+    } else {
+      const rec = await prisma.ambRecommendation.create({ data: baseRecData({ amb_product_id: realAmbProduct.id, product_name: realAmbProduct.product_name }) });
+      recIds.push(rec.id);
+      const executedAtMs = Date.now() - 8 * 24 * 3600 * 1000; // executed 8 days ago
+      const action = await prisma.ambAction.create({ data: {
+        recommendation_id: rec.id, mode: 'APPROVAL', action_type: 'DRAFT_PRODUCT_DECISION', ad_account_id: rec.ad_account_id,
+        level: 'product', entity_id: `product:${rec.amb_product_id}`, entity_name: rec.product_name,
+        approval_status: 'APPROVED', execution_status: 'EXECUTED', executed_at: new Date(executedAtMs),
+      } });
+      const evalWindowResult = await prisma.ambActionResult.create({ data: { action_id: action.id, checkpoint: 'EVAL_WINDOW', due_at: new Date(executedAtMs + 7 * 24 * 3600 * 1000) } });
+      await evaluateProductExperiments();
+      const after = await prisma.ambActionResult.findUnique({ where: { id: evalWindowResult.id } });
+      ok('the EVAL_WINDOW checkpoint gets evaluated using the SAME evaluator, no special-casing needed', after.evaluated_at !== null, JSON.stringify(after));
+
+      const view = await getProductExperiment({ recId: rec.id });
+      ok('getProductExperiment lists EVAL_WINDOW as a real 4th checkpoint when one was actually scheduled', view.checkpoints.length === 4 && view.checkpoints.some((c) => c.checkpoint === 'EVAL_WINDOW' && c.status === 'EVALUATED'), JSON.stringify(view.checkpoints));
+    }
   }
 
   console.log('\n§6 evaluateProductExperiments is idempotent — an already-evaluated row is never re-processed on a second run:');

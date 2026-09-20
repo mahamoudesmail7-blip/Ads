@@ -257,15 +257,18 @@ const PRIMARY_ACTION_MAP = {
   OFFER_TEST: 'KEEP_TESTING',
 };
 
+/** One clear primary CTA per decision — "تجهيز" (prepare), never "نشر" (publish); the real Meta write only ever happens later, inside the existing Launch Builder / after a second explicit confirmation. */
 const PRIMARY_ACTION_LABEL_AR = {
-  NEW_SCALING_CAMPAIGN: '🚀 إنشاء Scaling Campaign جديدة',
-  AUDIENCE_TEST: '🎯 اختبار جمهور',
-  GEO_TEST: '🗺️ اختبار جغرافي',
-  CREATIVE_TEST: '🎨 اختبار كرياتيف',
-  PAUSE_CANDIDATE: '⏸️ إيقاف مؤقت',
+  NEW_SCALING_CAMPAIGN: '🚀 تجهيز Campaign Scale',
+  AUDIENCE_TEST: '🎯 تجهيز اختبار الجمهور',
+  GEO_TEST: '🗺️ تجهيز اختبار المحافظات',
+  CREATIVE_TEST: '🎨 تجهيز اختبار الكرياتيف',
+  PAUSE_CANDIDATE: '⏸️ تجهيز الإيقاف',
   KEEP_TESTING: '🔬 الاستمرار في الاختبار',
   WAIT_FOR_DATA: '⏳ انتظار المزيد من البيانات',
 };
+const NO_PREPARE_ACTIONS = new Set(['KEEP_TESTING', 'WAIT_FOR_DATA']);
+const NEXT_EVALUATION_TEXT = 'هيتم إعادة تقييم هذا القرار تلقائيًا مع كل تحليل تشغيلي جديد للمنتج (كل ~30 دقيقة)، أو فورًا لو ضغطت "إعادة التحليل" — أي دليل جديد (مشتريات/أوردرات إضافية) هيظهر في المرة الجاية.';
 
 /**
  * The primary action type — derived ONLY from the decision engine's own
@@ -295,6 +298,7 @@ export async function getExistingBumpCandidates(campaigns) {
     recommendationId: r.id,
     type: r.decision === 'BUMP_ADSET_25' ? 'ADSET_BUDGET_BUMP' : 'ROLLBACK_BUMP',
     label: r.decision === 'BUMP_ADSET_25' ? `📈 زيادة ميزانية Ad Set: ${r.adset_name}` : `↩️ إرجاع ميزانية Ad Set: ${r.adset_name}`,
+    ctaLabel: r.decision === 'BUMP_ADSET_25' ? 'تجهيز زيادة 25%' : 'تجهيز Rollback',
     adsetName: r.adset_name,
     evidence: r.reason,
     currentBudget: r.current_budget,
@@ -375,18 +379,44 @@ export async function buildActionPlan({ pkg, productId, productName, image, adAc
   const formingPlan = buildFormingPlanSummary(fullStack, primaryType);
 
   const secondaryActions = bumpCandidates.map((b) => ({ ...b }));
-  const campaignPreview = primaryType === 'NEW_SCALING_CAMPAIGN' || primaryType === 'WAIT_FOR_DATA'
+  // A prepared CAMPAIGN (via the existing Launch Builder) is the real
+  // outcome of FOUR decision types — a Scale, and every kind of TEST. Each
+  // uses whatever real evidence exists; a test naturally has a sparser
+  // proven stack than a scale, which is exactly why campaign fields stay
+  // Broad/default wherever the evidence hasn't cleared the bar yet — never
+  // a fake, fully-populated preview. KEEP_TESTING/WAIT_FOR_DATA get NO
+  // campaign preview at all (never a fake campaign for a "not yet" decision).
+  const CAMPAIGN_PRIMARY_TYPES = new Set(['NEW_SCALING_CAMPAIGN', 'AUDIENCE_TEST', 'GEO_TEST', 'CREATIVE_TEST']);
+  const campaignPreview = CAMPAIGN_PRIMARY_TYPES.has(primaryType)
     ? buildCampaignPreview({ productId, productName, image, stack: targetingStack, tracking })
     : null;
+  // PAUSE_CANDIDATE's "prepared action" is a real pause target list, not a
+  // campaign — reuses the SAME real campaign resolution buildExecutionPlan's
+  // own PAUSE_CANDIDATE branch uses, so the count shown here always matches
+  // what "تجهيز الإيقاف" actually acts on.
+  const pausePreview = primaryType === 'PAUSE_CANDIDATE'
+    ? { campaignCount: (campaigns || []).length, campaignIds: (campaigns || []).map((c) => c.campaignId) }
+    : null;
+  const nextEvaluation = NO_PREPARE_ACTIONS.has(primaryType) ? NEXT_EVALUATION_TEXT : null;
+  // Mirrors productDecisionExecution.js's own needsCreativeFactory check —
+  // shown immediately in the Action Plan (never gated behind clicking
+  // "approve" first), but NEVER auto-triggers Creative Factory's paid AI
+  // generation itself; it only flags that the user would need to use it.
+  const needsCreativeFactory = primaryType === 'CREATIVE_TEST' && !fullStack.creative?.targeting;
+  const provenWinners = STACK_DIMS.filter((d) => d !== 'placements' && fullStack[d].targeting).map((d) => ({ dim: d, ...fullStack[d].targeting }));
 
   return {
     windowLabel: pkg.window?.label || null,
     winningStack: fullStack, // { <dim>: { targeting, observation } }
+    provenWinners, // only dimensions that actually cleared PROVEN/PROMISING — "الفائزون المثبتون"
     formingPlan,
     readiness,
-    primaryAction: { type: primaryType, label: PRIMARY_ACTION_LABEL_AR[primaryType] || primaryType, reason: pkg.reason },
+    primaryAction: { type: primaryType, label: PRIMARY_ACTION_LABEL_AR[primaryType] || primaryType, reason: pkg.reason, canPrepare: !NO_PREPARE_ACTIONS.has(primaryType) },
     secondaryActions,
     campaignPreview,
+    pausePreview,
+    nextEvaluation,
+    needsCreativeFactory,
     successMetric: pkg.successMetric || null,
     evaluationWindowDays: pkg.evaluationWindowDays || 7,
     canApprove: pkg.recommendationStatus === 'PENDING',

@@ -282,6 +282,48 @@ try {
       console.log('  (skipped — Smart-Tank product 146 not currently linked/analyzed in this DB)');
     }
   }
+
+  console.log('\n§12 Final core step — every prior TEST-only decision now ALSO gets a real prepared campaign preview, using the SAME evidence-gated stack, never a fake targeting choice:');
+  {
+    const winners = {
+      gender: { segment: 'نساء', classification: 'PROVEN_WINNER', evidence: 'e' },
+      creative: null, hook: null, // deliberately no proven creative — real for a fresh AUDIENCE_TEST
+    };
+    const pkg = {
+      window: { label: 'آخر 7 أيام' }, decision: 'AUDIENCE_TEST', reason: 'إشارة جمهور واعدة',
+      dataQuality: { status: 'VERIFIED' }, recommendationStatus: 'PENDING', successMetric: 'CPC', evaluationWindowDays: 7,
+      winners,
+    };
+    const plan = await buildActionPlan({ pkg, productId: -9997, productName: 'Audience Test Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('AUDIENCE_TEST now carries a real campaign preview (not null like before this step)', !!plan.campaignPreview, JSON.stringify(plan.campaignPreview));
+    ok('the campaign preview uses the REAL proven gender, never invents a governorate/creative it does not have', plan.campaignPreview.audience.gender?.value === 'نساء' && plan.campaignPreview.governorate === null && plan.campaignPreview.creative === null);
+    ok('primary CTA label matches the exact requested wording', plan.primaryAction.label.includes('تجهيز اختبار الجمهور'), plan.primaryAction.label);
+    ok('provenWinners lists ONLY the real proven dimension (gender), never a fabricated extra one', plan.provenWinners.length === 1 && plan.provenWinners[0].dim === 'gender', JSON.stringify(plan.provenWinners));
+
+    const creativeTestPkg = { ...pkg, decision: 'NEW_CREATIVE_TEST', winners: {} };
+    const creativePlan = await buildActionPlan({ pkg: creativeTestPkg, productId: -9997, productName: 'Creative Test Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('a creative test with zero proven creative flags needsCreativeFactory, never auto-generating', creativePlan.needsCreativeFactory === true);
+    ok('provenWinners is honestly empty when nothing is proven', creativePlan.provenWinners.length === 0);
+  }
+
+  console.log('\n§13 Final core step — KEEP_TESTING/WAIT_FOR_DATA NEVER get a fake campaign preview, and state a real next-evaluation timing:');
+  {
+    const pkg = { window: { label: 'اليوم' }, decision: 'INSUFFICIENT_DATA', reason: 'لسه بدري', dataQuality: { status: 'VERIFIED' }, recommendationStatus: 'PENDING', successMetric: null, evaluationWindowDays: 7, winners: {} };
+    const plan = await buildActionPlan({ pkg, productId: -9996, productName: 'Too Early Product', image: null, adAccountId: 'act_never_used', campaigns: [] });
+    ok('WAIT_FOR_DATA never gets a campaign preview — no fake campaign', plan.campaignPreview === null);
+    ok('WAIT_FOR_DATA states a real, honest next-evaluation timing', typeof plan.nextEvaluation === 'string' && plan.nextEvaluation.length > 10);
+    ok('primaryAction.canPrepare is false — there is nothing to prepare yet', plan.primaryAction.canPrepare === false);
+  }
+
+  console.log('\n§14 Final core step — PAUSE_CANDIDATE gets a real pause preview naming the exact real campaigns, never a vague count:');
+  {
+    const pkg = { window: { label: 'آخر 7 أيام' }, decision: 'PAUSE_CANDIDATE', reason: 'CPA مرتفع جدًا بدون أي إشارة إيجابية', dataQuality: { status: 'VERIFIED' }, recommendationStatus: 'PENDING', successMetric: 'CPA', evaluationWindowDays: 7, winners: {} };
+    const campaigns = [{ campaignId: 'camp_1', adAccountId: 'act_x', via: 'LAUNCH' }, { campaignId: 'camp_2', adAccountId: 'act_x', via: 'MAPPING' }];
+    const plan = await buildActionPlan({ pkg, productId: -9995, productName: 'Pause Candidate Product', image: null, adAccountId: 'act_x', campaigns });
+    ok('pausePreview carries the EXACT real campaign ids this product resolves to, never invented', plan.pausePreview?.campaignCount === 2 && plan.pausePreview.campaignIds.includes('camp_1') && plan.pausePreview.campaignIds.includes('camp_2'), JSON.stringify(plan.pausePreview));
+    ok('PAUSE_CANDIDATE never gets a campaign preview (a pause is not a new campaign)', plan.campaignPreview === null);
+    ok('primary CTA label matches the requested wording', plan.primaryAction.label.includes('تجهيز الإيقاف'), plan.primaryAction.label);
+  }
 } finally {
   await cleanup();
 }

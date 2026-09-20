@@ -2057,13 +2057,20 @@ function dualStackFieldHtml(field, label) {
   </div>`;
 }
 
-function formingPlanHtml(fp) {
+/** "الأعلى حاليًا" — every dimension with a REAL current observation, however early. */
+function currentLeadersHtml(fp) {
   if (!fp) return '';
-  return `<div class="section-title">🧩 الخطة تتكوّن حاليًا</div>
-  <div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
+  return `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
     ${fp.lines.length ? fp.lines.map((l) => `<div style="font-size:12.5px; margin-bottom:4px;">${l.icon} ${E(l.label)}: <b>${E(String(l.value || '').slice(0, 40))}</b> — ${E(l.statusAr || l.status)}</div>`).join('') : '<div class="faint" style="font-size:12px;">لا توجد إشارات ملحوظة كافية حتى الآن.</div>'}
-    <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--amb-border); font-weight:700; font-size:13px;">جاهز للـScale: ${fp.scaleReady ? '✅ نعم' : '❌ لا'}</div>
-    ${!fp.scaleReady && fp.reason ? `<div class="faint" style="font-size:12px; margin-top:4px;">السبب: ${E(fp.reason)}</div>` : ''}
+  </div>`;
+}
+
+/** "ما الناقص" — جاهز للـScale؟ ولو لأ، إيه اللي ناقص بالظبط. */
+function missingEvidenceHtml(fp) {
+  if (!fp) return '';
+  return `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
+    <div style="font-weight:700; font-size:13px;">جاهز للـScale: ${fp.scaleReady ? '✅ نعم' : '❌ لا'}</div>
+    ${!fp.scaleReady && fp.reason ? `<div class="faint" style="font-size:12.5px; margin-top:4px;">${E(fp.reason)}</div>` : ''}
   </div>`;
 }
 
@@ -2108,6 +2115,37 @@ function campaignPreviewHtml(cp) {
   </div>`;
 }
 
+/** "الفائزون المثبتون" — ONLY dimensions that actually cleared PROVEN/PROMISING (never observation-only signals). */
+function provenWinnersHtml(provenWinners) {
+  if (!provenWinners?.length) return `<div class="amb-empty" style="margin-bottom:14px;">لا يوجد فائز مثبت حتى الآن — كل الاستهداف الفعلي هيفضل Broad لحد ما تكتمل الأدلة.</div>`;
+  const DIM_LABEL_AR = { gender: 'النوع', age: 'العمر', governorate: 'المحافظة', creative: 'الكرياتيف', hook: 'Hook', angle: 'زاوية البيع', primaryText: 'البوست', headline: 'العنوان' };
+  return `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;">${provenWinners.map((w) => `
+    <span class="badge ${w.status === 'PROVEN' ? 'green' : 'blue'}" style="font-size:11.5px; padding:6px 10px;">${E(DIM_LABEL_AR[w.dim] || w.dim)}: ${E(String(w.value || '').slice(0, 30))} — ${w.status === 'PROVEN' ? 'PROVEN ✅' : 'PROMISING'}</span>
+  `).join('')}</div>`;
+}
+
+function pausePreviewHtml(pp) {
+  if (!pp) return '';
+  return `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px; border-color:var(--amb-red);">
+    <div style="font-weight:800;">⏸️ سيتم إيقاف ${fmtNum(pp.campaignCount)} حملة Meta حقيقية مرتبطة بهذا المنتج</div>
+    ${pp.campaignIds?.length ? `<div class="faint" style="font-size:11px; margin-top:4px;">${pp.campaignIds.map(E).join(' · ')}</div>` : '<div class="faint" style="font-size:11px; margin-top:4px;">لا توجد حملات حقيقية قابلة للإيقاف — القرار غير قابل للتنفيذ فعليًا.</div>'}
+  </div>`;
+}
+
+function needsCreativeFactoryHtml(ap) {
+  if (!ap.needsCreativeFactory) return '';
+  return `<div class="amb-panel" style="padding:10px 14px; margin-bottom:14px; border-color:var(--amb-purple); background:var(--amb-purple-bg);">
+    <b>🎨 محتاج كرياتيف جديد بالكامل؟</b> استخدم <b>مصنع الكرياتيف الذكي</b> بشكل صريح لتوليد كرياتيف جديد (توليد بالـ AI مدفوع) — الأكشن بلان هنا لا يشغّل أي توليد مدفوع تلقائيًا أبدًا.
+  </div>`;
+}
+
+function nextEvaluationHtml(ap) {
+  if (!ap.nextEvaluation) return '';
+  return `<div class="amb-panel" style="padding:10px 14px; margin-bottom:14px; background:var(--amb-surface-2);">
+    <div style="font-size:12.5px;">⏳ ${E(ap.nextEvaluation)}</div>
+  </div>`;
+}
+
 function budgetDateInputsHtml() {
   const inp = dcState.actionPlanInputs || {};
   return `<div class="section-title">💰 الميزانية و📅 تاريخ التشغيل</div>
@@ -2118,18 +2156,32 @@ function budgetDateInputsHtml() {
   </div>`;
 }
 
-function actionPlanHeaderHtml(ap) {
+/** "القرار الحالي" — top of the tab, the ONE decision + why. */
+function currentDecisionHtml(ap) {
   return `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
-    <div style="font-weight:800; font-size:14px;">🎯 الإجراء الأساسي المقترح: ${E(ap.primaryAction.label)}</div>
+    <div style="font-weight:800; font-size:14px;">🎯 ${E(ap.primaryAction.label)}</div>
     <div style="font-size:12.5px; margin-top:4px;">${E(ap.primaryAction.reason || '')}</div>
-    ${ap.secondaryActions.length ? `<div class="section-title" style="font-size:12.5px; margin-top:10px;">إجراءات ثانوية</div>${ap.secondaryActions.map((s) => `
-      <div class="amb-panel" style="padding:8px 10px; margin-top:6px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-        <div><div style="font-size:12px; font-weight:700;">${E(s.label)}</div><div class="faint" style="font-size:11px;">${E(s.evidence || '')} — ${fmtEGP(s.currentBudget)} ← ${fmtEGP(s.proposedBudget)}</div></div>
-        <button class="amb-btn ghost sm" data-ap-bump="${s.recommendationId}">✅ اعتماد</button>
-      </div>`).join('')}` : ''}
   </div>`;
 }
 
+/** Secondary, real, already-persisted Budget Bump/Rollback opportunities for this product's own ad sets — approved through the EXISTING generic recommendations pipeline, never a new execution path. */
+function secondaryActionsHtml(secondaryActions) {
+  if (!secondaryActions?.length) return '';
+  return `<div class="section-title" style="font-size:13px;">📈 إجراءات ثانوية</div>${secondaryActions.map((s) => `
+    <div class="amb-panel" style="padding:8px 10px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+      <div><div style="font-size:12px; font-weight:700;">${E(s.label)}</div><div class="faint" style="font-size:11px;">${E(s.evidence || '')} — ${fmtEGP(s.currentBudget)} ← ${fmtEGP(s.proposedBudget)}</div></div>
+      <button class="amb-btn ghost sm" data-ap-bump="${s.recommendationId}">${E(s.ctaLabel || 'تجهيز')}</button>
+    </div>`).join('')}`;
+}
+
+/**
+ * Fast-scan layout, top to bottom (per the mandatory redesign):
+ * القرار الحالي → الأعلى حاليًا → الفائزون المثبتون → ما سيتم استخدامه فعلًا
+ * → ما الناقص → الحملة/الإجراء المقترح → الميزانية+التاريخ+الوقت → أزرار.
+ * Verbose per-dimension evidence (the full observation+targeting dual cards)
+ * moves into an expandable <details> so the top of the tab stays scannable
+ * in seconds: مين متصدر؟ / مين ثبت؟ / هيتحط إيه فعلاً؟ / إيه الناقص؟
+ */
 function dcTabActionPlan(pkg) {
   const ap = pkg.actionPlan;
   if (!ap) return '<div class="amb-empty">تعذّر تجهيز أكشن بلان لهذا المنتج حاليًا.</div>';
@@ -2137,32 +2189,47 @@ function dcTabActionPlan(pkg) {
   const viewBanner = ap.isViewOnly ? `<div class="amb-panel" style="padding:10px 14px; margin-bottom:12px; border-color:var(--amb-amber); background:var(--amb-amber-bg);">
     <b>👁️ معاينة أكشن بلان لهذه الفترة (VIEW ONLY)</b> — معاينة لفترة العرض المختارة فقط، ولن تُحفظ أو تُغيّر خطة المنتج التشغيلية الحالية.
   </div>` : '';
+  const usedInCampaignHtml = ap.campaignPreview ? campaignPreviewHtml(ap.campaignPreview)
+    : ap.pausePreview ? pausePreviewHtml(ap.pausePreview)
+    : `<div class="amb-empty" style="margin-bottom:14px;">لا يوجد إجراء حملة مُجهّز حاليًا — الاستهداف الفعلي هيفضل Broad لحد ما تتوفر أدلة كافية.</div>`;
   return `
     ${viewBanner}
-    ${actionPlanHeaderHtml(ap)}
-    ${formingPlanHtml(ap.formingPlan)}
-    <div class="section-title" style="margin-top:0;">🏆 Winning Stack — الأعلى حاليًا مقابل ما سيُستخدم فعليًا</div>
-    <div class="amb-field-grid">
-      ${dualStackFieldHtml(stack.gender, 'النوع')}
-      ${dualStackFieldHtml(stack.age, 'العمر')}
-      ${dualStackFieldHtml(stack.governorate, 'المحافظة')}
-      ${dualStackFieldHtml(stack.placements, 'المواضع')}
-      ${dualStackFieldHtml(stack.creative, 'الكرياتيف')}
-      ${dualStackFieldHtml(stack.hook, 'Hook')}
-      ${dualStackFieldHtml(stack.angle, 'زاوية البيع')}
-      ${dualStackFieldHtml(stack.primaryText, 'البوست')}
-      ${dualStackFieldHtml(stack.headline, 'العنوان')}
-    </div>
-    ${campaignPreviewHtml(ap.campaignPreview)}
-    ${ap.campaignPreview && !ap.isViewOnly ? budgetDateInputsHtml() : ''}
-    ${readinessHtml(ap.readiness)}
+    <div class="section-title" style="margin-top:0;">🎯 القرار الحالي</div>
+    ${currentDecisionHtml(ap)}
+    <div class="section-title">🔎 الأعلى حاليًا</div>
+    ${currentLeadersHtml(ap.formingPlan)}
+    <div class="section-title">🏆 الفائزون المثبتون</div>
+    ${provenWinnersHtml(ap.provenWinners)}
+    <div class="section-title">✅ ما سيتم استخدامه فعلًا في الحملة</div>
+    ${usedInCampaignHtml}
+    <div class="section-title">🧩 ما الناقص</div>
+    ${missingEvidenceHtml(ap.formingPlan)}
+    ${needsCreativeFactoryHtml(ap)}
+    ${nextEvaluationHtml(ap)}
+    ${secondaryActionsHtml(ap.secondaryActions)}
+    ${ap.campaignPreview && !ap.isViewOnly ? `<div class="section-title">💰 الميزانية و📅 التاريخ والوقت</div>${budgetDateInputsHtml()}` : ''}
+    <details style="margin-bottom:14px;">
+      <summary style="cursor:pointer; font-size:12.5px; font-weight:700; color:var(--amb-text-dim);">📂 التفاصيل الكاملة لكل بُعد (الأعلى حاليًا مقابل ما سيُستخدم فعليًا) + جاهزية الحملة</summary>
+      <div class="amb-field-grid" style="margin-top:10px;">
+        ${dualStackFieldHtml(stack.gender, 'النوع')}
+        ${dualStackFieldHtml(stack.age, 'العمر')}
+        ${dualStackFieldHtml(stack.governorate, 'المحافظة')}
+        ${dualStackFieldHtml(stack.placements, 'المواضع')}
+        ${dualStackFieldHtml(stack.creative, 'الكرياتيف')}
+        ${dualStackFieldHtml(stack.hook, 'Hook')}
+        ${dualStackFieldHtml(stack.angle, 'زاوية البيع')}
+        ${dualStackFieldHtml(stack.primaryText, 'البوست')}
+        ${dualStackFieldHtml(stack.headline, 'العنوان')}
+      </div>
+      ${readinessHtml(ap.readiness)}
+    </details>
     <div class="faint" style="font-size:11.5px; margin-bottom:12px;">مقياس النجاح: ${E(ap.successMetric || '—')} · فترة التقييم: ${ap.evaluationWindowDays} أيام · مبني على: ${E(ap.windowLabel || '—')}</div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="amb-btn ghost sm" id="ambApViewEvidence">📊 عرض الأدلة</button>
-      ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApEdit">✏️ تعديل الخطة</button>` : ''}
+      ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApEdit">✏️ تعديل</button>` : ''}
       ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApSaveDraft">💾 حفظ كمسودة</button>` : ''}
       ${!ap.isViewOnly ? `<button class="amb-btn ghost sm" id="ambApReject">❌ رفض</button>` : ''}
-      ${ap.canApprove ? `<button class="amb-btn primary sm" id="ambApApprove">✅ اعتماد الخطة</button>` : ''}
+      ${ap.canApprove && ap.primaryAction.canPrepare ? `<button class="amb-btn primary sm" id="ambApApprove">${E(ap.primaryAction.label)}</button>` : ''}
     </div>
   `;
 }
@@ -2318,13 +2385,14 @@ async function dcApproveAndExecute(panel, id, extra = {}) {
   try { plan = await api.get(`/api/ai-media-buyer/decision-center/${id}/execution-plan`); }
   catch (err) { UI.toast(err.message, 'error'); dcReanalyzeSoft(panel); return; }
 
+const CAMPAIGN_PURPOSE_CONFIRM_LABEL = { SCALE: 'إنشاء مسودة Scaling Campaign', AUDIENCE_TEST: 'إنشاء مسودة اختبار جمهور', GEO_TEST: 'إنشاء مسودة اختبار محافظات', CREATIVE_TEST: 'إنشاء مسودة اختبار كرياتيف' };
   const planMessage = plan.realMetaWrite
     ? `⚠️ ${plan.summary}\n\nده إجراء حقيقي هيأثر على حساب Meta فعليًا.`
-    : `${plan.summary}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}${extra.budget ? `\nالميزانية: ${extra.budget} ج/يوم` : ''}${extra.startDate ? `\nالبدء: ${extra.startDate} ${extra.startTime || ''}` : ''}` : ''}`;
+    : `${plan.summary}${plan.needsCreativeFactory ? '\n\n🎨 محتاج كرياتيف جديد بالكامل؟ استخدم مصنع الكرياتيف بشكل صريح — مفيش توليد مدفوع بيحصل تلقائيًا هنا.' : ''}${plan.prefill ? `\n\nكرياتيف فائز: ${plan.prefill.winningCreative || '—'}\nجمهور: ${plan.prefill.winningSegment || '—'}${extra.budget ? `\nالميزانية: ${extra.budget} ج/يوم` : ''}${extra.startDate ? `\nالبدء: ${extra.startDate} ${extra.startTime || ''}` : ''}` : ''}`;
   const executeConfirmed = await UI.confirmModal({
     title: plan.realMetaWrite ? '⚠️ تأكيد نهائي — إجراء حقيقي على Meta' : 'كيف تريد تنفيذ الخطة؟',
     message: planMessage,
-    confirmLabel: plan.realMetaWrite ? 'نفّذ فعليًا على Meta' : (plan.actionKind === 'LAUNCH_BUILDER_PREFILL' ? 'إنشاء Campaign Scaling جديدة' : 'تأكيد'),
+    confirmLabel: plan.realMetaWrite ? 'نفّذ فعليًا على Meta' : (plan.actionKind === 'LAUNCH_BUILDER_PREFILL' ? (CAMPAIGN_PURPOSE_CONFIRM_LABEL[plan.campaignPurpose] || 'إنشاء مسودة جديدة') : 'تأكيد'),
     danger: !!plan.realMetaWrite,
   });
   if (!executeConfirmed) { UI.toast('تمت الموافقة — التنفيذ الفعلي لسه مستني تأكيدك.'); dcReanalyzeSoft(panel); return; }

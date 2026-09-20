@@ -20,10 +20,29 @@ import { logger } from '../../logger.js';
 import { getProductPerformance } from './productPerformance.js';
 import { applyLearningFromExperiment } from './productLearning.js';
 
-const CHECKPOINT_HOURS = { H6: 6, H12: 12, H24: 24 };
-
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
 function toISODate(ms) { return new Date(ms).toISOString().slice(0, 10); }
+
+/**
+ * The FULL real metrics snapshot for one before/after side — Spend, CPM,
+ * CTR, CPC, Landing Page Views, Meta Purchases, CPA, Easy Orders count,
+ * Confirmation Rate, Delivery Rate, business Conversion Rate, and Revenue
+ * (the closest always-available real profit proxy this dataset carries).
+ * Purely for TRANSPARENCY in the measurement view — the actual IMPROVED/
+ * WORSE classification below still uses ONLY the decision's own
+ * successMetric field, unchanged.
+ */
+function fullMetricsSnapshot(perf) {
+  const m = perf?.meta?.dataState === 'AVAILABLE' ? perf.meta : null;
+  const eo = perf?.easyOrders?.dataState === 'AVAILABLE' ? perf.easyOrders : null;
+  const bcr = perf?.businessConversionRate?.dataState === 'AVAILABLE' ? perf.businessConversionRate.value : null;
+  return {
+    spend: n(m?.spend), cpm: n(m?.cpm), ctr: n(m?.ctr), cpc: n(m?.cpc), landingPageViews: n(m?.landingPageViews),
+    metaPurchases: n(m?.purchases), cpa: n(m?.cpa), revenue: n(m?.revenue),
+    easyOrders: n(eo?.orders), confirmationRate: n(eo?.confirmationRate), deliveryRate: n(eo?.deliveryRate),
+    conversionRate: bcr,
+  };
+}
 
 /** Maps a Decision Package's free-text successMetric label to a real, comparable field + direction. Every label this file ever produces (productDecision.js's own vocabulary) is covered; an unrecognized label safely falls back to purchases volume. */
 function resolveMetricField(successMetric) {
@@ -88,8 +107,12 @@ export async function evaluateProductExperiments() {
       }
       const facts = JSON.parse(rec.reason_facts_json || '{}');
       const { field, direction, source } = resolveMetricField(facts.successMetric);
-      const hours = CHECKPOINT_HOURS[row.checkpoint] || 24;
       const executedAtMs = (action.executed_at || action.created_at).getTime();
+      // Real elapsed span for THIS checkpoint's own due_at — works
+      // identically for the fixed H6/H12/H24 rows AND the decision's own
+      // longer EVAL_WINDOW checkpoint (see productDecisionExecution.js),
+      // with no per-checkpoint special-casing needed.
+      const hours = Math.max(1, (row.due_at.getTime() - executedAtMs) / 3600000);
       const { before, after } = await beforeAfterForCheckpoint({ productId, executedAtMs, hours });
       const beforeVal = metricValue(before, field, source);
       const afterVal = metricValue(after, field, source);
@@ -103,7 +126,12 @@ export async function evaluateProductExperiments() {
           cpa_before: field === 'cpa' ? beforeVal : null, cpa_after: field === 'cpa' ? afterVal : null,
           spend_before: n(before.meta?.spend), spend_after: n(after.meta?.spend),
           purchases_before: n(before.meta?.purchases), purchases_after: n(after.meta?.purchases),
-          notes_json: JSON.stringify({ field, direction, beforeVal, afterVal, note, successMetric: facts.successMetric }),
+          notes_json: JSON.stringify({
+            field, direction, beforeVal, afterVal, note, successMetric: facts.successMetric,
+            // Full transparency — every metric the user asked to compare,
+            // even though only `field` above drives the IMPROVED/WORSE verdict.
+            fullMetrics: { before: fullMetricsSnapshot(before), after: fullMetricsSnapshot(after) },
+          }),
         },
       });
 
@@ -147,7 +175,8 @@ export async function getProductExperiment({ recId }) {
   const action = rec.actions[0] || null;
   if (!action) return { hasExperiment: false };
 
-  const checkpoints = ['H6', 'H12', 'H24'].map((cp) => {
+  const scheduledCheckpoints = ['H6', 'H12', 'H24', ...(action.results.some((r) => r.checkpoint === 'EVAL_WINDOW') ? ['EVAL_WINDOW'] : [])];
+  const checkpoints = scheduledCheckpoints.map((cp) => {
     const r = action.results.find((x) => x.checkpoint === cp);
     if (!r) return { checkpoint: cp, status: 'NOT_SCHEDULED' };
     if (!r.evaluated_at) return { checkpoint: cp, status: 'PENDING', dueAt: r.due_at };
