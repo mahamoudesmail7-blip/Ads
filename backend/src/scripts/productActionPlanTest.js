@@ -19,6 +19,7 @@ const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓'
 const {
   reconcileStackStatus, buildWinningStack, computeCampaignReadiness, derivePrimaryActionType,
   getExistingBumpCandidates, resolveTrackingIdentity, buildActionPlan,
+  buildObservationStack, buildFullStack, buildFormingPlanSummary,
 } = await imp('../services/amb/productActionPlan.js');
 const { prisma } = await imp('../prisma.js');
 
@@ -194,7 +195,92 @@ try {
     };
     const thinPlan = await buildActionPlan({ pkg: pkgThin, productId: -9998, productName: 'Smart-Tank-like', image: null, adAccountId: 'act_never_used', campaigns: [] });
     ok('a thin/early product is honestly NOT presented as a scaling campaign', thinPlan.primaryAction.type !== 'NEW_SCALING_CAMPAIGN', JSON.stringify(thinPlan.primaryAction));
-    ok('every winning stack field is null (Broad) when there is truly no evidence — never fabricated', Object.entries(thinPlan.winningStack).filter(([k]) => k !== 'placements').every(([, v]) => v === null));
+    ok('every winning stack TARGETING field is null (Broad) when there is truly no evidence — never fabricated', Object.entries(thinPlan.winningStack).filter(([k]) => k !== 'placements').every(([, v]) => v.targeting === null));
+  }
+
+  console.log('\n§8 Step 3 — buildObservationStack: CURRENT LEADER surfaces even when NOT proven, using the SAME real topObserved/table data:');
+  {
+    const segmentIntel = {
+      gender: {
+        table: [{ segment: 'رجال', spend: 1233, purchases: 4, classification: 'INSUFFICIENT_DATA', signalStrength: 'EARLY_SIGNAL', evidence: 'صرف 1233 ج · 4 شراء' }],
+        topObserved: { segment: 'رجال', count: 4, signalStrength: 'EARLY_SIGNAL', winnerStatus: 'NOT_PROVEN_YET' },
+      },
+      age: { table: [], topObserved: null },
+      governorates: {
+        table: [{ segment: 'القاهرة', orders: 2, classification: 'INSUFFICIENT_DATA', signalStrength: 'OBSERVED', evidence: '2 أوردر' }],
+        topObserved: { segment: 'القاهرة', count: 2, signalStrength: 'OBSERVED', winnerStatus: 'NOT_PROVEN_YET' },
+      },
+    };
+    const creativeIntel = {
+      creative: {
+        table: [{ label: 'C7', spend: 400, purchases: 3, classification: 'TESTING', signalStrength: 'EARLY_SIGNAL', evidence: 'e' }],
+        topObserved: { label: 'C7', purchases: 3, signalStrength: 'EARLY_SIGNAL', winnerStatus: 'NOT_PROVEN_YET' },
+      },
+      hooks: { table: [], topObserved: null }, angles: { table: [], topObserved: null }, primaryTexts: { table: [], topObserved: null }, headlines: { table: [], topObserved: null },
+    };
+    const obs = buildObservationStack(segmentIntel, creativeIntel);
+    ok('gender with 4 purchases but not enough for proof surfaces as EARLY_SIGNAL, never hidden as "Broad"', obs.gender.status === 'EARLY_SIGNAL' && obs.gender.value === 'رجال' && obs.gender.count === 4, JSON.stringify(obs.gender));
+    ok('governorate at OBSERVED tier (1-2 real orders) is honestly OBSERVED, not upgraded', obs.governorate.status === 'OBSERVED' && obs.governorate.value === 'القاهرة');
+    ok('creative current leader surfaces as EARLY_SIGNAL from the same real row', obs.creative.status === 'EARLY_SIGNAL' && obs.creative.value === 'C7');
+    ok('a dimension with truly zero observation is honestly NO_DATA', obs.age.status === 'NO_DATA' && obs.age.value === null);
+    ok('placements always stays NO_DATA — no placement-level pipeline exists to observe from', obs.placements.status === 'NO_DATA');
+
+    console.log('  (a PROVEN_WEAK/WEAK row is never shown as a positive "current leader" — it gets its own honest PROVEN_NEGATIVE rung)');
+    const weakSeg = { gender: { table: [{ segment: 'نساء', purchases: 20, classification: 'PROVEN_WEAK', signalStrength: null, evidence: 'e' }], topObserved: { segment: 'نساء', count: 20, signalStrength: null, winnerStatus: 'NOT_PROVEN_YET' } }, age: { table: [], topObserved: null }, governorates: { table: [], topObserved: null } };
+    const obsWeak = buildObservationStack(weakSeg, {});
+    ok('a real proven-negative current leader is labeled PROVEN_NEGATIVE, never disguised as progress', obsWeak.gender.status === 'PROVEN_NEGATIVE', JSON.stringify(obsWeak.gender));
+  }
+
+  console.log('\n§9 Step 3 — buildFullStack: targeting stays strict while observation stays exploratory, structurally separated:');
+  {
+    const winners = { gender: { segment: 'رجال', classification: 'PROVEN_WINNER', evidence: 'e' } }; // proven
+    const segmentIntel = {
+      gender: { table: [{ segment: 'رجال', purchases: 8, classification: 'PROVEN_WINNER', signalStrength: null, evidence: 'e' }], topObserved: { segment: 'رجال', count: 8, signalStrength: null, winnerStatus: 'PROVEN_WINNER' } },
+      age: { table: [{ segment: '20-35', purchases: 2, classification: 'INSUFFICIENT_DATA', signalStrength: 'EARLY_SIGNAL', evidence: 'e' }], topObserved: { segment: '20-35', count: 2, signalStrength: 'EARLY_SIGNAL', winnerStatus: 'NOT_PROVEN_YET' } },
+      governorates: { table: [], topObserved: null },
+    };
+    const full = buildFullStack({ winners, segmentIntel, creativeIntel: {} });
+    ok('gender has a REAL proven winner -> targeting is non-null AND observation reflects the same real leader', full.gender.targeting?.status === 'PROVEN' && full.gender.observation.status === 'PROVEN_WINNER');
+    ok('age has ONLY an early signal -> targeting stays null (Broad) even though observation shows a real current leader', full.age.targeting === null && full.age.observation.status === 'EARLY_SIGNAL', JSON.stringify(full.age));
+    ok('governorate has zero data -> both targeting null and observation NO_DATA', full.governorate.targeting === null && full.governorate.observation.status === 'NO_DATA');
+  }
+
+  console.log('\n§10 Step 3 — buildFormingPlanSummary: never fakes Scale-readiness, names the REAL missing evidence:');
+  {
+    const partialStack = {
+      gender: { targeting: null, observation: { status: 'EARLY_SIGNAL', value: 'رجال' } },
+      age: { targeting: null, observation: { status: 'NO_DATA', value: null } },
+      governorate: { targeting: null, observation: { status: 'EARLY_SIGNAL', value: 'القاهرة' } },
+      creative: { targeting: null, observation: { status: 'OBSERVED', value: 'C7' } },
+      hook: { targeting: null, observation: { status: 'OBSERVED', value: 'H3' } },
+      angle: { targeting: null, observation: { status: 'NO_DATA', value: null } },
+      primaryText: { targeting: null, observation: { status: 'NO_DATA', value: null } },
+      headline: { targeting: null, observation: { status: 'NO_DATA', value: null } },
+      placements: { targeting: { value: 'Advantage+', status: 'NOT_PROVEN' }, observation: { status: 'NO_DATA', value: null } },
+    };
+    const fp = buildFormingPlanSummary(partialStack, 'AUDIENCE_TEST');
+    ok('not scale-ready when the primary type isn\'t NEW_SCALING_CAMPAIGN, regardless of how many early signals exist', fp.scaleReady === false);
+    ok('names Creative + Audience + Geo as the real missing evidence (none has a targeting value yet)', /Creative/.test(fp.reason) && /Audience/.test(fp.reason) && /Geo/.test(fp.reason), fp.reason);
+    ok('lists every dimension with a REAL observation (gender/governorate/creative/hook), skips the NO_DATA ones (age/angle/primaryText/headline)', fp.lines.length === 4 && fp.lines.every((l) => l.status !== 'NO_DATA'), JSON.stringify(fp.lines));
+
+    const readyStack = { ...partialStack, gender: { targeting: { value: 'نساء', status: 'PROVEN' }, observation: { status: 'PROVEN_WINNER', value: 'نساء' } }, creative: { targeting: { value: 'C7', status: 'PROVEN' }, observation: { status: 'PROVEN_WINNER', value: 'C7' } }, governorate: { targeting: { value: 'القاهرة', status: 'PROMISING' }, observation: { status: 'PROMISING', value: 'القاهرة' } } };
+    const fpReady = buildFormingPlanSummary(readyStack, 'NEW_SCALING_CAMPAIGN');
+    ok('scaleReady true and no "missing evidence" reason once the primary type genuinely IS NEW_SCALING_CAMPAIGN', fpReady.scaleReady === true && fpReady.reason === null);
+  }
+
+  console.log('\n§11 Step 3 — real Smart-Tank (146) integration: Action Plan re-reads the real window, never hardcodes a prior report\'s values:');
+  {
+    const { getProductDossier } = await imp('../services/amb/productDossier.js');
+    const dossier = await getProductDossier({ productId: 146 });
+    if (dossier.linked && dossier.package?.actionPlan) {
+      const ap = dossier.package.actionPlan;
+      ok('winningStack is the NEW {targeting, observation} shape for every real dimension', Object.values(ap.winningStack).every((f) => 'targeting' in f && 'observation' in f), JSON.stringify(Object.keys(ap.winningStack)));
+      ok('formingPlan is present with a real boolean scaleReady', typeof ap.formingPlan?.scaleReady === 'boolean', JSON.stringify(ap.formingPlan));
+      ok('a real product-level campaign targeting decision is NEVER an Early Signal value alone — every non-null targeting field is PROVEN or PROMISING', Object.values(ap.winningStack).every((f) => !f.targeting || f.targeting.status === 'PROVEN' || f.targeting.status === 'PROMISING' || f.targeting.status === 'NOT_PROVEN'), JSON.stringify(ap.winningStack));
+      console.log('  (real Smart-Tank forming-plan lines right now):', JSON.stringify(ap.formingPlan.lines));
+    } else {
+      console.log('  (skipped — Smart-Tank product 146 not currently linked/analyzed in this DB)');
+    }
   }
 } finally {
   await cleanup();

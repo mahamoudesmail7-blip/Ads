@@ -83,6 +83,126 @@ export function buildWinningStack(winners) {
   };
 }
 
+// ---- Step 3: CURRENT LEADER / EARLY SIGNAL vs PROVEN WINNER ----
+// A second, purely ADDITIVE view over the SAME real data: `targeting`
+// (built above by buildWinningStack — UNCHANGED, still only ever
+// PROVEN/PROMISING/NOT_PROVEN, still the only thing ever used for actual
+// campaign targeting) tells you what will be BUILT INTO the campaign.
+// `observation` (built below) tells you what is CURRENTLY LEADING, even
+// when it is far too early to trust for targeting — sourced from the same
+// topObserved/table rows segmentIntel.js/creativeIntel.js already compute
+// (Step 1's "OBSERVATION vs WINNER CLASSIFICATION" split), never a new
+// threshold and never a new classification decision. The two are ALWAYS
+// kept visually and structurally separate so an Early Signal can never be
+// mistaken for — or silently promoted into — a targeting decision.
+const LADDER_LABEL_AR = {
+  NO_DATA: 'لا توجد بيانات',
+  OBSERVED: 'تم رصده',
+  EARLY_SIGNAL: 'إشارة مبكرة',
+  PROMISING: 'واعد',
+  PROVEN_WINNER: 'فائز مثبت',
+  PROVEN_NEGATIVE: 'ضعف مؤكد',
+};
+
+/** Same 5-rung ladder (+ an honest 6th rung for a real proven NEGATIVE) computed from the row's OWN already-gated classification/signalStrength — never a new evidence threshold, purely relabeling for progressive display. */
+function ladderStatus({ classification, signalStrength }) {
+  if (classification === 'PROVEN_WINNER' || classification === 'WINNER') return 'PROVEN_WINNER';
+  if (classification === 'PROMISING' || classification === 'GOOD') return 'PROMISING';
+  if (classification === 'PROVEN_WEAK' || classification === 'WEAK' || classification === 'FATIGUED') return 'PROVEN_NEGATIVE';
+  if (signalStrength === 'EARLY_SIGNAL') return 'EARLY_SIGNAL';
+  if (signalStrength === 'OBSERVED') return 'OBSERVED';
+  return 'OBSERVED'; // a real observation exists (caller only reaches here when topObserved is non-null) but neither label above applies — an honest, conservative fallback, never a claim of proof
+}
+
+function findObservedRow(table, keyValue, labelField) {
+  return (table || []).find((r) => (r[labelField] ?? r.label ?? r.segment) === keyValue) || null;
+}
+
+/**
+ * The CURRENT LEADER for one dimension — the real topObserved row
+ * segmentIntel.js/creativeIntel.js already compute (highest raw
+ * purchases/orders right now), regardless of whether it has cleared the
+ * evidence bar. Returns an honest NO_DATA object (never null/undefined —
+ * the UI always has something concrete to render) when there is truly zero
+ * observation yet.
+ */
+function buildObservationField(dim, { labelField = 'segment', countLabel = 'Purchases' } = {}) {
+  const topObserved = dim?.topObserved;
+  if (!topObserved) return { status: 'NO_DATA', value: null, count: null, countLabel, spend: null, evidence: null };
+  const keyValue = topObserved.segment ?? topObserved.label;
+  const row = findObservedRow(dim?.table, keyValue, labelField);
+  return {
+    status: ladderStatus({ classification: row?.classification, signalStrength: topObserved.signalStrength }),
+    value: keyValue,
+    count: topObserved.count ?? topObserved.purchases ?? null,
+    countLabel,
+    spend: row?.spend ?? null,
+    evidence: row?.evidence || null,
+    thumbnailUrl: row?.meta?.thumbnailUrl || null,
+  };
+}
+
+/** The full "current leader" view across every dimension — placements has no dedicated breakdown pipeline anywhere in this system, so it honestly stays NO_DATA here (its `targeting` side already defaults to Meta's own automatic placements). */
+export function buildObservationStack(segmentIntel, creativeIntel) {
+  const seg = segmentIntel || {};
+  const ci = creativeIntel || {};
+  return {
+    gender: buildObservationField(seg.gender, { labelField: 'segment', countLabel: 'Purchases' }),
+    age: buildObservationField(seg.age, { labelField: 'segment', countLabel: 'Purchases' }),
+    governorate: buildObservationField(seg.governorates, { labelField: 'segment', countLabel: 'Orders' }),
+    creative: buildObservationField(ci.creative, { labelField: 'label', countLabel: 'Purchases' }),
+    hook: buildObservationField(ci.hooks, { labelField: 'label', countLabel: 'Purchases' }),
+    angle: buildObservationField(ci.angles, { labelField: 'label', countLabel: 'Purchases' }),
+    primaryText: buildObservationField(ci.primaryTexts, { labelField: 'label', countLabel: 'Purchases' }),
+    headline: buildObservationField(ci.headlines, { labelField: 'label', countLabel: 'Purchases' }),
+    placements: { status: 'NO_DATA', value: null, count: null, countLabel: null, spend: null, evidence: 'لا يوجد تحليل مواضع إعلانية مخصص لهذا المنتج حتى الآن.' },
+  };
+}
+
+const STACK_DIMS = ['gender', 'age', 'governorate', 'placements', 'creative', 'hook', 'angle', 'primaryText', 'headline'];
+
+/** Merges the strict `targeting` stack (buildWinningStack — unchanged, PROVEN/PROMISING only) with the exploratory `observation` stack (current leader, however early) into one {targeting, observation} pair per dimension. This is the ONLY new structural change to the Winning Stack's shape — every existing consumer of the flat targeting-only shape (Campaign Preview, Campaign Readiness, the Launch Builder handoff) keeps reading `.targeting` exactly as it read the old flat object, so nothing downstream of a real campaign decision is weakened. */
+export function buildFullStack({ winners, segmentIntel, creativeIntel }) {
+  const targeting = buildWinningStack(winners);
+  const observation = buildObservationStack(segmentIntel, creativeIntel);
+  const merged = {};
+  for (const dim of STACK_DIMS) merged[dim] = { targeting: targeting[dim], observation: observation[dim] };
+  return merged;
+}
+
+const FORMING_PLAN_DIMS = {
+  gender: ['👨', 'Gender'], age: ['🎂', 'Age'], governorate: ['📍', 'Geo'],
+  creative: ['🎥', 'Creative'], hook: ['🪝', 'Hook'], angle: ['🧭', 'Angle'],
+  primaryText: ['📝', 'Post'], headline: ['🏷️', 'Headline'],
+};
+
+/**
+ * "🧩 الخطة تتكوّن حاليًا" — a live, honest snapshot of every dimension that
+ * has ANY real observation yet (regardless of proof), plus the ONE thing
+ * that actually gates NEW_SCALING_CAMPAIGN: which of Creative/Audience/Geo
+ * still lack a PROVEN/PROMISING `targeting` value. Never invents a reason —
+ * every missing item named here is a real null on the strict targeting
+ * stack, the exact same gate computeCampaignReadiness/derivePrimaryActionType
+ * already enforce.
+ */
+export function buildFormingPlanSummary(fullStack, primaryType) {
+  const lines = [];
+  for (const [key, [icon, label]] of Object.entries(FORMING_PLAN_DIMS)) {
+    const obs = fullStack[key]?.observation;
+    if (!obs || obs.status === 'NO_DATA') continue;
+    lines.push({ icon, label, value: obs.value, status: obs.status, statusAr: LADDER_LABEL_AR[obs.status] || obs.status });
+  }
+  const scaleReady = primaryType === 'NEW_SCALING_CAMPAIGN';
+  const missing = [];
+  if (!fullStack.creative?.targeting) missing.push('Creative');
+  if (!fullStack.gender?.targeting && !fullStack.age?.targeting) missing.push('Audience');
+  if (!fullStack.governorate?.targeting) missing.push('Geo');
+  return {
+    lines, scaleReady,
+    reason: scaleReady ? null : (missing.length ? `نحتاج أدلة أقوى على ${missing.join(' + ')}` : 'التشخيص العام لسه محتاج وقت/عينة أكبر لتأكيد قرار Scale.'),
+  };
+}
+
 const READINESS_WEIGHTS = { dataQuality: 20, audience: 15, geo: 15, creative: 20, copy: 15, tracking: 15 };
 
 function tierPoints(field, max) {
@@ -242,20 +362,27 @@ function buildCampaignPreview({ productId, productName, image, stack, tracking }
  * given, honestly).
  */
 export async function buildActionPlan({ pkg, productId, productName, image, adAccountId, campaigns }) {
-  const stack = buildWinningStack(pkg.winners);
+  const fullStack = buildFullStack({ winners: pkg.winners, segmentIntel: pkg.segmentIntel, creativeIntel: pkg.creativeIntel });
+  // The strict, targeting-only flat shape — EXACTLY what computeCampaignReadiness/
+  // buildCampaignPreview/the Launch Builder handoff have always consumed.
+  // Readiness and the real campaign preview NEVER see the observation side.
+  const targetingStack = Object.fromEntries(STACK_DIMS.map((d) => [d, fullStack[d].targeting]));
+
   const tracking = await resolveTrackingIdentity({ productId, adAccountId });
-  const readiness = computeCampaignReadiness({ dataQuality: pkg.dataQuality, stack, hasTrackingReady: !!(tracking.pixel_id && tracking.page_id) });
+  const readiness = computeCampaignReadiness({ dataQuality: pkg.dataQuality, stack: targetingStack, hasTrackingReady: !!(tracking.pixel_id && tracking.page_id) });
   const primaryType = derivePrimaryActionType(pkg.decision, readiness);
   const bumpCandidates = await getExistingBumpCandidates(campaigns).catch(() => []);
+  const formingPlan = buildFormingPlanSummary(fullStack, primaryType);
 
   const secondaryActions = bumpCandidates.map((b) => ({ ...b }));
   const campaignPreview = primaryType === 'NEW_SCALING_CAMPAIGN' || primaryType === 'WAIT_FOR_DATA'
-    ? buildCampaignPreview({ productId, productName, image, stack, tracking })
+    ? buildCampaignPreview({ productId, productName, image, stack: targetingStack, tracking })
     : null;
 
   return {
     windowLabel: pkg.window?.label || null,
-    winningStack: stack,
+    winningStack: fullStack, // { <dim>: { targeting, observation } }
+    formingPlan,
     readiness,
     primaryAction: { type: primaryType, label: PRIMARY_ACTION_LABEL_AR[primaryType] || primaryType, reason: pkg.reason },
     secondaryActions,

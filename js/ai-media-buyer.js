@@ -2019,6 +2019,54 @@ function stackFieldHtml(field, label) {
   </div>`;
 }
 
+// Step 3 — CURRENT LEADER / EARLY SIGNAL vs PROVEN WINNER. Every Winning
+// Stack card now shows BOTH: "الأعلى حاليًا" (the real current leader, from
+// the SAME topObserved data the Audience/Creative tabs already show —
+// progressive NO_DATA→OBSERVED→EARLY_SIGNAL→PROMISING→PROVEN_WINNER ladder,
+// never itself used for targeting) and "🎯 في الحملة" (what will ACTUALLY be
+// built into the campaign — unchanged, still only ever a real PROVEN/
+// PROMISING pick, else honestly "Broad"). The two must never be visually
+// merged — that is exactly the confusion this step exists to prevent.
+const LADDER_BADGE_COLOR = { NO_DATA: 'gray', OBSERVED: 'gray', EARLY_SIGNAL: 'yellow', PROMISING: 'blue', PROVEN_WINNER: 'green', PROVEN_NEGATIVE: 'red' };
+const LADDER_LABEL_AR = { NO_DATA: 'لا توجد بيانات', OBSERVED: 'تم رصده', EARLY_SIGNAL: 'إشارة مبكرة', PROMISING: 'واعد', PROVEN_WINNER: 'فائز مثبت', PROVEN_NEGATIVE: 'ضعف مؤكد' };
+const TARGETING_BADGE = { PROVEN: 'green', PROMISING: 'blue', NOT_PROVEN: 'gray' };
+const TARGETING_LABEL = { PROVEN: 'PROVEN ✅', PROMISING: 'PROMISING', NOT_PROVEN: 'افتراضي' };
+
+/** One Winning Stack card — always shows the real current leader (however early) AND, separately, what will actually be used for campaign targeting. An Early Signal is NEVER promoted into the targeting line. */
+function dualStackFieldHtml(field, label) {
+  const obs = field?.observation;
+  const targeting = field?.targeting;
+  const hasObservation = obs && obs.status !== 'NO_DATA';
+  return `<div class="amb-panel" style="padding:10px 12px;">
+    <div style="font-size:12px; font-weight:700; margin-bottom:6px;">${E(label)}</div>
+    ${hasObservation ? `
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+        <span class="faint" style="font-size:10.5px;">الأعلى حاليًا</span>
+        <span class="badge ${LADDER_BADGE_COLOR[obs.status] || 'gray'}" style="font-size:10px;">${E(LADDER_LABEL_AR[obs.status] || obs.status)}</span>
+      </div>
+      <div style="font-size:13px; font-weight:600; margin-top:2px;">${E(String(obs.value || '').slice(0, 60))}</div>
+      <div class="faint" style="font-size:11px; margin-top:2px;">${obs.count != null ? `${fmtNum(obs.count)} ${E(obs.countLabel || '')}` : ''}${obs.spend != null ? ` · ${fmtEGP(obs.spend)}` : ''}</div>
+    ` : `<div class="faint" style="font-size:12px;">لا توجد بيانات بعد</div>`}
+    <div style="margin-top:8px; padding-top:8px; border-top:1px dashed var(--amb-border); display:flex; justify-content:space-between; align-items:center; gap:6px;">
+      <span class="faint" style="font-size:10.5px;">🎯 في الحملة</span>
+      <span class="badge ${targeting ? (TARGETING_BADGE[targeting.status] || 'gray') : 'gray'}" style="font-size:10px;">${targeting ? E(TARGETING_LABEL[targeting.status] || targeting.status) : 'Broad'}</span>
+    </div>
+    ${targeting && targeting.status !== 'NOT_PROVEN'
+      ? `<div class="faint" style="font-size:11px; margin-top:2px;">${E(String(targeting.value || '').slice(0, 50))} — ${E(targeting.evidence || '')}</div>`
+      : (hasObservation ? `<div class="faint" style="font-size:10.5px; margin-top:2px; color:var(--amb-amber);">لسه مش مثبت بعد — الحملة هتستخدم Broad</div>` : '')}
+  </div>`;
+}
+
+function formingPlanHtml(fp) {
+  if (!fp) return '';
+  return `<div class="section-title">🧩 الخطة تتكوّن حاليًا</div>
+  <div class="amb-panel" style="padding:12px 14px; margin-bottom:14px;">
+    ${fp.lines.length ? fp.lines.map((l) => `<div style="font-size:12.5px; margin-bottom:4px;">${l.icon} ${E(l.label)}: <b>${E(String(l.value || '').slice(0, 40))}</b> — ${E(l.statusAr || l.status)}</div>`).join('') : '<div class="faint" style="font-size:12px;">لا توجد إشارات ملحوظة كافية حتى الآن.</div>'}
+    <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--amb-border); font-weight:700; font-size:13px;">جاهز للـScale: ${fp.scaleReady ? '✅ نعم' : '❌ لا'}</div>
+    ${!fp.scaleReady && fp.reason ? `<div class="faint" style="font-size:12px; margin-top:4px;">السبب: ${E(fp.reason)}</div>` : ''}
+  </div>`;
+}
+
 const READINESS_COLOR = { 'جاهزة للمراجعة': 'green', 'جاهزة مع بعض الافتراضات': 'blue', 'تحتاج بيانات أكثر': 'yellow', 'محظورة بسبب جودة البيانات': 'red' };
 function readinessHtml(readiness) {
   return `<div class="section-title">📊 جاهزية الحملة</div>
@@ -2092,17 +2140,18 @@ function dcTabActionPlan(pkg) {
   return `
     ${viewBanner}
     ${actionPlanHeaderHtml(ap)}
-    <div class="section-title" style="margin-top:0;">🏆 Winning Stack</div>
+    ${formingPlanHtml(ap.formingPlan)}
+    <div class="section-title" style="margin-top:0;">🏆 Winning Stack — الأعلى حاليًا مقابل ما سيُستخدم فعليًا</div>
     <div class="amb-field-grid">
-      ${stackFieldHtml(stack.gender, 'النوع')}
-      ${stackFieldHtml(stack.age, 'العمر')}
-      ${stackFieldHtml(stack.governorate, 'المحافظة')}
-      ${stackFieldHtml(stack.placements, 'المواضع')}
-      ${stackFieldHtml(stack.creative, 'الكرياتيف')}
-      ${stackFieldHtml(stack.hook, 'Hook')}
-      ${stackFieldHtml(stack.angle, 'زاوية البيع')}
-      ${stackFieldHtml(stack.primaryText, 'البوست')}
-      ${stackFieldHtml(stack.headline, 'العنوان')}
+      ${dualStackFieldHtml(stack.gender, 'النوع')}
+      ${dualStackFieldHtml(stack.age, 'العمر')}
+      ${dualStackFieldHtml(stack.governorate, 'المحافظة')}
+      ${dualStackFieldHtml(stack.placements, 'المواضع')}
+      ${dualStackFieldHtml(stack.creative, 'الكرياتيف')}
+      ${dualStackFieldHtml(stack.hook, 'Hook')}
+      ${dualStackFieldHtml(stack.angle, 'زاوية البيع')}
+      ${dualStackFieldHtml(stack.primaryText, 'البوست')}
+      ${dualStackFieldHtml(stack.headline, 'العنوان')}
     </div>
     ${campaignPreviewHtml(ap.campaignPreview)}
     ${ap.campaignPreview && !ap.isViewOnly ? budgetDateInputsHtml() : ''}
