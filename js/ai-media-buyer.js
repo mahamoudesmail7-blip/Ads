@@ -5177,7 +5177,13 @@ const META_MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
 const META_MIN_DURATION_SEC = 1;
 const META_MAX_DURATION_SEC = 241 * 60;
 const META_MIN_WIDTH = 600;
-const LAUNCH_MAX_VIDEOS = 60;
+const LAUNCH_MAX_VIDEOS = 300;
+// Bounded concurrency for the upload queue — at 300 videos, the previous
+// strictly-sequential (concurrency=1) queue would take far too long.
+// Kept modest (never unbounded) so a large batch never opens hundreds of
+// simultaneous connections against this backend/Meta's resumable-upload
+// endpoint at once.
+const LAUNCH_UPLOAD_CONCURRENCY = 3;
 
 function naturalCompare(a, b) { return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }); }
 function launchExtOf(filename) { const m = /\.([a-z0-9]+)$/i.exec(filename || ''); return m ? m[1].toLowerCase() : ''; }
@@ -5237,11 +5243,20 @@ function nextLaunchSlotKeys(count) {
 }
 function launchVideoSortKey(v) { return Number(v.slotKey.slice(1)) || 0; }
 
+/** Real overall progress across every selected file — not just a per-card bar. Sums each entry's own progress.sent/total (already tracked per-file for the individual bars), so this is never a guess from file count alone (a handful of huge files vs many small ones progress very differently by count). */
 function updateLaunchProgressSummary() {
   const el = $('ambLaunchProgressSummary');
   if (!el) return;
-  const uploaded = launchState.videos.filter((v) => v.status === 'UPLOADED').length;
-  el.textContent = launchState.videos.length ? `${uploaded} / ${launchState.videos.length} تم رفعهم` : '';
+  const videos = launchState.videos;
+  if (!videos.length) { el.innerHTML = ''; return; }
+  const uploaded = videos.filter((v) => v.status === 'UPLOADED').length;
+  const failed = videos.filter((v) => v.status === 'FAILED').length;
+  const totalBytes = videos.reduce((s, v) => s + (v.progress?.total || v.size || 0), 0);
+  const sentBytes = videos.reduce((s, v) => s + (v.status === 'UPLOADED' ? (v.progress?.total || v.size || 0) : (v.progress?.sent || 0)), 0);
+  const pct = totalBytes ? Math.round((sentBytes / totalBytes) * 100) : 0;
+  el.innerHTML = `
+    <div>تم اختيار ${videos.length} / ${LAUNCH_MAX_VIDEOS} فيديو · ${uploaded} تم رفعهم${failed ? ` · ${failed} فشل` : ''}</div>
+    <div style="height:6px; background:var(--amb-border); border-radius:3px; margin-top:6px; overflow:hidden; max-width:420px;"><div style="height:100%; width:${pct}%; background:var(--amb-blue); transition:width .2s;"></div></div>`;
 }
 
 function launchVideoStatusBadge(entry) {
@@ -5281,7 +5296,7 @@ function wireLaunchVideoCard(entry) {
   const remove = el.querySelector('[data-vid-remove]');
   if (remove) remove.onclick = () => { launchState.videos = launchState.videos.filter((v) => v.slotKey !== entry.slotKey); renderLaunchStep(); };
 }
-/** Updates just ONE card's DOM in place — keeps 60-video lists smooth under frequent progress polling instead of re-rendering the whole list. */
+/** Updates just ONE card's DOM in place — keeps large (up to 300-video) lists smooth under frequent progress polling instead of re-rendering the whole list. */
 function renderLaunchVideoCard(entry) {
   const el = $(`ambLaunchVid-${entry.slotKey}`);
   if (!el) { renderLaunchStep(); return; }
@@ -5293,9 +5308,12 @@ function renderLaunchVideoCard(entry) {
 async function addLaunchVideoFiles(fileList) {
   const incoming = [...fileList].sort((a, b) => naturalCompare(a.name, b.name));
   const room = LAUNCH_MAX_VIDEOS - launchState.videos.length;
-  if (room <= 0) { UI.toast(`وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS} فيديو).`, 'error'); return; }
+  if (room <= 0) { UI.toast(`وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS} فيديو) — مفيش مكان لإضافة فيديوهات جديدة.`, 'error'); return; }
   const toAdd = incoming.slice(0, room);
-  if (incoming.length > toAdd.length) UI.toast(`اتضاف ${toAdd.length} بس من ${incoming.length} — وصلت للحد الأقصى ${LAUNCH_MAX_VIDEOS} فيديو.`, 'error');
+  // The rejection (if any) happens HERE, before a single byte of the excess
+  // files is ever uploaded — toAdd is already capped to `room`, so nothing
+  // past the limit is added to launchState.videos, let alone uploaded.
+  if (incoming.length > toAdd.length) UI.toast(`تم اختيار ${toAdd.length} فيديو فقط من ${incoming.length} — وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS} فيديو). باقي الملفات (${incoming.length - toAdd.length}) لم تُضَف ولم تُرفع.`, 'error');
   const slotKeys = nextLaunchSlotKeys(toAdd.length);
   const added = toAdd.map((file, i) => ({ slotKey: slotKeys[i], file, name: file.name, size: file.size, duration: null, thumbnailUrl: null, contentHash: null, status: 'VALIDATING', progress: { sent: 0, total: file.size }, error: null, warning: null, dedupSlot: null, metaVideoId: null }));
   launchState.videos.push(...added);
@@ -5319,14 +5337,37 @@ async function addLaunchVideoFiles(fileList) {
 }
 
 let launchUploadQueueRunning = false;
+/**
+ * Bounded-concurrency upload queue (up to LAUNCH_UPLOAD_CONCURRENCY workers
+ * in parallel, never unbounded — matches this codebase's own runBounded()
+ * convention used for ad/campaign creation, applied here to video upload
+ * for the first time now that 300 videos makes strictly-sequential
+ * uploading impractical). Each worker's `while` loop claims the next
+ * PENDING entry by calling uploadLaunchVideo(), which sets the entry's
+ * status to UPLOADING synchronously before its first real await — safe
+ * without extra locking, since JS's single-threaded event loop guarantees
+ * one worker's synchronous claim always completes before the next worker
+ * (started immediately after, in the same synchronous Array.from call)
+ * gets a chance to run its own find(). A failed entry simply stops that
+ * worker's current iteration; the worker moves on to the next PENDING
+ * entry and every OTHER worker is unaffected — one failure never blocks
+ * or cancels the rest of the batch. Retrying a single failed entry
+ * (wireLaunchVideoCard's retry handler) only ever resets THAT entry back
+ * to PENDING, so this same queue naturally re-uploads just that one file,
+ * never anything already UPLOADED.
+ */
 async function processLaunchUploadQueue() {
   if (launchUploadQueueRunning) return;
   launchUploadQueueRunning = true;
   try {
-    let next;
-    while ((next = launchState.videos.find((v) => v.status === 'PENDING'))) {
-      await uploadLaunchVideo(next);
-    }
+    const workerCount = Math.min(LAUNCH_UPLOAD_CONCURRENCY, Math.max(1, launchState.videos.filter((v) => v.status === 'PENDING').length));
+    const workers = Array.from({ length: workerCount }, () => (async () => {
+      let next;
+      while ((next = launchState.videos.find((v) => v.status === 'PENDING'))) {
+        await uploadLaunchVideo(next);
+      }
+    })());
+    await Promise.all(workers);
   } finally {
     launchUploadQueueRunning = false;
   }
@@ -5432,7 +5473,7 @@ async function renderLaunchVideos(body) {
     <div class="amb-panel">
       <div class="section-title" style="margin-top:0;">رفع الفيديوهات</div>
       <div id="ambLaunchDrop" class="amb-empty" style="border:2px dashed var(--amb-border); border-radius:12px; padding:28px 10px; cursor:pointer;">
-        📤 اسحب وأسقط الفيديوهات هنا أو اضغط للاختيار (حتى ${LAUNCH_MAX_VIDEOS} فيديو)
+        📤 اسحب وأسقط الفيديوهات هنا أو اضغط للاختيار — حتى ${LAUNCH_MAX_VIDEOS} فيديو
         <div class="faint" style="font-size:11px; margin-top:6px;">الصيغ المدعومة من Meta: MP4, MOV, AVI, WMV, FLV, GIF وغيرها — حتى 4 جيجابايت لكل فيديو، مدة حتى 241 دقيقة.</div>
       </div>
       <input type="file" id="ambLaunchFileInput" accept="video/*,.3g2,.3gp,.3gpp,.asf,.avi,.dat,.divx,.dv,.f4v,.flv,.gif,.m2ts,.m4v,.mkv,.mod,.mov,.mpe,.mpeg,.mpg,.mts,.nsv,.ogm,.ogv,.qt,.tod,.ts,.vob,.wmv" multiple style="display:none;" />
