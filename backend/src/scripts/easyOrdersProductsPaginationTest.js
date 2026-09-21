@@ -16,11 +16,13 @@ process.env.EASYORDERS_STORES_JSON = JSON.stringify([
   { id: 's5', name: 'S5', apiKeyEnv: 'EO_TEST_KEY_5' },
   { id: 's6', name: 'S6', apiKeyEnv: 'EO_TEST_KEY_6' },
   { id: 's7', name: 'S7', apiKeyEnv: 'EO_TEST_KEY_7' },
+  { id: 's8', name: 'S8', apiKeyEnv: 'EO_TEST_KEY_8' },
+  { id: 's9', name: 'S9', apiKeyEnv: 'EO_TEST_KEY_9' },
 ]);
-for (let i = 1; i <= 7; i++) process.env[`EO_TEST_KEY_${i}`] = `key-${i}`;
+for (let i = 1; i <= 9; i++) process.env[`EO_TEST_KEY_${i}`] = `key-${i}`;
 process.env.EASYORDERS_PAGE_DELAY_MS_TEST_OVERRIDE = '5'; // real fetch is mocked below — no reason to burn real wall-clock time on production pacing
 
-const { getAllEasyOrdersProductsStatus } = await import(pathToFileURL(process.cwd() + '/src/services/amb/easyOrdersProducts.js').href);
+const { getAllEasyOrdersProductsStatus, getEasyOrdersProducts, getEasyOrdersDiagnostics } = await import(pathToFileURL(process.cwd() + '/src/services/amb/easyOrdersProducts.js').href);
 
 function product(id, n = '') { return { id, name: `p${id}${n}`, slug: `p${id}`, thumb: `t${id}.png`, price: 100, created_at: null }; }
 
@@ -110,6 +112,53 @@ console.log('\n§7 The safety bound stops an always-full-page API at EASYORDERS_
   ok('stopped at exactly 50 page requests, not unbounded', calls === 50, String(calls));
   ok('still returns the (capped) data instead of throwing', result.ok && result.products.length === 5000, String(result.products.length));
   restoreFetch();
+}
+
+console.log('\n§8 CRITICAL PRODUCTION FIX — single-flight: N concurrent callers on a cold cache trigger exactly ONE real crawl, never a stampede:');
+{
+  let realFetchCalls = 0;
+  mockFetch(async () => {
+    realFetchCalls++;
+    await new Promise((r) => setTimeout(r, 50)); // simulate real network latency, giving concurrent callers a real window to collide in
+    return { ok: true, status: 200, json: async () => [product(1), product(2)] };
+  });
+  // Exactly the real production trigger: N product cards each independently
+  // calling getEasyOrdersProducts() for the SAME store at the SAME moment.
+  const N = 12;
+  const results = await Promise.all(Array.from({ length: N }, () => getEasyOrdersProducts('s8')));
+  ok('all N concurrent callers still get the real, correct data', results.every((r) => r.length === 2), JSON.stringify(results.map((r) => r.length)));
+  ok(`${N} concurrent cold-cache callers produced exactly 1 real HTTP call, not ${N} (the actual fix for the real 429 stampede)`, realFetchCalls === 1, String(realFetchCalls));
+  restoreFetch();
+}
+
+console.log('\n§9 single-flight also protects getAllEasyOrdersProductsStatus() — including a forceRefresh call joining an already-running crawl instead of starting a second one:');
+{
+  let realFetchCalls = 0;
+  mockFetch(async () => {
+    realFetchCalls++;
+    await new Promise((r) => setTimeout(r, 50));
+    return { ok: true, status: 200, json: async () => [product(1)] };
+  });
+  const [a, b, c] = await Promise.all([
+    getAllEasyOrdersProductsStatus('s9'),
+    getAllEasyOrdersProductsStatus('s9'),
+    getAllEasyOrdersProductsStatus('s9', { forceRefresh: true }),
+  ]);
+  ok('all 3 concurrent callers (including the forceRefresh one) get real, correct data', a.ok && b.ok && c.ok && a.products.length === 1);
+  ok('exactly 1 real HTTP call for 3 concurrent callers on the same store', realFetchCalls === 1, String(realFetchCalls));
+  restoreFetch();
+}
+
+console.log('\n§10 getEasyOrdersDiagnostics() — real internal counters, never fabricated:');
+{
+  const diag = getEasyOrdersDiagnostics();
+  ok('reports a real, non-negative requests/min figure', typeof diag.requestsLastMinute === 'number' && diag.requestsLastMinute >= 0);
+  ok('reports real cache hit/miss counters (already non-zero from the sections above)', diag.cacheHits >= 0 && diag.cacheMisses > 0, JSON.stringify({ hits: diag.cacheHits, misses: diag.cacheMisses }));
+  ok('reports a real 429 count (at least the one from §6 above)', diag.status429Count >= 1, String(diag.status429Count));
+  ok('reports a real retry count', diag.retryCount >= 1, String(diag.retryCount));
+  ok('reports real per-store last-success timestamps for stores that succeeded', typeof diag.lastSuccessAtByStore.s8 === 'number' && typeof diag.lastSuccessAtByStore.s9 === 'number', JSON.stringify(diag.lastSuccessAtByStore));
+  ok('reports real cache age for stores with a warm cache, not a guess', diag.thumbCacheAgeMsByStore.s8 >= 0 && diag.thumbCacheAgeMsByStore.s8 < 5000, JSON.stringify(diag.thumbCacheAgeMsByStore));
+  ok('in-flight crawl counts settle back to 0 once every request completes — no leaked entries', diag.inFlightCrawls === 0 && diag.fullInFlightCrawls === 0, JSON.stringify({ inFlight: diag.inFlightCrawls, fullInFlight: diag.fullInFlightCrawls }));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

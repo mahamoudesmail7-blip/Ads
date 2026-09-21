@@ -73,7 +73,7 @@ export function evaluateStopSignals({ metrics, econ, settings, trend }) {
  */
 export async function validateAction(p) {
   const checks = [];
-  const add = (name, ok, detail) => checks.push({ name, ok, detail });
+  const add = (name, ok, detail, context) => checks.push({ name, ok, detail, context: context || null });
 
   // 1. Action is in the executable whitelist at all.
   const whitelisted = EXECUTABLE.has(p.actionType);
@@ -155,17 +155,50 @@ export async function validateAction(p) {
   }
 
   // 8. Duplicate / very-recent identical action.
+  const DUP_COOLDOWN_HOURS = 6;
   if (p.entityId) {
-    const dupSince = new Date(Date.now() - 6 * 3600 * 1000);
+    const dupSince = new Date(Date.now() - DUP_COOLDOWN_HOURS * 3600 * 1000);
     const dup = await prisma.ambAction.findFirst({
       where: { entity_id: p.entityId, action_type: p.actionType, created_at: { gte: dupSince }, execution_status: { in: ['PENDING', 'REVALIDATING', 'EXECUTED'] } },
+      orderBy: { created_at: 'desc' },
+      include: { recommendation: { select: { id: true, status: true, campaign_name: true, adset_name: true, current_budget: true, recommended_budget: true } } },
     });
-    add('no_recent_duplicate', !dup, !dup ? 'مفيش أكشن مطابق على نفس العنصر خلال آخر 6 ساعات.' : 'فيه أكشن مطابق اتنفّذ أو منتظر على نفس العنصر خلال آخر 6 ساعات.');
+    // Real blocker context (Phase 14 of the stabilization pass) — the
+    // caller previously only ever saw a bare boolean + one generic Arabic
+    // sentence; every real fact behind that sentence (which exact action,
+    // which campaign/ad set, PENDING vs already-EXECUTED, the real
+    // before/after budget, and exactly how much cooldown remains) was
+    // fetched from the DB and then silently discarded. Never weakens the
+    // block itself — only exposes what it already knew.
+    let dupContext = null;
+    if (dup) {
+      const oldV = dup.old_value_json ? JSON.parse(dup.old_value_json) : {};
+      const newV = dup.new_value_json ? JSON.parse(dup.new_value_json) : {};
+      const cooldownExpiresAt = new Date(dup.created_at.getTime() + DUP_COOLDOWN_HOURS * 3600 * 1000);
+      dupContext = {
+        blockerType: dup.execution_status === 'EXECUTED' ? 'POST_EXECUTION_COOLDOWN' : 'DUPLICATE_PENDING_ACTION',
+        actionId: dup.id, recommendationId: dup.recommendation_id, recommendationStatus: dup.recommendation?.status || null,
+        campaignId: dup.campaign_id, campaignName: dup.recommendation?.campaign_name || null,
+        adsetId: dup.adset_id, adsetName: dup.recommendation?.adset_name || null, adId: dup.ad_id,
+        actionType: dup.action_type, executionStatus: dup.execution_status,
+        currentBudget: dup.recommendation?.current_budget ?? oldV.budget ?? null,
+        previousBudget: oldV.budget ?? null, proposedBudget: newV.budget ?? dup.recommendation?.recommended_budget ?? null,
+        createdAt: dup.created_at, executedAt: dup.executed_at,
+        cooldownHours: DUP_COOLDOWN_HOURS, cooldownExpiresAt,
+        remainingMs: Math.max(0, cooldownExpiresAt.getTime() - Date.now()),
+      };
+    }
+    add('no_recent_duplicate', !dup, !dup ? 'مفيش أكشن مطابق على نفس العنصر خلال آخر 6 ساعات.' : 'فيه أكشن مطابق اتنفّذ أو منتظر على نفس العنصر خلال آخر 6 ساعات.', dupContext);
   }
 
   const blockers = checks.filter((c) => !c.ok).map((c) => c.detail);
+  // Real, structured context for every failed check that has one — never
+  // just the classic-engine's own bare string message when there is real
+  // data behind it. Keyed by check name; a check with no extra context
+  // (most of them) is simply absent here, never a fabricated empty object.
+  const blockerContext = Object.fromEntries(checks.filter((c) => !c.ok && c.context).map((c) => [c.name, c.context]));
   const passed = blockers.length === 0;
-  return { passed, executable: passed && whitelisted, checks, blockers };
+  return { passed, executable: passed && whitelisted, checks, blockers, blockerContext };
 }
 
 export { EXECUTABLE };

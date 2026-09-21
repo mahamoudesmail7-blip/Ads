@@ -52,6 +52,15 @@ router.get('/overview', asyncRoute(async (req, res) => {
 
 router.get('/sync/status', asyncRoute(async (req, res) => res.json(await getSyncStatus())));
 
+// Internal diagnostics only (Phase 22 of the stabilization pass) — never a
+// customer-facing dashboard. Real counters for the exact class of incident
+// that produced "EasyOrders /products 429 (page 1, after 3 attempts)" in
+// production, so a future one can be diagnosed in seconds.
+router.get('/diagnostics/easy-orders', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { getEasyOrdersDiagnostics } = await import('../services/amb/easyOrdersProducts.js');
+  res.json(getEasyOrdersDiagnostics());
+}));
+
 router.post('/sync/run', asyncRoute(async (req, res) => {
   const result = await runSnapshotSync({ trigger: 'MANUAL' });
   res.json(result);

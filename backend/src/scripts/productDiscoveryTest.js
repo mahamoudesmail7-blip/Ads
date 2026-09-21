@@ -34,6 +34,30 @@ console.log('§1 listSmartDecisionProducts — never the raw 400+ SKU catalog, o
   ok('Product 90 (known real product with zero resolvable campaigns) is discovered as UNMAPPED, never fabricated numbers', Boolean(p90) && p90.decisionStatus === 'UNMAPPED' && p90.spend === null && p90.cpa === null, JSON.stringify(p90));
 
   ok('every card carries a resolvable filterBucket, never undefined', cards.every((c) => typeof c.filterBucket === 'string' && c.filterBucket.length > 0));
+
+  console.log('  (real production audit — 165-product screen breakdown, never guessed):');
+  const byStatus = {};
+  for (const c of cards) byStatus[c.decisionStatus] = (byStatus[c.decisionStatus] || 0) + 1;
+  console.log('  ', JSON.stringify(byStatus));
+
+  ok('every card exposes a non-null `reason` string — Phase 6/7: never an unexplained "--" field', cards.every((c) => typeof c.reason === 'string' && c.reason.length > 0), cards.filter((c) => !c.reason).length);
+
+  console.log('\n§3 CRITICAL FIX — unmapped products are no longer one undifferentiated bucket: a product with REAL Easy Orders but no campaign mapping is EASY_ORDERS_ONLY, never lumped in with a product that has genuinely nothing:');
+  const eoOnly = cards.find((c) => c.decisionStatus === 'EASY_ORDERS_ONLY');
+  ok('at least one real product in this account is EASY_ORDERS_ONLY (has real orders, no mapping)', Boolean(eoOnly), JSON.stringify(eoOnly));
+  if (eoOnly) {
+    ok('its reason cites the REAL order count, never a placeholder', new RegExp(`${eoOnly.orders} Easy Orders`).test(eoOnly.reason), eoOnly.reason);
+    ok('it carries a real actionable next step', eoOnly.action === '🔗 مراجعة ربط الحملات');
+    ok('it still filters into the same "unmapped" bucket as a fully-unmapped product (same tab, different card explanation)', decisionFilterBucket(eoOnly.decisionStatus) === 'unmapped');
+  }
+  const trulyUnmapped = cards.find((c) => c.decisionStatus === 'UNMAPPED');
+  if (trulyUnmapped) {
+    ok('a genuinely inactive product (no mapping, no orders) gets the honest "no real activity" reason, never claims orders it does not have', !/Easy Orders/.test(trulyUnmapped.reason) || /لا توجد/.test(trulyUnmapped.reason), trulyUnmapped.reason);
+  }
+
+  console.log('\n§4 decisionFilterBucket now also covers the new EASY_ORDERS_ONLY/NO_AD_SPEND states:');
+  ok('EASY_ORDERS_ONLY -> unmapped (same tab as UNMAPPED, distinguished by its own card reason)', decisionFilterBucket('EASY_ORDERS_ONLY') === 'unmapped');
+  ok('NO_AD_SPEND -> insufficientData', decisionFilterBucket('NO_AD_SPEND') === 'insufficientData');
 }
 
 console.log('\n§2 decisionFilterBucket — pure vocabulary mapping, exhaustive over every real PRODUCT_DECISIONS + operational value:');

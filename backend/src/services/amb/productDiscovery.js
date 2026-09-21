@@ -116,8 +116,9 @@ const DECISION_LABEL_AR = {
 
 /** The Smart Decision Center's own filter buckets — a plain, documented reshape of the real PRODUCT_DECISIONS vocabulary, never a second classification. */
 export function decisionFilterBucket(decisionStatus) {
-  if (decisionStatus === 'UNMAPPED') return 'unmapped';
+  if (decisionStatus === 'UNMAPPED' || decisionStatus === 'EASY_ORDERS_ONLY') return 'unmapped';
   if (decisionStatus === 'NEEDS_MAPPING_REVIEW') return 'needsReview';
+  if (decisionStatus === 'NO_AD_SPEND') return 'insufficientData';
   if (decisionStatus === 'PENDING_ANALYSIS') return 'insufficientData';
   if (decisionStatus === 'MEASURING') return 'measuring';
   if (decisionStatus === 'INSUFFICIENT_DATA') return 'insufficientData';
@@ -127,6 +128,35 @@ export function decisionFilterBucket(decisionStatus) {
   if (['KEEP_TESTING', 'AUDIENCE_TEST', 'GEO_TEST'].includes(decisionStatus)) return 'testing';
   if (decisionStatus === 'PAUSE_CANDIDATE') return 'pauseCandidate';
   return 'ready';
+}
+
+/**
+ * Real production audit (2026-09-21, 165 real products): 156 of 165 (94.5%)
+ * showed one generic "غير مربوط بحملات" label with no explanation — but 112
+ * of those 156 have REAL recent Easy Orders sales; only 44 have genuinely
+ * nothing at all. Collapsing both into one label hid a real, actionable
+ * signal (a product selling in real life with no ad campaign linked yet —
+ * exactly the case worth a human's attention) behind an identical-looking
+ * "nothing to see here" card as a product with zero real activity.
+ * Every unmapped card now explains itself with a real reason + real count,
+ * never a bare label. Never fuzzy-maps automatically — this only explains
+ * WHY it's unmapped; a human still confirms the mapping (mapping.js).
+ */
+function unmappedReason({ hasOrders, orderCount }) {
+  if (hasOrders) {
+    return {
+      decisionStatus: 'EASY_ORDERS_ONLY',
+      decisionLabel: 'يوجد أوردرات بدون ربط حملة',
+      reason: `يوجد ${orderCount} Easy Orders لهذا المنتج ولكن لا توجد Campaign مرتبطة بشكل مؤكد.`,
+      action: '🔗 مراجعة ربط الحملات',
+    };
+  }
+  return {
+    decisionStatus: 'UNMAPPED',
+    decisionLabel: 'غير مربوط بحملات',
+    reason: 'لا توجد Campaign مرتبطة بشكل مؤكد ولا أوردرات حديثة (آخر 90 يوم) — لا يوجد نشاط حقيقي لتحليله حاليًا.',
+    action: '🔗 مراجعة ربط الحملات',
+  };
 }
 
 /**
@@ -178,10 +208,17 @@ export async function listSmartDecisionProducts({ storeId, windowName } = {}) {
     const activeCampaigns = campaigns.filter((c) => statusByCampaign.get(c.campaignId) === 'ACTIVE').length;
     const lastRec = ambId ? latestRecByAmbId.get(ambId) : null;
 
-    let decisionStatus, decisionLabel, health = null, confidence = null;
+    let decisionStatus, decisionLabel, health = null, confidence = null, reason = null, action = null;
     if (!campaigns.length) {
-      decisionStatus = (ambId && suggestedAmbIds.has(ambId) && !mappedAmbIds.has(ambId)) ? 'NEEDS_MAPPING_REVIEW' : 'UNMAPPED';
-      decisionLabel = decisionStatus === 'NEEDS_MAPPING_REVIEW' ? 'يحتاج مراجعة الربط' : 'غير مربوط بحملات';
+      if (ambId && suggestedAmbIds.has(ambId) && !mappedAmbIds.has(ambId)) {
+        decisionStatus = 'NEEDS_MAPPING_REVIEW';
+        decisionLabel = 'يحتاج مراجعة الربط';
+        reason = 'يوجد اقتراح ربط حملة غير مؤكد لهذا المنتج — راجعه لتأكيده أو رفضه.';
+        action = '🔗 مراجعة ربط الحملات';
+      } else {
+        const r = unmappedReason({ hasOrders: (cod?.orders ?? 0) > 0, orderCount: cod?.orders ?? 0 });
+        decisionStatus = r.decisionStatus; decisionLabel = r.decisionLabel; reason = r.reason; action = r.action;
+      }
     } else if (lastRec) {
       const facts = JSON.parse(lastRec.reason_facts_json || '{}');
       health = facts.health?.score ?? null;
@@ -189,9 +226,19 @@ export async function listSmartDecisionProducts({ storeId, windowName } = {}) {
       const hasActiveExperiment = lastRec.status === 'EXECUTED';
       decisionStatus = hasActiveExperiment ? 'MEASURING' : lastRec.decision;
       decisionLabel = hasActiveExperiment ? 'قيد القياس' : (DECISION_LABEL_AR[lastRec.decision] || lastRec.decision);
+      reason = hasActiveExperiment ? 'تم تنفيذ آخر قرار — جاري قياس نتيجته الفعلية.' : (facts.bottleneck?.evidence || lastRec.reason || null);
+    } else if (!meta && (cod?.orders ?? 0) === 0) {
+      // Real campaign mapping exists, but zero Meta spend AND zero Easy
+      // Orders in this window — a genuinely quiet product, never the same
+      // as "no mapping at all".
+      decisionStatus = 'NO_AD_SPEND';
+      decisionLabel = 'لا يوجد إنفاق إعلاني';
+      reason = 'المنتج مرتبط بحملة حقيقية لكن بدون إنفاق أو أوردرات في هذه الفترة.';
+      action = null;
     } else {
       decisionStatus = 'PENDING_ANALYSIS';
       decisionLabel = 'قيد التحليل الأول';
+      reason = 'المنتج مرتبط بحملة حقيقية ولسه محتاج أول تحليل — هيحصل تلقائيًا قريبًا.';
     }
 
     return {
@@ -199,6 +246,7 @@ export async function listSmartDecisionProducts({ storeId, windowName } = {}) {
       mappedCampaigns: campaigns.length, activeCampaigns,
       spend: meta?.spend ?? null, metaPurchases: meta?.purchases ?? null, cpa: meta?.cpa ?? null,
       orders: cod?.orders ?? null, confirmedOrders: cod?.confirmed ?? null, deliveredOrders: cod?.delivered ?? null,
+      reason, action,
       healthScore: health, decisionStatus, decisionLabel, confidence,
       filterBucket: decisionFilterBucket(decisionStatus),
       lastAnalysisAt: lastRec?.created_at || null,

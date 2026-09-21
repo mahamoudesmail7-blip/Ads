@@ -24,6 +24,30 @@ let cache = new Map(); // storeId -> { at, list } — thumb-only (existing consu
 let fullCache = new Map(); // storeId -> { at, list } — UN-filtered full catalogue (getAllEasyOrdersProductsStatus), kept apart from `cache` so neither invalidates the other
 const TTL_MS = 60 * 60 * 1000;
 
+// Real production incident fix: a page of N product cards each independently
+// resolves its own image via GET /products/:id/image -> getEasyOrdersProducts()
+// -> a cold 1h-TTL cache miss. Before this fix, EVERY one of those N
+// concurrent requests independently started its OWN full paginated crawl of
+// EasyOrders' real /products endpoint the instant the cache went cold —
+// instantly blowing past EasyOrders' ~40 req/min cap and producing
+// "EasyOrders /products 429 (page 1, after 3 attempts)" for most of them.
+// Single-flight: while a real crawl for a given storeId is already running,
+// every other concurrent caller AWAITS THAT SAME PROMISE instead of starting
+// a second one — N concurrent callers on a cold cache now produce exactly
+// ONE real HTTP crawl, not N.
+const inFlight = new Map(); // storeId -> Promise<thumb-only list>
+const fullInFlight = new Map(); // storeId -> Promise<{ok,products,source,error}>
+
+// Lightweight internal diagnostics (Phase 22 — never a customer-facing
+// dashboard, just enough to diagnose a future incident like this one
+// quickly): requests/min, cache hit/miss, 429 count, retry count, last
+// successful fetch per store, and current cache age per store.
+const diagStats = { requestTimestamps: [], cacheHits: 0, cacheMisses: 0, status429Count: 0, retryCount: 0, lastSuccessAt: {} };
+function pruneOldRequestTimestamps() {
+  const cutoff = Date.now() - 60_000;
+  diagStats.requestTimestamps = diagStats.requestTimestamps.filter((t) => t >= cutoff);
+}
+
 function norm(s) {
   return String(s || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
 }
@@ -52,14 +76,25 @@ const EASYORDERS_PAGE_DELAY_MS = Number(process.env.EASYORDERS_PAGE_DELAY_MS_TES
 
 async function fetchOnePageWithRetry(key, page, attempt = 1) {
   const url = `${EASYORDERS_API_BASE}/products?page=${page}&limit=${EASYORDERS_PAGE_LIMIT}`;
+  diagStats.requestTimestamps.push(Date.now());
   const res = await fetch(url, { headers: { 'Api-Key': key } });
   if (res.status === 429 || res.status >= 500) {
+    if (res.status === 429) diagStats.status429Count++;
     if (attempt >= 3) {
       const err = new Error(`EasyOrders /products ${res.status} (page ${page}, after ${attempt} attempts)`);
       err.httpStatus = res.status;
       throw err;
     }
-    await new Promise((r) => setTimeout(r, 1000 * attempt)); // 1s, 2s backoff
+    diagStats.retryCount++;
+    // Honor a real Retry-After header when EasyOrders sends one (seconds,
+    // per HTTP spec) instead of always guessing our own fixed delay; add a
+    // small random jitter either way so several already-collided retries
+    // don't re-collide again in lockstep.
+    const retryAfterHeader = res.headers?.get?.('retry-after');
+    const retryAfterMs = retryAfterHeader && Number.isFinite(Number(retryAfterHeader)) ? Math.min(30_000, Number(retryAfterHeader) * 1000) : null;
+    const baseDelayMs = retryAfterMs ?? (1000 * attempt); // unchanged 1s/2s fallback when EasyOrders gives no guidance
+    const jitterMs = Math.round(Math.random() * 300);
+    await new Promise((r) => setTimeout(r, baseDelayMs + jitterMs));
     return fetchOnePageWithRetry(key, page, attempt + 1);
   }
   if (!res.ok) {
@@ -152,16 +187,25 @@ export async function getEasyOrdersProducts(storeId = defaultStoreId()) {
   const key = getStoreApiKey(storeId);
   if (!key) return [];
   const entry = cache.get(storeId);
-  if (entry?.list && Date.now() - entry.at < TTL_MS) return entry.list;
-  try {
-    const list = (await fetchEasyOrdersProductsRaw(key)).filter((p) => p.thumb);
-    cache.set(storeId, { at: Date.now(), list });
-    logger.info('AMB EasyOrders products cached', { storeId, count: list.length });
-    return list;
-  } catch (err) {
-    logger.warn('AMB EasyOrders products fetch failed (non-fatal)', { storeId, message: err.message });
-    return entry?.list || [];
-  }
+  if (entry?.list && Date.now() - entry.at < TTL_MS) { diagStats.cacheHits++; return entry.list; }
+  diagStats.cacheMisses++;
+  if (inFlight.has(storeId)) return inFlight.get(storeId); // single-flight — see inFlight's own comment above
+  const p = (async () => {
+    try {
+      const list = (await fetchEasyOrdersProductsRaw(key)).filter((p) => p.thumb);
+      cache.set(storeId, { at: Date.now(), list });
+      diagStats.lastSuccessAt[storeId] = Date.now();
+      logger.info('AMB EasyOrders products cached', { storeId, count: list.length });
+      return list;
+    } catch (err) {
+      logger.warn('AMB EasyOrders products fetch failed (non-fatal)', { storeId, message: err.message });
+      return entry?.list || [];
+    } finally {
+      inFlight.delete(storeId);
+    }
+  })();
+  inFlight.set(storeId, p);
+  return p;
 }
 
 /**
@@ -186,17 +230,49 @@ export async function getAllEasyOrdersProductsStatus(storeId = defaultStoreId(),
   const key = getStoreApiKey(storeId);
   if (!key) return { ok: false, products: [], source: 'error', error: 'هذا المتجر غير مربوط بـ Easy Orders — تأكد من ضبط مفتاح API الخاص به في متغيرات البيئة.' };
   const entry = fullCache.get(storeId);
-  if (!forceRefresh && entry?.list && Date.now() - entry.at < TTL_MS) return { ok: true, products: entry.list, source: 'live', error: null };
-  try {
-    const list = await fetchEasyOrdersProductsRaw(key);
-    fullCache.set(storeId, { at: Date.now(), list });
-    logger.info('AMB EasyOrders full catalogue cached', { storeId, count: list.length });
-    return { ok: true, products: list, source: 'live', error: null };
-  } catch (err) {
-    logger.error('AMB EasyOrders full catalogue fetch FAILED', { storeId, message: err.message, httpStatus: err.httpStatus || null });
-    if (entry?.list) return { ok: true, products: entry.list, source: 'stale_cache', error: err.message };
-    return { ok: false, products: [], source: 'error', error: err.message };
-  }
+  if (!forceRefresh && entry?.list && Date.now() - entry.at < TTL_MS) { diagStats.cacheHits++; return { ok: true, products: entry.list, source: 'live', error: null }; }
+  diagStats.cacheMisses++;
+  // Single-flight even for forceRefresh: a caller that explicitly asked for
+  // fresh data still joins an ALREADY-RUNNING real crawl rather than
+  // starting a second concurrent one — the freshness guarantee (this call
+  // never reads a stale cache entry) is unaffected; only redundant duplicate
+  // HTTP traffic is avoided.
+  if (fullInFlight.has(storeId)) return fullInFlight.get(storeId);
+  const p = (async () => {
+    try {
+      const list = await fetchEasyOrdersProductsRaw(key);
+      fullCache.set(storeId, { at: Date.now(), list });
+      diagStats.lastSuccessAt[storeId] = Date.now();
+      logger.info('AMB EasyOrders full catalogue cached', { storeId, count: list.length });
+      return { ok: true, products: list, source: 'live', error: null };
+    } catch (err) {
+      logger.error('AMB EasyOrders full catalogue fetch FAILED', { storeId, message: err.message, httpStatus: err.httpStatus || null });
+      if (entry?.list) return { ok: true, products: entry.list, source: 'stale_cache', error: err.message };
+      return { ok: false, products: [], source: 'error', error: err.message };
+    } finally {
+      fullInFlight.delete(storeId);
+    }
+  })();
+  fullInFlight.set(storeId, p);
+  return p;
+}
+
+/** Internal diagnostics only (Phase 22) — never a customer-facing dashboard. Lets a future incident like the real 429 stampede this fixes be diagnosed in seconds instead of re-derived from scratch. */
+export function getEasyOrdersDiagnostics() {
+  pruneOldRequestTimestamps();
+  const now = Date.now();
+  return {
+    requestsLastMinute: diagStats.requestTimestamps.length,
+    cacheHits: diagStats.cacheHits,
+    cacheMisses: diagStats.cacheMisses,
+    status429Count: diagStats.status429Count,
+    retryCount: diagStats.retryCount,
+    lastSuccessAtByStore: { ...diagStats.lastSuccessAt },
+    thumbCacheAgeMsByStore: Object.fromEntries([...cache.entries()].map(([sid, e]) => [sid, now - e.at])),
+    fullCacheAgeMsByStore: Object.fromEntries([...fullCache.entries()].map(([sid, e]) => [sid, now - e.at])),
+    inFlightCrawls: inFlight.size,
+    fullInFlightCrawls: fullInFlight.size,
+  };
 }
 
 /**

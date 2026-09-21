@@ -1586,9 +1586,17 @@ const FILTER_CHIPS = [
   { key: 'testing', label: 'قيد الاختبار', match: (b) => b === 'testing' },
   { key: 'insufficientData', label: 'بيانات غير كافية', match: (b) => b === 'insufficientData' },
   { key: 'measuring', label: 'قيد القياس', match: (b) => b === 'measuring' },
+  { key: 'unmapped', label: 'يحتاج ربط', match: (b) => b === 'unmapped' || b === 'needsReview' },
 ];
 
-const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null }, actionPlanInputs: {} };
+// Phase 23 (stabilization pass) — real production audit: 156 of 165 real
+// products (94.5%) show as unmapped/no-activity. Defaulting to "الكل" made
+// the daily operational screen unusable — a media buyer had to scroll past
+// ~150 irrelevant cards to find the handful of products actually needing a
+// decision today. Defaulting to "ready" (active/testing/needs-attention
+// products only) fixes this; "الكل" and "يحتاج ربط" stay one click away for
+// anyone who wants the full picture.
+const dcState = { products: null, filter: 'ready', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null }, actionPlanInputs: {} };
 
 async function renderDecisionCenter(panel) {
   if (!dcState.stores) {
@@ -1738,7 +1746,8 @@ function dcCardHtml(p) {
       <div><b>${p.orders != null ? fmtNum(p.orders) : '—'}</b>طلبات</div>
       <div><b>${p.cpa != null ? fmtEGP(p.cpa) : '—'}</b>CPA</div>
     </div>
-    <div class="amb-pcard-foot">${p.lastAnalysisAt ? `آخر تحليل: ${timeAgo(p.lastAnalysisAt)}` : (p.decisionStatus === 'UNMAPPED' ? 'محتاج ربط بحملة' : 'اضغط للتحليل الأول')}</div>
+    ${p.reason ? `<div class="amb-pcard-reason faint" style="font-size:11px; margin-top:4px; line-height:1.4;">${E(p.reason)}</div>` : ''}
+    <div class="amb-pcard-foot">${p.lastAnalysisAt ? `آخر تحليل: ${timeAgo(p.lastAnalysisAt)}` : (p.action || (p.decisionStatus === 'UNMAPPED' ? 'محتاج ربط بحملة' : 'اضغط للتحليل الأول'))}</div>
   </div>`;
 }
 

@@ -124,7 +124,7 @@ export async function previewExecution({ recId }) {
       metrics: liveM || before, econ: null, settings, connection, liveEntity: { status: live.status },
       currentBudget: live.budgetMajor ?? rec.current_budget, recommendedBudget: rec.recommended_budget,
     });
-    out.revalidation = { passed: revalidation.passed, checks: revalidation.checks, blockers: revalidation.blockers };
+    out.revalidation = { passed: revalidation.passed, checks: revalidation.checks, blockers: revalidation.blockers, blockerContext: revalidation.blockerContext };
 
     if (rec.action_type === 'PAUSE' || rec.action_type === 'RESUME') {
       out.plannedRequest = { endpoint: `POST /${rec.entity_id}`, body: { status: rec.action_type === 'PAUSE' ? 'PAUSED' : 'ACTIVE' } };
@@ -234,11 +234,28 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
     });
 
     if (material || !revalidation.passed) {
+      // Real production dead-end (stabilization pass, Phase 13): the human
+      // saw "التوصية محتاجة إعادة تحليل — الوضع اتغير." with no path
+      // forward — the recommendation just sat at NEEDS_REANALYSIS forever
+      // (automatic full regeneration is a genuinely separate, larger
+      // capability, deliberately NOT built in this pass — see note below).
+      // The bounded, safe fix: expose the REAL old-vs-now numbers that
+      // triggered the abort, so the UI can show a real "here's what changed"
+      // comparison instead of a dead-end message, and a human can act on it
+      // (re-run analysis, or approve a freshly-generated recommendation)
+      // instead of guessing why their approved action silently stopped.
+      const staleContext = {
+        recommendationId: rec.id, entityId: rec.entity_id, entityName: rec.entity_name,
+        decision: rec.decision, actionType: rec.action_type,
+        before: { spend: before.spend ?? null, cpa: before.cpa ?? null, budget: rec.current_budget ?? null, analyzedAt: rec.created_at },
+        now: { spend: liveM?.spend ?? null, cpa: liveM?.cpa ?? null, budget: live.budgetMajor ?? null, checkedAt: new Date() },
+        drift, blockers: revalidation.blockers,
+      };
       await prisma.ambAction.update({
         where: { id: action.id },
         data: {
           execution_status: 'ABORTED_REANALYSIS',
-          revalidation_json: JSON.stringify({ material, drift, checks: revalidation.checks, blockers: revalidation.blockers }),
+          revalidation_json: JSON.stringify({ material, drift, checks: revalidation.checks, blockers: revalidation.blockers, staleContext }),
         },
       });
       await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'NEEDS_REANALYSIS' } });
@@ -252,7 +269,7 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
       return {
         ok: false, aborted: true,
         message: material ? 'التوصية محتاجة إعادة تحليل — الوضع اتغير.' : `فحص القواعد رفض التنفيذ: ${revalidation.blockers[0] || ''}`,
-        drift, revalidation,
+        drift, revalidation, staleContext,
       };
     }
 
