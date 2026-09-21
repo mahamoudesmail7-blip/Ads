@@ -76,6 +76,7 @@ const NAV = [
   { key: 'products', label: 'المنتجات', icon: 'box' },
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
   { key: 'decisions', label: '🧠 مركز القرار الذكي', icon: 'target', badge: true },
+  { key: 'scale', label: '🚀 مركز التوسّع', icon: 'chart' },
   { key: 'winners', label: 'الأبطال', icon: 'image' },
   { key: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'grid' },
   { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
@@ -83,9 +84,9 @@ const NAV = [
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: '🧠 مركز القرار الذكي', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
-const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions']);
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: '🧠 مركز القرار الذكي', scale: '🚀 مركز التوسّع', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
 // existing resolveWindow() keys, so every window-aware endpoint honours them.
@@ -3055,6 +3056,324 @@ function cloneUUID() {
 }
 function badge(text, tone) { return `<span class="badge ${tone || 'gray'}">${E(text)}</span>`; }
 function acctLabel(a) { return `${a.name || a.id}${a.currency ? ` · ${a.currency}` : ''}${a.timezoneName ? ` · ${a.timezoneName}` : ''}`; }
+
+// ---------------------------------------------------------------------------
+// 🚀 مركز التوسّع (Scale Center) — Phase 1. Deliberately separate from
+// مركز القرار الذكي: this tab is execution-only (Scale = new campaign via
+// the real Launch Builder prefill handoff; Bump = raise an existing ad
+// set's budget via the real budgetBumpEngine.js math), never a second
+// diagnosis engine. Every number comes from /api/scale-center, which itself
+// only reuses productDecision.js/dataQualityGate.js/budgetBumpEngine.js —
+// zero new scoring logic. No Meta write happens on this tab; Scale hands
+// off to the existing Launch Builder (paused draft) and Bump only ever
+// creates a PENDING AmbRecommendation for the existing approve/execute
+// pipeline to run later.
+const SCALE_WINDOWS = [
+  { key: 'today', label: 'اليوم' }, { key: 'yesterday', label: 'أمس' },
+  { key: 'last3', label: 'آخر 3 أيام' }, { key: 'last7', label: 'آخر 7 أيام' },
+  { key: 'last14', label: 'آخر 14 يوم' }, { key: 'last30', label: 'آخر 30 يوم' }, { key: 'last90', label: 'آخر 90 يوم' },
+];
+const scState = {
+  window: 'last7', customFrom: null, customTo: null,
+  filter: 'all', search: '',
+  products: [], meta: null, loading: true, error: null,
+  bumpPanel: null, // { productId, adSetId } — which product's bump panel is open
+};
+
+function scWindowParams() {
+  return scState.window === 'custom'
+    ? { from: scState.customFrom, to: scState.customTo }
+    : { window: scState.window };
+}
+
+async function renderScaleCenter(panel) {
+  panel.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
+  await scLoadProducts(panel);
+}
+
+async function scLoadProducts(panel) {
+  scState.loading = true; scState.error = null;
+  scRenderShell(panel);
+  try {
+    const r = await api.get('/api/scale-center/products', { ...scWindowParams(), limit: 20, offset: 0 });
+    scState.products = r.products; scState.meta = r;
+  } catch (err) {
+    scState.error = err.message || 'تعذّر تحميل مركز التوسّع.';
+  }
+  scState.loading = false;
+  scRenderShell(panel);
+}
+
+async function scLoadMore() {
+  if (!scState.meta?.hasMore) return;
+  const btn = $('scLoadMore'); if (btn) btn.disabled = true;
+  try {
+    const r = await api.get('/api/scale-center/products', { ...scWindowParams(), limit: 20, offset: scState.products.length });
+    scState.products = scState.products.concat(r.products);
+    scState.meta = { ...scState.meta, hasMore: r.hasMore, offset: r.offset };
+  } catch (err) { UI.toast(err.message, 'error'); }
+  scRenderShell($('ambSecPanel'));
+}
+
+const SC_STATE_AR = {
+  ELIGIBLE_FOR_SCALE: ['مؤهل للتوسع', 'green'], ELIGIBLE_FOR_BUMP: ['مؤهل لزيادة الميزانية', 'blue'],
+  NEEDS_MORE_DATA: ['يحتاج بيانات أكثر', 'amber'], MONITORING: ['تحت المراقبة', 'gray'],
+  DATA_QUALITY_BLOCKED: ['محظور — جودة البيانات', 'red'], NOT_ELIGIBLE: ['غير مؤهل حاليًا', 'gray'],
+};
+
+function scKpiBar(products) {
+  const sum = (f) => products.reduce((s, p) => s + (f(p) ?? 0), 0);
+  const spend = sum((p) => p.meta?.spend);
+  const orders = sum((p) => p.easyOrders?.orders);
+  const purchases = sum((p) => p.meta?.purchases);
+  const revenue = sum((p) => p.easyOrders?.revenue);
+  const cpa = purchases > 0 ? spend / purchases : null;
+  const withCtr = products.filter((p) => p.meta?.ctr != null);
+  const ctr = withCtr.length ? withCtr.reduce((s, p) => s + p.meta.ctr, 0) / withCtr.length : null;
+  const crRows = products.filter((p) => p.businessConversionRate?.dataState === 'AVAILABLE');
+  const totalOrders = crRows.reduce((s, p) => s + p.businessConversionRate.ordersNumerator, 0);
+  const totalLpv = crRows.reduce((s, p) => s + p.businessConversionRate.lpvDenominator, 0);
+  const cr = totalLpv > 0 ? (totalOrders * 100) / totalLpv : null;
+  const cards = [
+    ['إجمالي الإنفاق', fmtEGP(spend)], ['إجمالي الطلبات (Easy Orders)', fmtNum(orders)],
+    ['متوسط CPA', cpa != null ? fmtEGP(cpa) : '—'], ['متوسط CTR', ctr != null ? fmtPct(ctr) : '—'],
+    ['معدل التحويل CR', cr != null ? fmtPct(cr) : '—'], ['إجمالي الإيرادات (Easy Orders)', fmtEGP(revenue)],
+  ];
+  return `<div class="amb-kpis">${cards.map(([l, v]) => `<div class="amb-kpi"><div class="k-top"><span class="k-label">${E(l)}</span></div><div class="k-val">${v}</div></div>`).join('')}</div>`;
+}
+
+function scFilterCounts(products) {
+  const c = { all: products.length, ELIGIBLE_FOR_SCALE: 0, ELIGIBLE_FOR_BUMP: 0, MONITORING: 0, NOT_ELIGIBLE: 0 };
+  for (const p of products) {
+    const s = p.eligibility.state;
+    if (s === 'ELIGIBLE_FOR_SCALE') c.ELIGIBLE_FOR_SCALE++;
+    else if (s === 'ELIGIBLE_FOR_BUMP') c.ELIGIBLE_FOR_BUMP++;
+    else if (s === 'NOT_ELIGIBLE' || s === 'DATA_QUALITY_BLOCKED') c.NOT_ELIGIBLE++;
+    else c.MONITORING++;
+  }
+  return c;
+}
+
+function scRenderShell(panel) {
+  if (scState.loading) { panel.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>'; return; }
+  if (scState.error) {
+    panel.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(scState.error)}</div>
+      <div class="toolbar" style="margin-top:12px;"><button class="amb-btn" id="scRetry">إعادة المحاولة</button></div>`;
+    $('scRetry').onclick = () => scLoadProducts(panel);
+    return;
+  }
+  const w = scState.meta?.window;
+  const counts = scFilterCounts(scState.products);
+  const FILTERS = [
+    ['all', `كل المنتجات (${counts.all})`], ['ELIGIBLE_FOR_SCALE', `مؤهل للتوسع (${counts.ELIGIBLE_FOR_SCALE})`],
+    ['ELIGIBLE_FOR_BUMP', `Bump (${counts.ELIGIBLE_FOR_BUMP})`], ['MONITORING', `تحت المراقبة (${counts.MONITORING})`],
+    ['NOT_ELIGIBLE', `غير مؤهل حاليًا (${counts.NOT_ELIGIBLE})`],
+  ];
+  let list = scState.products;
+  if (scState.filter !== 'all') {
+    list = list.filter((p) => {
+      const s = p.eligibility.state;
+      if (scState.filter === 'NOT_ELIGIBLE') return s === 'NOT_ELIGIBLE' || s === 'DATA_QUALITY_BLOCKED';
+      if (scState.filter === 'MONITORING') return !['ELIGIBLE_FOR_SCALE', 'ELIGIBLE_FOR_BUMP', 'NOT_ELIGIBLE', 'DATA_QUALITY_BLOCKED'].includes(s);
+      return s === scState.filter;
+    });
+  }
+  if (scState.search.trim()) {
+    const q = scState.search.trim().toLowerCase();
+    list = list.filter((p) => (p.productName || '').toLowerCase().includes(q));
+  }
+
+  panel.innerHTML = `
+    <div class="amb-panel" style="margin-bottom:14px;">
+      <div class="amb-fgrp">
+        <span class="fl">الفترة</span>
+        ${SCALE_WINDOWS.map((wc) => `<button class="amb-fbtn ${scState.window === wc.key ? 'active' : ''}" data-scwin="${wc.key}">${E(wc.label)}</button>`).join('')}
+        <button class="amb-fbtn ${scState.window === 'custom' ? 'active' : ''}" data-scwin="custom">فترة مخصصة</button>
+      </div>
+      ${scState.window === 'custom' ? `<div class="toolbar" style="margin-top:8px;">
+        <input type="date" class="amb-input" id="scCustomFrom" value="${E(scState.customFrom || '')}" />
+        <input type="date" class="amb-input" id="scCustomTo" value="${E(scState.customTo || '')}" />
+        <button class="amb-btn sm" id="scCustomApply">تطبيق</button>
+      </div>` : ''}
+      ${w ? `<div class="faint" style="font-size:12px; margin-top:6px;">الفترة المستخدمة في هذا التحليل: من ${E(w.from)} إلى ${E(w.to)}${scState.meta?.total ? ` · ${scState.meta.total} منتج مكتشف${scState.meta.hasMore || scState.products.length < scState.meta.total ? ` (${scState.products.length} محمّل)` : ''}` : ''}</div>` : ''}
+    </div>
+
+    ${scKpiBar(scState.products)}
+
+    <div class="amb-panel" style="margin-top:14px; margin-bottom:14px;">
+      <div class="amb-fgrp">${FILTERS.map(([k, l]) => `<button class="amb-fbtn ${scState.filter === k ? 'active' : ''}" data-scfilter="${k}">${E(l)}</button>`).join('')}</div>
+      <input class="amb-input" id="scSearch" placeholder="ابحث عن منتج..." value="${E(scState.search)}" style="margin-top:8px; max-width:320px;" />
+    </div>
+
+    <div id="scList">${list.length ? list.map(scProductRowHtml).join('') : '<div class="amb-panel amb-empty">مفيش منتجات مطابقة للفلتر الحالي.</div>'}</div>
+    ${scState.meta?.hasMore ? `<div class="toolbar" style="margin-top:12px; justify-content:center;"><button class="amb-btn" id="scLoadMore">تحميل المزيد (${scState.meta.total - scState.products.length} متبقي)</button></div>` : ''}
+  `;
+
+  panel.querySelectorAll('[data-scwin]').forEach((b) => { b.onclick = () => { scState.window = b.dataset.scwin; if (scState.window !== 'custom') scLoadProducts(panel); else scRenderShell(panel); }; });
+  const applyBtn = $('scCustomApply');
+  if (applyBtn) applyBtn.onclick = () => {
+    scState.customFrom = $('scCustomFrom').value; scState.customTo = $('scCustomTo').value;
+    if (!scState.customFrom || !scState.customTo) { UI.toast('حدد تاريخ البداية والنهاية.', 'error'); return; }
+    scLoadProducts(panel);
+  };
+  panel.querySelectorAll('[data-scfilter]').forEach((b) => { b.onclick = () => { scState.filter = b.dataset.scfilter; scRenderShell(panel); }; });
+  const search = $('scSearch');
+  if (search) { let t = null; search.oninput = () => { scState.search = search.value; clearTimeout(t); t = setTimeout(() => scRenderShell(panel), 200); }; }
+  const loadMore = $('scLoadMore'); if (loadMore) loadMore.onclick = scLoadMore;
+
+  list.forEach((p) => scWireProductRow(panel, p));
+}
+
+function scGovRow(g) {
+  return `<div class="sc-gov-row"><span>${E(g.governorate)}</span><span>${fmtNum(g.orders)} طلب</span></div>`;
+}
+
+function scProductRowHtml(p) {
+  const [stateLabel, tone] = SC_STATE_AR[p.eligibility.state] || [p.eligibility.state, 'gray'];
+  const cr = p.businessConversionRate;
+  const crText = cr?.dataState === 'AVAILABLE' ? fmtPct(cr.value) : '—';
+  const m = p.meta || {}; const eo = p.easyOrders || {};
+  return `
+  <div class="amb-panel sc-row" id="scRow-${p.productId}" style="margin-bottom:12px;">
+    <div class="sc-row-head">
+      <div class="sc-row-title">
+        ${p.image ? `<img src="${E(p.image)}" class="sc-thumb" />` : '<div class="sc-thumb sc-thumb-empty">📦</div>'}
+        <div><div style="font-weight:800;">${E(p.productName)}</div><div class="faint" style="font-size:11px;">#${p.productId}</div></div>
+      </div>
+      ${badge(stateLabel, tone)}
+    </div>
+
+    <div class="sc-row-blocks">
+      <div class="sc-block">
+        <div class="section-title" style="margin-top:0; font-size:12px;">Meta Ads</div>
+        <div class="sc-metric-grid">
+          <div>Spend: ${fmtEGP(m.spend)}</div><div>Purchases: ${fmtNum(m.purchases)}</div><div>CPA: ${m.cpa != null ? fmtEGP(m.cpa) : '—'}</div>
+          <div>Impressions: ${fmtNum(m.impressions)}</div><div>CTR: ${m.ctr != null ? fmtPct(m.ctr) : '—'}</div><div>CPC: ${m.cpc != null ? fmtEGP(m.cpc) : '—'}</div>
+          <div>LPV: ${fmtNum(m.landingPageViews)}</div><div style="font-weight:700;">CR: ${crText}</div>
+        </div>
+      </div>
+      <div class="sc-block">
+        <div class="section-title" style="margin-top:0; font-size:12px;">Easy Orders — مبيعات المنتج</div>
+        <div class="sc-metric-grid">
+          <div>Orders: ${fmtNum(eo.orders)}</div><div>Confirmed: ${fmtNum(eo.confirmed)}</div><div>Delivered: ${fmtNum(eo.delivered)}</div>
+        </div>
+        ${p.governoratesTop3?.length ? `<div class="sc-gov-mini"><div class="faint" style="font-size:11px; margin:6px 0 2px;">📍 أعلى المحافظات</div>${p.governoratesTop3.map(scGovRow).join('')}</div>` : ''}
+      </div>
+    </div>
+
+    ${p.eligibility.reasons?.length ? `<div class="faint sc-reasons" style="font-size:11px; margin-top:8px;">${p.eligibility.reasons.map((r) => `<div>${r.startsWith('⚠️') ? '' : '✓ '}${E(r)}</div>`).join('')}</div>` : ''}
+    ${p.dataQuality?.status === 'DECISION_BLOCKED_DATA_QUALITY' ? `<div class="sc-reasons" style="font-size:11px; margin-top:6px; color:#c62828;">${p.dataQuality.criticalFailures.map((c) => `<div>⛔ ${E(c.reason)}</div>`).join('')}</div>` : ''}
+
+    <div class="toolbar" style="margin-top:10px;">
+      <button class="amb-btn sm" data-sc-details="${p.productId}">عرض التفاصيل</button>
+      <button class="amb-btn sm primary" data-sc-scale="${p.productId}" ${p.eligibility.canScale ? '' : 'disabled'}>🟢 Scale (اسكيل)</button>
+      <button class="amb-btn sm blue" data-sc-bump="${p.productId}" ${p.eligibility.canBump ? '' : 'disabled'}>🔵 Bump (بامب)</button>
+    </div>
+    <div id="scBumpPanel-${p.productId}"></div>
+  </div>`;
+}
+
+function scWireProductRow(panel, p) {
+  const row = $(`scRow-${p.productId}`);
+  if (!row) return;
+  row.querySelector('[data-sc-details]').onclick = () => {
+    location.hash = `decisions`;
+    setTimeout(() => UI.toast(`افتح المنتج #${p.productId} في مركز القرار الذكي للتشخيص الكامل.`), 50);
+  };
+  const scaleBtn = row.querySelector('[data-sc-scale]');
+  if (scaleBtn && p.eligibility.canScale) scaleBtn.onclick = () => scRunScale(p);
+  const bumpBtn = row.querySelector('[data-sc-bump]');
+  if (bumpBtn && p.eligibility.canBump) bumpBtn.onclick = () => scOpenBumpPanel(p);
+}
+
+/** Real reuse of the EXISTING product-decision → approve → execution-plan → execute pipeline (the exact same one مركز القرار الذكي's Action Plan already uses) — never a second Scale execution path. Stops before any real Meta write; hands off to the real Launch Builder as a paused draft. */
+async function scRunScale(p) {
+  try {
+    UI.toast('جارِ تجهيز قرار Scale…');
+    const { recommendation } = await api.post(`/api/ai-media-buyer/product-decision/${p.productId}`, {});
+    await api.post(`/api/ai-media-buyer/decision-center/${recommendation.id}/approve`, {});
+    const plan = await api.get(`/api/ai-media-buyer/decision-center/${recommendation.id}/execution-plan`);
+    if (plan.actionKind !== 'LAUNCH_BUILDER_PREFILL') { UI.toast('القرار الحالي مش Scale — راجعه في مركز القرار الذكي.', 'error'); return; }
+    const ok = await UI.confirmModal({
+      title: 'تجهيز Scale — مسودة كامبين جديدة',
+      message: `${plan.summary}\n\nهيتفتح "رفع الكامبين" بمسودة معبّأة (فيسبوك). لسه هتراجع وتضغط نشر بنفسك — مفيش نشر تلقائي على Meta.`,
+      confirmLabel: '🟢 تجهيز Scale',
+    });
+    if (!ok) return;
+    const result = await api.post(`/api/ai-media-buyer/decision-center/${recommendation.id}/execute`, { confirmRealExecution: true });
+    if (!result.ok || !result.prefill) { UI.toast(result.message || 'تعذّر تجهيز المسودة.', 'error'); return; }
+    launchState.productId = result.prefill.productId || p.productId;
+    launchState.productName = p.productName;
+    launchState.step = 1;
+    launchState._prefillWinners = {
+      creative: result.prefill.winningCreative, hook: result.prefill.winningHook, angle: result.prefill.winningAngle,
+      primaryText: result.prefill.winningPrimaryText, headline: result.prefill.winningHeadline,
+      segment: result.prefill.winningSegment, governorate: result.prefill.winningGovernorate,
+    };
+    if (result.prefill.pixelId) { launchState.pixelId = result.prefill.pixelId; launchState.pixelName = result.prefill.pixelName; launchState.conversionEvent = result.prefill.conversionEvent || 'PURCHASE'; }
+    if (result.prefill.pageId) { launchState.pageId = result.prefill.pageId; launchState.pageName = result.prefill.pageName; }
+    if (result.prefill.instagramId) { launchState.instagramId = result.prefill.instagramId; launchState.instagramUsername = result.prefill.instagramUsername; }
+    if (result.prefill.targeting) launchState.targeting = result.prefill.targeting;
+    location.hash = 'launch';
+    UI.toast('✅ اتفتحت مسودة "رفع الكامبين" — راجع كل خطوة قبل النشر.');
+  } catch (err) { UI.toast(err.message, 'error'); }
+}
+
+/** Real interactive Bump — user picks the percentage, sees the REAL Current→Proposed preview (budgetBumpEngine.js's own computeBumpedBudget), then "تجهيز الزيادة" persists a PENDING AmbRecommendation through the existing on-demand endpoint. No real budget change here — approval/execution still goes through the untouched executor.js pipeline. */
+async function scOpenBumpPanel(p) {
+  const adSet = p.bump?.adSets?.find((a) => a.verdict === 'BUMP' && a.canEvaluateBump) || p.bump?.adSets?.[0];
+  if (!adSet) { UI.toast('مفيش Ad Set مؤهل دلوقتي.', 'error'); return; }
+  const el = $(`scBumpPanel-${p.productId}`);
+  if (!el) return;
+  el.innerHTML = '<div class="amb-loading" style="margin-top:8px;">جارِ التحميل…</div>';
+  scState.bumpPanel = { productId: p.productId, adSetId: adSet.adSetId, pct: 25, customPct: '' };
+  await scRenderBumpPanel(p, adSet);
+}
+
+async function scRenderBumpPanel(p, adSet) {
+  const el = $(`scBumpPanel-${p.productId}`);
+  if (!el || !scState.bumpPanel) return;
+  const bp = scState.bumpPanel;
+  let preview;
+  try {
+    preview = await api.get('/api/scale-center/bump-preview', { adSetId: bp.adSetId, pct: bp.pct });
+  } catch (err) { el.innerHTML = `<div class="amb-panel amb-empty" style="margin-top:8px;">⚠️ ${E(err.message)}</div>`; return; }
+  const PCTS = [10, 25, 50];
+  el.innerHTML = `
+    <div class="amb-panel" style="margin-top:10px; background:var(--amb-surface-2);">
+      <div class="section-title" style="margin-top:0;">رفع ميزانية الحملة الحالية (Bump)</div>
+      <div class="faint" style="font-size:12px;">Campaign: ${E(preview.campaignName || preview.campaignId)} · Ad Set: ${E(preview.adSetName || preview.adSetId)}</div>
+      <div class="sc-metric-grid" style="margin-top:6px;">
+        <div>الميزانية الحالية: ${fmtEGP(preview.currentBudget)}</div><div>CPA: ${preview.cpa != null ? fmtEGP(preview.cpa) : '—'}</div>
+        <div>Purchases: ${fmtNum(preview.purchases)}</div><div>Spend: ${fmtEGP(preview.spend)}</div>
+      </div>
+      <div class="amb-fgrp" style="margin-top:10px;">${PCTS.map((pc) => `<button class="amb-fbtn ${bp.pct === pc ? 'active' : ''}" data-scbumppct="${pc}">+${pc}%</button>`).join('')}
+        <button class="amb-fbtn ${bp.pct === 'custom' ? 'active' : ''}" data-scbumppct="custom">مخصص</button></div>
+      ${bp.pct === 'custom' ? `<input type="number" class="amb-input" id="scBumpCustomPct" placeholder="نسبة الزيادة %" value="${E(bp.customPct)}" style="max-width:160px; margin-top:6px;" />` : ''}
+      <div style="margin-top:10px; font-weight:700;">${fmtEGP(preview.currentBudget)} ← ${preview.proposedBudget != null ? fmtEGP(preview.proposedBudget) : '—'}</div>
+      ${preview.verdict !== 'BUMP' ? `<div class="faint" style="font-size:11px; color:#c62828; margin-top:4px;">${E(preview.verdictReason || 'مش متاح تجهيز الزيادة دلوقتي.')}</div>` : ''}
+      <div class="toolbar" style="margin-top:10px;">
+        <button class="amb-btn sm primary" id="scBumpPrepare" ${preview.verdict === 'BUMP' ? '' : 'disabled'}>تجهيز الزيادة</button>
+        <button class="amb-btn sm ghost" id="scBumpCancel">إلغاء</button>
+      </div>
+    </div>`;
+  el.querySelectorAll('[data-scbumppct]').forEach((b) => { b.onclick = () => {
+    const v = b.dataset.scbumppct;
+    scState.bumpPanel.pct = v === 'custom' ? 'custom' : Number(v);
+    if (v !== 'custom') scRenderBumpPanel(p, adSet); else { const cur = $(`scBumpPanel-${p.productId}`); if (cur) scRenderBumpPanel(p, adSet); }
+  }; });
+  const customInput = $('scBumpCustomPct');
+  if (customInput) customInput.onchange = () => { const n = Number(customInput.value); if (n > 0) { scState.bumpPanel.pct = n; scRenderBumpPanel(p, adSet); } };
+  $('scBumpCancel').onclick = () => { scState.bumpPanel = null; el.innerHTML = ''; };
+  const prepareBtn = $('scBumpPrepare');
+  if (prepareBtn) prepareBtn.onclick = async () => {
+    try {
+      const r = await api.post('/api/scale-center/bump-prepare', { adSetId: bp.adSetId, pct: bp.pct === 'custom' ? Number(bp.customPct) : bp.pct });
+      UI.toast(r.ok ? '✅ تم تجهيز الزيادة — راجعها في مركز القرار الذكي للموافقة.' : 'تعذّر التجهيز.', r.ok ? undefined : 'error');
+      scState.bumpPanel = null; el.innerHTML = '';
+    } catch (err) { UI.toast(err.message, 'error'); }
+  };
+}
 
 async function renderClone(panel) {
   if (cloneState.poll) { clearInterval(cloneState.poll); cloneState.poll = null; }

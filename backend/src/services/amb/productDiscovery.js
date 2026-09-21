@@ -21,7 +21,7 @@ import { resolveProductCampaigns } from './productPerformance.js';
 
 const RECENT_ORDER_DAYS = 90;
 
-async function discoverRelevantProductIds(storeId) {
+export async function discoverRelevantProductIds(storeId) {
   const cutoff = new Date(Date.now() - RECENT_ORDER_DAYS * 86400000).toISOString().slice(0, 10);
   const orderWhere = { product_id: { not: null }, date: { gte: cutoff } };
   if (storeId) orderWhere.OR = [{ store_id: storeId }, { store_id: null }];
@@ -36,7 +36,7 @@ async function discoverRelevantProductIds(storeId) {
   return [...ids];
 }
 
-async function resolveProductImages(productIds) {
+export async function resolveProductImages(productIds) {
   const [ambProducts, profiles] = await Promise.all([
     prisma.ambProduct.findMany({ where: { product_id: { in: productIds } }, select: { product_id: true, image_url: true } }),
     prisma.productMarketingProfile.findMany({ where: { product_id: { in: productIds }, primary_image_url: { not: null } }, orderBy: { created_at: 'desc' }, select: { product_id: true, primary_image_url: true } }),

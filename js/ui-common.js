@@ -59,6 +59,7 @@ export const NAV_ITEMS = [
   { key: 'customers', href: 'customers.html', label: 'قاعدة العملاء', icon: navIcon('customers') },
   { key: 'aiintel', href: 'ai-intelligence.html', label: 'AI Intelligence', icon: navIcon('aiintel') },
   { key: 'aimediabuyer', href: 'ai-media-buyer.html', label: 'AI Media Buyer', icon: navIcon('aimediabuyer') },
+  { key: 'scalecenter', href: 'scale-center.html', label: '🚀 مركز التوسّع', icon: navIcon('ranking') },
   { key: 'creativefactory', href: 'creative-factory.html', label: 'مصنع الكرياتيفات', icon: navIcon('aimediabuyer') },
   { key: 'productresearch', href: 'product-research.html', label: 'بحث المنتجات', icon: navIcon('productresearch') },
   { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },

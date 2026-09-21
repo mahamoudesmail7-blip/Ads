@@ -15,7 +15,7 @@ import { entityWindowMetrics, resolveWindow } from './metricsEngine.js';
 import { mappedCampaignIndex } from './mapping.js';
 import { evaluateAdSetForBump, evaluateAdSetForRollback, resolveAdSetLifecycleState } from './budgetBumpEngine.js';
 
-function bumpSettingsFrom(settings) {
+export function bumpSettingsFrom(settings) {
   const out = {};
   const map = {
     cpaSuccessThreshold: 'ambBumpCpaSuccessThreshold', bumpPct: 'ambBumpPct', rollbackCpaThreshold: 'ambBumpRollbackCpaThreshold',
@@ -28,7 +28,7 @@ function bumpSettingsFrom(settings) {
 }
 
 /** The most recent bump/rollback AmbAction for this ad set, in the shape budgetBumpEngine.js's lifecycle function expects — reconstructed from AmbAction's own real old_value_json/new_value_json/created_at, never a separate new history table. */
-async function latestBumpActionFor(adAccountId, adsetId) {
+export async function latestBumpActionFor(adAccountId, adsetId) {
   const rec = await prisma.ambRecommendation.findFirst({
     where: { level: 'adset', entity_id: adsetId, ad_account_id: adAccountId, decision: { in: ['BUMP_ADSET_25', 'ROLLBACK_BUMP'] } },
     orderBy: { created_at: 'desc' },
@@ -46,13 +46,13 @@ async function latestBumpActionFor(adAccountId, adsetId) {
   };
 }
 
-async function bumpsInLast24h(adAccountId, adsetId) {
+export async function bumpsInLast24h(adAccountId, adsetId) {
   return prisma.ambRecommendation.count({
     where: { level: 'adset', entity_id: adsetId, ad_account_id: adAccountId, decision: 'BUMP_ADSET_25', created_at: { gte: new Date(Date.now() - 24 * 3600000) } },
   });
 }
 
-async function persistBumpRecommendation({ adAccountId, adSet, ambProductId, productName, evalResult, batchId }) {
+export async function persistBumpRecommendation({ adAccountId, adSet, ambProductId, productName, evalResult, batchId }) {
   return prisma.ambRecommendation.create({
     data: {
       batch_id: batchId, ad_account_id: adAccountId, amb_product_id: ambProductId || null, product_name: productName || null,
