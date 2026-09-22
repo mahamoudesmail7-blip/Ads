@@ -36,10 +36,36 @@ function clearUploadProgress(jobId, slotKey) {
   progressByKey.delete(progressKey(jobId, slotKey));
 }
 
+// None of Meta's fetch() calls in this file had a timeout — confirmed live
+// as the actual cause of uploads hanging forever at "100%": the LAST chunk
+// transfers fine (progress hits fileSize/fileSize), then the 'finish' phase
+// call to Meta stalls with no response and no connection error, so the
+// `await` never resolves or rejects. The route's try/catch around
+// streamUploadVideoToMeta() can only mark a video FAILED (and let the
+// frontend's retry button work) if the promise it's awaiting actually
+// settles — a hung fetch defeats that entirely, leaving the DB row stuck at
+// UPLOADING and the browser's own request hung the same way. AbortController
+// timeouts here are what make a stall fail cleanly instead of hanging.
+const METADATA_TIMEOUT_MS = 30000; // 'start'/'finish' calls carry no file bytes — should be fast
+const CHUNK_TIMEOUT_MS = 90000; // a real chunk transfer (a few MB) over a slow connection needs more room
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`Meta لم ترد خلال ${Math.round(timeoutMs / 1000)} ثانية — الاتصال عالق، أعد المحاولة.`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function metaGraphForm(path, fields) {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(fields)) form.set(k, String(v));
-  const res = await fetch(`${GRAPH_BASE}${path}`, { method: 'POST', body: form });
+  const res = await fetchWithTimeout(`${GRAPH_BASE}${path}`, { method: 'POST', body: form }, METADATA_TIMEOUT_MS);
   const json = await res.json().catch(() => null);
   if (!res.ok || json?.error) {
     const e = json?.error || {};
@@ -57,7 +83,7 @@ async function metaTransferChunk(adAccountId, token, { uploadSessionId, startOff
   form.append('start_offset', String(startOffset));
   form.append('access_token', token);
   form.append('video_file_chunk', new Blob([chunk]), 'chunk');
-  const res = await fetch(`${GRAPH_BASE}/${adAccountId}/advideos`, { method: 'POST', body: form });
+  const res = await fetchWithTimeout(`${GRAPH_BASE}/${adAccountId}/advideos`, { method: 'POST', body: form }, CHUNK_TIMEOUT_MS);
   const json = await res.json().catch(() => null);
   if (!res.ok || json?.error) {
     const e = json?.error || {};
@@ -71,7 +97,7 @@ async function metaTransferChunk(adAccountId, token, { uploadSessionId, startOff
 /** Best-effort processing status for an uploaded video (e.g. 'ready', 'processing', 'error'). Never throws — a status-check failure shouldn't fail the upload it's checking on. */
 export async function getMetaVideoStatus(token, videoId) {
   try {
-    const res = await fetch(`${GRAPH_BASE}/${videoId}?fields=status&access_token=${encodeURIComponent(token)}`);
+    const res = await fetchWithTimeout(`${GRAPH_BASE}/${videoId}?fields=status&access_token=${encodeURIComponent(token)}`, {}, METADATA_TIMEOUT_MS);
     const json = await res.json();
     return json?.status?.video_status || null;
   } catch {
@@ -90,7 +116,7 @@ export async function getMetaVideoStatus(token, videoId) {
  */
 export async function getMetaVideoThumbnailUrl(token, videoId) {
   try {
-    const res = await fetch(`${GRAPH_BASE}/${videoId}?fields=picture&access_token=${encodeURIComponent(token)}`);
+    const res = await fetchWithTimeout(`${GRAPH_BASE}/${videoId}?fields=picture&access_token=${encodeURIComponent(token)}`, {}, METADATA_TIMEOUT_MS);
     const json = await res.json();
     return json?.picture || null;
   } catch {
