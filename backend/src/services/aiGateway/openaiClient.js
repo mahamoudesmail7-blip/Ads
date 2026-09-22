@@ -49,23 +49,32 @@ function apiKeyOrThrow() {
   return key;
 }
 
-/** services/ai.js's Anthropic content-block shape → Responses API input-content shape. */
-function toResponsesContent(content) {
-  if (typeof content === 'string') return [{ type: 'input_text', text: content }];
+/**
+ * services/ai.js's Anthropic content-block shape → Responses API input-content
+ * shape. `role` matters: the Responses API rejects an `assistant`-role message
+ * item whose content uses `input_text` — replaying assistant history back as
+ * `input` (no `previous_response_id`) requires `output_text` instead. Found
+ * live: a real multi-turn assistant.js chat's 2nd message (the first to carry
+ * history) 400'd; every `user`/`system` message keeps `input_text`/
+ * `input_image` as before.
+ */
+function toResponsesContent(content, role = 'user') {
+  const textType = role === 'assistant' ? 'output_text' : 'input_text';
+  if (typeof content === 'string') return [{ type: textType, text: content }];
   return content.map((block) => {
-    if (block.type === 'text') return { type: 'input_text', text: block.text };
+    if (block.type === 'text') return { type: textType, text: block.text };
     if (block.type === 'image') {
       const mediaType = block.source?.media_type || 'image/jpeg';
       const data = block.source?.data || '';
       return { type: 'input_image', image_url: `data:${mediaType};base64,${data}` };
     }
     // Unknown block types pass through as text so a caller's mistake is visible in the response rather than silently dropped.
-    return { type: 'input_text', text: JSON.stringify(block) };
+    return { type: textType, text: JSON.stringify(block) };
   });
 }
 
 function toResponsesInput(messages) {
-  return messages.map((m) => ({ role: m.role, content: toResponsesContent(m.content) }));
+  return messages.map((m) => ({ role: m.role, content: toResponsesContent(m.content, m.role) }));
 }
 
 // OpenAI's Responses API rejects `text.format: {type:'json_object'}` with a
