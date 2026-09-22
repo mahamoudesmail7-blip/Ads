@@ -148,9 +148,19 @@ export async function matchProduct(sku, name, storeId = null, easyOrdersUuid = n
  * EasyOrdersOrder row it's re-checking). Defaults to 'default' — the one
  * real store 100% of pre-multi-store data belongs to — so any caller that
  * hasn't been updated yet keeps today's exact behavior.
+ *
+ * `createdAt` (optional, 3rd-arg options object) - when given, stamps the
+ * row's own created_at column with this exact Date on CREATE only, never on
+ * update (so a later status-change upsert can never move a row's original
+ * creation time). Omitted by every existing caller (the live webhook,
+ * reconciliation job), which keeps relying on Prisma's @default(now()) -
+ * a live order really is created "now". Used by the historical Excel
+ * import to preserve Easy Orders' own original order timestamp instead of
+ * the moment this row happened to be inserted.
  */
-export async function ingestOrder(order, storeId = 'default') {
+export async function ingestOrder(order, storeId = 'default', { createdAt } = {}) {
   const date = toDateOnly(order.created_at);
+  const createOnlyFields = createdAt instanceof Date && !Number.isNaN(createdAt.getTime()) ? { created_at: createdAt } : {};
   const status = normalizeStatus(order.status);
   const touched = new Set();
 
@@ -207,6 +217,7 @@ export async function ingestOrder(order, storeId = 'default') {
         quantity: item.quantity || 1,
         matched: !!product,
         ...customerFields,
+        ...createOnlyFields,
       },
     });
     if (product) touched.add(`${product.id}::${date}`);

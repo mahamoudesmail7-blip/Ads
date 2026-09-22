@@ -22,16 +22,18 @@ import { ingestOrder } from './easyOrders.js';
 import { logger } from '../logger.js';
 
 // The real export has exactly one row per order (confirmed: zero duplicate
-// Order IDs across the 6,988-row sample) — every row becomes a single
-// synthetic cart item. A genuinely multi-item order would only show its
-// first product here; that is Easy Orders' own export's limitation, not
-// something recoverable from this file.
+// Order IDs across the 6,988-row sample). Most rows sell a single product,
+// which becomes one synthetic cart item below. A minority (26 of 6,988
+// rows in the 2026-09-16 export, confirmed by direct inspection) are
+// genuinely multi-item orders: Easy Orders joins Product Name, Quantity,
+// SKU and Item Price with "\n" — one line per item, all four columns
+// aligned to the same line count — see buildCartItems() below.
 const SYNTHETIC_CART_ITEM_ID = 'xlsx-import';
 
 const COL = {
   ID: 1, STATUS: 2, FULL_NAME: 3, PHONE: 4, CITY: 5, ADDRESS: 6,
   TOTAL_COST: 7, PRODUCT_COST: 8, SHIPPING_COST: 9, PRODUCT_NAME: 12,
-  QUANTITY: 14, SKU: 15, CREATED_AT: 17, PAYMENT_METHOD: 25, ORDER_ID: 28,
+  QUANTITY: 14, SKU: 15, ITEM_PRICE: 16, CREATED_AT: 17, PAYMENT_METHOD: 25, ORDER_ID: 28,
 };
 
 /**
@@ -61,6 +63,52 @@ function cellNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Builds this row's cart items. A single-product row (the common case)
+ * becomes one synthetic item exactly as before. A multi-item row (Product
+ * Name contains "\n") is only ever split into real per-item entries when
+ * Quantity, SKU and Item Price ALL split into the exact same number of
+ * lines AND the resulting per-item quantity*price sum matches the row's
+ * own Product Cost column (confirmed true for all 26 real multi-item rows
+ * in the 2026-09-16 export). If anything about that doesn't line up, this
+ * never guesses a split — it falls back to the original single ambiguous
+ * synthetic item (which correctly fails product matching for manual
+ * review), exactly like every row did before this function existed.
+ */
+function buildCartItems(get) {
+  const rawName = cellText(get(COL.PRODUCT_NAME));
+  const singleItem = [{
+    id: SYNTHETIC_CART_ITEM_ID,
+    quantity: cellNumber(get(COL.QUANTITY)) || 1,
+    product: { sku: cellText(get(COL.SKU)), name: rawName, id: null },
+  }];
+  if (!rawName || !rawName.includes('\n')) return singleItem;
+
+  const nameLines = rawName.split('\n').map((s) => s.trim());
+  const n = nameLines.length;
+  const rawQty = get(COL.QUANTITY);
+  const rawSku = get(COL.SKU);
+  const rawPrice = get(COL.ITEM_PRICE);
+  const qtyLines = rawQty != null ? String(rawQty).split('\n') : [];
+  const skuLines = rawSku != null ? String(rawSku).split('\n') : [];
+  const priceLines = rawPrice != null ? String(rawPrice).split('\n') : [];
+  if (qtyLines.length !== n || skuLines.length !== n || priceLines.length !== n) return singleItem;
+
+  const quantities = qtyLines.map((s) => Number(s.trim()));
+  const prices = priceLines.map((s) => Number(s.trim()));
+  if (!quantities.every(Number.isFinite) || !prices.every(Number.isFinite)) return singleItem;
+
+  const computedTotal = quantities.reduce((acc, q, i) => acc + q * prices[i], 0);
+  const declaredCost = cellNumber(get(COL.PRODUCT_COST));
+  if (declaredCost == null || Math.abs(computedTotal - declaredCost) >= 0.5) return singleItem;
+
+  return nameLines.map((name, i) => ({
+    id: `${SYNTHETIC_CART_ITEM_ID}-${i}`,
+    quantity: quantities[i] || 1,
+    product: { sku: skuLines[i].trim() || null, name, id: null },
+  }));
+}
+
 /** Reads the workbook and returns every row as a synthetic webhook-shaped order, plus any row skipped for lacking the one field nothing else can substitute for (the real Order ID). Never throws on a single bad row. */
 export async function parseExportBuffer(buffer) {
   const wb = new ExcelJS.Workbook();
@@ -88,11 +136,7 @@ export async function parseExportBuffer(buffer) {
       total_cost: cellNumber(get(COL.TOTAL_COST)),
       payment_method: cellText(get(COL.PAYMENT_METHOD)),
       created_at: cellText(get(COL.CREATED_AT)) || new Date().toISOString(),
-      cart_items: [{
-        id: SYNTHETIC_CART_ITEM_ID,
-        quantity: cellNumber(get(COL.QUANTITY)) || 1,
-        product: { sku: cellText(get(COL.SKU)), name: cellText(get(COL.PRODUCT_NAME)), id: null },
-      }],
+      cart_items: buildCartItems(get),
     });
   });
   return { rows, skipped };
@@ -136,7 +180,9 @@ export async function startImport({ buffer, storeId, userId }) {
   (async () => {
     for (const order of rows) {
       try {
-        await ingestOrder(order, storeId);
+        const parsedCreatedAt = new Date(order.created_at);
+        const createdAtOpt = Number.isNaN(parsedCreatedAt.getTime()) ? {} : { createdAt: parsedCreatedAt };
+        await ingestOrder(order, storeId, createdAtOpt);
         job.imported++;
       } catch (err) {
         job.failed++;

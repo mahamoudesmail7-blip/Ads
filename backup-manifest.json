@@ -1,0 +1,31 @@
+{
+  "_comment": "Non-secret backup/recovery reference. NEVER add passwords, tokens, connection strings, API keys, or JWT secrets to this file. See docs/DISASTER_RECOVERY.md for the full runbook.",
+  "generatedAtUtc": "2026-09-13T13:21:13Z",
+  "code": {
+    "repository": "https://github.com/mahamoudesmail7-blip/Ads",
+    "branch": "main",
+    "knownGoodCommit": "4c711855b9de9de725833bcff103a89de2ff744d",
+    "knownGoodCommitNote": "Last verified-healthy commit as of this manifest — the PMC/OpenAI-gateway bug fixes (c211a4b) plus the Prisma shadow-database safety guard (4c71185). Confirmed live and serving real, restored production data.",
+    "tag": null,
+    "tagNote": "No backup-YYYY-MM-DD-HHMM tag has been created yet — tags are created only after explicit approval (see docs/DISASTER_RECOVERY.md, Phase 1 tagging procedure). Update this field with the tag name once one exists."
+  },
+  "database": {
+    "provider": "Neon",
+    "databaseName": "neondb",
+    "region": "eu-central-1 (AWS)",
+    "backupStrategy": "Neon Point-in-Time Recovery (retention depends on plan — verify in Neon console) + independent logical backup (backend/src/scripts/logicalBackup.js) run manually before major changes and on a recommended daily/weekly cadence",
+    "lastKnownIncident": "2026-09-13 — production data wiped by an accidental prisma migrate diff --shadow-database-url misuse; restored via Neon PITR to 2026-09-13 11:44:00 UTC. See docs/DISASTER_RECOVERY.md Scenario B."
+  },
+  "deployment": {
+    "provider": "Railway",
+    "healthCheckUrl": "https://ads-production-360b.up.railway.app/health",
+    "envTemplate": "backend/.env.example (names only, no real values)"
+  },
+  "safetyGuards": {
+    "shadowDatabaseGuard": "backend/src/scripts/prismaMigrateDiffSafe.js",
+    "dangerousCommandGuard": "backend/src/scripts/guardedPrismaCommand.js",
+    "dangerousSqlGuard": "backend/src/scripts/guardedDbExecute.js",
+    "sharedRules": "backend/src/scripts/dbSafetyGuard.js",
+    "guardTests": "backend/src/scripts/dbSafetyGuardTest.js"
+  }
+}

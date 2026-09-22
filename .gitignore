@@ -13,5 +13,14 @@ start-server.bat
 backend/.vision-cache/
 backend/*.traineddata
 
+# Logical database backups (backend/src/scripts/logicalBackup.js output) —
+# contains real production data (names, phone numbers, addresses, order
+# history). Never committed, ever.
+backend/backups/
+backups/
+*.backup.json
+*.backup.json.gz
+*.sha256
+
 # local agent / IDE tooling (not app code)
 .claude/

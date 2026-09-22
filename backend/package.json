@@ -14,6 +14,10 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:migrate-diff-safe": "node src/scripts/prismaMigrateDiffSafe.js",
+    "prisma:guarded": "node src/scripts/guardedPrismaCommand.js",
+    "db:guarded-execute": "node src/scripts/guardedDbExecute.js",
+    "db:safety-test": "node src/scripts/dbSafetyGuardTest.js",
+    "backup:logical": "node src/scripts/logicalBackup.js",
     "bootstrap-admin": "node src/scripts/bootstrapAdmin.js"
   },
   "dependencies": {
