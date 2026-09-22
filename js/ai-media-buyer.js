@@ -3076,7 +3076,7 @@ const SCALE_WINDOWS = [
 const scState = {
   window: 'last7', customFrom: null, customTo: null,
   filter: 'all', search: '',
-  products: [], meta: null, loading: true, error: null,
+  products: [], meta: null, totals: null, loading: true, error: null,
   bumpPanel: null, // { productId, adSetId } — which product's bump panel is open
 };
 
@@ -3095,8 +3095,17 @@ async function scLoadProducts(panel) {
   scState.loading = true; scState.error = null;
   scRenderShell(panel);
   try {
-    const r = await api.get('/api/scale-center/products', { ...scWindowParams(), limit: 20, offset: 0 });
-    scState.products = r.products; scState.meta = r;
+    // The KPI bar's totals come from a SEPARATE, account-wide call — never a
+    // sum over just this page's 20 products. Reported live: the bar showed
+    // 4,540 ج.م spend while native Ads Manager showed 14,610 for the same
+    // day, because summing only the loaded page silently under-counted the
+    // other 154 (of 174) discovered products. Fetched in parallel so both
+    // land together, never a stale/partial totals bar shown mid-load.
+    const [r, totals] = await Promise.all([
+      api.get('/api/scale-center/products', { ...scWindowParams(), limit: 20, offset: 0 }),
+      api.get('/api/scale-center/totals', scWindowParams()),
+    ]);
+    scState.products = r.products; scState.meta = r; scState.totals = totals;
   } catch (err) {
     scState.error = err.message || 'تعذّر تحميل مركز التوسّع.';
   }
@@ -3121,25 +3130,16 @@ const SC_STATE_AR = {
   DATA_QUALITY_BLOCKED: ['محظور — جودة البيانات', 'red'], NOT_ELIGIBLE: ['غير مؤهل حاليًا', 'gray'],
 };
 
-function scKpiBar(products) {
-  const sum = (f) => products.reduce((s, p) => s + (f(p) ?? 0), 0);
-  const spend = sum((p) => p.meta?.spend);
-  const orders = sum((p) => p.easyOrders?.orders);
-  const purchases = sum((p) => p.meta?.purchases);
-  const revenue = sum((p) => p.easyOrders?.revenue);
-  const cpa = purchases > 0 ? spend / purchases : null;
-  const withCtr = products.filter((p) => p.meta?.ctr != null);
-  const ctr = withCtr.length ? withCtr.reduce((s, p) => s + p.meta.ctr, 0) / withCtr.length : null;
-  const crRows = products.filter((p) => p.businessConversionRate?.dataState === 'AVAILABLE');
-  const totalPurchaseResults = crRows.reduce((s, p) => s + p.businessConversionRate.resultsNumerator, 0);
-  const totalLpv = crRows.reduce((s, p) => s + p.businessConversionRate.lpvDenominator, 0);
-  const cr = totalLpv > 0 ? (totalPurchaseResults * 100) / totalLpv : null;
+function scKpiBar(totals) {
+  if (!totals) return '';
+  const { spend, orders, cpa, ctr, cr, revenue, productCount } = totals;
   const cards = [
     ['إجمالي الإنفاق', fmtEGP(spend)], ['إجمالي الطلبات (Easy Orders)', fmtNum(orders)],
     ['متوسط CPA', cpa != null ? fmtEGP(cpa) : '—'], ['متوسط CTR', ctr != null ? fmtPct(ctr) : '—'],
     ['معدل التحويل CR', cr != null ? fmtPct(cr) : '—'], ['إجمالي الإيرادات (Easy Orders)', fmtEGP(revenue)],
   ];
-  return `<div class="amb-kpis">${cards.map(([l, v]) => `<div class="amb-kpi"><div class="k-top"><span class="k-label">${E(l)}</span></div><div class="k-val">${v}</div></div>`).join('')}</div>`;
+  return `<div class="amb-kpis">${cards.map(([l, v]) => `<div class="amb-kpi"><div class="k-top"><span class="k-label">${E(l)}</span></div><div class="k-val">${v}</div></div>`).join('')}</div>
+    <div class="faint" style="font-size:11px; margin-top:6px;">مجمّعة على ${fmtNum(productCount)} منتج مكتشف (كل المنتجات المرتبطة بحملات حقيقية) — مش بس المحمّل على الصفحة.</div>`;
 }
 
 function scFilterCounts(products) {
@@ -3210,7 +3210,7 @@ function scRenderShell(panel) {
       ${w ? `<div class="faint" style="font-size:12px; margin-top:6px;">الفترة المستخدمة في هذا التحليل: من ${E(w.from)} إلى ${E(w.to)}${scState.meta?.total ? ` · ${scState.meta.total} منتج مكتشف${scState.meta.hasMore || scState.products.length < scState.meta.total ? ` (${scState.products.length} محمّل)` : ''}` : ''}</div>` : ''}
     </div>
 
-    ${scKpiBar(scState.products)}
+    ${scKpiBar(scState.totals)}
 
     <div class="amb-panel" style="margin-top:14px; margin-bottom:14px;">
       <div class="amb-fgrp">${FILTERS.map(([k, l]) => `<button class="amb-fbtn ${scState.filter === k ? 'active' : ''}" data-scfilter="${k}">${E(l)}</button>`).join('')}</div>

@@ -234,6 +234,80 @@ export async function listScaleCenterProducts({ storeId, windowName, from, to, l
   return { window, products: rows, total: allIds.length, offset, limit, hasMore: offset + pageIds.length < allIds.length };
 }
 
+/**
+ * The KPI bar's real, account-wide totals — deliberately NOT a sum over
+ * whatever page of listScaleCenterProducts() happens to be loaded. Reported
+ * live: the page showed "إجمالي الإنفاق: 4,540" while native Meta Ads
+ * Manager showed 14,610 for the same day — confirmed the discrepancy was
+ * exactly the first 20 of 174 discovered products (20-product spend summed
+ * to 4,540.45, matching to the piaster). Bypasses the expensive per-product
+ * decision-package pipeline entirely (creative/segment intel, data-quality
+ * gate — none of that is needed for a spend/CTR/CPA/CR total) in favor of
+ * the same cheap bulk pattern productDiscovery.js's listSmartDecisionProducts
+ * already uses for its own fast full-list load: resolve every discovered
+ * product's campaigns in parallel (resolveProductCampaigns is itself
+ * 45s-cached), dedupe campaign ids so a campaign shared by two tracked
+ * products is never double-counted, then one entityWindowMetrics() call per
+ * distinct ad account. Easy Orders orders/revenue: one bulk query across
+ * every discovered product id, deduped by (product, order_id) — same
+ * per-product dedup convention codOrders.js/productDiscovery.js already use.
+ */
+export async function getScaleCenterTotals({ storeId, windowName, from, to }) {
+  const window = resolveScaleWindow({ windowName, from, to });
+  const productIds = await discoverRelevantProductIds(storeId);
+  if (!productIds.length) return { window, productCount: 0, spend: 0, purchases: null, cpa: null, ctr: null, cr: null, orders: 0, revenue: 0 };
+
+  const campaignsEntries = await Promise.all(productIds.map(async (id) => [id, await resolveProductCampaigns(id).catch(() => [])]));
+  const allCampaignIds = [...new Set(campaignsEntries.flatMap(([, list]) => list.map((c) => c.campaignId)))];
+  const adAccountIds = [...new Set(campaignsEntries.flatMap(([, list]) => list.map((c) => c.adAccountId).filter(Boolean)))];
+
+  const metaByCampaign = new Map();
+  for (const adAccountId of adAccountIds) {
+    try {
+      const m = await entityWindowMetrics({ level: 'campaign', from: window.from, to: window.to, adAccountId });
+      for (const [id, agg] of m.entries()) metaByCampaign.set(id, agg);
+    } catch (err) {
+      logger.warn('[scaleCenter] getScaleCenterTotals entityWindowMetrics failed', { adAccountId, message: err.message });
+    }
+  }
+  let spend = 0, purchases = 0, hasPurch = false, clicks = 0, hasClicks = false, impressions = 0, hasImpr = false, lpv = 0, hasLpv = false, purchaseResults = 0, hasPR = false;
+  for (const cid of allCampaignIds) {
+    const a = metaByCampaign.get(cid);
+    if (!a) continue;
+    spend += a.spend || 0;
+    if (a.purchases != null) { purchases += a.purchases; hasPurch = true; }
+    if (a.clicks != null) { clicks += a.clicks; hasClicks = true; }
+    if (a.impressions != null) { impressions += a.impressions; hasImpr = true; }
+    if (a.landingPageViews != null) { lpv += a.landingPageViews; hasLpv = true; }
+    if (a.purchaseResults != null) { purchaseResults += a.purchaseResults; hasPR = true; }
+  }
+
+  const eoWhere = { product_id: { in: productIds } };
+  if (storeId) eoWhere.store_id = storeId;
+  if (window.from || window.to) eoWhere.date = { ...(window.from ? { gte: window.from } : {}), ...(window.to ? { lte: window.to } : {}) };
+  const eoRows = await prisma.easyOrdersOrder.findMany({ where: eoWhere, select: { product_id: true, order_id: true, order_cost: true } });
+  const byProductOrder = new Map();
+  for (const r of eoRows) {
+    if (!byProductOrder.has(r.product_id)) byProductOrder.set(r.product_id, new Map());
+    const m = byProductOrder.get(r.product_id);
+    if (!m.has(r.order_id)) m.set(r.order_id, r); // first row wins per real order
+  }
+  let orders = 0, revenue = 0;
+  for (const m of byProductOrder.values()) for (const o of m.values()) { orders++; revenue += o.order_cost || 0; }
+
+  return {
+    window,
+    productCount: productIds.length,
+    spend,
+    purchases: hasPurch ? purchases : null,
+    cpa: hasPurch && purchases > 0 ? spend / purchases : null,
+    ctr: hasClicks && hasImpr && impressions > 0 ? (clicks / impressions) * 100 : null,
+    cr: hasPR && hasLpv && lpv > 0 ? (purchaseResults * 100) / lpv : null,
+    orders,
+    revenue,
+  };
+}
+
 /** Real Current→Proposed preview at a USER-CHOSEN percentage (never the scheduler's fixed 25%) — pure reuse of computeBumpedBudget + the same eligibility/cooldown primitives, just parameterized. No write. */
 export async function previewBumpForAdSet({ adSetId, pct }) {
   const bumpPct = Number(pct);

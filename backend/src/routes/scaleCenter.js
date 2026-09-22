@@ -8,7 +8,7 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
-import { listScaleCenterProducts, getScaleCenterProduct, previewBumpForAdSet, prepareBumpForAdSet } from '../services/amb/scaleCenter.js';
+import { listScaleCenterProducts, getScaleCenterProduct, getScaleCenterTotals, previewBumpForAdSet, prepareBumpForAdSet } from '../services/amb/scaleCenter.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -20,6 +20,11 @@ router.get('/products', asyncRoute(async (req, res) => {
     limit: limit ? Math.min(50, Math.max(1, Number(limit) || 20)) : undefined,
     offset: offset ? Math.max(0, Number(offset) || 0) : undefined,
   }));
+}));
+
+router.get('/totals', asyncRoute(async (req, res) => {
+  const { storeId, window, from, to } = req.query;
+  res.json(await getScaleCenterTotals({ storeId: storeId || undefined, windowName: window, from, to }));
 }));
 
 router.get('/products/:productId', asyncRoute(async (req, res) => {
