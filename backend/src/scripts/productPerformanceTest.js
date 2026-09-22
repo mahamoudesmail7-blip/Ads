@@ -116,36 +116,40 @@ try {
     ok('revenue reflects only the 3 real store-A orders (300), never the store-B leak (999 each)', result.easyOrders.revenue === 300, result.easyOrders.revenue);
     ok('storeId on the dataset is the product\'s real store', result.storeId === '__test_store_a_perf__');
   }
-  console.log('\n§ Business Conversion Rate — EXACT formula (Orders × 100 / Landing Page Views), never a substitute metric:');
+  console.log('\n§ Business Conversion Rate — EXACT formula (Meta Purchase Results × 100 / Landing Page Views), never a substitute metric (formula changed 2026-09-22 from an Easy-Orders-based numerator — see productPerformance.js header):');
   {
-    // Test case F from the spec: Orders=70, LPV=1000 -> 7%.
-    const r1 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 1000 }, easyOrders: { dataState: 'AVAILABLE', orders: 70 } });
-    ok('Orders=70 / LPV=1000 -> exactly 7%', r1.dataState === 'AVAILABLE' && r1.value === 7, JSON.stringify(r1));
-    ok('carries the real numerator/denominator/formula for auditability', r1.ordersNumerator === 70 && r1.lpvDenominator === 1000 && typeof r1.formula === 'string');
+    // Test case F re-based on Meta Purchase Results: purchaseResults=70, LPV=1000 -> 7%.
+    const r1 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 1000, purchaseResults: 70 } });
+    ok('purchaseResults=70 / LPV=1000 -> exactly 7%', r1.dataState === 'AVAILABLE' && r1.value === 7, JSON.stringify(r1));
+    ok('carries the real numerator/denominator/formula for auditability', r1.resultsNumerator === 70 && r1.lpvDenominator === 1000 && typeof r1.formula === 'string');
 
-    // The worked example from the spec: Orders=60, LPV=1000 -> 6%.
-    const r2 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 1000 }, easyOrders: { dataState: 'AVAILABLE', orders: 60 } });
-    ok('Orders=60 / LPV=1000 -> exactly 6%', r2.dataState === 'AVAILABLE' && r2.value === 6, r2.value);
+    // The worked example from the spec: purchaseResults=60, LPV=1000 -> 6%.
+    const r2 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 1000, purchaseResults: 60 } });
+    ok('purchaseResults=60 / LPV=1000 -> exactly 6%', r2.dataState === 'AVAILABLE' && r2.value === 6, r2.value);
 
     // LPV missing entirely (Meta block not AVAILABLE) -> UNAVAILABLE, never 0%.
-    const r3 = computeBusinessConversionRate({ meta: { dataState: 'META_UNMAPPED', landingPageViews: null }, easyOrders: { dataState: 'AVAILABLE', orders: 60 } });
+    const r3 = computeBusinessConversionRate({ meta: { dataState: 'META_UNMAPPED', landingPageViews: null, purchaseResults: null } });
     ok('missing LPV -> CONVERSION_RATE_UNAVAILABLE, never a fabricated 0%', r3.dataState === 'CONVERSION_RATE_UNAVAILABLE' && r3.value === null, JSON.stringify(r3));
 
     // LPV present but zero -> still UNAVAILABLE (can't divide by zero into a meaningful rate).
-    const r4 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 0 }, easyOrders: { dataState: 'AVAILABLE', orders: 5 } });
+    const r4 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 0, purchaseResults: 5 } });
     ok('LPV=0 -> CONVERSION_RATE_UNAVAILABLE, never a division-by-zero fabrication', r4.dataState === 'CONVERSION_RATE_UNAVAILABLE');
 
-    // Easy Orders missing -> UNAVAILABLE, never a fabricated 0%.
-    const r5 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 1000 }, easyOrders: { dataState: 'NO_DATA', orders: null } });
-    ok('missing Easy Orders count -> CONVERSION_RATE_UNAVAILABLE, never 0%', r5.dataState === 'CONVERSION_RATE_UNAVAILABLE' && r5.value === null);
+    // No purchase-type-indicator campaign in the window -> UNAVAILABLE, never a fabricated 0%.
+    const r5 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 1000, purchaseResults: null } });
+    ok('no purchase-indicator results -> CONVERSION_RATE_UNAVAILABLE, never 0%', r5.dataState === 'CONVERSION_RATE_UNAVAILABLE' && r5.value === null);
 
-    // Never silently substitutes clicks for LPV — a block WITHOUT landingPageViews but WITH clicks must still be unavailable.
-    const r6 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: null, clicks: 5000 }, easyOrders: { dataState: 'AVAILABLE', orders: 60 } });
+    // Never silently substitutes clicks/raw results for LPV or for purchase-filtered results.
+    const r6 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: null, clicks: 5000, purchaseResults: 60 } });
     ok('a real clicks figure is NEVER substituted for a missing LPV', r6.dataState === 'CONVERSION_RATE_UNAVAILABLE', JSON.stringify(r6));
 
-    // A genuine zero orders with real LPV is a real, honest 0% — not "unavailable".
-    const r7 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 500 }, easyOrders: { dataState: 'AVAILABLE', orders: 0 } });
-    ok('zero real orders against real LPV is an honest 0%, not UNAVAILABLE', r7.dataState === 'AVAILABLE' && r7.value === 0, JSON.stringify(r7));
+    // A genuine zero purchase results with real LPV is a real, honest 0% — not "unavailable".
+    const r7 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 500, purchaseResults: 0 } });
+    ok('zero real purchase results against real LPV is an honest 0%, not UNAVAILABLE', r7.dataState === 'AVAILABLE' && r7.value === 0, JSON.stringify(r7));
+
+    // A campaign whose result_indicator is post_engagement (not purchase-type) must contribute 0 to the numerator, never its raw (irrelevant) results count.
+    const r8 = computeBusinessConversionRate({ meta: { dataState: 'AVAILABLE', landingPageViews: 100, purchaseResults: 3, hasNonPurchaseResultCampaigns: true } });
+    ok('a mix of purchase + non-purchase-indicator campaigns only counts the purchase-type results, and surfaces a note about the exclusion', r8.value === 3 && typeof r8.note === 'string', JSON.stringify(r8));
   }
 
   console.log('\n§ getProductPerformance — businessConversionRate is bundled into the real dataset call:');

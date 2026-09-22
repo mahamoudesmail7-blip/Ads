@@ -19,25 +19,25 @@ export const PRODUCT_DECISIONS = [
 ];
 
 const PRICE_TEST_CVR_THRESHOLD = 6; // % — the exact business rule threshold the user specified
-const PRICE_TEST_MIN_ORDERS = 10; // never flag a price-test opportunity off a lucky handful of orders
+const PRICE_TEST_MIN_ORDERS = 10; // never flag a price-test opportunity off a lucky handful of purchase results
 const PRICE_TEST_MIN_LPV = 100;
 
 /**
- * A high real Conversion Rate (Orders/LPV) is evidence a PRICE TEST is worth
- * running — it is NEVER evidence to raise the price directly. Deliberately
- * additive/independent of decideProductAction()'s main decision: a product
- * can simultaneously be SCALE_CANDIDATE (marketing verdict) AND carry a
- * price-test opportunity (a separate, orthogonal economics signal) — see
- * the Action Plan's own point 3 in the spec, listed alongside the main
- * decision, not instead of it.
+ * A high real Conversion Rate (Meta Purchase Results/LPV) is evidence a
+ * PRICE TEST is worth running — it is NEVER evidence to raise the price
+ * directly. Deliberately additive/independent of decideProductAction()'s
+ * main decision: a product can simultaneously be SCALE_CANDIDATE (marketing
+ * verdict) AND carry a price-test opportunity (a separate, orthogonal
+ * economics signal) — see the Action Plan's own point 3 in the spec, listed
+ * alongside the main decision, not instead of it.
  */
 export function detectPriceTestOpportunity({ businessConversionRate }) {
   if (businessConversionRate?.dataState !== 'AVAILABLE') {
-    return { detected: false, reason: 'معدل التحويل الحقيقي (Orders/LPV) غير متاح لهذه الفترة.' };
+    return { detected: false, reason: 'معدل التحويل الحقيقي (Meta Purchase Results/LPV) غير متاح لهذه الفترة.' };
   }
-  const { value, ordersNumerator, lpvDenominator } = businessConversionRate;
-  if (ordersNumerator < PRICE_TEST_MIN_ORDERS || lpvDenominator < PRICE_TEST_MIN_LPV) {
-    return { detected: false, reason: `عينة صغيرة جدًا (${ordersNumerator} أوردر / ${lpvDenominator} LPV) — أي استنتاج هنا غير موثوق.` };
+  const { value, resultsNumerator, lpvDenominator } = businessConversionRate;
+  if (resultsNumerator < PRICE_TEST_MIN_ORDERS || lpvDenominator < PRICE_TEST_MIN_LPV) {
+    return { detected: false, reason: `عينة صغيرة جدًا (${resultsNumerator} عملية شراء / ${lpvDenominator} LPV) — أي استنتاج هنا غير موثوق.` };
   }
   if (value <= PRICE_TEST_CVR_THRESHOLD) {
     return { detected: false, reason: `معدل التحويل الحقيقي ${value.toFixed(1)}% — عند أو تحت الحد (${PRICE_TEST_CVR_THRESHOLD}%).` };
@@ -47,8 +47,8 @@ export function detectPriceTestOpportunity({ businessConversionRate }) {
     decision: 'PRICE_TEST_OPPORTUNITY',
     conversionRate: value,
     threshold: PRICE_TEST_CVR_THRESHOLD,
-    ordersNumerator, lpvDenominator,
-    evidence: `معدل التحويل الحقيقي ${value.toFixed(1)}% أعلى من ${PRICE_TEST_CVR_THRESHOLD}% (${ordersNumerator} أوردر / ${lpvDenominator} مشاهدة صفحة) — دليل كافٍ لتجربة سعر أعلى، مش دليل إنك تزود السعر مباشرة.`,
+    resultsNumerator, lpvDenominator,
+    evidence: `معدل التحويل الحقيقي ${value.toFixed(1)}% أعلى من ${PRICE_TEST_CVR_THRESHOLD}% (${resultsNumerator} عملية شراء / ${lpvDenominator} مشاهدة صفحة) — دليل كافٍ لتجربة سعر أعلى، مش دليل إنك تزود السعر مباشرة.`,
     proposedChange: 'اختبر سعرًا أعلى بشكل محدود ومُقاس (A/B أو فترة قصيرة) قبل أي تغيير دائم — معدل تحويل عالي وحده لا يثبت إن سعر أعلى هيزود الربح.',
   };
 }

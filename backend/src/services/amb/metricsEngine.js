@@ -137,11 +137,28 @@ export function latestPerDayPerEntity(rows, level) {
   return byEntity;
 }
 
+// A campaign's result_indicator is NOT stable across days in a window — the
+// SAME campaign_id can report post_engagement (likes/comments/shares) on one
+// day and omni_purchase (a real sale) on another, e.g. after its ad sets get
+// re-optimized (observed live: campaign 120252327808060205 reported 1198
+// "results" under post_engagement on one day, then 2-5 real purchases under
+// omni_purchase on later days in the same 7-day window). Trusting only the
+// LATEST day's indicator to decide whether to sum the WHOLE window's results
+// silently re-admits that junk day's huge post_engagement count — this is
+// why purchase-type filtering must happen PER ROW (per day), not once on the
+// aggregate. Matches Meta's real naming across purchase optimization types:
+// omni_purchase, offsite_conversion.fb_pixel_purchase, onsite_conversion.
+// purchase, app_custom_event.fb_mobile_purchase.
+export function isPurchaseResultIndicator(indicator) {
+  return typeof indicator === 'string' && indicator.toLowerCase().includes('purchase');
+}
+
 /** Aggregate an array of (already latest-per-day) snapshot rows into one metrics object. Ratios are null when their inputs are absent — never a misleading 0. */
 export function aggregateRows(dayRows) {
   if (!dayRows || dayRows.length === 0) return null;
   let spend = 0, impressions = 0, reach = 0, clicks = 0, purchases = 0, revenue = 0, results = 0, landingPageViews = 0;
-  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasResults = false, hasLpv = false;
+  let purchaseResults = 0, hasNonPurchaseResultDays = false;
+  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasResults = false, hasLpv = false, hasPurchResults = false;
   let lastFreq = null;
   const sorted = [...dayRows].sort((a, b) => (a.date_start < b.date_start ? -1 : 1));
   for (const r of sorted) {
@@ -154,6 +171,11 @@ export function aggregateRows(dayRows) {
     if (n(r.results) !== null) { results += n(r.results); hasResults = true; }
     if (n(r.landing_page_views) !== null) { landingPageViews += n(r.landing_page_views); hasLpv = true; }
     if (n(r.frequency) !== null) lastFreq = n(r.frequency);
+    if (isPurchaseResultIndicator(r.result_indicator)) {
+      if (n(r.results) !== null) { purchaseResults += n(r.results); hasPurchResults = true; }
+    } else if (n(r.results) !== null && n(r.results) > 0) {
+      hasNonPurchaseResultDays = true;
+    }
   }
   const last = sorted[sorted.length - 1];
   return {
@@ -165,6 +187,9 @@ export function aggregateRows(dayRows) {
     purchases: hasPurch ? purchases : null,
     revenue: hasRev ? revenue : null,
     results: hasResults ? results : null,
+    resultIndicator: last.result_indicator || null,
+    purchaseResults: hasPurchResults ? purchaseResults : null,
+    hasNonPurchaseResultDays,
     landingPageViews: hasLpv ? landingPageViews : null,
     frequency: lastFreq,
     cpa: hasPurch && purchases > 0 ? spend / purchases : null,

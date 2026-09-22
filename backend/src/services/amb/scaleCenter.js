@@ -117,15 +117,18 @@ async function resolveBumpStateForProduct({ productId, adAccountId, campaignIds,
   return { canBump: anyBumpable, reason: anyBumpable ? null : (evaluated[0]?.cooldownReason || evaluated[0]?.verdictReason || 'الأداء الحالي مش مؤهل لزيادة ميزانية دلوقتي.'), adSets: evaluated };
 }
 
-// A CR (Orders x 100 / LPV) above this is almost certainly NOT a real
-// customer conversion rate for e-commerce — it is a signal the denominator
-// (Meta Landing Page Views) is under-counted (a common real pixel/attribution
-// gap) and/or the numerator includes Easy Orders rows this window's ads
-// never actually drove (no deterministic ad-click-to-order key exists — see
-// productPerformance.js's own header comment). Never hidden or silently
-// "corrected" — the real ordersNumerator/lpvDenominator are always exposed
-// so the number can be audited, exactly like a real user flagged live.
-const CR_SUSPICIOUS_THRESHOLD = 25;
+// The CR formula (2026-09-22, replacing the earlier Easy-Orders-based one —
+// see productPerformance.js's computeBusinessConversionRate) now stays
+// entirely inside Meta: Purchase Results x 100 / LPV. That makes a "> 25%"
+// style suspicious threshold meaningless (a genuine purchase-based CR can
+// legitimately sit anywhere in a wide range depending on offer/price/COD
+// funnel), so this file no longer second-guesses the VALUE. What's still
+// worth flagging is a SAMPLE-SIZE warning — LPV or Purchase Results too
+// small for the ratio to be statistically meaningful — kept separate from
+// computeBusinessConversionRate's own `note` field (which flags campaigns
+// excluded for having a non-purchase result_indicator, e.g. post_engagement).
+const CR_MIN_RELIABLE_LPV = 30;
+const CR_MIN_RELIABLE_RESULTS = 3;
 
 function govRow(g) {
   return { governorate: g.segment, orders: g.orders, confirmed: g.confirmed, delivered: g.delivered, returned: g.returned, status: g.classification || null, evidence: g.evidence || null };
@@ -138,7 +141,10 @@ function toRow(pkg, perf, { storeId, image, adAccountId, bumpState, campaigns, c
     canBump: bumpState.canBump, bumpBlockedReason: bumpState.reason,
   });
   const cr = pkg.businessConversionRate;
-  const crSuspicious = cr?.dataState === 'AVAILABLE' && (cr.value > CR_SUSPICIOUS_THRESHOLD || cr.lpvDenominator < 50);
+  const crLowSample = cr?.dataState === 'AVAILABLE' && (cr.lpvDenominator < CR_MIN_RELIABLE_LPV || cr.resultsNumerator < CR_MIN_RELIABLE_RESULTS);
+  const crLowSampleReason = crLowSample
+    ? `عينة صغيرة (${cr.resultsNumerator} عملية شراء ÷ ${cr.lpvDenominator} LPV) — النسبة قابلة للتغيّر الكبير مع أي أوردر جديد، راجعها قبل ما تعتمد عليها في قرار.`
+    : null;
   return {
     productId: pkg.productId, productName: pkg.productName, storeId: storeId || null, image: image || null, adAccountId: adAccountId || null,
     window: pkg.window,
@@ -148,7 +154,7 @@ function toRow(pkg, perf, { storeId, image, adAccountId, bumpState, campaigns, c
     // that drops impressions/dataState, so it is never used for display here.
     meta: perf.meta,
     easyOrders: perf.easyOrders,
-    businessConversionRate: { ...cr, suspicious: crSuspicious, suspiciousReason: crSuspicious ? `العينة صغيرة أو غير موثوقة إحصائيًا (${cr.ordersNumerator} أوردر Easy Orders ÷ ${cr.lpvDenominator} LPV من Meta) — النسبة دي أعلى من المعتاد بكتير، غالبًا لأن LPV مش بيتسجل كامل (فجوة في الـ Pixel) أو لأن جزء من الأوردرات دي مش فعليًا جاي من نفس الإعلانات في نفس الفترة. راجع تفاصيل الأوردرات قبل ما تعتمد الرقم ده في قرار.` : null },
+    businessConversionRate: { ...cr, suspicious: crLowSample, suspiciousReason: crLowSampleReason },
     dataQuality: pkg.dataQuality,
     campaigns: (campaigns || []).map((c) => ({ id: c.campaignId, name: campaignNames?.get(c.campaignId) || c.campaignId, via: c.via })),
     governoratesTop3: gov.slice(0, 3).map(govRow),

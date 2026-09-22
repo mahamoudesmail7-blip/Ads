@@ -34,9 +34,11 @@ function emptyMetaBlock(dataState) {
     dataState,
     spend: null, impressions: null, reach: null, clicks: null, ctr: null, cpc: null, cpm: null,
     purchases: null, cpa: null, conversionRate: null, revenue: null, landingPageViews: null,
+    purchaseResults: null, hasNonPurchaseResultCampaigns: false,
     campaignIds: [], lastSyncAt: null,
   };
 }
+
 function emptyEasyOrdersBlock(dataState) {
   return {
     dataState,
@@ -90,7 +92,8 @@ async function _resolveProductCampaignsUncached(productId) {
 
 function sumMetaAggregates(aggs) {
   let spend = 0, impressions = 0, reach = 0, clicks = 0, purchases = 0, revenue = 0, landingPageViews = 0;
-  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasLpv = false;
+  let purchaseResults = 0, hasNonPurchaseResultCampaigns = false;
+  let hasImpr = false, hasClicks = false, hasPurch = false, hasRev = false, hasLpv = false, hasPurchResults = false;
   for (const a of aggs) {
     spend += a.spend || 0;
     if (a.impressions != null) { impressions += a.impressions; hasImpr = true; }
@@ -99,6 +102,14 @@ function sumMetaAggregates(aggs) {
     if (a.purchases != null) { purchases += a.purchases; hasPurch = true; }
     if (a.revenue != null) { revenue += a.revenue; hasRev = true; }
     if (a.landingPageViews != null) { landingPageViews += a.landingPageViews; hasLpv = true; }
+    // a.purchaseResults/a.hasNonPurchaseResultDays already come from
+    // aggregateRows() filtering PER DAY, not per campaign — a campaign that
+    // switched result_indicator mid-window (e.g. post_engagement one day,
+    // omni_purchase the next) contributes only its genuinely purchase-type
+    // days, never the whole window under whichever indicator its LATEST day
+    // happened to report.
+    if (a.purchaseResults != null) { purchaseResults += a.purchaseResults; hasPurchResults = true; }
+    if (a.hasNonPurchaseResultDays) hasNonPurchaseResultCampaigns = true;
   }
   return {
     spend,
@@ -108,6 +119,8 @@ function sumMetaAggregates(aggs) {
     purchases: hasPurch ? purchases : null,
     revenue: hasRev ? revenue : null,
     landingPageViews: hasLpv ? landingPageViews : null,
+    purchaseResults: hasPurchResults ? purchaseResults : null,
+    hasNonPurchaseResultCampaigns,
     ctr: hasClicks && hasImpr && impressions > 0 ? (clicks / impressions) * 100 : null,
     cpc: hasClicks && clicks > 0 ? spend / clicks : null,
     cpm: hasImpr && impressions > 0 ? (spend / impressions) * 1000 : null,
@@ -199,28 +212,42 @@ async function buildEasyOrdersBlock(productId, storeId, window) {
   }
 }
 
-const BUSINESS_CVR_FORMULA = '(Easy Orders Orders × 100) / Meta Landing Page Views';
+const BUSINESS_CVR_FORMULA = '(Meta Purchase Results × 100) / Meta Landing Page Views';
 
 /**
- * The business Conversion Rate the user explicitly requires:
- * (Easy Orders Orders × 100) / Meta Landing Page Views. This NEVER
- * substitutes Clicks/Link Clicks/Meta Purchases/Impressions for Landing
- * Page Views — if the real denominator (or numerator) is genuinely
- * unavailable, this returns CONVERSION_RATE_UNAVAILABLE with the exact
- * reason rather than fabricating a 0% or silently swapping in a different
- * metric. Exported standalone (not folded into the meta/easyOrders blocks)
- * because it is the one figure that legitimately crosses both sources.
+ * The business Conversion Rate: (Meta Purchase Results × 100) / Meta Landing
+ * Page Views — both sides now come from Meta alone, at the user's explicit
+ * request (2026-09-22), replacing the earlier Easy-Orders-Orders-based
+ * formula. That earlier version divided a low-friction, 99%-still-PENDING
+ * Easy Orders order-form submission count by Meta LPV, which produced
+ * numbers like 37% for a single day — mathematically correct but not a real
+ * "conversion rate" (verified live: of 9405 Easy Orders rows account-wide,
+ * 9375 have never left PENDING, i.e. never been confirmed as a real sale).
+ * "Purchase Results" is Meta's own results count, but ONLY summed across
+ * campaigns whose result_indicator is actually purchase-type (see
+ * isPurchaseResultIndicator) — campaigns whose ad sets are optimized for
+ * post_engagement or another non-sales indicator contribute 0, never their
+ * raw (irrelevant) results count. Returns CONVERSION_RATE_UNAVAILABLE with
+ * the exact reason rather than fabricating a 0% or silently swapping in a
+ * different metric when either side is genuinely missing.
  */
-export function computeBusinessConversionRate({ meta, easyOrders }) {
+export function computeBusinessConversionRate({ meta }) {
   const lpv = meta?.dataState === 'AVAILABLE' ? meta.landingPageViews : null;
-  const orders = easyOrders?.dataState === 'AVAILABLE' ? easyOrders.orders : null;
+  const purchaseResults = meta?.dataState === 'AVAILABLE' ? meta.purchaseResults : null;
   const reasons = [];
   if (lpv == null || lpv <= 0) reasons.push('Meta Landing Page Views غير متاحة أو صفر لهذه الفترة.');
-  if (orders == null) reasons.push('عدد أوردرات Easy Orders غير متاح لهذه الفترة.');
+  if (purchaseResults == null) reasons.push('Meta Purchase Results غير متاحة لهذه الفترة (لا توجد كامبينات بـ result_indicator من نوع purchase).');
   if (reasons.length) {
-    return { dataState: 'CONVERSION_RATE_UNAVAILABLE', value: null, ordersNumerator: orders, lpvDenominator: lpv, formula: BUSINESS_CVR_FORMULA, reason: reasons.join(' ') };
+    return { dataState: 'CONVERSION_RATE_UNAVAILABLE', value: null, resultsNumerator: purchaseResults, lpvDenominator: lpv, formula: BUSINESS_CVR_FORMULA, reason: reasons.join(' ') };
   }
-  return { dataState: 'AVAILABLE', value: (orders * 100) / lpv, ordersNumerator: orders, lpvDenominator: lpv, formula: BUSINESS_CVR_FORMULA };
+  return {
+    dataState: 'AVAILABLE',
+    value: (purchaseResults * 100) / lpv,
+    resultsNumerator: purchaseResults,
+    lpvDenominator: lpv,
+    formula: BUSINESS_CVR_FORMULA,
+    ...(meta.hasNonPurchaseResultCampaigns ? { note: 'بعض الكامبينات المرتبطة بهذا المنتج بتقيس Results كـ Post Engagement (تفاعل) مش شراء — استُبعدت من البسط.' } : {}),
+  };
 }
 
 /**
@@ -253,7 +280,7 @@ export async function getProductPerformance({ productId, windowName, from, to })
     resolvedVia, // ['LAUNCH'] | ['MAPPING'] | ['LAUNCH','MAPPING'] | []
     meta,
     easyOrders,
-    businessConversionRate: computeBusinessConversionRate({ meta, easyOrders }),
+    businessConversionRate: computeBusinessConversionRate({ meta }),
     generatedAt: new Date().toISOString(),
   };
 }

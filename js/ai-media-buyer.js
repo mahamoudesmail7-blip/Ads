@@ -1912,7 +1912,7 @@ function dcTabOverview(pkg) {
   const funnelSteps = [
     ['spend', 'الإنفاق (مصدر: Meta)', fmtEGP(m.totalSpend)], ['cpm', 'CPM (Meta)', fmtEGP(m.cpm)], ['ctr', 'CTR (Meta)', fmtPct(m.ctr)],
     ['cpc', 'CPC (Meta)', fmtEGP(m.cpc, 2)], ['purchases', 'Meta Purchases', fmtNum(m.metaPurchases)],
-    ['cvr', 'Conversion (Orders/LPV)', businessCvrCell(bcr)],
+    ['cvr', 'Conversion (Purchase Results/LPV)', businessCvrCell(bcr)],
     ['cpa', 'CPA (Meta)', fmtEGP(m.avgCpa)], ['cod', 'Easy Orders Product Orders', fmtNum(m.codSample)], ['conf', 'معدل التأكيد (Easy Orders)', m.confirmationRate != null ? fmtPct(m.confirmationRate * 100) : '—'],
     ['del', 'معدل التسليم (Easy Orders)', m.deliveryRate != null ? fmtPct(m.deliveryRate * 100) : '—'], ['rev', 'الإيرادات', fmtEGP(m.revenue)], ['profit', 'الربح', m.netProfit != null ? fmtEGP(m.netProfit) : '—'],
   ];
@@ -1922,7 +1922,7 @@ function dcTabOverview(pkg) {
     <div class="section-title" style="margin-top:0;">قمع الأداء الكامل</div>
     <div class="faint" style="font-size:11px; margin-bottom:8px;">النطاق الزمني لكل تبويبات هذا التحليل: <b>${E(pkg.window?.label || '')}</b> (${E(pkg.window?.from || '')} → ${E(pkg.window?.to || '')}) — نفس النطاق مستخدم في الجمهور/المحافظات والكرياتيفات، بدون أي اختلاف.</div>
     <div class="amb-funnel" style="margin-bottom:6px;">${funnelSteps.map(([, l, v]) => `<div class="f-step"><div class="fv">${v}</div><div class="fl">${E(l)}</div></div>`).join('')}</div>
-    ${bcr?.dataState === 'AVAILABLE' ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion = (${fmtNum(bcr.ordersNumerator)} أوردر × 100) ÷ ${fmtNum(bcr.lpvDenominator)} مشاهدة صفحة</div>` : bcr ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion Rate غير متاح: ${E(bcr.reason || 'LPV أو عدد الأوردرات غير متاح لهذه الفترة')}</div>` : ''}
+    ${bcr?.dataState === 'AVAILABLE' ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion = (${fmtNum(bcr.resultsNumerator)} عملية شراء × 100) ÷ ${fmtNum(bcr.lpvDenominator)} مشاهدة صفحة${bcr.note ? ` — ${E(bcr.note)}` : ''}</div>` : bcr ? `<div class="faint" style="font-size:11px; margin-bottom:18px;">Conversion Rate غير متاح: ${E(bcr.reason || 'LPV أو عمليات الشراء غير متاحة لهذه الفترة')}</div>` : ''}
     ${pto?.detected ? `<div class="amb-panel" style="padding:12px 14px; margin-bottom:14px; border-color:var(--amb-purple); background:var(--amb-purple-bg);">
       <div style="font-weight:800; margin-bottom:4px;">💰 فرصة اختبار سعر (PRICE_TEST_OPPORTUNITY)</div>
       <div style="font-size:13px;">${E(pto.evidence)}</div>
@@ -3131,9 +3131,9 @@ function scKpiBar(products) {
   const withCtr = products.filter((p) => p.meta?.ctr != null);
   const ctr = withCtr.length ? withCtr.reduce((s, p) => s + p.meta.ctr, 0) / withCtr.length : null;
   const crRows = products.filter((p) => p.businessConversionRate?.dataState === 'AVAILABLE');
-  const totalOrders = crRows.reduce((s, p) => s + p.businessConversionRate.ordersNumerator, 0);
+  const totalPurchaseResults = crRows.reduce((s, p) => s + p.businessConversionRate.resultsNumerator, 0);
   const totalLpv = crRows.reduce((s, p) => s + p.businessConversionRate.lpvDenominator, 0);
-  const cr = totalLpv > 0 ? (totalOrders * 100) / totalLpv : null;
+  const cr = totalLpv > 0 ? (totalPurchaseResults * 100) / totalLpv : null;
   const cards = [
     ['إجمالي الإنفاق', fmtEGP(spend)], ['إجمالي الطلبات (Easy Orders)', fmtNum(orders)],
     ['متوسط CPA', cpa != null ? fmtEGP(cpa) : '—'], ['متوسط CTR', ctr != null ? fmtPct(ctr) : '—'],
