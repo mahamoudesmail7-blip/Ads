@@ -3182,6 +3182,18 @@ function scRenderShell(panel) {
     const q = scState.search.trim().toLowerCase();
     list = list.filter((p) => (p.productName || '').toLowerCase().includes(q));
   }
+  // Highest real Easy Orders count (for the currently-selected window) first
+  // — the user explicitly wants the product actively pulling the most
+  // orders right now on top, not whatever order discoverRelevantProductIds
+  // happened to return. A product with no orders data (null) sorts last,
+  // never treated as a fabricated 0 ahead of a genuine low-but-real count.
+  list = [...list].sort((a, b) => {
+    const oa = a.easyOrders?.orders, ob = b.easyOrders?.orders;
+    if (oa == null && ob == null) return 0;
+    if (oa == null) return 1;
+    if (ob == null) return -1;
+    return ob - oa;
+  });
 
   panel.innerHTML = `
     <div class="amb-panel" style="margin-bottom:14px;">

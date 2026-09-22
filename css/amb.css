@@ -254,8 +254,8 @@ body { background: var(--amb-bg); }
 /* ---- 🚀 مركز التوسّع (Scale Center) ---- */
 .sc-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .sc-row-title { display: flex; align-items: center; gap: 10px; }
-.sc-thumb { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: var(--amb-surface-2); flex: 0 0 auto; }
-.sc-thumb-empty { display: flex; align-items: center; justify-content: center; font-size: 18px; }
+.sc-thumb { width: 72px; height: 72px; border-radius: 10px; object-fit: cover; background: var(--amb-surface-2); flex: 0 0 auto; }
+.sc-thumb-empty { display: flex; align-items: center; justify-content: center; font-size: 28px; }
 .sc-row-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
 .sc-block { background: var(--amb-surface-2); border-radius: 10px; padding: 10px 12px; }
 .sc-metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 12px; color: var(--amb-text-dim); margin-top: 4px; }
