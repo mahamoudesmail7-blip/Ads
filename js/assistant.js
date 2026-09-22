@@ -119,6 +119,17 @@ function fileToBase64(file) {
   });
 }
 
+const MOBILE_QUERY = '(max-width: 768px)';
+const isMobile = () => window.matchMedia(MOBILE_QUERY).matches;
+/** How close to the bottom (px) counts as "already at the bottom" — auto-scroll only kicks in from here, so a user who scrolled up to re-read history isn't yanked back down by a new/streaming message. */
+const AUTO_SCROLL_THRESHOLD = 64;
+function isNearBottom(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < AUTO_SCROLL_THRESHOLD;
+}
+function scrollToBottom(el, force = false) {
+  if (force || isNearBottom(el)) el.scrollTop = el.scrollHeight;
+}
+
 let mounted = false;
 let pendingImage = null; // {base64, mediaType, name}
 
@@ -126,14 +137,26 @@ export function mountAssistantBubble() {
   if (mounted || document.getElementById('ambAssistantBubble')) return;
   mounted = true;
 
+  const backdrop = document.createElement('div');
+  backdrop.id = 'ambAssistantBackdrop';
+  backdrop.className = 'assistant-backdrop';
+  document.body.appendChild(backdrop);
+
   const wrap = document.createElement('div');
   wrap.id = 'ambAssistantRoot';
   wrap.innerHTML = `
     <button type="button" id="ambAssistantBubble" class="assistant-bubble" aria-label="مساعد الميديا باير" title="مساعد الميديا باير">🤖</button>
     <div id="ambAssistantPanel" class="assistant-panel" hidden>
-      <div class="assistant-panel-header" id="ambAssistantDragHandle">
-        <span>🤖 مساعد الميديا باير</span>
-        <button type="button" id="ambAssistantClose" class="assistant-icon-btn" aria-label="إغلاق">✕</button>
+      <div class="assistant-panel-header">
+        <div class="assistant-header-avatar">🤖</div>
+        <div class="assistant-header-titles">
+          <div class="assistant-header-name">مساعد الميديا باير</div>
+          <div class="assistant-header-status">متصل</div>
+        </div>
+        <div class="assistant-header-actions">
+          <button type="button" id="ambAssistantMinimize" class="assistant-icon-btn" aria-label="تصغير" title="تصغير">−</button>
+          <button type="button" id="ambAssistantClose" class="assistant-icon-btn" aria-label="إغلاق" title="إغلاق">✕</button>
+        </div>
       </div>
       <div id="ambAssistantMessages" class="assistant-messages"></div>
       <div id="ambAssistantImagePreview" class="assistant-image-preview" hidden></div>
@@ -141,7 +164,7 @@ export function mountAssistantBubble() {
         <label class="assistant-icon-btn assistant-upload-btn" title="ارفع صورة">
           📷<input type="file" id="ambAssistantImageInput" accept="image/*" hidden>
         </label>
-        <input type="text" id="ambAssistantInput" placeholder="اسأل عن أي منتج أو حملة..." autocomplete="off">
+        <input type="text" id="ambAssistantInput" placeholder="اكتب رسالتك هنا..." autocomplete="off">
         <button type="submit" class="assistant-icon-btn assistant-send-btn" aria-label="إرسال">➤</button>
       </form>
     </div>`;
@@ -150,12 +173,12 @@ export function mountAssistantBubble() {
   const bubble = document.getElementById('ambAssistantBubble');
   const panel = document.getElementById('ambAssistantPanel');
   const closeBtn = document.getElementById('ambAssistantClose');
+  const minimizeBtn = document.getElementById('ambAssistantMinimize');
   const messagesEl = document.getElementById('ambAssistantMessages');
   const form = document.getElementById('ambAssistantForm');
   const input = document.getElementById('ambAssistantInput');
   const imageInput = document.getElementById('ambAssistantImageInput');
   const imagePreview = document.getElementById('ambAssistantImagePreview');
-  const dragHandle = document.getElementById('ambAssistantDragHandle');
 
   restorePosition(wrap);
   restoreConversation(messagesEl);
@@ -165,11 +188,25 @@ export function mountAssistantBubble() {
     open = v;
     panel.hidden = !v;
     bubble.setAttribute('aria-expanded', String(v));
-    if (v) { input.focus(); messagesEl.scrollTop = messagesEl.scrollHeight; }
+    const mobile = isMobile();
+    panel.classList.toggle('is-sheet', mobile);
+    if (mobile) {
+      // On mobile the sheet REPLACES the bubble while open (never both at
+      // once — a floating bubble behind/under a near-full-height sheet has
+      // nothing useful to do and just adds visual clutter), and gets a
+      // backdrop; on desktop the bubble stays visible next to the panel
+      // exactly as before, no backdrop.
+      bubble.hidden = v;
+      backdrop.classList.toggle('is-open', v);
+      if (v) applyMobileViewport(panel); else teardownMobileViewport();
+    }
+    if (v) { input.focus(); scrollToBottom(messagesEl, true); }
   };
 
   wireDrag(bubble, wrap, () => setOpen(!open));
   closeBtn.addEventListener('click', () => setOpen(false));
+  minimizeBtn.addEventListener('click', () => setOpen(false));
+  backdrop.addEventListener('click', () => setOpen(false));
 
   imageInput.addEventListener('change', async () => {
     const file = imageInput.files?.[0];
@@ -178,7 +215,10 @@ export function mountAssistantBubble() {
       const base64 = await fileToBase64(file);
       pendingImage = { base64, mediaType: file.type || 'image/jpeg', name: file.name };
       imagePreview.hidden = false;
-      imagePreview.innerHTML = `<span>📎 ${escapeHtml(file.name)}</span><button type="button" id="ambAssistantImageRemove" class="assistant-icon-btn">✕</button>`;
+      imagePreview.innerHTML = `
+        <img class="assistant-image-preview-thumb" src="data:${pendingImage.mediaType};base64,${pendingImage.base64}" alt="">
+        <span class="assistant-image-preview-name">${escapeHtml(file.name)}</span>
+        <button type="button" id="ambAssistantImageRemove" class="assistant-icon-btn" aria-label="إزالة الصورة">✕</button>`;
       document.getElementById('ambAssistantImageRemove').addEventListener('click', () => {
         pendingImage = null; imagePreview.hidden = true; imagePreview.innerHTML = ''; imageInput.value = '';
       });
@@ -207,8 +247,7 @@ export function mountAssistantBubble() {
     imageInput.value = '';
 
     addMessage(messagesEl, 'user', text, imageToSend);
-    const loadingEl = addMessage(messagesEl, 'assistant', '...بيفكر');
-    loadingEl.classList.add('assistant-loading');
+    const loadingEl = addThinkingMessage(messagesEl);
 
     const history = loadHistory();
     try {
@@ -220,27 +259,42 @@ export function mountAssistantBubble() {
       });
       const reply = result.reply || 'مفيش رد.';
       const { visibleText, proposal } = extractActionProposal(reply);
-      loadingEl.classList.remove('assistant-loading');
+      // Captured BEFORE mutating the placeholder's content — a user who
+      // scrolled up to re-read earlier history while the reply was still
+      // "جاري التفكير..." should not get yanked back down by it landing.
+      const stick = isNearBottom(messagesEl);
+      loadingEl.classList.remove('assistant-msg-thinking');
       loadingEl.innerHTML = renderReplyHtml(visibleText) + actionProposalHtml(proposal);
+      scrollToBottom(messagesEl, stick);
 
       history.push({ role: 'user', text });
       history.push({ role: 'assistant', text: visibleText });
       saveHistory(history);
     } catch (err) {
-      loadingEl.classList.remove('assistant-loading');
+      const stick = isNearBottom(messagesEl);
+      loadingEl.classList.remove('assistant-msg-thinking');
       loadingEl.innerHTML = `<div class="assistant-error">⚠️ ${escapeHtml(err.message || 'حصل خطأ')}</div>`;
+      scrollToBottom(messagesEl, stick);
     }
-    messagesEl.scrollTop = messagesEl.scrollHeight;
   });
 }
 
 function addMessage(messagesEl, role, text, image) {
+  const stick = isNearBottom(messagesEl);
   const el = document.createElement('div');
   el.className = `assistant-msg assistant-msg-${role}`;
   const imgHtml = image ? `<img class="assistant-msg-image" src="data:${image.mediaType};base64,${image.base64}" alt="">` : '';
   el.innerHTML = role === 'user' ? `${imgHtml}<div style="white-space:pre-wrap;">${escapeHtml(text)}</div>` : `<div style="white-space:pre-wrap;">${escapeHtml(text)}</div>`;
   messagesEl.appendChild(el);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  scrollToBottom(messagesEl, stick);
+  return el;
+}
+
+/** Compact "جاري التفكير..." placeholder — never a big empty bubble while waiting on a real tool-calling turn that can take several seconds. */
+function addThinkingMessage(messagesEl) {
+  const el = addMessage(messagesEl, 'assistant', '');
+  el.classList.add('assistant-msg-thinking');
+  el.innerHTML = '<span>جاري التفكير...</span>';
   return el;
 }
 
@@ -257,6 +311,36 @@ function restoreConversation(messagesEl) {
       el.innerHTML = renderReplyHtml(visibleText) + actionProposalHtml(proposal);
     }
   }
+}
+
+let vvCleanup = null;
+/**
+ * iOS/mobile on-screen-keyboard handling for the mobile bottom sheet, via
+ * the Visual Viewport API. `window.innerHeight` (the LAYOUT viewport) stays
+ * put when the keyboard opens on iOS Safari, but `visualViewport.height`
+ * shrinks to the actually-visible area — the gap between the two is
+ * approximately the keyboard's height, so pinning the sheet's `bottom` to
+ * that gap keeps the composer directly above the keyboard instead of
+ * behind it or leaving a dead gap. Browsers without Visual Viewport support
+ * just keep the CSS resting position (safe-area-aware, still usable, only
+ * without live keyboard tracking).
+ */
+function applyMobileViewport(panel) {
+  teardownMobileViewport();
+  if (!window.visualViewport) return;
+  const vv = window.visualViewport;
+  const update = () => {
+    const covered = window.innerHeight - vv.height - vv.offsetTop;
+    panel.style.bottom = `${Math.max(14, covered + 14)}px`;
+  };
+  vv.addEventListener('resize', update);
+  vv.addEventListener('scroll', update);
+  update();
+  vvCleanup = () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+}
+function teardownMobileViewport() {
+  if (vvCleanup) { vvCleanup(); vvCleanup = null; }
+  document.getElementById('ambAssistantPanel')?.style.removeProperty('bottom');
 }
 
 function restorePosition(wrap) {

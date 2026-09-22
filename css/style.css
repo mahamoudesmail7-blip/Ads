@@ -905,12 +905,34 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 
 /* ---------------------------------------------------------------------------
-   🤖 مساعد الميديا باير — floating global assistant bubble (js/assistant.js).
+   🤖 مساعد الميديا باير — floating global assistant (js/assistant.js).
    Mounted via ui-common.js's mountAssistantBubble() on every authenticated
-   page. #ambAssistantRoot is `position:fixed` and its own drag logic
-   (assistant.js's wireDrag) only ever sets `right`/`bottom` inline — never
-   `left` — so it must never gain a `left` value here that would fight that.
+   page. Two distinct presentations, switched at the SAME 768px breakpoint
+   the app's own mobile chrome (.mobile-header/.mobile-bottom-nav) uses:
+
+   - Desktop (>768px): small floating draggable bubble + a compact floating
+     panel anchored above it. #ambAssistantRoot is `position:fixed` and its
+     own drag logic (assistant.js's wireDrag) only ever sets `right`/`bottom`
+     inline on it — never `left` — so nothing here may set `left` on it.
+   - Mobile (<=768px): the bubble is draggable while closed only; opening it
+     HIDES the bubble and presents the panel as a fixed, non-draggable,
+     near-full-height bottom sheet with a backdrop, independent of wherever
+     the bubble was dragged to. assistant.js's keyboard handling (Visual
+     Viewport API) repositions the sheet's `bottom` inline on open/keyboard
+     show — the mobile rule below only sets the RESTING position/size.
+
+   Design tokens local to this component (spacing/radius/sizes), reusing the
+   app's own color/shadow/radius variables rather than one-off magic numbers.
 --------------------------------------------------------------------------- */
+:root {
+  --amb-radius-lg: 20px;
+  --amb-radius-md: 13px;
+  --amb-header-h: 56px;
+  --amb-gutter: 10px;
+  --amb-bubble-size: 56px;
+  --amb-touch: 44px;
+}
+
 #ambAssistantRoot {
   position: fixed;
   right: 24px;
@@ -919,8 +941,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 
 .assistant-bubble {
-  width: 56px;
-  height: 56px;
+  width: var(--amb-bubble-size);
+  height: var(--amb-bubble-size);
   border-radius: 50%;
   border: none;
   background: var(--sidebar-active-bg);
@@ -935,6 +957,18 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   user-select: none;
 }
 .assistant-bubble:active { transform: scale(0.96); }
+.assistant-bubble[hidden] { display: none; }
+
+.assistant-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(9, 13, 24, 0.45);
+  z-index: 1999;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+.assistant-backdrop.is-open { opacity: 1; pointer-events: auto; }
 
 .assistant-panel[hidden] { display: none; }
 .assistant-panel {
@@ -945,70 +979,118 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   height: min(520px, calc(100vh - 120px));
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--amb-radius-lg);
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
+/* Compact premium header — purple stays an ACCENT (avatar circle, status
+   dot) rather than a giant solid block filling the top of the panel. */
 .assistant-panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  background: var(--sidebar-active-bg);
-  color: #fff;
-  font-weight: 600;
-  font-size: 14px;
-  cursor: grab;
-  touch-action: none;
+  gap: 10px;
+  height: var(--amb-header-h);
+  min-height: var(--amb-header-h);
+  padding: 0 12px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
+.assistant-header-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  flex-shrink: 0;
+}
+.assistant-header-titles { flex: 1; min-width: 0; }
+.assistant-header-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.assistant-header-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--green);
+}
+.assistant-header-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+.assistant-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 
 .assistant-icon-btn {
   background: transparent;
   border: none;
-  color: inherit;
+  color: var(--text-dim);
   cursor: pointer;
   font-size: 15px;
-  padding: 4px 6px;
-  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
   line-height: 1;
 }
-.assistant-icon-btn:hover { background: rgba(255,255,255,0.15); }
+.assistant-icon-btn:hover { background: var(--accent-dim); color: var(--accent); }
 
 .assistant-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   background: var(--bg);
 }
 
 .assistant-msg {
-  max-width: 88%;
+  max-width: 85%;
   padding: 9px 12px;
-  border-radius: 12px;
+  border-radius: var(--amb-radius-md);
   font-size: 13.5px;
   line-height: 1.6;
   word-break: break-word;
 }
+/* RTL: a person's own sent messages sit on the READING-START side (right,
+   in Arabic) — the standard Arabic chat convention (WhatsApp/Telegram
+   Arabic). `align-self:flex-end` on a column flex container follows
+   `direction`, so on this RTL page flex-end is the LEFT edge — the opposite
+   of that convention — hence flex-START for the user's own bubble here. */
 .assistant-msg-user {
-  align-self: flex-end;
+  align-self: flex-start;
   background: var(--accent);
   color: #fff;
   border-bottom-right-radius: 3px;
 }
 .assistant-msg-assistant {
-  align-self: flex-start;
+  align-self: flex-end;
   background: var(--bg-card);
   border: 1px solid var(--border);
   color: var(--text);
   border-bottom-left-radius: 3px;
 }
-.assistant-msg.assistant-loading { opacity: 0.6; }
+.assistant-msg-thinking { opacity: 0.7; display: flex; align-items: center; gap: 6px; }
 .assistant-msg-image {
   max-width: 160px;
   border-radius: 8px;
@@ -1027,8 +1109,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   display: block;
   margin-top: 8px;
   width: 100%;
+  min-height: var(--amb-touch);
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: none;
   background: var(--accent);
   color: #fff;
@@ -1044,26 +1127,43 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
-  font-size: 12.5px;
-  color: var(--text-dim);
+  padding: 8px 12px;
   border-top: 1px solid var(--border);
+}
+.assistant-image-preview-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.assistant-image-preview-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .assistant-input-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
+  padding: 8px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
   background: var(--bg-card);
+  flex-shrink: 0;
 }
 .assistant-input-row input[type="text"] {
   flex: 1;
   min-width: 0;
+  height: var(--amb-touch);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 8px 14px;
+  padding: 0 14px;
   /* iOS Safari auto-zooms the whole page on focus for any input under
      16px — live-reported: tapping the input on a real iPhone visibly
      zoomed/cropped the entire panel. 16px is the minimum that avoids it. */
@@ -1071,36 +1171,55 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   background: var(--bg);
   color: var(--text);
 }
+.assistant-upload-btn, .assistant-send-btn {
+  width: var(--amb-touch);
+  height: var(--amb-touch);
+  flex-shrink: 0;
+}
 .assistant-upload-btn { cursor: pointer; }
-.assistant-send-btn { color: var(--accent); font-size: 18px; }
+.assistant-send-btn { color: var(--accent); font-size: 19px; }
 
-/* Below 768px the app switches to a fixed mobile-header (56px) + bottom-nav
-   (64px) chrome (see .mobile-header/.mobile-bottom-nav above) — the SAME
-   breakpoint and the same 80px bottom-nav-clearance convention
-   .theme-toggle-fixed/.toast already use, so the bubble sits flush above
-   the nav instead of overlapping it (found live: at the default 24px/24px
-   desktop offset the bubble sat half-behind the bottom nav's last icon).
-   The panel switches to `position:fixed` here (escaping #ambAssistantRoot,
-   which has no transform/will-change, so a fixed descendant anchors to the
-   viewport, not the root) with a symmetric left/right gutter and a
-   top+bottom span instead of the old `right:-12px` + calc(100vh - Npx) hack
-   — that hack anchored the panel's right edge to wherever the draggable
-   bubble currently sits (only ~2px from the screen edge after the -12px
-   offset) while leaving a full 22px gap on the left, i.e. a visibly
-   off-center panel regardless of where the bubble was dragged to. */
+/* Below 768px: a full mobile bottom-sheet presentation instead of the
+   desktop floating panel — a dedicated layout, not the desktop panel
+   resized (per the explicit mobile-polish request, not a "shrink the
+   desktop widget" job). assistant.js toggles `.assistant-panel.is-sheet`
+   only at this breakpoint (checked via matchMedia, not by this rule alone)
+   so drag/backdrop/bubble-hide JS behavior and this CSS presentation stay
+   in sync at exactly the same width. */
 @media (max-width: 768px) {
-  #ambAssistantRoot { right: 14px; bottom: 80px; }
-  .assistant-panel {
+  #ambAssistantRoot {
+    right: 14px;
+    bottom: calc(80px + env(safe-area-inset-bottom));
+  }
+
+  .assistant-panel.is-sheet {
     position: fixed;
-    left: 12px;
-    right: 12px;
-    top: 64px;
-    /* root's own 80px bottom-nav clearance + the 56px bubble itself + an 8px
-       gap, so the open panel never overlaps the still-visible, still-
-       clickable (tap again to close) bubble underneath it. */
-    bottom: 144px;
+    left: var(--amb-gutter);
+    right: var(--amb-gutter);
+    /* top/bottom start here; assistant.js's Visual-Viewport handler
+       overwrites `bottom` inline while the keyboard is open or the sheet
+       is first presented, keeping the composer pinned above the keyboard
+       — see applyMobileViewport() in assistant.js. */
+    top: calc(env(safe-area-inset-top) + 14px);
+    bottom: calc(14px + env(safe-area-inset-bottom));
     width: auto;
     height: auto;
+    max-width: none;
+    border-radius: var(--amb-radius-lg) var(--amb-radius-lg) var(--amb-radius-lg) var(--amb-radius-lg);
+    z-index: 2001;
+  }
+
+  /* On a slightly taller/tablet-ish phone, round only the top corners and
+     let the sheet reach the very bottom safe-area edge — matches the
+     reference "chat sheet" mockup while section 12 (tablet) keeps a capped
+     width instead of stretching a phone layout across an iPad. */
+  @media (min-width: 481px) {
+    .assistant-panel.is-sheet {
+      left: 50%;
+      right: auto;
+      width: min(420px, calc(100vw - 2 * var(--amb-gutter)));
+      transform: translateX(-50%);
+    }
   }
 }
 
