@@ -5648,15 +5648,50 @@ function launchVideoCardHtml(entry) {
     <div>${launchVideoStatusBadge(entry)}</div>
     <div style="display:flex; gap:4px;">
       ${entry.status === 'FAILED' && entry.file ? `<button class="amb-btn ghost sm" data-vid-retry="${E(entry.slotKey)}">إعادة المحاولة</button>` : ''}
+      ${entry.status === 'FAILED' && !entry.file ? `<button class="amb-btn ghost sm" data-vid-reselect="${E(entry.slotKey)}">🔁 اختر الفيديو تاني</button><input type="file" data-vid-reselect-input="${E(entry.slotKey)}" accept="video/*" style="display:none;" />` : ''}
       ${entry.status !== 'UPLOADING' ? `<button class="amb-btn ghost sm" data-vid-remove="${E(entry.slotKey)}">✕</button>` : ''}
     </div>
   </div>`;
+}
+/**
+ * A FAILED entry restored from the backend (page refresh mid-upload, or a
+ * failed slot from an earlier session/tab) has no live File object in
+ * memory — the browser never keeps file bytes across a reload — so the
+ * plain "إعادة المحاولة" retry (which just re-sends entry.file) has
+ * nothing to send. Reported live: the button/text was there but clicking
+ * did nothing for exactly this reason. This picks a fresh file for the
+ * SAME slotKey (never a new one), so the backend's idempotent
+ * registerVideoSlot()/markVideoResult() overwrite the same row instead of
+ * leaving an orphaned FAILED row the Review step's backend re-sync would
+ * otherwise keep resurrecting even after the entry is removed client-side.
+ */
+async function reselectLaunchVideoFile(entry, file) {
+  entry.file = file; entry.name = file.name; entry.size = file.size;
+  entry.status = 'VALIDATING'; entry.error = null; entry.duration = null; entry.thumbnailUrl = null; entry.contentHash = null;
+  entry.progress = { sent: 0, total: file.size };
+  renderLaunchVideoCard(entry);
+  const [validation, hash] = await Promise.all([validateLaunchVideoFile(file), computeLaunchContentHash(file)]);
+  entry.contentHash = hash;
+  if (!validation.ok) {
+    entry.status = 'FAILED'; entry.error = validation.reason;
+  } else {
+    entry.duration = validation.duration; entry.thumbnailUrl = validation.thumbnailUrl; entry.warning = validation.warning || null;
+    entry.status = 'PENDING';
+  }
+  renderLaunchVideoCard(entry);
+  if (entry.status === 'PENDING') processLaunchUploadQueue();
 }
 function wireLaunchVideoCard(entry) {
   const el = $(`ambLaunchVid-${entry.slotKey}`);
   if (!el) return;
   const retry = el.querySelector('[data-vid-retry]');
   if (retry) retry.onclick = () => { entry.status = 'PENDING'; entry.error = null; renderLaunchVideoCard(entry); processLaunchUploadQueue(); };
+  const reselectBtn = el.querySelector('[data-vid-reselect]');
+  const reselectInput = el.querySelector('[data-vid-reselect-input]');
+  if (reselectBtn && reselectInput) {
+    reselectBtn.onclick = () => reselectInput.click();
+    reselectInput.onchange = () => { const f = reselectInput.files?.[0]; if (f) reselectLaunchVideoFile(entry, f); };
+  }
   const remove = el.querySelector('[data-vid-remove]');
   if (remove) remove.onclick = () => { launchState.videos = launchState.videos.filter((v) => v.slotKey !== entry.slotKey); renderLaunchStep(); };
 }
