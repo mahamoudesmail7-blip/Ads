@@ -814,6 +814,15 @@ router.get('/launch/jobs/:jobId/videos/:slotKey/progress', asyncRoute(async (req
   res.json(videoUpload.getUploadProgress(req.params.jobId, req.params.slotKey) || { bytesSent: 0, totalBytes: 0 });
 }));
 
+// Permanently drops one video slot (never used for an UPLOADED slot from the
+// UI — see deleteVideoSlot's own comment). Needed so removing a FAILED slot
+// actually sticks instead of being resurrected by the Review step's forced
+// backend re-sync.
+router.delete('/launch/jobs/:jobId/videos/:slotKey', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json(await launch.deleteVideoSlot({ jobId: req.params.jobId, slotKey: req.params.slotKey }));
+}));
+
 // Phase F — the FIRST real Meta write. Deliberately narrow: exactly one
 // Campaign -> one Ad Set -> one Creative (reusing an already-uploaded real
 // video) -> one Ad, everything created PAUSED. ADMIN-only, and gated

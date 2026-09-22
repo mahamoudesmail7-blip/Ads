@@ -520,6 +520,21 @@ export async function markVideoResult({ jobId, slotKey, status, metaVideoId = nu
 }
 
 /**
+ * Permanently drops one video slot's row. Needed because the Review step's
+ * syncLaunchVideosFromBackend({force:true}) merges by slot_key — a slot the
+ * user removed only client-side (the ✕ button, before this existed) would
+ * get silently RESURRECTED as soon as Review re-synced, since the row still
+ * existed on the backend. Never touches a slot that already succeeded
+ * (status UPLOADED) unless the caller explicitly means to discard a real
+ * uploaded Meta video, which the frontend's remove button never does once
+ * a slot is UPLOADED (it only offers ✕ for PENDING/FAILED/VALIDATING).
+ */
+export async function deleteVideoSlot({ jobId, slotKey }) {
+  await prisma.ambLaunchVideoAsset.deleteMany({ where: { job_id: jobId, slot_key: slotKey } });
+  return { deleted: true };
+}
+
+/**
  * Smart Decision Center Phase 1 — the wizard's new Step 1 "المنتج" list.
  * Plain DB reads only, zero Meta calls. A store-tagged product only shows
  * for its own store; an untagged (legacy, pre-multi-store) product shows for

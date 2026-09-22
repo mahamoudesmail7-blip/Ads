@@ -5693,7 +5693,15 @@ function wireLaunchVideoCard(entry) {
     reselectInput.onchange = () => { const f = reselectInput.files?.[0]; if (f) reselectLaunchVideoFile(entry, f); };
   }
   const remove = el.querySelector('[data-vid-remove]');
-  if (remove) remove.onclick = () => { launchState.videos = launchState.videos.filter((v) => v.slotKey !== entry.slotKey); renderLaunchStep(); };
+  if (remove) remove.onclick = async () => {
+    // Deletes the backend row FIRST (when one could exist) — otherwise the
+    // Review step's forced re-sync would just re-add this exact slot back
+    // from the database moments later, making "remove" look like it did
+    // nothing (reported live for the plain-retry bug; same class of issue).
+    if (launchState.jobId) { try { await api.delete(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/videos/${entry.slotKey}`); } catch { /* slot may never have reached the server (e.g. still VALIDATING) — nothing to delete, safe to ignore */ } }
+    launchState.videos = launchState.videos.filter((v) => v.slotKey !== entry.slotKey);
+    renderLaunchStep();
+  };
 }
 /** Updates just ONE card's DOM in place — keeps large (up to 300-video) lists smooth under frequent progress polling instead of re-rendering the whole list. */
 function renderLaunchVideoCard(entry) {
