@@ -1070,8 +1070,33 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .assistant-upload-btn { cursor: pointer; }
 .assistant-send-btn { color: var(--accent); font-size: 18px; }
 
-@media (max-width: 480px) {
-  .assistant-panel { width: calc(100vw - 24px); height: calc(100vh - 140px); right: -12px; }
-  #ambAssistantRoot { right: 14px; bottom: 14px; }
+/* Below 768px the app switches to a fixed mobile-header (56px) + bottom-nav
+   (64px) chrome (see .mobile-header/.mobile-bottom-nav above) — the SAME
+   breakpoint and the same 80px bottom-nav-clearance convention
+   .theme-toggle-fixed/.toast already use, so the bubble sits flush above
+   the nav instead of overlapping it (found live: at the default 24px/24px
+   desktop offset the bubble sat half-behind the bottom nav's last icon).
+   The panel switches to `position:fixed` here (escaping #ambAssistantRoot,
+   which has no transform/will-change, so a fixed descendant anchors to the
+   viewport, not the root) with a symmetric left/right gutter and a
+   top+bottom span instead of the old `right:-12px` + calc(100vh - Npx) hack
+   — that hack anchored the panel's right edge to wherever the draggable
+   bubble currently sits (only ~2px from the screen edge after the -12px
+   offset) while leaving a full 22px gap on the left, i.e. a visibly
+   off-center panel regardless of where the bubble was dragged to. */
+@media (max-width: 768px) {
+  #ambAssistantRoot { right: 14px; bottom: 80px; }
+  .assistant-panel {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    top: 64px;
+    /* root's own 80px bottom-nav clearance + the 56px bubble itself + an 8px
+       gap, so the open panel never overlaps the still-visible, still-
+       clickable (tap again to close) bubble underneath it. */
+    bottom: 144px;
+    width: auto;
+    height: auto;
+  }
 }
 
