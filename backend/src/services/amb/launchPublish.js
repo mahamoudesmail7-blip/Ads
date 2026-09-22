@@ -339,6 +339,25 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
   return payload;
 }
 
+/** Static-image counterpart to buildCreativePayload — object_story_spec.link_data with image_hash, the exact field shape already proven working against Meta by cloneEngine.js's own image-creative path (cloneEngine.js:1418-1422). Requires campaign.website_url (link_data has no thumbnail-from-Meta fallback the way video_data does — an image ad IS the picture, there is nothing to derive a link from). */
+export function buildImageCreativePayload(job, campaign, adSetIndex, adIndex, imageHash) {
+  const cfg = JSON.parse(job.config_json || '{}');
+  return {
+    name: `${campaign.name} - Creative ${adSetIndex + 1}.${adIndex + 1}`,
+    object_story_spec: {
+      page_id: job.page_id,
+      instagram_user_id: job.instagram_id || undefined,
+      link_data: {
+        link: campaign.website_url,
+        image_hash: imageHash,
+        message: campaign.primary_text || undefined,
+        name: campaign.headline || undefined,
+        call_to_action: { type: cfg.cta || 'ORDER_NOW', value: { link: campaign.website_url } },
+      },
+    },
+  };
+}
+
 export function buildCreativePayload(job, campaign, adSetIndex, adIndex, videoId, thumbnailUrl) {
   const cfg = JSON.parse(job.config_json || '{}');
   return {
@@ -443,28 +462,40 @@ async function ensureAdSet({ job, campaign, metaCampaignId, adSetIndex, token, a
   }
 }
 
-async function ensureCreative({ job, campaign, adSetIndex, adIndex, video, token, audit }) {
+/** `creative` is a row from either ambLaunchVideoAsset or ambLaunchImageAsset, tagged with `_kind: 'video'|'image'` by the caller (publishCampaignFull's combined round-robin pool) — never guessed here from field presence, so a malformed/legacy row can never be silently misrouted. */
+async function ensureCreative({ job, campaign, adSetIndex, adIndex, creative, token, audit }) {
   const localKey = `creative:${adSetIndex}:${adIndex}`;
   const row = await getOrCreateObjectMapRow({ campaignId: campaign.id, level: 'CREATIVE', localKey, parentLocalKey: `adset:${adSetIndex}` });
   if (row.status === 'CREATED') return row.destination_id;
 
-  // Check Meta's own real processing status BEFORE asking for a thumbnail —
-  // "still processing" is expected and transient (Meta can take anywhere
-  // from seconds to a couple of hours per video); only a real 'error'
-  // status on the video itself is a genuine, non-retryable problem.
-  const videoStatus = await getMetaVideoStatus(token, video.meta_video_id);
-  if (videoStatus === 'error') {
-    const e = new Error(`فيديو ${video.slot_key} فشلت معالجته على Meta بشكل نهائي — محتاج إعادة رفع.`);
-    e.status = 422;
-    throw e; // terminal — no amount of waiting fixes a video Meta itself rejected
+  let payload, sourceLabel;
+  if (creative._kind === 'image') {
+    // An image asset is already fully UPLOADED (its own POST route only
+    // marks it UPLOADED once Meta's /adimages call already returned a real
+    // hash) — no async "still processing" wait like video needs, so this
+    // branch never throws a transient error the way the video one can.
+    payload = buildImageCreativePayload(job, campaign, adSetIndex, adIndex, creative.meta_image_hash);
+    sourceLabel = `صورة ${creative.slot_key} (${creative.meta_image_hash})`;
+  } else {
+    // Check Meta's own real processing status BEFORE asking for a thumbnail —
+    // "still processing" is expected and transient (Meta can take anywhere
+    // from seconds to a couple of hours per video); only a real 'error'
+    // status on the video itself is a genuine, non-retryable problem.
+    const videoStatus = await getMetaVideoStatus(token, creative.meta_video_id);
+    if (videoStatus === 'error') {
+      const e = new Error(`فيديو ${creative.slot_key} فشلت معالجته على Meta بشكل نهائي — محتاج إعادة رفع.`);
+      e.status = 422;
+      throw e; // terminal — no amount of waiting fixes a video Meta itself rejected
+    }
+    const thumbnailUrl = await getMetaVideoThumbnailUrl(token, creative.meta_video_id);
+    if (!thumbnailUrl) {
+      const e = new Error(`فيديو ${creative.slot_key} لسه Meta بيعالجه (${videoStatus || 'processing'}) — هيتعاد المحاولة تلقائيًا لحد ما يجهز.`);
+      e.transient = true; // never a terminal failure by itself — see publishCampaignFull's bounded-retry handling
+      throw e;
+    }
+    payload = buildCreativePayload(job, campaign, adSetIndex, adIndex, creative.meta_video_id, thumbnailUrl);
+    sourceLabel = `فيديو ${creative.slot_key} (${creative.meta_video_id})`;
   }
-  const thumbnailUrl = await getMetaVideoThumbnailUrl(token, video.meta_video_id);
-  if (!thumbnailUrl) {
-    const e = new Error(`فيديو ${video.slot_key} لسه Meta بيعالجه (${videoStatus || 'processing'}) — هيتعاد المحاولة تلقائيًا لحد ما يجهز.`);
-    e.transient = true; // never a terminal failure by itself — see publishCampaignFull's bounded-retry handling
-    throw e;
-  }
-  const payload = buildCreativePayload(job, campaign, adSetIndex, adIndex, video.meta_video_id, thumbnailUrl);
   try {
     // No cheap "list creatives for this campaign" Graph endpoint exists (creatives
     // live on the ad account, not the campaign), so unlike campaign/ad-set/ad there
@@ -474,12 +505,12 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, video, token
     // withDbRetry below at least removes the "Meta succeeded, DB write failed" case.
     const res = await createAdCreative(token, job.ad_account_id, payload);
     await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, destinationId: res.id, status: 'CREATED', payload }), 'creative.map');
-    await audit('OBJECT_CREATED', `Creative ${adSetIndex + 1}.${adIndex + 1} — فيديو ${video.slot_key} (${video.meta_video_id})`, { level: 'CREATIVE', metaCreativeId: res.id, payload });
+    await audit('OBJECT_CREATED', `Creative ${adSetIndex + 1}.${adIndex + 1} — ${sourceLabel}`, { level: 'CREATIVE', metaCreativeId: res.id, payload });
     // Smart Decision Center Phase 1 — stable cross-job creative identity via
     // the existing Media Library, not a new table. Best-effort, non-fatal
     // (registerLaunchCreativeRef never throws): a linking failure must never
     // fail or roll back an already-created real Meta creative.
-    await registerLaunchCreativeRef({ payload, adAccountId: job.ad_account_id, creativeId: res.id, productId: job.product_id || null, hook: video.hook || null, sellingAngle: video.selling_angle || null });
+    await registerLaunchCreativeRef({ payload, adAccountId: job.ad_account_id, creativeId: res.id, productId: job.product_id || null, hook: creative.hook || null, sellingAngle: creative.selling_angle || null });
     return res.id;
   } catch (err) {
     await markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, status: 'FAILED', error: err.message });
@@ -540,7 +571,7 @@ export async function publishSingleTestItem({ jobId, campaignIndex = 0, videoSlo
 
   const metaCampaignId = await ensureCampaign({ job, campaign, token, audit });
   const metaAdSetId = await ensureAdSet({ job, campaign, metaCampaignId, adSetIndex: 0, token, audit });
-  const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex: 0, adIndex: 0, video, token, audit });
+  const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex: 0, adIndex: 0, creative: { ...video, _kind: 'video' }, token, audit });
   const metaAdId = await ensureAd({ job, campaign, metaCampaignId, metaAdSetId, metaCreativeId, adSetIndex: 0, adIndex: 0, token, audit });
 
   const [campaignLive, adSetLive, adLive] = await Promise.all([
@@ -584,10 +615,21 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
   // Prisma's orderBy on slot_key is a plain string sort ("C1","C10","C11",
   // …,"C2",…), not the natural numeric order the slot_keys ("C1".."C15")
   // imply — sort numerically here so round-robin video assignment is
-  // predictable (C1, C2, C3, … C15) rather than silently scrambled.
-  const videos = (await prisma.ambLaunchVideoAsset.findMany({ where: { job_id: jobId, status: 'UPLOADED' } }))
-    .sort((a, b) => (parseInt(a.slot_key.slice(1), 10) || 0) - (parseInt(b.slot_key.slice(1), 10) || 0));
-  if (!videos.length) fail('مفيش فيديوهات مرفوعة وجاهزة (UPLOADED) في هذا الطلب.');
+  // predictable (C1, C2, C3, … C15) rather than silently scrambled. Images
+  // (own slot_key namespace "I1".."In") are appended after every video in
+  // the round-robin pool, sorted the same numeric way — a mixed job cycles
+  // through all its videos first, then its images, then wraps around, never
+  // interleaved in an unpredictable order.
+  const [videos, images] = await Promise.all([
+    prisma.ambLaunchVideoAsset.findMany({ where: { job_id: jobId, status: 'UPLOADED' } }),
+    prisma.ambLaunchImageAsset.findMany({ where: { job_id: jobId, status: 'UPLOADED' } }),
+  ]);
+  const bySlotNum = (a, b) => (parseInt(a.slot_key.slice(1), 10) || 0) - (parseInt(b.slot_key.slice(1), 10) || 0);
+  const creativePool = [
+    ...videos.sort(bySlotNum).map((v) => ({ ...v, _kind: 'video' })),
+    ...images.sort(bySlotNum).map((i) => ({ ...i, _kind: 'image' })),
+  ];
+  if (!creativePool.length) fail('مفيش فيديوهات أو صور مرفوعة وجاهزة (UPLOADED) في هذا الطلب.');
 
   const token = await requireLaunchToken();
   const audit = async (event, detail, extra = {}) => prisma.ambLaunchAudit.create({ data: { job_id: jobId, campaign_id: campaign.id, event, detail, data_json: JSON.stringify(extra) } });
@@ -636,8 +678,8 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     }
     const adResults = await runBounded(adSlots, LAUNCH_CONCURRENCY_LIMIT, async ({ adSetIndex, adIndex }) => {
       const globalAdIndex = campaignIndex * job.ad_sets_per_campaign * job.ads_per_ad_set + adSetIndex * job.ads_per_ad_set + adIndex;
-      const video = videos[globalAdIndex % videos.length];
-      const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex, adIndex, video, token, audit });
+      const creative = creativePool[globalAdIndex % creativePool.length];
+      const metaCreativeId = await ensureCreative({ job, campaign, adSetIndex, adIndex, creative, token, audit });
       return ensureAd({ job, campaign, metaCampaignId, metaAdSetId: metaAdSetIds[adSetIndex], metaCreativeId, adSetIndex, adIndex, token, audit });
     });
     const adFailures = adResults.filter((r) => !r.ok);
@@ -817,7 +859,7 @@ export async function retryLaunchCampaignNow({ jobId, campaignIndex }) {
  * anything or creates a second run).
  */
 export async function startLaunchQueue({ jobId, userId }) {
-  const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId }, include: { campaigns: true, videos: true } });
+  const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId }, include: { campaigns: true, videos: true, images: true } });
   if (!job) fail('طلب الرفع غير موجود.');
   if (job.status === 'PUBLISHING' || job.status === 'COMPLETE') return job;
   if (!['DRAFT', 'VALIDATING', 'READY', 'PARTIAL'].includes(job.status)) fail(`لا يمكن بدء النشر وهو في حالة ${job.status}.`);
@@ -833,7 +875,7 @@ export async function startLaunchQueue({ jobId, userId }) {
   for (const c of job.campaigns) {
     if (!c.name?.trim() || !c.website_url?.trim()) fail(`الكامبين "${c.name || c.index}" ناقصه اسم أو رابط الموقع.`);
   }
-  if (!job.videos.some((v) => v.status === 'UPLOADED')) fail('لازم فيديو واحد مرفوع وجاهز (UPLOADED) على الأقل.');
+  if (!job.videos.some((v) => v.status === 'UPLOADED') && !job.images.some((i) => i.status === 'UPLOADED')) fail('لازم فيديو أو صورة واحدة على الأقل مرفوعة وجاهزة (UPLOADED).');
   const cfg = JSON.parse(job.config_json || '{}');
   if (job.budget_mode === 'CBO') {
     if (!(cfg.budget?.cbo?.dailyBudgetMinor > 0)) fail('لازم ميزانية كامبين صحيحة (CBO).');

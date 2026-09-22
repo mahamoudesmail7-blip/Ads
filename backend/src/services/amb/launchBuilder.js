@@ -427,6 +427,7 @@ export async function getJob(jobId) {
     include: {
       campaigns: { orderBy: { index: 'asc' }, include: { objects: true } },
       videos: { orderBy: { slot_key: 'asc' } },
+      images: { orderBy: { slot_key: 'asc' } },
       audits: { orderBy: { created_at: 'desc' }, take: 100 },
     },
   });
@@ -531,6 +532,39 @@ export async function markVideoResult({ jobId, slotKey, status, metaVideoId = nu
  */
 export async function deleteVideoSlot({ jobId, slotKey }) {
   await prisma.ambLaunchVideoAsset.deleteMany({ where: { job_id: jobId, slot_key: slotKey } });
+  return { deleted: true };
+}
+
+// Image counterparts — exact mirror of the 3 functions above, own table
+// (amb_launch_image_assets), own slot_key namespace ("I1".."In", never
+// colliding with videos' "C1".."Cn"). Added so the Launch Builder's
+// "الفيديوهات" step can accept images alongside videos in the same
+// dropzone (explicit request — mixed creative pool, not a separate step).
+export const IMAGE_STATUSES = ['PENDING', 'VALIDATING', 'UPLOADING', 'UPLOADED', 'FAILED'];
+
+export async function registerImageSlot({ jobId, slotKey, originalFilename, contentHash = null, sizeBytes = null, mimeType = null, width = null, height = null }) {
+  const existing = await prisma.ambLaunchImageAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: slotKey } } });
+  const row = existing || await prisma.ambLaunchImageAsset.create({
+    data: { job_id: jobId, slot_key: slotKey, original_filename: originalFilename, content_hash: contentHash, size_bytes: sizeBytes, mime_type: mimeType, width, height, status: 'PENDING' },
+  });
+  let duplicateOfSlotKey = null;
+  if (contentHash) {
+    const dup = await prisma.ambLaunchImageAsset.findFirst({ where: { job_id: jobId, content_hash: contentHash, slot_key: { not: slotKey } }, orderBy: { id: 'asc' } });
+    if (dup) duplicateOfSlotKey = dup.slot_key;
+  }
+  return { row, duplicateOfSlotKey };
+}
+
+export async function markImageResult({ jobId, slotKey, status, metaImageHash = null, error = null }) {
+  if (!IMAGE_STATUSES.includes(status)) fail(`حالة غير معروفة: ${status}`);
+  return prisma.ambLaunchImageAsset.update({
+    where: { job_id_slot_key: { job_id: jobId, slot_key: slotKey } },
+    data: { status, meta_image_hash: metaImageHash, error },
+  });
+}
+
+export async function deleteImageSlot({ jobId, slotKey }) {
+  await prisma.ambLaunchImageAsset.deleteMany({ where: { job_id: jobId, slot_key: slotKey } });
   return { deleted: true };
 }
 

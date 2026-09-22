@@ -1101,7 +1101,14 @@ export async function uploadAdImageFromUrl(token, adAccountId, imageUrl) {
   if (!resp.ok) throw new Error(`تعذّر تحميل الصورة المصدر (${resp.status})`);
   const buf = Buffer.from(await resp.arrayBuffer());
   if (buf.length > 8 * 1024 * 1024) throw new Error('حجم الصورة أكبر من 8MB — لا يمكن رفعها تلقائيًا.');
-  const data = await graphPost(`/${adAccountId}/adimages`, { bytes: buf.toString('base64') }, token);
+  return uploadAdImageBuffer(token, adAccountId, buf);
+}
+
+/** Same real Meta /adimages upload as uploadAdImageFromUrl, but from bytes already in hand (the Launch Builder's own image upload route) — never re-fetches from a URL. Returns the real image_hash every ad creative referencing this image must use. */
+export async function uploadAdImageBuffer(token, adAccountId, buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) throw new Error('لا توجد بيانات صورة لرفعها.');
+  if (buffer.length > 8 * 1024 * 1024) throw new Error('حجم الصورة أكبر من 8MB — لا يمكن رفعها تلقائيًا.');
+  const data = await graphPost(`/${adAccountId}/adimages`, { bytes: buffer.toString('base64') }, token);
   const first = data?.images ? Object.values(data.images)[0] : null;
   if (!first?.hash) throw new Error('Meta لم تُرجع hash للصورة المرفوعة.');
   return { hash: first.hash, url: first.url || null };

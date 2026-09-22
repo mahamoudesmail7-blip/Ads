@@ -1856,6 +1856,7 @@ model AmbLaunchJob {
 
   campaigns AmbLaunchCampaign[]
   videos    AmbLaunchVideoAsset[]
+  images    AmbLaunchImageAsset[]
   audits    AmbLaunchAudit[]
 
   @@index([status])
@@ -1971,6 +1972,39 @@ model AmbLaunchVideoAsset {
   @@unique([job_id, slot_key])
   @@index([job_id, content_hash])
   @@map("amb_launch_video_assets")
+}
+
+// Static-image counterpart to AmbLaunchVideoAsset, added so the Launch
+// Builder's "الفيديوهات" step can accept images alongside videos in the
+// same dropzone (per explicit request — mixed creative pool, never a
+// separate step). Deliberately its own table, not a generic "creative
+// asset" union, to keep AmbLaunchVideoAsset's already-proven idempotent-
+// by-slot-key pattern (registerVideoSlot/markVideoResult) unchanged and
+// exactly mirror it here rather than risk a migration-heavy refactor of a
+// table every existing publish/review code path already depends on.
+model AmbLaunchImageAsset {
+  id                Int          @id @default(autoincrement())
+  job_id            String
+  job               AmbLaunchJob @relation(fields: [job_id], references: [job_id], onDelete: Cascade)
+  slot_key          String // "I1".."In" — own namespace, separate from videos' "C1".."Cn" so the two can never collide
+  original_filename String
+  content_hash      String? // sha256 of the file — duplicate-file detection within the same job
+  size_bytes        Int?
+  width             Int?
+  height            Int?
+  mime_type         String?
+  // PENDING | VALIDATING | UPLOADING | UPLOADED | FAILED — same vocabulary as AmbLaunchVideoAsset
+  status            String       @default("PENDING")
+  meta_image_hash   String? // set once uploaded to Meta — reused by every ad/campaign in this job, never re-uploaded (mirrors meta_video_id)
+  error             String?
+  hook              String?
+  selling_angle     String?
+  created_at        DateTime     @default(now())
+  updated_at        DateTime     @updatedAt
+
+  @@unique([job_id, slot_key])
+  @@index([job_id, content_hash])
+  @@map("amb_launch_image_assets")
 }
 
 // Append-only audit of everything that happens to a launch job: creation,

@@ -4806,7 +4806,7 @@ async function renderHomeSchedules(mount) {
 // uploaded, no Campaign/AdSet/Ad/Creative is created on Meta anywhere in
 // this file.
 // ---------------------------------------------------------------------------
-const LAUNCH_STEPS = ['📦 المنتج', 'الحساب', 'إعداد الكامبين', 'Ad Sets', 'المنصات والصفحة والجمهور', 'الفيديوهات', 'عدد الكامبينات', 'النصوص والروابط', 'مراجعة', 'النشر'];
+const LAUNCH_STEPS = ['📦 المنتج', 'الحساب', 'إعداد الكامبين', 'Ad Sets', 'المنصات والصفحة والجمهور', 'الفيديوهات والصور', 'عدد الكامبينات', 'النصوص والروابط', 'مراجعة', 'النشر'];
 const LAUNCH_CONVERSION_EVENTS = [
   { v: 'PURCHASE', l: 'شراء' },
   { v: 'INITIATED_CHECKOUT', l: 'بدء عملية الشراء' },
@@ -5246,7 +5246,7 @@ async function renderLaunchAccount(body) {
         <span>اختار الحساب الإعلاني</span>
         ${launchState.jobId ? `<button class="amb-btn ghost sm" id="ambLaunchStartNew" title="يمسح المسودة المحفوظة محليًا في المتصفح بس — مش هيمسح أي فيديو أو طلب محفوظ على السيرفر">🗑️ بدء طلب جديد</button>` : ''}
       </div>
-      ${launchState.jobId ? `<div class="faint" style="font-size:11.5px; margin-bottom:10px;">مكمّل طلب سابق — رقم الطلب: <code>${E(launchState.jobId)}</code>${launchState.videos.length ? ` · ${launchState.videos.length} فيديو محفوظ` : ''}</div>` : ''}
+      ${launchState.jobId ? `<div class="faint" style="font-size:11.5px; margin-bottom:10px;">مكمّل طلب سابق — رقم الطلب: <code>${E(launchState.jobId)}</code>${launchState.videos.length ? ` · ${launchState.videos.length} ملف محفوظ` : ''}</div>` : ''}
       <div class="faint" style="font-size:12px; margin-bottom:12px;">${accts.length} حساب متاح على الاتصال الحالي بـ Meta.</div>
       ${accts.length ? `<div class="amb-radio-list" style="max-height:420px; overflow:auto;">${accts.map((a) => `
         <label class="amb-radio-row ${launchState.adAccountId === a.id ? 'sel' : ''}">
@@ -5262,7 +5262,7 @@ async function renderLaunchAccount(body) {
   body.querySelectorAll('input[name="ambLaunchAcct"]').forEach((r) => {
     r.onchange = () => {
       if (launchState.adAccountId !== r.value) {
-        if (launchState.videos.length && !confirm('تغيير الحساب الإعلاني هيلغي الفيديوهات اللي رفعتها لحد دلوقتي (مرفوعة على حساب مختلف) — تكمل؟')) { renderLaunchStep(); return; }
+        if (launchState.videos.length && !confirm('تغيير الحساب الإعلاني هيلغي الفيديوهات والصور اللي رفعتها لحد دلوقتي (مرفوعة على حساب مختلف) — تكمل؟')) { renderLaunchStep(); return; }
         launchState.adAccountId = r.value;
         launchState.adAccountName = accts.find((a) => a.id === r.value)?.name || null;
         launchState.pageId = null; launchState.pageName = null;
@@ -5649,6 +5649,38 @@ async function validateLaunchVideoFile(file) {
   return { ok: true, duration: meta.duration, width: meta.width, height: meta.height, thumbnailUrl: meta.thumbnailUrl, warning };
 }
 
+// Verified against Meta's own Business Help Center (2026-09): "Image ad
+// specs" — JPG/PNG, recommended minimum 600x600px, this backend's own
+// /adimages upload caps a single image at 8MB (metaGraphClient.js's
+// uploadAdImageBuffer) so that's enforced here too, fast-failing in the
+// browser instead of letting a doomed upload attempt reach the server.
+const META_IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png'];
+const META_MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const META_MIN_IMAGE_DIM = 600;
+
+/** Mirrors probeLaunchVideo — real width/height via a decoded <img>, never trusted from the file alone. Deliberately does NOT revoke the object URL (unlike video's throwaway decode URL) — it's kept as the actual thumbnail shown in the card, valid for the life of this tab. */
+function probeLaunchImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight, thumbnailUrl: url });
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode error')); };
+    img.src = url;
+  });
+}
+
+async function validateLaunchImageFile(file) {
+  const ext = launchExtOf(file.name);
+  if (!META_IMAGE_EXTENSIONS.includes(ext)) return { ok: false, reason: `صيغة الملف (.${ext || '?'}) مش من صيغ الصور المدعومة (JPG/PNG فقط).` };
+  if (!(file.size > 0)) return { ok: false, reason: 'الملف فارغ.' };
+  if (file.size > META_MAX_IMAGE_BYTES) return { ok: false, reason: 'حجم الملف أكبر من الحد الأقصى (8 ميجابايت).' };
+  let meta;
+  try { meta = await probeLaunchImage(file); } catch { return { ok: false, reason: 'تعذّر قراءة الصورة — الملف قد يكون تالفًا أو صيغته غير مدعومة من المتصفح.' }; }
+  const warning = (meta.width && meta.width < META_MIN_IMAGE_DIM) || (meta.height && meta.height < META_MIN_IMAGE_DIM)
+    ? `مقاس الصورة (${meta.width}×${meta.height}px) أقل من الحد الأدنى الموصى به من Meta (600×600px) — ممكن تظهر بجودة رديئة.` : null;
+  return { ok: true, width: meta.width, height: meta.height, thumbnailUrl: meta.thumbnailUrl, warning };
+}
+
 /** A practical dedup fingerprint (first 4MB + total size) — never reads a whole multi-GB file into browser memory just to hash it. */
 async function computeLaunchContentHash(file) {
   try {
@@ -5659,13 +5691,21 @@ async function computeLaunchContentHash(file) {
   } catch { return null; }
 }
 
-function nextLaunchSlotKeys(count) {
-  const used = new Set(launchState.videos.map((v) => v.slotKey));
+// Videos use "C1".."Cn" (unchanged), images use "I1".."In" — own namespace
+// matching the backend's separate amb_launch_image_assets table/slot_key
+// uniqueness, so a video and an image can never collide on the same key.
+function nextLaunchSlotKeys(count, kind = 'video') {
+  const prefix = kind === 'image' ? 'I' : 'C';
+  const used = new Set(launchState.videos.filter((v) => (v.kind || 'video') === kind).map((v) => v.slotKey));
   const keys = [];
-  for (let n = 1; keys.length < count; n++) { const k = `C${n}`; if (!used.has(k)) keys.push(k); }
+  for (let n = 1; keys.length < count; n++) { const k = `${prefix}${n}`; if (!used.has(k)) keys.push(k); }
   return keys;
 }
-function launchVideoSortKey(v) { return Number(v.slotKey.slice(1)) || 0; }
+function launchVideoSortKey(v) {
+  const kind = v.kind || 'video';
+  const num = Number(v.slotKey.slice(1)) || 0;
+  return kind === 'image' ? 1_000_000 + num : num; // images always sort after every video, matching the publish engine's own round-robin pool order (videos first, then images)
+}
 
 /** Real overall progress across every selected file — not just a per-card bar. Sums each entry's own progress.sent/total (already tracked per-file for the individual bars), so this is never a guess from file count alone (a handful of huge files vs many small ones progress very differently by count). */
 function updateLaunchProgressSummary() {
@@ -5678,8 +5718,10 @@ function updateLaunchProgressSummary() {
   const totalBytes = videos.reduce((s, v) => s + (v.progress?.total || v.size || 0), 0);
   const sentBytes = videos.reduce((s, v) => s + (v.status === 'UPLOADED' ? (v.progress?.total || v.size || 0) : (v.progress?.sent || 0)), 0);
   const pct = totalBytes ? Math.round((sentBytes / totalBytes) * 100) : 0;
+  const videoCount = videos.filter((v) => (v.kind || 'video') === 'video').length;
+  const imageCount = videos.filter((v) => v.kind === 'image').length;
   el.innerHTML = `
-    <div>تم اختيار ${videos.length} / ${LAUNCH_MAX_VIDEOS} فيديو · ${uploaded} تم رفعهم${failed ? ` · ${failed} فشل` : ''}</div>
+    <div>تم اختيار ${videos.length} / ${LAUNCH_MAX_VIDEOS} (${videoCount} فيديو، ${imageCount} صورة) · ${uploaded} تم رفعهم${failed ? ` · ${failed} فشل` : ''}</div>
     <div style="height:6px; background:var(--amb-border); border-radius:3px; margin-top:6px; overflow:hidden; max-width:420px;"><div style="height:100%; width:${pct}%; background:var(--amb-blue); transition:width .2s;"></div></div>`;
 }
 
@@ -5692,23 +5734,24 @@ function launchVideoStatusBadge(entry) {
   return '';
 }
 function launchVideoCardHtml(entry) {
+  const isImage = entry.kind === 'image';
   const total = entry.progress?.total || entry.size || 0;
   const pct = entry.status === 'UPLOADED' ? 100 : (total ? Math.round((entry.progress.sent / total) * 100) : 0);
   const showBar = entry.status === 'UPLOADING' || entry.status === 'UPLOADED';
   return `
   <div class="amb-panel" id="ambLaunchVid-${E(entry.slotKey)}" style="display:flex; gap:12px; align-items:center; padding:10px 12px; margin-bottom:8px;">
     <div style="width:64px; height:48px; border-radius:8px; overflow:hidden; background:var(--amb-surface-2); flex:0 0 auto; display:flex; align-items:center; justify-content:center; font-size:20px;">
-      ${entry.thumbnailUrl ? `<img src="${entry.thumbnailUrl}" style="width:100%; height:100%; object-fit:cover;" />` : '🎬'}
+      ${entry.thumbnailUrl ? `<img src="${entry.thumbnailUrl}" style="width:100%; height:100%; object-fit:cover;" />` : (isImage ? '🖼️' : '🎬')}
     </div>
     <div style="flex:1; min-width:0;">
       <div style="display:flex; gap:8px; align-items:baseline;"><b>${E(entry.slotKey)}</b><span class="faint" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${E(entry.name)}</span></div>
-      <div class="faint" style="font-size:11px;">${Number.isFinite(entry.duration) ? fmtNum(entry.duration, 1) + ' ث' : '—'} · ${((entry.size || 0) / 1024 / 1024).toFixed(1)} MB${entry.dedupSlot ? ` · 🔁 نفس فيديو ${E(entry.dedupSlot)}` : ''}${entry.warning ? ` · ⚠️ ${E(entry.warning)}` : ''}${entry.restored ? ' · (من جلسة سابقة)' : ''}</div>
+      <div class="faint" style="font-size:11px;">${isImage ? (entry.width && entry.height ? `${entry.width}×${entry.height}` : '—') : (Number.isFinite(entry.duration) ? fmtNum(entry.duration, 1) + ' ث' : '—')} · ${((entry.size || 0) / 1024 / 1024).toFixed(1)} MB${entry.dedupSlot ? ` · 🔁 نفس ${isImage ? 'صورة' : 'فيديو'} ${E(entry.dedupSlot)}` : ''}${entry.warning ? ` · ⚠️ ${E(entry.warning)}` : ''}${entry.restored ? ' · (من جلسة سابقة)' : ''}</div>
       ${showBar ? `<div style="height:5px; background:var(--amb-border); border-radius:3px; margin-top:5px; overflow:hidden;"><div style="height:100%; width:${pct}%; background:var(--amb-blue);"></div></div>` : ''}
     </div>
     <div>${launchVideoStatusBadge(entry)}</div>
     <div style="display:flex; gap:4px;">
       ${entry.status === 'FAILED' && entry.file ? `<button class="amb-btn ghost sm" data-vid-retry="${E(entry.slotKey)}">إعادة المحاولة</button>` : ''}
-      ${entry.status === 'FAILED' && !entry.file ? `<button class="amb-btn ghost sm" data-vid-reselect="${E(entry.slotKey)}">🔁 اختر الفيديو تاني</button><input type="file" data-vid-reselect-input="${E(entry.slotKey)}" accept="video/*" style="display:none;" />` : ''}
+      ${entry.status === 'FAILED' && !entry.file ? `<button class="amb-btn ghost sm" data-vid-reselect="${E(entry.slotKey)}">🔁 اختر ${isImage ? 'الصورة' : 'الفيديو'} تاني</button><input type="file" data-vid-reselect-input="${E(entry.slotKey)}" accept="${isImage ? 'image/*' : 'video/*'}" style="display:none;" />` : ''}
       ${entry.status !== 'UPLOADING' ? `<button class="amb-btn ghost sm" data-vid-remove="${E(entry.slotKey)}">✕</button>` : ''}
     </div>
   </div>`;
@@ -5726,16 +5769,22 @@ function launchVideoCardHtml(entry) {
  * otherwise keep resurrecting even after the entry is removed client-side.
  */
 async function reselectLaunchVideoFile(entry, file) {
+  const isImage = entry.kind === 'image';
   entry.file = file; entry.name = file.name; entry.size = file.size;
   entry.status = 'VALIDATING'; entry.error = null; entry.duration = null; entry.thumbnailUrl = null; entry.contentHash = null;
   entry.progress = { sent: 0, total: file.size };
   renderLaunchVideoCard(entry);
-  const [validation, hash] = await Promise.all([validateLaunchVideoFile(file), computeLaunchContentHash(file)]);
+  const [validation, hash] = await Promise.all([
+    isImage ? validateLaunchImageFile(file) : validateLaunchVideoFile(file),
+    computeLaunchContentHash(file),
+  ]);
   entry.contentHash = hash;
   if (!validation.ok) {
     entry.status = 'FAILED'; entry.error = validation.reason;
   } else {
-    entry.duration = validation.duration; entry.thumbnailUrl = validation.thumbnailUrl; entry.warning = validation.warning || null;
+    if (!isImage) entry.duration = validation.duration;
+    else { entry.width = validation.width; entry.height = validation.height; }
+    entry.thumbnailUrl = validation.thumbnailUrl; entry.warning = validation.warning || null;
     entry.status = 'PENDING';
   }
   renderLaunchVideoCard(entry);
@@ -5758,7 +5807,8 @@ function wireLaunchVideoCard(entry) {
     // Review step's forced re-sync would just re-add this exact slot back
     // from the database moments later, making "remove" look like it did
     // nothing (reported live for the plain-retry bug; same class of issue).
-    if (launchState.jobId) { try { await api.delete(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/videos/${entry.slotKey}`); } catch { /* slot may never have reached the server (e.g. still VALIDATING) — nothing to delete, safe to ignore */ } }
+    const kindPath = entry.kind === 'image' ? 'images' : 'videos';
+    if (launchState.jobId) { try { await api.delete(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/${kindPath}/${entry.slotKey}`); } catch { /* slot may never have reached the server (e.g. still VALIDATING) — nothing to delete, safe to ignore */ } }
     launchState.videos = launchState.videos.filter((v) => v.slotKey !== entry.slotKey);
     renderLaunchStep();
   };
@@ -5772,29 +5822,51 @@ function renderLaunchVideoCard(entry) {
   updateLaunchProgressSummary();
 }
 
+/** True for a real image file (JPG/PNG) — everything else is routed through the video path. */
+function isLaunchImageFile(file) {
+  if (file.type) return file.type.startsWith('image/');
+  return META_IMAGE_EXTENSIONS.includes(launchExtOf(file.name));
+}
+
+// Same dropzone accepts both videos and images (explicit request — mixed
+// creative pool, not a separate step); each dropped/selected file is routed
+// to its own validator/slot-namespace/upload-route by isLaunchImageFile().
 async function addLaunchVideoFiles(fileList) {
   const incoming = [...fileList].sort((a, b) => naturalCompare(a.name, b.name));
   const room = LAUNCH_MAX_VIDEOS - launchState.videos.length;
-  if (room <= 0) { UI.toast(`وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS} فيديو) — مفيش مكان لإضافة فيديوهات جديدة.`, 'error'); return; }
+  if (room <= 0) { UI.toast(`وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS}) — مفيش مكان لإضافة ملفات جديدة.`, 'error'); return; }
   const toAdd = incoming.slice(0, room);
   // The rejection (if any) happens HERE, before a single byte of the excess
   // files is ever uploaded — toAdd is already capped to `room`, so nothing
   // past the limit is added to launchState.videos, let alone uploaded.
-  if (incoming.length > toAdd.length) UI.toast(`تم اختيار ${toAdd.length} فيديو فقط من ${incoming.length} — وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS} فيديو). باقي الملفات (${incoming.length - toAdd.length}) لم تُضَف ولم تُرفع.`, 'error');
-  const slotKeys = nextLaunchSlotKeys(toAdd.length);
-  const added = toAdd.map((file, i) => ({ slotKey: slotKeys[i], file, name: file.name, size: file.size, duration: null, thumbnailUrl: null, contentHash: null, status: 'VALIDATING', progress: { sent: 0, total: file.size }, error: null, warning: null, dedupSlot: null, metaVideoId: null }));
+  if (incoming.length > toAdd.length) UI.toast(`تم اختيار ${toAdd.length} ملف فقط من ${incoming.length} — وصلت للحد الأقصى (${LAUNCH_MAX_VIDEOS}). باقي الملفات (${incoming.length - toAdd.length}) لم تُضَف ولم تُرفع.`, 'error');
+
+  const videoFiles = toAdd.filter((f) => !isLaunchImageFile(f));
+  const imageFiles = toAdd.filter(isLaunchImageFile);
+  const videoSlotKeys = nextLaunchSlotKeys(videoFiles.length, 'video');
+  const imageSlotKeys = nextLaunchSlotKeys(imageFiles.length, 'image');
+  const added = [
+    ...videoFiles.map((file, i) => ({ slotKey: videoSlotKeys[i], kind: 'video', file, name: file.name, size: file.size, duration: null, thumbnailUrl: null, contentHash: null, status: 'VALIDATING', progress: { sent: 0, total: file.size }, error: null, warning: null, dedupSlot: null, metaVideoId: null })),
+    ...imageFiles.map((file, i) => ({ slotKey: imageSlotKeys[i], kind: 'image', file, name: file.name, size: file.size, width: null, height: null, thumbnailUrl: null, contentHash: null, status: 'VALIDATING', progress: { sent: 0, total: file.size }, error: null, warning: null, dedupSlot: null, metaImageHash: null })),
+  ];
   launchState.videos.push(...added);
   launchState.videos.sort((a, b) => launchVideoSortKey(a) - launchVideoSortKey(b));
   renderLaunchStep();
 
   for (const entry of added) {
-    const [validation, hash] = await Promise.all([validateLaunchVideoFile(entry.file), computeLaunchContentHash(entry.file)]);
+    const isImage = entry.kind === 'image';
+    const [validation, hash] = await Promise.all([
+      isImage ? validateLaunchImageFile(entry.file) : validateLaunchVideoFile(entry.file),
+      computeLaunchContentHash(entry.file),
+    ]);
     entry.contentHash = hash;
     if (!validation.ok) {
       entry.status = 'FAILED'; entry.error = validation.reason;
     } else {
-      entry.duration = validation.duration; entry.thumbnailUrl = validation.thumbnailUrl; entry.warning = validation.warning || null;
-      const dup = launchState.videos.find((v) => v !== entry && v.contentHash === hash && v.status !== 'FAILED');
+      if (!isImage) entry.duration = validation.duration;
+      else { entry.width = validation.width; entry.height = validation.height; }
+      entry.thumbnailUrl = validation.thumbnailUrl; entry.warning = validation.warning || null;
+      const dup = launchState.videos.find((v) => v !== entry && v.kind === entry.kind && v.contentHash === hash && v.status !== 'FAILED');
       if (dup) entry.dedupSlot = dup.slotKey;
       entry.status = 'PENDING';
     }
@@ -5840,17 +5912,22 @@ async function processLaunchUploadQueue() {
   }
 }
 
+async function ensureLaunchJobStarted() {
+  if (!launchState.jobId) launchState.jobId = launchUUID();
+  if (!launchState.jobStarted) {
+    await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/start`, { adAccountId: launchState.adAccountId, adAccountName: launchState.adAccountName, productId: launchState.productId });
+    launchState.jobStarted = true;
+  }
+  saveLaunchSnapshot(); // jobId is now real on the server — persist it immediately so a refresh mid-upload can still find this job's videos/images
+}
+
 async function uploadLaunchVideo(entry) {
+  if (entry.kind === 'image') return uploadLaunchImage(entry);
   entry.status = 'UPLOADING'; entry.error = null; entry.progress = { sent: 0, total: entry.size };
   renderLaunchVideoCard(entry);
   let pollTimer = null;
   try {
-    if (!launchState.jobId) launchState.jobId = launchUUID();
-    if (!launchState.jobStarted) {
-      await api.post(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/start`, { adAccountId: launchState.adAccountId, adAccountName: launchState.adAccountName, productId: launchState.productId });
-      launchState.jobStarted = true;
-    }
-    saveLaunchSnapshot(); // jobId is now real on the server — persist it immediately so a refresh mid-upload can still find this job's videos
+    await ensureLaunchJobStarted();
     pollTimer = setInterval(async () => {
       try {
         const p = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/videos/${entry.slotKey}/progress`);
@@ -5878,6 +5955,28 @@ async function uploadLaunchVideo(entry) {
   }
 }
 
+/** Image counterpart — much simpler than the video path: Meta's /adimages call is one real POST with no resumable phases, so this is a single fetch with no progress polling (an image this small finishes before a poll tick would even matter). */
+async function uploadLaunchImage(entry) {
+  entry.status = 'UPLOADING'; entry.error = null; entry.progress = { sent: 0, total: entry.size };
+  renderLaunchVideoCard(entry);
+  try {
+    await ensureLaunchJobStarted();
+    const res = await fetch(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}/images/${entry.slotKey}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': entry.file.type || 'application/octet-stream', 'X-Filename': encodeURIComponent(entry.file.name), 'X-Content-Hash': entry.contentHash || '', 'X-Width': Number.isFinite(entry.width) ? String(entry.width) : '', 'X-Height': Number.isFinite(entry.height) ? String(entry.height) : '' },
+      body: entry.file,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.imageHash) throw new Error(data?.message || `فشل رفع الصورة (HTTP ${res.status}).`);
+    entry.status = 'UPLOADED'; entry.metaImageHash = data.imageHash; entry.progress = { sent: entry.size, total: entry.size };
+  } catch (e) {
+    entry.status = 'FAILED'; entry.error = e.message;
+  } finally {
+    renderLaunchVideoCard(entry);
+  }
+}
+
 /**
  * The ONE place that reloads this job's video rows from the backend —
  * amb_launch_video_assets, scoped to launchState.jobId (never a different/
@@ -5900,14 +5999,26 @@ async function syncLaunchVideosFromBackend({ force = false } = {}) {
   try {
     job = await api.get(`/api/ai-media-buyer/launch/jobs/${launchState.jobId}`);
     for (const v of job.videos || []) {
-      const existing = launchState.videos.find((x) => x.slotKey === v.slot_key);
+      const existing = launchState.videos.find((x) => x.slotKey === v.slot_key && (x.kind || 'video') === 'video');
       if (existing) {
         existing.status = v.status;
         existing.error = v.error;
         existing.metaVideoId = v.meta_video_id;
         if (!existing.duration && v.duration_seconds) existing.duration = v.duration_seconds;
       } else {
-        launchState.videos.push({ slotKey: v.slot_key, file: null, name: v.original_filename, size: v.size_bytes || 0, duration: v.duration_seconds, thumbnailUrl: null, contentHash: v.content_hash, status: v.status, progress: { sent: v.size_bytes || 0, total: v.size_bytes || 0 }, error: v.error, warning: null, dedupSlot: null, metaVideoId: v.meta_video_id, restored: true });
+        launchState.videos.push({ slotKey: v.slot_key, kind: 'video', file: null, name: v.original_filename, size: v.size_bytes || 0, duration: v.duration_seconds, thumbnailUrl: null, contentHash: v.content_hash, status: v.status, progress: { sent: v.size_bytes || 0, total: v.size_bytes || 0 }, error: v.error, warning: null, dedupSlot: null, metaVideoId: v.meta_video_id, restored: true });
+      }
+    }
+    for (const im of job.images || []) {
+      const existing = launchState.videos.find((x) => x.slotKey === im.slot_key && x.kind === 'image');
+      if (existing) {
+        existing.status = im.status;
+        existing.error = im.error;
+        existing.metaImageHash = im.meta_image_hash;
+        if (!existing.width && im.width) existing.width = im.width;
+        if (!existing.height && im.height) existing.height = im.height;
+      } else {
+        launchState.videos.push({ slotKey: im.slot_key, kind: 'image', file: null, name: im.original_filename, size: im.size_bytes || 0, width: im.width, height: im.height, thumbnailUrl: null, contentHash: im.content_hash, status: im.status, progress: { sent: im.size_bytes || 0, total: im.size_bytes || 0 }, error: im.error, warning: null, dedupSlot: null, metaImageHash: im.meta_image_hash, restored: true });
       }
     }
     launchState.videos.sort((a, b) => launchVideoSortKey(a) - launchVideoSortKey(b));
@@ -5938,12 +6049,12 @@ async function renderLaunchVideos(body) {
   body.innerHTML = `
     ${launchStepper()}
     <div class="amb-panel">
-      <div class="section-title" style="margin-top:0;">رفع الفيديوهات</div>
+      <div class="section-title" style="margin-top:0;">رفع الفيديوهات والصور</div>
       <div id="ambLaunchDrop" class="amb-empty" style="border:2px dashed var(--amb-border); border-radius:12px; padding:28px 10px; cursor:pointer;">
-        📤 اسحب وأسقط الفيديوهات هنا أو اضغط للاختيار — حتى ${LAUNCH_MAX_VIDEOS} فيديو
-        <div class="faint" style="font-size:11px; margin-top:6px;">الصيغ المدعومة من Meta: MP4, MOV, AVI, WMV, FLV, GIF وغيرها — حتى 4 جيجابايت لكل فيديو، مدة حتى 241 دقيقة.</div>
+        📤 اسحب وأسقط الفيديوهات أو الصور هنا أو اضغط للاختيار — حتى ${LAUNCH_MAX_VIDEOS} ملف
+        <div class="faint" style="font-size:11px; margin-top:6px;">فيديو: MP4, MOV, AVI, WMV, FLV, GIF وغيرها — حتى 4 جيجابايت، مدة حتى 241 دقيقة. صورة: JPG/PNG — حتى 8 ميجابايت.</div>
       </div>
-      <input type="file" id="ambLaunchFileInput" accept="video/*,.3g2,.3gp,.3gpp,.asf,.avi,.dat,.divx,.dv,.f4v,.flv,.gif,.m2ts,.m4v,.mkv,.mod,.mov,.mpe,.mpeg,.mpg,.mts,.nsv,.ogm,.ogv,.qt,.tod,.ts,.vob,.wmv" multiple style="display:none;" />
+      <input type="file" id="ambLaunchFileInput" accept="video/*,image/jpeg,image/png,.3g2,.3gp,.3gpp,.asf,.avi,.dat,.divx,.dv,.f4v,.flv,.gif,.m2ts,.m4v,.mkv,.mod,.mov,.mpe,.mpeg,.mpg,.mts,.nsv,.ogm,.ogv,.qt,.tod,.ts,.vob,.wmv,.jpg,.jpeg,.png" multiple style="display:none;" />
       <div id="ambLaunchProgressSummary" class="faint" style="font-size:12px; margin:12px 0;"></div>
       <div id="ambLaunchVideoList">${launchState.videos.map(launchVideoCardHtml).join('')}</div>
     </div>
@@ -6197,7 +6308,7 @@ async function renderLaunchReview(body) {
   const videoStats = summarizeLaunchVideoReadiness(launchState.videos);
   const videoReady = videoStats.total > 0 && videoStats.ready === videoStats.total;
   const videoLine = videoStats.total === 0
-    ? '🔴 لسه معملتش رفع أي فيديو'
+    ? '🔴 لسه معملتش رفع أي فيديو أو صورة'
     : videoStats.failed > 0
       ? `🔴 ${videoStats.ready}/${videoStats.total} جاهزة — ${videoStats.failed} فشل`
       : videoReady
@@ -6253,7 +6364,7 @@ async function renderLaunchReview(body) {
     ['وضع التشغيل والجدولة', scheduleLine],
     ['Customer lifecycle', '🟢 All audiences (existing_customer_budget_percentage: 100)'],
     ['نصوص وروابط الحملات', launchState.campaigns.every((c) => c.name?.trim() && c.websiteUrl?.trim())],
-    ['الفيديوهات', videoLine],
+    ['الفيديوهات والصور', videoLine],
   ];
   // Draft-saving never required videos (a draft can be saved incrementally
   // before any upload finishes) — only the non-video fields gate "حفظ

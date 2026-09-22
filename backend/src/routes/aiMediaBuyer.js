@@ -845,6 +845,76 @@ router.delete('/launch/jobs/:jobId/videos/:slotKey', requireRole('ADMIN'), async
   res.json(await launch.deleteVideoSlot({ jobId: req.params.jobId, slotKey: req.params.slotKey }));
 }));
 
+// Image upload — the "الفيديوهات" step's mixed creative pool (explicit
+// request: images alongside videos in the same dropzone, not a separate
+// step/table the wizard treats differently). Much simpler than the video
+// route: Meta's /adimages upload is one real POST, no resumable
+// start/transfer/finish phases — so this reads the whole (small, image-
+// sized) body into memory and returns a single JSON response, never NDJSON
+// progress lines like the video route needs for a multi-GB resumable
+// upload. Raw binary POST body, same convention as the video route.
+router.post('/launch/jobs/:jobId/images/:slotKey', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { jobId, slotKey } = req.params;
+  const originalFilename = decodeURIComponent(req.get('X-Filename') || slotKey);
+  const contentHash = req.get('X-Content-Hash') || null;
+  const fileSize = Number(req.get('Content-Length'));
+  const mimeType = req.get('Content-Type') || null;
+  const widthHeader = Number(req.get('X-Width'));
+  const heightHeader = Number(req.get('X-Height'));
+  const width = Number.isFinite(widthHeader) && widthHeader > 0 ? widthHeader : null;
+  const height = Number.isFinite(heightHeader) && heightHeader > 0 ? heightHeader : null;
+
+  const launch = await import('../services/amb/launchBuilder.js');
+  const videoUpload = await import('../services/amb/launchVideoUpload.js'); // requireLaunchToken() is generic, not video-specific
+  const { uploadAdImageBuffer } = await import('../services/metaGraphClient.js');
+
+  if (!Number.isFinite(fileSize) || fileSize <= 0) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'حجم الملف غير معروف — أعد المحاولة.' });
+  const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId } });
+  if (!job) return res.status(404).json({ error: 'NOT_FOUND', message: 'طلب الرفع غير موجود.' });
+
+  const { row: imageRow, duplicateOfSlotKey } = await launch.registerImageSlot({ jobId, slotKey, originalFilename, contentHash, sizeBytes: fileSize, mimeType, width, height });
+
+  // Idempotent short-circuit — already uploaded (e.g. a refreshed page retrying the same slot).
+  if (imageRow.status === 'UPLOADED' && imageRow.meta_image_hash) {
+    return res.status(201).json({ imageHash: imageRow.meta_image_hash, reused: true });
+  }
+
+  // Same file already uploaded under a different slot in this job — reuse its Meta image_hash, never re-upload the identical bytes.
+  if (duplicateOfSlotKey) {
+    const dup = await prisma.ambLaunchImageAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: duplicateOfSlotKey } } });
+    if (dup?.status === 'UPLOADED' && dup.meta_image_hash) {
+      await launch.markImageResult({ jobId, slotKey, status: 'UPLOADED', metaImageHash: dup.meta_image_hash });
+      return res.status(201).json({ imageHash: dup.meta_image_hash, reused: true, dedupedFrom: duplicateOfSlotKey });
+    }
+  }
+
+  let token;
+  try {
+    token = await videoUpload.requireLaunchToken();
+  } catch (e) {
+    await launch.markImageResult({ jobId, slotKey, status: 'FAILED', error: e.message }).catch(() => {});
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: e.message });
+  }
+
+  await launch.markImageResult({ jobId, slotKey, status: 'UPLOADING' }).catch(() => {});
+  try {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const buffer = Buffer.concat(chunks);
+    const { hash } = await uploadAdImageBuffer(token, job.ad_account_id, buffer);
+    await launch.markImageResult({ jobId, slotKey, status: 'UPLOADED', metaImageHash: hash });
+    res.status(201).json({ imageHash: hash });
+  } catch (err) {
+    await launch.markImageResult({ jobId, slotKey, status: 'FAILED', error: err.metaError?.message || err.message }).catch(() => {});
+    res.status(502).json({ error: 'META_ERROR', message: err.metaError?.message || err.message });
+  }
+}));
+
+router.delete('/launch/jobs/:jobId/images/:slotKey', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const launch = await import('../services/amb/launchBuilder.js');
+  res.json(await launch.deleteImageSlot({ jobId: req.params.jobId, slotKey: req.params.slotKey }));
+}));
+
 // Phase F — the FIRST real Meta write. Deliberately narrow: exactly one
 // Campaign -> one Ad Set -> one Creative (reusing an already-uploaded real
 // video) -> one Ad, everything created PAUSED. ADMIN-only, and gated
