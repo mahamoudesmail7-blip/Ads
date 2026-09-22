@@ -1060,10 +1060,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .assistant-input-row input[type="text"] {
   flex: 1;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 8px 14px;
-  font-size: 13.5px;
+  /* iOS Safari auto-zooms the whole page on focus for any input under
+     16px — live-reported: tapping the input on a real iPhone visibly
+     zoomed/cropped the entire panel. 16px is the minimum that avoids it. */
+  font-size: 16px;
   background: var(--bg);
   color: var(--text);
 }
