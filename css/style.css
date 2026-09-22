@@ -1121,7 +1121,53 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 .assistant-action-btn:disabled { opacity: 0.6; cursor: default; }
 
-.assistant-error { color: var(--red); }
+.assistant-error { color: var(--red); font-size: 12.5px; margin-top: 6px; }
+
+/* AI Media Buyer Operator — Task Card (Phase 2 Slice 1). Rendered inside a
+   normal assistant message bubble from a PREPARE-tier tool's real,
+   persisted AssistantTask — never invented progress or a "done" claim not
+   backed by this same real state. */
+.assistant-task-card {
+  border: 1px solid var(--border);
+  border-radius: var(--amb-radius-md);
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.assistant-task-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.assistant-task-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--gray-bg);
+  color: var(--gray);
+  white-space: nowrap;
+}
+.assistant-task-badge-ok { background: var(--green-bg); color: var(--green); }
+.assistant-task-badge-warn { background: var(--yellow-bg); color: var(--yellow); }
+.assistant-task-badge-err { background: var(--red-bg); color: var(--red); }
+.assistant-task-badge-muted { background: var(--gray-bg); color: var(--text-faint); }
+.assistant-task-card-body { font-size: 12.5px; line-height: 1.7; color: var(--text-dim); }
+.assistant-task-card-body b { color: var(--text); }
+
+.assistant-task-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.assistant-task-actions .assistant-action-btn { margin-top: 0; flex: 1; }
+.assistant-action-btn-secondary {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
 
 .assistant-image-preview {
   display: flex;

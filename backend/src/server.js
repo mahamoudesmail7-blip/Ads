@@ -48,6 +48,7 @@ import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
 import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
 import scaleCenterRoutes from './routes/scaleCenter.js';
+import assistantTasksRoutes from './routes/assistantTasks.js';
 import creativeFactoryRoutes from './routes/creativeFactory.js';
 import productMarketingRoutes from './routes/productMarketing.js';
 import aiUsageRoutes from './routes/aiUsage.js';
@@ -107,6 +108,7 @@ app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
 app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new module INSIDE AI Intelligence (see routes/aiMediaBuyer.js)
 app.use('/api/scale-center', scaleCenterRoutes); // 🚀 مركز التوسّع — Scale/Bump execution only, deliberately separate from AI Media Buyer's Decision Center (see routes/scaleCenter.js)
+app.use('/api/assistant-tasks', assistantTasksRoutes); // 🤖 AI Media Buyer Operator — Task Engine (Phase 2 Slice 1, see routes/assistantTasks.js)
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
 app.use('/api/product-marketing', productMarketingRoutes); // AI Product Marketing Center — "مركز التسويق الذكي للمنتج" (see routes/productMarketing.js)
 app.use('/api/ai-usage', aiUsageRoutes); // AI Gateway admin usage/cost dashboard + health check (see routes/aiUsage.js)

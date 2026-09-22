@@ -10,10 +10,10 @@ import * as UI from './ui-common.js';
 
 const STORAGE_POS_KEY = 'amb_assistant_pos_v1';
 const STORAGE_HISTORY_KEY = 'amb_assistant_history_v1';
+const STORAGE_OPEN_TASKS_KEY = 'amb_assistant_open_tasks_v1';
 const MAX_STORED_HISTORY = 20;
 const REPLY_LABELS = { STATUS: 'الحالة', 'WHAT HAPPENED': 'اللي حصل', DATA: 'البيانات', WHY: 'ليه', RECOMMENDATION: 'التوصية', ACTION: 'الإجراء', CONFIDENCE: 'مستوى الثقة' };
 const REPLY_PATTERN = /^(STATUS|WHAT HAPPENED|DATA|WHY|RECOMMENDATION|ACTION|CONFIDENCE):\s*(.*)$/;
-const ACTION_PROPOSAL_PATTERN = /^ACTION_PROPOSAL:\s*(\{.*\})\s*$/m;
 
 function escapeHtml(s) {
   return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? '');
@@ -51,16 +51,6 @@ function saveHistory(history) {
   try { localStorage.setItem(STORAGE_HISTORY_KEY, JSON.stringify(history.slice(-MAX_STORED_HISTORY))); } catch { /* private window / blocked storage — conversation just won't persist across reloads */ }
 }
 
-/** Strips a trailing `ACTION_PROPOSAL: {...}` line (if present/valid) from the visible text and returns it separately, so the button is rendered instead of raw JSON. */
-function extractActionProposal(text) {
-  const m = ACTION_PROPOSAL_PATTERN.exec(text);
-  if (!m) return { visibleText: text, proposal: null };
-  let proposal = null;
-  try { proposal = JSON.parse(m[1]); } catch { proposal = null; }
-  const visibleText = text.slice(0, m.index).trim();
-  return { visibleText: visibleText || text, proposal };
-}
-
 function renderReplyHtml(text) {
   const lines = text.split('\n');
   const structured = lines.some((l) => REPLY_PATTERN.test(l.trim()));
@@ -83,25 +73,113 @@ function renderReplyHtml(text) {
   return html;
 }
 
-function actionProposalHtml(proposal) {
-  if (!proposal || typeof proposal !== 'object') return '';
-  if (proposal.type === 'PREPARE_BUMP' && proposal.adSetId) {
-    const pct = Number(proposal.pct) || 25;
-    return `<button type="button" class="assistant-action-btn" data-proposal="${escapeAttr(JSON.stringify(proposal))}">⚡ جهّز زيادة ${pct}% لهذا الـ Ad Set</button>`;
+// --- Task Card (AI Media Buyer Operator, Phase 2 Slice 1) ---------------
+// Replaces the old ACTION_PROPOSAL trailing-text convention entirely: a
+// PREPARE-tier tool (prepare_bump/prepare_pause/prepare_resume) now returns
+// a real, persisted AssistantTask in the /chat response's `task` field, and
+// this renders it as a live card the human must explicitly approve — never
+// two competing "propose a write" mechanisms running side by side.
+const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف' };
+const TASK_STATUS_LABEL = {
+  PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
+  WAITING_FOR_APPROVAL: 'محتاج موافقتك', RUNNING: 'جاري التنفيذ...', VERIFYING: 'جاري تأكيد التنفيذ...',
+  COMPLETED: 'تم ✅', PARTIALLY_COMPLETED: 'تم — محتاج تأكيد يدوي ⚠️', FAILED: 'فشل ❌', CANCELLED: 'اتلغى', BLOCKED: 'متوقف',
+};
+const TASK_STATUS_CLASS = { COMPLETED: 'ok', PARTIALLY_COMPLETED: 'warn', FAILED: 'err', BLOCKED: 'warn', CANCELLED: 'muted' };
+const TASK_ACTIVE_STATUSES = ['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT', 'WAITING_FOR_APPROVAL', 'RUNNING', 'VERIFYING'];
+
+function taskCardBodyHtml(task) {
+  const p = task.preparedPayload || {};
+  const name = escapeHtml(task.entityName || p.adSetName || p.entityName || task.entityId || '—');
+  if (task.kind === 'BUMP') {
+    return `<div>الـ Ad Set: <b>${name}</b></div>
+      <div>الميزانية: ${p.currentBudget != null ? `${p.currentBudget} ج` : '—'} ← ${p.proposedBudget != null ? `${p.proposedBudget} ج` : '—'}${p.bumpPct != null ? ` (+${p.bumpPct}%)` : ''}</div>`;
   }
-  return '';
+  if (task.kind === 'PAUSE' || task.kind === 'RESUME') {
+    return `<div>${name}</div><div>الحالة: ${escapeHtml(p.currentStatus || '—')} ← ${escapeHtml(p.targetStatus || '—')}</div>`;
+  }
+  return `<div>${name}</div>`;
 }
 
-/** The one real write this bubble can ever trigger — calls the EXISTING /bump-prepare endpoint directly (no LLM tool in the loop), same as Scale Center's own "تجهيز الزيادة" button. Creates a PENDING AmbRecommendation, no Meta write. */
-async function handleActionProposal(proposal, btn) {
-  if (proposal.type !== 'PREPARE_BUMP') return;
-  btn.disabled = true;
-  btn.textContent = '...جاري التجهيز';
+function renderTaskCardHtml(task) {
+  const label = TASK_KIND_LABEL[task.kind] || task.kind;
+  const statusLabel = TASK_STATUS_LABEL[task.status] || task.status;
+  const cls = TASK_STATUS_CLASS[task.status] || '';
+  let actions = '';
+  if (task.status === 'WAITING_FOR_APPROVAL') {
+    actions = `<div class="assistant-task-actions">
+      <button type="button" class="assistant-action-btn" data-task-approve="${escapeAttr(task.taskUuid)}" data-approval-hash="${escapeAttr(task.approvalHash || '')}">✅ موافقة وتنفيذ</button>
+      <button type="button" class="assistant-action-btn assistant-action-btn-secondary" data-task-cancel="${escapeAttr(task.taskUuid)}">❌ إلغاء</button>
+    </div>`;
+  } else if (['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT'].includes(task.status)) {
+    actions = `<div class="assistant-task-actions"><button type="button" class="assistant-action-btn assistant-action-btn-secondary" data-task-cancel="${escapeAttr(task.taskUuid)}">❌ إلغاء</button></div>`;
+  }
+  const noteHtml = (task.error || task.blockedReason) ? `<div class="assistant-error">${escapeHtml(task.error || task.blockedReason)}</div>` : '';
+  return `<div class="assistant-task-card" data-task-uuid="${escapeAttr(task.taskUuid)}">
+    <div class="assistant-task-card-head"><b>${escapeHtml(label)}</b><span class="assistant-task-badge assistant-task-badge-${cls}">${escapeHtml(statusLabel)}</span></div>
+    <div class="assistant-task-card-body">${taskCardBodyHtml(task)}</div>
+    ${noteHtml}${actions}
+  </div>`;
+}
+
+function loadOpenTaskUuids() {
+  try { const raw = localStorage.getItem(STORAGE_OPEN_TASKS_KEY); const parsed = raw ? JSON.parse(raw) : []; return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+}
+function trackTaskOpenState(task) {
   try {
-    await api.post('/api/scale-center/bump-prepare', { adSetId: proposal.adSetId, pct: proposal.pct || 25 });
-    btn.textContent = '✅ اتجهّزت — راجعها في مركز التوسّع';
+    const set = new Set(loadOpenTaskUuids());
+    if (TASK_ACTIVE_STATUSES.includes(task.status)) set.add(task.taskUuid);
+    else set.delete(task.taskUuid);
+    localStorage.setItem(STORAGE_OPEN_TASKS_KEY, JSON.stringify([...set]));
+  } catch { /* per-viewer convenience only */ }
+}
+
+/** Replaces one task card's DOM in place (used after approve/cancel and each poll tick) — never re-renders the whole message list. */
+function updateTaskCardInPlace(messagesEl, task) {
+  trackTaskOpenState(task);
+  const el = messagesEl.querySelector(`.assistant-task-card[data-task-uuid="${task.taskUuid}"]`);
+  if (el) el.outerHTML = renderTaskCardHtml(task);
+}
+
+/** Polls GET /api/assistant-tasks/:taskUuid while RUNNING/VERIFYING, re-rendering the card each tick, landing on the real terminal state. Bounded so a stuck task can't poll forever. */
+async function pollTaskUntilSettled(messagesEl, taskUuid) {
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    let task;
+    try { ({ task } = await api.get(`/api/assistant-tasks/${taskUuid}`)); } catch { return; }
+    if (!task) return;
+    updateTaskCardInPlace(messagesEl, task);
+    if (!['RUNNING', 'VERIFYING'].includes(task.status)) return;
+  }
+}
+
+async function handleTaskApprove(messagesEl, btn) {
+  const taskUuid = btn.dataset.taskApprove;
+  const approvalHash = btn.dataset.approvalHash;
+  btn.disabled = true;
+  const card = messagesEl.querySelector(`.assistant-task-card[data-task-uuid="${taskUuid}"]`);
+  if (card) card.querySelectorAll('.assistant-action-btn').forEach((b) => { b.disabled = true; });
+  try {
+    const result = await api.post(`/api/assistant-tasks/${taskUuid}/approve`, { approvalHash });
+    if (result.task) updateTaskCardInPlace(messagesEl, result.task);
+    if (result.task && ['RUNNING', 'VERIFYING'].includes(result.task.status)) await pollTaskUntilSettled(messagesEl, taskUuid);
+    if (!result.ok && result.error === 'STALE_APPROVAL') {
+      // Task went back to PREPARING server-side — re-fetch to show the real current card instead of a stuck disabled button.
+      try { const fresh = await api.get(`/api/assistant-tasks/${taskUuid}`); if (fresh.task) updateTaskCardInPlace(messagesEl, fresh.task); } catch { /* leave as-is */ }
+    }
   } catch (err) {
-    btn.textContent = `⚠️ ${err.message || 'فشل التجهيز'}`;
+    if (card) card.querySelector('.assistant-error')?.remove();
+    if (card) card.insertAdjacentHTML('beforeend', `<div class="assistant-error">⚠️ ${escapeHtml(err.message || 'فشل التنفيذ')}</div>`);
+  }
+}
+
+async function handleTaskCancel(messagesEl, btn) {
+  const taskUuid = btn.dataset.taskCancel;
+  btn.disabled = true;
+  try {
+    const result = await api.post(`/api/assistant-tasks/${taskUuid}/cancel`, {});
+    if (result.task) updateTaskCardInPlace(messagesEl, result.task);
+  } catch (err) {
     btn.disabled = false;
   }
 }
@@ -182,6 +260,7 @@ export function mountAssistantBubble() {
 
   restorePosition(wrap);
   restoreConversation(messagesEl);
+  restoreOpenTasks(messagesEl);
 
   let open = false;
   const setOpen = (v) => {
@@ -228,11 +307,10 @@ export function mountAssistantBubble() {
   });
 
   messagesEl.addEventListener('click', async (e) => {
-    const btn = e.target.closest('.assistant-action-btn');
-    if (!btn) return;
-    let proposal;
-    try { proposal = JSON.parse(btn.dataset.proposal); } catch { return; }
-    await handleActionProposal(proposal, btn);
+    const approveBtn = e.target.closest('[data-task-approve]');
+    if (approveBtn) return handleTaskApprove(messagesEl, approveBtn);
+    const cancelBtn = e.target.closest('[data-task-cancel]');
+    if (cancelBtn) return handleTaskCancel(messagesEl, cancelBtn);
   });
 
   form.addEventListener('submit', async (e) => {
@@ -258,17 +336,20 @@ export function mountAssistantBubble() {
         image: imageToSend ? { base64: imageToSend.base64, mediaType: imageToSend.mediaType } : undefined,
       });
       const reply = result.reply || 'مفيش رد.';
-      const { visibleText, proposal } = extractActionProposal(reply);
       // Captured BEFORE mutating the placeholder's content — a user who
       // scrolled up to re-read earlier history while the reply was still
       // "جاري التفكير..." should not get yanked back down by it landing.
       const stick = isNearBottom(messagesEl);
       loadingEl.classList.remove('assistant-msg-thinking');
-      loadingEl.innerHTML = renderReplyHtml(visibleText) + actionProposalHtml(proposal);
+      loadingEl.innerHTML = renderReplyHtml(reply);
+      if (result.task) {
+        trackTaskOpenState(result.task);
+        loadingEl.insertAdjacentHTML('afterend', `<div class="assistant-msg assistant-msg-assistant">${renderTaskCardHtml(result.task)}</div>`);
+      }
       scrollToBottom(messagesEl, stick);
 
       history.push({ role: 'user', text });
-      history.push({ role: 'assistant', text: visibleText });
+      history.push({ role: 'assistant', text: reply });
       saveHistory(history);
     } catch (err) {
       const stick = isNearBottom(messagesEl);
@@ -306,10 +387,23 @@ function restoreConversation(messagesEl) {
   }
   for (const h of history.slice(-10)) {
     const el = addMessage(messagesEl, h.role, h.text);
-    if (h.role === 'assistant') {
-      const { visibleText, proposal } = extractActionProposal(h.text);
-      el.innerHTML = renderReplyHtml(visibleText) + actionProposalHtml(proposal);
-    }
+    if (h.role === 'assistant') el.innerHTML = renderReplyHtml(h.text);
+  }
+}
+
+/** Resumability: re-fetches any task that was still non-terminal when the page was last open (a real page refresh, not just a minimize) and re-renders its card — the concrete answer to "tasks survive page refresh" given chat history itself stays client-only. */
+async function restoreOpenTasks(messagesEl) {
+  const uuids = loadOpenTaskUuids();
+  if (!uuids.length) return;
+  for (const taskUuid of uuids) {
+    let task;
+    try { ({ task } = await api.get(`/api/assistant-tasks/${taskUuid}`)); } catch { continue; }
+    if (!task) continue;
+    trackTaskOpenState(task);
+    addMessage(messagesEl, 'assistant', '');
+    const el = messagesEl.lastElementChild;
+    el.innerHTML = renderTaskCardHtml(task);
+    if (['RUNNING', 'VERIFYING'].includes(task.status)) pollTaskUntilSettled(messagesEl, taskUuid);
   }
 }
 

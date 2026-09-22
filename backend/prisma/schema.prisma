@@ -65,6 +65,9 @@ model User {
   amb_launch_jobs_created        AmbLaunchJob[]                @relation("AmbLaunchCreator")
   amb_launch_jobs_approved       AmbLaunchJob[]                @relation("AmbLaunchApprover")
   amb_launch_audit_entries       AmbLaunchAudit[]              @relation("AmbLaunchAuditActor")
+  // AI Media Buyer Operator — Task Engine (Phase 2, Slice 1). Additive back-relations only.
+  assistant_tasks_created        AssistantTask[]               @relation("AssistantTaskCreator")
+  assistant_tasks_approved       AssistantTask[]               @relation("AssistantTaskApprover")
   // AI Creative Factory — additive back-relations only (no column change on `users`).
   cf_products_created            CfProduct[]                  @relation("CfProductCreator")
   cf_projects_created            CfProject[]                  @relation("CfProjectCreator")
@@ -1334,6 +1337,7 @@ model AmbRecommendation {
   updated_at DateTime @updatedAt
 
   actions AmbAction[]
+  assistant_tasks AssistantTask[]
 
   @@index([status])
   @@index([batch_id])
@@ -1371,12 +1375,21 @@ model AmbAction {
   meta_response_json String?
   meta_error         String?
 
+  // Verify-after-write (Task Engine, Phase 2 Slice 1) — a fresh re-read of
+  // the live entity after the Meta write, so a 200 from Meta is never
+  // silently treated as proof the change actually took effect. Nullable:
+  // every action executed before this column existed simply has no
+  // verification recorded, which is honest (not "verified false").
+  verified_at    DateTime?
+  verify_json    String?
+
   executed_by_id Int?
   executed_by    User?     @relation(fields: [executed_by_id], references: [id], onDelete: SetNull)
   created_at     DateTime  @default(now())
   executed_at    DateTime?
 
   results AmbActionResult[]
+  assistant_tasks AssistantTask[]
 
   @@index([execution_status])
   @@index([recommendation_id])
@@ -1416,6 +1429,61 @@ model AmbActionResult {
   @@unique([action_id, checkpoint])
   @@index([due_at])
   @@map("amb_action_results")
+}
+
+// AI Media Buyer Operator — Task Engine (Phase 2, Slice 1). One row per
+// chat-triggered write attempt (prepare → approve → execute → verify).
+// NEVER a second business system: the actual old/new values and Meta
+// responses stay on AmbRecommendation/AmbAction (via the two FKs below) —
+// this table only tracks WHICH chat-originated request is in flight and
+// what state it's in. FSM transitions are whitelisted in
+// services/assistantTasks/taskEngine.js's TASK_TRANSITIONS (same pattern as
+// AmbLaunchJob's JOB_TRANSITIONS); status/progress shape borrows CfJob.
+model AssistantTask {
+  id        Int    @id @default(autoincrement())
+  task_uuid String @unique @default(uuid()) // the id exposed to chat/Task Card — never the raw autoincrement id
+
+  user_id Int
+  user    User @relation("AssistantTaskCreator", fields: [user_id], references: [id], onDelete: Cascade)
+
+  kind      String // BUMP | PAUSE | RESUME (Slice 1); LAUNCH_CAMPAIGN | SCALE_WINNER | ... later slices
+  tool_name String // exact WRITE_TOOL_DEFINITIONS name that created this row — audit/debug
+
+  // Conflict-detection + display key. Meta id (campaign/adset/ad) this task targets.
+  entity_id   String?
+  entity_type String? // campaign | adset | ad
+  entity_name String?
+
+  amb_recommendation_id Int?
+  amb_recommendation    AmbRecommendation? @relation(fields: [amb_recommendation_id], references: [id], onDelete: SetNull)
+  amb_action_id         Int?
+  amb_action            AmbAction?         @relation(fields: [amb_action_id], references: [id], onDelete: SetNull)
+
+  // PLANNED | PREPARING | WAITING_FOR_INPUT | WAITING_FOR_APPROVAL | RUNNING
+  // | VERIFYING | COMPLETED | PARTIALLY_COMPLETED | FAILED | CANCELLED | BLOCKED
+  status String @default("PLANNED")
+
+  input_json            String? // the tool-call args that created this task (chat-parsed)
+  prepared_payload_json String? // the exact plan shown to the human for approval — set on entering WAITING_FOR_APPROVAL
+  approval_hash         String? // sha256(taskUuid+toolName+entityId+actionType+preparedPayload+amb_recommendation.updated_at)
+  approved_at           DateTime?
+  approved_by_id        Int?
+  approved_by           User?     @relation("AssistantTaskApprover", fields: [approved_by_id], references: [id], onDelete: SetNull)
+
+  progress       Int     @default(0) // 0-100, coarse (PREPARING=10, RUNNING=50, VERIFYING=80, terminal=100)
+  error          String?
+  blocked_reason String? // conflict-detection / rule-engine block text, when status=BLOCKED
+
+  conversation_ref String? // opaque client-generated chat-session id, so a page refresh can re-associate the Task Card
+  heartbeat_at      DateTime? // updated on every FSM transition
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([status])
+  @@index([entity_id])
+  @@index([user_id])
+  @@map("assistant_tasks")
 }
 
 // AI Suggested Decisions — "Winner → Scale" lifecycle ONLY. Winner cards are

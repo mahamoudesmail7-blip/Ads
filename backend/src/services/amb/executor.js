@@ -75,6 +75,24 @@ async function loadLiveEntity(token, entityId, currency) {
 }
 
 /**
+ * Verify-after-write (Task Engine, Phase 2 Slice 1) — re-reads the live
+ * entity after a real Meta write and confirms the expected value actually
+ * took effect, retrying the read once after a short delay for Meta-side
+ * propagation lag. Never itself writes anything.
+ */
+async function verifyWrite(token, entityId, currency, expected, actionType) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 2000));
+    const live = await loadLiveEntity(token, entityId, currency);
+    const matches = (actionType === 'PAUSE' || actionType === 'RESUME')
+      ? live.status === expected.status
+      : Math.abs((live.budgetMajor ?? -1) - expected.budget) < 1; // 1 EGP tolerance for minor-unit rounding
+    if (matches) return { verified: true, live };
+    if (attempt === 1) return { verified: false, live };
+  }
+}
+
+/**
  * PREVIEW / dry-run of the full execution path for one recommendation —
  * loads the live Meta entity, runs the materiality check + full rule-engine
  * revalidation, and builds the EXACT Meta request that WOULD be sent — but
@@ -292,6 +310,16 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
       metaResponse = await setEntityBudget(token, rec.entity_id, minorArgs);
     }
 
+    // 4.5 Verify-after-write: a 200 from Meta is never treated as proof the
+    // value actually changed — re-read the live entity (the same
+    // loadLiveEntity() already used for pre-write revalidation) and confirm.
+    // Meta can lag a few seconds, so retry the read once before deciding.
+    // execution_status stays EXECUTED either way (Meta DID accept the
+    // write) — verified:false only means the immediate re-read couldn't
+    // confirm it yet, surfaced honestly via verify_json + a WARNING alert
+    // rather than silently upgraded to a full confirmation.
+    const verify = await verifyWrite(token, rec.entity_id, currency, newValue, rec.action_type);
+
     await prisma.ambAction.update({
       where: { id: action.id },
       data: {
@@ -299,9 +327,21 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
         executed_at: new Date(),
         revalidation_json: JSON.stringify({ material: false, drift, checks: revalidation.checks }),
         meta_response_json: JSON.stringify(metaResponse).slice(0, 4000),
+        verified_at: new Date(),
+        verify_json: JSON.stringify(verify).slice(0, 4000),
       },
     });
     await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { status: 'EXECUTED' } });
+
+    if (!verify.verified) {
+      await raiseAlert({
+        severity: 'WARNING', category: 'EXECUTION',
+        title: `تعذر تأكيد التنفيذ فورًا: ${rec.entity_name}`,
+        message: 'Meta قبلت الطلب لكن القراءة الفورية بعده لسه بتُظهر القيمة القديمة — قد يكون تأخير مؤقت من Meta.',
+        adAccountId: rec.ad_account_id, entityId: rec.entity_id, recommendationId: rec.id,
+        dedupeKey: `verify-miss:${rec.id}`,
+      }).catch(() => {});
+    }
 
     // 5. Schedule outcome-evaluation checkpoints.
     const now = Date.now();
