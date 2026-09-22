@@ -19,6 +19,14 @@ import { isRelevantRow, buildEntities } from './productAnalysis.js';
 import { classifyEntities } from './decisionEngine.js';
 import { computeTruePerformance } from './truePerformance.js';
 import { resolveDateWindows, loadMetricsInRange, loadThresholds, resolveDecisionWindow } from '../routes/adsIntelligence.js';
+import { getProductPerformance } from './amb/productPerformance.js';
+import { buildProductDecisionPackage } from './amb/productDecision.js';
+import { codCountsByGovernorate } from './amb/codOrders.js';
+import { creativeIntelForProduct } from './amb/creativeIntel.js';
+import { getScaleCenterProduct, getScaleCenterProductAudience, previewBumpForAdSet } from './amb/scaleCenter.js';
+import { resolveWindow } from './amb/metricsEngine.js';
+import { getAmbSettings } from './amb/settings.js';
+import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
 
@@ -192,6 +200,116 @@ export async function get_inventory_status() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AMB (🧠 مركز القرار الذكي / 🚀 مركز التوسّع) tools — `get_amb_*`. These wrap
+// the ACTIVELY-MAINTAINED, dataState-honest product pipeline in
+// services/amb/*, which is a SEPARATE, independently-computed system from
+// the 6 tools above (those wrap campaignAnalysis.js/decisionEngine.js/
+// truePerformance.js/adsIntelligence.js). The two pipelines can disagree on
+// CPA/classification for the same product because neither reads the other's
+// numbers — never blend them in one answer. For any question about a
+// specific product's real ad performance, Decision Center, Scale Center, or
+// Launch Builder, prefer these over get_product_profit/get_campaign_performance
+// (see SYSTEM_PROMPT_AMB_NOTE below, appended by routes/aiAssistant.js).
+async function resolveAmbAdAccountId() {
+  const connection = await getConnection();
+  return connection?.selected_ad_account_id || null;
+}
+
+export async function get_amb_product_performance({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const w = resolveWindow(window || 'last7');
+    const data = await getProductPerformance({ productId: Number(productId), from: w.from, to: w.to });
+    return { ok: true, hasData: data?.meta?.dataState === 'AVAILABLE' || data?.easyOrders?.dataState === 'AVAILABLE', window: w, ...data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function get_amb_product_decision({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId });
+    return {
+      ok: true,
+      hasData: true,
+      productId: pkg.productId,
+      productName: pkg.productName,
+      window: pkg.window,
+      decision: pkg.decision,
+      confidence: pkg.confidence,
+      reason: pkg.reason,
+      health: pkg.health,
+      dataQuality: pkg.dataQuality,
+      businessConversionRate: pkg.businessConversionRate,
+      winners: pkg.winners,
+      losers: pkg.losers,
+      proposedChange: pkg.proposedChange,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function get_amb_audience_breakdown({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const data = await getScaleCenterProductAudience({ productId: Number(productId), windowName: window || 'last7' });
+    return { ok: true, hasData: !!data.available, ...data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function get_amb_governorate_breakdown({ productId, window, storeId } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const w = resolveWindow(window || 'last7');
+    const rows = await codCountsByGovernorate({ productId: Number(productId), storeId: storeId || null, from: w.from, to: w.to });
+    return { ok: true, hasData: rows.length > 0, window: w, governorates: rows.sort((a, b) => b.orders - a.orders).slice(0, 30) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function get_amb_creative_intel({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: Number(productId) }, select: { id: true } });
+    if (!ambProduct) return { ok: true, hasData: false, message: 'المنتج ده مش متتبع في مركز القرار الذكي لسه.' };
+    const adAccountId = await resolveAmbAdAccountId();
+    if (!adAccountId) return { ok: true, hasData: false, message: 'مفيش حساب إعلاني متصل.' };
+    const settings = await getAmbSettings();
+    const data = await creativeIntelForProduct({ adAccountId, windowName: window || 'last7', settings, ambProductId: ambProduct.id, compareToPrior: false });
+    return { ok: true, hasData: !!data.dataAvailable, ...data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function get_amb_scale_center_product({ productId, window, storeId } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const row = await getScaleCenterProduct({ productId: Number(productId), storeId: storeId || null, windowName: window || 'last7' });
+    return { ok: true, hasData: true, ...row };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function get_amb_bump_preview({ adSetId, pct } = {}) {
+  try {
+    if (!adSetId) return { ok: false, error: 'adSetId مطلوب.' };
+    const data = await previewBumpForAdSet({ adSetId: String(adSetId), pct: pct || 25 });
+    return { ok: true, hasData: true, ...data };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // Anthropic tool-use schema definitions — kept next to the implementations
 // so a new tool can never be registered without its matching function
 // (see TOOL_IMPLS below, and the equality check the assistant route runs
@@ -252,6 +370,92 @@ export const TOOL_DEFINITIONS = [
     description: 'يجيب حالة المخزون الحقيقية — المنتجات اللي مخزونها وصل أو أقل من الحد الأدنى.',
     input_schema: { type: 'object', properties: {} },
   },
+  {
+    name: 'get_amb_product_performance',
+    description: '[مركز القرار الذكي / مركز التوسّع] أداء منتج واحد الحقيقي من Meta + Easy Orders (صرف، CPA، LPV، أوردرات) ونسبة التحويل الصحيحة (Purchase Results×100/LPV). استخدم ده بدل get_product_profit لأي سؤال عن أداء منتج معين في صفحات مركز القرار/مركز التوسّع.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_amb_product_decision',
+    description: '[مركز القرار الذكي] الحزمة الكاملة لقرار منتج: التصنيف (SCALE_CANDIDATE/KEEP_TESTING/PAUSE_CANDIDATE/...)، سبب القرار، بوابة جودة البيانات (VERIFIED/WARNING/BLOCKED)، الكرياتيف الفايز/الخاسر، فرصة تعديل السعر. استخدم ده لأسئلة "هل المنتج ده جاهز للتوسع؟" أو "ليه المنتج ده متوقف؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_amb_audience_breakdown',
+    description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_amb_governorate_breakdown',
+    description: '[مركز التوسّع] توزيع الأوردرات الحقيقي (Easy Orders) لمنتج معين على المحافظات — عدد الأوردرات، المؤكد، المتسلم، المرتجع لكل محافظة.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+        storeId: { type: 'string', description: 'فلترة على متجر معين، اختياري' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_amb_creative_intel',
+    description: '[مركز القرار الذكي] تحليل الكرياتيف الحقيقي لمنتج معين — أي فيديو/صورة هو الفايز الحالي، الأداء مقارنة بالباقي.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_amb_scale_center_product',
+    description: '[مركز التوسّع] صف مركز التوسّع الكامل لمنتج معين — الأداء + القرار + جودة البيانات + أعلى 3 محافظات + هل مؤهل لـ Scale أو Bump ولية.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+        storeId: { type: 'string', description: 'فلترة على متجر معين، اختياري' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_amb_bump_preview',
+    description: '[مركز التوسّع] معاينة زيادة ميزانية Ad Set حقيقي عند نسبة معينة — الميزانية الحالية والمقترحة، الـ CPA، هل فيه فترة تهدئة (cooldown) تمنع الزيادة دلوقتي. قراءة فقط — لا يغيّر أي ميزانية فعليًا.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        adSetId: { type: 'string', description: 'رقم Ad Set في Meta' },
+        pct: { type: 'number', description: 'نسبة الزيادة المطلوبة، افتراضي 25' },
+      },
+      required: ['adSetId'],
+    },
+  },
 ];
 
 export const TOOL_IMPLS = {
@@ -261,4 +465,19 @@ export const TOOL_IMPLS = {
   get_order_metrics,
   get_lost_orders_summary,
   get_inventory_status,
+  get_amb_product_performance,
+  get_amb_product_decision,
+  get_amb_audience_breakdown,
+  get_amb_governorate_breakdown,
+  get_amb_creative_intel,
+  get_amb_scale_center_product,
+  get_amb_bump_preview,
 };
+
+// A dedicated tool subset + prompt note for the GLOBAL assistant bubble
+// (routes/aiAssistant.js's /chat, called from every page) — keeps the
+// original ai-command-center.js's tool list untouched (still every tool,
+// covering both pipelines for its "AI E-Commerce Operating System" scope)
+// while the new global bubble leads with the AMB layer, since it's mounted
+// on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];

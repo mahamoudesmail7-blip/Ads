@@ -165,7 +165,7 @@ export async function generateText({ feature, tier = TIERS.ROUTINE, system, mess
  * untouched) — converted to the Responses API's function-tool shape
  * internally.
  */
-export async function runTools({ feature, tier = TIERS.BALANCED, system, userMessage, tools, executeTool, maxTurns = 6, maxTokens = 1536, onToolCall, userId }) {
+export async function runTools({ feature, tier = TIERS.BALANCED, system, userMessage, tools, executeTool, maxTurns = 6, maxTokens = 1536, onToolCall, userId, history }) {
   if (!feature) throw new Error('aiGateway.runTools: feature مطلوب.');
   const model = modelForTier(tier);
   const budget = await checkBudget();
@@ -177,7 +177,7 @@ export async function runTools({ feature, tier = TIERS.BALANCED, system, userMes
   }
   const startedAt = Date.now();
   try {
-    const { text, toolCalls, requestId } = await callOpenAiAgentTurn({ system, userMessage, tools, executeTool, maxTurns, maxTokens, model, onToolCall });
+    const { text, toolCalls, requestId } = await callOpenAiAgentTurn({ system, userMessage, tools, executeTool, maxTurns, maxTokens, model, onToolCall, history });
     await logUsage({ feature, tier, model, status: 'SUCCESS', requestId, userId, durationMs: Date.now() - startedAt });
     return { text, toolCalls };
   } catch (err) {

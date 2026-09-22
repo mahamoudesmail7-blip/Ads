@@ -234,6 +234,7 @@ export function mountAmbMobileNav(title, navId = 'ambNav') {
   overlay.onclick = close;
   nav?.addEventListener('click', (e) => { if (e.target.closest('a, button')) close(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  mountAssistantBubble();
 }
 
 /**
@@ -261,6 +262,7 @@ export async function renderSidebar(activeKey) {
     mountMobileChrome(NAV_ITEMS, activeKey, null);
     const { mountThemeToggle } = await import('./theme.js');
     mountThemeToggle();
+    mountAssistantBubble();
     return;
   }
 
@@ -292,6 +294,8 @@ export async function renderSidebar(activeKey) {
       // Non-critical — the sidebar itself already rendered successfully; a failed badge count just stays hidden.
     }
   }
+
+  mountAssistantBubble();
 }
 
 /**
@@ -412,6 +416,26 @@ export function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s ?? '';
   return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// 🤖 مساعد الميديا باير — thin re-exports so every page can reach the
+// floating assistant bubble (js/assistant.js) through the same ui-common.js
+// import it already has, without every page needing its own import of
+// assistant.js. Dynamically imported (like theme.js above) so a page that
+// never calls these never pays for the extra module.
+// ---------------------------------------------------------------------------
+export async function setAssistantContext(ctx) {
+  const mod = await import('./assistant.js');
+  mod.setAssistantContext(ctx);
+}
+export async function getAssistantContext() {
+  const mod = await import('./assistant.js');
+  return mod.getAssistantContext();
+}
+export async function mountAssistantBubble() {
+  const mod = await import('./assistant.js');
+  mod.mountAssistantBubble();
 }
 
 // ---------------------------------------------------------------------------

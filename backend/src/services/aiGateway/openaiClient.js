@@ -214,11 +214,16 @@ export async function callOpenAiText({ system, messages, maxTokens = 1024, model
  * contract ({text, toolCalls}); internally drives the Responses API's
  * function-calling loop instead of Anthropic's tool_use blocks.
  */
-export async function callOpenAiAgentTurn({ system, userMessage, tools, executeTool, maxTurns = 6, maxTokens = 1536, model, onToolCall }) {
+export async function callOpenAiAgentTurn({ system, userMessage, tools, executeTool, maxTurns = 6, maxTokens = 1536, model, onToolCall, history }) {
   const apiKey = apiKeyOrThrow();
   const oaTools = toResponsesTools(tools);
   const toolCalls = [];
-  let input = [{ role: 'user', content: toResponsesContent(userMessage) }];
+  // `history` (prior {role,content} turns, same Block shape as userMessage)
+  // is optional — every existing single-message caller (ai-command-center.js
+  // via routes/aiAssistant.js) keeps working unchanged with no history.
+  let input = Array.isArray(history) && history.length
+    ? [...toResponsesInput(history), { role: 'user', content: toResponsesContent(userMessage) }]
+    : [{ role: 'user', content: toResponsesContent(userMessage) }];
   let previousResponseId = null;
 
   for (let turn = 0; turn < maxTurns; turn++) {

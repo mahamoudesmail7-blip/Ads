@@ -34,7 +34,25 @@ CONFIDENCE: [عالية / متوسطة / منخفضة — حسب كفاية ال
 
 4. لو السؤال بسيط أو محادثة عادية، رد عادي من غير الشكل ده.
 5. ممنوع تدّعي إنك نفّذت أي Action حقيقي (زي إيقاف حملة أو زيادة ميزانية) — النظام في المرحلة دي للقراءة والتحليل بس، مفيش Tools تنفيذية لسه. لو المستخدم طلب تنفيذ Action، قوله بصراحة إن ده مش متاح لسه في النظام.
-6. لو Tool رجع hasData:false أو ok:false، قول للمستخدم بصراحة إن مفيش بيانات كفاية بدل ما تحاول تجاوب من غير بيانات.`;
+6. لو Tool رجع hasData:false أو ok:false، قول للمستخدم بصراحة إن مفيش بيانات كفاية بدل ما تحاول تجاوب من غير بيانات.
+7. فيه نوعين من الـ Tools: (أ) get_campaign_performance/get_decisions_summary/get_product_profit/get_order_metrics بتحسب من نظام تحليل عام للحملات، و(ب) get_amb_* (مركز القرار الذكي / مركز التوسّع) بتحسب من نظام تتبع منتج بمنتج منفصل وأدق. لو السؤال عن منتج معين وعن Scale/Bump/مركز القرار الذكي/مركز التوسّع، استخدم get_amb_* دايمًا وميزتها إنها الأحدث والأدق — ممنوع تخلط أرقام من النظامين في نفس الإجابة.
+8. لو حابب تقترح تجهيز زيادة ميزانية (Bump) بعد ما تجيب get_amb_bump_preview وتلاقيه مناسب، ضيف سطر واحد بالظبط في آخر ردك بالشكل ده (JSON صالح، من غير أي نص زيادة فيه): ACTION_PROPOSAL: {"type":"PREPARE_BUMP","adSetId":"...","pct":25} — ده مجرد اقتراح يظهر زرار للمستخدم يوافق عليه بنفسه؛ إنت مش بتنفذ أي حاجة فعليًا وممنوع تدّعي إنك نفذتها.`;
+
+/** Small, structured, per-page context the frontend bubble sends — appended to the system prompt as a clearly-labeled block, NEVER merged into the user's own message text, so the model can never confuse "what the user typed" with "what page they're on". */
+function contextBlock(context) {
+  if (!context || typeof context !== 'object') return '';
+  const safe = JSON.stringify(context).slice(0, 1000);
+  return `\n\nسياق الصفحة الحالية (بيانات حقيقية من الواجهة، مش من المستخدم): ${safe}`;
+}
+
+const MAX_HISTORY_TURNS = 12;
+function sanitizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+    .slice(-MAX_HISTORY_TURNS)
+    .map((m) => ({ role: m.role, content: m.content.trim().slice(0, 4000) }));
+}
 
 async function logAudit({ actorId, kind, action = 'READ', toolName = null, input, output, success = true, error = null }) {
   try {
@@ -59,20 +77,34 @@ async function logAudit({ actorId, kind, action = 'READ', toolName = null, input
 router.post(
   '/chat',
   asyncRoute(async (req, res) => {
-    const { message } = req.body || {};
+    // Legacy shape: {message}. New (floating global bubble) shape adds
+    // optional history/context/image — all backward-compatible, so
+    // js/ai-command-center.js's existing {message}-only calls are untouched.
+    const { message, history, context, image } = req.body || {};
     if (!message || typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'اكتب سؤال أو طلب الأول.' });
     }
 
-    logger.info('AI_REQUEST_STARTED', { actorId: req.user.id, messageLength: message.trim().length });
+    const safeHistory = sanitizeHistory(history);
+    const system = SYSTEM_PROMPT + contextBlock(context);
+    let userMessage = message.trim();
+    if (image && typeof image.base64 === 'string' && image.base64) {
+      userMessage = [
+        { type: 'text', text: message.trim() },
+        { type: 'image', source: { type: 'base64', media_type: image.mediaType || 'image/jpeg', data: image.base64 } },
+      ];
+    }
+
+    logger.info('AI_REQUEST_STARTED', { actorId: req.user.id, messageLength: message.trim().length, historyTurns: safeHistory.length, hasImage: !!image, hasContext: !!context });
 
     let result;
     try {
       result = await runTools({
         feature: 'assistant.chat',
         tier: TIERS.BALANCED, // interactive multi-tool reasoning over real business data
-        system: SYSTEM_PROMPT,
-        userMessage: message.trim(),
+        system,
+        userMessage,
+        history: safeHistory,
         tools: TOOL_DEFINITIONS,
         userId: req.user.id,
         executeTool: async (name, input) => {
@@ -85,13 +117,13 @@ router.post(
       });
     } catch (err) {
       logger.error('AI_REQUEST_FAILED', { actorId: req.user.id, message: err.message });
-      await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message }, success: false, error: err.message });
+      await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message, context }, success: false, error: err.message });
       return res.status(400).json({ error: 'AI_ERROR', message: err.message });
     }
 
     logger.info('AI_RESPONSE_COMPLETED', { actorId: req.user.id, toolCallCount: result.toolCalls.length, replyLength: result.text.length });
 
-    await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message }, output: { toolCalls: result.toolCalls.map((c) => c.name), textLength: result.text.length } });
+    await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message, context }, output: { toolCalls: result.toolCalls.map((c) => c.name), textLength: result.text.length } });
 
     res.json({ reply: result.text, toolCalls: result.toolCalls.map((c) => c.name) });
   })

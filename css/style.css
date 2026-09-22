@@ -904,3 +904,174 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .eo-bar-label { width: 60px; font-size: 12px; }
 }
 
+/* ---------------------------------------------------------------------------
+   🤖 مساعد الميديا باير — floating global assistant bubble (js/assistant.js).
+   Mounted via ui-common.js's mountAssistantBubble() on every authenticated
+   page. #ambAssistantRoot is `position:fixed` and its own drag logic
+   (assistant.js's wireDrag) only ever sets `right`/`bottom` inline — never
+   `left` — so it must never gain a `left` value here that would fight that.
+--------------------------------------------------------------------------- */
+#ambAssistantRoot {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 2000;
+}
+
+.assistant-bubble {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: var(--sidebar-active-bg);
+  color: #fff;
+  font-size: 26px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  user-select: none;
+}
+.assistant-bubble:active { transform: scale(0.96); }
+
+.assistant-panel[hidden] { display: none; }
+.assistant-panel {
+  position: absolute;
+  bottom: 68px;
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  height: min(520px, calc(100vh - 120px));
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.assistant-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--sidebar-active-bg);
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.assistant-icon-btn {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  line-height: 1;
+}
+.assistant-icon-btn:hover { background: rgba(255,255,255,0.15); }
+
+.assistant-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg);
+}
+
+.assistant-msg {
+  max-width: 88%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.assistant-msg-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 3px;
+}
+.assistant-msg-assistant {
+  align-self: flex-start;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-bottom-left-radius: 3px;
+}
+.assistant-msg.assistant-loading { opacity: 0.6; }
+.assistant-msg-image {
+  max-width: 160px;
+  border-radius: 8px;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.assistant-reply-card {
+  border-inline-start: 3px solid var(--accent);
+  padding-inline-start: 8px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.assistant-action-btn {
+  display: block;
+  margin-top: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.assistant-action-btn:disabled { opacity: 0.6; cursor: default; }
+
+.assistant-error { color: var(--red); }
+
+.assistant-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+
+.assistant-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.assistant-input-row input[type="text"] {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13.5px;
+  background: var(--bg);
+  color: var(--text);
+}
+.assistant-upload-btn { cursor: pointer; }
+.assistant-send-btn { color: var(--accent); font-size: 18px; }
+
+@media (max-width: 480px) {
+  .assistant-panel { width: calc(100vw - 24px); height: calc(100vh - 140px); right: -12px; }
+  #ambAssistantRoot { right: 14px; bottom: 14px; }
+}
+

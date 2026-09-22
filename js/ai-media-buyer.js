@@ -1784,6 +1784,7 @@ async function dcFetchDossier(panel, productId, opts = {}) {
     dossierEl.innerHTML = `<div class="amb-dossier amb-empty">⚠️ ${E(err.message)}</div>`;
     return;
   }
+  UI.setAssistantContext({ page: 'decision-center', productId, productName: dcState.dossier?.productName || null, window: dcState.dossier?.window?.label || null });
   dcRenderDossierInto(dossierEl, panel);
 }
 
@@ -3106,6 +3107,7 @@ async function scLoadProducts(panel) {
       api.get('/api/scale-center/totals', scWindowParams()),
     ]);
     scState.products = r.products; scState.meta = r; scState.totals = totals;
+    UI.setAssistantContext({ page: 'scale-center', window: r.window?.label || null, productCount: totals?.productCount ?? null });
   } catch (err) {
     scState.error = err.message || 'تعذّر تحميل مركز التوسّع.';
   }
@@ -3305,6 +3307,7 @@ function scToggleDetails(p) {
   if (!el) return;
   if (el.dataset.open === '1') { el.innerHTML = ''; el.dataset.open = '0'; return; }
   el.dataset.open = '1';
+  UI.setAssistantContext({ page: 'scale-center', productId: p.productId, productName: p.productName, window: p.window?.label || null });
   const checksHtml = (p.dataQuality?.checks || []).map((c) => `<div>${c.ok ? '✅' : (c.severity === 'CRITICAL' ? '⛔' : '⚠️')} ${E(c.name)}${c.reason ? ` — ${E(c.reason)}` : ''}</div>`).join('');
   const campaignsHtml = (p.campaigns || []).length
     ? `<div class="sc-table-wrap"><table class="sc-detail-table"><thead><tr><th>الحملة</th><th>ID</th><th>مصدر الربط</th></tr></thead><tbody>${p.campaigns.map((c) => `<tr><td>${E(c.name)}</td><td class="faint">${E(c.id)}</td><td>${c.via === 'LAUNCH' ? 'رفع كامبين' : 'ربط يدوي/AI'}</td></tr>`).join('')}</tbody></table></div>`
