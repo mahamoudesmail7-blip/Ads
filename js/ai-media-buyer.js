@@ -3233,12 +3233,16 @@ function scProductRowHtml(p) {
   const cr = p.businessConversionRate;
   const crText = cr?.dataState === 'AVAILABLE' ? fmtPct(cr.value) : '—';
   const m = p.meta || {}; const eo = p.easyOrders || {};
+  const campaignNames = (p.campaigns || []).map((c) => c.name).join(' · ');
   return `
   <div class="amb-panel sc-row" id="scRow-${p.productId}" style="margin-bottom:12px;">
     <div class="sc-row-head">
       <div class="sc-row-title">
         ${p.image ? `<img src="${E(p.image)}" class="sc-thumb" />` : '<div class="sc-thumb sc-thumb-empty">📦</div>'}
-        <div><div style="font-weight:800;">${E(p.productName)}</div><div class="faint" style="font-size:11px;">#${p.productId}</div></div>
+        <div>
+          <div style="font-weight:800;">${E(p.productName)}</div>
+          <div class="faint" style="font-size:11px;">#${p.productId}${campaignNames ? ` · ${E(campaignNames)}` : ' · مفيش حملة مرتبطة'}</div>
+        </div>
       </div>
       ${badge(stateLabel, tone)}
     </div>
@@ -3249,8 +3253,10 @@ function scProductRowHtml(p) {
         <div class="sc-metric-grid">
           <div>Spend: ${fmtEGP(m.spend)}</div><div>Purchases: ${fmtNum(m.purchases)}</div><div>CPA: ${m.cpa != null ? fmtEGP(m.cpa) : '—'}</div>
           <div>Impressions: ${fmtNum(m.impressions)}</div><div>CTR: ${m.ctr != null ? fmtPct(m.ctr) : '—'}</div><div>CPC: ${m.cpc != null ? fmtEGP(m.cpc) : '—'}</div>
-          <div>LPV: ${fmtNum(m.landingPageViews)}</div><div style="font-weight:700;">CR: ${crText}</div>
+          <div>CPM: ${m.cpm != null ? fmtEGP(m.cpm) : '—'}</div><div>LPV: ${fmtNum(m.landingPageViews)}</div>
+          <div style="font-weight:700;">CR: ${crText}${cr?.suspicious ? ' ⚠️' : ''}</div>
         </div>
+        ${cr?.suspicious ? `<div class="faint" style="font-size:11px; margin-top:6px; color:#c07a00;">⚠️ ${E(cr.suspiciousReason)}</div>` : ''}
       </div>
       <div class="sc-block">
         <div class="section-title" style="margin-top:0; font-size:12px;">Easy Orders — مبيعات المنتج</div>
@@ -3266,24 +3272,51 @@ function scProductRowHtml(p) {
 
     <div class="toolbar" style="margin-top:10px;">
       <button class="amb-btn sm" data-sc-details="${p.productId}">عرض التفاصيل</button>
-      <button class="amb-btn sm primary" data-sc-scale="${p.productId}" ${p.eligibility.canScale ? '' : 'disabled'}>🟢 Scale (اسكيل)</button>
-      <button class="amb-btn sm blue" data-sc-bump="${p.productId}" ${p.eligibility.canBump ? '' : 'disabled'}>🔵 Bump (بامب)</button>
+      <button class="amb-btn sm primary ${p.eligibility.canScale ? '' : 'sc-inert'}" data-sc-scale="${p.productId}">🟢 Scale (اسكيل)</button>
+      <button class="amb-btn sm blue ${p.eligibility.canBump ? '' : 'sc-inert'}" data-sc-bump="${p.productId}">🔵 Bump (بامب)</button>
     </div>
     <div id="scBumpPanel-${p.productId}"></div>
+    <div id="scDetailsPanel-${p.productId}"></div>
   </div>`;
+}
+
+function scGovFullRow(g) {
+  return `<tr><td>${E(g.governorate)}</td><td>${fmtNum(g.orders)}</td><td>${fmtNum(g.confirmed)}</td><td>${fmtNum(g.delivered)}</td><td>${fmtNum(g.returned)}</td><td>${E(g.status || '—')}</td></tr>`;
+}
+
+/** Real, full detail view — every field getScaleCenterProduct() already returns but the compact row doesn't show: every real linked campaign, the FULL governorate breakdown (not just top 3), every data-quality check (not just failures), and the real Bump ad-set evaluation. Toggle in place, never a separate page — nothing here is re-fetched, it's the exact same row data already loaded. */
+function scToggleDetails(p) {
+  const el = $(`scDetailsPanel-${p.productId}`);
+  if (!el) return;
+  if (el.dataset.open === '1') { el.innerHTML = ''; el.dataset.open = '0'; return; }
+  el.dataset.open = '1';
+  const checksHtml = (p.dataQuality?.checks || []).map((c) => `<div>${c.ok ? '✅' : (c.severity === 'CRITICAL' ? '⛔' : '⚠️')} ${E(c.name)}${c.reason ? ` — ${E(c.reason)}` : ''}</div>`).join('');
+  const campaignsHtml = (p.campaigns || []).length
+    ? `<table class="sc-detail-table"><thead><tr><th>الحملة</th><th>ID</th><th>مصدر الربط</th></tr></thead><tbody>${p.campaigns.map((c) => `<tr><td>${E(c.name)}</td><td class="faint">${E(c.id)}</td><td>${c.via === 'LAUNCH' ? 'رفع كامبين' : 'ربط يدوي/AI'}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="faint">مفيش حملة مرتبطة.</div>';
+  const govHtml = (p.governoratesAll || []).length
+    ? `<table class="sc-detail-table"><thead><tr><th>المحافظة</th><th>طلبات</th><th>مؤكد</th><th>تسليم</th><th>مرتجع</th><th>الحالة</th></tr></thead><tbody>${p.governoratesAll.map(scGovFullRow).join('')}</tbody></table>`
+    : '<div class="faint">مفيش بيانات محافظات كافية.</div>';
+  const bumpHtml = (p.bump?.adSets || []).length
+    ? p.bump.adSets.map((a) => `<div class="sc-adset-row">Ad Set: <b>${E(a.adSetName)}</b> (${E(a.campaignName)}) — ميزانية ${fmtEGP(a.currentBudget)}، CPA ${a.cpa != null ? fmtEGP(a.cpa) : '—'}، الحالة: ${E(a.verdict)}${a.verdictReason ? ` — ${E(a.verdictReason)}` : ''}</div>`).join('')
+    : `<div class="faint">${E(p.bump?.reason || 'مفيش Ad Set قابل للتقييم.')}</div>`;
+  el.innerHTML = `
+    <div class="sc-details-box">
+      <div class="section-title" style="margin-top:0;">الحملات المرتبطة</div>${campaignsHtml}
+      <div class="section-title">بوابة جودة البيانات (${E(p.dataQuality?.status || '—')})</div>${checksHtml}
+      <div class="section-title">كل المحافظات</div>${govHtml}
+      <div class="section-title">تقييم Bump على مستوى الـ Ad Sets</div>${bumpHtml}
+    </div>`;
 }
 
 function scWireProductRow(panel, p) {
   const row = $(`scRow-${p.productId}`);
   if (!row) return;
-  row.querySelector('[data-sc-details]').onclick = () => {
-    location.hash = `decisions`;
-    setTimeout(() => UI.toast(`افتح المنتج #${p.productId} في مركز القرار الذكي للتشخيص الكامل.`), 50);
-  };
+  row.querySelector('[data-sc-details]').onclick = () => scToggleDetails(p);
   const scaleBtn = row.querySelector('[data-sc-scale]');
-  if (scaleBtn && p.eligibility.canScale) scaleBtn.onclick = () => scRunScale(p);
+  if (scaleBtn) scaleBtn.onclick = () => { if (p.eligibility.canScale) scRunScale(p); else UI.toast(p.eligibility.reasons?.[0] || 'المنتج ده مش مؤهل للتوسع دلوقتي.', 'error'); };
   const bumpBtn = row.querySelector('[data-sc-bump]');
-  if (bumpBtn && p.eligibility.canBump) bumpBtn.onclick = () => scOpenBumpPanel(p);
+  if (bumpBtn) bumpBtn.onclick = () => { if (p.eligibility.canBump) scOpenBumpPanel(p); else UI.toast(p.bump?.reason || 'مفيش Ad Set مؤهل لزيادة الميزانية دلوقتي.', 'error'); };
 }
 
 /** Real reuse of the EXISTING product-decision → approve → execution-plan → execute pipeline (the exact same one مركز القرار الذكي's Action Plan already uses) — never a second Scale execution path. Stops before any real Meta write; hands off to the real Launch Builder as a paused draft. */

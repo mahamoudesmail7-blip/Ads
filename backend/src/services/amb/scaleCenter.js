@@ -117,12 +117,28 @@ async function resolveBumpStateForProduct({ productId, adAccountId, campaignIds,
   return { canBump: anyBumpable, reason: anyBumpable ? null : (evaluated[0]?.cooldownReason || evaluated[0]?.verdictReason || 'الأداء الحالي مش مؤهل لزيادة ميزانية دلوقتي.'), adSets: evaluated };
 }
 
-function toRow(pkg, perf, { storeId, image, adAccountId, bumpState }) {
+// A CR (Orders x 100 / LPV) above this is almost certainly NOT a real
+// customer conversion rate for e-commerce — it is a signal the denominator
+// (Meta Landing Page Views) is under-counted (a common real pixel/attribution
+// gap) and/or the numerator includes Easy Orders rows this window's ads
+// never actually drove (no deterministic ad-click-to-order key exists — see
+// productPerformance.js's own header comment). Never hidden or silently
+// "corrected" — the real ordersNumerator/lpvDenominator are always exposed
+// so the number can be audited, exactly like a real user flagged live.
+const CR_SUSPICIOUS_THRESHOLD = 25;
+
+function govRow(g) {
+  return { governorate: g.segment, orders: g.orders, confirmed: g.confirmed, delivered: g.delivered, returned: g.returned, status: g.classification || null, evidence: g.evidence || null };
+}
+
+function toRow(pkg, perf, { storeId, image, adAccountId, bumpState, campaigns, campaignNames }) {
   const gov = pkg.segmentIntel?.governorates?.table || [];
   const eligibility = deriveScaleCenterEligibility({
     decision: pkg.decision, dataQuality: pkg.dataQuality,
     canBump: bumpState.canBump, bumpBlockedReason: bumpState.reason,
   });
+  const cr = pkg.businessConversionRate;
+  const crSuspicious = cr?.dataState === 'AVAILABLE' && (cr.value > CR_SUSPICIOUS_THRESHOLD || cr.lpvDenominator < 50);
   return {
     productId: pkg.productId, productName: pkg.productName, storeId: storeId || null, image: image || null, adAccountId: adAccountId || null,
     window: pkg.window,
@@ -132,9 +148,11 @@ function toRow(pkg, perf, { storeId, image, adAccountId, bumpState }) {
     // that drops impressions/dataState, so it is never used for display here.
     meta: perf.meta,
     easyOrders: perf.easyOrders,
-    businessConversionRate: pkg.businessConversionRate,
+    businessConversionRate: { ...cr, suspicious: crSuspicious, suspiciousReason: crSuspicious ? `العينة صغيرة أو غير موثوقة إحصائيًا (${cr.ordersNumerator} أوردر Easy Orders ÷ ${cr.lpvDenominator} LPV من Meta) — النسبة دي أعلى من المعتاد بكتير، غالبًا لأن LPV مش بيتسجل كامل (فجوة في الـ Pixel) أو لأن جزء من الأوردرات دي مش فعليًا جاي من نفس الإعلانات في نفس الفترة. راجع تفاصيل الأوردرات قبل ما تعتمد الرقم ده في قرار.` : null },
     dataQuality: pkg.dataQuality,
-    governoratesTop3: gov.slice(0, 3).map((g) => ({ governorate: g.segment, orders: g.orders, confirmed: g.confirmed, delivered: g.delivered, status: g.classification || null })),
+    campaigns: (campaigns || []).map((c) => ({ id: c.campaignId, name: campaignNames?.get(c.campaignId) || c.campaignId, via: c.via })),
+    governoratesTop3: gov.slice(0, 3).map(govRow),
+    governoratesAll: gov.map(govRow),
     bump: bumpState,
     eligibility,
     generatedAt: pkg.generatedAt,
@@ -157,8 +175,20 @@ export async function getScaleCenterProduct({ productId, storeId, windowName, fr
   ]);
   const campaignIds = campaigns.map((c) => c.campaignId);
   const resolvedAdAccountId = adAccountId || campaigns[0]?.adAccountId || null;
-  const bumpState = await resolveBumpStateForProduct({ productId: pid, adAccountId: resolvedAdAccountId, campaignIds, settings });
-  return toRow(pkg, perf, { storeId: storeId || null, image: images.get(pid) || null, adAccountId: resolvedAdAccountId, bumpState });
+  const [bumpState, campaignNames] = await Promise.all([
+    resolveBumpStateForProduct({ productId: pid, adAccountId: resolvedAdAccountId, campaignIds, settings }),
+    resolveCampaignNames(campaignIds),
+  ]);
+  return toRow(pkg, perf, { storeId: storeId || null, image: images.get(pid) || null, adAccountId: resolvedAdAccountId, bumpState, campaigns, campaignNames });
+}
+
+/** Real campaign names for display (e.g. "Anti-suffocation _ scale") — a small, targeted DB read, never a second source of truth (the ids themselves already come from resolveProductCampaigns()). */
+async function resolveCampaignNames(campaignIds) {
+  if (!campaignIds.length) return new Map();
+  const rows = await prisma.metaPerformanceSnapshot.findMany({
+    where: { campaign_id: { in: campaignIds } }, distinct: ['campaign_id'], select: { campaign_id: true, campaign_name: true },
+  }).catch(() => []);
+  return new Map(rows.map((r) => [r.campaign_id, r.campaign_name]));
 }
 
 /**
