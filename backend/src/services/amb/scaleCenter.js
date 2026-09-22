@@ -49,7 +49,17 @@ function resolveScaleWindow({ windowName, from, to }) {
  * mapping only — same pattern as productActionPlan.js's own relabeling of
  * PRODUCT_DECISIONS for the Action Plan UI. Never a second scoring engine.
  */
-function deriveScaleCenterEligibility({ decision, dataQuality, canBump, bumpBlockedReason }) {
+// `reason`/`evidence` are decideProductAction()'s OWN explanation for why
+// this product is KEEP_TESTING/AUDIENCE_TEST/PAUSE_CANDIDATE/etc — the real
+// reason Scale is blocked. `bumpBlockedReason` is a SEPARATE, Bump-specific
+// fact (e.g. "no active ABO ad set") that must never be reused as the Scale
+// explanation — it was, until 2026-09-22, which made every non-eligible
+// product's Scale button show the Bump reason even when Bump was never the
+// question (reported live: clicking Scale on any product showed "مفيش Ad
+// Set نشط بميزانية ABO..." regardless of why Scale itself was blocked). The
+// Bump button already reads its own blocked reason straight from
+// `bump.reason` in js/ai-media-buyer.js — it does not need it duplicated here.
+function deriveScaleCenterEligibility({ decision, dataQuality, canBump, reason, evidence }) {
   const reasons = [];
   if (dataQuality?.status === 'DECISION_BLOCKED_DATA_QUALITY') {
     return { state: 'DATA_QUALITY_BLOCKED', canScale: false, canBump: false, reasons: dataQuality.criticalFailures.map((c) => c.reason) };
@@ -61,12 +71,12 @@ function deriveScaleCenterEligibility({ decision, dataQuality, canBump, bumpBloc
   }
   if (canBump) return { state: 'ELIGIBLE_FOR_BUMP', canScale: false, canBump: true, reasons: ['أداء Ad Set الحالي بيستاهل زيادة ميزانية.'] };
   if (decision === 'INSUFFICIENT_DATA' || dataQuality?.status === 'DATA_QUALITY_WARNING') {
-    return { state: 'NEEDS_MORE_DATA', canScale: false, canBump: false, reasons: [dataQuality?.warnings?.[0]?.reason || 'البيانات لسه غير كافية لقرار موثوق.'] };
+    return { state: 'NEEDS_MORE_DATA', canScale: false, canBump: false, reasons: [dataQuality?.warnings?.[0]?.reason || reason || 'البيانات لسه غير كافية لقرار موثوق.'] };
   }
   if (['KEEP_TESTING', 'AUDIENCE_TEST', 'GEO_TEST', 'NEW_CREATIVE_TEST', 'OFFER_TEST', 'LANDING_PAGE_FIX'].includes(decision)) {
-    return { state: 'MONITORING', canScale: false, canBump: false, reasons: [bumpBlockedReason].filter(Boolean) };
+    return { state: 'MONITORING', canScale: false, canBump: false, reasons: [evidence || reason || 'الأداء لسه تحت المراقبة — مش مؤهل للتوسع دلوقتي.'] };
   }
-  return { state: 'NOT_ELIGIBLE', canScale: false, canBump: false, reasons: [bumpBlockedReason].filter(Boolean) };
+  return { state: 'NOT_ELIGIBLE', canScale: false, canBump: false, reasons: [evidence || reason || 'المنتج مش مؤهل للتوسع دلوقتي.'] };
 }
 
 /** Real ABO ad-set-level bump eligibility for one product's own resolved campaigns — same primitives budgetBumpOrchestrator.js already uses, just evaluated on-demand instead of by the 30-min scheduler, and against the product's OWN campaigns only. */
@@ -138,7 +148,7 @@ function toRow(pkg, perf, { storeId, image, adAccountId, bumpState, campaigns, c
   const gov = pkg.segmentIntel?.governorates?.table || [];
   const eligibility = deriveScaleCenterEligibility({
     decision: pkg.decision, dataQuality: pkg.dataQuality,
-    canBump: bumpState.canBump, bumpBlockedReason: bumpState.reason,
+    canBump: bumpState.canBump, reason: pkg.reason, evidence: pkg.evidence,
   });
   const cr = pkg.businessConversionRate;
   const crLowSample = cr?.dataState === 'AVAILABLE' && (cr.lpvDenominator < CR_MIN_RELIABLE_LPV || cr.resultsNumerator < CR_MIN_RELIABLE_RESULTS);
