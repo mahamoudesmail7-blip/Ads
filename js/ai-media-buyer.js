@@ -3250,7 +3250,10 @@ function scProductRowHtml(p) {
   <div class="amb-panel sc-row" id="scRow-${p.productId}" style="margin-bottom:12px;">
     <div class="sc-row-head">
       <div class="sc-row-title">
-        ${p.image ? `<img src="${E(p.image)}" class="sc-thumb" />` : '<div class="sc-thumb sc-thumb-empty">📦</div>'}
+        <div class="sc-thumb-wrap" data-sc-thumb="${p.productId}" title="اضغط لرفع صورة المنتج">
+          ${p.image ? `<img src="${E(p.image)}" class="sc-thumb" />` : '<div class="sc-thumb sc-thumb-empty">📦</div>'}
+        </div>
+        <input type="file" data-sc-thumb-input="${p.productId}" accept="image/*" style="display:none;" />
         <div>
           <div style="font-weight:800;">${E(p.productName)}</div>
           <div class="faint" style="font-size:11px;">#${p.productId}${campaignNames ? ` · ${E(campaignNames)}` : ' · مفيش حملة مرتبطة'}</div>
@@ -3329,6 +3332,29 @@ function scWireProductRow(panel, p) {
   if (scaleBtn) scaleBtn.onclick = () => { if (p.eligibility.canScale) scRunScale(p); else UI.toast(p.eligibility.reasons?.[0] || 'المنتج ده مش مؤهل للتوسع دلوقتي.', 'error'); };
   const bumpBtn = row.querySelector('[data-sc-bump]');
   if (bumpBtn) bumpBtn.onclick = () => { if (p.eligibility.canBump) scOpenBumpPanel(p); else UI.toast(p.bump?.reason || 'مفيش Ad Set مؤهل لزيادة الميزانية دلوقتي.', 'error'); };
+  const thumbWrap = row.querySelector('[data-sc-thumb]');
+  const thumbInput = row.querySelector('[data-sc-thumb-input]');
+  if (thumbWrap && thumbInput) {
+    thumbWrap.onclick = () => thumbInput.click();
+    thumbInput.onchange = () => scUploadProductImage(p, thumbInput.files?.[0]);
+  }
+}
+
+/** Manual image upload for one product — the fallback path when EasyOrders' own catalog can't supply a real photo automatically (rate-limited, wrong store, no name match). Raw binary POST, same convention as the video uploader. */
+async function scUploadProductImage(p, file) {
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { UI.toast('لازم تختار صورة.', 'error'); return; }
+  try {
+    const res = await fetch(`/api/ai-media-buyer/products/by-catalog/${p.productId}/manual-image`, {
+      method: 'POST', credentials: 'include', headers: { 'Content-Type': file.type }, body: file,
+    });
+    const j = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(j?.message || `فشل رفع الصورة (HTTP ${res.status}).`);
+    p.image = j.imageUrl + `?t=${Date.now()}`; // cache-bust so the just-uploaded image shows immediately, not a stale 404
+    const thumbWrap = $(`scRow-${p.productId}`)?.querySelector('[data-sc-thumb]');
+    if (thumbWrap) thumbWrap.innerHTML = `<img src="${E(p.image)}" class="sc-thumb" />`;
+    UI.toast('✅ اتحفظت الصورة');
+  } catch (err) { UI.toast(err.message, 'error'); }
 }
 
 /** Real reuse of the EXISTING product-decision → approve → execution-plan → execute pipeline (the exact same one مركز القرار الذكي's Action Plan already uses) — never a second Scale execution path. Stops before any real Meta write; hands off to the real Launch Builder as a paused draft. */

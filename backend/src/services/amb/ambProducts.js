@@ -313,4 +313,49 @@ export async function resolveProductImage(ambProductId) {
   return { none: true };
 }
 
+const MANUAL_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const MANUAL_IMAGE_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+function manualImageBlobKey(catalogProductId) { return `amb-product-image/${catalogProductId}`; }
+
+/**
+ * Manual image upload — for a product whose real photo can't be pulled
+ * automatically right now (e.g. EasyOrders' /products catalog endpoint was
+ * rate-limited for both stores when this was added, confirmed live via
+ * GET /api/product-marketing/stores/connections). Stored the SAME way
+ * Creative Factory stores generated images (cf_blobs — durable, no external
+ * bucket needed) rather than inventing a second storage mechanism, but with
+ * a DETERMINISTIC key (one row per catalog productId, upserted) instead of
+ * a random one, since there is exactly one manual image per product, never
+ * a gallery. Keyed by the CATALOG product id (not AmbProduct.id) because
+ * every caller that already has a product on screen (Scale Center included)
+ * has the catalog id readily available and would otherwise need an extra
+ * round trip just to find/create the AmbProduct row first. Still writes
+ * through to AmbProduct.image_url (creating the AmbProduct via
+ * createFromCatalogProduct if it doesn't exist yet) so the existing
+ * resolveProductImages()/<img src> path needs no changes at all.
+ */
+export async function setManualProductImage(catalogProductId, buffer, mimeType, userId) {
+  const pid = Number(catalogProductId);
+  if (!Buffer.isBuffer(buffer) || !buffer.length) { const e = new Error('لا توجد بيانات صورة.'); e.status = 400; throw e; }
+  if (buffer.length > MANUAL_IMAGE_MAX_BYTES) { const e = new Error('حجم الصورة أكبر من الحد الأقصى (8 ميجابايت).'); e.status = 400; throw e; }
+  const mime = MANUAL_IMAGE_MIME[mimeType] ? mimeType : 'image/png';
+  const key = manualImageBlobKey(pid);
+  await prisma.cfBlob.upsert({
+    where: { key },
+    create: { key, data: buffer, mime, bytes: buffer.length },
+    update: { data: buffer, mime, bytes: buffer.length },
+  });
+  const imageUrl = `/api/ai-media-buyer/products/by-catalog/${pid}/manual-image`;
+  const amb = await createFromCatalogProduct(pid, userId);
+  await prisma.ambProduct.update({ where: { id: amb.id }, data: { image_url: imageUrl } });
+  return { imageUrl };
+}
+
+/** Serves back what setManualProductImage() stored, or {none:true}. */
+export async function getManualProductImage(catalogProductId) {
+  const row = await prisma.cfBlob.findUnique({ where: { key: manualImageBlobKey(Number(catalogProductId)) } });
+  if (!row) return { none: true };
+  return { data: Buffer.from(row.data), contentType: row.mime };
+}
+
 export { serialize as serializeAmbProduct };

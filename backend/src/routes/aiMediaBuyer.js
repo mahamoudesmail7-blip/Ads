@@ -116,6 +116,28 @@ router.get('/products/:id/image', asyncRoute(async (req, res) => {
   res.status(404).end();
 }));
 
+// Manual image upload/serve — the fallback for when EasyOrders' catalog
+// can't be reached automatically (rate-limited, wrong store, no match).
+// Raw binary POST body (same convention as the video upload route), never
+// multipart — this codebase has no streaming multipart parser. Keyed by the
+// CATALOG product id (not AmbProduct.id) — every caller with a product on
+// screen already has this id, no extra lookup needed.
+router.post('/products/by-catalog/:productId/manual-image', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const buffer = Buffer.concat(chunks);
+  const result = await products.setManualProductImage(req.params.productId, buffer, req.get('Content-Type'), req.user.id);
+  res.status(201).json(result);
+}));
+
+router.get('/products/by-catalog/:productId/manual-image', asyncRoute(async (req, res) => {
+  const r = await products.getManualProductImage(req.params.productId);
+  if (r.none) return res.status(404).end();
+  res.set('Content-Type', r.contentType || 'image/png');
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.send(r.data);
+}));
+
 router.post('/products', asyncRoute(async (req, res) => res.status(201).json(await products.createProduct(req.body || {}, req.user.id))));
 
 router.post('/products/from-catalog/:productId', asyncRoute(async (req, res) => {
