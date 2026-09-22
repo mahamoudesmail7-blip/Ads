@@ -150,7 +150,7 @@ export function classifyCodSegment(row, { minOrders = 10, globalConfirmationRate
 }
 
 const RANK = { PROVEN_WINNER: 3, PROMISING: 2, INSUFFICIENT_DATA: 1, PROVEN_WEAK: 0 };
-function pickBestSegment(rows) {
+export function pickBestSegment(rows) {
   const eligible = rows.filter((r) => r.classification === 'PROVEN_WINNER' || r.classification === 'PROMISING');
   if (!eligible.length) return null;
   eligible.sort((a, b) => RANK[b.classification] - RANK[a.classification] || (b.orders ?? b.purchases ?? 0) - (a.orders ?? a.purchases ?? 0));

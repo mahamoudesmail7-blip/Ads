@@ -25,6 +25,7 @@ import { logger } from '../../logger.js';
 import { resolveWindow, addDaysISO, entityWindowMetrics } from './metricsEngine.js';
 import { computeDiagnosis, diagnoseFunnelBottleneck } from './productMarketingScoring.js';
 import { codCountsForProduct, codCountsByGovernorate } from './codOrders.js';
+import { cachedMetaFetch } from '../metaAssetCache.js';
 
 const MIN_COD_SAMPLE = 10; // mirrors codOrders.js's observedRatesForProduct() convention
 
@@ -52,7 +53,17 @@ function emptyEasyOrdersBlock(dataState) {
  * Never campaign-name matching — that stays historical-review-only.
  * Returns [{ campaignId, adAccountId, via: 'LAUNCH'|'MAPPING' }], deduped by campaignId (LAUNCH wins on collision).
  */
-export async function resolveProductCampaigns(productId) {
+// Same rationale as metricsEngine.js's entityWindowMetrics cache: this
+// product's real campaign links get re-resolved several times within one
+// Scale Center listing pass (buildProductDecisionPackage's current + prior
+// window, plus this page's own extra call for the raw meta block) — a
+// short cache collapses that into one real DB round trip per product per
+// listing, never a staleness risk beyond the mapping's own real sync cycle.
+const PRODUCT_CAMPAIGNS_TTL_MS = 45 * 1000;
+export async function resolveProductCampaigns(productId, { force = false } = {}) {
+  return cachedMetaFetch(`resolveProductCampaigns:${productId}`, () => _resolveProductCampaignsUncached(productId), { ttlMs: PRODUCT_CAMPAIGNS_TTL_MS, force });
+}
+async function _resolveProductCampaignsUncached(productId) {
   const [launchCampaigns, ambProduct] = await Promise.all([
     prisma.ambLaunchCampaign.findMany({
       where: { job: { product_id: productId }, meta_campaign_id: { not: null } },

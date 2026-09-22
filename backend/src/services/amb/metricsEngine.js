@@ -12,6 +12,7 @@
 // (entity, today) row.
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma.js';
+import { cachedMetaFetch } from '../metaAssetCache.js';
 
 const LEVEL_ID_FIELD = { campaign: 'campaign_id', adset: 'adset_id', ad: 'ad_id' };
 const DIR_THRESHOLD = 0.05; // ±5% => UP / DOWN, else FLAT
@@ -194,7 +195,24 @@ export function aggregateRows(dayRows) {
  * a plain read on spend + purchases (thresholds passed by the caller from
  * settings) — STRONG / MODERATE / WEAK.
  */
-export async function entityWindowMetrics({ level, from, to, adAccountId }, { minSpend = 150, minPurchases = 5 } = {}) {
+// Scale Center Phase 1 — a real production measurement showed listing 20
+// products took 40s+ because MANY products under the same ad account each
+// independently re-ran the IDENTICAL (level, from, to, adAccountId) query
+// (this data reads OUR OWN already-synced meta_performance_snapshots table,
+// never live Meta, so a short cache is purely a local-cost saving, never a
+// staleness risk beyond the sync cycle itself). Reuses the SAME in-process
+// cache/de-dup helper metaGraphClient.js already relies on for Meta asset
+// lists — never a second cache implementation. TTL kept short (45s): long
+// enough to collapse one page's worth of redundant per-product calls,
+// short enough that a manual "تحديث البيانات الآن" a minute later sees fresh
+// rows without needing an explicit invalidation path.
+const ENTITY_METRICS_TTL_MS = 45 * 1000;
+export async function entityWindowMetrics({ level, from, to, adAccountId }, opts = {}) {
+  const { minSpend = 150, minPurchases = 5, force = false } = opts;
+  const key = `entityWindowMetrics:${level}:${from}:${to}:${adAccountId}:${minSpend}:${minPurchases}`;
+  return cachedMetaFetch(key, () => _entityWindowMetricsUncached({ level, from, to, adAccountId }, { minSpend, minPurchases }), { ttlMs: ENTITY_METRICS_TTL_MS, force });
+}
+async function _entityWindowMetricsUncached({ level, from, to, adAccountId }, { minSpend = 150, minPurchases = 5 } = {}) {
   const rows = await loadSnapshots({ level, from, to, adAccountId });
   const byEntity = latestPerDayPerEntity(rows, level);
   const out = new Map();

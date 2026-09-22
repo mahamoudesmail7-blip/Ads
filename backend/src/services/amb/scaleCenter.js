@@ -11,13 +11,62 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { resolveWindow, entityWindowMetrics } from './metricsEngine.js';
-import { buildProductDecisionPackage } from './productDecision.js';
-import { getProductPerformance, resolveProductCampaigns } from './productPerformance.js';
+import { decideProductAction, detectPriceTestOpportunity } from './productDecision.js';
+import { getProductDiagnosis, resolveProductCampaigns } from './productPerformance.js';
+import { computeDataQualityGate } from './dataQualityGate.js';
+import { classifyCodSegment, pickBestSegment } from './segmentIntel.js';
 import { discoverRelevantProductIds, resolveProductImages } from './productDiscovery.js';
 import { getConnection } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
 import { evaluateAdSetForBump, resolveAdSetLifecycleState, computeBumpedBudget } from './budgetBumpEngine.js';
 import { bumpSettingsFrom, latestBumpActionFor, bumpsInLast24h, persistBumpRecommendation } from './budgetBumpOrchestrator.js';
+
+/**
+ * A real production measurement showed the full product-decision pipeline
+ * (buildProductDecisionPackage -> segmentIntelForProduct) spends most of its
+ * wall-clock time on a Meta Graph API audience-breakdown call (age/gender/
+ * country insights) that Scale Center never displays — this page only shows
+ * governorates, which come from codCountsByGovernorate() (a local DB read,
+ * zero Meta calls). So this composes the SAME real functions
+ * (getProductDiagnosis, computeDataQualityGate, decideProductAction,
+ * detectPriceTestOpportunity, classifyCodSegment) buildProductDecisionPackage
+ * itself uses, minus the one piece (segmentIntelForProduct's Meta fetch) this
+ * page has no use for — never a second scoring engine, never a different
+ * verdict for the same product+window than مركز القرار الذكي would show.
+ */
+function classifyGovernorateRows(rows) {
+  const totalOrders = rows.reduce((s, r) => s + (r.orders || 0), 0);
+  const totalConfirmed = rows.reduce((s, r) => s + (r.confirmed || 0), 0);
+  const globalConfirmationRate = totalOrders > 0 ? totalConfirmed / totalOrders : null;
+  const table = rows.map((r) => ({
+    segment: r.government, orders: r.orders, confirmed: r.confirmed, delivered: r.delivered, returned: r.returned,
+    ...classifyCodSegment(r, { minOrders: 10, globalConfirmationRate }),
+  })).sort((a, b) => (b.orders || 0) - (a.orders || 0));
+  return { table, best: pickBestSegment(table) };
+}
+
+async function buildScaleDecision({ productId, storeId, window, settings }) {
+  const [diagnosis, product, campaigns] = await Promise.all([
+    getProductDiagnosis({ productId, from: window.from, to: window.to, settings }),
+    prisma.product.findUnique({ where: { id: productId }, select: { store_id: true } }),
+    resolveProductCampaigns(productId).catch(() => []),
+  ]);
+  // Reuses the SAME governorate rows getProductDiagnosis already fetched
+  // internally (buildEasyOrdersBlock -> codCountsByGovernorate) — never a
+  // second, independently-timed query for the identical product+window,
+  // which would risk a tiny live-order-arrival mismatch between the two.
+  const governorates = classifyGovernorateRows(diagnosis.easyOrders?.governorates || []);
+  const dataQuality = computeDataQualityGate({ product, campaigns, meta: diagnosis.meta, easyOrders: diagnosis.easyOrders, window });
+  const segmentIntel = { governorates, age: {}, gender: {} };
+  const action = decideProductAction({ diagnosis, creativeIntel: { dataAvailable: false }, segmentIntel });
+  const priceTestOpportunity = detectPriceTestOpportunity({ businessConversionRate: diagnosis.businessConversionRate });
+  return {
+    productId: diagnosis.productId, productName: diagnosis.productName, window,
+    meta: diagnosis.meta, easyOrders: diagnosis.easyOrders, businessConversionRate: diagnosis.businessConversionRate,
+    dataQuality, decision: action.decision, confidence: action.confidence, reason: action.reason, priceTestOpportunity,
+    segmentIntel, campaigns, generatedAt: new Date().toISOString(),
+  };
+}
 
 function resolveScaleWindow({ windowName, from, to }) {
   return (from || to) ? { from: from || null, to: to || null, label: 'فترة مخصصة' } : resolveWindow(windowName || 'last7');
@@ -97,7 +146,7 @@ async function resolveBumpStateForProduct({ productId, adAccountId, campaignIds,
   return { canBump: anyBumpable, reason: anyBumpable ? null : (evaluated[0]?.cooldownReason || evaluated[0]?.verdictReason || 'الأداء الحالي مش مؤهل لزيادة ميزانية دلوقتي.'), adSets: evaluated };
 }
 
-function toRow(pkg, perf, { storeId, image, adAccountId, bumpState }) {
+function toRow(pkg, { storeId, image, adAccountId, bumpState }) {
   const gov = pkg.segmentIntel?.governorates?.table || [];
   const eligibility = deriveScaleCenterEligibility({
     decision: pkg.decision, dataQuality: pkg.dataQuality,
@@ -106,22 +155,18 @@ function toRow(pkg, perf, { storeId, image, adAccountId, bumpState }) {
   return {
     productId: pkg.productId, productName: pkg.productName, storeId: storeId || null, image: image || null, adAccountId: adAccountId || null,
     window: pkg.window,
-    // Raw meta/easyOrders blocks come from getProductPerformance() directly
-    // (never re-derived) — buildProductDecisionPackage()'s own `diagnosis`
-    // field is a NARROWER reshape (toDiagnosisMetrics) for computeDiagnosis()
-    // that drops impressions/dataState, so it is never used for display here.
-    meta: perf.meta,
-    easyOrders: perf.easyOrders,
+    meta: pkg.meta,
+    easyOrders: pkg.easyOrders,
     businessConversionRate: pkg.businessConversionRate,
     dataQuality: pkg.dataQuality,
-    governoratesTop3: gov.slice(0, 3).map((g) => ({ governorate: g.segment, orders: g.orders, confirmed: g.confirmed, delivered: g.delivered, status: g.status || g.classification || null })),
+    governoratesTop3: gov.slice(0, 3).map((g) => ({ governorate: g.segment, orders: g.orders, confirmed: g.confirmed, delivered: g.delivered, status: g.classification || null })),
     bump: bumpState,
     eligibility,
     generatedAt: pkg.generatedAt,
   };
 }
 
-/** One product's full Scale Center row — real reuse of getProductPerformance() (raw Meta/EasyOrders blocks) + buildProductDecisionPackage() (decision/dataQuality/CR/governorates) + an on-demand ad-set bump check for that product's own real campaigns. Two calls into the same underlying data on purpose: buildProductDecisionPackage()'s own diagnosis reshape drops fields (impressions) this page needs to show. */
+/** One product's full Scale Center row — real reuse of buildScaleDecision() (decision/dataQuality/CR/governorates, Meta-audience-call-free) + an on-demand ad-set bump check for that product's own real campaigns. */
 export async function getScaleCenterProduct({ productId, storeId, windowName, from, to }) {
   const pid = Number(productId);
   const window = resolveScaleWindow({ windowName, from, to });
@@ -129,16 +174,14 @@ export async function getScaleCenterProduct({ productId, storeId, windowName, fr
   const connection = await getConnection();
   const adAccountId = connection?.selected_ad_account_id || null;
 
-  const [pkg, perf, campaigns, images] = await Promise.all([
-    buildProductDecisionPackage({ productId: pid, from: window.from, to: window.to, windowLabel: window.label, settings, adAccountId }),
-    getProductPerformance({ productId: pid, from: window.from, to: window.to }),
-    resolveProductCampaigns(pid).catch(() => []),
+  const [pkg, images] = await Promise.all([
+    buildScaleDecision({ productId: pid, storeId, window, settings }),
     resolveProductImages([pid]),
   ]);
-  const campaignIds = campaigns.map((c) => c.campaignId);
-  const resolvedAdAccountId = adAccountId || campaigns[0]?.adAccountId || null;
+  const campaignIds = pkg.campaigns.map((c) => c.campaignId);
+  const resolvedAdAccountId = adAccountId || pkg.campaigns[0]?.adAccountId || null;
   const bumpState = await resolveBumpStateForProduct({ productId: pid, adAccountId: resolvedAdAccountId, campaignIds, settings });
-  return toRow(pkg, perf, { storeId: storeId || null, image: images.get(pid) || null, adAccountId: resolvedAdAccountId, bumpState });
+  return toRow(pkg, { storeId: storeId || null, image: images.get(pid) || null, adAccountId: resolvedAdAccountId, bumpState });
 }
 
 /**
