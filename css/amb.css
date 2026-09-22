@@ -254,8 +254,6 @@ body { background: var(--amb-bg); }
 /* ---- 🚀 مركز التوسّع (Scale Center) ---- */
 .sc-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .sc-row-title { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-.sc-row-campaigns { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
-.sc-row-campaigns.sc-expanded { -webkit-line-clamp: unset; overflow: visible; }
 .sc-thumb { width: 72px; height: 72px; border-radius: 10px; object-fit: cover; background: var(--amb-surface-2); flex: 0 0 auto; }
 .sc-thumb-empty { display: flex; align-items: center; justify-content: center; font-size: 28px; }
 .sc-thumb-wrap { cursor: pointer; }

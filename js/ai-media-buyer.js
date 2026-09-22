@@ -3245,7 +3245,7 @@ function scProductRowHtml(p) {
   const cr = p.businessConversionRate;
   const crText = cr?.dataState === 'AVAILABLE' ? fmtPct(cr.value) : '—';
   const m = p.meta || {}; const eo = p.easyOrders || {};
-  const campaignNames = (p.campaigns || []).map((c) => c.name).join(' · ');
+  const campaignCount = (p.campaigns || []).length;
   return `
   <div class="amb-panel sc-row" id="scRow-${p.productId}" style="margin-bottom:12px;">
     <div class="sc-row-head">
@@ -3256,7 +3256,7 @@ function scProductRowHtml(p) {
         <input type="file" data-sc-thumb-input="${p.productId}" accept="image/*" style="display:none;" />
         <div style="min-width:0;">
           <div style="font-weight:800;">${E(p.productName)}</div>
-          <div class="faint sc-row-campaigns" style="font-size:11px;" data-sc-camtoggle="${p.productId}">#${p.productId}${campaignNames ? ` · ${E(campaignNames)}` : ' · مفيش حملة مرتبطة'}</div>
+          <div class="faint" style="font-size:11px;">#${p.productId}${campaignCount ? ` · ${campaignCount} حملة مرتبطة (التفاصيل تحت)` : ' · مفيش حملة مرتبطة'}</div>
         </div>
       </div>
       ${badge(stateLabel, tone)}
@@ -3372,8 +3372,6 @@ function scWireProductRow(panel, p) {
     thumbWrap.onclick = () => thumbInput.click();
     thumbInput.onchange = () => scUploadProductImage(p, thumbInput.files?.[0]);
   }
-  const camToggle = row.querySelector('[data-sc-camtoggle]');
-  if (camToggle) camToggle.onclick = () => camToggle.classList.toggle('sc-expanded');
 }
 
 /** Manual image upload for one product — the fallback path when EasyOrders' own catalog can't supply a real photo automatically (rate-limited, wrong store, no name match). Raw binary POST, same convention as the video uploader. */
