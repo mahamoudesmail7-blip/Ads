@@ -3254,9 +3254,9 @@ function scProductRowHtml(p) {
           ${p.image ? `<img src="${E(p.image)}" class="sc-thumb" />` : '<div class="sc-thumb sc-thumb-empty">📦</div>'}
         </div>
         <input type="file" data-sc-thumb-input="${p.productId}" accept="image/*" style="display:none;" />
-        <div>
+        <div style="min-width:0;">
           <div style="font-weight:800;">${E(p.productName)}</div>
-          <div class="faint" style="font-size:11px;">#${p.productId}${campaignNames ? ` · ${E(campaignNames)}` : ' · مفيش حملة مرتبطة'}</div>
+          <div class="faint sc-row-campaigns" style="font-size:11px;" data-sc-camtoggle="${p.productId}">#${p.productId}${campaignNames ? ` · ${E(campaignNames)}` : ' · مفيش حملة مرتبطة'}</div>
         </div>
       </div>
       ${badge(stateLabel, tone)}
@@ -3307,10 +3307,10 @@ function scToggleDetails(p) {
   el.dataset.open = '1';
   const checksHtml = (p.dataQuality?.checks || []).map((c) => `<div>${c.ok ? '✅' : (c.severity === 'CRITICAL' ? '⛔' : '⚠️')} ${E(c.name)}${c.reason ? ` — ${E(c.reason)}` : ''}</div>`).join('');
   const campaignsHtml = (p.campaigns || []).length
-    ? `<table class="sc-detail-table"><thead><tr><th>الحملة</th><th>ID</th><th>مصدر الربط</th></tr></thead><tbody>${p.campaigns.map((c) => `<tr><td>${E(c.name)}</td><td class="faint">${E(c.id)}</td><td>${c.via === 'LAUNCH' ? 'رفع كامبين' : 'ربط يدوي/AI'}</td></tr>`).join('')}</tbody></table>`
+    ? `<div class="sc-table-wrap"><table class="sc-detail-table"><thead><tr><th>الحملة</th><th>ID</th><th>مصدر الربط</th></tr></thead><tbody>${p.campaigns.map((c) => `<tr><td>${E(c.name)}</td><td class="faint">${E(c.id)}</td><td>${c.via === 'LAUNCH' ? 'رفع كامبين' : 'ربط يدوي/AI'}</td></tr>`).join('')}</tbody></table></div>`
     : '<div class="faint">مفيش حملة مرتبطة.</div>';
   const govHtml = (p.governoratesAll || []).length
-    ? `<table class="sc-detail-table"><thead><tr><th>المحافظة</th><th>طلبات</th><th>مؤكد</th><th>تسليم</th><th>مرتجع</th><th>الحالة</th></tr></thead><tbody>${p.governoratesAll.map(scGovFullRow).join('')}</tbody></table>`
+    ? `<div class="sc-table-wrap"><table class="sc-detail-table"><thead><tr><th>المحافظة</th><th>طلبات</th><th>مؤكد</th><th>تسليم</th><th>مرتجع</th><th>الحالة</th></tr></thead><tbody>${p.governoratesAll.map(scGovFullRow).join('')}</tbody></table></div>`
     : '<div class="faint">مفيش بيانات محافظات كافية.</div>';
   const bumpHtml = (p.bump?.adSets || []).length
     ? p.bump.adSets.map((a) => `<div class="sc-adset-row">Ad Set: <b>${E(a.adSetName)}</b> (${E(a.campaignName)}) — ميزانية ${fmtEGP(a.currentBudget)}، CPA ${a.cpa != null ? fmtEGP(a.cpa) : '—'}، الحالة: ${E(a.verdict)}${a.verdictReason ? ` — ${E(a.verdictReason)}` : ''}</div>`).join('')
@@ -3339,17 +3339,17 @@ async function scLoadAudience(p) {
       return;
     }
     const ageHtml = r.age.length
-      ? `<table class="sc-detail-table"><thead><tr><th>الفئة العمرية</th><th>مشتريات</th><th>صرف</th><th>CPA</th></tr></thead><tbody>${r.age.map((a) => `<tr><td>${E(a.value)}</td><td>${fmtNum(a.purchases)}</td><td>${fmtEGP(a.spend)}</td><td>${a.cpa != null ? fmtEGP(a.cpa) : '—'}</td></tr>`).join('')}</tbody></table>`
+      ? `<div class="sc-table-wrap"><table class="sc-detail-table"><thead><tr><th>الفئة العمرية</th><th>مشتريات</th><th>صرف</th><th>CPA</th></tr></thead><tbody>${r.age.map((a) => `<tr><td>${E(a.value)}</td><td>${fmtNum(a.purchases)}</td><td>${fmtEGP(a.spend)}</td><td>${a.cpa != null ? fmtEGP(a.cpa) : '—'}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="faint">مفيش تقسيم عمري متاح من Meta لهذه الفترة.</div>';
     const genderHtml = r.gender.length
-      ? `<table class="sc-detail-table"><thead><tr><th>النوع</th><th>مشتريات</th><th>صرف</th><th>CPA</th></tr></thead><tbody>${r.gender.map((g) => `<tr><td>${E(SC_GENDER_AR[g.value] || g.value)}</td><td>${fmtNum(g.purchases)}</td><td>${fmtEGP(g.spend)}</td><td>${g.cpa != null ? fmtEGP(g.cpa) : '—'}</td></tr>`).join('')}</tbody></table>`
+      ? `<div class="sc-table-wrap"><table class="sc-detail-table"><thead><tr><th>النوع</th><th>مشتريات</th><th>صرف</th><th>CPA</th></tr></thead><tbody>${r.gender.map((g) => `<tr><td>${E(SC_GENDER_AR[g.value] || g.value)}</td><td>${fmtNum(g.purchases)}</td><td>${fmtEGP(g.spend)}</td><td>${g.cpa != null ? fmtEGP(g.cpa) : '—'}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="faint">مفيش تقسيم نوع متاح من Meta لهذه الفترة.</div>';
     const topAge = r.age[0]; // arrays already sorted by purchases desc
     const topGender = r.gender[0];
     el.innerHTML = `
       ${topAge || topGender ? `<div style="font-weight:700; margin-bottom:8px;">أكتر شريحة بتشتري: ${topAge ? `عمر ${E(topAge.value)}` : ''}${topAge && topGender ? ' · ' : ''}${topGender ? E(SC_GENDER_AR[topGender.value] || topGender.value) : ''}</div>` : ''}
       ${r.sampleWarning ? `<div class="faint" style="color:#c07a00; margin-bottom:8px;">⚠️ ${E(r.sampleWarning)}</div>` : ''}
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      <div class="sc-audience-grid">
         <div><div class="faint" style="margin-bottom:4px;">حسب العمر</div>${ageHtml}</div>
         <div><div class="faint" style="margin-bottom:4px;">حسب النوع</div>${genderHtml}</div>
       </div>`;
@@ -3372,6 +3372,8 @@ function scWireProductRow(panel, p) {
     thumbWrap.onclick = () => thumbInput.click();
     thumbInput.onchange = () => scUploadProductImage(p, thumbInput.files?.[0]);
   }
+  const camToggle = row.querySelector('[data-sc-camtoggle]');
+  if (camToggle) camToggle.onclick = () => camToggle.classList.toggle('sc-expanded');
 }
 
 /** Manual image upload for one product — the fallback path when EasyOrders' own catalog can't supply a real photo automatically (rate-limited, wrong store, no name match). Raw binary POST, same convention as the video uploader. */
