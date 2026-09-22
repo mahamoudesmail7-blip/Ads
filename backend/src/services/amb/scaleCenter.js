@@ -18,6 +18,7 @@ import { getConnection } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
 import { evaluateAdSetForBump, resolveAdSetLifecycleState, computeBumpedBudget } from './budgetBumpEngine.js';
 import { bumpSettingsFrom, latestBumpActionFor, bumpsInLast24h, persistBumpRecommendation } from './budgetBumpOrchestrator.js';
+import { fetchAudienceBreakdown } from './metaAudienceBreakdown.js';
 
 // ---------------------------------------------------------------------------
 // A real production attempt at speeding this up (skip segmentIntelForProduct's
@@ -347,4 +348,27 @@ export async function prepareBumpForAdSet({ adSetId, pct, ambProductId, productN
   const evalResult = { currentBudget: preview.currentBudget, proposedBudget: preview.proposedBudget, pct, evidence: `تجهيز يدوي من مركز التوسّع بنسبة ${pct}% — ${preview.verdictReason || ''}`.trim() };
   const rec = await persistBumpRecommendation({ adAccountId: preview.adAccountId, adSet, ambProductId: ambProductId || null, productName: productName || null, evalResult, batchId: `scale-center-bump-${Date.now()}` });
   return { ok: true, recommendationId: rec.id, preview };
+}
+
+/**
+ * Real Meta-attributed age/gender breakdown for one product's mapped
+ * campaigns — reuses metaAudienceBreakdown.js's shared core (the same
+ * function PMC's own audience tab calls) rather than a second Meta-insights
+ * integration. Deliberately on-demand only (called from the Scale Center
+ * row's "عرض التفاصيل" expansion, never from listScaleCenterProducts()'s
+ * main list) — a live Meta Insights call per product would make the list
+ * itself far too slow, exactly the same reasoning PMC's own audience tab
+ * already documents. Every number here is Meta's own ad-performance-by-
+ * audience-segment data, never a real customer record.
+ */
+export async function getScaleCenterProductAudience({ productId, windowName, from, to }) {
+  const window = resolveScaleWindow({ windowName, from, to });
+  const campaigns = await resolveProductCampaigns(Number(productId)).catch(() => []);
+  const campaignIds = campaigns.map((c) => c.campaignId);
+  const adAccountId = campaigns[0]?.adAccountId || (await getConnection())?.selected_ad_account_id || null;
+  if (!campaignIds.length || !adAccountId) {
+    return { available: false, reason: 'لا توجد حملات Meta مؤكدة لهذا المنتج — تقسيمات الجمهور تُحسب فقط على حملات حقيقية.', age: [], gender: [] };
+  }
+  const result = await fetchAudienceBreakdown({ adAccountId, campaignIds, window });
+  return { available: result.available, reason: result.reason, sampleWarning: result.sampleWarning, age: result.age || [], gender: result.gender || [], window };
 }

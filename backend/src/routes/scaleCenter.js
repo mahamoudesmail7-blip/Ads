@@ -8,7 +8,7 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
-import { listScaleCenterProducts, getScaleCenterProduct, getScaleCenterTotals, previewBumpForAdSet, prepareBumpForAdSet } from '../services/amb/scaleCenter.js';
+import { listScaleCenterProducts, getScaleCenterProduct, getScaleCenterTotals, getScaleCenterProductAudience, previewBumpForAdSet, prepareBumpForAdSet } from '../services/amb/scaleCenter.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -30,6 +30,11 @@ router.get('/totals', asyncRoute(async (req, res) => {
 router.get('/products/:productId', asyncRoute(async (req, res) => {
   const { storeId, window, from, to } = req.query;
   res.json(await getScaleCenterProduct({ productId: req.params.productId, storeId: storeId || undefined, windowName: window, from, to }));
+}));
+
+router.get('/products/:productId/audience', asyncRoute(async (req, res) => {
+  const { window, from, to } = req.query;
+  res.json(await getScaleCenterProductAudience({ productId: req.params.productId, windowName: window, from, to }));
 }));
 
 router.get('/bump-preview', asyncRoute(async (req, res) => {

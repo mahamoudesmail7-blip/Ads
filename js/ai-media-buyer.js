@@ -3319,9 +3319,43 @@ function scToggleDetails(p) {
     <div class="sc-details-box">
       <div class="section-title" style="margin-top:0;">الحملات المرتبطة</div>${campaignsHtml}
       <div class="section-title">بوابة جودة البيانات (${E(p.dataQuality?.status || '—')})</div>${checksHtml}
+      <div class="section-title">الجمهور (العمر والنوع) — Meta</div>
+      <div id="scAudience-${p.productId}" class="faint">⏳ جارِ التحميل من Meta…</div>
       <div class="section-title">كل المحافظات</div>${govHtml}
       <div class="section-title">تقييم Bump على مستوى الـ Ad Sets</div>${bumpHtml}
     </div>`;
+  scLoadAudience(p);
+}
+
+const SC_GENDER_AR = { male: 'رجالة', female: 'بنات', unknown: 'غير معروف' };
+/** Real Meta-attributed age/gender breakdown, fetched on-demand only when a product's details panel opens — a live Meta Insights call per row would make the whole list far too slow. */
+async function scLoadAudience(p) {
+  const el = $(`scAudience-${p.productId}`);
+  if (!el) return;
+  try {
+    const r = await api.get(`/api/scale-center/products/${p.productId}/audience`, scWindowParams());
+    if (!r.available || (!r.age.length && !r.gender.length)) {
+      el.innerHTML = `<div class="faint">${E(r.reason || 'مفيش بيانات جمهور كافية من Meta لهذه الفترة.')}</div>`;
+      return;
+    }
+    const ageHtml = r.age.length
+      ? `<table class="sc-detail-table"><thead><tr><th>الفئة العمرية</th><th>مشتريات</th><th>صرف</th><th>CPA</th></tr></thead><tbody>${r.age.map((a) => `<tr><td>${E(a.value)}</td><td>${fmtNum(a.purchases)}</td><td>${fmtEGP(a.spend)}</td><td>${a.cpa != null ? fmtEGP(a.cpa) : '—'}</td></tr>`).join('')}</tbody></table>`
+      : '<div class="faint">مفيش تقسيم عمري متاح من Meta لهذه الفترة.</div>';
+    const genderHtml = r.gender.length
+      ? `<table class="sc-detail-table"><thead><tr><th>النوع</th><th>مشتريات</th><th>صرف</th><th>CPA</th></tr></thead><tbody>${r.gender.map((g) => `<tr><td>${E(SC_GENDER_AR[g.value] || g.value)}</td><td>${fmtNum(g.purchases)}</td><td>${fmtEGP(g.spend)}</td><td>${g.cpa != null ? fmtEGP(g.cpa) : '—'}</td></tr>`).join('')}</tbody></table>`
+      : '<div class="faint">مفيش تقسيم نوع متاح من Meta لهذه الفترة.</div>';
+    const topAge = r.age[0]; // arrays already sorted by purchases desc
+    const topGender = r.gender[0];
+    el.innerHTML = `
+      ${topAge || topGender ? `<div style="font-weight:700; margin-bottom:8px;">أكتر شريحة بتشتري: ${topAge ? `عمر ${E(topAge.value)}` : ''}${topAge && topGender ? ' · ' : ''}${topGender ? E(SC_GENDER_AR[topGender.value] || topGender.value) : ''}</div>` : ''}
+      ${r.sampleWarning ? `<div class="faint" style="color:#c07a00; margin-bottom:8px;">⚠️ ${E(r.sampleWarning)}</div>` : ''}
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div><div class="faint" style="margin-bottom:4px;">حسب العمر</div>${ageHtml}</div>
+        <div><div class="faint" style="margin-bottom:4px;">حسب النوع</div>${genderHtml}</div>
+      </div>`;
+  } catch (err) {
+    el.innerHTML = `<div class="faint">⚠️ ${E(err.message)}</div>`;
+  }
 }
 
 function scWireProductRow(panel, p) {
