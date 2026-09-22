@@ -19,6 +19,16 @@ function escapeHtml(s) {
   return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? '');
 }
 
+// escapeHtml (ui-common.js's textContent/innerHTML roundtrip) only escapes
+// &/</> — safe for text-node context, but a JSON blob placed inside a
+// double-quoted HTML attribute (data-proposal="...") also needs its own `"`
+// escaped, or the attribute value terminates at the JSON's first `"`. Found
+// live: the real ACTION_PROPOSAL button rendered with data-proposal='{"'
+// (truncated at the first quote), so clicking it silently did nothing.
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, '&quot;');
+}
+
 let pageContext = null;
 /** Called by any page via UI.setAssistantContext() when it knows what it's showing (e.g. {page:'scale-center', productId, window}) — never scraped from the DOM. */
 export function setAssistantContext(ctx) {
@@ -77,7 +87,7 @@ function actionProposalHtml(proposal) {
   if (!proposal || typeof proposal !== 'object') return '';
   if (proposal.type === 'PREPARE_BUMP' && proposal.adSetId) {
     const pct = Number(proposal.pct) || 25;
-    return `<button type="button" class="assistant-action-btn" data-proposal="${escapeHtml(JSON.stringify(proposal))}">⚡ جهّز زيادة ${pct}% لهذا الـ Ad Set</button>`;
+    return `<button type="button" class="assistant-action-btn" data-proposal="${escapeAttr(JSON.stringify(proposal))}">⚡ جهّز زيادة ${pct}% لهذا الـ Ad Set</button>`;
   }
   return '';
 }
