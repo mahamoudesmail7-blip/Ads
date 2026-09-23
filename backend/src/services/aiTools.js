@@ -39,6 +39,7 @@ import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { detectIncidentsForProduct, raiseIncidentAlerts } from './amb/incidentCenter.js';
 import { buildDailyBrief } from './amb/dailyBrief.js';
+import { listCapabilities, capabilitySummary } from './amb/capabilityRegistry.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -532,6 +533,16 @@ export async function get_daily_brief({ window } = {}) {
   }
 }
 
+export async function get_capabilities({ category } = {}) {
+  try {
+    const all = listCapabilities();
+    const filtered = category ? all.filter((c) => c.category === category) : all;
+    return { ok: true, hasData: true, summary: capabilitySummary(), capabilities: filtered };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -828,6 +839,16 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_capabilities',
+    description: '[📚 سجل القدرات] القائمة الحقيقية والحية لكل حاجة النظام يقدر يعملها — كل Tool في الشات وكل صفحة/إجراء في الواجهة، مقسّمة بالتصنيف (Dashboard/Products/Meta/Easy Orders/مركز القرار الذكي/مركز التوسّع/خطة العمل/بناء الكامبين/الميديا/مكتبة الكرياتيفات/التوصيات/الجدولة/الاستنساخ/التقارير/الإعدادات/الاختبارات/التعلّم/المهام/الحوادث/ذكاء النمو) مع هل محتاج موافقة، هل بيمر على Money Guard أو Data Quality Gate. استخدمها إجباريًا لأي سؤال زي "تقدر تعمل إيه؟" أو "إيه الحاجات المتاحة؟" — ممنوع تجاوب من الذاكرة أو تخترع قائمة، لازم تيجي من هنا بالظبط.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: 'فلترة على تصنيف معين، اختياري — لو مش موجود يرجع كل حاجة' },
+      },
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -913,6 +934,7 @@ export const TOOL_IMPLS = {
   get_stock_status,
   get_incidents,
   get_daily_brief,
+  get_capabilities,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -926,4 +948,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_daily_brief', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_daily_brief', 'get_capabilities', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
