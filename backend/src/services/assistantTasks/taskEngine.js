@@ -176,7 +176,7 @@ export async function enterWaitingForApproval({ taskId, ambRecommendationId, pre
  * reopens the chat, with no separate scheduler needed.
  */
 export async function resolveTaskStatus({ taskId }) {
-  let task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskId } });
+  let task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskId }, include: { user: { select: { name: true } }, approved_by: { select: { name: true } } } });
   if (!task) { const e = new Error('التاسك مش موجود.'); e.status = 404; throw e; }
 
   let launchProgress = null;
@@ -199,7 +199,8 @@ export async function resolveTaskStatus({ taskId }) {
     }
   }
 
-  return { ok: true, task: serializeTask(task, { launchProgress }) };
+  const timeline = await buildTaskTimeline(task).catch(() => []);
+  return { ok: true, task: serializeTask(task, { launchProgress, timeline, createdByName: task.user?.name || null, approvedByName: task.approved_by?.name || null }) };
 }
 
 export async function listRecentTasksForUser({ userId, limit = 5 }) {
@@ -209,6 +210,65 @@ export async function listRecentTasksForUser({ userId, limit = 5 }) {
     take: limit,
   });
   return { ok: true, tasks: tasks.map(serializeTask) };
+}
+
+// Slice 16 — Task History UI. Five real, mutually-exclusive views over the
+// SAME status vocabulary the FSM already uses (never a new status). "active"
+// deliberately excludes WAITING_FOR_APPROVAL — the spec treats "still being
+// worked on" and "sitting on YOUR approval" as two separate views a human
+// checks for different reasons.
+export const TASK_VIEW_STATUSES = {
+  active: ['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT', 'RUNNING', 'VERIFYING'],
+  waiting_approval: ['WAITING_FOR_APPROVAL'],
+  completed: ['COMPLETED', 'PARTIALLY_COMPLETED'],
+  failed: ['FAILED', 'BLOCKED'],
+  cancelled: ['CANCELLED'],
+};
+
+export async function listTasksByView({ view, limit = 50 } = {}) {
+  const statuses = TASK_VIEW_STATUSES[view];
+  if (!statuses) { const e = new Error(`Unknown task view: ${view}`); e.status = 400; throw e; }
+  const tasks = await prisma.assistantTask.findMany({
+    where: { status: { in: statuses } },
+    orderBy: { updated_at: 'desc' },
+    take: Math.min(limit, 200),
+    include: { user: { select: { name: true } }, approved_by: { select: { name: true } } },
+  });
+  const counts = await prisma.assistantTask.groupBy({ by: ['status'], _count: true });
+  const countByView = {};
+  for (const [v, sts] of Object.entries(TASK_VIEW_STATUSES)) {
+    countByView[v] = counts.filter((c) => sts.includes(c.status)).reduce((a, c) => a + c._count, 0);
+  }
+  return {
+    ok: true,
+    view,
+    counts: countByView,
+    tasks: tasks.map((t) => ({ ...serializeTask(t), createdByName: t.user?.name || null, approvedByName: t.approved_by?.name || null })),
+  };
+}
+
+/**
+ * A real, never-fabricated timeline built ONLY from timestamps the row
+ * itself already carries (created_at/approved_at/updated_at) plus, for
+ * LAUNCH/SCALE/TEST_CAMPAIGN tasks with a real launch_job_id, the genuine
+ * AmbLaunchAudit event trail already written by launchPublish.js — never a
+ * second, invented per-transition log.
+ */
+export async function buildTaskTimeline(task) {
+  const points = [{ at: task.created_at, label: 'تم إنشاء التاسك', kind: 'CREATED' }];
+  if (task.approved_at) points.push({ at: task.approved_at, label: `تمت الموافقة${task.approved_by?.name ? ' — ' + task.approved_by.name : ''}`, kind: 'APPROVED' });
+  if (task.launch_job_id) {
+    const audits = await prisma.ambLaunchAudit.findMany({
+      where: { job_id: task.launch_job_id },
+      orderBy: { created_at: 'asc' },
+      select: { event: true, detail: true, created_at: true, level: true, destination_id: true },
+    }).catch(() => []);
+    for (const a of audits) points.push({ at: a.created_at, label: a.detail || a.event, kind: a.event });
+  }
+  if (task.blocked_reason) points.push({ at: task.updated_at, label: `محظور: ${task.blocked_reason}`, kind: 'BLOCKED' });
+  if (task.error) points.push({ at: task.updated_at, label: `خطأ: ${task.error}`, kind: 'ERROR' });
+  if (['COMPLETED', 'PARTIALLY_COMPLETED', 'CANCELLED'].includes(task.status)) points.push({ at: task.updated_at, label: task.status === 'CANCELLED' ? 'تم الإلغاء' : 'اكتمل التنفيذ', kind: task.status });
+  return points.sort((a, b) => new Date(a.at) - new Date(b.at));
 }
 
 /**

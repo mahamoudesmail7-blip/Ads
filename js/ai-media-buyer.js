@@ -81,12 +81,13 @@ const NAV = [
   { key: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'grid' },
   { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
   { key: 'launch', label: 'رفع الكامبين', icon: 'rocket' },
+  { key: 'tasks', label: '📋 المهام', icon: 'doc' },
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: '🧠 مركز القرار الذكي', scale: '🚀 مركز التوسّع', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
-const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale']);
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, tasks: renderTasks, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: '🧠 مركز القرار الذكي', scale: '🚀 مركز التوسّع', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', tasks: '📋 المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale', 'tasks']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
 // existing resolveWindow() keys, so every window-aware endpoint honours them.
@@ -2622,6 +2623,102 @@ function showHistDetails(a) {
   `);
   $('ambDrawerX').onclick = closeDrawer;
   $('ambDrawerX2').onclick = closeDrawer;
+}
+
+// ===========================================================================
+// TASK HISTORY — 📋 المهام (Phase 3 Slice 16). Read-only history + approve/
+// cancel over the SAME AssistantTask FSM the chat Task Card already drives
+// (routes/assistantTasks.js) — never a second task system, never a new
+// status vocabulary.
+// ===========================================================================
+const TASKS_KIND_AR = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل', TEST_CAMPAIGN: '🧪 اختبار', PRICE_TEST: '💵 اختبار سعر' };
+const TASKS_STATUS_AR = {
+  PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
+  WAITING_FOR_APPROVAL: 'محتاج موافقة', RUNNING: 'جاري التنفيذ...', VERIFYING: 'جاري التأكيد...',
+  COMPLETED: 'تم ✅', PARTIALLY_COMPLETED: 'تم جزئيًا ⚠️', FAILED: 'فشل ❌', CANCELLED: 'اتلغى', BLOCKED: 'متوقف',
+};
+const TASKS_VIEWS = [
+  { key: 'active', label: 'نشطة' },
+  { key: 'waiting_approval', label: 'تنتظر موافقتك' },
+  { key: 'completed', label: 'مكتملة' },
+  { key: 'failed', label: 'فشلت' },
+  { key: 'cancelled', label: 'ملغاة' },
+];
+const tasksState = { view: 'active' };
+
+async function renderTasks(panel) {
+  const view = tasksState.view;
+  const data = await api.get(`/api/assistant-tasks?view=${view}&limit=100`);
+  const counts = data.counts || {};
+  panel.innerHTML = `
+    <div class="amb-filters" id="ambTasksTabs">${TASKS_VIEWS.map((v) => `<button class="amb-fbtn ${v.key === view ? 'active' : ''}" data-tv="${v.key}">${E(v.label)}${counts[v.key] ? ` (${counts[v.key]})` : ''}</button>`).join('')}</div>
+    <div id="ambTasksBody"></div>`;
+  panel.querySelectorAll('[data-tv]').forEach((b) => { b.onclick = () => { tasksState.view = b.dataset.tv; renderTasks(panel); }; });
+
+  const body = $('ambTasksBody');
+  const rows = data.tasks || [];
+  body.innerHTML = rows.length === 0
+    ? '<div class="amb-panel amb-empty">مفيش مهام في القسم ده حاليًا.</div>'
+    : `<div class="table-wrap"><table class="data">
+        <thead><tr><th>النوع</th><th>العنصر</th><th>الحالة</th><th>أنشأه</th><th>آخر تحديث</th><th></th></tr></thead>
+        <tbody>${rows.map(taskRow).join('')}</tbody></table></div>`;
+  body.querySelectorAll('[data-task]').forEach((b) => b.onclick = () => showTaskDetails(b.dataset.task));
+}
+function taskRow(t) {
+  return `<tr>
+    <td>${E(TASKS_KIND_AR[t.kind] || t.kind)}</td>
+    <td>${E(t.entityName || t.preparedPayload?.productName || '—')}</td>
+    <td>${E(TASKS_STATUS_AR[t.status] || t.status)}</td>
+    <td>${E(t.createdByName || '—')}</td>
+    <td style="white-space:nowrap;">${fmtDT(t.updatedAt)}</td>
+    <td><button class="amb-btn sm" data-task="${E(t.taskUuid)}">تفاصيل</button></td>
+  </tr>`;
+}
+async function showTaskDetails(taskUuid) {
+  const { task } = await api.get(`/api/assistant-tasks/${taskUuid}`);
+  if (!task) return;
+  const canApprove = task.status === 'WAITING_FOR_APPROVAL';
+  const canCancel = ['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT', 'WAITING_FOR_APPROVAL'].includes(task.status);
+  openDrawer(`
+    <div class="drawer-header"><div class="drawer-title">${E(TASKS_KIND_AR[task.kind] || task.kind)}</div><button class="drawer-close" id="ambDrawerX">×</button></div>
+    <div class="drawer-section">
+      <div class="amb-derived">
+        <div class="amb-derived-row"><span>العنصر</span><b>${E(task.entityName || '—')}</b></div>
+        <div class="amb-derived-row"><span>الحالة</span><b>${E(TASKS_STATUS_AR[task.status] || task.status)}</b></div>
+        <div class="amb-derived-row"><span>أنشأه</span><b>${E(task.createdByName || '—')}</b></div>
+        ${task.approvedByName ? `<div class="amb-derived-row"><span>وافق</span><b>${E(task.approvedByName)}</b></div>` : ''}
+        <div class="amb-derived-row"><span>آخر تحديث</span><b>${fmtDT(task.updatedAt)}</b></div>
+      </div>
+      ${task.error ? `<div style="color:var(--amb-red); font-size:12.5px; margin-top:8px;">خطأ: ${E(task.error)}</div>` : ''}
+      ${task.blockedReason ? `<div style="color:var(--amb-orange, #b8860b); font-size:12.5px; margin-top:8px;">${E(task.blockedReason)}</div>` : ''}
+      ${task.preparedPayload ? `<div class="section-title">الخطة المُجهّزة</div><pre style="white-space:pre-wrap; font-size:11px; background:var(--amb-surface-2); padding:10px; border-radius:8px;">${E(JSON.stringify(task.preparedPayload, null, 1))}</pre>` : ''}
+      <div class="section-title">الجدول الزمني</div>
+      <div class="amb-derived">${(task.timeline || []).map((p) => `<div class="amb-derived-row"><span>${fmtDT(p.at)}</span><b>${E(p.label)}</b></div>`).join('') || '<div class="faint" style="font-size:12px;">مفيش أحداث مسجلة.</div>'}</div>
+      <div class="toolbar" style="margin-top:14px; display:flex; gap:8px;">
+        ${canApprove ? `<button class="amb-btn primary" id="ambTaskApprove">✅ موافقة وتنفيذ</button>` : ''}
+        ${canCancel ? `<button class="amb-btn" id="ambTaskCancel">إلغاء</button>` : ''}
+        <button class="amb-btn" id="ambDrawerX2">إغلاق</button>
+      </div>
+    </div>
+  `);
+  $('ambDrawerX').onclick = closeDrawer;
+  $('ambDrawerX2').onclick = closeDrawer;
+  if (canApprove) $('ambTaskApprove').onclick = async () => {
+    if (!confirm('هتوافق على تنفيذ هذا الإجراء فعليًا على Meta؟')) return;
+    try {
+      await api.post(`/api/assistant-tasks/${taskUuid}/approve`, { approvalHash: task.approvalHash });
+      closeDrawer();
+      route();
+    } catch (err) { alert(err.message || 'حصل خطأ أثناء الموافقة.'); }
+  };
+  if (canCancel) $('ambTaskCancel').onclick = async () => {
+    if (!confirm('هتلغي التاسك ده؟')) return;
+    try {
+      await api.post(`/api/assistant-tasks/${taskUuid}/cancel`, {});
+      closeDrawer();
+      route();
+    } catch (err) { alert(err.message || 'حصل خطأ أثناء الإلغاء.'); }
+  };
 }
 
 // ===========================================================================

@@ -8,10 +8,17 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
-import { resolveTaskStatus, approveTask, transitionTask } from '../services/assistantTasks/taskEngine.js';
+import { resolveTaskStatus, approveTask, transitionTask, listTasksByView } from '../services/assistantTasks/taskEngine.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
+
+// Slice 16 — Task History UI. view is one of TASK_VIEW_STATUSES's keys
+// (active | waiting_approval | completed | failed | cancelled); counts for
+// every view are returned alongside so the UI can badge all 5 tabs from one call.
+router.get('/', asyncRoute(async (req, res) => {
+  res.json(await listTasksByView({ view: req.query.view || 'active', limit: Number(req.query.limit) || 50 }));
+}));
 
 router.get('/:taskUuid', asyncRoute(async (req, res) => {
   res.json(await resolveTaskStatus({ taskId: req.params.taskUuid }));

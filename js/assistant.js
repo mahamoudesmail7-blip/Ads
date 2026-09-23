@@ -80,7 +80,7 @@ function renderReplyHtml(text) {
 // a real, persisted AssistantTask in the /chat response's `task` field, and
 // this renders it as a live card the human must explicitly approve — never
 // two competing "propose a write" mechanisms running side by side.
-const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل للمنتج الرابح', TEST_CAMPAIGN: '🧪 اختبار مُتحكَّم فيه' };
+const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل للمنتج الرابح', TEST_CAMPAIGN: '🧪 اختبار مُتحكَّم فيه', PRICE_TEST: '💵 اختبار سعر' };
 const LAUNCH_KINDS = ['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN', 'TEST_CAMPAIGN'];
 const TASK_STATUS_LABEL = {
   PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
