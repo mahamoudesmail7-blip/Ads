@@ -32,6 +32,7 @@ import { buildGrowthPlan } from './amb/growthStrategist.js';
 import { buildTargetingStrategy } from './amb/targetingStrategy.js';
 import { generateAngleProposals, generateHooks, generateCreativeIdeas } from './amb/productMarketingAI.js';
 import { buildCodQualityReport } from './amb/codQualityBrain.js';
+import { buildProductPlaybook } from './amb/productPlaybook.js';
 import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { getConnection } from './metaAuth.js';
@@ -382,6 +383,28 @@ export async function get_cod_quality({ productId, window } = {}) {
   }
 }
 
+export async function get_product_playbook({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const w = resolveWindow(window || 'last7');
+    const [pkg, ambProduct, product] = await Promise.all([
+      buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId }),
+      prisma.ambProduct.findUnique({ where: { product_id: Number(productId) }, select: { id: true } }),
+      prisma.product.findUnique({ where: { id: Number(productId) }, select: { store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, commission: true, expected_return_cost: true } }),
+    ]);
+    const trueRows = await computeTruePerformance({ productId: Number(productId) });
+    const profitBrain = classifyProfitState(trueRows.products?.[0] || { real: { actualOrders: 0 } }, product || {}, settings);
+    const codReport = await buildCodQualityReport({ productId: Number(productId), storeId: product?.store_id, from: w.from, to: w.to, pkg });
+
+    const playbook = await buildProductPlaybook({ productId: Number(productId), ambProductId: ambProduct?.id || null, profitBrain, codReport });
+    return { ok: true, hasData: true, productId: pkg.productId, productName: pkg.productName, ...playbook };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -610,6 +633,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_product_playbook',
+    description: '[📘 دليل المنتج] كل اللي اتعلمناه عن المنتج ده مع الوقت — أفضل Angle/Hook/جمهور/محافظة/كرياتيف أثبتوا نفسهم فعلاً (مع العينة وآخر تأكيد)، وتاريخ القرارات الحقيقية (Scale/اختبار/إيقاف) اللي اتاخدت له، ولقطة حالية من الربح وجودة الـCOD. استخدمه لأسئلة "إيه اللي اتعلمناه عن المنتج؟" أو "أنهي Angle كان أنجح؟" أو "مين أفضل جمهور تاريخيًا؟" أو "آخر Creative Winner كان إيه؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7 (بيأثر بس على لقطة الربح/الـCOD الحالية، مش على التاريخ)' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -689,6 +724,7 @@ export const TOOL_IMPLS = {
   generate_hooks,
   generate_creative_brief,
   get_cod_quality,
+  get_product_playbook,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -702,4 +738,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
