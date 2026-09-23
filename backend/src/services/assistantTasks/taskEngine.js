@@ -230,6 +230,7 @@ export async function approveTask({ taskId, userId, approvalHash }) {
   }
 
   if (['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN', 'TEST_CAMPAIGN'].includes(task.kind)) return approveLaunchCampaignTask({ task, userId, approvalHash });
+  if (task.kind === 'PRICE_TEST') return approvePriceTestTask({ task, userId, approvalHash });
 
   const { approveAndExecute } = await import('../amb/executor.js');
 
@@ -333,6 +334,55 @@ async function approveLaunchCampaignTask({ task, userId, approvalHash }) {
 
   const verifyingTask = await transitionTask({ taskId: task.task_uuid, to: 'VERIFYING', patch: { progress: 80 } });
   return { ok: true, task: serializeTask(verifyingTask) };
+}
+
+/**
+ * PRICE_TEST's approve path — deliberately NOT the Launch-family's Meta
+ * queue: the consequential action here is a single, synchronous LOCAL
+ * database write (Product.selling_price), never Meta, never Easy Orders.
+ * Still hash-bound, still conflict-checked, still verified by re-reading
+ * the row after the write — "never trust a write as proof" applies to a
+ * local DB write exactly as much as a Meta call, even though it can't fail
+ * the way a network call can.
+ */
+async function approvePriceTestTask({ task, userId, approvalHash }) {
+  const preview = task.prepared_payload_json ? JSON.parse(task.prepared_payload_json) : null;
+  const expectedHash = computeApprovalHash({
+    taskUuid: task.task_uuid, toolName: task.tool_name, entityId: task.entity_id, actionType: task.kind,
+    preparedPayload: preview, recUpdatedAt: null,
+  });
+  if (!approvalHash || approvalHash !== expectedHash) {
+    await transitionTask({ taskId: task.task_uuid, to: 'PREPARING', patch: { error: 'الخطة اتغيرت بعد التجهيز — جهّزها تاني.' } });
+    return { ok: false, error: 'STALE_APPROVAL', message: 'الخطة اتغيرت بعد التجهيز — محتاجة موافقة جديدة.' };
+  }
+
+  const conflicting = await findActiveTaskForEntity(task.entity_id);
+  if (conflicting && conflicting.task_uuid !== task.task_uuid) {
+    await transitionTask({ taskId: task.task_uuid, to: 'BLOCKED', patch: { blocked_reason: 'فيه تاسك تاني شغال بالفعل على نفس المنتج.' } });
+    return { ok: false, error: 'CONFLICT', message: 'فيه إجراء تاني شغال على نفس المنتج دلوقتي.' };
+  }
+
+  await transitionTask({ taskId: task.task_uuid, to: 'RUNNING', patch: { approved_at: new Date(), approved_by_id: userId || null, progress: 75 } });
+
+  const productId = Number(task.entity_id);
+  let updated;
+  try {
+    updated = await prisma.product.update({ where: { id: productId }, data: { selling_price: preview.newPrice } });
+  } catch (err) {
+    await transitionTask({ taskId: task.task_uuid, to: 'FAILED', patch: { error: err.message || String(err) } });
+    return { ok: false, error: 'EXECUTION_FAILED', message: err.message || 'فشل تحديث السعر.' };
+  }
+
+  await transitionTask({ taskId: task.task_uuid, to: 'VERIFYING', patch: { progress: 90 } });
+
+  // Verify-after-write — re-read the row rather than trusting the update() call's own return value.
+  const reread = await prisma.product.findUnique({ where: { id: productId }, select: { selling_price: true } });
+  const verified = reread?.selling_price === preview.newPrice;
+  const finalTask = await transitionTask({
+    taskId: task.task_uuid, to: verified ? 'COMPLETED' : 'PARTIALLY_COMPLETED',
+    patch: { progress: 100, error: verified ? null : 'السعر اتحدّث لكن القراءة الفورية بعده مش مطابقة — راجعه يدويًا.' },
+  });
+  return { ok: true, task: serializeTask(finalTask), oldValue: preview.currentPrice, newValue: updated.selling_price };
 }
 
 export { serializeTask, ACTIVE_STATUSES };

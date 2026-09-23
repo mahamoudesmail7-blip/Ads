@@ -34,6 +34,7 @@ import { generateAngleProposals, generateHooks, generateCreativeIdeas } from './
 import { buildCodQualityReport } from './amb/codQualityBrain.js';
 import { buildProductPlaybook } from './amb/productPlaybook.js';
 import { resolveScaleLadderStage, STAGE_ORDER } from './amb/scaleLadder.js';
+import { capturePriceTestBaseline } from './assistantTasks/pricePrepare.js';
 import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { getConnection } from './metaAuth.js';
@@ -434,6 +435,45 @@ export async function get_scale_ladder({ productId, window } = {}) {
   }
 }
 
+export async function get_price_test_status({ productId } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const task = await prisma.assistantTask.findFirst({
+      where: { kind: 'PRICE_TEST', entity_id: String(productId), status: { in: ['COMPLETED', 'PARTIALLY_COMPLETED'] } },
+      orderBy: { updated_at: 'desc' },
+    });
+    if (!task) return { ok: true, hasActiveTest: false, message: 'مفيش اختبار سعر مكتمل مسجل لهذا المنتج حتى الآن.' };
+
+    const preview = task.prepared_payload_json ? JSON.parse(task.prepared_payload_json) : {};
+    const after = await capturePriceTestBaseline({ productId: Number(productId) });
+    if (!after.ok) return { ok: false, error: after.message };
+
+    const before = preview.baseline || null;
+    // The SAME >=15% real-margin logic productMarketingTests.js's own classify() already uses for every other test type — never a new threshold, applied here to net profit specifically because the spec is explicit: optimize for PROFIT, not merely preserving conversion rate.
+    let verdict = 'INCONCLUSIVE';
+    if (after.baseline.actualOrders != null && after.baseline.actualOrders < 5) {
+      verdict = 'CONTINUE_TEST';
+    } else if (before?.netProfit != null && after.baseline.netProfit != null && Math.abs(before.netProfit) > 0.01) {
+      const rel = (after.baseline.netProfit - before.netProfit) / Math.abs(before.netProfit);
+      if (rel >= 0.15) verdict = 'KEEP_NEW_PRICE';
+      else if (rel <= -0.15) verdict = 'ROLLBACK_PRICE';
+      else verdict = 'CONTINUE_TEST';
+    }
+
+    return {
+      ok: true, hasActiveTest: true,
+      productName: preview.productName || after.productName,
+      priorPrice: preview.currentPrice, currentPrice: preview.newPrice,
+      priceChangedAt: task.updated_at,
+      before, after: after.baseline,
+      verdict,
+      note: 'التقييم بيفضّل صافي الربح الحقيقي، مش مجرد الحفاظ على معدل التحويل.',
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -686,6 +726,17 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_price_test_status',
+    description: '[💵 نتيجة اختبار السعر] لو المنتج اتغيّر سعره فعليًا من قبل (عن طريق prepare_price_test موافَق عليه)، يقارن الأداء الحقيقي قبل/بعد (صافي الربح، عدد الأوردرات) ويرجع حكم: KEEP_NEW_PRICE (السعر الجديد أحسن فعليًا) أو ROLLBACK_PRICE (أسوأ) أو CONTINUE_TEST (العينة لسه صغيرة) أو INCONCLUSIVE. التقييم بيفضّل الربح الحقيقي مش مجرد معدل التحويل. استخدمه لأسؤلة "اختبار السعر عمل إيه؟" أو "أرجع السعر القديم ولا أستمر؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -767,6 +818,7 @@ export const TOOL_IMPLS = {
   get_cod_quality,
   get_product_playbook,
   get_scale_ladder,
+  get_price_test_status,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -780,4 +832,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];

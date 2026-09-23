@@ -25,6 +25,7 @@ import { checkEntityForPauseResume, findOrCreatePauseResumeRecommendation } from
 import { resolveMultiGeoTargeting, requireAdAccount, autoResolveAccountAssets, resolveProduct, createDraftJob, getJob } from './assistantTasks/launchCampaignPrepare.js';
 import { loadWinningStackForProduct, resolveWinningCreativeAsset } from './assistantTasks/scalePrepare.js';
 import { loadTestContext, parseAudienceTestValue } from './assistantTasks/testPrepare.js';
+import { capturePriceTestBaseline } from './assistantTasks/pricePrepare.js';
 import { createTest as createPmcTest } from './amb/productMarketingTests.js';
 import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
 import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus } from './assistantTasks/taskEngine.js';
@@ -37,6 +38,7 @@ export const WRITE_TOOL_META = {
   prepare_campaign: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_scale: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_test: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
+  prepare_price_test: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   generate_campaign_copy: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   get_my_recent_tasks: { tier: 'READ', requiresApproval: false, writesToMeta: false },
 };
@@ -656,6 +658,70 @@ export async function prepare_test(args = {}) {
   }
 }
 
+/**
+ * Price Testing Engine (Phase 3 Slice 12). Unlike every other prepare_*
+ * tool, the write here is a LOCAL database field (Product.selling_price) —
+ * never Meta, never Easy Orders. Still goes through the exact same
+ * PREPARE -> approval-hash -> conflict-check -> EXECUTE -> verify-after-
+ * write discipline (see taskEngine.js's approvePriceTestTask). Captures a
+ * real baseline snapshot at prepare time so get_price_test_status can later
+ * compare honestly instead of guessing "before" state.
+ */
+export async function prepare_price_test({ productId, productName, newPrice, userId, conversationRef, context } = {}) {
+  let taskUuid = null;
+  try {
+    let pid = productId || context?.productId || null;
+    if (!pid && productName) {
+      const p = await prisma.product.findFirst({ where: { product_name: { contains: productName }, active: true, is_historical: false }, select: { id: true } });
+      if (p) pid = p.id;
+    }
+    if (!pid) return { ok: false, error: 'عايز تختبر سعر لأنهي منتج بالظبط؟' };
+    if (newPrice === undefined || newPrice === null || Number(newPrice) <= 0) return { ok: false, error: 'محتاج السعر الجديد المقترح (رقم أكبر من صفر).' };
+
+    const existing = await findActiveTaskForEntity(String(pid));
+    if (existing) return { ok: true, task: (await resolveTaskStatus({ taskId: existing.task_uuid })).task, note: 'فيه تاسك شغال بالفعل على المنتج ده.' };
+
+    const baseline = await capturePriceTestBaseline({ productId: pid });
+    if (!baseline.ok) return { ok: false, error: baseline.message };
+
+    const task = await createTask({ userId, kind: 'PRICE_TEST', toolName: 'prepare_price_test', entityId: String(pid), entityType: 'product', entityName: baseline.productName, inputJson: { productId: pid, newPrice }, conversationRef });
+    taskUuid = task.task_uuid;
+    await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { progress: 30 } });
+
+    // Track as a real PMC PRICE test when a marketing profile exists — same graceful, non-fatal fallback prepare_test uses.
+    let pmcTestId = null;
+    try {
+      const profile = await prisma.productMarketingProfile.findFirst({ where: { product_id: pid }, select: { id: true } });
+      if (profile) {
+        const pmcTest = await createPmcTest({
+          profileId: profile.id, testType: 'PRICE',
+          hypothesis: `تغيير السعر من ${baseline.currentPrice} لـ${newPrice} ممكن يحسّن/يحافظ على الربح الحقيقي.`,
+          variable: 'price', control: String(baseline.currentPrice), variation: String(newPrice),
+          successMetric: 'netProfit', expectedLearning: 'هل السعر الجديد بيحسّن صافي الربح الحقيقي مقارنة بالسعر الحالي؟',
+          userId,
+        });
+        pmcTestId = pmcTest.id;
+      }
+    } catch { /* tracking-only — never blocks the actual price test */ }
+
+    const preview = {
+      productName: baseline.productName,
+      currentPrice: baseline.currentPrice,
+      newPrice: Number(newPrice),
+      priceChangePct: baseline.currentPrice > 0 ? Math.round(((Number(newPrice) - baseline.currentPrice) / baseline.currentPrice) * 1000) / 10 : null,
+      baseline: baseline.baseline,
+      pmcTestId,
+      warning: 'السعر هيتغير فعليًا في قاعدة البيانات لحظة الموافقة (بيأثر على أي عرض للمنتج) — راجعه كويس.',
+    };
+
+    const finalTask = await enterWaitingForApproval({ taskId: taskUuid, ambRecommendationId: null, preparedPayload: preview, actionType: 'PRICE_TEST', recUpdatedAt: null });
+    return { ok: true, task: (await resolveTaskStatus({ taskId: finalTask.task_uuid })).task };
+  } catch (err) {
+    if (taskUuid) await failTaskSafely({ taskId: taskUuid, error: err });
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function generate_campaign_copy({ productId, angle, tone } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -792,6 +858,19 @@ export const WRITE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'prepare_price_test',
+    description: '[تجهيز — لا يغيّر السعر فعليًا] يجهّز اختبار سعر حقيقي لمنتج — يلتقط لقطة حقيقية من الأداء الحالي (CPA/تأكيد/تسليم/صافي ربح) كمرجع قبل أي تغيير، ثم يعرض السعر الحالي مقابل المقترح. التغيير الفعلي في قاعدة البيانات بيحصل بس بعد موافقة صريحة. استخدمه لما المستخدم يطلب اختبار سعر جديد صراحة — ممنوع تقترح رقم سعر من عندك، لازم ييجي من المستخدم.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        productName: { type: 'string', description: 'اسم المنتج لو productId مش معروف' },
+        newPrice: { type: 'number', description: 'السعر الجديد المقترح — لازم ييجي من المستخدم صراحة' },
+      },
+      required: ['newPrice'],
+    },
+  },
+  {
     name: 'generate_campaign_copy',
     description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب نص إعلاني مصري حقيقي (Primary Text, Headline, Hook, CTA) لمنتج معين، مع تصنيف أمان الادّعاءات. اعرضه على المستخدم كمسودة يوافق عليها قبل ما تحطه في prepare_campaign.',
     input_schema: {
@@ -811,4 +890,4 @@ export const WRITE_TOOL_DEFINITIONS = [
   },
 ];
 
-export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, generate_campaign_copy, get_my_recent_tasks };
+export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, prepare_price_test, generate_campaign_copy, get_my_recent_tasks };
