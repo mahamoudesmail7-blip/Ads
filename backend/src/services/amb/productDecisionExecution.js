@@ -30,7 +30,7 @@ import { getAmbSettings } from './settings.js';
 
 function fail(msg, status = 400) { const e = new Error(msg); e.status = status; throw e; }
 
-const GENDER_TO_META = { 'رجال': 'MALE', 'نساء': 'FEMALE' };
+export const GENDER_TO_META = { 'رجال': 'MALE', 'نساء': 'FEMALE' };
 /** Meta's own real age-breakdown bucket strings ("18-24".."55-64", "65+") — never a guess, sourced from the SAME metaAudienceBreakdown.js values segmentIntel.js already classifies. */
 export function parseMetaAgeBucket(label) {
   const range = /^(\d+)-(\d+)$/.exec(String(label || ''));

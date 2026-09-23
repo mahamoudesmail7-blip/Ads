@@ -24,6 +24,8 @@ import { resolveOperationalWindowName } from './amb/productDossier.js';
 import { checkEntityForPauseResume, findOrCreatePauseResumeRecommendation } from './assistantTasks/pauseResumePrepare.js';
 import { resolveMultiGeoTargeting, requireAdAccount, autoResolveAccountAssets, resolveProduct, createDraftJob, getJob } from './assistantTasks/launchCampaignPrepare.js';
 import { loadWinningStackForProduct, resolveWinningCreativeAsset } from './assistantTasks/scalePrepare.js';
+import { loadTestContext, parseAudienceTestValue } from './assistantTasks/testPrepare.js';
+import { createTest as createPmcTest } from './amb/productMarketingTests.js';
 import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
 import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus } from './assistantTasks/taskEngine.js';
 import { prisma } from '../prisma.js';
@@ -34,6 +36,7 @@ export const WRITE_TOOL_META = {
   prepare_resume: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_campaign: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_scale: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
+  prepare_test: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   generate_campaign_copy: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   get_my_recent_tasks: { tier: 'READ', requiresApproval: false, writesToMeta: false },
 };
@@ -469,6 +472,190 @@ export async function prepare_scale(args = {}) {
   }
 }
 
+/**
+ * Testing Brain's "اعمل الاختبار المقترح" (Phase 3 Slice 3). A controlled
+ * AUDIENCE or GEO test: targeting varies by exactly the one dimension being
+ * tested, the product's current best creative is held CONSTANT (zero-upload
+ * reuse, same mechanism prepare_scale already built) so the test actually
+ * isolates one variable. CREATIVE-dimension tests are deliberately not
+ * supported here yet — that needs a genuinely new creative asset (Creative
+ * Brief/generation, a later slice), not a re-targeted reuse of the winner.
+ */
+export async function prepare_test(args = {}) {
+  const { userId, conversationRef, context } = args;
+  let taskUuid = null;
+  try {
+    const existingTask = await findActiveTaskForUserKind({ userId, kind: 'TEST_CAMPAIGN' });
+    const priorInput = existingTask?.input_json ? JSON.parse(existingTask.input_json) : {};
+    const merged = { ...priorInput };
+    for (const [k, v] of Object.entries(args)) {
+      if (['userId', 'conversationRef', 'context'].includes(k)) continue;
+      if (v !== undefined && v !== null && v !== '') merged[k] = v;
+    }
+
+    const task = existingTask || await createTask({ userId, kind: 'TEST_CAMPAIGN', toolName: 'prepare_test', inputJson: merged, conversationRef });
+    taskUuid = task.task_uuid;
+    if (task.status !== 'PREPARING') await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { input_json: JSON.stringify(merged), progress: 15 } });
+    else await patchTask({ taskId: taskUuid, patch: { input_json: JSON.stringify(merged) } });
+
+    const needInput = async (message, patch = {}) => {
+      await transitionTask({ taskId: taskUuid, to: 'WAITING_FOR_INPUT', patch: { error: message, input_json: JSON.stringify(merged), ...patch } });
+      return { ok: true, task: (await resolveTaskStatus({ taskId: taskUuid })).task };
+    };
+
+    // 1. Product — same convention as prepare_campaign/prepare_scale, never guessed.
+    let productId = merged.productId || context?.productId || null;
+    if (!productId && merged.productName) {
+      const p = await prisma.product.findFirst({ where: { product_name: { contains: merged.productName }, active: true, is_historical: false }, select: { id: true } });
+      if (p) productId = p.id;
+    }
+    if (!productId) return needInput('عايز تعمل الاختبار ده لأنهي منتج بالظبط؟');
+    const product = await resolveProduct(productId);
+    if (!product) return needInput('المنتج ده مش موجود أو مش نشط — عايز تعمل الاختبار لأنهي منتج؟');
+    merged.productId = product.id;
+
+    // 2. Required fields the tool never invents.
+    if (!['AUDIENCE', 'GEO'].includes(merged.testDimension)) return needInput('الاختبار ده لأنهي بُعد؟ (AUDIENCE للجمهور، أو GEO للمحافظات — اختبار الكرياتيف لسه مش متاح من الشات).');
+    const missing = ['testValue', 'budgetEgp', 'websiteUrl'].filter((k) => merged[k] === undefined || merged[k] === null || merged[k] === '');
+    if (missing.length) return needInput(`محتاج منك: ${missing.join('، ')}.`);
+
+    // 3. Targeting for the dimension being tested — the ONE variable that changes.
+    let targeting;
+    if (merged.testDimension === 'AUDIENCE') {
+      const parsed = parseAudienceTestValue(merged.testValue);
+      if (!parsed) return needInput('قيمة الجمهور دي مش واضحة — اكتب فئة عمرية بصيغة Meta زي "25-34" أو "65+"، أو "رجال"/"نساء".');
+      targeting = {
+        mode: 'CUSTOM', genders: parsed.mode === 'GENDER' ? parsed.gender : 'ALL',
+        ageMin: parsed.mode === 'AGE' ? parsed.ageMin : 18, ageMax: parsed.mode === 'AGE' ? parsed.ageMax : 65,
+        geoRegions: [], placementsMode: 'AUTOMATIC',
+      };
+    } else {
+      const geo = await resolveMultiGeoTargeting([merged.testValue]);
+      if (!geo.ok) return needInput(`مقدرتش أتعرف على المحافظة "${geo.unresolved}" — اكتبها بشكل تاني.`);
+      targeting = { mode: 'CUSTOM', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: geo.geoRegions, placementsMode: 'AUTOMATIC' };
+    }
+
+    // 4. Real Winning Stack context — the creative to hold constant + duplicate-test guard against durable learning memory.
+    const connection = await requireAdAccount();
+    const adAccountId = connection.selected_ad_account_id;
+    const testCtx = await loadTestContext({ productId: merged.productId, adAccountId, testDimension: merged.testDimension, testValue: merged.testValue });
+    if (!testCtx.ok) {
+      await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: testCtx.message, entity_name: product.product_name } });
+      return { ok: false, error: 'BLOCKED', message: testCtx.message };
+    }
+
+    // 5. Money Guard — profit gate only (a test's small budget doesn't warrant a stock/fatigue check the way a Scale does).
+    const settings = await getAmbSettings();
+    const opWindow = resolveWindow(resolveOperationalWindowName(settings));
+    const profitBrain = await getProductProfitBrain({ productId: merged.productId, dateFrom: opWindow.from, dateTo: opWindow.to });
+    const moneyGuard = evaluateMoneyGuardForScale({ profitState: profitBrain.state, stockGuard: null, creativeFatigueState: null, settings });
+    if (moneyGuard.decision === 'BLOCKED') {
+      await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: moneyGuard.reason, entity_name: product.product_name } });
+      return { ok: false, error: 'BLOCKED', message: moneyGuard.reason };
+    }
+
+    // 6. Page/Pixel/Instagram — same auto-resolve every launch-family prepare tool uses.
+    const resolved = await autoResolveAccountAssets(adAccountId, { pageName: merged.pageName, pixelName: merged.pixelName, instagramUsername: merged.instagramUsername });
+    if (!resolved.ok) {
+      const opts = resolved.options ? ' خيارات: ' + resolved.options.map((o) => o.name || o.username).join('، ') : '';
+      return needInput(`${resolved.message}${opts}`);
+    }
+
+    // 7. jobId — generated once, reused across every re-entry for this task.
+    const jobId = task.launch_job_id || crypto.randomUUID();
+    const dimLabel = merged.testDimension === 'AUDIENCE' ? 'اختبار جمهور' : 'اختبار محافظة';
+    const campaignName = merged.campaignName || `${testCtx.productName} — ${dimLabel} (${merged.testValue})`;
+    if (!task.launch_job_id) await patchTask({ taskId: taskUuid, patch: { launch_job_id: jobId, entity_id: jobId, entity_type: 'launch_job', entity_name: campaignName } });
+
+    const budgetMinor = Math.round(Number(merged.budgetEgp) * 100);
+    const launchInput = {
+      adAccountId, adAccountName: resolved.adAccountName, productId: merged.productId,
+      pageId: resolved.pageId, pageName: resolved.pageName, pixelId: resolved.pixelId, pixelName: resolved.pixelName,
+      instagramId: resolved.instagramId, instagramUsername: resolved.instagramUsername, platforms: resolved.platforms,
+      budgetMode: 'CBO', adSetsPerCampaign: 1, adsPerAdSet: 1, campaignCount: 1,
+      campaigns: [{ name: campaignName, websiteUrl: merged.websiteUrl, primaryText: merged.primaryText || null, headline: merged.headline || null }],
+      budget: { cbo: { dailyBudgetMinor: budgetMinor } },
+      startMode: 'NOW', startDate: null, startTime: null, timezone: resolved.timezone,
+      launchMode: 'PAUSED_REVIEW', // always — never let the model choose NOW/SCHEDULED launch_mode
+      targeting,
+    };
+
+    let job;
+    try {
+      job = await createDraftJob({ jobId, userId, input: launchInput });
+    } catch (err) {
+      if (err.status === 400) return needInput(err.message);
+      throw err;
+    }
+
+    // 8. Hold the creative constant — zero-upload reuse of the SAME winning asset prepare_scale uses, so this test isolates ONLY the targeting variable.
+    const fullJob = await getJob(jobId);
+    const alreadyHasMedia = (fullJob.videos || []).some((v) => v.status === 'UPLOADED') || (fullJob.images || []).some((i) => i.status === 'UPLOADED');
+    let reusedAsset = false;
+    if (!alreadyHasMedia && testCtx.creativeAssetId) {
+      const asset = await resolveWinningCreativeAsset(testCtx.creativeAssetId, adAccountId);
+      if (asset?.kind === 'video') {
+        await registerVideoSlot({ jobId, slotKey: 'C1', originalFilename: testCtx.controlCreativeLabel || 'control-creative' });
+        await markVideoResult({ jobId, slotKey: 'C1', status: 'UPLOADED', metaVideoId: asset.metaId });
+        reusedAsset = true;
+      } else if (asset?.kind === 'image') {
+        await registerImageSlot({ jobId, slotKey: 'I1', originalFilename: testCtx.controlCreativeLabel || 'control-creative' });
+        await markImageResult({ jobId, slotKey: 'I1', status: 'UPLOADED', metaImageHash: asset.metaId });
+        reusedAsset = true;
+      }
+    }
+
+    const fullJob2 = reusedAsset ? await getJob(jobId) : fullJob;
+    const hasMedia = (fullJob2.videos || []).some((v) => v.status === 'UPLOADED') || (fullJob2.images || []).some((i) => i.status === 'UPLOADED');
+    if (!hasMedia) return needInput('الكرياتيف اللي هنثبته للاختبار مش متسجل على الحساب ده — ارفق فيديو أو صورة من 📎 في الشات، وبعدين قولّي "كمّل".', { progress: 50 });
+
+    // 9. Track this as a real PMC test row when a marketing profile exists — never auto-creates one (matches resolveProfileForProduct's own "never fabricate" rule). Non-fatal if it fails.
+    let pmcTestId = null;
+    try {
+      const profile = await prisma.productMarketingProfile.findFirst({ where: { product_id: merged.productId }, select: { id: true } });
+      if (profile) {
+        const pmcTest = await createPmcTest({
+          profileId: profile.id,
+          testType: merged.testDimension === 'AUDIENCE' ? 'AUDIENCE' : 'MARKET_AREA',
+          hypothesis: `تغيير ${dimLabel === 'اختبار جمهور' ? 'الجمهور' : 'المحافظة'} لـ"${merged.testValue}" ممكن يحسّن ${testCtx.successMetric} مقارنة بالوضع الحالي.`,
+          variable: merged.testDimension, control: testCtx.controlCreativeLabel || 'الوضع الحالي', variation: merged.testValue,
+          recommendedBudget: Number(merged.budgetEgp), successMetric: testCtx.successMetric,
+          expectedLearning: `هل ${merged.testValue} بيحسن ${testCtx.successMetric} عن الوضع الحالي، مع تثبيت نفس الكرياتيف؟`,
+          userId,
+        });
+        pmcTestId = pmcTest.id;
+      }
+    } catch (err) {
+      // Tracking-only — never blocks the actual test campaign preparation.
+    }
+
+    // 10. All resolved — build the approval preview.
+    const preview = {
+      productName: testCtx.productName, campaignName, adAccountName: resolved.adAccountName, objective: 'OUTCOME_SALES',
+      budgetEgp: Number(merged.budgetEgp), budgetMode: 'CBO', adSetsPerCampaign: 1, adsPerAdSet: 1, campaignCount: 1,
+      pixelName: resolved.pixelName, pageName: resolved.pageName, instagramUsername: resolved.instagramUsername,
+      mediaCount: { videos: (fullJob2.videos || []).filter((v) => v.status === 'UPLOADED').length, images: (fullJob2.images || []).filter((i) => i.status === 'UPLOADED').length },
+      startMode: 'NOW', startAt: fullJob2.start_at,
+      targeting: { genders: targeting.genders, ageMin: targeting.ageMin, ageMax: targeting.ageMax, governorates: targeting.geoRegions.map((g) => g.name) },
+      primaryText: launchInput.campaigns[0].primaryText, headline: launchInput.campaigns[0].headline,
+      dataQuality: { productActive: true, pixelResolved: !!resolved.pixelId, pageResolved: !!resolved.pageId, instagramResolved: !!resolved.instagramId, mediaReady: true },
+      testDesign: {
+        dimension: merged.testDimension, variant: merged.testValue, control: testCtx.controlCreativeLabel || 'الوضع الحالي',
+        heldConstant: 'نفس الكرياتيف الحالي' + (reusedAsset ? ' (تم إعادة استخدامه من غير رفع جديد)' : ''),
+        successMetric: testCtx.successMetric, evaluationWindowDays: testCtx.evaluationWindowDays, pmcTestId,
+      },
+      profitBrain: { state: profitBrain.state, marginPct: profitBrain.marginPct, configState: profitBrain.configState },
+      moneyGuardWarning: moneyGuard.decision === 'WARN' ? moneyGuard.reason : null,
+    };
+
+    const finalTask = await enterWaitingForApproval({ taskId: taskUuid, ambRecommendationId: null, preparedPayload: preview, actionType: 'TEST_CAMPAIGN', recUpdatedAt: null });
+    return { ok: true, task: (await resolveTaskStatus({ taskId: finalTask.task_uuid })).task };
+  } catch (err) {
+    if (taskUuid) await failTaskSafely({ taskId: taskUuid, error: err });
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function generate_campaign_copy({ productId, angle, tone } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -584,6 +771,27 @@ export const WRITE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'prepare_test',
+    description: '[تجهيز — لا ينشئ أي كامبين فعليًا على Meta] يجهّز اختبار مُتحكَّم فيه (Controlled Test) لمنتج — يغيّر بُعد واحد بس (AUDIENCE: جمهور/فئة عمرية، أو GEO: محافظة) ويثبّت نفس الكرياتيف الفائز الحالي (بدون رفع جديد لو مسجل). استخدمه لما المستخدم يقول "اعمل الاختبار المقترح" أو يطلب اختبار جمهور/محافظة معينة صراحة. اختبار الكرياتيف نفسه (CREATIVE) لسه مش متاح من الشات. يرفض لو الاختبار ده اتجرب قبل كده وفشل (DOES_NOT_WORK) في ذاكرة التعلم. ينشئ تاسك كارت معاينة يوضّح المتغيّر اللي بيتغيّر والمتغيّرات الثابتة ومقياس النجاح — المستخدم لازم يوافق قبل أي إنشاء فعلي.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج الحقيقي، لو معروف' },
+        productName: { type: 'string', description: 'اسم المنتج لو productId مش معروف' },
+        testDimension: { type: 'string', enum: ['AUDIENCE', 'GEO'], description: 'البُعد المطلوب اختباره' },
+        testValue: { type: 'string', description: 'قيمة الاختبار — لـAUDIENCE: فئة عمرية بصيغة Meta ("25-34"، "65+") أو "رجال"/"نساء"؛ لـGEO: اسم محافظة مصرية بالعربي' },
+        campaignName: { type: 'string', description: 'اختياري — افتراضي "<اسم المنتج> — اختبار <البُعد> (<القيمة>)"' },
+        websiteUrl: { type: 'string', description: 'رابط الموقع/صفحة المنتج — لازم من المستخدم، ممنوع تخترعه' },
+        pageName: { type: 'string', description: 'بس لو المستخدم حدد صفحة معينة ردًا على سؤال الـ Tool' },
+        pixelName: { type: 'string', description: 'بس لو المستخدم حدد Pixel معين ردًا على سؤال الـ Tool' },
+        instagramUsername: { type: 'string', description: 'بس لو المستخدم حدد حساب إنستجرام معين ردًا على سؤال الـ Tool' },
+        budgetEgp: { type: 'number', description: 'الميزانية اليومية بالجنيه — عادة أصغر من ميزانية Scale لأنه اختبار' },
+        primaryText: { type: 'string' },
+        headline: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'generate_campaign_copy',
     description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب نص إعلاني مصري حقيقي (Primary Text, Headline, Hook, CTA) لمنتج معين، مع تصنيف أمان الادّعاءات. اعرضه على المستخدم كمسودة يوافق عليها قبل ما تحطه في prepare_campaign.',
     input_schema: {
@@ -603,4 +811,4 @@ export const WRITE_TOOL_DEFINITIONS = [
   },
 ];
 
-export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, generate_campaign_copy, get_my_recent_tasks };
+export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, generate_campaign_copy, get_my_recent_tasks };

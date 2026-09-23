@@ -80,8 +80,8 @@ function renderReplyHtml(text) {
 // a real, persisted AssistantTask in the /chat response's `task` field, and
 // this renders it as a live card the human must explicitly approve — never
 // two competing "propose a write" mechanisms running side by side.
-const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل للمنتج الرابح' };
-const LAUNCH_KINDS = ['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN'];
+const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل للمنتج الرابح', TEST_CAMPAIGN: '🧪 اختبار مُتحكَّم فيه' };
+const LAUNCH_KINDS = ['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN', 'TEST_CAMPAIGN'];
 const TASK_STATUS_LABEL = {
   PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
   WAITING_FOR_APPROVAL: 'محتاج موافقتك', RUNNING: 'جاري التنفيذ...', VERIFYING: 'جاري تأكيد التنفيذ...',
@@ -127,6 +127,13 @@ function moneyGuardHeaderHtml(p) {
   return `<div class="assistant-task-money-guard">${parts.map(escapeHtml).join(' · ')}</div>${warnHtml}`;
 }
 
+/** TEST_CAMPAIGN-only header — makes the controlled-test structure (what changes vs what's held constant) visible on the Task Card itself, not just in the chat reply text. */
+function testDesignHeaderHtml(testDesign) {
+  if (!testDesign) return '';
+  const dimLabel = testDesign.dimension === 'AUDIENCE' ? 'الجمهور' : 'المحافظة';
+  return `<div class="assistant-task-source-winner">🧪 اختبار مُتحكَّم فيه: ${escapeHtml(dimLabel)} → "${escapeHtml(testDesign.variant)}" (المتغيّر الوحيد) — ثابت: ${escapeHtml(testDesign.heldConstant)} — مقياس النجاح: ${escapeHtml(testDesign.successMetric)} خلال ${testDesign.evaluationWindowDays} يوم</div>`;
+}
+
 function launchCampaignPreviewHtml(p) {
   const targetingHtml = p.targeting?.mode === 'BROAD'
     ? 'كل مصر — بدون استهداف مخصص'
@@ -140,7 +147,7 @@ function launchCampaignPreviewHtml(p) {
     ['البداية', p.startMode === 'SCHEDULED' && p.startAt ? new Date(p.startAt).toLocaleString('ar-EG') : 'فورًا (بعد الموافقة، متوقف مبدئيًا للمراجعة)'],
     ['الاستهداف', targetingHtml],
   ];
-  return sourceWinnerHeaderHtml(p.sourceWinner) + moneyGuardHeaderHtml(p) + rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
+  return sourceWinnerHeaderHtml(p.sourceWinner) + testDesignHeaderHtml(p.testDesign) + moneyGuardHeaderHtml(p) + rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
 }
 
 function launchCampaignProgressHtml(launchProgress) {

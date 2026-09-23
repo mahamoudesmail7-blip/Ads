@@ -180,7 +180,7 @@ export async function resolveTaskStatus({ taskId }) {
   if (!task) { const e = new Error('التاسك مش موجود.'); e.status = 404; throw e; }
 
   let launchProgress = null;
-  if ((task.kind === 'LAUNCH_CAMPAIGN' || task.kind === 'SCALE_CAMPAIGN') && task.launch_job_id && ['RUNNING', 'VERIFYING'].includes(task.status)) {
+  if (['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN', 'TEST_CAMPAIGN'].includes(task.kind) && task.launch_job_id && ['RUNNING', 'VERIFYING'].includes(task.status)) {
     const { getQueueProgress } = await import('../amb/launchPublish.js');
     const progress = await getQueueProgress(task.launch_job_id).catch(() => null);
     if (progress) {
@@ -229,7 +229,7 @@ export async function approveTask({ taskId, userId, approvalHash }) {
     return { ok: task.status === 'COMPLETED', task: serializeTask(task) };
   }
 
-  if (task.kind === 'LAUNCH_CAMPAIGN' || task.kind === 'SCALE_CAMPAIGN') return approveLaunchCampaignTask({ task, userId, approvalHash });
+  if (['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN', 'TEST_CAMPAIGN'].includes(task.kind)) return approveLaunchCampaignTask({ task, userId, approvalHash });
 
   const { approveAndExecute } = await import('../amb/executor.js');
 

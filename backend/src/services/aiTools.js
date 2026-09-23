@@ -27,6 +27,7 @@ import { getScaleCenterProduct, getScaleCenterProductAudience, previewBumpForAdS
 import { resolveWindow } from './amb/metricsEngine.js';
 import { getAmbSettings } from './amb/settings.js';
 import { attachProfitStates } from './amb/profitBrain.js';
+import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './amb/testingBrain.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -257,6 +258,24 @@ export async function get_amb_product_decision({ productId, window } = {}) {
   }
 }
 
+export async function get_testing_brain({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId });
+    const { matrix, hasProfile } = await buildTestMatrix({ productId: Number(productId), pkg });
+    const next = nextBestTest({ pkg, testMatrix: matrix });
+    const design = buildControlledTestDesign({ pkg, next });
+    return {
+      ok: true, hasData: true, productId: pkg.productId, productName: pkg.productName, window: pkg.window,
+      hasMarketingProfile: hasProfile, testMatrix: matrix, nextBestTest: next, controlledTestDesign: design,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -398,6 +417,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_testing_brain',
+    description: '[Testing Brain] تاريخ اختبارات المنتج الكامل موحّد من كل المصادر الحقيقية (ذاكرة التعلم + الكرياتيف/الجمهور الحالي + اختبارات مركز التسويق) — لكل بُعد (كرياتيف/Hook/زاوية/جمهور/محافظة/عرض): TESTED/TESTING/WON/LOST/INCONCLUSIVE/NOT_TESTED. كمان بيرجع أفضل اختبار تالي مقترح بناءً على العنق الحقيقي (Bottleneck) الحالي، مع تصميم اختبار كامل (دليل/فرضية/متغيّر/Control/Variant/مقياس نجاح). استخدمه لأسئلة "إيه اللي اتجرب قبل كده؟" أو "أختبر إيه بعد كده؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -470,6 +501,7 @@ export const TOOL_IMPLS = {
   get_inventory_status,
   get_amb_product_performance,
   get_amb_product_decision,
+  get_testing_brain,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -483,4 +515,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
