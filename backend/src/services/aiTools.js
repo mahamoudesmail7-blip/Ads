@@ -31,6 +31,7 @@ import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './amb/
 import { buildGrowthPlan } from './amb/growthStrategist.js';
 import { buildTargetingStrategy } from './amb/targetingStrategy.js';
 import { generateAngleProposals, generateHooks, generateCreativeIdeas } from './amb/productMarketingAI.js';
+import { buildCodQualityReport } from './amb/codQualityBrain.js';
 import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { getConnection } from './metaAuth.js';
@@ -366,6 +367,21 @@ export async function generate_creative_brief({ productId, angle, count } = {}) 
   }
 }
 
+export async function get_cod_quality({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const w = resolveWindow(window || 'last7');
+    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId });
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { store_id: true } });
+    const report = await buildCodQualityReport({ productId: Number(productId), storeId: product?.store_id, from: w.from, to: w.to, pkg });
+    return { ok: true, hasData: true, productId: pkg.productId, productName: pkg.productName, window: w, ...report };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -582,6 +598,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_cod_quality',
+    description: '[🚚 جودة الـCOD] تفاصيل الأوردرات الحقيقية من Easy Orders لمنتج معين — العدد الكلي، قيد الانتظار، مؤكد، ملغي، تم التسليم، مرتجع، مع نسب التأكيد/الإلغاء/التسليم/الإرجاع. وتوزيع حقيقي على المحافظات مُرتَّب بالدليل (مثبت/واعد/غير كافٍ) مش بعدد الأوردرات الخام بس. يوضّح صراحة لو جودة الـCOD هي سبب عدم التوسع حتى لو الـCPA من Meta كويس. استخدمه لأسئلة "التأكيد كام؟" أو "المحافظة دي كويسة ولا لأ؟" أو "المخزون/التسليم بيمنع Scale؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -660,6 +688,7 @@ export const TOOL_IMPLS = {
   generate_angles,
   generate_hooks,
   generate_creative_brief,
+  get_cod_quality,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -673,4 +702,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
