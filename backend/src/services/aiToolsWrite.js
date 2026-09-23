@@ -28,7 +28,7 @@ import { loadTestContext, parseAudienceTestValue } from './assistantTasks/testPr
 import { capturePriceTestBaseline } from './assistantTasks/pricePrepare.js';
 import { createTest as createPmcTest } from './amb/productMarketingTests.js';
 import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
-import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus } from './assistantTasks/taskEngine.js';
+import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus, canTransitionTask } from './assistantTasks/taskEngine.js';
 import { prisma } from '../prisma.js';
 
 export const WRITE_TOOL_META = {
@@ -41,6 +41,12 @@ export const WRITE_TOOL_META = {
   prepare_price_test: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   generate_campaign_copy: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   get_my_recent_tasks: { tier: 'READ', requiresApproval: false, writesToMeta: false },
+  get_task_progress: { tier: 'READ', requiresApproval: false, writesToMeta: false },
+  // retry_task never writes to Meta directly — it either nudges an ALREADY-
+  // approved launch job's scheduler (no new approval needed, same plan) or
+  // re-runs prepare_* (which itself requires a fresh approval before any write).
+  retry_task: { tier: 'EXECUTE', requiresApproval: false, writesToMeta: false },
+  cancel_task: { tier: 'EXECUTE', requiresApproval: false, writesToMeta: false },
 };
 
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
@@ -745,6 +751,117 @@ export async function get_my_recent_tasks({ userId } = {}) {
   }
 }
 
+// Slice 17 — Operator Recovery. "فاضل إيه؟" / "وقفت ليه؟" for a
+// LAUNCH/SCALE/TEST_CAMPAIGN task — reads the SAME real per-campaign queue
+// progress the Task Card already polls (getQueueProgress), never a second
+// progress model. Distinguishes a genuinely stuck/unknown state (no
+// heartbeat for a while, nothing left retrying) from real, ongoing work —
+// a stalled task is reported as "الحالة الحقيقية مش معروفة", never silently
+// claimed COMPLETED/FAILED without evidence.
+const STALE_HEARTBEAT_MS = 10 * 60 * 1000;
+export async function get_task_progress({ taskUuid } = {}) {
+  try {
+    if (!taskUuid) return { ok: false, error: 'taskUuid مطلوب.' };
+    const task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskUuid } });
+    if (!task) return { ok: false, error: 'التاسك مش موجود.' };
+
+    if (!task.launch_job_id) {
+      return { ok: true, hasLaunchJob: false, status: task.status, error: task.error, blockedReason: task.blocked_reason, updatedAt: task.updated_at };
+    }
+    const { getQueueProgress } = await import('./amb/launchPublish.js');
+    const progress = await getQueueProgress(task.launch_job_id);
+    if (!progress) return { ok: false, error: 'مفيش تقدّم حقيقي مسجّل لهذا التاسك.' };
+
+    const stale = ['RUNNING', 'VERIFYING'].includes(task.status) && (Date.now() - new Date(task.heartbeat_at || task.updated_at).getTime()) > STALE_HEARTBEAT_MS;
+    const done = progress.campaigns.filter((c) => c.phase === 'COMPLETE');
+    const stuckNeedsHuman = progress.campaigns.filter((c) => c.humanActionRequired);
+    const stillWorking = progress.campaigns.filter((c) => !['COMPLETE'].includes(c.phase) && !c.humanActionRequired);
+
+    return {
+      ok: true, hasLaunchJob: true, status: task.status,
+      effectiveStatus: stale ? 'UNKNOWN' : task.status,
+      staleNote: stale ? `التاسك من غير أي تحديث حقيقي من ${Math.round((Date.now() - new Date(task.heartbeat_at || task.updated_at).getTime()) / 60000)} دقيقة — الحالة الحقيقية مش معروفة دلوقتي، ينصح تتأكد من Meta مباشرة أو تجرب "جرب تاني".` : null,
+      totalCampaigns: progress.campaigns.length,
+      completedCampaigns: done.length,
+      remainingCampaigns: stillWorking.map((c) => ({ name: c.name, phase: c.phase, adSetsCreated: c.adSetsCreated, adSetsTotal: c.adSetsTotal, adsCreated: c.adsCreated, adsTotal: c.adsTotal })),
+      blockedCampaigns: stuckNeedsHuman.map((c) => ({ name: c.name, error: c.error, errorClassification: c.errorClassification })),
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * "جرب تاني" — Slice 17. Two SAFE, distinct paths, never a duplicate write:
+ *   1. Task already has a real launch_job_id (it reached Meta publishing at
+ *      least once) — the plan is already approved and campaigns may already
+ *      be LIVE on Meta. Retrying here NEVER re-prepares a new plan (that
+ *      would risk a second, duplicate campaign); it only nudges the SAME
+ *      job's already-scheduled-but-not-yet-human-blocked campaigns via the
+ *      existing retryLaunchCampaignNow(), exactly what the Launch UI's own
+ *      "إعادة محاولة الآن" button does. A campaign genuinely ACTION_REQUIRED
+ *      is never silently retried — its real blocking reason is returned so
+ *      the human fixes it first.
+ *   2. Task never reached Meta (no launch_job_id — a pure prepare-time
+ *      failure/block, e.g. Money Guard, Data Quality, missing input) — the
+ *      ONLY safe retry is to re-run the ORIGINAL prepare_* call with its
+ *      ORIGINAL input, which is exactly the established "call prepare_x
+ *      again" convention every other slice already relies on. This always
+ *      creates a fresh task with a fresh approval — nothing stale is reused.
+ */
+export async function retry_task({ taskUuid, userId, conversationRef } = {}) {
+  try {
+    if (!taskUuid) return { ok: false, error: 'taskUuid مطلوب.' };
+    const task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskUuid } });
+    if (!task) return { ok: false, error: 'التاسك مش موجود.' };
+    if (!['FAILED', 'BLOCKED'].includes(task.status)) return { ok: false, error: `التاسك ده حالته ${task.status} — إعادة المحاولة متاحة بس للتاسكات اللي فشلت أو اتوقفت.` };
+
+    if (task.launch_job_id) {
+      const { getQueueProgress, retryLaunchCampaignNow } = await import('./amb/launchPublish.js');
+      const progress = await getQueueProgress(task.launch_job_id);
+      if (!progress) return { ok: false, error: 'مفيش تقدّم حقيقي مسجّل لهذا التاسك — مينفعش نعيد المحاولة من غيره.' };
+
+      const blocked = progress.campaigns.filter((c) => c.humanActionRequired);
+      if (blocked.length) {
+        return {
+          ok: true, retried: false,
+          note: 'فيه كامبينات محتاجة تدخل يدوي قبل إعادة المحاولة — مش هينفع نعيد المحاولة تلقائيًا.',
+          blockedCampaigns: blocked.map((c) => ({ name: c.name, error: c.error, errorClassification: c.errorClassification })),
+        };
+      }
+      const retryable = progress.campaigns.filter((c) => !['COMPLETE'].includes(c.phase));
+      if (!retryable.length) return { ok: true, retried: false, note: 'كل الكامبينات خلصت بالفعل — مفيش حاجة تتعاد.' };
+
+      for (const c of retryable) await retryLaunchCampaignNow({ jobId: task.launch_job_id, campaignIndex: c.index }).catch(() => {});
+      if (task.status === 'FAILED') await transitionTask({ taskId: taskUuid, to: 'RUNNING', patch: { error: null, progress: Math.round((progress.campaigns.length - retryable.length) / progress.campaigns.length * 100) } });
+      return { ok: true, retried: true, nudgedCampaigns: retryable.map((c) => c.name), note: 'المفروض الكامبينات دي تستأنف خلال ثواني — استخدم get_task_progress للمتابعة.' };
+    }
+
+    // No launch_job_id — safe to re-run the original prepare_* call verbatim.
+    const originalInput = task.input_json ? JSON.parse(task.input_json) : {};
+    const impl = WRITE_TOOL_IMPLS[task.tool_name];
+    if (!impl) return { ok: false, error: `مفيش أداة تجهيز معروفة اسمها ${task.tool_name} — مينفعش نعيد المحاولة تلقائيًا.` };
+    const result = await impl({ ...originalInput, userId, conversationRef });
+    return { ok: true, retried: true, reprepared: true, ...result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/** "الغِ التاسك" — a thin chat-facing wrapper over the SAME cancel transition the Task History page's own cancel button already uses. Only ever cancels a task still in a non-terminal, non-launched state. */
+export async function cancel_task({ taskUuid } = {}) {
+  try {
+    if (!taskUuid) return { ok: false, error: 'taskUuid مطلوب.' };
+    const task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskUuid } });
+    if (!task) return { ok: false, error: 'التاسك مش موجود.' };
+    if (!canTransitionTask(task.status, 'CANCELLED')) return { ok: false, error: `التاسك ده حالته ${task.status} — مينفعش يتلغي دلوقتي.` };
+    const cancelled = await transitionTask({ taskId: taskUuid, to: 'CANCELLED' });
+    return { ok: true, task: { taskUuid: cancelled.task_uuid, status: cancelled.status } };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export const WRITE_TOOL_DEFINITIONS = [
   {
     name: 'prepare_bump',
@@ -888,6 +1005,33 @@ export const WRITE_TOOL_DEFINITIONS = [
     description: '[قراءة فقط] يجيب آخر 5 تاسكات حقيقية للمستخدم الحالي وحالتها الفعلية (PLANNED/PREPARING/WAITING_FOR_APPROVAL/RUNNING/VERIFYING/COMPLETED/PARTIALLY_COMPLETED/FAILED/CANCELLED/BLOCKED). استخدمه دايمًا قبل الرد على أي سؤال زي "بتعمل إيه دلوقتي؟" أو "خلصت؟" — ممنوع تجاوب من الذاكرة.',
     input_schema: { type: 'object', properties: {} },
   },
+  {
+    name: 'get_task_progress',
+    description: '[قراءة فقط] لسؤال "فاضل إيه؟" أو "وقفت ليه؟" عن تاسك إطلاق/سكيل/اختبار معين — بيرجع تفصيل حقيقي لكل كامبين لسه شغال (وصل لفين: Ad Sets/Ads اتعملت)، أي كامبين محتاج تدخل يدوي وليه، ولو التاسك واقف من غير أي تحديث لفترة طويلة بيقول بصراحة إن الحالة الحقيقية "غير معروفة" (effectiveStatus=UNKNOWN) بدل ما يدّعي إنه لسه شغال أو إنه فشل من غير دليل.',
+    input_schema: {
+      type: 'object',
+      properties: { taskUuid: { type: 'string', description: 'رقم التاسك الحقيقي (من get_my_recent_tasks)' } },
+      required: ['taskUuid'],
+    },
+  },
+  {
+    name: 'retry_task',
+    description: '[تجهيز/تنفيذ حسب الحالة] لطلب "جرب تاني" على تاسك فشل أو اتوقف. لو التاسك وصل لـ Meta فعلاً (فيه كامبينات جزئيًا شغالة)، بيعيد تشغيل بس الكامبينات اللي لسه مش خلصت من غير ما يلمس اللي خلص أو يكرر أي حاجة على Meta؛ لو فيه كامبين محتاج تدخل يدوي، بيقولك السبب الحقيقي بدل ما يحاول يتخطاه. لو التاسك فشل قبل ما يوصل لـ Meta خالص، بيعيد تجهيز نفس الخطة بنفس البيانات من الأول (تاسك جديد، محتاج موافقة جديدة).',
+    input_schema: {
+      type: 'object',
+      properties: { taskUuid: { type: 'string', description: 'رقم التاسك الحقيقي (من get_my_recent_tasks)' } },
+      required: ['taskUuid'],
+    },
+  },
+  {
+    name: 'cancel_task',
+    description: '[تنفيذ فوري — إلغاء بس، لا يغيّر أي حاجة على Meta] لطلب "الغِ التاسك" أو "سيبها" — يلغي تاسك لسه في حالة غير نهائية (قبل التنفيذ أو محتاج موافقة). مينفعش يلغي تاسك خلص أو بيتنفذ فعليًا على Meta دلوقتي.',
+    input_schema: {
+      type: 'object',
+      properties: { taskUuid: { type: 'string', description: 'رقم التاسك الحقيقي (من get_my_recent_tasks)' } },
+      required: ['taskUuid'],
+    },
+  },
 ];
 
-export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, prepare_price_test, generate_campaign_copy, get_my_recent_tasks };
+export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, prepare_price_test, generate_campaign_copy, get_my_recent_tasks, get_task_progress, retry_task, cancel_task };

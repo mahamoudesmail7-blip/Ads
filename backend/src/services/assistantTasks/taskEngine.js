@@ -21,7 +21,13 @@ const TASK_TRANSITIONS = {
   COMPLETED: [],
   PARTIALLY_COMPLETED: [],
   CANCELLED: [],
-  FAILED: ['PREPARING'],
+  // FAILED->RUNNING (Slice 17, Operator Recovery): resuming a LAUNCH/SCALE/
+  // TEST_CAMPAIGN task whose launch_job_id already exists — retrying there
+  // means nudging the SAME already-approved AmbLaunchJob's stuck campaigns
+  // (retry_task in aiToolsWrite.js), never re-preparing a fresh plan, so the
+  // task re-enters RUNNING (work resumes) rather than PREPARING (which would
+  // imply a new plan needs a new approval it does not need).
+  FAILED: ['PREPARING', 'RUNNING'],
   BLOCKED: ['PREPARING', 'CANCELLED'],
 };
 
