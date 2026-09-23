@@ -38,6 +38,7 @@ import { capturePriceTestBaseline } from './assistantTasks/pricePrepare.js';
 import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { detectIncidentsForProduct, raiseIncidentAlerts } from './amb/incidentCenter.js';
+import { buildDailyBrief } from './amb/dailyBrief.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -521,6 +522,16 @@ export async function get_incidents({ productId, window } = {}) {
   }
 }
 
+export async function get_daily_brief({ window } = {}) {
+  try {
+    const brief = await buildDailyBrief({ windowName: window || 'today' });
+    if (!brief.ok) return { ok: false, error: brief.message || 'مفيش حساب Meta متصل.' };
+    return { ok: true, hasData: true, ...brief };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -807,6 +818,16 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_daily_brief',
+    description: '[📊 تقرير النهاردة] ملخص كامل الحساب لفترة معينة — الصرف، مشتريات Meta، أوردرات Easy Orders، الإيراد، صافي الربح (لو مؤكد فقط)، متوسط CPA، معدل التحويل الفعلي (Business CR)، المنتجات الفائزة والمحتاجة انتباه، فرص التوسّع/الزيادة، الكرياتيفات المتعبة، الاختبارات الشغالة، آخر الحوادث، والمهام المنتظرة موافقتك — كل قسم معاه وقت آخر تحديث حقيقي بتاعه (Meta/Easy Orders/التحليل) عشان مفيش خلط بين فترات مختلفة. استخدمه لأسئلة "لخصلي النهاردة" أو "عامل إيه الحساب؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي today' },
+      },
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -891,6 +912,7 @@ export const TOOL_IMPLS = {
   get_price_test_status,
   get_stock_status,
   get_incidents,
+  get_daily_brief,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -904,4 +926,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_daily_brief', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
