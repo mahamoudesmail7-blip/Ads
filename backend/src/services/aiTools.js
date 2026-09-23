@@ -26,6 +26,7 @@ import { creativeIntelForProduct } from './amb/creativeIntel.js';
 import { getScaleCenterProduct, getScaleCenterProductAudience, previewBumpForAdSet } from './amb/scaleCenter.js';
 import { resolveWindow } from './amb/metricsEngine.js';
 import { getAmbSettings } from './amb/settings.js';
+import { attachProfitStates } from './amb/profitBrain.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -115,7 +116,9 @@ export async function get_decisions_summary({ dateFrom, dateTo } = {}) {
 export async function get_product_profit({ dateFrom, dateTo, productId } = {}) {
   try {
     const data = await computeTruePerformance({ dateFrom, dateTo, productId });
-    return { ok: true, ...data };
+    const settings = await getAmbSettings();
+    const products = await attachProfitStates(data.products, settings);
+    return { ok: true, ...data, products };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -339,7 +342,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_product_profit',
-    description: 'يجيب الربح الحقيقي لكل منتج — صرف Meta، أوردرات حقيقية، تم التسليم، مرتجعات، صافي الربح، True CPA، True ROAS. استخدمه لأسئلة زي "إحنا كسبنا كام" أو "أفضل منتج مربح".',
+    description: 'يجيب الربح الحقيقي لكل منتج — صرف Meta، أوردرات حقيقية، تم التسليم، مرتجعات، صافي الربح، True CPA، True ROAS، وحالة الربح الحقيقية (profitState: PROFITABLE/MARGIN_THIN/BREAK_EVEN/UNPROFITABLE/PARTIAL_DATA/INSUFFICIENT_DATA) مبنية على هامش الربح الحقيقي، مش على الـ CPA لوحده. استخدمه لأسئلة زي "إحنا كسبنا كام" أو "أفضل منتج مربح" أو "المنتج ده بيكسب فعلاً؟".',
     input_schema: {
       type: 'object',
       properties: {

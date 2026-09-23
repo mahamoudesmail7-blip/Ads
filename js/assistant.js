@@ -93,6 +93,11 @@ const CAMPAIGN_PHASE_LABEL = {
 };
 const TASK_STATUS_CLASS = { COMPLETED: 'ok', PARTIALLY_COMPLETED: 'warn', FAILED: 'err', BLOCKED: 'warn', CANCELLED: 'muted' };
 const TASK_ACTIVE_STATUSES = ['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT', 'WAITING_FOR_APPROVAL', 'RUNNING', 'VERIFYING'];
+const PROFIT_STATE_LABEL = {
+  PROFITABLE: '✅ مربح', MARGIN_THIN: '⚠️ هامش ضيق', BREAK_EVEN: '⚖️ على حافة التعادل',
+  UNPROFITABLE: '🔴 خسران', PARTIAL_DATA: '❔ بيانات ناقصة', INSUFFICIENT_DATA: '❔ بيانات غير كافية',
+};
+const STOCK_STATUS_LABEL = { SAFE: '✅ متوفر', LOW: '⚠️ منخفض', OUT_OF_STOCK: '🔴 نفد', STOCK_UNKNOWN: '❔ غير مسجل' };
 
 /** SCALE_CAMPAIGN-only header showing exactly which proven creative/evidence the draft was built from — the Task Card's own "never claim proof without showing it" affordance. */
 function sourceWinnerHeaderHtml(sourceWinner) {
@@ -103,6 +108,22 @@ function sourceWinnerHeaderHtml(sourceWinner) {
   if (sourceWinner.purchases != null) parts.push(`${sourceWinner.purchases} عملية شراء`);
   const reuseNote = sourceWinner.reusedFromMediaLibrary ? ' (تم إعادة استخدامه من غير رفع جديد)' : '';
   return `<div class="assistant-task-source-winner">📈 بناءً على الكرييتيف الرابح: ${parts.join(' — ')}${reuseNote}</div>`;
+}
+
+/** SCALE_CAMPAIGN-only Money Guard/Profit Brain/Stock Guard header — never hides a risk flag, only ever additive to the preview rows below it. */
+function moneyGuardHeaderHtml(p) {
+  if (!p.profitBrain && !p.stockGuard) return '';
+  const parts = [];
+  if (p.profitBrain) {
+    const label = PROFIT_STATE_LABEL[p.profitBrain.state] || p.profitBrain.state;
+    parts.push(`💰 الربح الحقيقي: ${label}${p.profitBrain.marginPct != null ? ` (${p.profitBrain.marginPct.toFixed(1)}%)` : ''}`);
+  }
+  if (p.stockGuard) {
+    const label = STOCK_STATUS_LABEL[p.stockGuard.status] || p.stockGuard.status;
+    parts.push(`📦 المخزون: ${label}${p.stockGuard.daysRemaining != null ? ` — ${p.stockGuard.daysRemaining} يوم متبقي تقريبًا` : ''}`);
+  }
+  const warnHtml = p.moneyGuardWarning ? `<div class="assistant-task-warning">⚠️ ${escapeHtml(p.moneyGuardWarning)}</div>` : '';
+  return `<div class="assistant-task-money-guard">${parts.map(escapeHtml).join(' · ')}</div>${warnHtml}`;
 }
 
 function launchCampaignPreviewHtml(p) {
@@ -118,7 +139,7 @@ function launchCampaignPreviewHtml(p) {
     ['البداية', p.startMode === 'SCHEDULED' && p.startAt ? new Date(p.startAt).toLocaleString('ar-EG') : 'فورًا (بعد الموافقة، متوقف مبدئيًا للمراجعة)'],
     ['الاستهداف', targetingHtml],
   ];
-  return sourceWinnerHeaderHtml(p.sourceWinner) + rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
+  return sourceWinnerHeaderHtml(p.sourceWinner) + moneyGuardHeaderHtml(p) + rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
 }
 
 function launchCampaignProgressHtml(launchProgress) {

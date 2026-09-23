@@ -100,7 +100,7 @@ export async function autoResolveAccountAssets(adAccountId, overrides = {}) {
 export async function resolveProduct(productId) {
   const pid = Number(productId);
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  const product = await prisma.product.findUnique({ where: { id: pid }, select: { id: true, product_name: true, active: true, is_historical: true } });
+  const product = await prisma.product.findUnique({ where: { id: pid }, select: { id: true, product_name: true, active: true, is_historical: true, store_id: true } });
   if (!product || !product.active || product.is_historical) return null;
   return product;
 }

@@ -1178,6 +1178,21 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   font-weight: 500;
 }
 
+/* Money Guard / Profit Brain / Stock Guard (Product Growth & Profit Intelligence, Phase 3 Slice 1). */
+.assistant-task-money-guard {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-weight: 500;
+}
+.assistant-task-warning {
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--yellow-bg);
+  color: var(--yellow);
+  font-size: 12px;
+}
+
 /* LAUNCH_CAMPAIGN task card (AI Media Buyer Operator, Phase 2 Slice 2). */
 .assistant-task-progress-rows {
   margin-top: 6px;

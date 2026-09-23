@@ -23,6 +23,7 @@ import { creativeIntelForProduct } from './creativeIntel.js';
 import { resolveWindow } from './metricsEngine.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { buildActionPlan } from './productActionPlan.js';
+import { stockStatus } from './stockGuard.js';
 
 /** The SAME window productAutoAnalysis.js's scheduler uses to compute/persist the LIVE operational decision — exported so both files derive it from one place and can never drift apart. */
 export function resolveOperationalWindowName(settings) {
@@ -39,13 +40,6 @@ async function resolveSinceLaunchWindow(productId) {
   if (!job) return null;
   const activatedAt = job.campaigns[0]?.natively_activated_at || job.created_at;
   return { from: new Date(activatedAt).toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10), label: 'منذ الإطلاق' };
-}
-
-function stockSummary(product) {
-  if (product.current_stock == null) return { status: 'STOCK_UNKNOWN', currentStock: null, minimumStock: product.minimum_stock ?? null };
-  const min = product.minimum_stock ?? 0;
-  const status = product.current_stock <= 0 ? 'OUT_OF_STOCK' : product.current_stock <= min ? 'LOW' : 'SAFE';
-  return { status, currentStock: product.current_stock, minimumStock: product.minimum_stock ?? null };
 }
 
 function packageFromPersistedRow(row, productId) {
@@ -95,7 +89,7 @@ export async function getProductDossier({ productId, windowName, from, to, force
   if (!product) { const e = new Error('المنتج غير موجود.'); e.status = 404; throw e; }
 
   const ambProduct = await prisma.ambProduct.findUnique({ where: { product_id: pid }, select: { id: true, image_url: true } });
-  const stock = stockSummary(product);
+  const stock = stockStatus(product);
   const base = { productId: pid, productName: product.product_name, storeId: product.store_id, sku: product.sku, category: product.category, image: ambProduct?.image_url || null, stock };
 
   const campaigns = await resolveProductCampaigns(pid);

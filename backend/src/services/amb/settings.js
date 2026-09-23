@@ -52,6 +52,11 @@ export const AMB_DEFAULT_SETTINGS = {
   ambBumpRollbackCooldownHours: 48,
   ambBumpMaxDailyBudget: null,              // EGP — no cap unless set
   ambBumpAutopilot: false,                  // reserved for a future per-rule autopilot toggle — NEVER silently enabled by this build
+  // Product Growth & Profit Intelligence — Profit Brain / Money Guard / Stock Guard (Phase 3, Slice 1)
+  ambProfitMarginThinPct: 15,          // % — real net margin below this (but still positive) classifies as MARGIN_THIN
+  ambProfitBreakEvenBandPct: 3,        // % — symmetric band around 0 net margin classified as BREAK_EVEN
+  ambStockGuardMinDaysForScale: 14,    // days of stock remaining below this → Scale gets a WARN risk flag
+  ambStockGuardVelocityWindowDays: 14, // trailing window used to compute real sales velocity for days-remaining
 };
 
 /** Merged AMB settings — DEFAULTS <- whatever the owner saved. Only the `amb…` keys are returned. */

@@ -52,6 +52,15 @@ export async function bumpsInLast24h(adAccountId, adsetId) {
   });
 }
 
+/** Sum of every real budget_change_pct persisted for this ad set in the last 24h (scheduler-originated AND chat-prepared bumps both write through persistBumpRecommendation, so this is a true cumulative total) — what Money Guard's daily-cumulative-cap check needs. */
+export async function cumulativeBumpPctLast24h(adAccountId, adsetId) {
+  const rows = await prisma.ambRecommendation.findMany({
+    where: { level: 'adset', entity_id: adsetId, ad_account_id: adAccountId, decision: 'BUMP_ADSET_25', created_at: { gte: new Date(Date.now() - 24 * 3600000) } },
+    select: { budget_change_pct: true },
+  });
+  return rows.reduce((s, r) => s + (r.budget_change_pct || 0), 0);
+}
+
 export async function persistBumpRecommendation({ adAccountId, adSet, ambProductId, productName, evalResult, batchId }) {
   return prisma.ambRecommendation.create({
     data: {

@@ -15,6 +15,12 @@
 import crypto from 'crypto';
 import { getAmbSettings } from './amb/settings.js';
 import { previewBumpForAdSet, prepareBumpForAdSet } from './amb/scaleCenter.js';
+import { cumulativeBumpPctLast24h } from './amb/budgetBumpOrchestrator.js';
+import { evaluateBudgetCap, evaluateDailyCumulativeCap, evaluateMoneyGuardForScale } from './amb/moneyGuard.js';
+import { getProductProfitBrain } from './amb/profitBrain.js';
+import { stockGuardForProduct } from './amb/stockGuard.js';
+import { resolveWindow } from './amb/metricsEngine.js';
+import { resolveOperationalWindowName } from './amb/productDossier.js';
 import { checkEntityForPauseResume, findOrCreatePauseResumeRecommendation } from './assistantTasks/pauseResumePrepare.js';
 import { resolveMultiGeoTargeting, requireAdAccount, autoResolveAccountAssets, resolveProduct, createDraftJob, getJob } from './assistantTasks/launchCampaignPrepare.js';
 import { loadWinningStackForProduct, resolveWinningCreativeAsset } from './assistantTasks/scalePrepare.js';
@@ -41,26 +47,39 @@ export async function prepare_bump({ adSetId, pct, userId, conversationRef } = {
     const settings = await getAmbSettings();
     const maxPct = n(settings.ambMaxBudgetIncreasePct) ?? 20;
     const requestedPct = n(pct) ?? n(settings.ambBumpPct) ?? 25;
-    // Fixes a confirmed gap: previewBumpForAdSet/prepareBumpForAdSet only
-    // validate pct>0, never an upper bound — clamp here, at PREPARE time,
-    // rather than letting an unsafe value reach the rule engine's own
-    // budget_change_bounds check for the first time only at approve.
-    const clampedPct = Math.min(requestedPct, maxPct);
 
     const existing = await findActiveTaskForEntity(String(adSetId));
     if (existing) return { ok: true, task: (await resolveTaskStatus({ taskId: existing.task_uuid })).task, note: 'فيه تاسك شغال بالفعل على الـ Ad Set ده.' };
 
-    const task = await createTask({ userId, kind: 'BUMP', toolName: 'prepare_bump', entityId: String(adSetId), entityType: 'adset', inputJson: { adSetId, pct: clampedPct }, conversationRef });
+    const task = await createTask({ userId, kind: 'BUMP', toolName: 'prepare_bump', entityId: String(adSetId), entityType: 'adset', inputJson: { adSetId, pct: requestedPct }, conversationRef });
     taskUuid = task.task_uuid;
     await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { progress: 20 } });
 
-    const preview = await previewBumpForAdSet({ adSetId, pct: clampedPct });
+    // Money Guard — never silently clamps a requested % down to the allowed
+    // ceiling anymore; a request over the single-action cap is refused
+    // outright with the exact conflict (both numbers) shown to the human.
+    const capGuard = evaluateBudgetCap({ requestedPct, maxSingleActionPct: maxPct });
+    if (capGuard.decision === 'BLOCKED') {
+      await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: capGuard.reason } });
+      return { ok: false, error: 'BLOCKED', message: capGuard.reason };
+    }
+
+    const preview = await previewBumpForAdSet({ adSetId, pct: requestedPct });
     if (!preview.canEvaluateBump) {
       await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: preview.cooldownReason || 'مش متاح دلوقتي.', entity_name: preview.adSetName || null } });
       return { ok: false, error: 'BLOCKED', message: preview.cooldownReason || 'مش متاح تجهيز زيادة دلوقتي لهذا الـ Ad Set.' };
     }
 
-    const prepared = await prepareBumpForAdSet({ adSetId, pct: clampedPct });
+    // Money Guard — cumulative 24h cap across every bump on this SAME ad
+    // set (scheduler-originated and chat-prepared bumps both count).
+    const cumulativePct = await cumulativeBumpPctLast24h(preview.adAccountId, String(adSetId));
+    const dailyGuard = evaluateDailyCumulativeCap({ cumulativePctLast24h: cumulativePct, requestedPct, maxDailyPct: n(settings.ambMaxDailyBudgetIncreasePct) ?? 50 });
+    if (dailyGuard.decision === 'BLOCKED') {
+      await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: dailyGuard.reason, entity_name: preview.adSetName || null } });
+      return { ok: false, error: 'BLOCKED', message: dailyGuard.reason };
+    }
+
+    const prepared = await prepareBumpForAdSet({ adSetId, pct: requestedPct });
     const rec = await prisma.ambRecommendation.findUnique({ where: { id: prepared.recommendationId } });
     await patchTask({ taskId: taskUuid, patch: { entity_name: preview.adSetName } });
     const finalTask = await enterWaitingForApproval({
@@ -320,6 +339,23 @@ export async function prepare_scale(args = {}) {
       return { ok: false, error: 'NOT_A_PROVEN_WINNER', message: winStack.message };
     }
 
+    // 3.5. Money Guard — real profit + stock gates, independent of the
+    // CPA-vs-target SCALE_CANDIDATE verdict above (a product can look
+    // CPA-healthy vs an arbitrary target while actually losing money on
+    // real break-even math). Refuses outright (BLOCKED) for genuinely
+    // unprofitable or out-of-stock products — no amount of approval should
+    // paper over those two. Anything else short of fully clean data becomes
+    // an honest WARN flag carried into the preview, never a silent pass.
+    const settings = await getAmbSettings();
+    const opWindow = resolveWindow(resolveOperationalWindowName(settings));
+    const profitBrain = await getProductProfitBrain({ productId: merged.productId, dateFrom: opWindow.from, dateTo: opWindow.to });
+    const stock = await stockGuardForProduct({ productId: merged.productId, storeId: product.store_id, days: settings.ambStockGuardVelocityWindowDays });
+    const moneyGuard = evaluateMoneyGuardForScale({ profitState: profitBrain.state, stockGuard: stock, settings });
+    if (moneyGuard.decision === 'BLOCKED') {
+      await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: moneyGuard.reason, entity_name: product.product_name } });
+      return { ok: false, error: 'BLOCKED', message: moneyGuard.reason };
+    }
+
     // 4. Page/Pixel/Instagram — prefer this product's own real launch history (resolveTrackingIdentity), fall back to the same auto-resolve prepare_campaign uses when history is incomplete (never guessed either way).
     let resolved;
     if (winStack.tracking.pixel_id && winStack.tracking.page_id) {
@@ -420,6 +456,9 @@ export async function prepare_scale(args = {}) {
       headline: launchInput.campaigns[0].headline,
       dataQuality: { productActive: true, pixelResolved: !!resolved.pixelId, pageResolved: !!resolved.pageId, instagramResolved: !!resolved.instagramId, mediaReady: true },
       sourceWinner: { assetId: winStack.creativeAssetId, label: winStack.creativeLabel, cpa: winStack.creativeCpa, purchases: winStack.creativePurchases, reusedFromMediaLibrary: reusedAsset },
+      profitBrain: { state: profitBrain.state, marginPct: profitBrain.marginPct, configState: profitBrain.configState },
+      stockGuard: { status: stock.status, currentStock: stock.currentStock, daysRemaining: stock.daysRemaining },
+      moneyGuardWarning: moneyGuard.decision === 'WARN' ? moneyGuard.reason : null,
     };
 
     const finalTask = await enterWaitingForApproval({ taskId: taskUuid, ambRecommendationId: null, preparedPayload: preview, actionType: 'SCALE_CAMPAIGN', recUpdatedAt: null });
