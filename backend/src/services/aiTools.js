@@ -30,6 +30,7 @@ import { attachProfitStates } from './amb/profitBrain.js';
 import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './amb/testingBrain.js';
 import { buildGrowthPlan } from './amb/growthStrategist.js';
 import { buildTargetingStrategy } from './amb/targetingStrategy.js';
+import { generateAngleProposals, generateHooks, generateCreativeIdeas } from './amb/productMarketingAI.js';
 import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { getConnection } from './metaAuth.js';
@@ -315,6 +316,56 @@ export async function get_targeting_strategy({ productId, window } = {}) {
   }
 }
 
+/** Real, already-known angle labels for this product (Testing Brain's own ANGLE-dimension keys) — passed to the AI so it never re-proposes something already tried, and never invents "existing angles" that don't exist. */
+async function knownAnglesFor(productId, pkg) {
+  const { matrix } = await buildTestMatrix({ productId, pkg });
+  return [...new Set(matrix.filter((e) => e.dimension === 'ANGLE').map((e) => e.key))];
+}
+
+export async function generate_angles({ productId, count } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
+    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: 'last7', settings, adAccountId }).catch(() => null);
+    const existingAngles = pkg ? await knownAnglesFor(Number(productId), pkg) : [];
+    const bottleneckContext = pkg?.diagnosis?.bottleneck?.evidence || null;
+    const res = await generateAngleProposals({ productName: product.product_name, existingAngles, bottleneckContext, count: count || 3 });
+    if (!res.ok) return { ok: false, error: res.reason };
+    return { ok: true, angles: res.angles, existingAnglesConsidered: existingAngles };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function generate_hooks({ productId, angle, category, count } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
+    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
+    const res = await generateHooks({ productName: product.product_name, angle, category, count: count || 10 });
+    if (!res.ok) return { ok: false, error: res.reason };
+    return { ok: true, hooks: res.hooks };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function generate_creative_brief({ productId, angle, count } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
+    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
+    const res = await generateCreativeIdeas({ productName: product.product_name, angle, count: count || 4 });
+    if (!res.ok) return { ok: false, error: res.reason };
+    return { ok: true, ideas: res.ideas };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -492,6 +543,45 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'generate_angles',
+    description: '[💡 توليد زوايا جديدة — لا يُستخدم تلقائيًا] يقترح زوايا بيع جديدة (Selling Angles) لمنتج — كل زاوية فيها: الاسم، ليه بتناسب، الـpersona المستهدفة، الوعد الأساسي، اتجاه الـHook، اتجاه الكرياتيف، والفرضية اللي بتختبرها. يتجنب تلقائيًا الزوايا المجربة قبل كده (من Testing Brain). كل زاوية تبدأ بحالة PROPOSED — ممنوع تقول إنها فائزة قبل ما الأداء الحقيقي يثبت كده. اعرضها على المستخدم كمسودة يوافق عليها.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        count: { type: 'integer', description: 'عدد الزوايا المطلوبة، افتراضي 3' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'generate_hooks',
+    description: '[🎣 توليد Hooks — لا يُستخدم تلقائيًا] يكتب Hooks إعلانية مصرية لمنتج ولزاوية معينة، مع تصنيف أمان الادّعاءات لكل Hook. اعرضها على المستخدم كمسودة يوافق عليها قبل الاستخدام في أي كامبين.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        angle: { type: 'string', description: 'الزاوية المطلوب كتابة Hooks لها، اختياري' },
+        category: { type: 'string', description: 'نوع Hook معين لو مطلوب، اختياري' },
+        count: { type: 'integer', description: 'عدد الـHooks، افتراضي 10' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'generate_creative_brief',
+    description: '[🎥 Creative Brief — لا يُستخدم تلقائيًا ولا يستهلك رصيد توليد صور/فيديو] يقترح أفكار كرياتيف عملية وقابلة للتنفيذ (نوع المحتوى، المشهد، الـHook، ظهور المنتج، النص الأساسي، CTA، الجمهور المستهدف) لمنتج وزاوية معينة — تعليمات جاهزة تُستخدم بمعرفة مصنع الكرياتيف أو مصمم بشري، مش توليد فعلي. استخدمه لما المستخدم يقول "اعملي Creative Brief".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        angle: { type: 'string', description: 'الزاوية المطلوب بناء الأفكار عليها، اختياري' },
+        count: { type: 'integer', description: 'عدد الأفكار، افتراضي 4' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -567,6 +657,9 @@ export const TOOL_IMPLS = {
   get_testing_brain,
   get_growth_plan,
   get_targeting_strategy,
+  generate_angles,
+  generate_hooks,
+  generate_creative_brief,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -580,4 +673,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];

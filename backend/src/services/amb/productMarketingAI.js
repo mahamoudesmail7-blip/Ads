@@ -128,6 +128,34 @@ export async function buildIntelligenceReport(ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Angle Intelligence (Product Growth & Profit Intelligence, Phase 3 Slice
+// 6) — NEW angle proposals only, generated on demand, never auto-triggered.
+// Deliberately a small, focused prompt (not the full buildIntelligenceReport
+// context, which is entangled with a ProductMarketingProfile most AMB
+// products don't have) — takes only real, already-known angle labels
+// (Testing Brain's own ANGLE-dimension keys) so it never re-proposes
+// something already tried, and a plain-text bottleneck summary for context.
+// Every proposal starts state:'PROPOSED' — never claims WON until real
+// performance proves it, matching every other AI-generated item's contract.
+// ---------------------------------------------------------------------------
+const ANGLE_SYSTEM = `إنت استراتيجي تسويق مصري. هتقترح زوايا بيع جديدة (Selling Angles) لمنتج، مبنية على السياق الحقيقي اللي هتستلمه فقط (زوايا مجربة قبل كده تتجنبها، ومشكلة الأداء الحالية لو موجودة). كل زاوية مقترحة هي فرضية تحتاج اختبار حقيقي، مش حقيقة مؤكدة — ممنوع تدّعي إنها فائزة. ممنوع منعًا باتًا أي ادّعاء طبي أو علاجي أو تخسيس أو ضمان نتيجة. رجّع JSON فقط:
+{"angles":[{"name":"","category":"Problem/Solution|Convenience|Time Saving|Comfort|Gift|Demonstration|Comparison|Value|Routine|Before/After","why":"","persona":"","corePromise":"","hookDirection":"","creativeDirection":"","hypothesis":""}]}`;
+export async function generateAngleProposals({ productName, existingAngles = [], bottleneckContext, count = 3 }) {
+  const user = `المنتج: ${productName}\nالزوايا المجربة قبل كده (ممنوع تقترح نفس الزاوية تاني بصيغة مختلفة): ${existingAngles.length ? existingAngles.join('، ') : 'مفيش زوايا مسجلة حتى الآن'}\nسياق المشكلة الحالية (لو موجود): ${bottleneckContext || 'مفيش سياق إضافي'}\nاقترح ${count} زوايا بيع جديدة ومختلفة فعليًا عن الزوايا المجربة.`;
+  const res = await callJson({ system: ANGLE_SYSTEM, user, maxTokens: 1800, label: 'ANGLES' });
+  if (!res.ok) return { ok: false, reason: res.reason };
+  const angles = Array.isArray(res.data?.angles) ? res.data.angles.slice(0, count).map((a) => {
+    const claim = classifyClaim(`${a.name || ''} ${a.corePromise || ''} ${a.hookDirection || ''}`);
+    return {
+      name: a.name || 'زاوية بدون اسم', category: a.category || '', why: a.why || '', persona: a.persona || '',
+      corePromise: a.corePromise || '', hookDirection: a.hookDirection || '', creativeDirection: a.creativeDirection || '', hypothesis: a.hypothesis || '',
+      state: 'PROPOSED', claimStatus: claim ? claim.status : 'GREEN', claimReason: claim?.reason || null,
+    };
+  }) : [];
+  return { ok: true, angles };
+}
+
+// ---------------------------------------------------------------------------
 // §15 Hook Lab — generated on demand only (never as part of the main report).
 // ---------------------------------------------------------------------------
 const HOOK_SYSTEM = `إنت كاتب إعلانات مصري متخصص في الـ Hooks. اكتب Hooks بالعامية المصرية بس، قصيرة وقوية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة. رجّع JSON فقط: {"hooks":[{"text":"","category":""}]}`;
