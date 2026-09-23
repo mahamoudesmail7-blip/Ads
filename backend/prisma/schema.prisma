@@ -1446,7 +1446,7 @@ model AssistantTask {
   user_id Int
   user    User @relation("AssistantTaskCreator", fields: [user_id], references: [id], onDelete: Cascade)
 
-  kind      String // BUMP | PAUSE | RESUME (Slice 1); LAUNCH_CAMPAIGN | SCALE_WINNER | ... later slices
+  kind      String // BUMP | PAUSE | RESUME (Slice 1); LAUNCH_CAMPAIGN (Slice 2); SCALE_CAMPAIGN (Slice 3) | ... later slices
   tool_name String // exact WRITE_TOOL_DEFINITIONS name that created this row — audit/debug
 
   // Conflict-detection + display key. Meta id (campaign/adset/ad) this task targets.

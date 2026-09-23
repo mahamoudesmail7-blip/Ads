@@ -17,6 +17,8 @@ import { getAmbSettings } from './amb/settings.js';
 import { previewBumpForAdSet, prepareBumpForAdSet } from './amb/scaleCenter.js';
 import { checkEntityForPauseResume, findOrCreatePauseResumeRecommendation } from './assistantTasks/pauseResumePrepare.js';
 import { resolveMultiGeoTargeting, requireAdAccount, autoResolveAccountAssets, resolveProduct, createDraftJob, getJob } from './assistantTasks/launchCampaignPrepare.js';
+import { loadWinningStackForProduct, resolveWinningCreativeAsset } from './assistantTasks/scalePrepare.js';
+import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
 import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus } from './assistantTasks/taskEngine.js';
 import { prisma } from '../prisma.js';
 
@@ -25,6 +27,7 @@ export const WRITE_TOOL_META = {
   prepare_pause: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_resume: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_campaign: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
+  prepare_scale: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   generate_campaign_copy: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   get_my_recent_tasks: { tier: 'READ', requiresApproval: false, writesToMeta: false },
 };
@@ -260,6 +263,173 @@ export async function prepare_campaign(args = {}) {
   }
 }
 
+/**
+ * Scale-from-chat (Phase 2 Slice 3). Re-callable across multiple chat turns
+ * exactly like prepare_campaign (findActiveTaskForUserKind, merge fields).
+ * NEVER calls persistProductDecision/approveProductDecision/
+ * executeApprovedDecision (ADMIN-only routes — see scalePrepare.js's header
+ * for why) — only reads the real Winning Stack via loadWinningStackForProduct
+ * and builds a draft job through the same safe createDraftJob() prepare_campaign
+ * uses. Refuses outright (BLOCKED, not WAITING_FOR_INPUT — no chat answer can
+ * fix "not a proven winner yet") for anything short of a real SCALE_CANDIDATE
+ * verdict from the actual decision engine.
+ */
+export async function prepare_scale(args = {}) {
+  const { userId, conversationRef, context } = args;
+  let taskUuid = null;
+  try {
+    const existingTask = await findActiveTaskForUserKind({ userId, kind: 'SCALE_CAMPAIGN' });
+    const priorInput = existingTask?.input_json ? JSON.parse(existingTask.input_json) : {};
+    const merged = { ...priorInput };
+    for (const [k, v] of Object.entries(args)) {
+      if (['userId', 'conversationRef', 'context'].includes(k)) continue;
+      if (v !== undefined && v !== null && v !== '') merged[k] = v;
+    }
+
+    const task = existingTask || await createTask({ userId, kind: 'SCALE_CAMPAIGN', toolName: 'prepare_scale', inputJson: merged, conversationRef });
+    taskUuid = task.task_uuid;
+    if (task.status !== 'PREPARING') await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { input_json: JSON.stringify(merged), progress: 15 } });
+    else await patchTask({ taskId: taskUuid, patch: { input_json: JSON.stringify(merged) } });
+
+    const needInput = async (message, patch = {}) => {
+      await transitionTask({ taskId: taskUuid, to: 'WAITING_FOR_INPUT', patch: { error: message, input_json: JSON.stringify(merged), ...patch } });
+      return { ok: true, task: (await resolveTaskStatus({ taskId: taskUuid })).task };
+    };
+
+    // 1. Product — same convention as prepare_campaign, never guessed.
+    let productId = merged.productId || context?.productId || null;
+    if (!productId && merged.productName) {
+      const p = await prisma.product.findFirst({ where: { product_name: { contains: merged.productName }, active: true, is_historical: false }, select: { id: true } });
+      if (p) productId = p.id;
+    }
+    if (!productId) return needInput('عايز تعمل Scale لأنهي منتج بالظبط؟');
+    const product = await resolveProduct(productId);
+    if (!product) return needInput('المنتج ده مش موجود أو مش نشط — عايز تعمل Scale لأنهي منتج؟');
+    merged.productId = product.id;
+
+    // 2. Required fields the tool never invents.
+    const missing = ['budgetEgp', 'websiteUrl'].filter((k) => merged[k] === undefined || merged[k] === null || merged[k] === '');
+    if (missing.length) return needInput(`محتاج منك: ${missing.join('، ')}.`);
+
+    // 3. Real Winning Stack — the actual evidence/security gate.
+    const connection = await requireAdAccount();
+    const adAccountId = connection.selected_ad_account_id;
+    const winStack = await loadWinningStackForProduct({ productId: merged.productId, adAccountId });
+    if (!winStack.ok) {
+      await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: winStack.message, entity_name: winStack.productName || product.product_name } });
+      return { ok: false, error: 'NOT_A_PROVEN_WINNER', message: winStack.message };
+    }
+
+    // 4. Page/Pixel/Instagram — prefer this product's own real launch history (resolveTrackingIdentity), fall back to the same auto-resolve prepare_campaign uses when history is incomplete (never guessed either way).
+    let resolved;
+    if (winStack.tracking.pixel_id && winStack.tracking.page_id) {
+      resolved = {
+        ok: true, adAccountName: connection.selected_ad_account_name || null,
+        timezone: 'Africa/Cairo',
+        pageId: winStack.tracking.page_id, pageName: winStack.tracking.page_name,
+        pixelId: winStack.tracking.pixel_id, pixelName: winStack.tracking.pixel_name,
+        instagramId: winStack.tracking.instagram_id, instagramUsername: winStack.tracking.instagram_username,
+        platforms: winStack.tracking.instagram_id ? ['facebook', 'instagram'] : ['facebook'],
+      };
+    } else {
+      resolved = await autoResolveAccountAssets(adAccountId, {
+        pageName: merged.pageName, pixelName: merged.pixelName, instagramUsername: merged.instagramUsername,
+      });
+      if (!resolved.ok) {
+        const opts = resolved.options ? ' خيارات: ' + resolved.options.map((o) => o.name || o.username).join('، ') : '';
+        return needInput(`${resolved.message}${opts}`);
+      }
+    }
+
+    // 5. jobId — generated once, reused across every re-entry for this task.
+    const jobId = task.launch_job_id || crypto.randomUUID();
+    const campaignName = merged.campaignName || `${winStack.productName} — Scale`;
+    if (!task.launch_job_id) await patchTask({ taskId: taskUuid, patch: { launch_job_id: jobId, entity_id: jobId, entity_type: 'launch_job', entity_name: campaignName } });
+
+    const budgetMinor = Math.round(Number(merged.budgetEgp) * 100);
+    const launchInput = {
+      adAccountId,
+      adAccountName: resolved.adAccountName,
+      productId: merged.productId,
+      pageId: resolved.pageId, pageName: resolved.pageName,
+      pixelId: resolved.pixelId, pixelName: resolved.pixelName,
+      instagramId: resolved.instagramId, instagramUsername: resolved.instagramUsername,
+      platforms: resolved.platforms,
+      budgetMode: 'CBO',
+      adSetsPerCampaign: 1,
+      adsPerAdSet: 1,
+      campaignCount: 1,
+      campaigns: [{ name: campaignName, websiteUrl: merged.websiteUrl, primaryText: merged.primaryText || winStack.stack.primaryText?.value || null, headline: merged.headline || winStack.stack.headline?.value || null }],
+      budget: { cbo: { dailyBudgetMinor: budgetMinor } },
+      startMode: 'NOW',
+      startDate: null,
+      startTime: null,
+      timezone: resolved.timezone,
+      launchMode: 'PAUSED_REVIEW', // always — never let the model choose NOW/SCHEDULED launch_mode
+      targeting: winStack.targeting,
+    };
+
+    let job;
+    try {
+      job = await createDraftJob({ jobId, userId, input: launchInput });
+    } catch (err) {
+      if (err.status === 400) return needInput(err.message);
+      throw err;
+    }
+
+    // 6. Zero-upload media reuse — if the winning creative's real Meta asset is registered for THIS ad account, write it straight into the job's media slot (no upload, no new Meta call). Otherwise fall back to the same 📎-attach gate prepare_campaign uses.
+    const fullJob = await getJob(jobId);
+    const alreadyHasMedia = (fullJob.videos || []).some((v) => v.status === 'UPLOADED') || (fullJob.images || []).some((i) => i.status === 'UPLOADED');
+    let reusedAsset = false;
+    if (!alreadyHasMedia) {
+      const asset = await resolveWinningCreativeAsset(winStack.creativeAssetId, adAccountId);
+      if (asset?.kind === 'video') {
+        await registerVideoSlot({ jobId, slotKey: 'C1', originalFilename: winStack.creativeLabel || 'winning-creative' });
+        await markVideoResult({ jobId, slotKey: 'C1', status: 'UPLOADED', metaVideoId: asset.metaId });
+        reusedAsset = true;
+      } else if (asset?.kind === 'image') {
+        await registerImageSlot({ jobId, slotKey: 'I1', originalFilename: winStack.creativeLabel || 'winning-creative' });
+        await markImageResult({ jobId, slotKey: 'I1', status: 'UPLOADED', metaImageHash: asset.metaId });
+        reusedAsset = true;
+      }
+    }
+
+    const fullJob2 = reusedAsset ? await getJob(jobId) : fullJob;
+    const hasMedia = (fullJob2.videos || []).some((v) => v.status === 'UPLOADED') || (fullJob2.images || []).some((i) => i.status === 'UPLOADED');
+    if (!hasMedia) return needInput('الكرييتيف الرابح مش متسجل على الحساب الإعلاني ده — ارفق فيديو أو صورة من 📎 في الشات، وبعدين قولّي "كمّل".', { progress: 50 });
+
+    // 7. All resolved — build the approval preview.
+    const preview = {
+      productName: winStack.productName,
+      campaignName,
+      adAccountName: resolved.adAccountName,
+      objective: 'OUTCOME_SALES',
+      budgetEgp: Number(merged.budgetEgp),
+      budgetMode: 'CBO',
+      adSetsPerCampaign: 1,
+      adsPerAdSet: 1,
+      campaignCount: 1,
+      pixelName: resolved.pixelName,
+      pageName: resolved.pageName,
+      instagramUsername: resolved.instagramUsername,
+      mediaCount: { videos: (fullJob2.videos || []).filter((v) => v.status === 'UPLOADED').length, images: (fullJob2.images || []).filter((i) => i.status === 'UPLOADED').length },
+      startMode: 'NOW',
+      startAt: fullJob2.start_at,
+      targeting: winStack.targeting ? { genders: winStack.targeting.genders, ageMin: winStack.targeting.ageMin, ageMax: winStack.targeting.ageMax, governorates: winStack.targeting.geoRegions.map((g) => g.name) } : { mode: 'BROAD' },
+      primaryText: launchInput.campaigns[0].primaryText,
+      headline: launchInput.campaigns[0].headline,
+      dataQuality: { productActive: true, pixelResolved: !!resolved.pixelId, pageResolved: !!resolved.pageId, instagramResolved: !!resolved.instagramId, mediaReady: true },
+      sourceWinner: { assetId: winStack.creativeAssetId, label: winStack.creativeLabel, cpa: winStack.creativeCpa, purchases: winStack.creativePurchases, reusedFromMediaLibrary: reusedAsset },
+    };
+
+    const finalTask = await enterWaitingForApproval({ taskId: taskUuid, ambRecommendationId: null, preparedPayload: preview, actionType: 'SCALE_CAMPAIGN', recUpdatedAt: null });
+    return { ok: true, task: (await resolveTaskStatus({ taskId: finalTask.task_uuid })).task };
+  } catch (err) {
+    if (taskUuid) await failTaskSafely({ taskId: taskUuid, error: err });
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function generate_campaign_copy({ productId, angle, tone } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -356,6 +526,25 @@ export const WRITE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'prepare_scale',
+    description: '[تجهيز — لا ينشئ أي كامبين فعليًا على Meta] يجهّز كامبين "Scale" حقيقي (Draft Job بـ Ad Set واحد وإعلان واحد) لمنتج وصل فعليًا لقرار SCALE_CANDIDATE في مركز القرار الذكي — يعيد استخدام الكرييتيف والاستهداف الفائز المُثبت تلقائيًا (بدون رفع ميديا جديدة لو الكرييتيف مسجل على نفس الحساب الإعلاني). يرفض صراحة لو المنتج لسه مش فائز مثبت بالأدلة الحالية. ينشئ تاسك يظهر كارت معاينة موضّح فيه الكرييتيف/CPA/عدد المشتريات اللي اتبنى عليهم القرار. المستخدم لازم يوافق قبل أي إنشاء فعلي. قابل للاستدعاء أكتر من مرة في نفس المحادثة زي prepare_campaign.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج الحقيقي، لو معروف' },
+        productName: { type: 'string', description: 'اسم المنتج لو productId مش معروف' },
+        campaignName: { type: 'string', description: 'اختياري — افتراضي "<اسم المنتج> — Scale"' },
+        websiteUrl: { type: 'string', description: 'رابط الموقع/صفحة المنتج — لازم من المستخدم، ممنوع تخترعه' },
+        pageName: { type: 'string', description: 'بس لو المستخدم حدد صفحة معينة ردًا على سؤال الـ Tool' },
+        pixelName: { type: 'string', description: 'بس لو المستخدم حدد Pixel معين ردًا على سؤال الـ Tool' },
+        instagramUsername: { type: 'string', description: 'بس لو المستخدم حدد حساب إنستجرام معين ردًا على سؤال الـ Tool' },
+        budgetEgp: { type: 'number', description: 'الميزانية اليومية بالجنيه للكامبين الجديد' },
+        primaryText: { type: 'string', description: 'اختياري — لو مش موجود بيستخدم النص الفائز المثبت لو موجود' },
+        headline: { type: 'string', description: 'اختياري — لو مش موجود بيستخدم العنوان الفائز المثبت لو موجود' },
+      },
+    },
+  },
+  {
     name: 'generate_campaign_copy',
     description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب نص إعلاني مصري حقيقي (Primary Text, Headline, Hook, CTA) لمنتج معين، مع تصنيف أمان الادّعاءات. اعرضه على المستخدم كمسودة يوافق عليها قبل ما تحطه في prepare_campaign.',
     input_schema: {
@@ -375,4 +564,4 @@ export const WRITE_TOOL_DEFINITIONS = [
   },
 ];
 
-export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, generate_campaign_copy, get_my_recent_tasks };
+export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, generate_campaign_copy, get_my_recent_tasks };

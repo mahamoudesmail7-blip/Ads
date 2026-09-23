@@ -80,7 +80,8 @@ function renderReplyHtml(text) {
 // a real, persisted AssistantTask in the /chat response's `task` field, and
 // this renders it as a live card the human must explicitly approve — never
 // two competing "propose a write" mechanisms running side by side.
-const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين' };
+const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل للمنتج الرابح' };
+const LAUNCH_KINDS = ['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN'];
 const TASK_STATUS_LABEL = {
   PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
   WAITING_FOR_APPROVAL: 'محتاج موافقتك', RUNNING: 'جاري التنفيذ...', VERIFYING: 'جاري تأكيد التنفيذ...',
@@ -92,6 +93,17 @@ const CAMPAIGN_PHASE_LABEL = {
 };
 const TASK_STATUS_CLASS = { COMPLETED: 'ok', PARTIALLY_COMPLETED: 'warn', FAILED: 'err', BLOCKED: 'warn', CANCELLED: 'muted' };
 const TASK_ACTIVE_STATUSES = ['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT', 'WAITING_FOR_APPROVAL', 'RUNNING', 'VERIFYING'];
+
+/** SCALE_CAMPAIGN-only header showing exactly which proven creative/evidence the draft was built from — the Task Card's own "never claim proof without showing it" affordance. */
+function sourceWinnerHeaderHtml(sourceWinner) {
+  if (!sourceWinner) return '';
+  const parts = [];
+  if (sourceWinner.label) parts.push(escapeHtml(sourceWinner.label));
+  if (sourceWinner.cpa != null) parts.push(`CPA ${Math.round(sourceWinner.cpa)} ج`);
+  if (sourceWinner.purchases != null) parts.push(`${sourceWinner.purchases} عملية شراء`);
+  const reuseNote = sourceWinner.reusedFromMediaLibrary ? ' (تم إعادة استخدامه من غير رفع جديد)' : '';
+  return `<div class="assistant-task-source-winner">📈 بناءً على الكرييتيف الرابح: ${parts.join(' — ')}${reuseNote}</div>`;
+}
 
 function launchCampaignPreviewHtml(p) {
   const targetingHtml = p.targeting?.mode === 'BROAD'
@@ -106,7 +118,7 @@ function launchCampaignPreviewHtml(p) {
     ['البداية', p.startMode === 'SCHEDULED' && p.startAt ? new Date(p.startAt).toLocaleString('ar-EG') : 'فورًا (بعد الموافقة، متوقف مبدئيًا للمراجعة)'],
     ['الاستهداف', targetingHtml],
   ];
-  return rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
+  return sourceWinnerHeaderHtml(p.sourceWinner) + rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
 }
 
 function launchCampaignProgressHtml(launchProgress) {
@@ -117,7 +129,7 @@ function launchCampaignProgressHtml(launchProgress) {
 
 function taskCardBodyHtml(task) {
   const p = task.preparedPayload || {};
-  if (task.kind === 'LAUNCH_CAMPAIGN') {
+  if (LAUNCH_KINDS.includes(task.kind)) {
     return launchCampaignPreviewHtml(p) + launchCampaignProgressHtml(task.launchProgress);
   }
   const name = escapeHtml(task.entityName || p.adSetName || p.entityName || task.entityId || '—');
@@ -151,7 +163,7 @@ function renderTaskCardHtml(task) {
   // click. Harmless to show even if it's waiting on something else (product/
   // page/pixel) — attaching media early is never wasted, prepare_campaign's
   // own media gate just checks for it later regardless of what unblocked first.
-  const attachHtml = (task.kind === 'LAUNCH_CAMPAIGN' && task.status === 'WAITING_FOR_INPUT' && task.launchJobId)
+  const attachHtml = (LAUNCH_KINDS.includes(task.kind) && task.status === 'WAITING_FOR_INPUT' && task.launchJobId)
     ? `<div class="assistant-launch-attach">
         <label class="assistant-action-btn assistant-action-btn-secondary" style="display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
           📎 أرفق فيديوهات أو صور<input type="file" multiple accept="video/*,image/*" data-launch-attach-input="${escapeAttr(task.taskUuid)}" data-launch-job-id="${escapeAttr(task.launchJobId)}" hidden>
@@ -196,8 +208,8 @@ function updateTaskCardInPlace(messagesEl, task) {
  * polling on page reload as the safety net if this bound is ever exceeded.
  */
 async function pollTaskUntilSettled(messagesEl, taskUuid, kind) {
-  const intervalMs = kind === 'LAUNCH_CAMPAIGN' ? 5000 : 1500;
-  const maxTicks = kind === 'LAUNCH_CAMPAIGN' ? 720 : 20;
+  const intervalMs = LAUNCH_KINDS.includes(kind) ? 5000 : 1500;
+  const maxTicks = LAUNCH_KINDS.includes(kind) ? 720 : 20;
   for (let i = 0; i < maxTicks; i++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     let task;

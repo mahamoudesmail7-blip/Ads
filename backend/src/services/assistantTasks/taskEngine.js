@@ -180,7 +180,7 @@ export async function resolveTaskStatus({ taskId }) {
   if (!task) { const e = new Error('التاسك مش موجود.'); e.status = 404; throw e; }
 
   let launchProgress = null;
-  if (task.kind === 'LAUNCH_CAMPAIGN' && task.launch_job_id && ['RUNNING', 'VERIFYING'].includes(task.status)) {
+  if ((task.kind === 'LAUNCH_CAMPAIGN' || task.kind === 'SCALE_CAMPAIGN') && task.launch_job_id && ['RUNNING', 'VERIFYING'].includes(task.status)) {
     const { getQueueProgress } = await import('../amb/launchPublish.js');
     const progress = await getQueueProgress(task.launch_job_id).catch(() => null);
     if (progress) {
@@ -229,7 +229,7 @@ export async function approveTask({ taskId, userId, approvalHash }) {
     return { ok: task.status === 'COMPLETED', task: serializeTask(task) };
   }
 
-  if (task.kind === 'LAUNCH_CAMPAIGN') return approveLaunchCampaignTask({ task, userId, approvalHash });
+  if (task.kind === 'LAUNCH_CAMPAIGN' || task.kind === 'SCALE_CAMPAIGN') return approveLaunchCampaignTask({ task, userId, approvalHash });
 
   const { approveAndExecute } = await import('../amb/executor.js');
 
@@ -291,18 +291,22 @@ export async function approveTask({ taskId, userId, approvalHash }) {
 }
 
 /**
- * LAUNCH_CAMPAIGN's approve path — no AmbRecommendation exists for this
- * kind, so the hash is self-contained over the prepared snapshot (recUpdatedAt
- * null) rather than bound to a live row's updated_at (media uploads write to
- * AmbLaunchVideoAsset/AmbLaunchImageAsset, never AmbLaunchJob itself, so
- * there'd be nothing to bind to even if we wanted to). startLaunchQueue()
- * returns almost immediately — it hands off to the existing durable
- * scheduler, which is why this lands in VERIFYING rather than a terminal
- * state; resolveTaskStatus() converges it from there.
+ * LAUNCH_CAMPAIGN/SCALE_CAMPAIGN's shared approve path — no AmbRecommendation
+ * exists for either kind, so the hash is self-contained over the prepared
+ * snapshot (recUpdatedAt null) rather than bound to a live row's updated_at
+ * (media uploads write to AmbLaunchVideoAsset/AmbLaunchImageAsset, never
+ * AmbLaunchJob itself, so there'd be nothing to bind to even if we wanted
+ * to). startLaunchQueue() returns almost immediately — it hands off to the
+ * existing durable scheduler, which is why this lands in VERIFYING rather
+ * than a terminal state; resolveTaskStatus() converges it from there. Both
+ * kinds share this exact function since both ultimately hand a fully-built
+ * AmbLaunchJob to the same publish queue — the only difference is how the
+ * job's fields were populated (a hand-described campaign vs. a proven
+ * Winning Stack), which is entirely decided at prepare time.
  */
 async function approveLaunchCampaignTask({ task, userId, approvalHash }) {
   const expectedHash = computeApprovalHash({
-    taskUuid: task.task_uuid, toolName: task.tool_name, entityId: task.entity_id, actionType: 'LAUNCH_CAMPAIGN',
+    taskUuid: task.task_uuid, toolName: task.tool_name, entityId: task.entity_id, actionType: task.kind,
     preparedPayload: task.prepared_payload_json ? JSON.parse(task.prepared_payload_json) : null,
     recUpdatedAt: null,
   });

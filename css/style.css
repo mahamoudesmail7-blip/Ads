@@ -1169,6 +1169,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   border: 1px solid var(--border);
 }
 
+/* SCALE_CAMPAIGN task card (AI Media Buyer Operator, Phase 2 Slice 3). */
+.assistant-task-source-winner {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+  color: var(--text);
+  font-weight: 500;
+}
+
 /* LAUNCH_CAMPAIGN task card (AI Media Buyer Operator, Phase 2 Slice 2). */
 .assistant-task-progress-rows {
   margin-top: 6px;
