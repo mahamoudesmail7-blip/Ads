@@ -29,6 +29,7 @@ import { getAmbSettings } from './amb/settings.js';
 import { attachProfitStates } from './amb/profitBrain.js';
 import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './amb/testingBrain.js';
 import { buildGrowthPlan } from './amb/growthStrategist.js';
+import { buildTargetingStrategy } from './amb/targetingStrategy.js';
 import { classifyProfitState } from './amb/profitBrain.js';
 import { stockGuardForProduct } from './amb/stockGuard.js';
 import { getConnection } from './metaAuth.js';
@@ -301,6 +302,19 @@ export async function get_growth_plan({ productId, window } = {}) {
   }
 }
 
+export async function get_targeting_strategy({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId });
+    const strategy = buildTargetingStrategy({ pkg });
+    return { ok: true, hasData: true, productId: pkg.productId, productName: pkg.productName, window: pkg.window, ...strategy };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -466,6 +480,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_targeting_strategy',
+    description: '[🎯 استراتيجية الاستهداف] يقسّم استهداف المنتج لثلاث رؤى منفصلة دايمًا: (1) الأعلى حاليًا — القائد الحالي بالأرقام مهما كان مبكر، (2) Scale Targeting — بس الأبعاد المثبتة بأدلة قوية (PROVEN)، أو Broad صراحة لو مفيش دليل كافٍ، (3) Test Targeting — الأبعاد الواعدة (PROMISING/EARLY_SIGNAL) اللي تستاهل اختبار. ممنوع تترقّى إشارة مبكرة لاستهداف Scale تلقائيًا. استخدمه لأسئلة "أستهدف مين؟" أو "أنهي عمر/جنس/محافظة؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -540,6 +566,7 @@ export const TOOL_IMPLS = {
   get_amb_product_decision,
   get_testing_brain,
   get_growth_plan,
+  get_targeting_strategy,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -553,4 +580,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
