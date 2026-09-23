@@ -474,6 +474,32 @@ export async function get_price_test_status({ productId } = {}) {
   }
 }
 
+// Spec vocabulary (CONNECTED/HEALTHY/LOW/CRITICAL/NOT_CONNECTED) mapped onto
+// stockGuard.js's existing states (SAFE/LOW/OUT_OF_STOCK/STOCK_UNKNOWN,
+// shipped in Phase 3 Slice 1) — a pure relabeling, never a second stock
+// state engine. STOCK_UNKNOWN (no current_stock on this Product at all) is
+// the ONLY state that honestly means "not connected" — never invented.
+const STOCK_STATE_LABEL = { SAFE: 'HEALTHY', LOW: 'LOW', OUT_OF_STOCK: 'CRITICAL', STOCK_UNKNOWN: 'NOT_CONNECTED' };
+
+export async function get_stock_status({ productId } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { store_id: true } });
+    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
+    const guard = await stockGuardForProduct({ productId: Number(productId), storeId: product.store_id, days: settings.ambStockGuardVelocityWindowDays });
+    return {
+      ok: true, hasData: true, productId: Number(productId),
+      status: STOCK_STATE_LABEL[guard.status] || 'NOT_CONNECTED',
+      currentStock: guard.currentStock, minimumStock: guard.minimumStock,
+      avgDailyDelivered: guard.avgDailyDelivered, daysRemaining: guard.daysRemaining,
+      note: guard.status === 'STOCK_UNKNOWN' ? 'مفيش مصدر مخزون موثوق متصل لهذا المنتج — مينفعش نخترع رقم.' : null,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -737,6 +763,17 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_stock_status',
+    description: '[📦 حالة المخزون] حالة المخزون الحقيقية لمنتج (HEALTHY/LOW/CRITICAL/NOT_CONNECTED)، مع معدل البيع الحقيقي والأيام المتبقية المقدّرة لو فيه بيانات كافية — مفيش تخمين لو مفيش مصدر مخزون موصول. استخدمه لأسئلة "المخزون يسمح بالتوسع؟" أو "فاضل كام يوم؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -819,6 +856,7 @@ export const TOOL_IMPLS = {
   get_product_playbook,
   get_scale_ladder,
   get_price_test_status,
+  get_stock_status,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -832,4 +870,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
