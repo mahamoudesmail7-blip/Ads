@@ -1814,10 +1814,12 @@ const DC_TABS = [
   { key: 'overview', label: 'نظرة عامة' },
   { key: 'audience', label: 'الجمهور والمحافظات' },
   { key: 'creatives', label: 'الكرياتيفات والـHooks' },
+  { key: 'growth', label: '🧠 خطة النمو' },
   { key: 'actionplan', label: '🚀 أكشن بلان' },
   { key: 'history', label: 'سجل القرارات' },
   { key: 'learning', label: 'تعلم المنتج' },
 ];
+const dcGrowthCache = new Map(); // productId -> bundled growth response, cleared on window change/reanalyze
 
 function healthBandColor(band) {
   return { HEALTHY: 'green', GOOD: 'green', NEEDS_ATTENTION: 'yellow', AT_RISK: 'red', CRITICAL: 'red', INSUFFICIENT_DATA: 'gray' }[band] || 'gray';
@@ -1880,23 +1882,100 @@ function dcRenderDossierInto(el, panel) {
     ${dcState.activeTab === 'actionplan' ? '' : dcActionPlanHtml(pkg)}
   </div>`;
 
-  $('ambDcReanalyze').onclick = () => dcReanalyze(panel, d.productId);
+  $('ambDcReanalyze').onclick = () => { dcGrowthCache.delete(d.productId); dcReanalyze(panel, d.productId); };
   el.querySelectorAll('[data-dctab]').forEach((b) => b.onclick = () => { dcState.activeTab = b.dataset.dctab; dcRenderDossierInto(el, panel); });
   el.querySelectorAll('[data-dcwin]').forEach((b) => b.onclick = () => {
+    dcGrowthCache.delete(d.productId);
     const key = b.dataset.dcwin;
     dcChangeWindow(panel, d.productId, key === 'operational' ? null : key);
   });
   if (dcState.activeTab === 'actionplan') dcWireActionPlanTab(el, panel, pkg);
   else dcWireActionPlan(el, panel, pkg);
+  if (dcState.activeTab === 'growth') dcLoadGrowthTab(el, d.productId).catch(() => {});
 }
 
 function dcTabBody(d) {
   if (dcState.activeTab === 'audience') return dcTabAudience(d.package);
   if (dcState.activeTab === 'creatives') return dcTabCreatives(d.package);
+  if (dcState.activeTab === 'growth') return `<div id="ambDcGrowthBody" class="amb-empty">جارِ التحميل...</div>`;
   if (dcState.activeTab === 'actionplan') return dcTabActionPlan(d.package);
   if (dcState.activeTab === 'history') return dcTabHistory(d.history);
   if (dcState.activeTab === 'learning') return dcTabLearning(d.learning);
   return dcTabOverview(d.package);
+}
+
+/**
+ * 🧠 خطة النمو — lazy-loaded only when the tab is opened (Phase 3 Slice 19),
+ * a pure composition over the already-existing Testing Brain/Growth
+ * Strategist/COD Quality/Scale Ladder/Stock/Incident Center reads. Always
+ * uses the standard "last7" window — the SAME default every one of these
+ * tools already uses everywhere else in the app (chat included) — rather
+ * than trying to follow the dossier's own window picker (which supports
+ * custom ranges/"منذ الإطلاق" that these tools have no way to honour),
+ * so it can never silently show numbers from the wrong period. Cached per
+ * productId until a reanalyze happens.
+ */
+async function dcLoadGrowthTab(el, productId) {
+  const bodyEl = () => el.querySelector('#ambDcGrowthBody');
+  let data = dcGrowthCache.get(productId);
+  if (!data) {
+    try {
+      data = await api.get(`/api/ai-media-buyer/decision-center/products/${productId}/growth`, { window: 'last7' });
+      dcGrowthCache.set(productId, data);
+    } catch (err) {
+      if (bodyEl()) bodyEl().innerHTML = `<div class="amb-empty">⚠️ ${E(err.message || err)}</div>`;
+      return;
+    }
+  }
+  if (dcState.activeTab !== 'growth' || !bodyEl()) return; // user navigated away before this resolved
+  bodyEl().outerHTML = dcTabGrowth(data);
+}
+
+const SCALE_STAGE_AR = { NEW: 'جديد', TESTING: 'قيد الاختبار', VALIDATED: 'مُثبت', SCALING: 'قيد التوسّع', SCALED: 'موسّع بالكامل', DECLINING: 'في تراجع', RETIRED: 'متقاعد' };
+function dcTabGrowth(data) {
+  const gp = data.growthPlan?.ok ? data.growthPlan : null;
+  const sl = data.scaleLadder?.ok ? data.scaleLadder : null;
+  const cq = data.codQuality?.ok ? data.codQuality : null;
+  const st = data.stock?.ok ? data.stock : null;
+  const inc = data.incidents?.ok ? data.incidents : null;
+  const stockCls = { HEALTHY: 'green', LOW: 'yellow', CRITICAL: 'red', NOT_CONNECTED: 'gray' }[st?.status] || 'gray';
+  const sevCls = { CRITICAL: 'red', HIGH: 'red', WARNING: 'yellow', INFO: 'gray' };
+
+  return `<div id="ambDcGrowthBody">
+    <div class="faint" style="font-size:11px; margin-bottom:10px;">خطة النمو محسوبة دايمًا على آخر 7 أيام (نفس الافتراضي في باقي أدوات الذكاء الاصطناعي) — مش مرتبطة بفلتر الفترة فوق.</div>
+    <div class="amb-healthrow" style="margin-bottom:14px;">
+      <div class="amb-healthbox"><div class="hv">${sl ? E(SCALE_STAGE_AR[sl.stage] || sl.stage) : '—'}</div><div class="hl">مرحلة سلّم التوسّع</div></div>
+      <div class="amb-healthbox"><div class="hv" style="color:var(--amb-${stockCls === 'green' ? 'green' : stockCls === 'red' ? 'red' : stockCls === 'yellow' ? 'amber' : 'text-faint'});">${st ? E(st.status === 'NOT_CONNECTED' ? 'غير موصول' : st.status === 'HEALTHY' ? 'متوفر' : st.status === 'LOW' ? 'منخفض' : 'نفذ') : '—'}</div><div class="hl">المخزون${st?.daysRemaining != null ? ` (${st.daysRemaining} يوم)` : ''}</div></div>
+      <div class="amb-healthbox"><div class="hv">${cq?.codBlocksScale ? '⚠️ نعم' : cq ? 'لا' : '—'}</div><div class="hl">الـCOD بيمنع التوسّع؟</div></div>
+      <div class="amb-healthbox"><div class="hv">${inc ? inc.count : '—'}</div><div class="hl">حوادث حالية</div></div>
+    </div>
+
+    ${sl?.reason ? `<div class="section-title" style="margin-top:0;">سلّم التوسّع</div><div class="amb-panel" style="padding:10px 14px; margin-bottom:14px;">${E(sl.reason)}${sl.blockers?.length ? `<div class="faint" style="font-size:12px; margin-top:6px;">عوائق: ${sl.blockers.map(E).join(' · ')}</div>` : ''}</div>` : ''}
+
+    ${gp ? `
+    <div class="section-title">العنق الحقيقي (دليل، مش تخمين)</div>
+    <div class="amb-panel" style="padding:12px 14px; margin-bottom:10px;">
+      <div style="font-weight:800; margin-bottom:4px;">${E(gp.primaryBottleneck?.label || gp.primaryBottleneck?.category || '—')} — <span class="faint" style="font-weight:600;">${E(gp.primaryBottleneck?.confidence || '')}</span></div>
+      <div style="font-size:13px;">${E(gp.primaryBottleneck?.evidence || '')}</div>
+    </div>
+    ${gp.hypothesis ? `<div class="amb-panel" style="padding:10px 14px; margin-bottom:14px; border-color:var(--amb-purple); background:var(--amb-purple-bg);"><b>🧪 الفرضية (لسه مش دليل)</b><div style="font-size:13px; margin-top:4px;">${E(gp.hypothesis)}</div></div>` : ''}
+
+    ${gp.controlledTestDesign ? `<div class="section-title">الاختبار المقترح التالي</div>
+    <div class="amb-derived" style="margin-bottom:14px;">
+      <div class="amb-derived-row"><span>المتغيّر</span><b>${E(gp.controlledTestDesign.variableChanged || '—')}</b></div>
+      <div class="amb-derived-row"><span>الحالي ← المقترح</span><b>${E(gp.controlledTestDesign.control || '—')} ← ${E(gp.controlledTestDesign.variant || '—')}</b></div>
+      <div class="amb-derived-row"><span>مقياس النجاح</span><b>${E(gp.controlledTestDesign.successMetric || '—')}</b></div>
+      <div class="amb-derived-row"><span>العينة المطلوبة</span><b>${E(gp.controlledTestDesign.sampleRequirement || '—')}</b></div>
+    </div>` : ''}
+
+    ${gp.whatIsWorking?.length ? `<div class="section-title">✅ إيه اللي شغال</div><div class="amb-derived" style="margin-bottom:14px;">${gp.whatIsWorking.map((w) => `<div class="amb-derived-row"><span>${E(w.dimension)}</span><b>${E((w.key || '').slice(0, 40))}</b></div>`).join('')}</div>` : ''}
+    ${gp.whatIsNotWorking?.length ? `<div class="section-title">❌ إيه اللي مش شغال</div><div class="amb-derived" style="margin-bottom:14px;">${gp.whatIsNotWorking.slice(0, 5).map((w) => `<div class="amb-derived-row"><span>${E(w.dimension)}</span><b style="font-weight:500; font-size:12px;">${E((w.key || '').slice(0, 50))}</b></div>`).join('')}</div>` : ''}
+    ` : '<div class="amb-empty">تعذّر تجهيز خطة النمو لهذا المنتج حاليًا.</div>'}
+
+    ${cq?.decisionNote ? `<div class="section-title">جودة الـCOD</div><div class="amb-panel" style="padding:10px 14px; margin-bottom:14px;">${E(cq.decisionNote)}</div>` : ''}
+
+    ${inc?.incidents?.length ? `<div class="section-title">🚨 حوادث حالية</div><div class="amb-derived">${inc.incidents.map((i) => `<div class="amb-derived-row"><span class="badge ${sevCls[i.severity] || 'gray'}">${E(i.severity)}</span><b style="font-size:12px;">${E(i.title)}</b></div>`).join('')}</div>` : ''}
+  </div>`;
 }
 
 function businessCvrCell(bcr) {

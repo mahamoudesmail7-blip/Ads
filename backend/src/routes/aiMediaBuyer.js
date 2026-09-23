@@ -233,6 +233,28 @@ router.get('/decision-center/products/:productId/dossier', asyncRoute(async (req
   res.json(await getProductDossier({ productId: req.params.productId, windowName: req.query.window, from: req.query.from, to: req.query.to, forceRefresh: req.query.refresh === '1' }));
 }));
 
+// Phase 3 Slice 19 — 🧠 خطة النمو tab. A pure composition over the ALREADY
+// existing, already-tested Slice 3/4/9/11/13/14 read tools (Testing Brain,
+// Growth Strategist, COD Quality, Scale Ladder, Stock Intelligence,
+// Incident Center) — never a second implementation of any of them, exactly
+// this file's own "pure composition layer" convention (see
+// productDossier.js's header). Loaded lazily by the frontend only when the
+// tab is actually opened, so the main dossier load stays fast.
+router.get('/decision-center/products/:productId/growth', asyncRoute(async (req, res) => {
+  const { get_growth_plan, get_scale_ladder, get_testing_brain, get_cod_quality, get_stock_status, get_incidents } = await import('../services/aiTools.js');
+  const productId = Number(req.params.productId);
+  const window = req.query.window;
+  const [growthPlan, scaleLadder, testingBrain, codQuality, stock, incidents] = await Promise.all([
+    get_growth_plan({ productId, window }),
+    get_scale_ladder({ productId, window }),
+    get_testing_brain({ productId, window }),
+    get_cod_quality({ productId, window }),
+    get_stock_status({ productId }),
+    get_incidents({ productId, window }),
+  ]);
+  res.json({ growthPlan, scaleLadder, testingBrain, codQuality, stock, incidents });
+}));
+
 // Smart Decision Center Phase 5 — Full Funnel Diagnosis. Analysis only.
 router.get('/product-diagnosis/:productId', asyncRoute(async (req, res) => {
   const { getProductDiagnosis } = await import('../services/amb/productPerformance.js');
