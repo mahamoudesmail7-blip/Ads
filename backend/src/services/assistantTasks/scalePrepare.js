@@ -89,5 +89,7 @@ export async function loadWinningStackForProduct({ productId, adAccountId }) {
     creativeLabel: stack.creative?.value || null,
     creativeCpa: pkg.winners?.creative?.cpa ?? null,
     creativePurchases: pkg.winners?.creative?.purchases ?? null,
+    creativeFatigueState: pkg.winners?.creative?.fatigueRadar?.state || null,
+    creativeFatigueEvidence: pkg.winners?.creative?.fatigueRadar?.evidence || null,
   };
 }

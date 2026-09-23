@@ -286,7 +286,7 @@ export async function get_amb_creative_intel({ productId, window } = {}) {
     const adAccountId = await resolveAmbAdAccountId();
     if (!adAccountId) return { ok: true, hasData: false, message: 'مفيش حساب إعلاني متصل.' };
     const settings = await getAmbSettings();
-    const data = await creativeIntelForProduct({ adAccountId, windowName: window || 'last7', settings, ambProductId: ambProduct.id, compareToPrior: false });
+    const data = await creativeIntelForProduct({ adAccountId, windowName: window || 'last7', settings, ambProductId: ambProduct.id, compareToPrior: true });
     return { ok: true, hasData: !!data.dataAvailable, ...data };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -424,7 +424,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_amb_creative_intel',
-    description: '[مركز القرار الذكي] تحليل الكرياتيف الحقيقي لمنتج معين — أي فيديو/صورة هو الفايز الحالي، الأداء مقارنة بالباقي.',
+    description: '[مركز القرار الذكي] تحليل الكرياتيف الحقيقي لمنتج معين — أي فيديو/صورة هو الفايز الحالي، الأداء مقارنة بالباقي، وحالة الإجهاد (fatigueRadar: NEW/LEARNING/HEALTHY/WATCH/FATIGUING/FATIGUED/INSUFFICIENT_DATA) لكل كرياتيف/Hook/زاوية — استخدمه لأسئلة زي "الكرياتيف الفائز بدأ يضعف؟".',
     input_schema: {
       type: 'object',
       properties: {

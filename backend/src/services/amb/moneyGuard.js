@@ -44,7 +44,7 @@ export function evaluateDailyCumulativeCap({ cumulativePctLast24h, requestedPct,
  * nothing left to sell); everything else that isn't fully clean data
  * becomes an honest WARN flag on the Task Card, never a silent pass.
  */
-export function evaluateMoneyGuardForScale({ profitState, stockGuard, settings }) {
+export function evaluateMoneyGuardForScale({ profitState, stockGuard, creativeFatigueState, settings }) {
   const riskFlags = [];
 
   if (profitState === 'UNPROFITABLE') {
@@ -60,6 +60,8 @@ export function evaluateMoneyGuardForScale({ profitState, stockGuard, settings }
   if (profitState === 'INSUFFICIENT_DATA') riskFlags.push('مفيش عدد أوردرات كافي في الفترة دي للحكم على الربح الحقيقي.');
   if (stockGuard?.status === 'LOW') riskFlags.push('المخزون منخفض.');
   if (stockGuard?.status === 'STOCK_UNKNOWN') riskFlags.push('المخزون غير مسجل لهذا المنتج.');
+  if (creativeFatigueState === 'WATCH') riskFlags.push('⚠️ الكرياتيف الفائز بدأ يضعف شوية — فكّر في تجهيز كرياتيف بديل قريبًا.');
+  if (creativeFatigueState === 'FATIGUING') riskFlags.push('⚠️ الكرياتيف الفائز بدأ يضعف بشكل واضح — يفضّل تجهيز كرياتيف بديل قبل ما تكبّر الميزانية عليه.');
   const minDays = Number(settings?.ambStockGuardMinDaysForScale) || 14;
   if (stockGuard?.daysRemaining != null && stockGuard.daysRemaining < minDays) {
     riskFlags.push(`المخزون الحالي هيخلص خلال ${stockGuard.daysRemaining} يوم تقريبًا بمعدل البيع الحالي.`);

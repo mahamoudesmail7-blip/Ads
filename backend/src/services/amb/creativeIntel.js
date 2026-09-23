@@ -29,6 +29,7 @@ import { creativeLabelIndex } from './creativeAnalysis.js';
 import { groupByCreativeLabel, NAME_HOOK_RULES, NAME_ANGLE_RULES } from './winnerDetection.js';
 import { scopedAdsForProduct } from './productMarketingWinnerIntel.js';
 import { dataSufficiencyOf } from './productMarketingScoring.js';
+import { classifyFatigueRadar } from './creativeFatigueRadar.js';
 import { resolveWindow, addDaysISO } from './metricsEngine.js';
 
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
@@ -159,7 +160,11 @@ export function pickBest(classifiedRows) {
 }
 
 function classifyRows(rows, gate, priorByKey) {
-  return rows.map((r) => ({ ...r, ...classifyCandidate(r, { ...gate, priorRow: priorByKey?.get(r.id || r.label) || null }) }));
+  return rows.map((r) => {
+    const priorRow = priorByKey?.get(r.id || r.label) || null;
+    const verdict = classifyCandidate(r, { ...gate, priorRow });
+    return { ...r, ...verdict, fatigueRadar: classifyFatigueRadar(r, priorRow, verdict) };
+  });
 }
 
 /**

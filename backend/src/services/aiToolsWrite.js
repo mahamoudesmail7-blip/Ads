@@ -350,7 +350,7 @@ export async function prepare_scale(args = {}) {
     const opWindow = resolveWindow(resolveOperationalWindowName(settings));
     const profitBrain = await getProductProfitBrain({ productId: merged.productId, dateFrom: opWindow.from, dateTo: opWindow.to });
     const stock = await stockGuardForProduct({ productId: merged.productId, storeId: product.store_id, days: settings.ambStockGuardVelocityWindowDays });
-    const moneyGuard = evaluateMoneyGuardForScale({ profitState: profitBrain.state, stockGuard: stock, settings });
+    const moneyGuard = evaluateMoneyGuardForScale({ profitState: profitBrain.state, stockGuard: stock, creativeFatigueState: winStack.creativeFatigueState, settings });
     if (moneyGuard.decision === 'BLOCKED') {
       await transitionTask({ taskId: taskUuid, to: 'BLOCKED', patch: { blocked_reason: moneyGuard.reason, entity_name: product.product_name } });
       return { ok: false, error: 'BLOCKED', message: moneyGuard.reason };
@@ -455,7 +455,7 @@ export async function prepare_scale(args = {}) {
       primaryText: launchInput.campaigns[0].primaryText,
       headline: launchInput.campaigns[0].headline,
       dataQuality: { productActive: true, pixelResolved: !!resolved.pixelId, pageResolved: !!resolved.pageId, instagramResolved: !!resolved.instagramId, mediaReady: true },
-      sourceWinner: { assetId: winStack.creativeAssetId, label: winStack.creativeLabel, cpa: winStack.creativeCpa, purchases: winStack.creativePurchases, reusedFromMediaLibrary: reusedAsset },
+      sourceWinner: { assetId: winStack.creativeAssetId, label: winStack.creativeLabel, cpa: winStack.creativeCpa, purchases: winStack.creativePurchases, reusedFromMediaLibrary: reusedAsset, fatigueState: winStack.creativeFatigueState, fatigueEvidence: winStack.creativeFatigueEvidence },
       profitBrain: { state: profitBrain.state, marginPct: profitBrain.marginPct, configState: profitBrain.configState },
       stockGuard: { status: stock.status, currentStock: stock.currentStock, daysRemaining: stock.daysRemaining },
       moneyGuardWarning: moneyGuard.decision === 'WARN' ? moneyGuard.reason : null,

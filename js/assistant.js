@@ -107,7 +107,8 @@ function sourceWinnerHeaderHtml(sourceWinner) {
   if (sourceWinner.cpa != null) parts.push(`CPA ${Math.round(sourceWinner.cpa)} ج`);
   if (sourceWinner.purchases != null) parts.push(`${sourceWinner.purchases} عملية شراء`);
   const reuseNote = sourceWinner.reusedFromMediaLibrary ? ' (تم إعادة استخدامه من غير رفع جديد)' : '';
-  return `<div class="assistant-task-source-winner">📈 بناءً على الكرييتيف الرابح: ${parts.join(' — ')}${reuseNote}</div>`;
+  const fatigueNote = ['WATCH', 'FATIGUING'].includes(sourceWinner.fatigueState) ? ' — ⚠️ الكرياتيف الفائز بدأ يضعف' : '';
+  return `<div class="assistant-task-source-winner">📈 بناءً على الكرييتيف الرابح: ${parts.join(' — ')}${reuseNote}${fatigueNote}</div>`;
 }
 
 /** SCALE_CAMPAIGN-only Money Guard/Profit Brain/Stock Guard header — never hides a risk flag, only ever additive to the preview rows below it. */
