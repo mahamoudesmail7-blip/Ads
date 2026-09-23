@@ -28,6 +28,9 @@ import { resolveWindow } from './amb/metricsEngine.js';
 import { getAmbSettings } from './amb/settings.js';
 import { attachProfitStates } from './amb/profitBrain.js';
 import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './amb/testingBrain.js';
+import { buildGrowthPlan } from './amb/growthStrategist.js';
+import { classifyProfitState } from './amb/profitBrain.js';
+import { stockGuardForProduct } from './amb/stockGuard.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -276,6 +279,28 @@ export async function get_testing_brain({ productId, window } = {}) {
   }
 }
 
+export async function get_growth_plan({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const settings = await getAmbSettings();
+    const adAccountId = await resolveAmbAdAccountId();
+    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId });
+
+    const product = await prisma.product.findUnique({
+      where: { id: Number(productId) },
+      select: { store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, commission: true, expected_return_cost: true },
+    });
+    const trueRows = await computeTruePerformance({ productId: Number(productId) });
+    const profitBrain = classifyProfitState(trueRows.products?.[0] || { real: { actualOrders: 0 } }, product || {}, settings);
+    const stockGuard = await stockGuardForProduct({ productId: Number(productId), storeId: product?.store_id, days: settings.ambStockGuardVelocityWindowDays });
+
+    const plan = await buildGrowthPlan({ productId: Number(productId), pkg, profitBrain, stockGuard });
+    return { ok: true, hasData: true, ...plan };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_amb_audience_breakdown({ productId, window } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -429,6 +454,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_growth_plan',
+    description: '[🧠 خطة النمو] "المنتج ده مش عارف أطلعه، أعمل إيه؟" — خطة إخراج كاملة تجمع كل الأدلة الحقيقية (القمع الإعلاني/الربح/المخزون/الكرياتيف/الجمهور/Testing Brain) في مكان واحد: الحالة الحالية، العنق الحقيقي (مع فصل واضح بين الدليل والفرضية)، إيه اللي شغال وإيه اللي مش شغال، إيه اللي لازم يفضل زي ما هو، الاختبار التالي المقترح، الاستهداف/الزاوية/الهوك الفائز، فرصة تعديل السعر لو موجودة، ومقياس النجاح. استخدمه لأي سؤال شامل عن "أطلع المنتج إزاي" أو "اعمللي خطة للمنتج".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_amb_audience_breakdown',
     description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
     input_schema: {
@@ -502,6 +539,7 @@ export const TOOL_IMPLS = {
   get_amb_product_performance,
   get_amb_product_decision,
   get_testing_brain,
+  get_growth_plan,
   get_amb_audience_breakdown,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
@@ -515,4 +553,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
