@@ -33,7 +33,7 @@ export function canTransitionTask(from, to) {
   return Array.isArray(TASK_TRANSITIONS[from]) && TASK_TRANSITIONS[from].includes(to);
 }
 
-function serializeTask(task) {
+function serializeTask(task, extra = {}) {
   if (!task) return null;
   return {
     taskUuid: task.task_uuid,
@@ -50,8 +50,10 @@ function serializeTask(task) {
     approvalHash: task.approval_hash,
     ambRecommendationId: task.amb_recommendation_id,
     ambActionId: task.amb_action_id,
+    launchJobId: task.launch_job_id,
     createdAt: task.created_at,
     updatedAt: task.updated_at,
+    ...extra,
   };
 }
 
@@ -60,6 +62,25 @@ export async function findActiveTaskForEntity(entityId) {
   if (!entityId) return null;
   return prisma.assistantTask.findFirst({
     where: { entity_id: entityId, status: { in: ACTIVE_STATUSES } },
+    orderBy: { created_at: 'desc' },
+  });
+}
+
+/**
+ * A fresh multi-turn task (like LAUNCH_CAMPAIGN) has no stable external
+ * entity_id until it creates one (a jobId) on its first successful step —
+ * so "is this chat message continuing an existing in-flight request, or
+ * starting a new one" can't be answered by findActiveTaskForEntity alone
+ * for that first turn. Scoped by user+kind instead: the same user can only
+ * ever have ONE in-flight task of a given multi-turn kind at a time, which
+ * also naturally supports "edit after prepare" (خليها 2000 بدل 1500) by
+ * letting the caller reuse/update the same row rather than spawning a
+ * second one.
+ */
+export async function findActiveTaskForUserKind({ userId, kind }) {
+  if (!userId || !kind) return null;
+  return prisma.assistantTask.findFirst({
+    where: { user_id: userId, kind, status: { in: ACTIVE_STATUSES } },
     orderBy: { created_at: 'desc' },
   });
 }
@@ -144,11 +165,41 @@ export async function enterWaitingForApproval({ taskId, ambRecommendationId, pre
   });
 }
 
-/** Plain read of real persisted state — the literal implementation of "what are you doing right now." Never invents progress. */
+/**
+ * Plain read of real persisted state — the literal implementation of "what
+ * are you doing right now." Never invents progress. For a LAUNCH_CAMPAIGN
+ * task mid-publish, this is ALSO where verify-after-write lives: there's no
+ * single Meta object to re-read the way Bump/Pause do, so instead this
+ * calls the real, unmodified getQueueProgress() (launchPublish.js) — never
+ * cached — and reconciles the task's own status to it before returning,
+ * converging to a real terminal state the next time anyone polls or
+ * reopens the chat, with no separate scheduler needed.
+ */
 export async function resolveTaskStatus({ taskId }) {
-  const task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskId } });
+  let task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskId } });
   if (!task) { const e = new Error('التاسك مش موجود.'); e.status = 404; throw e; }
-  return { ok: true, task: serializeTask(task) };
+
+  let launchProgress = null;
+  if (task.kind === 'LAUNCH_CAMPAIGN' && task.launch_job_id && ['RUNNING', 'VERIFYING'].includes(task.status)) {
+    const { getQueueProgress } = await import('../amb/launchPublish.js');
+    const progress = await getQueueProgress(task.launch_job_id).catch(() => null);
+    if (progress) {
+      launchProgress = progress;
+      if (progress.jobStatus === 'COMPLETE') {
+        task = await transitionTask({ taskId, to: 'COMPLETED', patch: { progress: 100 } });
+      } else if (progress.jobStatus === 'PARTIAL') {
+        task = await transitionTask({ taskId, to: 'PARTIALLY_COMPLETED', patch: { progress: 100, error: 'بعض الكامبينات نجحت وبعضها فشل — راجع التفاصيل.' } });
+      } else if (progress.jobStatus === 'FAILED') {
+        task = await transitionTask({ taskId, to: 'FAILED', patch: { error: progress.jobError || 'فشل النشر.' } });
+      } else {
+        const total = progress.campaigns.length || 1;
+        const done = progress.campaigns.filter((c) => c.phase === 'COMPLETE').length;
+        task = await patchTask({ taskId, patch: { progress: Math.min(99, Math.round((done / total) * 100)) } });
+      }
+    }
+  }
+
+  return { ok: true, task: serializeTask(task, { launchProgress }) };
 }
 
 export async function listRecentTasksForUser({ userId, limit = 5 }) {
@@ -170,8 +221,6 @@ export async function listRecentTasksForUser({ userId, limit = 5 }) {
  * checks "did the real world change" — both stay, neither duplicates the other.
  */
 export async function approveTask({ taskId, userId, approvalHash }) {
-  const { approveAndExecute } = await import('../amb/executor.js');
-
   const task = await prisma.assistantTask.findUnique({ where: { task_uuid: taskId } });
   if (!task) { const e = new Error('التاسك مش موجود.'); e.status = 404; throw e; }
 
@@ -179,6 +228,10 @@ export async function approveTask({ taskId, userId, approvalHash }) {
     // Idempotent double-click: return the current state rather than erroring.
     return { ok: task.status === 'COMPLETED', task: serializeTask(task) };
   }
+
+  if (task.kind === 'LAUNCH_CAMPAIGN') return approveLaunchCampaignTask({ task, userId, approvalHash });
+
+  const { approveAndExecute } = await import('../amb/executor.js');
 
   const rec = task.amb_recommendation_id
     ? await prisma.ambRecommendation.findUnique({ where: { id: task.amb_recommendation_id } })
@@ -235,6 +288,47 @@ export async function approveTask({ taskId, userId, approvalHash }) {
 
   logger.info('AssistantTask executed', { taskUuid: task.task_uuid, actionId: result.actionId, finalStatus });
   return { ok: true, task: serializeTask(finalTask), oldValue: result.oldValue, newValue: result.newValue };
+}
+
+/**
+ * LAUNCH_CAMPAIGN's approve path — no AmbRecommendation exists for this
+ * kind, so the hash is self-contained over the prepared snapshot (recUpdatedAt
+ * null) rather than bound to a live row's updated_at (media uploads write to
+ * AmbLaunchVideoAsset/AmbLaunchImageAsset, never AmbLaunchJob itself, so
+ * there'd be nothing to bind to even if we wanted to). startLaunchQueue()
+ * returns almost immediately — it hands off to the existing durable
+ * scheduler, which is why this lands in VERIFYING rather than a terminal
+ * state; resolveTaskStatus() converges it from there.
+ */
+async function approveLaunchCampaignTask({ task, userId, approvalHash }) {
+  const expectedHash = computeApprovalHash({
+    taskUuid: task.task_uuid, toolName: task.tool_name, entityId: task.entity_id, actionType: 'LAUNCH_CAMPAIGN',
+    preparedPayload: task.prepared_payload_json ? JSON.parse(task.prepared_payload_json) : null,
+    recUpdatedAt: null,
+  });
+  if (!approvalHash || approvalHash !== expectedHash) {
+    await transitionTask({ taskId: task.task_uuid, to: 'PREPARING', patch: { error: 'الخطة اتغيرت بعد التجهيز — جهّزها تاني.' } });
+    return { ok: false, error: 'STALE_APPROVAL', message: 'الخطة اتغيرت بعد التجهيز — محتاجة موافقة جديدة.' };
+  }
+
+  const conflicting = await findActiveTaskForEntity(task.entity_id);
+  if (conflicting && conflicting.task_uuid !== task.task_uuid) {
+    await transitionTask({ taskId: task.task_uuid, to: 'BLOCKED', patch: { blocked_reason: 'فيه تاسك تاني شغال بالفعل على نفس طلب الإطلاق.' } });
+    return { ok: false, error: 'CONFLICT', message: 'فيه إجراء تاني شغال على نفس الكامبين دلوقتي.' };
+  }
+
+  await transitionTask({ taskId: task.task_uuid, to: 'RUNNING', patch: { approved_at: new Date(), approved_by_id: userId || null, progress: 75 } });
+
+  const { startLaunchQueue } = await import('../amb/launchPublish.js');
+  try {
+    await startLaunchQueue({ jobId: task.launch_job_id, userId });
+  } catch (err) {
+    await transitionTask({ taskId: task.task_uuid, to: 'FAILED', patch: { error: err.message || String(err) } });
+    return { ok: false, error: 'EXECUTION_FAILED', message: err.message || 'فشل بدء النشر.' };
+  }
+
+  const verifyingTask = await transitionTask({ taskId: task.task_uuid, to: 'VERIFYING', patch: { progress: 80 } });
+  return { ok: true, task: serializeTask(verifyingTask) };
 }
 
 export { serializeTask, ACTIVE_STATUSES };

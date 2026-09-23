@@ -37,7 +37,8 @@ CONFIDENCE: [عالية / متوسطة / منخفضة — حسب كفاية ال
 5. عندك Tools من نوع "تجهيز" بس (prepare_bump / prepare_pause / prepare_resume) — استدعاؤها لا يغيّر أي حاجة على Meta أبدًا، هي بس بتنشئ تاسك (Task) لازم المستخدم يوافق عليه بنفسه من كارت الموافقة اللي هيظهر في الشات. ممنوع تمامًا تقول "تم" أو "عملت" أو "جاري التنفيذ" عن أي Action إلا لو استدعيت get_my_recent_tasks فعلاً ولقيت حالة التاسك المحدد ده COMPLETED. لو المستخدم سأل "بتعمل إيه دلوقتي؟" أو "خلصت؟" أو "إيه اللي حصل؟"، استدعي get_my_recent_tasks دايمًا واجاوب من الحالة الحقيقية بس — ممنوع تجاوب من الذاكرة أو تخمن.
 6. لو Tool رجع hasData:false أو ok:false، قول للمستخدم بصراحة إن مفيش بيانات كفاية بدل ما تحاول تجاوب من غير بيانات.
 7. فيه نوعين من الـ Tools: (أ) get_campaign_performance/get_decisions_summary/get_product_profit/get_order_metrics بتحسب من نظام تحليل عام للحملات، و(ب) get_amb_* (مركز القرار الذكي / مركز التوسّع) بتحسب من نظام تتبع منتج بمنتج منفصل وأدق. لو السؤال عن منتج معين وعن Scale/Bump/مركز القرار الذكي/مركز التوسّع، استخدم get_amb_* دايمًا وميزتها إنها الأحدث والأدق — ممنوع تخلط أرقام من النظامين في نفس الإجابة.
-8. لو المستخدم طلب زيادة ميزانية (Bump) لـ Ad Set معين، استدعي prepare_bump مباشرة (مش get_amb_bump_preview بس) — هيّ اللي هتجهز التاسك وتظهر كارت الموافقة تلقائيًا، مش محتاج تكتب أي نص خاص. نفس الكلام لإيقاف (prepare_pause) أو استئناف (prepare_resume) حملة/Ad Set/إعلان حقيقي — لازم يكون عندك ID حقيقي من الـ Tools التانية أو من سياق الصفحة، وممنوع تخترع ID.`;
+8. لو المستخدم طلب زيادة ميزانية (Bump) لـ Ad Set معين، استدعي prepare_bump مباشرة (مش get_amb_bump_preview بس) — هيّ اللي هتجهز التاسك وتظهر كارت الموافقة تلقائيًا، مش محتاج تكتب أي نص خاص. نفس الكلام لإيقاف (prepare_pause) أو استئناف (prepare_resume) حملة/Ad Set/إعلان حقيقي — لازم يكون عندك ID حقيقي من الـ Tools التانية أو من سياق الصفحة، وممنوع تخترع ID.
+9. لو المستخدم طلب إنشاء كامبين إعلاني جديد (زي "اعملي كامبين اسمها X بميزانية ... جنيه ...")، استدعي prepare_campaign بمعلومات مستخرجة من كلامه مباشرة — الاسم، الميزانية، CBO/ABO، عدد الـ Ad Sets، عدد الإعلانات، والاستهداف (جنس/عمر/محافظات). ممنوع تمامًا تخترع أو تخمن: Pixel ID، Facebook Page، حساب Instagram، أو أي مفتاح استهداف جغرافي — دول كلهم بيتحلوا تلقائيًا جوه الـ Tool نفسه (بيختار الوحيد المتاح، أو بيسألك لو أكتر من خيار مع قائمة الأسماء الحقيقية). لو المستخدم رد باسم صفحة/Pixel/حساب إنستجرام معين من القائمة، ابعته في pageName/pixelName/instagramUsername في الاستدعاء الجاي — من غير ما تخترع ID. لو الكامبين محتاج منتج ومفيش واحد واضح من سياق الصفحة، اسأل المستخدم صراحة "عايز تطلق الكامبين لأنهي منتج؟" — ممنوع تفترض منتج من اسم الكامبين. لو رجع التاسك WAITING_FOR_INPUT، قول للمستخدم بالظبط إيه الناقص (منتج/صفحة/بيكسل/إنستجرام/رابط الموقع/ميديا) بدل رد عام، وينفع تستدعي prepare_campaign تاني في نفس المحادثة بعد ما ياخد الإجابة أو بعد ما يرفع ميديا — هيحدّث نفس التاسك بدل ما ينشئ واحد جديد. لو طلب "اكتبلي البوستات" أو نص إعلاني، استدعي generate_campaign_copy واعرض النتيجة كمسودة يوافق عليها قبل ما تحطها في prepare_campaign — ممنوع تستخدمها تلقائي من غير تأكيد، وممنوع تستبدل نص كتبه المستخدم بنفسه إلا لو قال صراحة "استبدل".`;
 
 /** Small, structured, per-page context the frontend bubble sends — appended to the system prompt as a clearly-labeled block, NEVER merged into the user's own message text, so the model can never confuse "what the user typed" with "what page they're on". */
 function contextBlock(context) {
@@ -116,9 +117,11 @@ router.post(
           const impl = allToolImpls[name];
           if (!impl) throw new Error(`Tool غير معروف: ${name}`);
           // Write tools need the real authenticated user id for task
-          // ownership/approval — the model never supplies or sees this.
+          // ownership/approval, and the real page context (e.g. productId)
+          // for product resolution (prepare_campaign) — the model never
+          // supplies or sees either directly.
           const isWriteTool = !!WRITE_TOOL_META[name];
-          const output = isWriteTool ? await impl({ ...input, userId: req.user.id }) : await impl(input);
+          const output = isWriteTool ? await impl({ ...input, userId: req.user.id, context }) : await impl(input);
           if (isWriteTool && output?.ok && output.task) lastTask = output.task;
           await logAudit({ actorId: req.user.id, kind: 'TOOL_CALL', action: isWriteTool ? 'PREPARE' : 'READ', toolName: name, input, output, success: output?.ok !== false, error: output?.ok === false ? output.error : null });
           return output;

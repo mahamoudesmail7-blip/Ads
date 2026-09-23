@@ -1169,6 +1169,43 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   border: 1px solid var(--border);
 }
 
+/* LAUNCH_CAMPAIGN task card (AI Media Buyer Operator, Phase 2 Slice 2). */
+.assistant-task-progress-rows {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.assistant-launch-attach { margin-top: 8px; }
+.assistant-launch-media-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.assistant-launch-media-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  background: var(--bg);
+}
+.assistant-launch-media-row span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-launch-media-status { flex-shrink: 0; color: var(--text-dim); }
+.assistant-launch-media-done {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--green);
+  font-weight: 600;
+}
+
 .assistant-image-preview {
   display: flex;
   align-items: center;

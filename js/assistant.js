@@ -7,6 +7,7 @@
 // two surfaces never drift into two different reply formats.
 import { api } from './api-client.js';
 import * as UI from './ui-common.js';
+import { nextSlotKeys, computeLaunchContentHash, validateLaunchVideoFile, validateLaunchImageFile, isLaunchImageFile, uploadLaunchVideoSlot, uploadLaunchImageSlot, naturalCompare } from './launchMediaUpload.js';
 
 const STORAGE_POS_KEY = 'amb_assistant_pos_v1';
 const STORAGE_HISTORY_KEY = 'amb_assistant_history_v1';
@@ -79,17 +80,46 @@ function renderReplyHtml(text) {
 // a real, persisted AssistantTask in the /chat response's `task` field, and
 // this renders it as a live card the human must explicitly approve — never
 // two competing "propose a write" mechanisms running side by side.
-const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف' };
+const TASK_KIND_LABEL = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين' };
 const TASK_STATUS_LABEL = {
   PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
   WAITING_FOR_APPROVAL: 'محتاج موافقتك', RUNNING: 'جاري التنفيذ...', VERIFYING: 'جاري تأكيد التنفيذ...',
   COMPLETED: 'تم ✅', PARTIALLY_COMPLETED: 'تم — محتاج تأكيد يدوي ⚠️', FAILED: 'فشل ❌', CANCELLED: 'اتلغى', BLOCKED: 'متوقف',
 };
+const CAMPAIGN_PHASE_LABEL = {
+  COMPLETE: 'تم ✅', CANCELLED: 'اتلغى', ACTION_REQUIRED: 'محتاج تدخل ⚠️', FAILED_TERMINAL: 'فشل ❌',
+  WAITING_FOR_META: 'بيستنى Meta...', RETRY_SCHEDULED: 'هيعيد المحاولة...', QUEUED: 'في الطابور', PUBLISHING: 'جاري النشر...',
+};
 const TASK_STATUS_CLASS = { COMPLETED: 'ok', PARTIALLY_COMPLETED: 'warn', FAILED: 'err', BLOCKED: 'warn', CANCELLED: 'muted' };
 const TASK_ACTIVE_STATUSES = ['PLANNED', 'PREPARING', 'WAITING_FOR_INPUT', 'WAITING_FOR_APPROVAL', 'RUNNING', 'VERIFYING'];
 
+function launchCampaignPreviewHtml(p) {
+  const targetingHtml = p.targeting?.mode === 'BROAD'
+    ? 'كل مصر — بدون استهداف مخصص'
+    : `${escapeHtml(p.targeting?.genders === 'MALE' ? 'رجالة' : p.targeting?.genders === 'FEMALE' ? 'ستات' : 'الكل')} · ${p.targeting?.ageMin ?? 18}-${p.targeting?.ageMax ?? 65} سنة${p.targeting?.governorates?.length ? ' · ' + p.targeting.governorates.map(escapeHtml).join('، ') : ''}`;
+  const rows = [
+    ['المنتج', p.productName], ['الكامبين', p.campaignName], ['الحساب الإعلاني', p.adAccountName],
+    ['الميزانية اليومية', p.budgetEgp != null ? `${p.budgetEgp} ج (${p.budgetMode})` : null],
+    ['العدد', `${p.campaignCount || 1} كامبين × ${p.adSetsPerCampaign} Ad Set × ${p.adsPerAdSet} إعلان`],
+    ['Pixel', p.pixelName], ['الصفحة', p.pageName], ['إنستجرام', p.instagramUsername || 'مفيش (فيسبوك بس)'],
+    ['الميديا', p.mediaCount ? `${p.mediaCount.videos} فيديو، ${p.mediaCount.images} صورة` : null],
+    ['البداية', p.startMode === 'SCHEDULED' && p.startAt ? new Date(p.startAt).toLocaleString('ar-EG') : 'فورًا (بعد الموافقة، متوقف مبدئيًا للمراجعة)'],
+    ['الاستهداف', targetingHtml],
+  ];
+  return rows.filter(([, v]) => v != null).map(([k, v]) => `<div><b>${escapeHtml(k)}:</b> ${typeof v === 'string' && v.startsWith('<') ? v : escapeHtml(String(v))}</div>`).join('');
+}
+
+function launchCampaignProgressHtml(launchProgress) {
+  if (!launchProgress?.campaigns?.length) return '';
+  const rows = launchProgress.campaigns.map((c) => `<div>${escapeHtml(c.name)} — ${escapeHtml(CAMPAIGN_PHASE_LABEL[c.phase] || c.phase)} (${c.adSetsCreated}/${c.adSetsTotal} Ad Sets، ${c.adsCreated}/${c.adsTotal} إعلان)</div>`).join('');
+  return `<div class="assistant-task-progress-rows">${rows}</div>`;
+}
+
 function taskCardBodyHtml(task) {
   const p = task.preparedPayload || {};
+  if (task.kind === 'LAUNCH_CAMPAIGN') {
+    return launchCampaignPreviewHtml(p) + launchCampaignProgressHtml(task.launchProgress);
+  }
   const name = escapeHtml(task.entityName || p.adSetName || p.entityName || task.entityId || '—');
   if (task.kind === 'BUMP') {
     return `<div>الـ Ad Set: <b>${name}</b></div>
@@ -115,10 +145,24 @@ function renderTaskCardHtml(task) {
     actions = `<div class="assistant-task-actions"><button type="button" class="assistant-action-btn assistant-action-btn-secondary" data-task-cancel="${escapeAttr(task.taskUuid)}">❌ إلغاء</button></div>`;
   }
   const noteHtml = (task.error || task.blockedReason) ? `<div class="assistant-error">${escapeHtml(task.error || task.blockedReason)}</div>` : '';
+  // A LAUNCH_CAMPAIGN task with a real job_id, still WAITING_FOR_INPUT, is
+  // (most commonly) waiting specifically on media — offer the attach
+  // control right on the card so the user doesn't have to guess where to
+  // click. Harmless to show even if it's waiting on something else (product/
+  // page/pixel) — attaching media early is never wasted, prepare_campaign's
+  // own media gate just checks for it later regardless of what unblocked first.
+  const attachHtml = (task.kind === 'LAUNCH_CAMPAIGN' && task.status === 'WAITING_FOR_INPUT' && task.launchJobId)
+    ? `<div class="assistant-launch-attach">
+        <label class="assistant-action-btn assistant-action-btn-secondary" style="display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer;">
+          📎 أرفق فيديوهات أو صور<input type="file" multiple accept="video/*,image/*" data-launch-attach-input="${escapeAttr(task.taskUuid)}" data-launch-job-id="${escapeAttr(task.launchJobId)}" hidden>
+        </label>
+        <div class="assistant-launch-media-list" id="launchMedia-${escapeAttr(task.taskUuid)}"></div>
+      </div>`
+    : '';
   return `<div class="assistant-task-card" data-task-uuid="${escapeAttr(task.taskUuid)}">
     <div class="assistant-task-card-head"><b>${escapeHtml(label)}</b><span class="assistant-task-badge assistant-task-badge-${cls}">${escapeHtml(statusLabel)}</span></div>
     <div class="assistant-task-card-body">${taskCardBodyHtml(task)}</div>
-    ${noteHtml}${actions}
+    ${noteHtml}${attachHtml}${actions}
   </div>`;
 }
 
@@ -141,10 +185,21 @@ function updateTaskCardInPlace(messagesEl, task) {
   if (el) el.outerHTML = renderTaskCardHtml(task);
 }
 
-/** Polls GET /api/assistant-tasks/:taskUuid while RUNNING/VERIFYING, re-rendering the card each tick, landing on the real terminal state. Bounded so a stuck task can't poll forever. */
-async function pollTaskUntilSettled(messagesEl, taskUuid) {
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
+/**
+ * Polls GET /api/assistant-tasks/:taskUuid while RUNNING/VERIFYING,
+ * re-rendering the card each tick, landing on the real terminal state.
+ * Bounded so a stuck task can't poll forever. A BUMP/PAUSE/RESUME write is
+ * synchronous (one Meta call, done in seconds) so the default interval/
+ * bound is tight; a LAUNCH_CAMPAIGN hands off to a durable scheduler with a
+ * mandatory 5-minute inter-campaign gate and can legitimately take
+ * minutes-to-an-hour for multiple campaigns — restoreOpenTasks() re-arms
+ * polling on page reload as the safety net if this bound is ever exceeded.
+ */
+async function pollTaskUntilSettled(messagesEl, taskUuid, kind) {
+  const intervalMs = kind === 'LAUNCH_CAMPAIGN' ? 5000 : 1500;
+  const maxTicks = kind === 'LAUNCH_CAMPAIGN' ? 720 : 20;
+  for (let i = 0; i < maxTicks; i++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
     let task;
     try { ({ task } = await api.get(`/api/assistant-tasks/${taskUuid}`)); } catch { return; }
     if (!task) return;
@@ -162,7 +217,7 @@ async function handleTaskApprove(messagesEl, btn) {
   try {
     const result = await api.post(`/api/assistant-tasks/${taskUuid}/approve`, { approvalHash });
     if (result.task) updateTaskCardInPlace(messagesEl, result.task);
-    if (result.task && ['RUNNING', 'VERIFYING'].includes(result.task.status)) await pollTaskUntilSettled(messagesEl, taskUuid);
+    if (result.task && ['RUNNING', 'VERIFYING'].includes(result.task.status)) await pollTaskUntilSettled(messagesEl, taskUuid, result.task.kind);
     if (!result.ok && result.error === 'STALE_APPROVAL') {
       // Task went back to PREPARING server-side — re-fetch to show the real current card instead of a stuck disabled button.
       try { const fresh = await api.get(`/api/assistant-tasks/${taskUuid}`); if (fresh.task) updateTaskCardInPlace(messagesEl, fresh.task); } catch { /* leave as-is */ }
@@ -170,6 +225,71 @@ async function handleTaskApprove(messagesEl, btn) {
   } catch (err) {
     if (card) card.querySelector('.assistant-error')?.remove();
     if (card) card.insertAdjacentHTML('beforeend', `<div class="assistant-error">⚠️ ${escapeHtml(err.message || 'فشل التنفيذ')}</div>`);
+  }
+}
+
+const MEDIA_ROW_STATUS_LABEL = { pending: 'في الانتظار', uploading: 'جاري الرفع...', done: '✓ تم', failed: '❌' };
+function mediaRowHtml(row) {
+  return `<div class="assistant-launch-media-row" data-media-row="${escapeAttr(row.slotKey)}"><span>${escapeHtml(row.name)}</span><span class="assistant-launch-media-status">${row.status === 'failed' ? `❌ ${escapeHtml(row.error || 'فشل')}` : MEDIA_ROW_STATUS_LABEL[row.status]}</span></div>`;
+}
+
+/**
+ * Chat-driven multi-file attach for a LAUNCH_CAMPAIGN task — uploads
+ * straight to the SAME existing Launch Builder routes the wizard uses
+ * (js/launchMediaUpload.js's shared, byte-for-byte-identical fetch helpers),
+ * never a new backend surface. Slot keys are assigned client-side by
+ * reading the job's current videos/images first (same convention the
+ * wizard itself uses), so re-attaching more files later in the same
+ * conversation never collides with what's already uploaded.
+ */
+async function handleLaunchAttach(messagesEl, input) {
+  const files = [...(input.files || [])].sort((a, b) => naturalCompare(a.name, b.name));
+  if (!files.length) return;
+  const jobId = input.dataset.launchJobId;
+  const taskUuid = input.dataset.launchAttachInput;
+  const listEl = document.getElementById(`launchMedia-${taskUuid}`);
+  input.value = '';
+  if (!listEl) return;
+
+  let existing;
+  try { existing = await api.get(`/api/ai-media-buyer/launch/jobs/${jobId}`); } catch (err) {
+    listEl.insertAdjacentHTML('beforeend', `<div class="assistant-error">⚠️ ${escapeHtml(err.message || 'تعذر تحميل بيانات الكامبين')}</div>`);
+    return;
+  }
+  const existingVideoKeys = (existing.videos || []).map((v) => v.slot_key);
+  const existingImageKeys = (existing.images || []).map((v) => v.slot_key);
+
+  const videoFiles = files.filter((f) => !isLaunchImageFile(f));
+  const imageFiles = files.filter(isLaunchImageFile);
+  const videoKeys = nextSlotKeys(existingVideoKeys, videoFiles.length, 'video');
+  const imageKeys = nextSlotKeys(existingImageKeys, imageFiles.length, 'image');
+  const entries = [
+    ...videoFiles.map((file, i) => ({ slotKey: videoKeys[i], kind: 'video', file, name: file.name, status: 'pending' })),
+    ...imageFiles.map((file, i) => ({ slotKey: imageKeys[i], kind: 'image', file, name: file.name, status: 'pending' })),
+  ];
+
+  for (const row of entries) listEl.insertAdjacentHTML('beforeend', mediaRowHtml(row));
+  const rowEl = (slotKey) => listEl.querySelector(`[data-media-row="${slotKey}"]`);
+  const updateRow = (row) => { const el = rowEl(row.slotKey); if (el) el.outerHTML = mediaRowHtml(row); };
+
+  for (const row of entries) {
+    row.status = 'uploading'; updateRow(row);
+    try {
+      const validation = row.kind === 'image' ? await validateLaunchImageFile(row.file) : await validateLaunchVideoFile(row.file);
+      if (!validation.ok) throw new Error(validation.reason);
+      const contentHash = await computeLaunchContentHash(row.file);
+      if (row.kind === 'image') await uploadLaunchImageSlot({ jobId, slotKey: row.slotKey, file: row.file, contentHash, width: validation.width, height: validation.height });
+      else await uploadLaunchVideoSlot({ jobId, slotKey: row.slotKey, file: row.file, contentHash, duration: validation.duration });
+      row.status = 'done';
+    } catch (err) {
+      row.status = 'failed'; row.error = err.message;
+    }
+    updateRow(row);
+  }
+
+  const allDone = entries.every((r) => r.status === 'done');
+  if (allDone) {
+    listEl.insertAdjacentHTML('beforeend', `<div class="assistant-launch-media-done">✅ كل الملفات جاهزة — اكتب "كمّل" عشان أراجع الكامبين.</div>`);
   }
 }
 
@@ -312,6 +432,10 @@ export function mountAssistantBubble() {
     const cancelBtn = e.target.closest('[data-task-cancel]');
     if (cancelBtn) return handleTaskCancel(messagesEl, cancelBtn);
   });
+  messagesEl.addEventListener('change', async (e) => {
+    const attachInput = e.target.closest('[data-launch-attach-input]');
+    if (attachInput) return handleLaunchAttach(messagesEl, attachInput);
+  });
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -403,7 +527,7 @@ async function restoreOpenTasks(messagesEl) {
     addMessage(messagesEl, 'assistant', '');
     const el = messagesEl.lastElementChild;
     el.innerHTML = renderTaskCardHtml(task);
-    if (['RUNNING', 'VERIFYING'].includes(task.status)) pollTaskUntilSettled(messagesEl, taskUuid);
+    if (['RUNNING', 'VERIFYING'].includes(task.status)) pollTaskUntilSettled(messagesEl, taskUuid, task.kind);
   }
 }
 

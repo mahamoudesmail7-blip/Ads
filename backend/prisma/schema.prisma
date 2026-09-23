@@ -1459,6 +1459,12 @@ model AssistantTask {
   amb_action_id         Int?
   amb_action            AmbAction?         @relation(fields: [amb_action_id], references: [id], onDelete: SetNull)
 
+  // AmbLaunchJob.job_id this LAUNCH_CAMPAIGN task owns (Phase 2 Slice 2) —
+  // plain string, no FK (AmbLaunchJob is keyed by job_id, not id; mirrors
+  // entity_id's existing no-FK convention above, used here for the SAME
+  // reason: a launch job has no AmbRecommendation/AmbAction row to point at).
+  launch_job_id String?
+
   // PLANNED | PREPARING | WAITING_FOR_INPUT | WAITING_FOR_APPROVAL | RUNNING
   // | VERIFYING | COMPLETED | PARTIALLY_COMPLETED | FAILED | CANCELLED | BLOCKED
   status String @default("PLANNED")
@@ -1483,6 +1489,7 @@ model AssistantTask {
   @@index([status])
   @@index([entity_id])
   @@index([user_id])
+  @@index([launch_job_id])
   @@map("assistant_tasks")
 }
 
