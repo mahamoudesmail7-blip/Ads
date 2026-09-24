@@ -205,6 +205,25 @@ export async function resolveTaskStatus({ taskId }) {
     }
   }
 
+  // SCALE_WINNER's approval blocks synchronously inside executeScale() (up
+  // to ~2 minutes) rather than handing off to a pollable async queue like
+  // LAUNCH_CAMPAIGN does — if the SERVER PROCESS itself restarts mid-await
+  // (e.g. a deploy landing at the wrong moment), the real work underneath
+  // (createBatch/approveBatch's clone worker) can finish and even mark the
+  // real AmbScaleDecision row EXECUTED, while the orphaned AssistantTask
+  // request never gets to call its own final transitionTask() and is left
+  // stuck showing RUNNING forever. Self-heal exactly like the LAUNCH_CAMPAIGN
+  // branch above: reconcile against the real, already-proven decision row
+  // rather than ever re-invoking executeScale() a second time.
+  if (task.kind === 'SCALE_WINNER' && ['RUNNING', 'VERIFYING'].includes(task.status)) {
+    const decision = await prisma.ambScaleDecision.findFirst({ where: { source_campaign_id: task.entity_id }, orderBy: { id: 'desc' } }).catch(() => null);
+    if (decision?.status === 'EXECUTED') {
+      task = await transitionTask({ taskId, to: 'COMPLETED', patch: { progress: 100 } });
+    } else if (decision?.status === 'FAILED') {
+      task = await transitionTask({ taskId, to: 'FAILED', patch: { error: decision.error || 'فشل تنفيذ الاسكيل.' } });
+    }
+  }
+
   const timeline = await buildTaskTimeline(task).catch(() => []);
   return { ok: true, task: serializeTask(task, { launchProgress, timeline, createdByName: task.user?.name || null, approvedByName: task.approved_by?.name || null }) };
 }
