@@ -30,6 +30,7 @@ const TOOL_CATEGORY = {
   get_product_playbook: 'Learning',
   get_scale_ladder: 'Scale Center', get_amb_audience_breakdown: 'Scale Center', get_amb_governorate_breakdown: 'Scale Center',
   get_amb_scale_center_product: 'Scale Center', get_amb_bump_preview: 'Scale Center', prepare_bump: 'Scale Center', prepare_scale: 'Scale Center',
+  get_scale_winners: 'Scale Center', prepare_scale_winner: 'Scale Center',
   generate_angles: 'Creative Library', generate_hooks: 'Creative Library', generate_creative_brief: 'Creative Library', get_amb_creative_intel: 'Creative Library',
   prepare_pause: 'Action Plan', prepare_resume: 'Action Plan',
   prepare_campaign: 'Campaign Builder', generate_campaign_copy: 'Campaign Builder',

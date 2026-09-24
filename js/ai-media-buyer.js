@@ -2710,7 +2710,7 @@ function showHistDetails(a) {
 // (routes/assistantTasks.js) — never a second task system, never a new
 // status vocabulary.
 // ===========================================================================
-const TASKS_KIND_AR = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل', TEST_CAMPAIGN: '🧪 اختبار', PRICE_TEST: '💵 اختبار سعر' };
+const TASKS_KIND_AR = { BUMP: '⚡ زيادة ميزانية', PAUSE: '⏸️ إيقاف', RESUME: '▶️ استئناف', LAUNCH_CAMPAIGN: '🚀 إطلاق كامبين', SCALE_CAMPAIGN: '📈 سكيل', TEST_CAMPAIGN: '🧪 اختبار', PRICE_TEST: '💵 اختبار سعر', SCALE_WINNER: '🚀 اسكيل حملة رابحة' };
 const TASKS_STATUS_AR = {
   PLANNED: 'مخطط', PREPARING: 'جاري التجهيز...', WAITING_FOR_INPUT: 'محتاج بيانات منك',
   WAITING_FOR_APPROVAL: 'محتاج موافقة', RUNNING: 'جاري التنفيذ...', VERIFYING: 'جاري التأكيد...',

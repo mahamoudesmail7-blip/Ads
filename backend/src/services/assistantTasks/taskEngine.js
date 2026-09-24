@@ -297,6 +297,7 @@ export async function approveTask({ taskId, userId, approvalHash }) {
 
   if (['LAUNCH_CAMPAIGN', 'SCALE_CAMPAIGN', 'TEST_CAMPAIGN'].includes(task.kind)) return approveLaunchCampaignTask({ task, userId, approvalHash });
   if (task.kind === 'PRICE_TEST') return approvePriceTestTask({ task, userId, approvalHash });
+  if (task.kind === 'SCALE_WINNER') return approveScaleWinnerTask({ task, userId, approvalHash });
 
   const { approveAndExecute } = await import('../amb/executor.js');
 
@@ -449,6 +450,64 @@ async function approvePriceTestTask({ task, userId, approvalHash }) {
     patch: { progress: 100, error: verified ? null : 'السعر اتحدّث لكن القراءة الفورية بعده مش مطابقة — راجعه يدويًا.' },
   });
   return { ok: true, task: serializeTask(finalTask), oldValue: preview.currentPrice, newValue: updated.selling_price };
+}
+
+/**
+ * "اعمل اسكيل" via the real Winner→Scale system (services/amb/scaleWinners.js
+ * — the SAME engine + eligibility (orders>=1, CPA<=WINNER_CPA_EGP) the
+ * dashboard's own "🚀 جاهزة للاسكيل" cards use, never a second criterion).
+ * executeScale() itself already creates the new campaign via the existing
+ * clone engine AND blocks until waitAndVerifyScale() proves the whole tree
+ * exists (up to 2 minutes) — the same synchronous-wait precedent the
+ * dashboard's own "Approve Scale" button already relies on, so this task
+ * simply awaits the SAME call rather than inventing a second execution path.
+ */
+async function approveScaleWinnerTask({ task, userId, approvalHash }) {
+  const preview = task.prepared_payload_json ? JSON.parse(task.prepared_payload_json) : null;
+  const expectedHash = computeApprovalHash({
+    taskUuid: task.task_uuid, toolName: task.tool_name, entityId: task.entity_id, actionType: task.kind,
+    preparedPayload: preview, recUpdatedAt: null,
+  });
+  if (!approvalHash || approvalHash !== expectedHash) {
+    await transitionTask({ taskId: task.task_uuid, to: 'PREPARING', patch: { error: 'الخطة اتغيرت بعد التجهيز — جهّزها تاني.' } });
+    return { ok: false, error: 'STALE_APPROVAL', message: 'الخطة اتغيرت بعد التجهيز — محتاجة موافقة جديدة.' };
+  }
+
+  const conflicting = await findActiveTaskForEntity(task.entity_id);
+  if (conflicting && conflicting.task_uuid !== task.task_uuid) {
+    await transitionTask({ taskId: task.task_uuid, to: 'BLOCKED', patch: { blocked_reason: 'فيه تاسك تاني شغال بالفعل على نفس الحملة.' } });
+    return { ok: false, error: 'CONFLICT', message: 'فيه إجراء تاني شغال على نفس الحملة دلوقتي.' };
+  }
+
+  await transitionTask({ taskId: task.task_uuid, to: 'RUNNING', patch: { approved_at: new Date(), approved_by_id: userId || null, progress: 50 } });
+
+  const { executeScale } = await import('../amb/scaleWinners.js');
+  let result;
+  try {
+    result = await executeScale({
+      sourceCampaignId: task.entity_id,
+      budgetMode: preview.budgetMode,
+      campaignBudgetEgp: preview.campaignBudgetEgp,
+      selectedAdIds: preview.selectedAdIds,
+      adSets: preview.adSets,
+      startMode: preview.startMode,
+      startAt: preview.startAt,
+      windowName: preview.windowName || 'today',
+      userId,
+    });
+  } catch (err) {
+    // executeScale() itself already marks the AmbScaleDecision row FAILED
+    // with the real reason (including a partial-tree proof failure) —
+    // never a second, invented error here.
+    await transitionTask({ taskId: task.task_uuid, to: 'FAILED', patch: { error: err.message || String(err) } });
+    return { ok: false, error: 'EXECUTION_FAILED', message: err.message || 'فشل تنفيذ الاسكيل.' };
+  }
+
+  // executeScale() only ever returns after waitAndVerifyScale() has proven
+  // the destination campaign + every required ad set/ad genuinely exists —
+  // trusting that real proof here rather than re-verifying a third time.
+  const finalTask = await transitionTask({ taskId: task.task_uuid, to: 'COMPLETED', patch: { progress: 100 } });
+  return { ok: true, task: serializeTask(finalTask), newValue: result };
 }
 
 export { serializeTask, ACTIVE_STATUSES };

@@ -40,6 +40,8 @@ export const WRITE_TOOL_META = {
   prepare_scale: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_test: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
   prepare_price_test: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
+  prepare_scale_winner: { tier: 'PREPARE', requiresApproval: true, writesToMeta: true },
+  get_scale_winners: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   generate_campaign_copy: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   get_my_recent_tasks: { tier: 'READ', requiresApproval: false, writesToMeta: false },
   get_task_progress: { tier: 'READ', requiresApproval: false, writesToMeta: false },
@@ -729,6 +731,96 @@ export async function prepare_price_test({ productId, productName, newPrice, use
   }
 }
 
+/**
+ * "اعمل اسكيل" via the REAL Winner→Scale system (services/amb/scaleWinners.js)
+ * — the exact same eligible campaigns the dashboard's own "🚀 جاهزة للاسكيل"
+ * cards show (orders>=1, CPA<=WINNER_CPA_EGP), never a second criterion and
+ * never invented. Resolves by real campaign/product name — ممنوع تطلب رقم —
+ * only falling back to sourceCampaignId when the caller already has it
+ * (e.g. from a prior get_scale_winners call in the same turn). Creates a
+ * WAITING_FOR_APPROVAL task; nothing runs on Meta until approveTask() (the
+ * same hash-bound approval every other PREPARE tool uses).
+ */
+export async function prepare_scale_winner({ sourceCampaignId, campaignName, productName, budgetMode, campaignBudgetEgp, adSets, startMode, startAt, selectedAdIds, userId, conversationRef } = {}) {
+  let taskUuid = null;
+  try {
+    if (!sourceCampaignId && !campaignName && !productName) return { ok: false, error: 'محتاج اسم الحملة أو المنتج على الأقل — استخدم get_scale_winners الأول لو مش متأكد.' };
+
+    const { listScaleWinners } = await import('./amb/scaleWinners.js');
+    const data = await listScaleWinners({ windowName: 'today' });
+    if (!data.connected) return { ok: false, error: 'اربط حساب Meta Ads الأول.' };
+
+    let card = null;
+    if (sourceCampaignId) {
+      card = data.cards.find((c) => String(c.sourceCampaignId) === String(sourceCampaignId));
+    } else {
+      const q = String(campaignName || productName).trim();
+      const matches = data.cards.filter((c) => c.decisionStatus === 'PENDING' && [c.displayName, c.sourceCampaignName, c.productName].filter(Boolean).some((n) => n.includes(q)));
+      if (matches.length > 1) return { ok: false, error: 'فيه أكتر من حملة جاهزة للاسكيل قريبة من الاسم ده.', candidates: matches.map((c) => ({ sourceCampaignId: c.sourceCampaignId, name: c.displayName, campaignName: c.sourceCampaignName })) };
+      card = matches[0] || null;
+    }
+    if (!card) return { ok: false, error: 'مفيش حملة جاهزة للاسكيل حاليًا بالاسم أو الرقم ده — استخدم get_scale_winners عشان تشوف القائمة الحقيقية دلوقتي.' };
+    if (card.decisionStatus !== 'PENDING') return { ok: false, error: `الحملة "${card.displayName}" حالتها ${card.decisionStatus} بالفعل — مش متاحة للاسكيل تاني.` };
+
+    const bm = budgetMode === 'ABO' ? 'ABO' : budgetMode === 'CBO' ? 'CBO' : null;
+    if (!bm) return { ok: true, needsInput: true, card: { sourceCampaignId: card.sourceCampaignId, displayName: card.displayName, orders: card.orders, cpa: card.cpa, winningCreativeCount: card.winningCreativeCount, recommendation: card.recommendation }, question: 'هيسكيل بميزانية موحّدة (CBO) ولا ميزانية لكل مجموعة إعلانية (ABO)؟' };
+
+    let finalSelectedAdIds = null, finalAdSets = null;
+    if (bm === 'CBO') {
+      if (!(Number(campaignBudgetEgp) > 0)) return { ok: true, needsInput: true, budgetMode: bm, question: 'الميزانية اليومية للحملة كام (بالجنيه)؟' };
+      finalSelectedAdIds = Array.isArray(selectedAdIds) && selectedAdIds.length ? selectedAdIds : card.winningAdIds;
+    } else {
+      if (!Array.isArray(adSets) || !adSets.length) return { ok: true, needsInput: true, budgetMode: bm, availableAds: card.ads.filter((a) => a.qualifies), question: 'محتاج ميزانية كل مجموعة إعلانية (Ad Set) والإعلانات المختارة فيها لوضع ABO.' };
+      finalAdSets = adSets;
+    }
+
+    const mode = startMode === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW';
+    if (mode === 'SCHEDULE' && !startAt) return { ok: true, needsInput: true, question: 'تاريخ ووقت البداية إمتى؟ (أو قول "دلوقتي" للتشغيل الفوري)' };
+
+    const existing = await findActiveTaskForEntity(String(card.sourceCampaignId));
+    if (existing) return { ok: true, task: (await resolveTaskStatus({ taskId: existing.task_uuid })).task, note: 'فيه تاسك شغال بالفعل على الحملة دي.' };
+
+    const preview = {
+      sourceCampaignId: card.sourceCampaignId, sourceCampaignName: card.sourceCampaignName, productName: card.productName,
+      proposedScaleCampaignName: card.proposedScaleCampaignName,
+      budgetMode: bm, campaignBudgetEgp: bm === 'CBO' ? Number(campaignBudgetEgp) : null, adSets: finalAdSets,
+      selectedAdIds: finalSelectedAdIds, startMode: mode, startAt: mode === 'SCHEDULE' ? startAt : null,
+      windowName: 'today',
+      evidence: { orders: card.orders, cpa: card.cpa, spend: card.spend, winningCreativeCount: card.winningCreativeCount, recommendation: card.recommendation },
+    };
+
+    const task = await createTask({ userId, kind: 'SCALE_WINNER', toolName: 'prepare_scale_winner', entityId: String(card.sourceCampaignId), entityType: 'campaign', entityName: card.sourceCampaignName, inputJson: preview, conversationRef });
+    taskUuid = task.task_uuid;
+    await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { progress: 40 } });
+
+    const finalTask = await enterWaitingForApproval({ taskId: taskUuid, ambRecommendationId: null, preparedPayload: preview, actionType: 'SCALE_WINNER', recUpdatedAt: null });
+    return { ok: true, task: (await resolveTaskStatus({ taskId: finalTask.task_uuid })).task };
+  } catch (err) {
+    if (taskUuid) await failTaskSafely({ taskId: taskUuid, error: err });
+    return { ok: false, error: err.message };
+  }
+}
+
+/** [قراءة فقط] الحملات الحقيقية الجاهزة للاسكيل الآن — نفس البيانات بالظبط اللي شاشة "🚀 جاهزة للاسكيل" بتعرضها. */
+export async function get_scale_winners({ window } = {}) {
+  try {
+    const { listScaleWinners } = await import('./amb/scaleWinners.js');
+    const data = await listScaleWinners({ windowName: window || 'today' });
+    if (!data.connected) return { ok: false, error: 'اربط حساب Meta Ads الأول.' };
+    const pending = data.cards.filter((c) => c.decisionStatus === 'PENDING');
+    return {
+      ok: true, hasData: true, window: data.window, winnerCpaEgp: data.winnerCpaEgp, count: pending.length,
+      candidates: pending.map((c) => ({
+        sourceCampaignId: c.sourceCampaignId, sourceCampaignName: c.sourceCampaignName, productName: c.productName,
+        displayName: c.displayName, orders: c.orders, cpa: c.cpa, spend: c.spend, winningCreativeCount: c.winningCreativeCount,
+        recommendation: c.recommendation, defaultBudgetType: c.sourceBudgetType,
+      })),
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function generate_campaign_copy({ productId, productName, angle, anglesToAvoid, tone } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
@@ -838,6 +930,24 @@ export async function retry_task({ taskUuid, userId, conversationRef } = {}) {
       for (const c of retryable) await retryLaunchCampaignNow({ jobId: task.launch_job_id, campaignIndex: c.index }).catch(() => {});
       if (task.status === 'FAILED') await transitionTask({ taskId: taskUuid, to: 'RUNNING', patch: { error: null, progress: Math.round((progress.campaigns.length - retryable.length) / progress.campaigns.length * 100) } });
       return { ok: true, retried: true, nudgedCampaigns: retryable.map((c) => c.name), note: 'المفروض الكامبينات دي تستأنف خلال ثواني — استخدم get_task_progress للمتابعة.' };
+    }
+
+    // SCALE_WINNER has no launch_job_id (it uses the clone engine, not the
+    // launch queue) but a FAILED one can still have already reached Meta —
+    // executeScale() calls createBatch()+approveBatch() BEFORE the final
+    // waitAndVerifyScale() proof, so a verification failure still leaves a
+    // real AmbCloneBatch/campaign behind. Blindly re-preparing here would
+    // risk a second, duplicate campaign — check the real decision row first.
+    if (task.kind === 'SCALE_WINNER') {
+      const decision = await prisma.ambScaleDecision.findFirst({ where: { source_campaign_id: task.entity_id }, orderBy: { id: 'desc' } });
+      if (decision?.clone_batch_id) {
+        return {
+          ok: true, retried: false,
+          note: `فيه استنساخ حقيقي (batch ${decision.clone_batch_id}) اتعمل بالفعل لهذه الحملة وحالته ${decision.status} — مش آمن نعيد التجهيز تلقائيًا عشان مش نكرر الحملة. راجع "استنساخ وجدولة" أو "📋 المهام" للتفاصيل، أو احذف/عالج النسخة القديمة يدويًا الأول.`,
+        };
+      }
+      // No real batch was ever created (failed before reaching Meta, e.g. a
+      // stale approval or conflict) — safe to re-run fresh.
     }
 
     // No launch_job_id — safe to re-run the original prepare_* call verbatim.
@@ -991,6 +1101,37 @@ export const WRITE_TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_scale_winners',
+    description: '[🚀 قراءة فقط] القائمة الحقيقية والحية للحملات الجاهزة للاسكيل الآن — بالظبط نفس البيانات اللي شاشة "🚀 جاهزة للاسكيل" في الرئيسية بتعرضها (طلب ≥ 1 و CPA ≤ الحد المسموح). استخدمها إجباريًا لما المستخدم يقول "عايز اعمل اسكيل" من غير ما يحدد حملة بعينها — اعرض القائمة بالاسم الحقيقي، ممنوع تخترع أو تفترض حملة.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        window: { type: 'string', description: 'today | yesterday | last3 | last7، افتراضي today' },
+      },
+    },
+  },
+  {
+    name: 'prepare_scale_winner',
+    description: '[تجهيز — لا يطلق أي حملة فعليًا] يجهّز اسكيل حقيقي لحملة رابحة من قائمة get_scale_winners — بينشئ حملة جديدة بنفس الكرياتيف الفائز عن طريق محرك الاستنساخ الحقيقي. لازم يوصلك من المستخدم: اسم الحملة/المنتج (أو sourceCampaignId من get_scale_winners)، budgetMode (CBO أو ABO)، الميزانية (campaignBudgetEgp لو CBO، أو adSets لو ABO)، وموعد البدء (startMode: RUN_NOW أو SCHEDULE مع startAt). لو أي حاجة من دي ناقصة، الأداة بترجع needsInput:true مع سؤال محدد — اسأل المستخدم بالظبط السؤال ده وارجع استدعِ الأداة تاني لما يرد، ممنوع تخترع قيمة بدل ما تسأل. ممنوع تمامًا تطلب أو تخترع رقم/ID — استخدم الاسم الحقيقي أو الرقم الراجع من get_scale_winners فقط.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sourceCampaignId: { type: 'string', description: 'رقم الحملة الحقيقي، لو راجعلك من get_scale_winners في نفس المحادثة' },
+        campaignName: { type: 'string', description: 'اسم الحملة كما وصله المستخدم أو من القائمة' },
+        productName: { type: 'string', description: 'اسم المنتج، بديل عن اسم الحملة' },
+        budgetMode: { type: 'string', enum: ['CBO', 'ABO'], description: 'نوع توزيع الميزانية — لازم يجاوب المستخدم عليه صراحة' },
+        campaignBudgetEgp: { type: 'number', description: 'الميزانية اليومية للحملة بالجنيه — لوضع CBO فقط' },
+        adSets: {
+          type: 'array', description: 'لوضع ABO فقط — ميزانية وإعلانات كل مجموعة إعلانية',
+          items: { type: 'object', properties: { dailyBudgetEgp: { type: 'number' }, selectedAdIds: { type: 'array', items: { type: 'string' } } } },
+        },
+        selectedAdIds: { type: 'array', items: { type: 'string' }, description: 'الإعلانات الرابحة المختارة لوضع CBO — افتراضي كل الإعلانات المؤهلة لو مش محدد' },
+        startMode: { type: 'string', enum: ['RUN_NOW', 'SCHEDULE'], description: 'تشغيل فوري ولا جدولة لموعد لاحق' },
+        startAt: { type: 'string', description: 'تاريخ ووقت البداية بتوقيت القاهرة (YYYY-MM-DDTHH:mm) — لازم لوضع SCHEDULE فقط' },
+      },
+    },
+  },
+  {
     name: 'generate_campaign_copy',
     description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب بوست فيسبوك إعلاني مصري متكامل وجاهز للنشر (finalPost) لمنتج معين، مبني على مميزات حقيقية مؤكدة بس (مفيش مواصفات مخترعة) — بيرجع كمان حقول منفصلة (headline/primaryText/hook/cta) لاستخدامها في بناء كامبين. لتحديد المنتج: ابعت productId لو معروف من سياق الصفحة، وإلا ابعت productName بالاسم اللي وصلك — من كلام المستخدم، أو من وصفك أنت للمنتج في صورة أرسلها (شوف الصورة واكتب اسم المنتج الظاهر فيها بوضوح، من غير ما تسأل المستخدم عن رقم). ممنوع تمامًا تطلب من المستخدم "رقم المنتج" — لو الأداة رجعت candidates، اسأله يختار بالاسم من القائمة دي فقط. لطلب "بوست بأنجل تاني"، ابعت anglesToAvoid بالزوايا اللي استُخدمت قبل كده في نفس المحادثة لهذا المنتج عشان يختار وعد أساسي مختلف فعليًا.',
     input_schema: {
@@ -1038,4 +1179,4 @@ export const WRITE_TOOL_DEFINITIONS = [
   },
 ];
 
-export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, prepare_price_test, generate_campaign_copy, get_my_recent_tasks, get_task_progress, retry_task, cancel_task };
+export const WRITE_TOOL_IMPLS = { prepare_bump, prepare_pause, prepare_resume, prepare_campaign, prepare_scale, prepare_test, prepare_price_test, prepare_scale_winner, get_scale_winners, generate_campaign_copy, get_my_recent_tasks, get_task_progress, retry_task, cancel_task };
