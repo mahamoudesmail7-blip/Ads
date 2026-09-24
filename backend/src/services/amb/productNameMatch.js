@@ -1,10 +1,11 @@
-// AI Media Buyer Operator — fuzzy product name resolution. Lets chat tools
-// that only need a product's NAME (content generation: posts/angles/hooks/
-// creative briefs) accept free text — from what the user typed, or from
-// what the model identified in an attached product photo — instead of
-// forcing the human to look up and type a raw internal Product ID.
-// Never invents a product: an unmatched name returns candidates:[] and the
-// caller must say so honestly, never guess the "closest" one silently.
+// AI Media Buyer Operator — fuzzy product name resolution AND verified
+// product-feature lookup. Lets chat tools that only need a product's NAME
+// (content generation: posts/angles/hooks/creative briefs) accept free
+// text — from what the user typed, or from what the model identified in an
+// attached product photo — instead of forcing the human to look up and
+// type a raw internal Product ID. Never invents a product: an unmatched
+// name returns candidates:[] and the caller must say so honestly, never
+// guess the "closest" one silently.
 import { prisma } from '../../prisma.js';
 
 // Arabic normalization: unify alef/hamza variants, ta-marbuta/ha, strip
@@ -110,4 +111,56 @@ export async function resolveProductByIdOrName({ productId, productName }) {
   }
 
   return { ok: false, error: 'فيه أكتر من منتج قريب من الاسم ده.', candidates: relevant.map((r) => ({ id: r.p.id, name: r.p.product_name })) };
+}
+
+// Labels PMC's confirmed_traits_json uses purely for DATA PROVENANCE (which
+// store, which source, internal id, matched price) rather than an actual
+// physical product feature — never useful as an ad-copy "✅ feature" bullet.
+const PROVENANCE_LABELS = new Set(['المتجر', 'المصدر', 'اسم المنتج (Easy Orders)', 'رقم المنتج الداخلي', 'سعر البيع المسجّل', 'الفئة']);
+
+// Product names in this catalogue often literally enumerate real features
+// for multi-function products ("...5 في 1 – حوض سمك، إضاءة LED، ساعة رقمية،
+// مقياس حرارة، ومنظم أقلام") — split the listy part after a dash/colon on
+// commas/"+". Only trusted as real features when it yields several short
+// parts; a normal descriptive name split on commas that just gives one long
+// fragment back is not a real feature list.
+function featuresFromProductName(name) {
+  const afterDash = name.split(/[–\-:]/).slice(1).join(' ').trim();
+  const listPart = afterDash || name;
+  const parts = listPart.split(/[،,]|(?:\s\+\s)/)
+    .map((s) => s.trim().replace(/^و\s*/, '')) // strip a leading "و" (and) connector — not part of the feature name
+    .filter((s) => s.length >= 2 && s.length <= 40);
+  return parts.length >= 2 ? parts : [];
+}
+
+/**
+ * Real, verified product facts for content generation — NEVER invented.
+ * Sources, most to least authoritative: PMC's own confirmed_traits (minus
+ * pure data-provenance rows), CfProduct's reviewed specification/benefit
+ * fields (when a Creative Factory profile is linked), and features
+ * literally enumerated in the product's own name.
+ * @param {{id:number, product_name:string}} product
+ * @returns {Promise<string[]>}
+ */
+export async function getVerifiedFeatures(product) {
+  const features = [];
+  const [pmcProfile, cfProduct] = await Promise.all([
+    prisma.productMarketingProfile.findFirst({ where: { product_id: product.id }, orderBy: { updated_at: 'desc' }, select: { confirmed_traits_json: true } }),
+    prisma.cfProduct.findUnique({ where: { product_id: product.id }, select: { specifications: true, benefits: true } }).catch(() => null),
+  ]);
+
+  if (pmcProfile?.confirmed_traits_json) {
+    try {
+      const traits = JSON.parse(pmcProfile.confirmed_traits_json);
+      for (const t of traits) {
+        if (!t?.label || PROVENANCE_LABELS.has(t.label)) continue;
+        features.push(t.value ? `${t.label}: ${t.value}` : t.label);
+      }
+    } catch { /* malformed row — skip, never guess */ }
+  }
+  if (cfProduct?.specifications) features.push(String(cfProduct.specifications).slice(0, 200));
+  if (cfProduct?.benefits) features.push(String(cfProduct.benefits).slice(0, 200));
+  features.push(...featuresFromProductName(product.product_name));
+
+  return [...new Set(features)].slice(0, 12);
 }

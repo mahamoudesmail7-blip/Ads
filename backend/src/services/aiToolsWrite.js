@@ -729,13 +729,15 @@ export async function prepare_price_test({ productId, productName, newPrice, use
   }
 }
 
-export async function generate_campaign_copy({ productId, productName, angle, tone } = {}) {
+export async function generate_campaign_copy({ productId, productName, angle, anglesToAvoid, tone } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
     const resolved = await resolveProductByIdOrName({ productId, productName });
     if (!resolved.ok) return resolved;
     const { generatePost } = await import('./amb/productMarketingAI.js');
-    const res = await generatePost({ productName: resolved.product.product_name, angle, tone });
+    const { getVerifiedFeatures } = await import('./amb/productNameMatch.js');
+    const verifiedFeatures = await getVerifiedFeatures(resolved.product);
+    const res = await generatePost({ productName: resolved.product.product_name, verifiedFeatures, angle, anglesToAvoid: Array.isArray(anglesToAvoid) ? anglesToAvoid : [], tone });
     if (!res.ok) return { ok: false, error: res.reason };
     return { ok: true, productId: resolved.product.id, productName: resolved.product.product_name, post: res.post };
   } catch (err) {
@@ -990,13 +992,14 @@ export const WRITE_TOOL_DEFINITIONS = [
   },
   {
     name: 'generate_campaign_copy',
-    description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب بوست/نص إعلاني مصري حقيقي (Primary Text, Headline, Hook, CTA) لمنتج معين، مع تصنيف أمان الادّعاءات. اعرضه على المستخدم كمسودة يوافق عليها قبل ما تحطه في prepare_campaign. لتحديد المنتج: ابعت productId لو معروف من سياق الصفحة، وإلا ابعت productName بالاسم اللي وصلك — من كلام المستخدم، أو من وصفك أنت للمنتج في صورة أرسلها (شوف الصورة واكتب اسم المنتج الظاهر فيها بوضوح، من غير ما تسأل المستخدم عن رقم). ممنوع تمامًا تطلب من المستخدم "رقم المنتج" — لو الأداة رجعت candidates، اسأله يختار بالاسم من القائمة دي فقط.',
+    description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب بوست فيسبوك إعلاني مصري متكامل وجاهز للنشر (finalPost) لمنتج معين، مبني على مميزات حقيقية مؤكدة بس (مفيش مواصفات مخترعة) — بيرجع كمان حقول منفصلة (headline/primaryText/hook/cta) لاستخدامها في بناء كامبين. لتحديد المنتج: ابعت productId لو معروف من سياق الصفحة، وإلا ابعت productName بالاسم اللي وصلك — من كلام المستخدم، أو من وصفك أنت للمنتج في صورة أرسلها (شوف الصورة واكتب اسم المنتج الظاهر فيها بوضوح، من غير ما تسأل المستخدم عن رقم). ممنوع تمامًا تطلب من المستخدم "رقم المنتج" — لو الأداة رجعت candidates، اسأله يختار بالاسم من القائمة دي فقط. لطلب "بوست بأنجل تاني"، ابعت anglesToAvoid بالزوايا اللي استُخدمت قبل كده في نفس المحادثة لهذا المنتج عشان يختار وعد أساسي مختلف فعليًا.',
     input_schema: {
       type: 'object',
       properties: {
         productId: { type: 'integer', description: 'رقم المنتج، لو معروف بالفعل من سياق الصفحة' },
         productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز' },
         angle: { type: 'string', description: 'زاوية تسويقية، اختياري (مثلًا: الخوف، الفضول، توفير الوقت، السعر)' },
+        anglesToAvoid: { type: 'array', items: { type: 'string' }, description: 'الزوايا المستخدمة قبل كده في نفس المحادثة لهذا المنتج — ابعتها عند طلب "بوست بأنجل تاني" فقط' },
         tone: { type: 'string', description: 'نبرة الكتابة، اختياري' },
       },
     },

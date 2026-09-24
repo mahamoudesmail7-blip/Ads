@@ -159,7 +159,7 @@ export async function generateAngleProposals({ productName, existingAngles = [],
 // §15 Hook Lab — generated on demand only (never as part of the main report).
 // ---------------------------------------------------------------------------
 const HOOK_SYSTEM = `إنت كاتب إعلانات مصري متخصص في الـ Hooks. اكتب Hooks بالعامية المصرية بس، قصيرة وقوية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة. رجّع JSON فقط: {"hooks":[{"text":"","category":""}]}`;
-export async function generateHooks({ productName, angle, category, count = 10 }) {
+export async function generateHooks({ productName, angle, category, count = 5 }) {
   const user = `المنتج: ${productName}\nالزاوية المطلوبة: ${angle || 'عام'}\nنوع الـ Hook المطلوب (لو محدد): ${category || 'أي نوع مناسب'}\nاكتب ${count} Hook مختلفين بالعامية المصرية.`;
   const res = await callJson({ system: HOOK_SYSTEM, user, maxTokens: 1500, label: 'HOOKS' });
   if (!res.ok) return { ok: false, reason: res.reason };
@@ -171,29 +171,77 @@ export async function generateHooks({ productName, angle, category, count = 10 }
 }
 
 // ---------------------------------------------------------------------------
-// §16 Post Generator.
+// §16 Post Generator. Redesigned for the "اعملي بوست" intent (user request:
+// one clean, paste-ready Facebook post — no field labels, no fabricated
+// specs). `verifiedFeatures` (from ProductMarketingProfile.confirmed_traits
+// and/or CfProduct's own reviewed fields — see aiTools.js's callers) is the
+// ONLY source of concrete product facts the model is allowed to state as
+// fact; given none, it must sell on benefit/emotion without inventing specs.
+// `avoidAngles` lets a "بوست بأنجل تاني" follow-up request a genuinely
+// different core promise instead of a reworded repeat.
 // ---------------------------------------------------------------------------
-const POST_SYSTEM = `إنت كاتب محتوى فيسبوك مصري. اكتب بوست إعلاني بالعامية المصرية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة.
-قواعد الصياغة الإلزامية:
-- ممنوع نهائيًا أي علامة **markdown** (نجوم **، شرطات تحت __، عناوين #) في أي حقل — النص هيتلصق مباشرة في Meta Ads Manager كنص عادي، مش هيتقرأ كـ Markdown.
-- ضيف إيموجي واحد أو اتنين مناسبين للمنتج/الزاوية في كل حقل نصي رئيسي (short/medium/long/headline) — مش أكتر عشان ميبقاش مبالغ فيه.
-رجّع JSON فقط:
-{"short":"","medium":"","long":"","headline":"","primaryText":"","cta":"","hook":""}`;
+const POST_SYSTEM = `إنت Media Buyer/Copywriter مصري محترف متخصص في إعلانات فيسبوك للتجارة الإلكترونية. اكتب بوست إعلاني واحد متكامل بالعامية المصرية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة.
+
+بنية البوست (من غير ما تكتب عناوين البنية دي، اكتبها كنص متصل طبيعي):
+1. Hook قوي في أول سطر يوقف اللي بيسكرول — اختار الأقوى للمنتج والزاوية دي، ممنوع تبدأ كل بوست بنفس الصياغة (زي "ودّع" دايمًا) — نوّع من أساليب زي: "ودّع"، "مش هتحتاج"، "لو بتعاني من"، "تخيل"، "ليه تفضل"، "دلوقتي تقدر"، "الحل اللي كان ناقصك"، أو أي افتتاحية طبيعية تانية تناسب المنتج.
+2. تمهيد قصير مقنع بعد الـHook.
+3. لو فيه مميزات مؤكدة اتبعتلك (verifiedFeatures)، اكتب كل مميزة في سطر مستقل يبدأ بـ ✅ — استخدم بس المميزات المؤكدة دي، وحوّلها لفايدة للعميل مش سرد جاف (مثلًا "✅ شحن USB-C لسهولة الاستخدام" مش "✅ USB-C" بس). ممنوع تخترع أي مواصفة أو سعر أو ضمان أو سياسة استرجاع/شحن مش موجودة في البيانات اللي وصلتك. لو مفيش مميزات مؤكدة خالص، منّ تكتب قائمة ✅ ووصّل الرسالة بالفايدة العاطفية/العملية العامة للمنتج بس.
+4. اقفل بـ CTA واضح ومناسب للسوق المصري (زي "🛒 اطلبه دلوقتي" أو أقوى منه حسب السياق).
+
+قواعد إلزامية:
+- ممنوع نهائيًا أي علامة **markdown** (نجوم **، شرطات تحت __، عناوين #) — النص هيتلصق مباشرة في Meta Ads Manager كنص عادي.
+- إيموجي ✅ لكل مميزة، + 1-3 إيموجي تاني مناسب في باقي البوست — من غير مبالغة.
+- الطول: كافي إنه يبيع المنتج لكن سهل القراءة على الموبايل — مش فقرة عملاقة واحدة، ومش عشرين سطر تفصيلي فاضي.
+- لو معاك anglesToAvoid، اختار وعد أساسي مختلف فعليًا (مش بس صياغة تانية لنفس الوعد).
+رجّع JSON فقط — finalPost هو البوست الكامل الجاهز للنشر بالظبط زي ما هيتنشر (بدون أي تسميات حقول)؛ short/medium/long هما نفس البوست في 3 أطوال مختلفة لواجهات تانية بتحتاجهم منفصلين (خليهم متسقين مع finalPost، مش أفكار مختلفة):
+{"finalPost":"","short":"","medium":"","long":"","hook":"","headline":"","primaryText":"","cta":""}`;
 function stripMarkdown(s) {
   return typeof s === 'string' ? s.replace(/\*\*/g, '').replace(/__/g, '').replace(/^#+\s*/gm, '') : s;
 }
-export async function generatePost({ productName, angle, tone }) {
-  const user = `المنتج: ${productName}\nالزاوية: ${angle || 'عام'}\nنبرة الكتابة المطلوبة: ${tone || 'مباشر'}`;
-  const res = await callJson({ system: POST_SYSTEM, user, maxTokens: 1500, label: 'POST' });
+export async function generatePost({ productName, verifiedFeatures = [], angle, anglesToAvoid = [], tone }) {
+  const featuresLine = verifiedFeatures.length ? verifiedFeatures.join('، ') : 'مفيش مميزات مؤكدة متاحة — ممنوع تخترع أي مواصفة، بيع بالفايدة العامة بس.';
+  const avoidLine = anglesToAvoid.length ? `زوايا مستخدمة قبل كده في نفس المحادثة، اختار وعد أساسي مختلف فعليًا عنها: ${anglesToAvoid.join('، ')}` : '';
+  const user = `المنتج: ${productName}\nمميزات مؤكدة (استخدمها فقط، ممنوع تضيف غيرها): ${featuresLine}\nالزاوية: ${angle || 'اختار أنسب زاوية للمنتج'}\n${avoidLine}\nنبرة الكتابة المطلوبة: ${tone || 'مباشر ومقنع'}`;
+
+  async function attempt() {
+    const res = await callJson({ system: POST_SYSTEM, user, maxTokens: 1500, label: 'POST' });
+    if (!res.ok) return { ok: false, reason: res.reason };
+    const raw = res.data || {};
+    const d = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, stripMarkdown(v)]));
+    const claim = classifyClaim(`${d.finalPost || ''} ${d.hook || ''} ${d.headline || ''}`);
+    return { ok: true, d, claimStatus: claim ? claim.status : 'GREEN', claimReason: claim?.reason || null };
+  }
+
+  let out = await attempt();
+  if (!out.ok) return out;
+  // Quality gate — a detected banned claim must never reach the user, even
+  // if the model's own self-check missed it. One bounded regeneration
+  // attempt; if the SAME real problem persists, fail honestly instead of
+  // silently exposing risky copy.
+  if (out.claimStatus === 'RED') {
+    out = await attempt();
+    if (!out.ok) return out;
+    if (out.claimStatus === 'RED') return { ok: false, reason: 'مقدرش أكتب البوست ده من غير ادّعاء غير مسموح (طبي/تخسيس/ضمان نتيجة) — جرب زاوية تانية.' };
+  }
+  return { ok: true, post: { ...out.d, claimStatus: out.claimStatus, claimReason: out.claimReason } };
+}
+
+// ---------------------------------------------------------------------------
+// §16b Headline Generator — a dedicated intent ("هات هيدلاين"), separate
+// from the post's own single `headline` field: 5 DIFFERENT headlines
+// exploring different persuasion directions (never five rewordings of the
+// same idea), for the human to pick/test independently of the post text.
+// ---------------------------------------------------------------------------
+const HEADLINES_SYSTEM = `إنت كاتب إعلانات مصري متخصص في Headlines لإعلانات Meta. اكتب Headlines قصيرة وقوية بالعامية المصرية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة. كل Headline لازم تستكشف اتجاه إقناع مختلف عن الباقي (مثلًا: مشكلة/حل، سهولة الاستخدام، الفايدة الأساسية، فضول، تميّز عن البدائل) — ممنوع تكرر نفس الجملة بصياغات مختلفة. استخدم بس المميزات المؤكدة اللي هتوصلك، ممنوع تخترع مواصفة. رجّع JSON فقط:
+{"headlines":[""]}`;
+export async function generateHeadlines({ productName, verifiedFeatures = [], angle, count = 5 }) {
+  const featuresLine = verifiedFeatures.length ? verifiedFeatures.join('، ') : 'مفيش مميزات مؤكدة متاحة — ممنوع تخترع أي مواصفة.';
+  const user = `المنتج: ${productName}\nمميزات مؤكدة: ${featuresLine}\nالزاوية (لو محددة): ${angle || 'أي زاوية مناسبة'}\nاكتب ${count} Headlines مختلفة فعليًا في اتجاه الإقناع.`;
+  const res = await callJson({ system: HEADLINES_SYSTEM, user, maxTokens: 800, label: 'HEADLINES' });
   if (!res.ok) return { ok: false, reason: res.reason };
-  // Defense-in-depth: strip any markdown decoration the model added anyway,
-  // regardless of the instruction above — this text is pasted verbatim into
-  // Meta Ads Manager, never rendered, so a stray ** must never survive.
-  const raw = res.data || {};
-  const d = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, stripMarkdown(v)]));
-  const full = `${d.short || ''} ${d.medium || ''} ${d.long || ''} ${d.headline || ''}`;
-  const claim = classifyClaim(full);
-  return { ok: true, post: { ...d, claimStatus: claim ? claim.status : 'GREEN', claimReason: claim?.reason || null } };
+  const headlines = (Array.isArray(res.data?.headlines) ? res.data.headlines : []).slice(0, count).map(stripMarkdown).filter(Boolean);
+  if (!headlines.length) return { ok: false, reason: 'مقدرش أطلع Headlines لهذا المنتج دلوقتي.' };
+  return { ok: true, headlines };
 }
 
 // ---------------------------------------------------------------------------

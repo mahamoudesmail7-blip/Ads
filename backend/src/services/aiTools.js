@@ -30,7 +30,7 @@ import { attachProfitStates } from './amb/profitBrain.js';
 import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './amb/testingBrain.js';
 import { buildGrowthPlan } from './amb/growthStrategist.js';
 import { buildTargetingStrategy } from './amb/targetingStrategy.js';
-import { generateAngleProposals, generateHooks, generateCreativeIdeas } from './amb/productMarketingAI.js';
+import { generateAngleProposals, generateHooks, generateCreativeIdeas, generateHeadlines } from './amb/productMarketingAI.js';
 import { buildCodQualityReport } from './amb/codQualityBrain.js';
 import { buildProductPlaybook } from './amb/productPlaybook.js';
 import { resolveScaleLadderStage, STAGE_ORDER } from './amb/scaleLadder.js';
@@ -40,7 +40,7 @@ import { stockGuardForProduct } from './amb/stockGuard.js';
 import { detectIncidentsForProduct, raiseIncidentAlerts } from './amb/incidentCenter.js';
 import { buildDailyBrief } from './amb/dailyBrief.js';
 import { listCapabilities, capabilitySummary } from './amb/capabilityRegistry.js';
-import { resolveProductByIdOrName } from './amb/productNameMatch.js';
+import { resolveProductByIdOrName, getVerifiedFeatures } from './amb/productNameMatch.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -354,9 +354,23 @@ export async function generate_hooks({ productId, productName, angle, category, 
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
     const resolved = await resolveProductByIdOrName({ productId, productName });
     if (!resolved.ok) return resolved;
-    const res = await generateHooks({ productName: resolved.product.product_name, angle, category, count: count || 10 });
+    const res = await generateHooks({ productName: resolved.product.product_name, angle, category, count: count || 5 });
     if (!res.ok) return { ok: false, error: res.reason };
     return { ok: true, productId: resolved.product.id, productName: resolved.product.product_name, hooks: res.hooks };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+export async function generate_headlines({ productId, productName, angle, count } = {}) {
+  try {
+    if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
+    const resolved = await resolveProductByIdOrName({ productId, productName });
+    if (!resolved.ok) return resolved;
+    const verifiedFeatures = await getVerifiedFeatures(resolved.product);
+    const res = await generateHeadlines({ productName: resolved.product.product_name, verifiedFeatures, angle, count: count || 5 });
+    if (!res.ok) return { ok: false, error: res.reason };
+    return { ok: true, productId: resolved.product.id, productName: resolved.product.product_name, headlines: res.headlines };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -735,7 +749,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'generate_hooks',
-    description: '[🎣 توليد Hooks — لا يُستخدم تلقائيًا] يكتب Hooks إعلانية مصرية لمنتج ولزاوية معينة، مع تصنيف أمان الادّعاءات لكل Hook. اعرضها على المستخدم كمسودة يوافق عليها قبل الاستخدام في أي كامبين.',
+    description: '[🎣 توليد Hooks — لا يُستخدم تلقائيًا] لطلب "هات Hooks" أو "عايز هوك أقوى". يكتب Hooks إعلانية مصرية لمنتج ولزاوية معينة، مع تصنيف أمان الادّعاءات لكل Hook. لو المستخدم طلب "هوك أقوى" أو "غير البداية" على بوست موجود، استدعِ بـ count:1 واعرض الـHook الجديد بس (من غير بوست كامل) إلا لو طلب صراحة يعيد كتابة البوست كله. اعرضها كمسودة يوافق عليها قبل الاستخدام في أي كامبين.',
     input_schema: {
       type: 'object',
       properties: {
@@ -743,7 +757,20 @@ export const TOOL_DEFINITIONS = [
         productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز؛ ممنوع تطلب رقم من المستخدم' },
         angle: { type: 'string', description: 'الزاوية المطلوب كتابة Hooks لها، اختياري' },
         category: { type: 'string', description: 'نوع Hook معين لو مطلوب، اختياري' },
-        count: { type: 'integer', description: 'عدد الـHooks، افتراضي 10' },
+        count: { type: 'integer', description: 'عدد الـHooks، افتراضي 5 — استخدم 1 لطلب "هوك أقوى" لبوست موجود' },
+      },
+    },
+  },
+  {
+    name: 'generate_headlines',
+    description: '[📰 توليد Headlines — لا يُستخدم تلقائيًا] لطلب "هات هيدلاين" أو "عايز Headlines". يرجّع بالظبط 5 Headlines مختلفة فعليًا في اتجاه الإقناع (مشكلة/حل، سهولة، الفايدة الأساسية، فضول، تميّز) — مش نفس الجملة بصياغات مختلفة. مبني على مميزات المنتج المؤكدة فقط. اعرض الـ5 Headlines بس، من غير بوست أو شرح.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج، لو معروف من سياق الصفحة' },
+        productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز؛ ممنوع تطلب رقم من المستخدم' },
+        angle: { type: 'string', description: 'الزاوية، اختياري' },
+        count: { type: 'integer', description: 'عدد الـHeadlines، افتراضي 5' },
       },
     },
   },
@@ -928,6 +955,7 @@ export const TOOL_IMPLS = {
   get_targeting_strategy,
   generate_angles,
   generate_hooks,
+  generate_headlines,
   generate_creative_brief,
   get_cod_quality,
   get_product_playbook,
@@ -950,4 +978,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_daily_brief', 'get_capabilities', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_headlines', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_daily_brief', 'get_capabilities', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
