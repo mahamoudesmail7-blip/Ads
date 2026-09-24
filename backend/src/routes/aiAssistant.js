@@ -52,11 +52,11 @@ CONFIDENCE: [عالية / متوسطة / منخفضة — حسب كفاية ال
    **تحديد المنتج (لكل الأنواع دي) — ممنوع نهائيًا تطلب "رقم المنتج" أو productId من المستخدم:**
    - لو كتب اسم المنتج، ابعته زي ما هو في productName لأي أداة generate_*.
    - لو بعت صورة منتج، بصّ عليها وحدد اسم/نوع المنتج بنفسك من شكلها، وابعت الوصف في productName — من غير ما تسأل "إيه اسمه؟" إلا لو الصورة غامضة جدًا.
-   - لو الأداة رجعت candidates، اسأل المستخدم يختار بالاسم بس من القائمة ("قصدك ده ولا ده؟") — ممنوع تعرض أو تطلب أي ID.
-   - المنتج اللي اتحدد في أول رسالة في المحادثة يفضل هو نفسه لأي طلب متابعة بعد كده ("هات هيدلاين"، "بأنجل تاني"، "هوك أقوى"...) من غير ما تسأل عنه تاني، إلا لو المستخدم غيّر المنتج صراحة.
+   - لو الأداة رجعت candidates، اسأل المستخدم يختار بالاسم بس من القائمة ("قصدك ده ولا ده؟") — ممنوع تعرض أو تطلب أي ID. لما المستخدم يرد ("الأول"، "التاني"، أو بجزء من الاسم)، **استخدم الـ id الحقيقي بتاع الـcandidate اللي اختاره بالظبط كـ productId في الاستدعاء الجاي — ممنوع تعيد كتابة أو تختصر اسم المنتج من ذاكرتك وتبعته كـ productName تاني**، لأن اسمين متشابهين (زي منتجين بنفس الاسم تقريبًا لكن مختلفين) ممكن يتلخبطوا ويرجعوا منتج غلط. الـid موجود عندك من نتيجة الأداة اللي رجعت الـcandidates.
+   - المنتج اللي اتحدد (productId الحقيقي) يفضل هو نفسه لأي طلب متابعة بعد كده ("هات هيدلاين"، "بأنجل تاني"، "هوك أقوى"...) — ابعت نفس الـproductId، من غير ما تسأل عنه تاني أو تعيد الحل بالاسم، إلا لو المستخدم غيّر المنتج صراحة.
 
    **POST — "اعملي بوست"/"اكتبلي بوست"/"بوست للفيس بوك":**
-   استدعِ generate_campaign_copy. اعرض finalPost بس — كنص واحد متصل جاهز للنسخ واللصق مباشرة. ممنوع نهائيًا تحط قبله أو بعده أي تسميات أو شرح زي "Hook:"، "Primary Text:"، "Headline:"، "CTA:"، "Angle:"، "ليه ده هيشتغل:"، "النسخة الطويلة:"، أو أي اقتراحات إضافية — البوست بس، من غير أي مقدمة أو خاتمة منك. بعد ما ترسل البوست (في رسالة منفصلة تالية، لو المستخدم رد)، ينفع تسأل باختصار "عايز هيدلاين مقترح؟" — بس متضيفهاش جوه رسالة البوست نفسها.
+   استدعِ generate_campaign_copy. اعرض finalPost **بالظبط زي ما رجع من الأداة، حرفًا بحرف — ممنوع تضيف عليه أي تنسيق خاص بيك (نجوم **، تعريض، عناوين) حتى لو ده أسلوبك العادي في الرد على المستخدم؛ ده نص إعلاني هيتنسخ ويتلصق زي ما هو، مش رسالة شات**. ممنوع نهائيًا تحط قبله أو بعده أي تسميات أو شرح زي "Hook:"، "Primary Text:"، "Headline:"، "CTA:"، "Angle:"، "ليه ده هيشتغل:"، "النسخة الطويلة:"، أو أي اقتراحات إضافية — البوست بس، من غير أي مقدمة أو خاتمة منك. بعد ما ترسل البوست (في رسالة منفصلة تالية، لو المستخدم رد)، ينفع تسأل باختصار "عايز هيدلاين مقترح؟" — بس متضيفهاش جوه رسالة البوست نفسها.
 
    **HEADLINES — "هات هيدلاين"/"اعملي هيدلاين"/"عايز Headlines":**
    استدعِ generate_headlines. اعرض الـ5 Headlines بس (سطر لكل واحد) — من غير بوست، من غير شرح، من غير تسميات "Headline 1:" إلا لو الترقيم فعلاً يفيد القراءة.
@@ -174,11 +174,23 @@ router.post(
       return res.status(400).json({ error: 'AI_ERROR', message: err.message });
     }
 
-    logger.info('AI_RESPONSE_COMPLETED', { actorId: req.user.id, toolCallCount: result.toolCalls.length, replyLength: result.text.length, hasTask: !!lastTask });
+    // Defense-in-depth for the copy-generation intents (§9 of the copy
+    // spec: "never **" — this is ad copy meant to be pasted verbatim into
+    // Meta, never rendered as Markdown). The tool layer already strips **
+    // from what it returns, but the model composing its OWN chat reply can
+    // still re-add bold formatting as a stylistic habit regardless of the
+    // system prompt's instruction not to — observed live during testing.
+    // Scoped to only fire when a copy tool was actually called this turn,
+    // so it never touches unrelated replies.
+    const toolNames = result.toolCalls.map((c) => c.name);
+    const COPY_TOOLS = new Set(['generate_campaign_copy', 'generate_headlines', 'generate_hooks', 'generate_creative_brief']);
+    const replyText = toolNames.some((n) => COPY_TOOLS.has(n)) ? result.text.replace(/\*\*/g, '').replace(/__/g, '') : result.text;
 
-    await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message, context }, output: { toolCalls: result.toolCalls.map((c) => c.name), textLength: result.text.length } });
+    logger.info('AI_RESPONSE_COMPLETED', { actorId: req.user.id, toolCallCount: result.toolCalls.length, replyLength: replyText.length, hasTask: !!lastTask });
 
-    res.json({ reply: result.text, toolCalls: result.toolCalls.map((c) => c.name), task: lastTask });
+    await logAudit({ actorId: req.user.id, kind: 'ASSISTANT_TURN', input: { message, context }, output: { toolCalls: toolNames, textLength: replyText.length } });
+
+    res.json({ reply: replyText, toolCalls: toolNames, task: lastTask });
   })
 );
 
