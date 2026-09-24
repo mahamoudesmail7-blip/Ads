@@ -27,6 +27,7 @@ import { loadWinningStackForProduct, resolveWinningCreativeAsset } from './assis
 import { loadTestContext, parseAudienceTestValue } from './assistantTasks/testPrepare.js';
 import { capturePriceTestBaseline } from './assistantTasks/pricePrepare.js';
 import { createTest as createPmcTest } from './amb/productMarketingTests.js';
+import { resolveProductByIdOrName } from './amb/productNameMatch.js';
 import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
 import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus, canTransitionTask } from './assistantTasks/taskEngine.js';
 import { prisma } from '../prisma.js';
@@ -728,15 +729,15 @@ export async function prepare_price_test({ productId, productName, newPrice, use
   }
 }
 
-export async function generate_campaign_copy({ productId, angle, tone } = {}) {
+export async function generate_campaign_copy({ productId, productName, angle, tone } = {}) {
   try {
-    if (!productId) return { ok: false, error: 'productId مطلوب.' };
-    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
-    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
+    if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
+    const resolved = await resolveProductByIdOrName({ productId, productName });
+    if (!resolved.ok) return resolved;
     const { generatePost } = await import('./amb/productMarketingAI.js');
-    const res = await generatePost({ productName: product.product_name, angle, tone });
+    const res = await generatePost({ productName: resolved.product.product_name, angle, tone });
     if (!res.ok) return { ok: false, error: res.reason };
-    return { ok: true, post: res.post };
+    return { ok: true, productId: resolved.product.id, productName: resolved.product.product_name, post: res.post };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -989,15 +990,15 @@ export const WRITE_TOOL_DEFINITIONS = [
   },
   {
     name: 'generate_campaign_copy',
-    description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب نص إعلاني مصري حقيقي (Primary Text, Headline, Hook, CTA) لمنتج معين، مع تصنيف أمان الادّعاءات. اعرضه على المستخدم كمسودة يوافق عليها قبل ما تحطه في prepare_campaign.',
+    description: '[قراءة فقط — لا يستخدم النص تلقائيًا] يكتب بوست/نص إعلاني مصري حقيقي (Primary Text, Headline, Hook, CTA) لمنتج معين، مع تصنيف أمان الادّعاءات. اعرضه على المستخدم كمسودة يوافق عليها قبل ما تحطه في prepare_campaign. لتحديد المنتج: ابعت productId لو معروف من سياق الصفحة، وإلا ابعت productName بالاسم اللي وصلك — من كلام المستخدم، أو من وصفك أنت للمنتج في صورة أرسلها (شوف الصورة واكتب اسم المنتج الظاهر فيها بوضوح، من غير ما تسأل المستخدم عن رقم). ممنوع تمامًا تطلب من المستخدم "رقم المنتج" — لو الأداة رجعت candidates، اسأله يختار بالاسم من القائمة دي فقط.',
     input_schema: {
       type: 'object',
       properties: {
-        productId: { type: 'integer' },
-        angle: { type: 'string', description: 'زاوية تسويقية، اختياري' },
+        productId: { type: 'integer', description: 'رقم المنتج، لو معروف بالفعل من سياق الصفحة' },
+        productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز' },
+        angle: { type: 'string', description: 'زاوية تسويقية، اختياري (مثلًا: الخوف، الفضول، توفير الوقت، السعر)' },
         tone: { type: 'string', description: 'نبرة الكتابة، اختياري' },
       },
-      required: ['productId'],
     },
   },
   {

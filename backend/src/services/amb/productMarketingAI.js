@@ -173,13 +173,24 @@ export async function generateHooks({ productName, angle, category, count = 10 }
 // ---------------------------------------------------------------------------
 // §16 Post Generator.
 // ---------------------------------------------------------------------------
-const POST_SYSTEM = `إنت كاتب محتوى فيسبوك مصري. اكتب بوست إعلاني بالعامية المصرية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة. رجّع JSON فقط:
+const POST_SYSTEM = `إنت كاتب محتوى فيسبوك مصري. اكتب بوست إعلاني بالعامية المصرية، بدون أي ادّعاء طبي أو تخسيس أو ضمان نتيجة.
+قواعد الصياغة الإلزامية:
+- ممنوع نهائيًا أي علامة **markdown** (نجوم **، شرطات تحت __، عناوين #) في أي حقل — النص هيتلصق مباشرة في Meta Ads Manager كنص عادي، مش هيتقرأ كـ Markdown.
+- ضيف إيموجي واحد أو اتنين مناسبين للمنتج/الزاوية في كل حقل نصي رئيسي (short/medium/long/headline) — مش أكتر عشان ميبقاش مبالغ فيه.
+رجّع JSON فقط:
 {"short":"","medium":"","long":"","headline":"","primaryText":"","cta":"","hook":""}`;
+function stripMarkdown(s) {
+  return typeof s === 'string' ? s.replace(/\*\*/g, '').replace(/__/g, '').replace(/^#+\s*/gm, '') : s;
+}
 export async function generatePost({ productName, angle, tone }) {
   const user = `المنتج: ${productName}\nالزاوية: ${angle || 'عام'}\nنبرة الكتابة المطلوبة: ${tone || 'مباشر'}`;
   const res = await callJson({ system: POST_SYSTEM, user, maxTokens: 1500, label: 'POST' });
   if (!res.ok) return { ok: false, reason: res.reason };
-  const d = res.data || {};
+  // Defense-in-depth: strip any markdown decoration the model added anyway,
+  // regardless of the instruction above — this text is pasted verbatim into
+  // Meta Ads Manager, never rendered, so a stray ** must never survive.
+  const raw = res.data || {};
+  const d = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, stripMarkdown(v)]));
   const full = `${d.short || ''} ${d.medium || ''} ${d.long || ''} ${d.headline || ''}`;
   const claim = classifyClaim(full);
   return { ok: true, post: { ...d, claimStatus: claim ? claim.status : 'GREEN', claimReason: claim?.reason || null } };

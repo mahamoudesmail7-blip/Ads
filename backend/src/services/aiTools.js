@@ -40,6 +40,7 @@ import { stockGuardForProduct } from './amb/stockGuard.js';
 import { detectIncidentsForProduct, raiseIncidentAlerts } from './amb/incidentCenter.js';
 import { buildDailyBrief } from './amb/dailyBrief.js';
 import { listCapabilities, capabilitySummary } from './amb/capabilityRegistry.js';
+import { resolveProductByIdOrName } from './amb/productNameMatch.js';
 import { getConnection } from './metaAuth.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
@@ -329,45 +330,46 @@ async function knownAnglesFor(productId, pkg) {
   return [...new Set(matrix.filter((e) => e.dimension === 'ANGLE').map((e) => e.key))];
 }
 
-export async function generate_angles({ productId, count } = {}) {
+export async function generate_angles({ productId, productName, count } = {}) {
   try {
-    if (!productId) return { ok: false, error: 'productId مطلوب.' };
-    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
-    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
+    if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
+    const resolved = await resolveProductByIdOrName({ productId, productName });
+    if (!resolved.ok) return resolved;
+    const pid = resolved.product.id;
     const settings = await getAmbSettings();
     const adAccountId = await resolveAmbAdAccountId();
-    const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: 'last7', settings, adAccountId }).catch(() => null);
-    const existingAngles = pkg ? await knownAnglesFor(Number(productId), pkg) : [];
+    const pkg = await buildProductDecisionPackage({ productId: pid, windowName: 'last7', settings, adAccountId }).catch(() => null);
+    const existingAngles = pkg ? await knownAnglesFor(pid, pkg) : [];
     const bottleneckContext = pkg?.diagnosis?.bottleneck?.evidence || null;
-    const res = await generateAngleProposals({ productName: product.product_name, existingAngles, bottleneckContext, count: count || 3 });
+    const res = await generateAngleProposals({ productName: resolved.product.product_name, existingAngles, bottleneckContext, count: count || 3 });
     if (!res.ok) return { ok: false, error: res.reason };
-    return { ok: true, angles: res.angles, existingAnglesConsidered: existingAngles };
+    return { ok: true, productId: pid, productName: resolved.product.product_name, angles: res.angles, existingAnglesConsidered: existingAngles };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 }
 
-export async function generate_hooks({ productId, angle, category, count } = {}) {
+export async function generate_hooks({ productId, productName, angle, category, count } = {}) {
   try {
-    if (!productId) return { ok: false, error: 'productId مطلوب.' };
-    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
-    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
-    const res = await generateHooks({ productName: product.product_name, angle, category, count: count || 10 });
+    if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
+    const resolved = await resolveProductByIdOrName({ productId, productName });
+    if (!resolved.ok) return resolved;
+    const res = await generateHooks({ productName: resolved.product.product_name, angle, category, count: count || 10 });
     if (!res.ok) return { ok: false, error: res.reason };
-    return { ok: true, hooks: res.hooks };
+    return { ok: true, productId: resolved.product.id, productName: resolved.product.product_name, hooks: res.hooks };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 }
 
-export async function generate_creative_brief({ productId, angle, count } = {}) {
+export async function generate_creative_brief({ productId, productName, angle, count } = {}) {
   try {
-    if (!productId) return { ok: false, error: 'productId مطلوب.' };
-    const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { product_name: true } });
-    if (!product) return { ok: false, error: 'المنتج غير موجود.' };
-    const res = await generateCreativeIdeas({ productName: product.product_name, angle, count: count || 4 });
+    if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
+    const resolved = await resolveProductByIdOrName({ productId, productName });
+    if (!resolved.ok) return resolved;
+    const res = await generateCreativeIdeas({ productName: resolved.product.product_name, angle, count: count || 4 });
     if (!res.ok) return { ok: false, error: res.reason };
-    return { ok: true, ideas: res.ideas };
+    return { ok: true, productId: resolved.product.id, productName: resolved.product.product_name, ideas: res.ideas };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -725,10 +727,10 @@ export const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        productId: { type: 'integer', description: 'رقم المنتج' },
+        productId: { type: 'integer', description: 'رقم المنتج، لو معروف من سياق الصفحة' },
+        productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز؛ ممنوع تطلب رقم من المستخدم' },
         count: { type: 'integer', description: 'عدد الزوايا المطلوبة، افتراضي 3' },
       },
-      required: ['productId'],
     },
   },
   {
@@ -737,12 +739,12 @@ export const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        productId: { type: 'integer', description: 'رقم المنتج' },
+        productId: { type: 'integer', description: 'رقم المنتج، لو معروف من سياق الصفحة' },
+        productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز؛ ممنوع تطلب رقم من المستخدم' },
         angle: { type: 'string', description: 'الزاوية المطلوب كتابة Hooks لها، اختياري' },
         category: { type: 'string', description: 'نوع Hook معين لو مطلوب، اختياري' },
         count: { type: 'integer', description: 'عدد الـHooks، افتراضي 10' },
       },
-      required: ['productId'],
     },
   },
   {
@@ -751,11 +753,11 @@ export const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        productId: { type: 'integer', description: 'رقم المنتج' },
+        productId: { type: 'integer', description: 'رقم المنتج، لو معروف من سياق الصفحة' },
+        productName: { type: 'string', description: 'اسم المنتج كما وصله المستخدم أو كما تراه في صورة مرفقة — استخدمه دايمًا لو مفيش productId جاهز؛ ممنوع تطلب رقم من المستخدم' },
         angle: { type: 'string', description: 'الزاوية المطلوب بناء الأفكار عليها، اختياري' },
         count: { type: 'integer', description: 'عدد الأفكار، افتراضي 4' },
       },
-      required: ['productId'],
     },
   },
   {
