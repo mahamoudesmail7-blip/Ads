@@ -774,8 +774,8 @@ export async function prepare_scale_winner({ sourceCampaignId, campaignName, pro
       finalAdSets = adSets;
     }
 
-    const mode = startMode === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW';
-    if (mode === 'SCHEDULE' && !startAt) return { ok: true, needsInput: true, question: 'تاريخ ووقت البداية إمتى؟ (أو قول "دلوقتي" للتشغيل الفوري)' };
+    const mode = startMode === 'SCHEDULE' ? 'SCHEDULE' : startMode === 'STAY_PAUSED' ? 'STAY_PAUSED' : 'RUN_NOW';
+    if (mode === 'SCHEDULE' && !startAt) return { ok: true, needsInput: true, question: 'تاريخ ووقت البداية إمتى؟ (أو قول "دلوقتي" للتشغيل الفوري، أو "خليها متوقفة وأنا أشغلها بنفسي")' };
 
     const existing = await findActiveTaskForEntity(String(card.sourceCampaignId));
     if (existing) return { ok: true, task: (await resolveTaskStatus({ taskId: existing.task_uuid })).task, note: 'فيه تاسك شغال بالفعل على الحملة دي.' };
@@ -1126,7 +1126,7 @@ export const WRITE_TOOL_DEFINITIONS = [
           items: { type: 'object', properties: { dailyBudgetEgp: { type: 'number' }, selectedAdIds: { type: 'array', items: { type: 'string' } } } },
         },
         selectedAdIds: { type: 'array', items: { type: 'string' }, description: 'الإعلانات الرابحة المختارة لوضع CBO — افتراضي كل الإعلانات المؤهلة لو مش محدد' },
-        startMode: { type: 'string', enum: ['RUN_NOW', 'SCHEDULE'], description: 'تشغيل فوري ولا جدولة لموعد لاحق' },
+        startMode: { type: 'string', enum: ['RUN_NOW', 'SCHEDULE', 'STAY_PAUSED'], description: 'تشغيل فوري (RUN_NOW)، جدولة لموعد لاحق (SCHEDULE — فيها مشكلة معروفة حاليًا في الجدولة التلقائية، تجنّبها إلا لو المستخدم يعرف ده ويصرّ)، أو تجهيز الحملة متوقفة (PAUSED) بدون أي تفعيل تلقائي خالص عشان المستخدم يشغّلها بنفسه بالظبط في الوقت اللي عايزه (STAY_PAUSED — الخيار الأضمن دلوقتي لأي طلب فيه معاد محدد)' },
         startAt: { type: 'string', description: 'تاريخ ووقت البداية بتوقيت القاهرة (YYYY-MM-DDTHH:mm) — لازم لوضع SCHEDULE فقط' },
       },
     },

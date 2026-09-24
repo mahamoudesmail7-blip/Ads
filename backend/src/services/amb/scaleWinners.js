@@ -271,7 +271,15 @@ export async function executeScale({
   const settings = await getAmbSettings();
 
   if (!sourceCampaignId) throw bad('sourceCampaignId مطلوب.');
-  const mode = startMode === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW';
+  // STAY_PAUSED: create every object PAUSED and never auto-activate anything
+  // (no executionMode reaches createBatch -> autoActivate computes false) —
+  // for a human to flip ACTIVE themselves later via the Task History/Clone &
+  // Schedule UI, real proof in hand of exactly when. Added after a real
+  // incident where SCHEDULE's own auto-activation flipped a campaign live
+  // immediately instead of waiting for the requested future time — the
+  // root cause wasn't found in time, so this gives a verified-safe manual
+  // path rather than trusting SCHEDULE again before that's understood.
+  const mode = startMode === 'SCHEDULE' ? 'SCHEDULE' : startMode === 'STAY_PAUSED' ? 'STAY_PAUSED' : 'RUN_NOW';
   if (mode === 'SCHEDULE') {
     const [dp, tp] = String(startAt || '').split('T');
     const at = cairoLocalToUtc(dp, tp || '00:00');
@@ -387,7 +395,7 @@ export async function executeScale({
       allowSameAccount: true,
       campaignIds: [String(sourceCampaignId)],
       campaignNameOverride: nameOverride,
-      executionMode: mode,
+      executionMode: mode === 'STAY_PAUSED' ? null : mode,
       startAt: mode === 'SCHEDULE' ? startAt : null,
       allowPageOnlyIg: true,
       userId,

@@ -218,8 +218,13 @@ export async function resolveTaskStatus({ taskId }) {
   if (task.kind === 'SCALE_WINNER' && ['RUNNING', 'VERIFYING'].includes(task.status)) {
     const decision = await prisma.ambScaleDecision.findFirst({ where: { source_campaign_id: task.entity_id }, orderBy: { id: 'desc' } }).catch(() => null);
     if (decision?.status === 'EXECUTED') {
+      // RUNNING can only reach COMPLETED via VERIFYING (the same 2-step path
+      // approveScaleWinnerTask's own happy path already takes) — jump
+      // straight there first when reconciling from RUNNING.
+      if (task.status === 'RUNNING') task = await transitionTask({ taskId, to: 'VERIFYING', patch: { progress: 90 } });
       task = await transitionTask({ taskId, to: 'COMPLETED', patch: { progress: 100 } });
     } else if (decision?.status === 'FAILED') {
+      // FAILED is directly reachable from both RUNNING and VERIFYING — no intermediate hop needed.
       task = await transitionTask({ taskId, to: 'FAILED', patch: { error: decision.error || 'فشل تنفيذ الاسكيل.' } });
     }
   }
