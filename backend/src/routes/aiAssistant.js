@@ -176,17 +176,15 @@ router.post(
       return res.status(400).json({ error: 'AI_ERROR', message: err.message });
     }
 
-    // Defense-in-depth for the copy-generation intents (§9 of the copy
-    // spec: "never **" — this is ad copy meant to be pasted verbatim into
-    // Meta, never rendered as Markdown). The tool layer already strips **
-    // from what it returns, but the model composing its OWN chat reply can
-    // still re-add bold formatting as a stylistic habit regardless of the
-    // system prompt's instruction not to — observed live during testing.
-    // Scoped to only fire when a copy tool was actually called this turn,
-    // so it never touches unrelated replies.
+    // Defense-in-depth: the chat bubble (js/assistant.js) never renders
+    // Markdown — it prints text verbatim — so any ** or __ the model adds
+    // (a stylistic habit, observed live on both copy-generation replies AND
+    // plain status/summary messages like a Task Card preview) shows up as
+    // literal asterisks instead of emphasis. Stripped from every reply,
+    // not just copy-generation ones, since no reply in this app is ever
+    // rendered as Markdown — there's nothing this could break.
     const toolNames = result.toolCalls.map((c) => c.name);
-    const COPY_TOOLS = new Set(['generate_campaign_copy', 'generate_headlines', 'generate_hooks', 'generate_creative_brief']);
-    const replyText = toolNames.some((n) => COPY_TOOLS.has(n)) ? result.text.replace(/\*\*/g, '').replace(/__/g, '') : result.text;
+    const replyText = result.text.replace(/\*\*/g, '').replace(/__/g, '');
 
     logger.info('AI_RESPONSE_COMPLETED', { actorId: req.user.id, toolCallCount: result.toolCalls.length, replyLength: replyText.length, hasTask: !!lastTask });
 
