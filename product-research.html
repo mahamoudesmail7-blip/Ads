@@ -645,27 +645,39 @@
             <div class="icd-faint" style="margin-top:6px;">ارفع حتى 4 صور لنفس المنتج من زوايا مختلفة للحصول على نتائج أدق. مفيش صورة؟ تقدر تكتب اسم المنتج يدويًا من "بيانات متقدمة" تحت.</div>
           </div>
 
-          <div class="icd-field">
-            <label>اسم المنتج الرئيسي (اختياري لو رفعت صورة)</label>
-            <input type="text" id="icdProductName" placeholder="مثال: جهاز مساج فروة الرأس الكهربائي" />
-          </div>
+          <!-- Step: search-by-image-only. When at least one image is
+               uploaded, these two fields (name + widening names) are real
+               optional extras, not a required step — hidden by default so
+               the default flow really is "upload → search", never
+               nudging the user to type anything. This link reveals them
+               again for anyone who DOES want to widen the search with
+               extra names; hidden itself once no image is present, since
+               a typed name is the only signal at all in that case. -->
+          <button type="button" class="icd-btn secondary small" id="icdBtnShowNameFields" style="display:none; margin-bottom:10px;">🔤 عايز تضيف اسم للمنتج أو أسماء تانية؟ (اختياري)</button>
 
-          <!-- Step: multi-name product discovery. Promoted out of the
-               collapsed advanced section and always visible — real
-               production data showed this is the single highest-leverage
-               fix for weak Meta Ads Library recall (one exact typed phrase
-               vs. several real synonyms genuinely changed a 0-result
-               search into a 100-result one). Same existing chips.alt
-               state/wiring/POST field (possibleNames) as before — nothing
-               about how it flows to the backend changed, only its
-               visibility and label. -->
-          <div class="icd-field">
-            <label>أسماء المنتج</label>
-            <div class="icd-faint" style="margin-bottom:6px;">ضيف أكتر من اسم للمنتج علشان نوسّع البحث ونوصل لإعلانات أكتر</div>
-            <div class="icd-chips" id="icdChipsAlt"></div>
-            <div class="icd-row" style="gap:6px;">
-              <input type="text" id="icdInputAlt" placeholder="مثال: كاشف كاميرات مخفية — اكتب واضغط Enter" />
-              <button type="button" class="icd-btn secondary small" data-icd-add-chip="alt">+ إضافة</button>
+          <div id="icdNameFieldsSection">
+            <div class="icd-field">
+              <label>اسم المنتج الرئيسي (اختياري لو رفعت صورة)</label>
+              <input type="text" id="icdProductName" placeholder="مثال: جهاز مساج فروة الرأس الكهربائي" />
+            </div>
+
+            <!-- Step: multi-name product discovery. Promoted out of the
+                 collapsed advanced section — real production data showed
+                 this is the single highest-leverage fix for weak Meta Ads
+                 Library recall (one exact typed phrase vs. several real
+                 synonyms genuinely changed a 0-result search into a
+                 100-result one). Same existing chips.alt state/wiring/POST
+                 field (possibleNames) as before — nothing about how it
+                 flows to the backend changed, only its visibility and
+                 label. -->
+            <div class="icd-field">
+              <label>أسماء المنتج</label>
+              <div class="icd-faint" style="margin-bottom:6px;">ضيف أكتر من اسم للمنتج علشان نوسّع البحث ونوصل لإعلانات أكتر</div>
+              <div class="icd-chips" id="icdChipsAlt"></div>
+              <div class="icd-row" style="gap:6px;">
+                <input type="text" id="icdInputAlt" placeholder="مثال: كاشف كاميرات مخفية — اكتب واضغط Enter" />
+                <button type="button" class="icd-btn secondary small" data-icd-add-chip="alt">+ إضافة</button>
+              </div>
             </div>
           </div>
 

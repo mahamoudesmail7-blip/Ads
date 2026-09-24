@@ -230,6 +230,64 @@ export async function analyzeProductImage(imageBase64, imageMediaType, onProgres
 }
 
 /**
+ * Safe identity path for a PURE IMAGE_ONLY search (no typed name at all —
+ * see experimentalCreativeDiscovery.js's Stage A). analyzeProductImages()
+ * below always runs the FULL local pass (OCR worker + 2 CLIP pipelines) on
+ * the primary image for this exact case, since there's no typed name to
+ * fall back to — real production data confirms that has hung/crashed the
+ * whole process on this host every single time it was actually exercised
+ * (every IMAGE_ONLY search since 2026-09-02 failed the same way). OPENAI_
+ * VISION's analyzeProductImage (productIdentityVision.js) is a single
+ * bounded hosted call (its own 45s abort-controller timeout, no local
+ * model load) that already produces the EXACT same Product Identity
+ * Profile shape on its own — nothing here needs merging with a local
+ * profile the way analyzeProductImage()'s enrichment path does. When it's
+ * configured/healthy and returns a real name, this is a complete
+ * replacement for the risky local pass, not just an enhancement layered on
+ * top of it. Real reference embeddings for visual matching still come from
+ * buildReferenceEmbeddings() (the existing lighter, circuit-breaker-gated
+ * CLIP-only pass) — never from the heavy pass this function exists to
+ * avoid. Returns null when OpenAI vision isn't worth trying or couldn't
+ * name the product at all — the caller falls back to the heavy local pass
+ * in that case, exactly as before this function existed.
+ * @param {{imageBase64:string, imageMediaType:string}[]} images 1-4 real uploaded reference images, images[0] is primary
+ * @returns {Promise<{profile, identityProvider, imageHash, embedding, perceptualHash, references}|null>}
+ */
+export async function analyzeProductImagesAiIdentityFirst(images, onProgress = () => {}) {
+  if (!visionAiWorthTrying()) return null;
+  const primary = images[0];
+  const imageHash = hashImage(primary.imageBase64);
+  await onProgress('ai_identity_start');
+  let aiResult;
+  try {
+    aiResult = await aiAnalyzeImage(primary.imageBase64, primary.imageMediaType);
+  } catch (err) {
+    logger.error(`${LOG_PREFIX} AI_IDENTITY_FIRST_FAILED`, { errorType: classifyErrorType(err), message: err.message });
+    return null;
+  }
+  await onProgress('ai_identity_done');
+  if (aiResult.source === 'fallback' || !aiResult.profile?.mainProductName) return null;
+
+  let references = [];
+  if (localVisionWorthTrying()) {
+    await onProgress('reference_embeddings_start');
+    references = await buildReferenceEmbeddings(images);
+    await onProgress('reference_embeddings_done');
+  } else {
+    logger.info(`${LOG_PREFIX} AI_IDENTITY_FIRST_EMBEDDINGS_SKIPPED_CIRCUIT_OPEN`);
+  }
+
+  return {
+    profile: aiResult.profile,
+    identityProvider: 'OPENAI_VISION_ONLY',
+    imageHash,
+    embedding: references[0]?.embedding ?? null,
+    perceptualHash: references[0]?.perceptualHash ?? null,
+    references,
+  };
+}
+
+/**
  * Multi-image identity generation (Step: same-exact-product visual
  * matching, 1-4 real uploaded reference images). Runs the FULL real
  * analysis (OCR + CLIP + zero-shot classification, i.e. analyzeProductImage

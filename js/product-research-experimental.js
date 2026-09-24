@@ -81,6 +81,7 @@ const internalCreativeDiscovery = {
   lastMatchDecisions: null, // {exact, review, reject} counts from the most recent poll's summary — used for the tab labels/counts without a separate request
   resultsById: {}, // Step: Part 8 — id -> full result object from the most recent loadResults(), read by the "عرض التحليل" expandable toggle
   currentSearchVisualMatchingActive: false, // whether the CURRENT search actually ran real visual verification (data.visualMatchingActive) — never just "an image was uploaded"
+  showNameFieldsManually: false, // Step: search-by-image-only — user explicitly asked to reveal the name/widening-names fields despite having uploaded an image
 };
 
 function escapeHtml(s) { return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? ''); }
@@ -156,6 +157,26 @@ function updateImagePickerState() {
   const count = internalCreativeDiscovery.images.length;
   btn.disabled = count >= MAX_REFERENCE_IMAGES;
   nameEl.textContent = count > 0 ? `${count}/${MAX_REFERENCE_IMAGES} صور مرفوعة` : '';
+  updateNameFieldsVisibility();
+}
+
+/**
+ * Step: search-by-image-only. Once at least one image is uploaded, the
+ * name/widening-names fields are real optional extras, not something the
+ * user needs to look at — hidden by default so the default flow really is
+ * "upload an image → search", nothing typed. A small link reveals them
+ * again for anyone who explicitly wants to widen the search with extra
+ * names. With no image at all, a typed name is the only signal the search
+ * has — the fields stay visible and the reveal link stays hidden.
+ */
+function updateNameFieldsVisibility() {
+  const section = document.getElementById('icdNameFieldsSection');
+  const showBtn = document.getElementById('icdBtnShowNameFields');
+  if (!section || !showBtn) return;
+  const hasImages = internalCreativeDiscovery.images.length > 0;
+  const reveal = !hasImages || internalCreativeDiscovery.showNameFieldsManually;
+  section.style.display = reveal ? '' : 'none';
+  showBtn.style.display = hasImages && !internalCreativeDiscovery.showNameFieldsManually ? '' : 'none';
 }
 
 /** 1-4 real reference images of the SAME product (Step: multi-image visual matching) — 1 image still works fine; extra angles (side/back/packaging) only make visual matching more accurate, never required. */
@@ -1093,6 +1114,10 @@ function init() {
   wireChipInput('icdInputKw', 'kw');
   wireImageUpload();
   updateImagePickerState();
+  document.getElementById('icdBtnShowNameFields')?.addEventListener('click', () => {
+    internalCreativeDiscovery.showNameFieldsManually = true;
+    updateNameFieldsVisibility();
+  });
   wireModeToggle();
   wireResultGridDownloads();
   wireQueryBreakdownToggle();

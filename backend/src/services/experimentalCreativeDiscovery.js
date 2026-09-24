@@ -37,7 +37,7 @@ import * as apifyProvider from './searchProviders/apifyMetaAdLibraryProvider.js'
 import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 import * as googleSearchProvider from './searchProviders/googleSearchProvider.js';
 import { identityToSearchProfile } from './productIdentityVision.js';
-import { analyzeProductImages, compareVisualMatchMulti, buildReferenceEmbeddings, localVisionWorthTrying } from './vision/productVisionService.js';
+import { analyzeProductImages, analyzeProductImagesAiIdentityFirst, compareVisualMatchMulti, buildReferenceEmbeddings, localVisionWorthTrying } from './vision/productVisionService.js';
 
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube']; // META_AD_LIBRARY handled separately (Apify staged); 'google' handled separately (own normalizer, see below)
@@ -436,16 +436,35 @@ export async function runExperimentalSearchPipeline(searchId) {
       const IMAGE_IDENTITY_TIMEOUT_MS = 90000;
       logger.info(`${LOG_PREFIX} STAGE_A_START`, { searchId, referenceImageCount: referenceInputImages.length });
       let identityResult = null;
-      try {
-        identityResult = await Promise.race([
-          analyzeProductImages(referenceInputImages, async (step) => {
-            await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`Local Vision لسه بيحلل الصور ومردش خلال ${Math.round(IMAGE_IDENTITY_TIMEOUT_MS / 1000)} ثانية`), { code: 'IMAGE_IDENTITY_TIMEOUT' })), IMAGE_IDENTITY_TIMEOUT_MS)),
-        ]);
-      } catch (err) {
-        if (err.code !== 'IMAGE_IDENTITY_TIMEOUT') throw err;
-        logger.error(`${LOG_PREFIX} STAGE_A_TIMED_OUT`, { searchId, timeoutMs: IMAGE_IDENTITY_TIMEOUT_MS, hadManualName });
+
+      // Pure IMAGE_ONLY (no typed name): try the SAFE OpenAI-only identity
+      // path first (analyzeProductImagesAiIdentityFirst — one bounded
+      // hosted call, no local model load). Real production data confirms
+      // the heavy local pass below has hung/crashed the whole process on
+      // EVERY real IMAGE_ONLY search since 2026-09-02 (checked via prisma:
+      // every sampled search_mode:IMAGE_ONLY row FAILED the same way) — this
+      // removes that risk from the common case entirely; the heavy pass
+      // only remains as a last resort when OpenAI vision itself isn't
+      // configured/healthy or genuinely can't name the product.
+      if (!hadManualName) {
+        identityResult = await analyzeProductImagesAiIdentityFirst(referenceInputImages, async (step) => {
+          await updateSearch(searchId, { error: `[DEBUG] ai_identity:${step} @ ${new Date().toISOString()}` }).catch(() => {});
+        });
+        if (identityResult) logger.info(`${LOG_PREFIX} STAGE_A_AI_IDENTITY_FIRST_USED`, { searchId, mainProductName: identityResult.profile?.mainProductName });
+      }
+
+      if (!identityResult) {
+        try {
+          identityResult = await Promise.race([
+            analyzeProductImages(referenceInputImages, async (step) => {
+              await updateSearch(searchId, { error: `[DEBUG] ${step} @ ${new Date().toISOString()}` }).catch(() => {});
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error(`Local Vision لسه بيحلل الصور ومردش خلال ${Math.round(IMAGE_IDENTITY_TIMEOUT_MS / 1000)} ثانية`), { code: 'IMAGE_IDENTITY_TIMEOUT' })), IMAGE_IDENTITY_TIMEOUT_MS)),
+          ]);
+        } catch (err) {
+          if (err.code !== 'IMAGE_IDENTITY_TIMEOUT') throw err;
+          logger.error(`${LOG_PREFIX} STAGE_A_TIMED_OUT`, { searchId, timeoutMs: IMAGE_IDENTITY_TIMEOUT_MS, hadManualName });
+        }
       }
       await updateSearch(searchId, { error: null });
 
