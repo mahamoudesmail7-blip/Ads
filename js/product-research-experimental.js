@@ -636,6 +636,8 @@ async function loadResults(searchId, page = 1) {
     empty.textContent = internalCreativeDiscovery.currentSearchVisualMatchingActive
       ? (internalCreativeDiscovery.matchGroup === 'EXACT'
           ? 'مفيش نتايج مطابقة تمامًا للمنتج لسه — جرب تبويب "محتاج مراجعة" فوق.'
+          : internalCreativeDiscovery.matchGroup === 'UNVERIFIED'
+          ? 'كل النتايج اتفحصت بصريًا بالفعل.'
           : 'مفيش نتايج تحتاج مراجعة.')
       : 'مفيش نتايج.';
     rangeEl.textContent = '';
@@ -675,14 +677,18 @@ function renderMatchTabs(searchId) {
   const row = document.getElementById('icdExpandMatchesRow');
   if (!row) return;
   if (!internalCreativeDiscovery.currentSearchVisualMatchingActive) { row.style.display = 'none'; return; }
-  const counts = internalCreativeDiscovery.lastMatchDecisions || { exact: 0, review: 0, reject: 0 };
+  const counts = internalCreativeDiscovery.lastMatchDecisions || { exact: 0, review: 0, reject: 0, unverified: 0 };
   row.style.display = 'flex';
   row.style.gap = '8px';
   const tab = (group, label, count) => {
     const active = internalCreativeDiscovery.matchGroup === group;
     return `<button class="icd-btn ${active ? '' : 'secondary'} small" data-match-group="${group}"${active ? ' style="border-color:var(--icd-cyan);color:var(--icd-cyan);"' : ''}>${label} (${count})</button>`;
   };
-  row.innerHTML = tab('EXACT', '🎯 مطابق للمنتج', counts.exact) + tab('REVIEW', '🔍 محتاج مراجعة', counts.review);
+  // "لسه ما اتفحصش بصريًا" (UNVERIFIED) is only ever non-empty when this
+  // search had a reference image — its own explicit group now, never
+  // silently folded into "مطابق للمنتج" (see productResearchExperimental.js).
+  row.innerHTML = tab('EXACT', '🎯 مطابق للمنتج', counts.exact) + tab('REVIEW', '🔍 محتاج مراجعة', counts.review)
+    + (counts.unverified > 0 ? tab('UNVERIFIED', '🖼️ لسه ما اتفحصش بصريًا', counts.unverified) : '');
   row.querySelectorAll('[data-match-group]').forEach((btn) => {
     btn.addEventListener('click', () => {
       internalCreativeDiscovery.matchGroup = btn.dataset.matchGroup;

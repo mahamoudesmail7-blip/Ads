@@ -42,11 +42,13 @@ import { analyzeProductImages, compareVisualMatchMulti, buildReferenceEmbeddings
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube']; // META_AD_LIBRARY handled separately (Apify staged); 'google' handled separately (own normalizer, see below)
 const ALL_PLATFORMS = [...GENERIC_PLATFORMS, 'youtube', 'META_AD_LIBRARY', 'google'];
-// Widened from 12 (Step: visual matching is now the PRIMARY relevance
-// filter, not just a re-rank bonus — Step 13 still caps it for real cost
-// control, just at a number that can plausibly cover a search's real
-// candidate pool instead of only its very top text-ranked slice).
-const MAX_VISUAL_COMPARISONS = 30;
+// Widened from 12, then from 30 (user-reported: too many un-compared
+// results were being shown as if they matched the reference image — see
+// productResearchExperimental.js's searchHasImage-gated EXACT filter).
+// Local embedding comparison is cheap (no external API call unless
+// visionAiWorthTrying() layers OpenAI on top), so this stays generous —
+// still capped for real cost control, not unlimited.
+const MAX_VISUAL_COMPARISONS = 60;
 
 const cancelFlags = new Set();
 export function requestCancel(searchId) { cancelFlags.add(searchId); }

@@ -372,14 +372,20 @@ router.get(
     // ran, regardless of which path produced the reference embeddings.
     const matchRows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id }, select: { match_decision: true, visual_match_score: true } });
     const visualMatchingActive = matchRows.some((r) => r.visual_match_score !== null);
-    // "exact" mirrors the /results route's EXACT-tab filter exactly
-    // (match_decision:EXACT OR never compared at all) so the tab's count
-    // label always matches what actually appears when it's opened — a
-    // result that was never checked was never disqualified either.
+    // "exact" mirrors the /results route's EXACT-tab filter exactly. When a
+    // reference image was uploaded, a result that was never visually
+    // compared (match_decision:null — beyond MAX_VISUAL_COMPARISONS, no
+    // thumbnail, or the comparison failed) must NOT count as "matches the
+    // product" — that was exactly the user-reported bug (unrelated products
+    // showing up under "🎯 مطابق للمنتج"). It now gets its own honest
+    // "unverified" bucket/tab instead. Text-only searches (no image at all)
+    // never run visual comparison, so null is the ONLY state that will ever
+    // exist there — keep folding it into "exact" so that case is unaffected.
     const matchDecisions = {
-      exact: matchRows.filter((r) => r.match_decision === 'EXACT' || r.match_decision === null).length,
+      exact: matchRows.filter((r) => r.match_decision === 'EXACT' || (!search.product_image && r.match_decision === null)).length,
       review: matchRows.filter((r) => r.match_decision === 'REVIEW').length,
       reject: matchRows.filter((r) => r.match_decision === 'REJECT').length,
+      unverified: search.product_image ? matchRows.filter((r) => r.match_decision === null).length : 0,
     };
 
     res.json({
@@ -453,24 +459,6 @@ router.get(
     if (Number.isFinite(minScore) && minScore > 0) {
       where.visual_match_score = { gte: minScore };
     }
-    // Step: exact product matching — the new explicit grouping tabs
-    // ("مطابق للمنتج" / "محتاج مراجعة") filter on the real stored decision
-    // rather than a score threshold. REJECT is never requestable here —
-    // those rows are already hidden by `ignored:false` above, by design.
-    // EXACT also includes match_decision:null (never compared at all —
-    // beyond MAX_VISUAL_COMPARISONS, no thumbnail, or comparison failed):
-    // a result that was never checked was never DISQUALIFIED either, so
-    // hiding it from every tab would silently make legitimate, simply-
-    // unverified candidates disappear — worse than showing them clearly
-    // labeled "لم يتم التحقق بصريًا" (resultCardHtml already does this).
-    // REVIEW stays strict — only rows a real comparison genuinely placed
-    // in that band.
-    if (matchDecision === 'EXACT') {
-      where.AND = [...(where.AND || []), { OR: [{ match_decision: 'EXACT' }, { match_decision: null }] }];
-    } else if (matchDecision === 'REVIEW') {
-      where.match_decision = 'REVIEW';
-    }
-
     // When a reference image exists, the visually-verified final_score
     // (Steps 17/29 — 80% visual / 15% text / 5% distinctive attributes)
     // is the honest default ranking signal for "same physical product
@@ -478,6 +466,29 @@ router.get(
     // visually verified (beyond the comparison cap) or when no image was
     // ever uploaded for this search.
     const searchHasImage = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId }, select: { product_image: true } }).then((s) => Boolean(s?.product_image));
+
+    // Step: exact product matching — the explicit grouping tabs
+    // ("مطابق للمنتج" / "محتاج مراجعة" / "لسه ما اتفحصش") filter on the
+    // real stored decision rather than a score threshold. REJECT is never
+    // requestable here — those rows are already hidden by `ignored:false`
+    // above, by design. When NO reference image was ever uploaded, visual
+    // comparison never runs at all, so match_decision:null is the only
+    // state that will ever exist — EXACT keeps folding it in so that case
+    // stays unaffected. When a reference image WAS uploaded, a null
+    // decision means "never actually compared" (beyond
+    // MAX_VISUAL_COMPARISONS, no thumbnail, or the comparison failed) and
+    // must NOT be presented as a confirmed match — that mixing was exactly
+    // the user-reported bug (unrelated products under "مطابق للمنتج").
+    // It gets its own explicit UNVERIFIED group instead. REVIEW stays
+    // strict either way — only rows a real comparison genuinely placed in
+    // that band.
+    if (matchDecision === 'EXACT') {
+      where.AND = [...(where.AND || []), searchHasImage ? { match_decision: 'EXACT' } : { OR: [{ match_decision: 'EXACT' }, { match_decision: null }] }];
+    } else if (matchDecision === 'REVIEW') {
+      where.match_decision = 'REVIEW';
+    } else if (matchDecision === 'UNVERIFIED') {
+      where.match_decision = null;
+    }
     const defaultOrderBy = searchHasImage
       ? [{ final_score: { sort: 'desc', nulls: 'last' } }, { match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }]
       : [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }];

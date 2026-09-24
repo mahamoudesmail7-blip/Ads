@@ -259,6 +259,15 @@ export async function runStagedSearch({ profile, country, activeOnly, mode, rawL
 
   const hardCap = Number(process.env.APIFY_AD_LIBRARY_MAX_RAW_RESULTS_PER_SEARCH) || DEFAULT_MAX_RAW_RESULTS;
   const effectiveLimit = Math.min(Number(rawLimit) || 100, hardCap);
+  // Same COUNTRY_MAP used by search() above — "WW" (Worldwide, the
+  // frontend's country-selector value) and any other unrecognized code
+  // have no real Meta country equivalent, so they must NOT be forwarded
+  // literally into the real facebook.com/ads/library URL (Meta doesn't
+  // recognize "WW" as a country param and would return empty/broken
+  // results). buildSearchUrl()'s own `country || 'ALL'` fallback is the
+  // real "every country" value, so an unmapped selector resolves to
+  // undefined here and lets that fallback do the right thing.
+  const apifyCountry = COUNTRY_MAP[country];
   const { high, medium, broad } = generateAdLibraryTieredQueries(profile);
   const tiersToTry = [
     { name: 'HIGH_PRECISION', queries: high },
@@ -276,7 +285,7 @@ export async function runStagedSearch({ profile, country, activeOnly, mode, rawL
 
     const runner = mode === 'deep' ? apifyProvider.runDeep : apifyProvider.runQuick;
     try {
-      const rawItems = await runner({ queries: tier.queries, country, activeOnly, rawLimit: Math.min(remaining, effectiveLimit) });
+      const rawItems = await runner({ queries: tier.queries, country: apifyCountry, activeOnly, rawLimit: Math.min(remaining, effectiveLimit) });
       const mapped = rawItems.map((raw) => ({ ...mapApifyItem(raw), _sourceQueries: tier.queries }));
       tiers.push({ tier: tier.name, queries: tier.queries, rawCount: mapped.length, provider: 'apify_meta_ad_library', error: null });
       allRawItems.push(...mapped);
