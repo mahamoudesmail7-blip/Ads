@@ -588,7 +588,7 @@ export async function listLaunchableProducts({ storeId } = {}) {
   return prisma.product.findMany({
     where,
     select: { id: true, product_name: true, sku: true, store_id: true, easy_orders_uuid: true },
-    orderBy: { product_name: 'asc' },
+    orderBy: { created_at: 'desc' },
   });
 }
 

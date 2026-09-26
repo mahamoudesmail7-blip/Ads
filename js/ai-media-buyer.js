@@ -75,18 +75,19 @@ const NAV = [
   { key: 'campaigns', label: 'أداء الإعلانات', icon: 'chart' },
   { key: 'products', label: 'المنتجات', icon: 'box' },
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
-  { key: 'decisions', label: '🧠 مركز القرار الذكي', icon: 'target', badge: true },
-  { key: 'scale', label: '🚀 مركز التوسّع', icon: 'chart' },
+  { key: 'decisions', label: 'مركز القرار الذكي', icon: 'target', badge: true },
+  { key: 'scale', label: 'مركز التوسّع', icon: 'rocket' },
   { key: 'winners', label: 'الأبطال', icon: 'image' },
   { key: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'grid' },
   { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
-  { key: 'launch', label: 'رفع الكامبين', icon: 'rocket' },
-  { key: 'tasks', label: '📋 المهام', icon: 'doc' },
+  { key: 'launch', label: 'رفع الكامبين', icon: 'play' },
+  { key: 'tasks', label: 'المهام', icon: 'doc' },
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
 const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, tasks: renderTasks, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: '🧠 مركز القرار الذكي', scale: '🚀 مركز التوسّع', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', tasks: '📋 المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'مركز القرار الذكي', scale: 'مركز التوسّع', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', tasks: 'doc', history: 'doc', settings: 'gear' };
 const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale', 'tasks']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
@@ -136,7 +137,35 @@ async function init() {
   window.addEventListener('hashchange', route);
   renderNav();
   UI.mountAmbMobileNav('AI Media Buyer');
+  mountAmbBottomNav();
   route();
+}
+
+// Mobile bottom tab bar (redesign v2 — the user's reference image uses a
+// bottom bar for primary destinations on mobile, not just a hamburger
+// drawer). Deliberately built here, not inside ui-common.js's shared
+// mountAmbMobileNav() — that function is also used by Product Marketing
+// Center / Easy Orders Catalog Sync, which have their own different nav
+// items, so a bottom bar with AMB-specific destinations belongs only here.
+// Reuses the existing hamburger drawer (#ambNav) for every OTHER
+// destination via the same "المزيد" (More) pattern already established.
+const AMB_BOTTOM_NAV_KEYS = ['home', 'decisions', 'scale', 'tasks'];
+function mountAmbBottomNav() {
+  if (!document.getElementById('ambBottomNav')) {
+    document.body.insertAdjacentHTML('beforeend', '<nav class="amb-mobile-bottom-nav" id="ambBottomNav"></nav>');
+  }
+  renderAmbBottomNav();
+}
+function renderAmbBottomNav() {
+  const el = document.getElementById('ambBottomNav');
+  if (!el) return;
+  const items = AMB_BOTTOM_NAV_KEYS.map((key) => NAV.find((n) => n.key === key)).filter(Boolean);
+  const onBottomItem = items.some((i) => i.key === state.tab);
+  el.innerHTML = items
+    .map((i) => `<button type="button" class="amb-mobile-bottom-nav-item ${i.key === state.tab ? 'active' : ''}" data-bnav="${i.key}">${ic(i.icon)}<span>${E(i.label)}</span></button>`)
+    .join('') + `<button type="button" class="amb-mobile-bottom-nav-item ${onBottomItem ? '' : 'active'}" id="ambBottomMoreBtn">${ic('grid')}<span>المزيد</span></button>`;
+  el.querySelectorAll('[data-bnav]').forEach((b) => { b.onclick = () => { location.hash = b.dataset.bnav; }; });
+  document.getElementById('ambBottomMoreBtn').onclick = () => { document.getElementById('ambHamburgerBtn')?.click(); };
 }
 
 function renderNav() {
@@ -158,11 +187,11 @@ function renderNav() {
         <div class="av">${E(initials)}</div>
         <div><div class="nm">${E(u.name || '—')}</div><div class="rl">${E({ ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' }[u.role] || u.role || '')}</div></div>
       </div>
-      <a class="amb-nav-link" href="product-marketing-center.html">💡 مركز التسويق الذكي</a>
-      <a class="amb-nav-link" href="creative-factory.html">✨ مصنع الكرياتيفات</a>
-      <a class="amb-nav-link" href="ai-intelligence.html">🧠 AI Intelligence</a>
-      ${state.isAdmin ? '<a class="amb-nav-link" href="ai-usage.html">📊 استهلاك الذكاء الاصطناعي</a>' : ''}
-      <a class="amb-nav-link" href="index.html">↩︎ الرجوع للنظام</a>
+      <a class="amb-nav-link" href="product-marketing-center.html">${ic('bulb', 'ic amb-nav-link-ic')}مركز التسويق الذكي</a>
+      <a class="amb-nav-link" href="creative-factory.html">${ic('image', 'ic amb-nav-link-ic')}مصنع الكرياتيفات</a>
+      <a class="amb-nav-link" href="ai-intelligence.html">${ic('target', 'ic amb-nav-link-ic')}AI Intelligence</a>
+      ${state.isAdmin ? `<a class="amb-nav-link" href="ai-usage.html">${ic('chart', 'ic amb-nav-link-ic')}استهلاك الذكاء الاصطناعي</a>` : ''}
+      <a class="amb-nav-link" href="index.html">${ic('home', 'ic amb-nav-link-ic')}الرجوع للنظام</a>
     </div>`;
   $('ambNavList').querySelectorAll('[data-nav]').forEach((b) => {
     b.onclick = () => { location.hash = b.dataset.nav; };
@@ -175,6 +204,7 @@ function route() {
   const hash = (location.hash || '#home').slice(1);
   state.tab = NAV.find((n) => n.key === hash) ? hash : 'home';
   renderNav();
+  renderAmbBottomNav();
   const view = $('ambView');
   view.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   const run = state.tab === 'home' ? renderHome : (panel) => renderSection(panel, state.tab);
@@ -185,9 +215,12 @@ function route() {
 async function renderSection(view, key) {
   view.innerHTML = `
     <div class="amb-head">
-      <div>
-        <h1>${E(SECTION_TITLE[key] || key)}</h1>
-        <div class="sub">جزء من AI Media Buyer — نفس البيانات والمنطق، عرض مبسّط.</div>
+      <div class="amb-head-title">
+        <div class="amb-head-icon">${ic(SECTION_ICON[key] || 'doc')}</div>
+        <div>
+          <h1>${E(SECTION_TITLE[key] || key)}</h1>
+          <div class="sub">جزء من AI Media Buyer — نفس البيانات والمنطق، عرض مبسّط.</div>
+        </div>
       </div>
       <div class="amb-head-tools">${NO_WINDOW_SECTIONS.has(key) ? '' : windowChips()}</div>
     </div>
@@ -3440,7 +3473,7 @@ function scProductRowHtml(p) {
       ${badge(stateLabel, tone)}
     </div>
 
-    <div class="sc-row-blocks">
+    <div class="sc-row-blocks sc-row-blocks-3">
       <div class="sc-block">
         <div class="section-title" style="margin-top:0; font-size:12px;">Meta Ads</div>
         <div class="sc-metric-grid">
@@ -3458,12 +3491,14 @@ function scProductRowHtml(p) {
         </div>
         ${p.governoratesTop3?.length ? `<div class="sc-gov-mini"><div class="faint" style="font-size:11px; margin:6px 0 2px;">📍 أعلى المحافظات</div>${p.governoratesTop3.map(scGovRow).join('')}</div>` : ''}
       </div>
+      <div class="sc-block sc-block-intel">
+        <div class="section-title" style="margin-top:0; font-size:12px;">🧠 التشخيص</div>
+        ${p.eligibility.reasons?.length ? `<div class="sc-reasons" style="font-size:11px;">${p.eligibility.reasons.map((r) => `<div>${r.startsWith('⚠️') ? '' : '✓ '}${E(r)}</div>`).join('')}</div>` : '<div class="faint" style="font-size:11px;">لا يوجد تشخيص إضافي دلوقتي.</div>'}
+        ${p.dataQuality?.status === 'DECISION_BLOCKED_DATA_QUALITY' ? `<div class="sc-reasons" style="font-size:11px; margin-top:6px; color:#c62828;">${p.dataQuality.criticalFailures.map((c) => `<div>⛔ ${E(c.reason)}</div>`).join('')}</div>` : ''}
+      </div>
     </div>
 
-    ${p.eligibility.reasons?.length ? `<div class="faint sc-reasons" style="font-size:11px; margin-top:8px;">${p.eligibility.reasons.map((r) => `<div>${r.startsWith('⚠️') ? '' : '✓ '}${E(r)}</div>`).join('')}</div>` : ''}
-    ${p.dataQuality?.status === 'DECISION_BLOCKED_DATA_QUALITY' ? `<div class="sc-reasons" style="font-size:11px; margin-top:6px; color:#c62828;">${p.dataQuality.criticalFailures.map((c) => `<div>⛔ ${E(c.reason)}</div>`).join('')}</div>` : ''}
-
-    <div class="toolbar" style="margin-top:10px;">
+    <div class="toolbar sc-row-actions">
       <button class="amb-btn sm" data-sc-details="${p.productId}">عرض التفاصيل</button>
       <button class="amb-btn sm primary ${p.eligibility.canScale ? '' : 'sc-inert'}" data-sc-scale="${p.productId}">🟢 Scale (اسكيل)</button>
       <button class="amb-btn sm blue ${p.eligibility.canBump ? '' : 'sc-inert'}" data-sc-bump="${p.productId}">🔵 Bump (بامب)</button>
@@ -5340,6 +5375,27 @@ async function renderLaunchHistoryDetail(body, jobId) {
 // for every store — mirrors the exact backward-compatible convention the
 // backend itself already documents on Product.store_id. This is a UI
 // convenience list only; the real enforcement is server-side. ----
+/** Client-side name search over the already-loaded product list (search-as-you-type, no extra request — the backend already returns every launchable product for the store in one call) + a note when the search hides everything so an empty result never looks like "no products at all". */
+function launchProductListHtml(products) {
+  const q = (launchState._productSearch || '').trim().toLowerCase();
+  const filtered = q ? products.filter((p) => (p.product_name || '').toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q)) : products;
+  if (filtered.length === 0) return `<div class="amb-empty">مفيش منتج اسمه بيحتوي على "${E(launchState._productSearch)}".</div>`;
+  return filtered.map((p) => `
+    <label class="amb-radio-row ${launchState.productId === p.id ? 'sel' : ''}">
+      <input type="radio" name="ambLaunchProduct" value="${p.id}" ${launchState.productId === p.id ? 'checked' : ''} />
+      <span class="rr-main">${E(p.product_name)}</span>
+      <span class="rr-sub">${p.sku ? E(p.sku) : ''}</span>
+    </label>`).join('');
+}
+function wireLaunchProductRadios(container, products) {
+  container.querySelectorAll('input[name="ambLaunchProduct"]').forEach((r) => {
+    r.onchange = () => {
+      launchState.productId = Number(r.value);
+      launchState.productName = products.find((p) => p.id === launchState.productId)?.product_name || null;
+      renderLaunchStep();
+    };
+  });
+}
 async function renderLaunchProduct(body) {
   if (!launchState.stores) {
     const r = await api.get('/api/ai-media-buyer/launch/stores');
@@ -5378,14 +5434,21 @@ async function renderLaunchProduct(body) {
           </select>
         </div>` : ''}
       ${!launchState.storeId ? '<div class="amb-empty">اختار متجر الأول عشان تشوف منتجاته.</div>' : products.length ? `
-        <div class="amb-radio-list" style="max-height:420px; overflow:auto;">${products.map((p) => `
-          <label class="amb-radio-row ${launchState.productId === p.id ? 'sel' : ''}">
-            <input type="radio" name="ambLaunchProduct" value="${p.id}" ${launchState.productId === p.id ? 'checked' : ''} />
-            <span class="rr-main">${E(p.product_name)}</span>
-            <span class="rr-sub">${p.sku ? E(p.sku) : ''}</span>
-          </label>`).join('')}</div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
+        <div class="field" style="margin-bottom:12px;">
+          <input type="text" class="amb-input" id="ambLaunchProductSearch" placeholder="🔍 دوّر باسم المنتج..." value="${E(launchState._productSearch || '')}" style="width:100%;" />
+        </div>
+        <div class="amb-radio-list" id="ambLaunchProductList" style="max-height:420px; overflow:auto;">${launchProductListHtml(products)}</div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
     </div>
     ${launchNav(0, 'التالي: الحساب الإعلاني', !!launchState.productId)}`;
+  const searchInput = $('ambLaunchProductSearch');
+  if (searchInput) {
+    searchInput.oninput = (e) => {
+      launchState._productSearch = e.target.value;
+      const listEl = $('ambLaunchProductList');
+      if (listEl) { listEl.innerHTML = launchProductListHtml(products); wireLaunchProductRadios(listEl, products); }
+    };
+  }
+  wireLaunchProductRadios(body, products);
   const dismissWinners = $('ambLaunchDismissWinners');
   if (dismissWinners) dismissWinners.onclick = () => { launchState._prefillWinners = null; renderLaunchStep(); };
   const storeSel = $('ambLaunchStoreSelect');
@@ -5393,16 +5456,9 @@ async function renderLaunchProduct(body) {
     launchState.storeId = e.target.value || null;
     launchState.storeName = stores.find((s) => s.id === launchState.storeId)?.name || null;
     launchState.productId = null; launchState.productName = null;
-    launchState.products = null; launchState._productsLoadedForStore = null;
+    launchState.products = null; launchState._productsLoadedForStore = null; launchState._productSearch = '';
     renderLaunchStep();
   };
-  body.querySelectorAll('input[name="ambLaunchProduct"]').forEach((r) => {
-    r.onchange = () => {
-      launchState.productId = Number(r.value);
-      launchState.productName = products.find((p) => p.id === launchState.productId)?.product_name || null;
-      renderLaunchStep();
-    };
-  });
   wireLaunchNav(0, () => {
     if (!launchState.productId) return;
     launchState.step = 2; renderLaunchStep();

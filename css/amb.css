@@ -22,8 +22,19 @@
   --amb-purple: #7a4dff; --amb-purple-bg: #f1ecff;
   --amb-radius: 16px;
   --amb-radius-sm: 12px;
-  --amb-shadow: 0 1px 2px rgba(18,24,40,.04), 0 4px 14px rgba(18,24,40,.05);
-  --amb-shadow-hover: 0 2px 6px rgba(18,24,40,.06), 0 10px 26px rgba(18,24,40,.08);
+  --amb-radius-lg: 20px;
+  --amb-shadow: 0 1px 2px rgba(16,24,40,.04), 0 6px 18px rgba(16,24,40,.06);
+  --amb-shadow-hover: 0 2px 6px rgba(16,24,40,.06), 0 12px 28px rgba(16,24,40,.09);
+  /* Redesign v2 (localhost-only, UI/UX pass): corrected per the user's
+     explicit reference image — light/white sidebar with a solid-blue
+     active pill, NOT the dark navy sidebar from the first pass (reverted;
+     the user explicitly asked for it removed). */
+  --amb-nav-bg: var(--amb-surface);
+  --amb-nav-border: var(--amb-border);
+  --amb-nav-text: var(--amb-text-dim);
+  --amb-nav-text-dim: var(--amb-text-faint);
+  --amb-nav-hover-bg: var(--amb-surface-2);
+  --amb-nav-active-bg: var(--amb-blue);
 }
 body { background: var(--amb-bg); }
 .amb-app {
@@ -79,48 +90,56 @@ body { background: var(--amb-bg); }
 .amb-app input[type="text"], .amb-app input[type="number"], .amb-app select {
   font-family: inherit; font-size: 12.5px; color: var(--amb-text);
   background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 9px; padding: 8px 10px;
+  transition: border-color .12s, box-shadow .12s;
+}
+.drawer-panel .field input:focus, .drawer-panel .field select:focus,
+.amb-app .field input:focus, .amb-app .field select:focus,
+.amb-app input[type="text"]:focus, .amb-app input[type="number"]:focus, .amb-app select:focus {
+  outline: none; border-color: var(--amb-blue); box-shadow: 0 0 0 3px var(--amb-blue-bg);
 }
 .amb-app .field label, .drawer-panel .field label { font-size: 12px; color: var(--amb-text-dim); font-weight: 600; }
 .amb-app .toolbar, .drawer-panel .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .amb-app .table-wrap { overflow-x: auto; border: 1px solid var(--amb-border); border-radius: var(--amb-radius); }
 .amb-app table.data { width: 100%; border-collapse: collapse; background: var(--amb-surface); font-size: 12.5px; }
-.amb-app table.data th { text-align: start; padding: 10px 12px; color: var(--amb-text-dim); font-weight: 700; border-bottom: 1px solid var(--amb-border); background: var(--amb-surface-2); }
+.amb-app table.data th { text-align: start; padding: 10px 12px; color: var(--amb-text-dim); font-weight: 700; border-bottom: 1px solid var(--amb-border); background: var(--amb-surface-2); position: sticky; top: 0; z-index: 1; }
 .amb-app table.data td { padding: 10px 12px; border-bottom: 1px solid var(--amb-border); color: var(--amb-text); }
 .amb-app table.data tr:last-child td { border-bottom: none; }
+.amb-app table.data tbody tr:hover { background: var(--amb-surface-2); }
 .amb-app .eo-task-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--amb-border); font-size: 12.5px; }
 .amb-app .mono, .drawer-panel .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 11px; }
 
 /* ---- shell + light left nav (page-scoped) ---- */
 .amb-app .amb-nav {
-  background: var(--amb-surface);
-  border-inline-end: 1px solid var(--amb-border);
+  background: var(--amb-nav-bg);
+  border-inline-end: 1px solid var(--amb-nav-border);
   width: 244px; flex-shrink: 0;
   display: flex; flex-direction: column;
   padding: 22px 14px;
 }
 .amb-nav-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px; }
 .amb-nav-brand .logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #2f6bff, #7a4dff); display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
-.amb-nav-brand .t { font-weight: 800; font-size: 15px; letter-spacing: -.2px; }
-.amb-nav-brand .s { font-size: 10px; color: var(--amb-text-faint); }
+.amb-nav-brand .t { font-weight: 800; font-size: 15px; letter-spacing: -.2px; color: var(--amb-text); }
+.amb-nav-brand .s { font-size: 10px; color: var(--amb-nav-text-dim); }
 .amb-nav-list { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .amb-nav-item {
   display: flex; align-items: center; gap: 11px;
   padding: 10px 12px; border-radius: 11px;
-  font-size: 13.5px; font-weight: 600; color: var(--amb-text-dim);
+  font-size: 13.5px; font-weight: 600; color: var(--amb-nav-text);
   cursor: pointer; border: none; background: none; text-align: start; width: 100%;
   transition: background .12s, color .12s; font-family: inherit;
 }
-.amb-nav-item:hover { background: var(--amb-surface-2); color: var(--amb-text); }
-.amb-nav-item.active { background: #eef2ff; color: var(--amb-blue); }
+.amb-nav-item:hover { background: var(--amb-nav-hover-bg); color: var(--amb-text); }
+.amb-nav-item.active { background: var(--amb-nav-active-bg); color: #fff; box-shadow: 0 4px 12px rgba(47,107,255,.25); }
 .amb-nav-item .ic { width: 18px; height: 18px; flex-shrink: 0; opacity: .9; }
 .amb-nav-item .amb-nav-count { margin-inline-start: auto; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--amb-red); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
-.amb-nav-foot { border-top: 1px solid var(--amb-border); padding-top: 12px; margin-top: 8px; }
+.amb-nav-foot { border-top: 1px solid var(--amb-nav-border); padding-top: 12px; margin-top: 8px; }
 .amb-nav-user { display: flex; align-items: center; gap: 10px; padding: 6px 8px 10px; }
-.amb-nav-user .av { width: 32px; height: 32px; border-radius: 50%; background: #eef2ff; color: var(--amb-blue); font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.amb-nav-user .nm { font-size: 12.5px; font-weight: 700; }
-.amb-nav-user .rl { font-size: 10px; color: var(--amb-text-faint); }
-.amb-nav-link { display: block; padding: 7px 10px; border-radius: 9px; font-size: 11.5px; color: var(--amb-text-faint); text-decoration: none; }
-.amb-nav-link:hover { background: var(--amb-surface-2); color: var(--amb-text-dim); }
+.amb-nav-user .av { width: 32px; height: 32px; border-radius: 50%; background: var(--amb-blue-bg); color: var(--amb-blue); font-weight: 800; font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.amb-nav-user .nm { font-size: 12.5px; font-weight: 700; color: var(--amb-text); }
+.amb-nav-user .rl { font-size: 10px; color: var(--amb-nav-text-dim); }
+.amb-nav-link { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 9px; font-size: 11.5px; color: var(--amb-nav-text-dim); text-decoration: none; }
+.amb-nav-link-ic { width: 14px; height: 14px; flex-shrink: 0; }
+.amb-nav-link:hover { background: var(--amb-nav-hover-bg); color: var(--amb-nav-text); }
 
 /* ---- main ---- */
 .amb-app .amb-main { flex: 1; min-width: 0; background: var(--amb-bg); padding: 26px 30px 40px; overflow-x: hidden; }
@@ -128,6 +147,9 @@ body { background: var(--amb-bg); }
 
 /* ---- header ---- */
 .amb-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; }
+.amb-head-title { display: flex; align-items: center; gap: 14px; }
+.amb-head-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--amb-blue-bg); color: var(--amb-blue); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.amb-head-icon svg.ic { width: 21px; height: 21px; }
 
 /* ---- period segmented control ---- */
 .amb-period { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
@@ -241,11 +263,13 @@ body { background: var(--amb-bg); }
 
 .amb-btn { border: 1px solid var(--amb-border); background: var(--amb-surface); color: var(--amb-text); font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 8px 15px; border-radius: 10px; cursor: pointer; white-space: nowrap; }
 .amb-btn:hover { border-color: var(--amb-border-strong); background: var(--amb-surface-2); }
-.amb-btn.primary { background: #15924f; border-color: #15924f; color: #fff; }
-.amb-btn.primary:hover { background: #12813f; }
+.amb-btn.primary, .amb-btn.success { background: #15924f; border-color: #15924f; color: #fff; }
+.amb-btn.primary:hover, .amb-btn.success:hover { background: #12813f; }
 .amb-btn.danger { background: var(--amb-red); border-color: var(--amb-red); color: #fff; }
 .amb-btn.danger:hover { filter: brightness(.94); }
 .amb-btn.blue { background: var(--amb-blue); border-color: var(--amb-blue); color: #fff; }
+.amb-btn.warning { background: var(--amb-amber); border-color: var(--amb-amber); color: #fff; }
+.amb-btn.warning:hover { filter: brightness(.94); }
 .amb-btn.ghost { background: none; border-color: transparent; color: var(--amb-text-dim); padding: 8px 10px; }
 .amb-btn.ghost:hover { background: var(--amb-surface-2); color: var(--amb-text); }
 .amb-btn:disabled { opacity: .55; pointer-events: none; }
@@ -259,11 +283,21 @@ body { background: var(--amb-bg); }
 .sc-thumb-wrap { cursor: pointer; }
 .sc-thumb-wrap:hover .sc-thumb { opacity: 0.75; }
 .sc-row-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+/* Redesign: Product (header, unchanged) → Meta / Easy Orders / Intelligence
+   as three explicit, equally-weighted zones — the "PRODUCT / META / EASY
+   ORDERS / INTELLIGENCE / ACTION" separation the redesign brief asks for,
+   with Action as its own bordered footer strip (.sc-row-actions) below
+   rather than crammed into the same row as the metric blocks. */
+.sc-row-blocks-3 { grid-template-columns: repeat(3, 1fr); }
 .sc-block { background: var(--amb-surface-2); border-radius: 10px; padding: 10px 12px; }
+.sc-block-intel { background: var(--amb-blue-bg); }
+.sc-block-intel .section-title { color: var(--amb-text); }
 .sc-metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 12px; color: var(--amb-text-dim); margin-top: 4px; }
 .sc-gov-mini { border-top: 1px dashed var(--amb-border); margin-top: 8px; padding-top: 6px; }
 .sc-gov-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
 .sc-reasons { line-height: 1.6; }
+.sc-row-actions { border-top: 1px solid var(--amb-border); padding-top: 12px; margin-top: 12px; }
+@media (max-width: 1024px) { .sc-row-blocks-3 { grid-template-columns: 1fr 1fr; } .sc-block-intel { grid-column: 1 / -1; } }
 /* Deliberately NOT the native `disabled` attribute — a truly disabled button
    fires no click event at all, which is exactly what a real user reported
    ("clicking does nothing"). Stays clickable and dimmed; the click handler
@@ -305,7 +339,13 @@ body { background: var(--amb-bg); }
 .amb-donut-legend .lv { margin-inline-start: auto; font-weight: 800; }
 
 .amb-empty { text-align: center; color: var(--amb-text-faint); font-size: 12.5px; padding: 26px 10px; }
-.amb-loading { text-align: center; color: var(--amb-text-faint); font-size: 12.5px; padding: 40px 10px; }
+.amb-loading { text-align: center; color: var(--amb-text-faint); font-size: 12.5px; padding: 40px 10px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.amb-loading::before {
+  content: ''; width: 22px; height: 22px; border-radius: 50%;
+  border: 2.5px solid var(--amb-border); border-top-color: var(--amb-blue);
+  animation: amb-spin .7s linear infinite;
+}
+@keyframes amb-spin { to { transform: rotate(360deg); } }
 
 /* ---- secondary tabs for the deeper sections ---- */
 .amb-app .amb-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; border-bottom: 1px solid var(--amb-border); }
@@ -377,10 +417,16 @@ body { background: var(--amb-bg); }
 .amb-app .empty-state { color: var(--amb-text-faint); }
 
 /* ---- drawer (sibling of .app-shell, so not scoped under .amb-app) ---- */
-.drawer-panel { background: var(--amb-surface); color: var(--amb-text); }
-.drawer-panel .drawer-title { color: var(--amb-text); }
-.drawer-panel .drawer-close { color: var(--amb-text-faint); }
+.drawer-panel { background: var(--amb-surface); color: var(--amb-text); border-radius: var(--amb-radius-lg, 20px) 0 0 var(--amb-radius-lg, 20px); }
+.drawer-panel .drawer-title { color: var(--amb-text); font-size: 16px; }
+.drawer-panel .drawer-header { padding-bottom: 14px; border-bottom: 1px solid var(--amb-border); margin-bottom: 18px; }
+.drawer-panel .drawer-close { color: var(--amb-text-faint); width: 32px; height: 32px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; }
+.drawer-panel .drawer-close:hover { background: var(--amb-surface-2); color: var(--amb-text); }
 .drawer-panel pre { color: var(--amb-text); }
+@media (max-width: 560px) {
+  .drawer-panel { width: 100%; max-width: 100%; border-radius: 0; }
+  .drawer-panel .drawer-close { width: 44px; height: 44px; }
+}
 .amb-drawer-explain { font-size: 12.5px; line-height: 1.8; }
 .amb-drawer-explain .row { display: flex; gap: 8px; padding: 5px 0; }
 .amb-drawer-explain .row b { color: var(--amb-text); min-width: 92px; flex-shrink: 0; }
@@ -503,6 +549,14 @@ body { background: var(--amb-bg); }
   .amb-kpis { grid-template-columns: 1fr; }
   .amb-r-actions { margin-inline-start: 0; }
 }
+/* Touch targets + iOS zoom-on-focus prevention (redesign step 25). */
+@media (max-width: 768px) {
+  .amb-app .amb-btn { min-height: 44px; }
+  .amb-app .amb-btn.sm { min-height: 40px; }
+  .amb-app .amb-iconbtn { width: 44px; height: 44px; }
+  .amb-app input[type="text"], .amb-app input[type="number"], .amb-app select,
+  .amb-app .amb-input, .amb-search input { font-size: 16px; }
+}
 
 /* ---- mobile sidebar → off-canvas drawer (matches css/style.css's own
    .drawer-panel convention exactly: same breakpoint, same slide-in side,
@@ -525,8 +579,42 @@ body { background: var(--amb-bg); }
   /* ID selector deliberately used for the open state so it unambiguously
      outranks the base rule above regardless of source order. */
   #ambNav.open { transform: translateX(0); }
-  .amb-app .amb-main { padding: 18px; padding-top: 72px; min-width: 0; }
+  .amb-app .amb-main { padding: 18px; padding-top: 72px; padding-bottom: 88px; min-width: 0; }
+
+  /* Redesign v2 — the hamburger header/drawer stay as the secondary
+     "everything else" entry point, but recolored to the light theme
+     (mountAmbMobileNav() in ui-common.js mounts these with the shared,
+     always-dark .mobile-header styling by default — that default is meant
+     for the legacy always-dark sidebar, not this app's light one). IDs used
+     directly since these elements are inserted as siblings of .app-shell,
+     outside .amb-app. */
+  #ambMobileHeader { background: var(--amb-surface); border-bottom: 1px solid var(--amb-border); }
+  #ambMobileHeaderTitle { color: var(--amb-text); }
+  #ambHamburgerBtn { color: var(--amb-text-dim); }
+  #ambHamburgerBtn:active { background: var(--amb-surface-2); }
+
+  /* New primary mobile navigation — a bottom tab bar for the handful of
+     destinations people jump to constantly, matching the reference image's
+     mobile composition. Everything else (media library, clone, launch,
+     reports, settings, cross-app links) stays one tap away behind
+     "المزيد", which just opens the existing hamburger drawer — no
+     destination was removed, only re-prioritized for a thumb-reachable
+     mobile layout. */
+  .amb-mobile-bottom-nav {
+    display: flex; position: fixed; bottom: 0; inset-inline: 0; height: 64px;
+    background: var(--amb-surface); border-top: 1px solid var(--amb-border);
+    z-index: 150; padding-bottom: env(safe-area-inset-bottom);
+  }
+  .amb-mobile-bottom-nav-item {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; color: var(--amb-text-faint); font-size: 10.5px; font-family: inherit;
+    background: none; border: none; cursor: pointer; min-width: 0; min-height: 44px;
+  }
+  .amb-mobile-bottom-nav-item svg.ic { width: 20px; height: 20px; }
+  .amb-mobile-bottom-nav-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .amb-mobile-bottom-nav-item.active { color: var(--amb-blue); }
 }
+@media (min-width: 769px) { .amb-mobile-bottom-nav { display: none; } }
 
 /* ── AI Suggested Decisions → Winner → Scale (this section only) ─────────── */
 .amb-scale-wrap { margin-bottom: 16px; }
