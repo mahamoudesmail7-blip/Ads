@@ -14,6 +14,7 @@
 import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
 import { runProviderSearch, isAnyProviderConfigured, getProviderStatus } from './searchProviders/index.js';
+import { fetchOgImage, runWithConcurrency } from './ogImageFetch.js';
 
 const LOG_PREFIX = '[WinnerProducts]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
@@ -171,6 +172,22 @@ async function runSearchPipeline(searchId) {
   }
 
   await updateSearch(searchId, { status: 'NORMALIZING' });
+
+  // Real-thumbnail backfill: SerpApi's organic google results only carry a
+  // `thumbnail` field for a minority of listings (live-measured: YouTube
+  // 100% via its own Data API, but Instagram/Facebook/TikTok/Meta Ad
+  // Library often well under half) — without this, most result cards would
+  // show a placeholder icon instead of an actual product photo, which
+  // defeats the point of a visual discovery feed. Backfills by reading the
+  // REAL og:image/twitter:image meta tag off the item's own destination URL
+  // (never fabricated) — best-effort, capped concurrency, never blocks the
+  // pipeline on a slow/blocked page (see ogImageFetch.js).
+  const itemsMissingThumb = allItems.filter((it) => !it.thumbnail && it.url);
+  if (itemsMissingThumb.length) {
+    await runWithConcurrency(itemsMissingThumb, 10, async (item) => {
+      item.thumbnail = await fetchOgImage(item.url);
+    });
+  }
 
   // Cluster by exact normalized title (Phase 1 — see normalizeTitle() comment above).
   const clusters = new Map(); // normalizedTitle -> { displayName, items: [] }
