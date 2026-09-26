@@ -15,6 +15,11 @@ const MARKET_LABEL = {
   EG: 'مصر', EG_GAP: '🔥 فرصة مصر', GULF: 'الخليج', SA: 'السعودية', AE: 'الإمارات',
   US: 'أمريكا', CA: 'كندا', UK: 'بريطانيا', EU: 'أوروبا', ASIA: 'آسيا', WORLD: 'كل العالم',
 };
+const PLATFORM_ERROR_LABEL_AR = {
+  QUOTA_EXCEEDED: 'انتهت حصة المزود (مؤقت)', RATE_LIMITED: 'تجاوز حد الطلبات', INVALID_CREDENTIALS: 'بيانات اعتماد غير صحيحة',
+  INSUFFICIENT_CREDITS: 'الرصيد غير متاح', TIMEOUT: 'انتهت المهلة', NETWORK_ERROR: 'مشكلة اتصال', SERVER_ERROR: 'خطأ من المزود',
+  VALIDATION_ERROR: 'طلب غير صحيح', UNKNOWN_ERROR: 'خطأ غير معروف',
+};
 
 const wp = {
   categories: [],
@@ -66,7 +71,10 @@ async function loadProviderStatus() {
     el.innerHTML = (data.providers || []).map((p) => {
       const cls = p.status === 'CONNECTED' ? 'green' : p.status === 'DEGRADED' ? 'yellow' : p.status === 'ERROR' ? 'red' : '';
       const label = p.status === 'CONNECTED' ? '✅ متصل' : p.status === 'DEGRADED' ? '🟡 غير مستقر' : p.status === 'ERROR' ? '⚠️ خطأ' : '⚪ غير مربوط';
-      return `<span class="icd-mini-badge ${cls}">${escapeHtml(PLATFORM_LABEL[p.platform] || p.platform)}: ${label}</span>`;
+      // Real classified reason (from the SAME traffic-driven health tracker
+      // the status comes from) — never just "ERROR" with no explanation.
+      const reason = p.status === 'ERROR' && p.detail ? ` (${escapeHtml(PLATFORM_ERROR_LABEL_AR[p.detail] || p.detail)})` : '';
+      return `<span class="icd-mini-badge ${cls}" title="${p.lastErrorAt ? 'آخر خطأ: ' + new Date(p.lastErrorAt).toLocaleString('ar-EG') : ''}">${escapeHtml(PLATFORM_LABEL[p.platform] || p.platform)}: ${label}${reason}</span>`;
     }).join('');
   } catch (err) {
     el.innerHTML = `<span class="icd-faint">تعذر تحميل حالة المزودين.</span>`;

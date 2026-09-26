@@ -39,9 +39,18 @@ export async function getProviderStatus() {
   const serpApiHealth = health.classify('serpapi', serpApiOk);
   const googleHealth = health.classify('google_custom_search', googleOk);
   const igFbTiktokUsesSerp = serpApiOk;
+  const igFbTiktokHealth = igFbTiktokUsesSerp ? serpApiHealth : googleHealth;
   const igFbTiktokStatus = {
     provider: igFbTiktokUsesSerp ? 'serpapi' : 'google_custom_search',
-    status: (igFbTiktokUsesSerp ? serpApiHealth : googleHealth).status,
+    status: igFbTiktokHealth.status,
+    // Diagnostic only, additive (existing callers that ignore extra fields
+    // are unaffected) — real classified error type + timestamps from the
+    // SAME traffic-driven health tracker the status itself comes from, so
+    // "ERROR" is never a dead end with no way to tell what actually failed.
+    detail: igFbTiktokHealth.lastErrorType || null,
+    lastCheckedAt: igFbTiktokHealth.lastCheckedAt,
+    lastSuccessfulRequestAt: igFbTiktokHealth.lastSuccessfulRequestAt,
+    lastErrorAt: igFbTiktokHealth.lastErrorAt,
   };
   const youtubeHealth = health.classify('youtube_data_api', youtubeOk);
   const metaAdLib = await metaAdLibraryProvider.getStatus();
