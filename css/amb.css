@@ -116,9 +116,28 @@ body { background: var(--amb-bg); }
   width: 244px; flex-shrink: 0;
   display: flex; flex-direction: column;
   padding: 22px 14px;
+  transition: width 200ms ease;
 }
+.amb-app .amb-nav.collapsed { width: 76px; padding-inline: 10px; }
+.amb-app .amb-nav.collapsed .amb-nav-brand-text,
+.amb-app .amb-nav.collapsed .amb-nav-item span:not(.amb-nav-count),
+.amb-app .amb-nav.collapsed .amb-nav-user .nm,
+.amb-app .amb-nav.collapsed .amb-nav-user .rl,
+.amb-app .amb-nav.collapsed .amb-nav-link { display: none; }
+.amb-app .amb-nav.collapsed .amb-nav-item { justify-content: center; }
+.amb-app .amb-nav.collapsed .amb-nav-user { justify-content: center; }
 .amb-nav-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px; }
-.amb-nav-brand .logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, #2f6bff, #7a4dff); display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+.amb-nav-brand .logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--amb-orange), var(--amb-orange-hover)); display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; }
+.amb-nav-brand-text { flex: 1; min-width: 0; }
+.amb-nav-collapse-btn {
+  flex-shrink: 0; width: 26px; height: 26px; border-radius: 8px;
+  border: 1px solid var(--amb-border); background: var(--amb-surface);
+  color: var(--amb-text-dim); display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: background-color 150ms ease, color 150ms ease;
+}
+.amb-nav-collapse-btn svg { width: 14px; height: 14px; transition: transform 200ms ease; }
+.amb-nav-collapse-btn:hover { background: var(--amb-orange-bg); color: var(--amb-orange); }
+.amb-app .amb-nav.collapsed .amb-nav-collapse-btn svg { transform: rotate(180deg); }
 .amb-nav-brand .t { font-weight: 800; font-size: 15px; letter-spacing: -.2px; color: var(--amb-text); }
 .amb-nav-brand .s { font-size: 10px; color: var(--amb-nav-text-dim); }
 .amb-nav-list { display: flex; flex-direction: column; gap: 2px; flex: 1; }
@@ -565,6 +584,18 @@ body { background: var(--amb-bg); }
    .drawer-panel convention exactly: same breakpoint, same slide-in side,
    same transform/transition) — see js/ui-common.js's mountAmbMobileNav(). ---- */
 @media (max-width: 768px) {
+  /* The desktop collapse feature must never apply to the mobile off-canvas
+     drawer — it always shows fully when open regardless of the desktop
+     collapsed/expanded preference stored in localStorage. */
+  .amb-app .amb-nav.collapsed { width: 280px; max-width: 85vw; padding-inline: 14px; }
+  .amb-app .amb-nav.collapsed .amb-nav-brand-text,
+  .amb-app .amb-nav.collapsed .amb-nav-item span:not(.amb-nav-count),
+  .amb-app .amb-nav.collapsed .amb-nav-user .nm,
+  .amb-app .amb-nav.collapsed .amb-nav-user .rl,
+  .amb-app .amb-nav.collapsed .amb-nav-link { display: block; }
+  .amb-app .amb-nav.collapsed .amb-nav-item span { display: inline; }
+  .amb-app .amb-nav.collapsed .amb-nav-item { justify-content: flex-start; }
+  .amb-app .amb-nav-collapse-btn { display: none; }
   .amb-app .amb-nav {
     position: fixed; top: 0; bottom: 0; inset-inline-end: 0;
     width: 280px; max-width: 85vw;

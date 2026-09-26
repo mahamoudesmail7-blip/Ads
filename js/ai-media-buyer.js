@@ -65,6 +65,7 @@ const IC = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   play: '<circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4z"/>',
+  chevronLeft: '<polyline points="15 18 9 12 15 6"/>',
 };
 function ic(name, cls = 'ic') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${IC[name] || ''}</svg>`;
@@ -168,13 +169,15 @@ function renderAmbBottomNav() {
   document.getElementById('ambBottomMoreBtn').onclick = () => { document.getElementById('ambHamburgerBtn')?.click(); };
 }
 
+const AMB_NAV_COLLAPSE_KEY = 'ambNavCollapsed';
 function renderNav() {
   const u = state.me || {};
   const initials = (u.name || 'U').trim().split(/\s+/).map((x) => x[0]).slice(0, 2).join('').toUpperCase();
   $('ambNav').innerHTML = `
     <div class="amb-nav-brand">
       <div class="logo">${ic('bulb', 'ic')}</div>
-      <div><div class="t">AI Media Buyer</div><div class="s">قرارات أذكى. ربح أعلى.</div></div>
+      <div class="amb-nav-brand-text"><div class="t">AI Media Buyer</div><div class="s">قرارات أذكى. ربح أعلى.</div></div>
+      <button type="button" id="ambNavCollapseBtn" class="amb-nav-collapse-btn" aria-label="طي/فتح القائمة" title="طي/فتح القائمة">${ic('chevronLeft', 'ic')}</button>
     </div>
     <div class="amb-nav-list" id="ambNavList">
       ${NAV.map((n) => `<button class="amb-nav-item ${n.key === state.tab ? 'active' : ''}" data-nav="${n.key}">
@@ -196,6 +199,15 @@ function renderNav() {
   $('ambNavList').querySelectorAll('[data-nav]').forEach((b) => {
     b.onclick = () => { location.hash = b.dataset.nav; };
   });
+  const navEl = $('ambNav');
+  let navCollapsed = false;
+  try { navCollapsed = localStorage.getItem(AMB_NAV_COLLAPSE_KEY) === '1'; } catch { /* private-browsing guard */ }
+  navEl.classList.toggle('collapsed', navCollapsed);
+  $('ambNavCollapseBtn').onclick = () => {
+    navCollapsed = !navEl.classList.contains('collapsed');
+    navEl.classList.toggle('collapsed', navCollapsed);
+    try { localStorage.setItem(AMB_NAV_COLLAPSE_KEY, navCollapsed ? '1' : '0'); } catch { /* private-browsing guard */ }
+  };
 }
 
 function route() {
