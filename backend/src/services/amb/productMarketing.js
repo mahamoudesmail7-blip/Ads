@@ -361,6 +361,51 @@ function summarizeCreateResults(results) {
   return summary;
 }
 
+/**
+ * Auto-sync — a product added on Easy Orders used to stay invisible
+ * everywhere in this app (launch wizard, Products tab) until someone
+ * opened the manual Easy Orders Catalog Sync page and explicitly created
+ * it (createProductsFromEasyOrdersCatalog above). Real user report: a real
+ * new catalog item ("فرشة أسنان زوتوبيا...") was added on Easy Orders and
+ * never showed up here because that manual step was never done.
+ *
+ * This closes that gap by doing the SAME safe, idempotent, exact-name-
+ * matched creation automatically, called from the launch wizard's product
+ * list (listLaunchableProducts) so a genuinely new catalog item appears
+ * there immediately — no separate sync step, no cron job, no new
+ * infrastructure. Cheap by construction: reads the (1h-cached, so this
+ * never adds real Easy Orders API load) full catalog + this store's
+ * existing products ONCE, diffs by exact name locally, and only ever calls
+ * the real per-item create path (with its own product_code-scan cost) for
+ * items that are genuinely missing — steady state is zero extra DB work.
+ * Never throws — a real Easy Orders outage must never break the product
+ * picker that already has its own, real, separately-cached data to show.
+ * @param {string} storeId
+ * @returns {Promise<{created: number}>}
+ */
+export async function syncNewEasyOrdersProducts(storeId) {
+  try {
+    const status = await getAllEasyOrdersProductsStatus(storeId);
+    if (!status.ok || !status.products?.length) return { created: 0 };
+    const existing = await prisma.product.findMany({
+      where: { active: true, is_historical: false, OR: [{ store_id: storeId }, { store_id: null }] },
+      select: { product_name: true },
+    });
+    const existingKeys = new Set(existing.map((p) => exactNameKey(p.product_name)));
+    const missing = status.products.filter((p) => {
+      const key = exactNameKey(stripStoreTagSuffix(p.name || ''));
+      return key && !existingKeys.has(key);
+    });
+    if (missing.length === 0) return { created: 0 };
+    const { summary } = await createProductsFromEasyOrdersCatalog(storeId, missing.map((p) => ({ eoId: String(p.id) })));
+    if (summary.created > 0) logger.info('AMB EasyOrders auto-sync created new products', { storeId, created: summary.created });
+    return { created: summary.created };
+  } catch (err) {
+    logger.warn('AMB EasyOrders auto-sync failed (non-fatal)', { storeId, message: err.message });
+    return { created: 0 };
+  }
+}
+
 // BUG 3 fix — this used to be a plain Prisma `equals` (case-insensitive
 // only), which silently fails to link a real product the moment the Easy
 // Orders name differs from the internal catalog name by so much as an

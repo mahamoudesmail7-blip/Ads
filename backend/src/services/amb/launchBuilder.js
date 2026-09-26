@@ -19,6 +19,7 @@ import { prisma } from '../../prisma.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone, searchAdGeoLocations } from '../metaGraphClient.js';
 import { listStores } from '../easyOrdersStores.js';
+import { syncNewEasyOrdersProducts } from './productMarketing.js';
 
 export const JOB_STATUSES = ['DRAFT', 'VALIDATING', 'READY', 'PUBLISHING', 'PARTIAL', 'COMPLETE', 'FAILED', 'CANCELLED'];
 export const CAMPAIGN_STATUSES = ['PENDING', 'QUEUED', 'PUBLISHING', 'CAMPAIGN_CREATED', 'ADSETS_CREATED', 'ADS_CREATED', 'COMPLETE', 'FAILED', 'CANCELLED'];
@@ -583,6 +584,20 @@ export async function listLaunchStores() {
 }
 
 export async function listLaunchableProducts({ storeId } = {}) {
+  // Real user report: a product added on Easy Orders never showed up here
+  // because turning an Easy Orders catalog item into a real internal
+  // Product used to require a separate manual step (the Easy Orders
+  // Catalog Sync page). This keeps that page for bulk/curated imports but
+  // means the launch wizard itself never has to wait for it — every real
+  // load auto-creates whatever's genuinely missing first. Cheap (1h-cached
+  // catalog read + one exact-name diff) and never throws, so a real Easy
+  // Orders outage degrades to "just show what we already have" instead of
+  // breaking the picker.
+  if (storeId) {
+    await syncNewEasyOrdersProducts(storeId);
+  } else {
+    await Promise.all(listStores().map((s) => syncNewEasyOrdersProducts(s.id)));
+  }
   const where = { active: true, is_historical: false };
   if (storeId) where.OR = [{ store_id: storeId }, { store_id: null }];
   return prisma.product.findMany({

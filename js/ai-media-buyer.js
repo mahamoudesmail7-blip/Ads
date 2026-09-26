@@ -5392,6 +5392,7 @@ function wireLaunchProductRadios(container, products) {
     r.onchange = () => {
       launchState.productId = Number(r.value);
       launchState.productName = products.find((p) => p.id === launchState.productId)?.product_name || null;
+      launchState._productSkipped = false;
       renderLaunchStep();
     };
   });
@@ -5437,9 +5438,15 @@ async function renderLaunchProduct(body) {
         <div class="field" style="margin-bottom:12px;">
           <input type="text" class="amb-input" id="ambLaunchProductSearch" placeholder="🔍 دوّر باسم المنتج..." value="${E(launchState._productSearch || '')}" style="width:100%;" />
         </div>
-        <div class="amb-radio-list" id="ambLaunchProductList" style="max-height:420px; overflow:auto;">${launchProductListHtml(products)}</div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
+        <div class="amb-radio-list" id="ambLaunchProductList" style="max-height:420px; overflow:auto;">${launchProductListHtml(products)}</div>
+        <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--amb-border); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; color:var(--amb-text-dim); cursor:pointer;">
+            <input type="checkbox" id="ambLaunchSkipProduct" ${launchState._productSkipped ? 'checked' : ''} />
+            الحملة مش مرتبطة بمنتج معين دلوقتي — هربطه بعدين يدويًا
+          </label>
+        </div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
     </div>
-    ${launchNav(0, 'التالي: الحساب الإعلاني', !!launchState.productId)}`;
+    ${launchNav(0, 'التالي: الحساب الإعلاني', !!launchState.productId || !!launchState._productSkipped)}`;
   const searchInput = $('ambLaunchProductSearch');
   if (searchInput) {
     searchInput.oninput = (e) => {
@@ -5449,18 +5456,34 @@ async function renderLaunchProduct(body) {
     };
   }
   wireLaunchProductRadios(body, products);
+  const skipBox = $('ambLaunchSkipProduct');
+  if (skipBox) {
+    skipBox.onchange = (e) => {
+      launchState._productSkipped = e.target.checked;
+      // Skipping and picking a real product are mutually exclusive — checking
+      // the box clears any radio selection made so far, and picking a radio
+      // (wireLaunchProductRadios above) implicitly un-skips via the re-render
+      // below since renderLaunchStep() rebuilds this checkbox unchecked
+      // whenever launchState.productId is set at render time... but that
+      // needs an explicit reset here too, since selecting a radio doesn't
+      // re-render this step (only the Next button's enabled state matters,
+      // handled by re-rendering the whole step on any change here).
+      if (e.target.checked) { launchState.productId = null; launchState.productName = null; }
+      renderLaunchStep();
+    };
+  }
   const dismissWinners = $('ambLaunchDismissWinners');
   if (dismissWinners) dismissWinners.onclick = () => { launchState._prefillWinners = null; renderLaunchStep(); };
   const storeSel = $('ambLaunchStoreSelect');
   if (storeSel) storeSel.onchange = (e) => {
     launchState.storeId = e.target.value || null;
     launchState.storeName = stores.find((s) => s.id === launchState.storeId)?.name || null;
-    launchState.productId = null; launchState.productName = null;
+    launchState.productId = null; launchState.productName = null; launchState._productSkipped = false;
     launchState.products = null; launchState._productsLoadedForStore = null; launchState._productSearch = '';
     renderLaunchStep();
   };
   wireLaunchNav(0, () => {
-    if (!launchState.productId) return;
+    if (!launchState.productId && !launchState._productSkipped) return;
     launchState.step = 2; renderLaunchStep();
   });
 }
@@ -6587,7 +6610,7 @@ async function renderLaunchReview(body) {
     : '🟢 تلقائي (Highest Volume) — بدون حد أقصى للمزايدة';
 
   const checklist = [
-    ['المنتج', !!launchState.productId],
+    ['المنتج', !!launchState.productId || !!launchState._productSkipped],
     ['الحساب الإعلاني', !!launchState.adAccountId],
     ['Facebook Page', !!launchState.pageId],
     ['Instagram placement + identity', igLine],
@@ -6642,7 +6665,7 @@ async function renderLaunchReview(body) {
     ${launchStepper()}
     <div class="amb-panel amb-review">
       <div class="amb-review-grid">
-        <div><span class="rl">المنتج</span><span class="rv">${E(launchState.productName || '—')}${launchState.storeName ? ` · ${E(launchState.storeName)}` : ''}</span></div>
+        <div><span class="rl">المنتج</span><span class="rv">${E(launchState.productName || (launchState._productSkipped ? 'هيتربط لاحقًا يدويًا' : '—'))}${launchState.storeName ? ` · ${E(launchState.storeName)}` : ''}</span></div>
         <div><span class="rl">الحساب الإعلاني</span><span class="rv">${E(launchState.adAccountName || launchState.adAccountId)}</span></div>
         <div><span class="rl">عدد الكامبينات</span><span class="rv">${launchState.campaigns.length}</span></div>
         <div><span class="rl">نوع الميزانية</span><span class="rv">${E(launchState.budgetMode)}</span></div>
