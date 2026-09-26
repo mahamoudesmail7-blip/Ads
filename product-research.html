@@ -263,26 +263,33 @@
              PARTIAL/FAILED, etc.) is KEPT and only restyled — none renamed,
              none removed. New decorative classes are additive. */
           :is(#prExperimentalSection, #prWinnerSection) {
-            --icd-bg: #05070f;
-            --icd-bg2: #070a16;
-            --icd-panel: rgba(15,18,34,0.62);
-            --icd-panel-2: rgba(20,24,45,0.68);
-            --icd-panel-solid: #12162a;
-            --icd-border: rgba(129,140,248,0.16);
-            --icd-border-strong: rgba(129,140,248,0.34);
-            --icd-text: #e8eaf6;
-            --icd-faint: #8b90b3;
-            --icd-purple: #8b5cf6;
-            --icd-blue: #3b82f6;
-            --icd-cyan: #22d3ee;
-            --icd-green: #34d399;
-            --icd-yellow: #fbbf24;
-            --icd-red: #f87171;
+            /* White/black theme (explicit request: "الباد كرون كله بيضة
+               والكتابة السودة" — applied to both tabs sharing this block).
+               Accent colors (purple/blue/cyan/green/yellow/red) are darkened
+               versions of the originals — the old bright values were tuned
+               for text-on-near-black and fail contrast on white; kept the
+               same hues so status semantics (connected/error/etc.) still
+               read the same. */
+            --icd-bg: #ffffff;
+            --icd-bg2: #f4f5fa;
+            --icd-panel: #ffffff;
+            --icd-panel-2: #f1f2f8;
+            --icd-panel-solid: #ffffff;
+            --icd-border: rgba(15,23,42,0.10);
+            --icd-border-strong: rgba(15,23,42,0.22);
+            --icd-text: #0f1222;
+            --icd-faint: #5b6072;
+            --icd-purple: #7c3aed;
+            --icd-blue: #2563eb;
+            --icd-cyan: #0891b2;
+            --icd-green: #15803d;
+            --icd-yellow: #b45309;
+            --icd-red: #dc2626;
             position: relative;
             background:
-              radial-gradient(900px 420px at 12% -8%, rgba(139,92,246,0.16), transparent 60%),
-              radial-gradient(800px 420px at 100% 0%, rgba(34,211,238,0.10), transparent 55%),
-              radial-gradient(600px 500px at 50% 110%, rgba(59,130,246,0.08), transparent 60%),
+              radial-gradient(900px 420px at 12% -8%, rgba(139,92,246,0.05), transparent 60%),
+              radial-gradient(800px 420px at 100% 0%, rgba(34,211,238,0.04), transparent 55%),
+              radial-gradient(600px 500px at 50% 110%, rgba(59,130,246,0.03), transparent 60%),
               linear-gradient(180deg, var(--icd-bg) 0%, var(--icd-bg2) 100%);
             border: 1px solid var(--icd-border);
             border-radius: 20px;
@@ -311,13 +318,13 @@
           :is(#prExperimentalSection, #prWinnerSection)::after {
             content: ''; position: absolute; z-index: -1; pointer-events: none;
             width: 380px; height: 380px; border-radius: 50%; top: -140px; inset-inline-end: -100px;
-            background: radial-gradient(circle, rgba(34,211,238,0.14), transparent 70%);
+            background: radial-gradient(circle, rgba(34,211,238,0.05), transparent 70%);
           }
 
           :is(#prExperimentalSection, #prWinnerSection) .icd-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 22px; position: relative; z-index: 1; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-header-left { display: flex; align-items: center; gap: 14px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-brain { width: 46px; height: 46px; flex-shrink: 0; filter: drop-shadow(0 0 8px rgba(34,211,238,0.45)); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-title { font-size: 21px; font-weight: 800; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-purple)); -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: 0 0 24px rgba(139,92,246,0.25); }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-title { font-size: 21px; font-weight: 800; color: var(--icd-text); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-subtitle { font-size: 12.5px; color: var(--icd-faint); margin-top: 3px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--icd-border-strong); color: var(--icd-cyan); background: rgba(139,92,246,0.10); letter-spacing: .03em; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--icd-cyan); box-shadow: 0 0 8px var(--icd-cyan); animation: icdPulseDot 2s ease-in-out infinite; }
@@ -351,7 +358,7 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-ref-thumb { position: relative; width: 84px; height: 84px; border-radius: 12px; overflow: hidden; border: 1px solid var(--icd-border-strong); box-shadow: 0 0 0 1px rgba(255,255,255,0.03) inset; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ref-thumb button { position: absolute; top: 2px; inset-inline-end: 2px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(5,7,15,0.8); color: #fff; font-size: 11px; line-height: 1; cursor: pointer; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-ref-thumb .icd-ref-idx { position: absolute; bottom: 2px; inset-inline-start: 2px; background: rgba(5,7,15,0.8); color: var(--icd-cyan); font-size: 9.5px; padding: 1px 5px; border-radius: 999px; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-ref-thumb .icd-ref-idx { position: absolute; bottom: 2px; inset-inline-start: 2px; background: rgba(5,7,15,0.8); color: #22d3ee; font-size: 9.5px; padding: 1px 5px; border-radius: 999px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-chip { background: rgba(139,92,246,0.15); border: 1px solid var(--icd-purple); color: var(--icd-text); font-size: 11.5px; padding: 3px 8px; border-radius: 999px; display: flex; align-items: center; gap: 6px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-chip button { background: none; border: none; color: var(--icd-faint); cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
@@ -377,7 +384,7 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle-group { display: flex; gap: 8px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle { flex: 1; text-align: center; padding: 9px; border-radius: 10px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); cursor: pointer; font-size: 12.5px; font-weight: 600; position: relative; transition: border-color .2s, color .2s; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle[data-icd-mode="quick"].active { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.1); box-shadow: 0 0 0 1px rgba(34,211,238,0.25) inset; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-toggle[data-icd-mode="deep"].active { border-color: var(--icd-purple); color: #c4b5fd; background: rgba(139,92,246,0.12); box-shadow: 0 0 0 1px rgba(139,92,246,0.28) inset; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-toggle[data-icd-mode="deep"].active { border-color: var(--icd-purple); color: var(--icd-purple); background: rgba(139,92,246,0.12); box-shadow: 0 0 0 1px rgba(139,92,246,0.28) inset; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle.active::after { content: ''; position: absolute; top: 5px; inset-inline-end: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
           /* --- AI Product Analysis Hero --- */
@@ -437,7 +444,7 @@
           /* PERF NOTE: shimmer only actually runs while a search is active — after COMPLETED/PARTIAL/FAILED the bar stops moving and there's no real progress left to animate, so the shimmer stopped meaning anything anyway. */
           :is(#prExperimentalSection, #prWinnerSection) .icd-overall-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent); width: 40%; display: none; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-searching-active .icd-overall-fill::after { display: block; animation: icdEnergyFlow 2s linear infinite; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-overall-pct { font-size: 22px; font-weight: 800; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-purple)); -webkit-background-clip: text; background-clip: text; color: transparent; min-width: 58px; text-align: center; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-overall-pct { font-size: 22px; font-weight: 800; color: var(--icd-text); min-width: 58px; text-align: center; }
 
           /* --- Platform cards (premium AI processing modules) --- */
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
@@ -523,8 +530,8 @@
           @media (hover: hover) and (pointer: fine) {
             :is(#prExperimentalSection, #prWinnerSection) .icd-result-card:hover { border-color: var(--icd-purple); }
           }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-result-thumb { width: 100%; height: 130px; object-fit: cover; background: #0d1024; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-result-thumb-placeholder { width: 100%; height: 130px; background: #0d1024; display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 26px; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-result-thumb { width: 100%; height: 130px; object-fit: cover; background: var(--icd-panel-2); }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-result-thumb-placeholder { width: 100%; height: 130px; background: var(--icd-panel-2); display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 26px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-result-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-result-platform { font-size: 10px; color: var(--icd-cyan); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-result-title { font-size: 12.5px; font-weight: 600; line-height: 1.35; }
@@ -604,7 +611,7 @@
                 <circle cx="38" cy="22" r="2.2" fill="#8b5cf6" stroke="none" />
                 <circle cx="16" cy="36" r="2" fill="#22d3ee" stroke="none" />
                 <circle cx="32" cy="36" r="2" fill="#22d3ee" stroke="none" />
-                <circle cx="24" cy="26" r="2.6" fill="#e8eaf6" stroke="none" />
+                <circle cx="24" cy="26" r="2.6" fill="#0f1222" stroke="none" />
                 <path d="M24 12.4 L24 23.4 M10 22 L21.6 25.6 M38 22 L26.4 25.6 M16 36 L22.4 28 M32 36 L25.6 28 M10 22 L16 36 M38 22 L32 36" />
               </g>
               <defs>
