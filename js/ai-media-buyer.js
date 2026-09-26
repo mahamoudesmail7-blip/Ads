@@ -5434,17 +5434,19 @@ async function renderLaunchProduct(body) {
             ${stores.map((s) => `<option value="${E(s.id)}" ${launchState.storeId === s.id ? 'selected' : ''}>${E(s.name || s.id)}</option>`).join('')}
           </select>
         </div>` : ''}
-      ${!launchState.storeId ? '<div class="amb-empty">اختار متجر الأول عشان تشوف منتجاته.</div>' : products.length ? `
-        <div class="field" style="margin-bottom:12px;">
-          <input type="text" class="amb-input" id="ambLaunchProductSearch" placeholder="🔍 دوّر باسم المنتج..." value="${E(launchState._productSearch || '')}" style="width:100%;" />
+      ${!launchState.storeId ? '<div class="amb-empty">اختار متجر الأول عشان تشوف منتجاته.</div>' : `
+        <div class="field" style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
+          <input type="text" class="amb-input" id="ambLaunchProductSearch" placeholder="🔍 دوّر باسم المنتج..." value="${E(launchState._productSearch || '')}" style="width:100%; flex:1;" />
+          <button type="button" class="amb-btn sm" id="ambLaunchRefreshProducts" title="لو لسه ضايف منتج على Easy Orders من ثانية وعايز يظهر فورًا">🔄 تحديث القائمة</button>
         </div>
+        ${products.length ? `
         <div class="amb-radio-list" id="ambLaunchProductList" style="max-height:420px; overflow:auto;">${launchProductListHtml(products)}</div>
         <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--amb-border); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:600; color:var(--amb-text-dim); cursor:pointer;">
             <input type="checkbox" id="ambLaunchSkipProduct" ${launchState._productSkipped ? 'checked' : ''} />
             الحملة مش مرتبطة بمنتج معين دلوقتي — هربطه بعدين يدويًا
           </label>
-        </div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر.</div>'}
+        </div>` : '<div class="amb-empty">مفيش منتجات نشطة لهذا المتجر. لو لسه ضايف منتج على Easy Orders، دوس "تحديث القائمة" فوق.</div>'}`}
     </div>
     ${launchNav(0, 'التالي: الحساب الإعلاني', !!launchState.productId || !!launchState._productSkipped)}`;
   const searchInput = $('ambLaunchProductSearch');
@@ -5453,6 +5455,21 @@ async function renderLaunchProduct(body) {
       launchState._productSearch = e.target.value;
       const listEl = $('ambLaunchProductList');
       if (listEl) { listEl.innerHTML = launchProductListHtml(products); wireLaunchProductRadios(listEl, products); }
+    };
+  }
+  const refreshBtn = $('ambLaunchRefreshProducts');
+  if (refreshBtn) {
+    refreshBtn.onclick = async () => {
+      refreshBtn.disabled = true; refreshBtn.textContent = '⏳ بيحدّث...';
+      try {
+        const r = await api.get(`/api/ai-media-buyer/launch/products?storeId=${encodeURIComponent(launchState.storeId)}&refresh=1`);
+        launchState.products = r.products || [];
+        UI.toast('✅ تم تحديث قائمة المنتجات من Easy Orders');
+      } catch (err) {
+        UI.toast(err.message, 'error');
+      } finally {
+        renderLaunchStep();
+      }
     };
   }
   wireLaunchProductRadios(body, products);

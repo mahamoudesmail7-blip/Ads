@@ -583,7 +583,7 @@ export async function listLaunchStores() {
   return listStores();
 }
 
-export async function listLaunchableProducts({ storeId } = {}) {
+export async function listLaunchableProducts({ storeId, forceRefresh = false } = {}) {
   // Real user report: a product added on Easy Orders never showed up here
   // because turning an Easy Orders catalog item into a real internal
   // Product used to require a separate manual step (the Easy Orders
@@ -592,11 +592,14 @@ export async function listLaunchableProducts({ storeId } = {}) {
   // load auto-creates whatever's genuinely missing first. Cheap (1h-cached
   // catalog read + one exact-name diff) and never throws, so a real Easy
   // Orders outage degrades to "just show what we already have" instead of
-  // breaking the picker.
+  // breaking the picker. `forceRefresh` (the wizard's manual "🔄 تحديث
+  // القائمة" button) bypasses that 1h cache for the one real moment it
+  // matters — right after someone just added a product and doesn't want to
+  // wait up to an hour for the automatic path to notice.
   if (storeId) {
-    await syncNewEasyOrdersProducts(storeId);
+    await syncNewEasyOrdersProducts(storeId, { forceRefresh });
   } else {
-    await Promise.all(listStores().map((s) => syncNewEasyOrdersProducts(s.id)));
+    await Promise.all(listStores().map((s) => syncNewEasyOrdersProducts(s.id, { forceRefresh })));
   }
   const where = { active: true, is_historical: false };
   if (storeId) where.OR = [{ store_id: storeId }, { store_id: null }];

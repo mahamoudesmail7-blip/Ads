@@ -380,12 +380,18 @@ function summarizeCreateResults(results) {
  * items that are genuinely missing — steady state is zero extra DB work.
  * Never throws — a real Easy Orders outage must never break the product
  * picker that already has its own, real, separately-cached data to show.
+ * `forceRefresh` (default false) bypasses the 1h cache — used only by the
+ * launch wizard's explicit "🔄 تحديث القائمة" button (a real user asked for
+ * a product they'd JUST added to be visible immediately, not after up to an
+ * hour) — every automatic call on page load stays on the cheap cached path
+ * so normal traffic never risks the real rate-limit this app has hit today.
  * @param {string} storeId
+ * @param {{forceRefresh?: boolean}} [options]
  * @returns {Promise<{created: number}>}
  */
-export async function syncNewEasyOrdersProducts(storeId) {
+export async function syncNewEasyOrdersProducts(storeId, { forceRefresh = false } = {}) {
   try {
-    const status = await getAllEasyOrdersProductsStatus(storeId);
+    const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh });
     if (!status.ok || !status.products?.length) return { created: 0 };
     const existing = await prisma.product.findMany({
       where: { active: true, is_historical: false, OR: [{ store_id: storeId }, { store_id: null }] },

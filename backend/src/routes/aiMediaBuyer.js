@@ -746,7 +746,8 @@ router.get('/launch/stores', asyncRoute(async (req, res) => {
 router.get('/launch/products', asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   const storeId = req.query.storeId ? String(req.query.storeId) : null;
-  res.json({ products: await launch.listLaunchableProducts({ storeId }) });
+  const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+  res.json({ products: await launch.listLaunchableProducts({ storeId, forceRefresh }) });
 }));
 
 router.get('/launch/jobs', asyncRoute(async (req, res) => {
