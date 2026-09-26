@@ -78,6 +78,9 @@ model User {
   pmc_profiles_locked            ProductMarketingProfile[]
   pmc_actions_decided            ProductMarketingActionLog[]
   pmc_tests_created              ProductMarketingTest[]
+  // Winner Products Discovery Engine — additive back-relations only (no column change on `users`).
+  winner_product_searches        WinnerProductSearch[]
+  winner_product_saved           WinnerProductSaved[]
 
   @@map("users")
 }
@@ -2998,4 +3001,102 @@ model AiCacheEntry {
   @@index([expires_at])
   @@index([feature])
   @@map("ai_cache_entries")
+}
+
+// ============================================================================
+// Winner Products Discovery Engine — "🔥 منتجات وينر". Fully isolated new
+// module inside product-research.html (own tab, own DOM ids, own JS file,
+// own /api/winner-products/* routes, own tables below). Phase 1 only:
+// category config, real per-category discovery jobs reusing the EXISTING
+// provider infrastructure (searchProviders/index.js — the same
+// Instagram/Facebook/TikTok/YouTube/Meta Ads Library/Google connections
+// experimentalCreativeDiscovery.js already uses), raw per-product evidence,
+// and saved products. Winner Score / Egypt Saturation / Opportunity Gap /
+// trend stage are nullable and computed by a later phase — Phase 1 never
+// fabricates them. No existing table/column is touched.
+// ============================================================================
+
+// Admin-configurable category list (spec: "easily extendable from backend/admin configuration") — a real DB table, not a hardcoded frontend array, so adding a category never needs a code deploy.
+model WinnerProductCategory {
+  id         Int      @id @default(autoincrement())
+  key        String   @unique
+  label_ar   String
+  enabled    Boolean  @default(true)
+  sort_order Int      @default(0)
+  created_at DateTime @default(now())
+
+  @@map("winner_product_categories")
+}
+
+// One discovery job/run — the async pipeline the spec calls for (QUEUED→...→COMPLETED/PARTIAL/FAILED). Phase 1 implements a real single-pass search across the existing generic providers per category+market+time; later phases extend the same status machine for alias generation/clustering/Egypt comparison without a schema change (those are just later statuses this same string field already allows).
+model WinnerProductSearch {
+  id                      Int       @id @default(autoincrement())
+  user_id                 Int
+  user                    User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  category                String
+  market                  String    @default("EG") // EG|GULF|SA|AE|US|CA|UK|EU|ASIA|WORLD|EG_GAP (the special "ناجح بره ومش منتشر في مصر" mode)
+  time_range              String    @default("7d") // 24h|3d|7d|14d|30d|90d
+  mode                    String    @default("quick") // quick|deep
+  status                  String    @default("QUEUED") // QUEUED|SEARCHING|NORMALIZING|SCORING|COMPLETED|PARTIAL|FAILED
+  platform_status_json    String? // real per-platform PENDING|SEARCHING|COMPLETE|PARTIAL|FAILED|NOT_CONFIGURED, same convention as experimental_creative_searches
+  platform_progress_json  String? // real per-platform 0-100, same convention as experimental_creative_searches
+  queries_json            String? // the real auto-generated seed queries actually used (Step: query generation) — never a single fixed query
+  error                   String?
+  started_at              DateTime?
+  completed_at            DateTime?
+  created_at              DateTime  @default(now())
+  updated_at              DateTime  @updatedAt
+
+  products WinnerProduct[]
+
+  @@index([user_id])
+  @@index([status])
+  @@map("winner_product_searches")
+}
+
+// One discovered candidate product (post-dedup within its own search — cross-search clustering is a later phase). Score/stage fields are null until a scoring phase runs; Phase 1 never invents them. raw_sources_json holds the real provider hits this card is built from, so every displayed number is traceable to real, stored evidence.
+model WinnerProduct {
+  id                 Int                 @id @default(autoincrement())
+  search_id          Int
+  search             WinnerProductSearch @relation(fields: [search_id], references: [id], onDelete: Cascade)
+  category           String
+  display_name       String
+  normalized_name    String
+  thumbnail          String?
+  platforms_json     String // real platforms this candidate was actually found on
+  videos_count       Int                 @default(0)
+  ads_count          Int                 @default(0)
+  advertisers_count  Int                 @default(0)
+  markets_json       String? // real detected countries, when available — never invented
+  trend_stage        String? // EMERGING|RISING|WINNER|SATURATED — null = not yet scored (later phase)
+  winner_score       Int? // 0-100, null = not yet computed
+  egypt_saturation   Int? // 0-100, null = not yet computed
+  opportunity_gap    Int? // null = not yet computed
+  confidence         Int? // 0-100, null = not yet computed
+  growth_pct         Float? // null = not enough historical data yet
+  raw_sources_json   String? // real provider hits (platform/url/title/thumbnail/publishedAt) backing this card — the honest evidence trail
+  first_detected_at  DateTime            @default(now())
+  last_detected_at   DateTime            @default(now())
+  created_at         DateTime            @default(now())
+  updated_at          DateTime           @updatedAt
+
+  saved WinnerProductSaved[]
+
+  @@index([search_id])
+  @@index([category])
+  @@map("winner_products")
+}
+
+// A user's saved/watchlisted product, snapshotting its metrics at save time so a later re-open can honestly show real movement (spec: "Winner Score: 78 → 91") instead of just the current value.
+model WinnerProductSaved {
+  id                 Int           @id @default(autoincrement())
+  user_id            Int
+  user               User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  winner_product_id  Int
+  winner_product     WinnerProduct @relation(fields: [winner_product_id], references: [id], onDelete: Cascade)
+  snapshot_json      String // real metrics at save time (score/saturation/videos/ads/advertisers) — comparison baseline, never overwritten
+  saved_at           DateTime      @default(now())
+
+  @@unique([user_id, winner_product_id])
+  @@map("winner_product_saved")
 }

@@ -55,6 +55,7 @@ import aiUsageRoutes from './routes/aiUsage.js';
 import backupStatusRoutes from './routes/backupStatus.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
+import winnerProductsRoutes from './routes/winnerProducts.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
@@ -115,6 +116,7 @@ app.use('/api/ai-usage', aiUsageRoutes); // AI Gateway admin usage/cost dashboar
 app.use('/api/backup-status', backupStatusRoutes); // Backup & Recovery status page (informational only, see routes/backupStatus.js)
 app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
 app.use('/api/product-research', productResearchRoutes);
+app.use('/api/winner-products', winnerProductsRoutes); // Winner Products Discovery Engine — "🔥 منتجات وينر" (see routes/winnerProducts.js)
 
 // Serve the existing static frontend (order-monitor/) from this same
 // service, so there's a single public URL. `backend/`, `.env`, and `.git`
