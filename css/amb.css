@@ -7,9 +7,14 @@
 /* Tokens on :root so the drawer (a sibling of .app-shell, outside .amb-app)
    also resolves them. This whole file only loads on ai-media-buyer.html. */
 :root {
-  --amb-bg: #f4f5f7;
+  /* White/black theme (explicit request, system-wide) — amber/green/red
+     kept as real status colors (warning/positive/negative); blue and
+     purple were pure decorative accents (active nav, links, focus rings,
+     a rare "purple" badge category) and are now black/gray so no non-
+     status color remains. */
+  --amb-bg: #ffffff;
   --amb-surface: #ffffff;
-  --amb-surface-2: #fafbfc;
+  --amb-surface-2: #f7f7f9;
   --amb-border: #e9eaef;
   --amb-border-strong: #dfe1e8;
   --amb-text: #171e2e;
@@ -17,9 +22,9 @@
   --amb-text-faint: #98a0ad;
   --amb-green: #15924f; --amb-green-bg: #e9f7ef;
   --amb-red: #d33f3f;   --amb-red-bg: #fdecec;
-  --amb-blue: #2f6bff;  --amb-blue-bg: #ebf1ff;
+  --amb-blue: #111111;  --amb-blue-bg: #f0f0f2;
   --amb-amber: #c9761a; --amb-amber-bg: #fdf1e3;
-  --amb-purple: #7a4dff; --amb-purple-bg: #f1ecff;
+  --amb-purple: #333333; --amb-purple-bg: #eeeeee;
   --amb-radius: 16px;
   --amb-radius-sm: 12px;
   --amb-radius-lg: 20px;
@@ -90,7 +95,7 @@ body { background: var(--amb-bg); }
 .amb-app input[type="text"], .amb-app input[type="number"], .amb-app select {
   font-family: inherit; font-size: 12.5px; color: var(--amb-text);
   background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 9px; padding: 8px 10px;
-  transition: border-color .12s, box-shadow .12s;
+
 }
 .drawer-panel .field input:focus, .drawer-panel .field select:focus,
 .amb-app .field input:focus, .amb-app .field select:focus,
@@ -126,7 +131,7 @@ body { background: var(--amb-bg); }
   padding: 10px 12px; border-radius: 11px;
   font-size: 13.5px; font-weight: 600; color: var(--amb-nav-text);
   cursor: pointer; border: none; background: none; text-align: start; width: 100%;
-  transition: background .12s, color .12s; font-family: inherit;
+ font-family: inherit;
 }
 .amb-nav-item:hover { background: var(--amb-nav-hover-bg); color: var(--amb-text); }
 .amb-nav-item.active { background: var(--amb-nav-active-bg); color: #fff; box-shadow: 0 4px 12px rgba(47,107,255,.25); }
@@ -158,7 +163,7 @@ body { background: var(--amb-bg); }
   border: none; background: none; font-family: inherit;
   font-size: 12.5px; font-weight: 700; color: var(--amb-text-dim);
   padding: 7px 16px; border-radius: 9px; cursor: pointer; white-space: nowrap;
-  transition: background .12s, color .12s, box-shadow .12s;
+
 }
 .amb-seg-btn:hover { color: var(--amb-text); }
 .amb-seg-btn.active { background: var(--amb-surface); color: var(--amb-text); box-shadow: 0 1px 2px rgba(18,24,40,.06), 0 1px 4px rgba(18,24,40,.04); }
@@ -222,7 +227,7 @@ body { background: var(--amb-bg); }
 .amb-sort { font-size: 12px; color: var(--amb-text-dim); border: 1px solid var(--amb-border); background: var(--amb-surface); border-radius: 999px; padding: 6px 12px; font-family: inherit; }
 
 /* ---- recommendation card ---- */
-.amb-r { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); display: flex; overflow: hidden; margin-bottom: 14px; transition: box-shadow .15s; }
+.amb-r { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); display: flex; overflow: hidden; margin-bottom: 14px; }
 .amb-r:hover { box-shadow: var(--amb-shadow-hover); }
 .amb-r-chip { flex-shrink: 0; width: 96px; padding: 16px 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; text-align: center; font-size: 12px; font-weight: 800; }
 .amb-r-chip .ci { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
@@ -343,9 +348,7 @@ body { background: var(--amb-bg); }
 .amb-loading::before {
   content: ''; width: 22px; height: 22px; border-radius: 50%;
   border: 2.5px solid var(--amb-border); border-top-color: var(--amb-blue);
-  animation: amb-spin .7s linear infinite;
 }
-@keyframes amb-spin { to { transform: rotate(360deg); } }
 
 /* ---- secondary tabs for the deeper sections ---- */
 .amb-app .amb-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; border-bottom: 1px solid var(--amb-border); }
@@ -359,7 +362,7 @@ body { background: var(--amb-bg); }
 .amb-app .amb-tree-node { background: var(--amb-surface); border-color: var(--amb-border); border-radius: 10px; margin-bottom: 8px; }
 .amb-app .amb-tree-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; }
 .amb-app .amb-tree-row:hover { background: var(--amb-surface-2); }
-.amb-app .amb-tree-caret { width: 14px; flex-shrink: 0; color: var(--amb-text-faint); transition: transform .15s; }
+.amb-app .amb-tree-caret { width: 14px; flex-shrink: 0; color: var(--amb-text-faint); }
 .amb-app .amb-tree-caret.open { transform: rotate(90deg); }
 .amb-app .amb-tree-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .amb-app .amb-tree-metrics { display: flex; gap: 14px; font-size: 12px; color: var(--amb-text-dim); flex-shrink: 0; }
@@ -443,7 +446,7 @@ body { background: var(--amb-bg); }
 
 .amb-app .amb-wizard-nav { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; }
 .amb-app .amb-radio-list, .amb-app .amb-check-list { display: flex; flex-direction: column; gap: 8px; }
-.amb-app .amb-radio-row, .amb-app .amb-check-row { display: grid; grid-template-columns: 20px 1fr; grid-auto-rows: min-content; gap: 2px 10px; align-items: center; padding: 12px 14px; border: 1px solid var(--amb-border); border-radius: 10px; cursor: pointer; transition: border-color .12s, background .12s; }
+.amb-app .amb-radio-row, .amb-app .amb-check-row { display: grid; grid-template-columns: 20px 1fr; grid-auto-rows: min-content; gap: 2px 10px; align-items: center; padding: 12px 14px; border: 1px solid var(--amb-border); border-radius: 10px; cursor: pointer; }
 .amb-app .amb-radio-row:hover, .amb-app .amb-check-row:hover { border-color: var(--amb-border-strong); }
 .amb-app .amb-radio-row.sel, .amb-app .amb-check-row.sel { border-color: var(--amb-blue); background: var(--amb-blue-bg); }
 .amb-app .amb-radio-row input, .amb-app .amb-check-row input { grid-row: span 2; }
@@ -498,7 +501,7 @@ body { background: var(--amb-bg); }
 .amb-app .amb-ml-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
 .amb-app .amb-ml-bar .amb-select { max-width: 200px; }
 .amb-app .amb-ml-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
-.amb-app .amb-ml-card { display: flex; flex-direction: column; border: 1px solid var(--amb-border); border-radius: 12px; overflow: hidden; background: var(--amb-surface); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+.amb-app .amb-ml-card { display: flex; flex-direction: column; border: 1px solid var(--amb-border); border-radius: 12px; overflow: hidden; background: var(--amb-surface); cursor: pointer; }
 .amb-app .amb-ml-card:hover { border-color: var(--amb-border-strong); box-shadow: var(--amb-shadow); }
 .amb-app .amb-ml-thumb { width: 100%; height: 150px; object-fit: cover; background: var(--amb-surface-2); display: block; }
 .amb-app .amb-ml-thumb.ph { display: flex; align-items: center; justify-content: center; color: var(--amb-text-faint); }
@@ -517,7 +520,6 @@ body { background: var(--amb-bg); }
 
 /* ---- Advanced Campaign Scheduling ---- */
 .amb-app .amb-sched-list { display: flex; flex-direction: column; gap: 12px; }
-.amb-app .amb-sched-slot { }
 .amb-app .amb-sched-editor { border: 1px solid var(--amb-border); border-radius: 12px; padding: 14px; background: var(--amb-surface); }
 .amb-app .amb-sched-modes { display: flex; flex-direction: column; gap: 6px; }
 .amb-app .amb-sched-mode { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; padding: 6px 8px; border: 1px solid var(--amb-border); border-radius: 8px; }
@@ -573,7 +575,7 @@ body { background: var(--amb-bg); }
        inset-inline-end:0 in RTL resolves to the physical LEFT edge, so the
        closed state slides further left (negative X). */
     transform: translateX(-100%);
-    transition: transform 0.18s ease-out;
+
     overflow-y: auto;
   }
   /* ID selector deliberately used for the open state so it unambiguously
@@ -691,7 +693,7 @@ body { background: var(--amb-bg); }
 
 /* Smart Decision Center — Product Intelligence Inbox + Decision Dossier */
 .amb-pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px; margin-bottom: 20px; }
-.amb-pcard { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); padding: 14px; cursor: pointer; transition: box-shadow .15s, border-color .15s; position: relative; }
+.amb-pcard { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); padding: 14px; cursor: pointer; position: relative; }
 .amb-pcard:hover { box-shadow: var(--amb-shadow-hover); }
 .amb-pcard.sel { border-color: var(--amb-blue); box-shadow: 0 0 0 2px var(--amb-blue-bg), var(--amb-shadow-hover); }
 .amb-pcard-badge { position: absolute; top: 10px; inset-inline-end: 10px; font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }

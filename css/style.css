@@ -1,32 +1,22 @@
 /* style.css — shared design system for Product Order Monitoring System.
-   Professional / clean, RTL-first (Arabic UI), desktop-first with
-   responsive breakpoints. Status colors: green=positive, yellow=warning,
-   red=negative, gray=neutral — used consistently everywhere.
-
-   Theme system: :root holds the LIGHT palette (the default). Dark mode is
-   applied either via [data-theme="dark"] (explicit user choice, set by
-   js/theme.js) or, when no explicit choice has ever been stored, via the
-   prefers-color-scheme media query — see the two blocks after :root.
-   [data-theme="light"] exists too so an explicit light choice always wins
-   even on a dark-OS system. Every existing component rule below was
-   already written against these same custom-property names, so the theme
-   switch requires no changes anywhere else in this file.
-
-   --sidebar-* tokens are declared once and never overridden by either
-   theme: the sidebar stays dark navy in both Light and Dark mode by
-   design (see the Theme Mode spec: "Light Mode ... Dark navy sidebar"). */
+   White background, black text everywhere (explicit request) — status
+   colors (green=positive, yellow=warning, red=negative) are the only
+   colors kept, used consistently everywhere. No dark mode: the old
+   Light/Dark toggle has been removed and every page always renders this
+   one theme. No motion: transitions/animations have been stripped
+   throughout (explicit request) — interactions are instant. */
 
 :root {
-  --bg: #f7f8fc;
+  --bg: #ffffff;
   --bg-elevated: #ffffff;
   --bg-card: #ffffff;
   --border: #e5e7f0;
-  --text: #1e2333;
+  --text: #0f1222;
   --text-dim: #6b7280;
   --text-faint: #9ca3af;
-  --accent: #4f46e5;
-  --accent-2: #6d28d9;
-  --accent-dim: #eef0ff;
+  --accent: #111111;
+  --accent-2: #333333;
+  --accent-dim: #f0f0f2;
 
   --green: #159a52;
   --green-bg: #e6f7ee;
@@ -36,86 +26,22 @@
   --red-bg: #fdeaea;
   --gray: #64748b;
   --gray-bg: #eef1f6;
-  --purple: #7c3aed;
-  --purple-bg: #f1e9fe;
+  --purple: #333333;
+  --purple-bg: #eeeeee;
 
-  --sidebar-bg: #0b1930;
-  --sidebar-border: #17233d;
-  --sidebar-text: #b9c2d9;
-  --sidebar-text-dim: #7c8aa8;
-  --sidebar-hover-bg: #142136;
-  --sidebar-active-bg: linear-gradient(135deg, #4f46e5, #6d28d9);
+  --sidebar-bg: #ffffff;
+  --sidebar-border: #e5e7f0;
+  --sidebar-text: #1e2333;
+  --sidebar-text-dim: #6b7280;
+  --sidebar-hover-bg: #f0f1f5;
+  --sidebar-active-bg: #111111;
   --sidebar-active-text: #ffffff;
 
   --radius: 14px;
   --shadow: 0 10px 28px rgba(20,30,60,0.07), 0 2px 6px rgba(20,30,60,0.05);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0b0f1a;
-    --bg-elevated: #131a2b;
-    --bg-card: #161d30;
-    --border: #262f45;
-    --text: #e7e9f5;
-    --text-dim: #9aa3be;
-    --text-faint: #636e8c;
-    --accent: #6366f1;
-    --accent-2: #8b5cf6;
-    --accent-dim: #241f45;
-
-    --green: #34d399;
-    --green-bg: #0f2e26;
-    --yellow: #fbbf24;
-    --yellow-bg: #332a10;
-    --red: #f87171;
-    --red-bg: #3a1414;
-    --gray: #94a3b8;
-    --gray-bg: #1b2437;
-    --purple: #c9a4ff;
-    --purple-bg: #2a1e42;
-
-    --sidebar-active-bg: linear-gradient(135deg, #6366f1, #8b5cf6);
-    --shadow: 0 10px 28px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.25);
-  }
-}
-
-:root[data-theme="dark"] {
-  --bg: #0b0f1a;
-  --bg-elevated: #131a2b;
-  --bg-card: #161d30;
-  --border: #262f45;
-  --text: #e7e9f5;
-  --text-dim: #9aa3be;
-  --text-faint: #636e8c;
-  --accent: #6366f1;
-  --accent-2: #8b5cf6;
-  --accent-dim: #241f45;
-
-  --green: #34d399;
-  --green-bg: #0f2e26;
-  --yellow: #fbbf24;
-  --yellow-bg: #332a10;
-  --red: #f87171;
-  --red-bg: #3a1414;
-  --gray: #94a3b8;
-  --gray-bg: #1b2437;
-  --purple: #c9a4ff;
-  --purple-bg: #2a1e42;
-
-  --sidebar-active-bg: linear-gradient(135deg, #6366f1, #8b5cf6);
-  --shadow: 0 10px 28px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.25);
-}
-
 * { box-sizing: border-box; }
-
-/* Smooth, professional theme transition (spec section 9) — scoped to the
-   properties that actually change between themes, not `all`, so layout
-   (hover transforms, drawer slide-in, etc.) is never accidentally slowed. */
-body, .card, .stat-tile, .sidebar, table.data, input, select, textarea,
-.btn, .action-card, .employee-card, .alert-card, .drawer-panel, .chip, .toast {
-  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-}
 
 html, body {
   margin: 0;
@@ -232,66 +158,12 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 .sidebar-logout-btn svg { flex-shrink: 0; width: 15px; height: 15px; }
 .sidebar-logout-btn:hover { background: rgba(248, 113, 113, 0.18); color: #ffffff; border-color: rgba(248, 113, 113, 0.55); }
 .sidebar-logout-btn:active { background: rgba(248, 113, 113, 0.26); }
 
-/* ---------------- Theme toggle ---------------- */
-
-/* Fixed to the physical top-left corner of the viewport on every page
-   (spec: "عايز يكون فوق على الشمال" — left, not RTL-start/right — so this
-   uses plain `left`, not inset-inline-start, on purpose). Sits above the
-   sidebar/content via z-index; theme-aware colors so it reads correctly
-   whether it's floating over a light or dark page. */
-.theme-toggle-fixed {
-  position: fixed;
-  top: 16px;
-  left: 16px;
-  z-index: 300;
-}
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 999px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  cursor: pointer;
-  font-size: 12.5px;
-  color: var(--text-dim);
-  user-select: none;
-}
-.theme-toggle:hover { border-color: var(--accent); }
-.theme-toggle .theme-toggle-icons { display: flex; align-items: center; gap: 6px; }
-.theme-toggle .theme-toggle-icon { opacity: 0.4; font-size: 13px; transition: opacity 0.18s ease; }
-.theme-toggle .theme-toggle-icon.current { opacity: 1; }
-.theme-toggle-switch {
-  position: relative;
-  width: 34px;
-  height: 18px;
-  border-radius: 999px;
-  background: var(--border);
-  flex-shrink: 0;
-  transition: background-color 0.18s ease;
-}
-.theme-toggle-switch::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  inset-inline-start: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  transition: inset-inline-start 0.18s ease;
-}
-.theme-toggle-switch.is-dark { background: var(--accent); }
-.theme-toggle-switch.is-dark::after { inset-inline-start: 18px; }
+/* Theme toggle removed — the system has one theme now (white/black, no dark mode). */
 
 .main {
   flex: 1;
@@ -515,7 +387,6 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   border-radius: var(--radius);
   padding: 14px 16px;
   cursor: pointer;
-  transition: border-color 0.15s;
 }
 .employee-card:hover { border-color: var(--accent); }
 .employee-card.active { border-color: var(--accent); background: var(--accent-dim); }
@@ -615,7 +486,6 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   box-shadow: var(--shadow);
   overflow-y: auto; padding: 22px;
   transform: translateX(100%);
-  transition: transform 0.18s ease-out;
 }
 [dir="rtl"] .drawer-panel { transform: translateX(-100%); }
 .drawer-overlay.open .drawer-panel { transform: translateX(0); }
@@ -673,10 +543,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(79,70,229,0.25);
-  transition: filter 0.15s ease, box-shadow 0.15s ease, background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
 }
-.btn:hover { filter: brightness(1.08); box-shadow: 0 6px 16px rgba(79,70,229,0.32); }
+.btn:hover { filter: brightness(1.08); box-shadow: 0 6px 16px rgba(0,0,0,0.24); }
 .btn.secondary { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
 .btn.secondary:hover { background: var(--bg-card); filter: none; box-shadow: none; border-color: var(--accent); }
 .btn.danger { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); box-shadow: none; }
@@ -847,9 +716,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .mobile-bottom-nav-item.active { color: var(--sidebar-active-text); }
 
   /* On narrow screens the sidebar is gone (rule above) and the fixed mobile
-     header/bottom-nav take its place — raise the toggle and toast above the
-     bottom nav instead of the old "stacked sidebar" bottom-16px offset. */
-  .theme-toggle-fixed { top: auto; bottom: 80px; }
+     header/bottom-nav take its place — raise the toast above the bottom
+     nav instead of the old "stacked sidebar" bottom-16px offset. */
   .toast { bottom: 80px; }
 
   table.data { min-width: 640px; width: max-content; }
@@ -966,7 +834,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   z-index: 1999;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.18s ease;
 }
 .assistant-backdrop.is-open { opacity: 1; pointer-events: auto; }
 

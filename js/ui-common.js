@@ -260,8 +260,6 @@ export async function renderSidebar(activeKey) {
     // every nav item with no user footer instead of crashing.
     el.innerHTML = navBodyHtml(NAV_ITEMS, activeKey, null);
     mountMobileChrome(NAV_ITEMS, activeKey, null);
-    const { mountThemeToggle } = await import('./theme.js');
-    mountThemeToggle();
     mountAssistantBubble();
     return;
   }
@@ -274,9 +272,6 @@ export async function renderSidebar(activeKey) {
 
   el.innerHTML = navBodyHtml(visibleItems, activeKey, user);
   mountMobileChrome(visibleItems, activeKey, user);
-
-  const { mountThemeToggle } = await import('./theme.js');
-  mountThemeToggle();
 
   document.getElementById('sidebarLogout')?.addEventListener('click', logout);
 

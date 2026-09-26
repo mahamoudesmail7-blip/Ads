@@ -327,7 +327,7 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-title { font-size: 21px; font-weight: 800; color: var(--icd-text); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-subtitle { font-size: 12.5px; color: var(--icd-faint); margin-top: 3px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--icd-border-strong); color: var(--icd-cyan); background: rgba(139,92,246,0.10); letter-spacing: .03em; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--icd-cyan); box-shadow: 0 0 8px var(--icd-cyan); animation: icdPulseDot 2s ease-in-out infinite; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--icd-cyan); box-shadow: 0 0 8px var(--icd-cyan); }
 
           /* PERF NOTE: blur reduced 16px→7px here, and REMOVED entirely
              below from .icd-platform-card / .icd-result-card, where up to
@@ -340,7 +340,7 @@
             backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
             box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 14px 28px -22px rgba(0,0,0,0.6);
             position: relative; z-index: 1;
-            transition: border-color .25s ease;
+
           }
           @media (hover: hover) and (pointer: fine) {
             :is(#prExperimentalSection, #prWinnerSection) .icd-panel:hover { border-color: var(--icd-border-strong); }
@@ -349,7 +349,7 @@
           :is(#prExperimentalSection, #prWinnerSection) label { font-size: 12px; color: var(--icd-faint); display: block; margin-bottom: 5px; }
           :is(#prExperimentalSection, #prWinnerSection) input[type="text"], :is(#prExperimentalSection, #prWinnerSection) textarea, :is(#prExperimentalSection, #prWinnerSection) select {
             width: 100%; background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 10px; color: var(--icd-text);
-            padding: 8px 10px; font-size: 13px; font-family: inherit; transition: border-color .2s, box-shadow .2s;
+            padding: 8px 10px; font-size: 13px; font-family: inherit;
           }
           :is(#prExperimentalSection, #prWinnerSection) input[type="text"]:focus, :is(#prExperimentalSection, #prWinnerSection) textarea:focus, :is(#prExperimentalSection, #prWinnerSection) select:focus {
             outline: none; border-color: var(--icd-purple); box-shadow: 0 0 0 3px rgba(139,92,246,0.18);
@@ -366,7 +366,7 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-btn {
             background: linear-gradient(90deg, var(--icd-purple), var(--icd-blue)); border: none; color: #fff; font-weight: 700; font-size: 13px;
             padding: 10px 20px; border-radius: 11px; cursor: pointer; box-shadow: 0 0 16px rgba(139,92,246,0.3);
-            transition: transform .15s ease, box-shadow .25s ease;
+
           }
           /* PERF NOTE: hover transform/glow/filter gated to real hover-capable pointers only — on touch, :hover can stick after a tap until the next tap elsewhere, wasting paint on mobile for an effect that was never meant to be visible there. */
           @media (hover: hover) and (pointer: fine) {
@@ -382,7 +382,7 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-row > * { flex: 1; min-width: 140px; }
 
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle-group { display: flex; gap: 8px; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-toggle { flex: 1; text-align: center; padding: 9px; border-radius: 10px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); cursor: pointer; font-size: 12.5px; font-weight: 600; position: relative; transition: border-color .2s, color .2s; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-toggle { flex: 1; text-align: center; padding: 9px; border-radius: 10px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); cursor: pointer; font-size: 12.5px; font-weight: 600; position: relative; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle[data-icd-mode="quick"].active { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.1); box-shadow: 0 0 0 1px rgba(34,211,238,0.25) inset; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle[data-icd-mode="deep"].active { border-color: var(--icd-purple); color: var(--icd-purple); background: rgba(139,92,246,0.12); box-shadow: 0 0 0 1px rgba(139,92,246,0.28) inset; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-toggle.active::after { content: ''; position: absolute; top: 5px; inset-inline-end: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -403,14 +403,13 @@
             background: radial-gradient(circle, rgba(34,211,238,0.28), transparent 70%);
             filter: blur(2px); opacity: .55;
           }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-searching-active .icd-hero-stage::before { animation: icdHaloPulse 3.4s ease-in-out infinite; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-hero-stage::after {
             content: ''; position: absolute; inset: -3px; border-radius: 16px; border: 1px solid rgba(34,211,238,0.35);
             box-shadow: 0 0 0 1px rgba(139,92,246,0.15) inset; pointer-events: none;
           }
           :is(#prExperimentalSection, #prWinnerSection) .icd-hero-scan { position: absolute; inset: 0; border-radius: 12px; overflow: hidden; pointer-events: none; display: none; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-searching-active .icd-hero-scan { display: block; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-hero-scan span { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--icd-cyan), transparent); box-shadow: 0 0 8px var(--icd-cyan); animation: icdScan 2.6s linear infinite; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-hero-scan span { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--icd-cyan), transparent); box-shadow: 0 0 8px var(--icd-cyan); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-product-thumb { position: relative; width: 72px; height: 72px; border-radius: 12px; object-fit: cover; border: 1px solid var(--icd-border-strong); flex-shrink: 0; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-product-thumb-placeholder { position: relative; width: 72px; height: 72px; border-radius: 12px; border: 1px dashed var(--icd-border-strong); flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--icd-faint); font-size: 24px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-product-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--icd-faint); margin-top: 6px; }
@@ -420,8 +419,8 @@
           /* --- AI Analysis Pipeline (real stages, derived from real search status) --- */
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline { display: flex; align-items: flex-start; gap: 4px; overflow-x: auto; padding: 6px 2px 4px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node { display: flex; flex-direction: column; align-items: center; gap: 7px; min-width: 84px; flex: 1; position: relative; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-icon { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); transition: all .3s ease; z-index: 1; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-label { font-size: 10.5px; color: var(--icd-faint); text-align: center; line-height: 1.3; transition: color .3s ease; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-icon { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; border: 1px solid var(--icd-border); background: var(--icd-panel-2); color: var(--icd-faint); z-index: 1; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-label { font-size: 10.5px; color: var(--icd-faint); text-align: center; line-height: 1.3; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-line { position: absolute; top: 17px; inset-inline-start: 50%; width: 100%; height: 1px; background: var(--icd-border); z-index: 0; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node:last-child .icd-pipeline-line { display: none; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node.done .icd-pipeline-icon { border-color: var(--icd-green); color: var(--icd-green); background: rgba(52,211,153,0.12); box-shadow: 0 0 12px rgba(52,211,153,0.25); }
@@ -432,7 +431,7 @@
              of the more expensive things to animate). A static box-shadow
              plus a cheap opacity pulse reads the same visually for a small
              34px icon at a fraction of the paint cost. */
-          :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node.current .icd-pipeline-icon { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.14); box-shadow: 0 0 12px rgba(34,211,238,0.35); animation: icdRingPulse 1.8s ease-in-out infinite; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node.current .icd-pipeline-icon { border-color: var(--icd-cyan); color: var(--icd-cyan); background: rgba(34,211,238,0.14); box-shadow: 0 0 12px rgba(34,211,238,0.35); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node.current .icd-pipeline-label { color: var(--icd-cyan); font-weight: 700; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node.failed .icd-pipeline-icon { border-color: var(--icd-red); color: var(--icd-red); background: rgba(248,113,113,0.12); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-pipeline-node.failed .icd-pipeline-label { color: var(--icd-red); }
@@ -440,10 +439,10 @@
           /* --- Overall progress (real aggregate of real platformProgress values) --- */
           :is(#prExperimentalSection, #prWinnerSection) .icd-overall-wrap { display: flex; align-items: center; gap: 16px; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-overall-bar { flex: 1; height: 12px; border-radius: 999px; background: rgba(139,144,179,0.14); overflow: hidden; position: relative; border: 1px solid var(--icd-border); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-overall-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-blue), var(--icd-purple)); transition: width .6s cubic-bezier(.4,0,.2,1); position: relative; overflow: hidden; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-overall-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--icd-cyan), var(--icd-blue), var(--icd-purple)); position: relative; overflow: hidden; }
           /* PERF NOTE: shimmer only actually runs while a search is active — after COMPLETED/PARTIAL/FAILED the bar stops moving and there's no real progress left to animate, so the shimmer stopped meaning anything anyway. */
           :is(#prExperimentalSection, #prWinnerSection) .icd-overall-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent); width: 40%; display: none; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-searching-active .icd-overall-fill::after { display: block; animation: icdEnergyFlow 2s linear infinite; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-searching-active .icd-overall-fill::after { display: block; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-overall-pct { font-size: 22px; font-weight: 800; color: var(--icd-text); min-width: 58px; text-align: center; }
 
           /* --- Platform cards (premium AI processing modules) --- */
@@ -455,18 +454,13 @@
              as "glass" without it. */
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card {
             background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 14px; padding: 15px; position: relative; overflow: hidden;
-            transition: border-color .3s ease;
+
           }
           @media (hover: hover) and (pointer: fine) {
             :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card:hover { border-color: var(--icd-border-strong); }
           }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card::before { content: ''; position: absolute; top: 0; inset-inline: 0; height: 2px; background: var(--icd-plat-accent, var(--icd-border)); opacity: .8; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform="instagram"] { --icd-plat-accent: linear-gradient(90deg, #f472b6, #a78bfa); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform="facebook"] { --icd-plat-accent: #3b82f6; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform="tiktok"] { --icd-plat-accent: linear-gradient(90deg, #22d3ee, #f472b6); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform="youtube"] { --icd-plat-accent: #f87171; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform="META_AD_LIBRARY"] { --icd-plat-accent: linear-gradient(90deg, #818cf8, #8b5cf6); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform="google"] { --icd-plat-accent: linear-gradient(90deg, #34d399, #fbbf24, #f87171, #3b82f6); }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card[data-platform] { --icd-plat-accent: var(--icd-border-strong); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card.status-COMPLETE, :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card.status-COMPLETED { border-color: var(--icd-green); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card.status-PARTIAL { border-color: var(--icd-yellow); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-card.status-FAILED { border-color: var(--icd-red); }
@@ -477,7 +471,7 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-wrap { display: flex; justify-content: center; margin: 4px 0 10px; position: relative; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring { transform: rotate(-90deg); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-bg { fill: none; stroke: rgba(139,144,179,0.16); stroke-width: 7; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill { fill: none; stroke-width: 7; stroke-linecap: round; transition: stroke-dashoffset .6s cubic-bezier(.4,0,.2,1), stroke .3s ease; stroke: var(--icd-blue); }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill { fill: none; stroke-width: 7; stroke-linecap: round; stroke: var(--icd-blue); }
           /* PERF NOTE: `filter: drop-shadow` on every ring (including
              terminal COMPLETE/PARTIAL rings that never change again) forces
              its own compositing layer per card — removed on the terminal
@@ -487,16 +481,16 @@
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill.st-complete { stroke: var(--icd-green); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill.st-partial { stroke: var(--icd-yellow); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill.st-failed { stroke: var(--icd-red); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill.st-running { stroke: var(--icd-cyan); animation: icdRingPulse 1.8s ease-in-out infinite; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill.st-running { stroke: var(--icd-cyan); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-fill.st-pending { stroke: rgba(139,144,179,0.35); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-ring-pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 800; color: var(--icd-text); }
 
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-count { font-size: 21px; font-weight: 800; color: var(--icd-cyan); line-height: 1.1; text-align: center; transition: color .2s; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-count { font-size: 21px; font-weight: 800; color: var(--icd-cyan); line-height: 1.1; text-align: center; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-count-label { font-size: 10.5px; color: var(--icd-faint); text-align: center; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status { font-size: 11px; margin-top: 8px; padding: 3px 9px; border-radius: 999px; display: inline-block; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-pending { background: rgba(139,144,179,0.15); color: var(--icd-faint); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-running { background: rgba(34,211,238,0.14); color: var(--icd-cyan); }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-running::before { content: '● '; animation: icdPulseDot 1.4s ease-in-out infinite; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-running::before { content: '● '; }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-complete { background: rgba(52,211,153,0.15); color: var(--icd-green); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-partial { background: rgba(251,191,36,0.15); color: var(--icd-yellow); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-status.st-failed { background: rgba(248,113,113,0.15); color: var(--icd-red); }
@@ -509,13 +503,13 @@
           /* Deprecated linear bar markup (kept styleable in case any older cached script still emits it — harmless if unused) */
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-pct { font-size: 15px; font-weight: 800; color: var(--icd-text); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-bar { height: 6px; border-radius: 999px; background: rgba(139,144,179,0.18); overflow: hidden; margin: 5px 0 10px; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; background: var(--icd-blue); }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-fill { height: 100%; border-radius: 999px; background: var(--icd-blue); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-fill.st-complete { background: var(--icd-green); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-fill.st-partial { background: var(--icd-yellow); }
           :is(#prExperimentalSection, #prWinnerSection) .icd-platform-progress-fill.st-failed { background: var(--icd-red); }
 
           :is(#prExperimentalSection, #prWinnerSection) .icd-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
-          :is(#prExperimentalSection, #prWinnerSection) .icd-summary-tile { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; padding: 12px; text-align: center; transition: border-color .2s; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-summary-tile { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 12px; padding: 12px; text-align: center; }
           @media (hover: hover) and (pointer: fine) {
             :is(#prExperimentalSection, #prWinnerSection) .icd-summary-tile:hover { border-color: var(--icd-border-strong); }
           }
@@ -526,7 +520,7 @@
              100 cards at once (pageSize option), each independently
              blurring was by far the largest single multiplier in the whole
              redesign. Hover glow/lift gated to real hover-capable pointers. */
-          :is(#prExperimentalSection, #prWinnerSection) .icd-result-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .2s; content-visibility: auto; contain-intrinsic-size: 0 280px; }
+          :is(#prExperimentalSection, #prWinnerSection) .icd-result-card { background: var(--icd-panel-2); border: 1px solid var(--icd-border); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; content-visibility: auto; contain-intrinsic-size: 0 280px; }
           @media (hover: hover) and (pointer: fine) {
             :is(#prExperimentalSection, #prWinnerSection) .icd-result-card:hover { border-color: var(--icd-purple); }
           }
@@ -578,18 +572,6 @@
              search state) has been removed outright per the explicit
              request to remove continuous decorative background motion —
              it was pure decoration with a real, permanent cost. */
-          @keyframes icdPulseDot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
-          @keyframes icdHaloPulse { 0%,100% { opacity: .55; transform: scale(1); } 50% { opacity: .9; transform: scale(1.08); } }
-          @keyframes icdScan { 0% { top: 0; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
-          @keyframes icdRingPulse { 0%,100% { opacity: 1; } 50% { opacity: .65; } }
-          @keyframes icdEnergyFlow { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
-
-          /* Respect prefers-reduced-motion — the interface stays fully usable, only decorative motion stops (Step: accessibility). */
-          @media (prefers-reduced-motion: reduce) {
-            :is(#prExperimentalSection, #prWinnerSection) *, :is(#prExperimentalSection, #prWinnerSection) *::before, :is(#prExperimentalSection, #prWinnerSection) *::after {
-              animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important;
-            }
-          }
 
           @media (max-width: 720px) {
             :is(#prExperimentalSection, #prWinnerSection) { padding: 16px; border-radius: 16px; }
@@ -605,21 +587,15 @@
           <div class="icd-header-left">
             <!-- Decorative AI neural-network glyph (Step: AI brain/intelligence visual) — purely presentational, no data represented. -->
             <svg class="icd-brain" viewBox="0 0 48 48" aria-hidden="true">
-              <g fill="none" stroke="url(#icdBrainGrad)" stroke-width="1.6" stroke-linecap="round">
-                <circle cx="24" cy="10" r="2.4" fill="#22d3ee" stroke="none" />
-                <circle cx="10" cy="22" r="2.2" fill="#8b5cf6" stroke="none" />
-                <circle cx="38" cy="22" r="2.2" fill="#8b5cf6" stroke="none" />
-                <circle cx="16" cy="36" r="2" fill="#22d3ee" stroke="none" />
-                <circle cx="32" cy="36" r="2" fill="#22d3ee" stroke="none" />
+              <g fill="none" stroke="#0f1222" stroke-width="1.6" stroke-linecap="round">
+                <circle cx="24" cy="10" r="2.4" fill="#0f1222" stroke="none" />
+                <circle cx="10" cy="22" r="2.2" fill="#0f1222" stroke="none" />
+                <circle cx="38" cy="22" r="2.2" fill="#0f1222" stroke="none" />
+                <circle cx="16" cy="36" r="2" fill="#0f1222" stroke="none" />
+                <circle cx="32" cy="36" r="2" fill="#0f1222" stroke="none" />
                 <circle cx="24" cy="26" r="2.6" fill="#0f1222" stroke="none" />
                 <path d="M24 12.4 L24 23.4 M10 22 L21.6 25.6 M38 22 L26.4 25.6 M16 36 L22.4 28 M32 36 L25.6 28 M10 22 L16 36 M38 22 L32 36" />
               </g>
-              <defs>
-                <linearGradient id="icdBrainGrad" x1="0" y1="0" x2="48" y2="48">
-                  <stop offset="0" stop-color="#22d3ee" />
-                  <stop offset="1" stop-color="#8b5cf6" />
-                </linearGradient>
-              </defs>
             </svg>
             <div>
               <div class="icd-title">منصة البحث الجديدة</div>

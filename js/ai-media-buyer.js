@@ -983,7 +983,7 @@ function renderSide(ov, meta, hWin, active) {
 
 function donutSvg(counts, total) {
   const segs = [
-    ['#15924f', counts.Scaling], ['#d33f3f', counts.Pause], ['#2f6bff', counts.Creative], ['#98a0ad', counts.Other],
+    ['#15924f', counts.Scaling], ['#d33f3f', counts.Pause], ['#171e2e', counts.Creative], ['#98a0ad', counts.Other],
   ].filter(([, v]) => v > 0);
   const sum = segs.reduce((s, [, v]) => s + v, 0) || 1;
   const R = 42, C = 2 * Math.PI * R;
@@ -5997,7 +5997,7 @@ function updateLaunchProgressSummary() {
   const imageCount = videos.filter((v) => v.kind === 'image').length;
   el.innerHTML = `
     <div>تم اختيار ${videos.length} / ${LAUNCH_MAX_VIDEOS} (${videoCount} فيديو، ${imageCount} صورة) · ${uploaded} تم رفعهم${failed ? ` · ${failed} فشل` : ''}</div>
-    <div style="height:6px; background:var(--amb-border); border-radius:3px; margin-top:6px; overflow:hidden; max-width:420px;"><div style="height:100%; width:${pct}%; background:var(--amb-blue); transition:width .2s;"></div></div>`;
+    <div style="height:6px; background:var(--amb-border); border-radius:3px; margin-top:6px; overflow:hidden; max-width:420px;"><div style="height:100%; width:${pct}%; background:var(--amb-blue);"></div></div>`;
 }
 
 function launchVideoStatusBadge(entry) {

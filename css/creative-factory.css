@@ -1,15 +1,17 @@
-/* AI Creative Factory — premium light SaaS, RTL. Aligned with amb.css tokens. */
+/* AI Creative Factory — white/black theme (explicit request, system-wide).
+   green/red/amber kept as real status colors; the old purple/blue brand
+   accent is now black/gray. */
 :root {
-  --cf-bg: #f6f7fb;
+  --cf-bg: #ffffff;
   --cf-surface: #ffffff;
   --cf-ink: #14161c;
   --cf-ink-dim: #565b68;
   --cf-ink-faint: #8b90a0;
   --cf-border: #e7e9f0;
   --cf-border-strong: #d6d9e4;
-  --cf-primary: #6c5ce7;
-  --cf-primary-soft: #efecfe;
-  --cf-blue: #3b7bf6;
+  --cf-primary: #111111;
+  --cf-primary-soft: #f0f0f2;
+  --cf-blue: #333333;
   --cf-green: #17b26a;
   --cf-green-soft: #e7f7ef;
   --cf-red: #e5484d;
@@ -57,7 +59,7 @@
 .cf-grid.cards { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .cf-grid.gallery { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 
-.cf-choice { border: 1.5px solid var(--cf-border); border-radius: 14px; padding: 16px; cursor: pointer; background: var(--cf-surface); transition: border-color .12s, background .12s; }
+.cf-choice { border: 1.5px solid var(--cf-border); border-radius: 14px; padding: 16px; cursor: pointer; background: var(--cf-surface); }
 .cf-choice:hover { border-color: var(--cf-border-strong); }
 .cf-choice.sel { border-color: var(--cf-primary); background: var(--cf-primary-soft); }
 .cf-choice .ic { font-size: 22px; }
@@ -127,7 +129,7 @@
 .cf-banner.ok { background: var(--cf-green-soft); color: #0a6b40; }
 
 .cf-progress { height: 8px; border-radius: 999px; background: var(--cf-bg); overflow: hidden; }
-.cf-progress > i { display: block; height: 100%; background: linear-gradient(90deg, var(--cf-primary), var(--cf-blue)); transition: width .4s; }
+.cf-progress > i { display: block; height: 100%; background: linear-gradient(90deg, var(--cf-primary), var(--cf-blue)); }
 .cf-scorebar { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 3px 0; }
 .cf-scorebar .lbl { width: 130px; color: var(--cf-ink-dim); flex-shrink: 0; }
 .cf-scorebar .track { flex: 1; height: 6px; border-radius: 999px; background: var(--cf-bg); }
@@ -138,7 +140,7 @@
 
 .cf-drawer-overlay { position: fixed; inset: 0; background: rgba(10,12,20,.4); display: none; z-index: 50; }
 .cf-drawer-overlay.open { display: block; }
-.cf-drawer { position: fixed; inset-block: 0; inset-inline-end: 0; width: min(560px, 94vw); background: var(--cf-surface); box-shadow: -8px 0 32px rgba(0,0,0,.14); padding: 22px; overflow-y: auto; transform: translateX(100%); transition: transform .22s; }
+.cf-drawer { position: fixed; inset-block: 0; inset-inline-end: 0; width: min(560px, 94vw); background: var(--cf-surface); box-shadow: -8px 0 32px rgba(0,0,0,.14); padding: 22px; overflow-y: auto; transform: translateX(100%); }
 [dir="rtl"] .cf-drawer { transform: translateX(-100%); }
 .cf-drawer-overlay.open .cf-drawer { transform: translateX(0); }
 
@@ -153,14 +155,14 @@
      js/ui-common.js's mountAmbMobileNav('...', 'cfNav'). Previously this
      rule had no way to ever add .open — the nav was permanently
      off-screen with no trigger; fixed alongside the shared mobile-nav pass. */
-  .cf-nav { position: fixed; inset-block: 0; inset-inline-end: 0; z-index: 210; width: 280px; max-width: 85vw; transform: translateX(-100%); transition: transform 0.18s ease-out; overflow-y: auto; }
+  .cf-nav { position: fixed; inset-block: 0; inset-inline-end: 0; z-index: 210; width: 280px; max-width: 85vw; transform: translateX(-100%); overflow-y: auto; }
   #cfNav.open { transform: translateX(0); }
   .cf-main { padding: 18px 14px; padding-top: 72px; min-width: 0; }
 }
 
 /* ===== New-creation single-screen workspace ===== */
 .cf-head-hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.cf-hero-badge { background: linear-gradient(135deg, var(--cf-primary-soft), #e9f1ff); color: var(--cf-primary); font-weight: 700; font-size: 12px; padding: 8px 14px; border-radius: 999px; white-space: nowrap; }
+.cf-hero-badge { background: var(--cf-primary-soft); color: var(--cf-primary); font-weight: 700; font-size: 12px; padding: 8px 14px; border-radius: 999px; white-space: nowrap; }
 
 .cf-stepper { display: flex; gap: 10px; margin: 4px 0 16px; overflow-x: auto; padding-bottom: 4px; }
 .cf-stepbox { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 14px; background: var(--cf-surface); border: 1px solid var(--cf-border); min-width: 190px; flex: 1; }
@@ -173,8 +175,7 @@
 .cf-stepbox.done .n { background: var(--cf-green); color: #fff; }
 
 .cf-savetag { font-size: 11.5px; color: var(--cf-green); font-weight: 700; margin-bottom: 10px; }
-.cf-savetag.flash { animation: cfFlash .8s ease; }
-@keyframes cfFlash { 0% { opacity: .3; } 100% { opacity: 1; } }
+.cf-savetag.flash { opacity: 1; }
 
 .cf-ws-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .cf-ws-card { background: var(--cf-surface); border: 1px solid var(--cf-border); border-radius: var(--cf-radius); box-shadow: var(--cf-shadow); padding: 18px; min-width: 0; }
@@ -213,11 +214,11 @@
 .cf-typecard.sel .tick { display: grid; }
 
 .cf-sec-label { font-size: 12px; font-weight: 800; color: var(--cf-ink-dim); margin: 16px 0 8px; }
-.cf-gen-btn { width: 100%; margin-top: 18px; font-size: 15px; padding: 13px; background: linear-gradient(135deg, var(--cf-primary), var(--cf-blue)); box-shadow: 0 8px 20px rgba(108,92,231,.28); }
+.cf-gen-btn { width: 100%; margin-top: 18px; font-size: 15px; padding: 13px; background: linear-gradient(135deg, var(--cf-primary), var(--cf-blue)); box-shadow: 0 8px 20px rgba(0,0,0,.18); }
 .cf-gen-btn:hover { filter: brightness(1.05); background: linear-gradient(135deg, var(--cf-primary), var(--cf-blue)); }
 
 .cf-reco { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; margin-top: 16px; }
-.cf-reco-main { background: linear-gradient(135deg, #f3f0ff, #eef4ff); border: 1px solid var(--cf-primary-soft); border-radius: var(--cf-radius); padding: 20px; }
+.cf-reco-main { background: var(--cf-primary-soft); border: 1px solid var(--cf-primary-soft); border-radius: var(--cf-radius); padding: 20px; }
 .cf-reco-head { display: flex; align-items: center; gap: 10px; }
 .cf-reco-head .bot { font-size: 26px; }
 .cf-reco-head h2 { margin: 0; font-size: 15px; font-weight: 800; }

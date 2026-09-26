@@ -43,7 +43,7 @@
 @media (max-width: 860px) { .pmc-product-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 620px) { .pmc-product-grid { grid-template-columns: repeat(2, 1fr); } }
 
-.pmc-pcard { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); overflow: hidden; cursor: pointer; transition: box-shadow .12s, border-color .12s, transform .12s; text-align: start; }
+.pmc-pcard { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); overflow: hidden; cursor: pointer; text-align: start; }
 .pmc-pcard:hover { box-shadow: var(--amb-shadow-hover); border-color: var(--amb-border-strong); transform: translateY(-1px); }
 .pmc-pcard.selected { border-color: var(--amb-blue); box-shadow: 0 0 0 2px var(--amb-blue-bg), var(--amb-shadow-hover); }
 .pmc-pcard .thumb { width: 100%; aspect-ratio: 1 / 1; background: var(--amb-surface-2); overflow: hidden; }
@@ -59,12 +59,11 @@
 
 /* skeleton loaders */
 .pmc-skel { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); overflow: hidden; }
-.pmc-skel .thumb, .pmc-skel .ln { background: linear-gradient(90deg, var(--amb-surface-2) 25%, var(--amb-border) 37%, var(--amb-surface-2) 63%); background-size: 400% 100%; animation: pmc-shimmer 1.4s ease infinite; }
+.pmc-skel .thumb, .pmc-skel .ln { background: var(--amb-surface-2); }
 .pmc-skel .thumb { width: 100%; aspect-ratio: 1/1; }
 .pmc-skel .body { padding: 10px; display: grid; gap: 6px; }
 .pmc-skel .ln { height: 10px; border-radius: 4px; }
 .pmc-skel .ln.w60 { width: 60%; }
-@keyframes pmc-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
 .pmc-eo-error { text-align: center; padding: 30px 16px; background: var(--amb-red-bg); border: 1px dashed var(--amb-red); border-radius: var(--amb-radius); color: var(--amb-red); font-size: 13px; }
 .pmc-eo-error .detail { font-size: 11px; color: var(--amb-text-dim); margin: 6px 0 12px; direction: ltr; }
@@ -132,19 +131,23 @@
    already exists; only 3 genuinely new accents are added (cyan/pink/yellow).
    ============================================================================ */
 .pmc-shell {
-  --pmc-navy: #10152b;
-  --pmc-navy-2: #1a2145;
-  --pmc-navy-border: #232a52;
-  --pmc-navy-text: #9aa3c4;
-  --pmc-navy-text-strong: #ffffff;
-  --pmc-cyan: #0c8599;      --pmc-cyan-bg: #e3f6f9;
-  --pmc-pink: #d6336c;      --pmc-pink-bg: #fdeef3;
-  --pmc-yellow: #b8860b;    --pmc-yellow-bg: #fdf6e3;
+  /* White/black theme (explicit request, system-wide) — the old dark-navy
+     sidebar and cyan/pink/yellow category-icon accents are now white/gray;
+     none of these were status colors (connected/error/warning), just
+     decorative categorization. */
+  --pmc-navy: #ffffff;
+  --pmc-navy-2: #f0f1f5;
+  --pmc-navy-border: #e5e7f0;
+  --pmc-navy-text: #5b6072;
+  --pmc-navy-text-strong: #111111;
+  --pmc-cyan: #333333;      --pmc-cyan-bg: #eeeeee;
+  --pmc-pink: #333333;      --pmc-pink-bg: #eeeeee;
+  --pmc-yellow: #333333;    --pmc-yellow-bg: #eeeeee;
 }
 .pmc-ic { width: 20px; height: 20px; flex-shrink: 0; }
 
-/* ---- Sidebar: navy, icon-driven, the 9 sections as the primary nav ---- */
-.pmc-shell .amb-nav { background: var(--pmc-navy); border-inline-end: none; width: 258px; }
+/* ---- Sidebar: white, icon-driven, the 9 sections as the primary nav ---- */
+.pmc-shell .amb-nav { background: var(--pmc-navy); border-inline-end: 1px solid var(--pmc-navy-border); width: 258px; }
 .pmc-brand { padding-bottom: 20px; margin-bottom: 6px; border-bottom: 1px solid var(--pmc-navy-border); }
 .pmc-brand-logo { background: linear-gradient(135deg, var(--amb-blue), var(--pmc-cyan)); }
 .pmc-brand .t { color: var(--pmc-navy-text-strong); }
@@ -205,7 +208,7 @@
 
 /* ---- 9 large section nav cards ---- */
 .pmc-navcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; margin-bottom: 18px; }
-.pmc-navcard { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 16px 10px; cursor: pointer; font-family: inherit; transition: box-shadow .15s, border-color .15s, transform .15s; }
+.pmc-navcard { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 16px 10px; cursor: pointer; font-family: inherit; }
 .pmc-navcard:hover { box-shadow: var(--amb-shadow-hover); transform: translateY(-1px); border-color: var(--amb-border-strong); }
 .pmc-navcard.active { border-color: var(--amb-blue); box-shadow: 0 0 0 2px var(--amb-blue-bg); }
 .pmc-navcard-ic { width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center; }
@@ -295,7 +298,6 @@
    ============================================================================ */
 .pmc-table-premium table.data th { position: sticky; top: 0; z-index: 1; }
 .pmc-table-premium table.data td, .pmc-table-premium table.data th { padding: 12px 14px; }
-.pmc-table-premium table.data tbody tr { transition: background .12s; }
 .pmc-table-premium table.data tbody tr:hover { background: var(--amb-surface-2); }
 
 .pmc-competitor-card { display: flex; align-items: center; gap: 14px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--amb-shadow); }
