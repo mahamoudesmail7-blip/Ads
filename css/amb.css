@@ -7,39 +7,35 @@
 /* Tokens on :root so the drawer (a sibling of .app-shell, outside .amb-app)
    also resolves them. This whole file only loads on ai-media-buyer.html. */
 :root {
-  /* White/black theme (explicit request, system-wide) — amber/green/red
-     kept as real status colors (warning/positive/negative); blue and
-     purple were pure decorative accents (active nav, links, focus rings,
-     a rare "purple" badge category) and are now black/gray so no non-
-     status color remains. */
-  --amb-bg: #ffffff;
+  /* Premium white SaaS theme, orange as the primary brand accent (explicit
+     request) — green/amber/red are real status colors; blue is a
+     secondary "info" accent (used by the "كرياتيف جديد" chip etc.),
+     kept as a real blue distinct from the orange brand color. */
+  --amb-bg: #f7f8fa;
   --amb-surface: #ffffff;
-  --amb-surface-2: #f7f7f9;
-  --amb-border: #e9eaef;
-  --amb-border-strong: #dfe1e8;
+  --amb-surface-2: #f3f4f6;
+  --amb-border: #e7eaf0;
+  --amb-border-strong: #dde1e8;
   --amb-text: #171e2e;
   --amb-text-dim: #5b6472;
   --amb-text-faint: #98a0ad;
-  --amb-green: #15924f; --amb-green-bg: #e9f7ef;
-  --amb-red: #d33f3f;   --amb-red-bg: #fdecec;
-  --amb-blue: #111111;  --amb-blue-bg: #f0f0f2;
-  --amb-amber: #c9761a; --amb-amber-bg: #fdf1e3;
-  --amb-purple: #333333; --amb-purple-bg: #eeeeee;
+  --amb-green: #14b86e; --amb-green-bg: #eafbf3;
+  --amb-red: #ef4444;   --amb-red-bg: #fff0f0;
+  --amb-blue: #2684ff;  --amb-blue-bg: #eef5ff;
+  --amb-amber: #f59e0b; --amb-amber-bg: #fff7e6;
+  --amb-purple: #7c3aed; --amb-purple-bg: #f1e9fe;
+  --amb-orange: #ff7a1a; --amb-orange-hover: #f36a0a; --amb-orange-bg: #fff2e8;
   --amb-radius: 16px;
   --amb-radius-sm: 12px;
   --amb-radius-lg: 20px;
-  --amb-shadow: 0 1px 2px rgba(16,24,40,.04), 0 6px 18px rgba(16,24,40,.06);
-  --amb-shadow-hover: 0 2px 6px rgba(16,24,40,.06), 0 12px 28px rgba(16,24,40,.09);
-  /* Redesign v2 (localhost-only, UI/UX pass): corrected per the user's
-     explicit reference image — light/white sidebar with a solid-blue
-     active pill, NOT the dark navy sidebar from the first pass (reverted;
-     the user explicitly asked for it removed). */
+  --amb-shadow: 0 2px 8px rgba(15,23,42,0.05);
+  --amb-shadow-hover: 0 8px 24px rgba(15,23,42,0.07);
   --amb-nav-bg: var(--amb-surface);
   --amb-nav-border: var(--amb-border);
   --amb-nav-text: var(--amb-text-dim);
   --amb-nav-text-dim: var(--amb-text-faint);
-  --amb-nav-hover-bg: var(--amb-surface-2);
-  --amb-nav-active-bg: var(--amb-blue);
+  --amb-nav-hover-bg: var(--amb-orange-bg);
+  --amb-nav-active-bg: var(--amb-orange);
 }
 body { background: var(--amb-bg); }
 .amb-app {
@@ -95,12 +91,12 @@ body { background: var(--amb-bg); }
 .amb-app input[type="text"], .amb-app input[type="number"], .amb-app select {
   font-family: inherit; font-size: 12.5px; color: var(--amb-text);
   background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 9px; padding: 8px 10px;
-
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 .drawer-panel .field input:focus, .drawer-panel .field select:focus,
 .amb-app .field input:focus, .amb-app .field select:focus,
 .amb-app input[type="text"]:focus, .amb-app input[type="number"]:focus, .amb-app select:focus {
-  outline: none; border-color: var(--amb-blue); box-shadow: 0 0 0 3px var(--amb-blue-bg);
+  outline: none; border-color: var(--amb-orange); box-shadow: 0 0 0 3px var(--amb-orange-bg);
 }
 .amb-app .field label, .drawer-panel .field label { font-size: 12px; color: var(--amb-text-dim); font-weight: 600; }
 .amb-app .toolbar, .drawer-panel .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -132,9 +128,10 @@ body { background: var(--amb-bg); }
   font-size: 13.5px; font-weight: 600; color: var(--amb-nav-text);
   cursor: pointer; border: none; background: none; text-align: start; width: 100%;
  font-family: inherit;
+ transition: background-color 150ms ease, color 150ms ease;
 }
-.amb-nav-item:hover { background: var(--amb-nav-hover-bg); color: var(--amb-text); }
-.amb-nav-item.active { background: var(--amb-nav-active-bg); color: #fff; box-shadow: 0 4px 12px rgba(47,107,255,.25); }
+.amb-nav-item:hover { background: var(--amb-nav-hover-bg); color: var(--amb-orange); }
+.amb-nav-item.active { background: var(--amb-nav-active-bg); color: #fff; box-shadow: 0 4px 12px rgba(255,122,26,.28); }
 .amb-nav-item .ic { width: 18px; height: 18px; flex-shrink: 0; opacity: .9; }
 .amb-nav-item .amb-nav-count { margin-inline-start: auto; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--amb-red); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
 .amb-nav-foot { border-top: 1px solid var(--amb-nav-border); padding-top: 12px; margin-top: 8px; }
@@ -163,10 +160,10 @@ body { background: var(--amb-bg); }
   border: none; background: none; font-family: inherit;
   font-size: 12.5px; font-weight: 700; color: var(--amb-text-dim);
   padding: 7px 16px; border-radius: 9px; cursor: pointer; white-space: nowrap;
-
+  transition: background-color 130ms ease, color 130ms ease, box-shadow 130ms ease;
 }
-.amb-seg-btn:hover { color: var(--amb-text); }
-.amb-seg-btn.active { background: var(--amb-surface); color: var(--amb-text); box-shadow: 0 1px 2px rgba(18,24,40,.06), 0 1px 4px rgba(18,24,40,.04); }
+.amb-seg-btn:hover { color: var(--amb-orange); }
+.amb-seg-btn.active { background: var(--amb-surface); color: var(--amb-orange); box-shadow: 0 1px 2px rgba(18,24,40,.06), 0 1px 4px rgba(18,24,40,.04); }
 .amb-period-date { font-size: 12.5px; font-weight: 600; color: var(--amb-text-faint); }
 
 .amb-batchnote {
@@ -190,7 +187,8 @@ body { background: var(--amb-bg); }
 
 /* ---- KPIs ---- */
 .amb-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
-.amb-kpi { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 18px 20px; box-shadow: var(--amb-shadow); }
+.amb-kpi { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 18px 20px; box-shadow: var(--amb-shadow); transition: box-shadow 150ms ease, border-color 150ms ease; }
+.amb-kpi:hover { box-shadow: var(--amb-shadow-hover); }
 .amb-kpi .k-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .amb-kpi .k-label { font-size: 12.5px; color: var(--amb-text-dim); font-weight: 600; }
 .amb-kpi .k-ic { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; }
@@ -207,16 +205,16 @@ body { background: var(--amb-bg); }
 
 /* ---- filters + search ---- */
 .amb-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
-.amb-fbtn { display: inline-flex; align-items: center; gap: 7px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 8px 15px; font-size: 12.5px; font-weight: 700; color: var(--amb-text-dim); cursor: pointer; box-shadow: var(--amb-shadow); white-space: nowrap; font-family: inherit; }
-.amb-fbtn:hover { color: var(--amb-text); }
-.amb-fbtn.active { background: #171e2e; color: #fff; border-color: #171e2e; }
+.amb-fbtn { display: inline-flex; align-items: center; gap: 7px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 8px 15px; font-size: 12.5px; font-weight: 700; color: var(--amb-text-dim); cursor: pointer; box-shadow: var(--amb-shadow); white-space: nowrap; font-family: inherit; transition: background-color 130ms ease, color 130ms ease, border-color 130ms ease; }
+.amb-fbtn:hover { color: var(--amb-orange); border-color: var(--amb-orange); }
+.amb-fbtn.active { background: var(--amb-orange); color: #fff; border-color: var(--amb-orange); }
 .amb-fbtn .fdot { width: 7px; height: 7px; border-radius: 50%; }
 .amb-fbtn .fdot.green { background: var(--amb-green); } .amb-fbtn .fdot.red { background: var(--amb-red); }
 .amb-fbtn .fdot.blue { background: var(--amb-blue); } .amb-fbtn .fdot.amber { background: var(--amb-amber); }
 .amb-fbtn .fcount { opacity: .65; }
 .amb-search { flex: 1; min-width: 200px; max-width: 320px; margin-inline-start: auto; position: relative; }
-.amb-search input { width: 100%; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 9px 38px 9px 16px; font-size: 12.5px; color: var(--amb-text); box-shadow: var(--amb-shadow); font-family: inherit; }
-.amb-search input:focus { outline: none; border-color: var(--amb-blue); }
+.amb-search input { width: 100%; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 9px 38px 9px 16px; font-size: 12.5px; color: var(--amb-text); box-shadow: var(--amb-shadow); font-family: inherit; transition: border-color 150ms ease; }
+.amb-search input:focus { outline: none; border-color: var(--amb-orange); }
 .amb-search .s-ic { position: absolute; inset-inline-start: 13px; top: 50%; transform: translateY(-50%); color: var(--amb-text-faint); pointer-events: none; }
 
 /* ---- body grid ---- */
@@ -227,7 +225,7 @@ body { background: var(--amb-bg); }
 .amb-sort { font-size: 12px; color: var(--amb-text-dim); border: 1px solid var(--amb-border); background: var(--amb-surface); border-radius: 999px; padding: 6px 12px; font-family: inherit; }
 
 /* ---- recommendation card ---- */
-.amb-r { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); display: flex; overflow: hidden; margin-bottom: 14px; }
+.amb-r { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); display: flex; overflow: hidden; margin-bottom: 14px; transition: box-shadow 150ms ease; }
 .amb-r:hover { box-shadow: var(--amb-shadow-hover); }
 .amb-r-chip { flex-shrink: 0; width: 96px; padding: 16px 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; text-align: center; font-size: 12px; font-weight: 800; }
 .amb-r-chip .ci { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
@@ -235,7 +233,7 @@ body { background: var(--amb-bg); }
 .amb-r-chip.pause { background: var(--amb-red-bg); color: var(--amb-red); }
 .amb-r-chip.creative { background: var(--amb-blue-bg); color: var(--amb-blue); }
 .amb-r-chip.optimize { background: var(--amb-amber-bg); color: var(--amb-amber); }
-.amb-r-chip.monitor { background: var(--amb-surface-2); color: var(--amb-text-dim); }
+.amb-r-chip.monitor { background: var(--amb-amber-bg); color: var(--amb-amber); }
 .amb-r-body { flex: 1; min-width: 0; padding: 15px 18px; display: flex; flex-direction: column; gap: 9px; }
 .amb-r-top { display: flex; align-items: flex-start; gap: 12px; }
 .amb-r-thumb {
@@ -266,13 +264,16 @@ body { background: var(--amb-bg); }
 .amb-metabadge { font-size: 11px; font-weight: 700; padding: 4px 9px; border-radius: 999px; background: var(--amb-blue-bg); color: var(--amb-blue); }
 .amb-metabadge.paused { background: var(--amb-amber-bg); color: var(--amb-amber); }
 
-.amb-btn { border: 1px solid var(--amb-border); background: var(--amb-surface); color: var(--amb-text); font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 8px 15px; border-radius: 10px; cursor: pointer; white-space: nowrap; }
+.amb-btn { border: 1px solid var(--amb-border); background: var(--amb-surface); color: var(--amb-text); font-family: inherit; font-size: 12.5px; font-weight: 700; padding: 8px 15px; border-radius: 10px; cursor: pointer; white-space: nowrap; transition: background-color 120ms ease, border-color 120ms ease, filter 120ms ease, transform 120ms ease; }
 .amb-btn:hover { border-color: var(--amb-border-strong); background: var(--amb-surface-2); }
+.amb-btn:active { transform: scale(0.97); }
 .amb-btn.primary, .amb-btn.success { background: #15924f; border-color: #15924f; color: #fff; }
 .amb-btn.primary:hover, .amb-btn.success:hover { background: #12813f; }
 .amb-btn.danger { background: var(--amb-red); border-color: var(--amb-red); color: #fff; }
 .amb-btn.danger:hover { filter: brightness(.94); }
 .amb-btn.blue { background: var(--amb-blue); border-color: var(--amb-blue); color: #fff; }
+.amb-btn.orange { background: var(--amb-orange); border-color: var(--amb-orange); color: #fff; }
+.amb-btn.orange:hover { background: var(--amb-orange-hover); }
 .amb-btn.warning { background: var(--amb-amber); border-color: var(--amb-amber); color: #fff; }
 .amb-btn.warning:hover { filter: brightness(.94); }
 .amb-btn.ghost { background: none; border-color: transparent; color: var(--amb-text-dim); padding: 8px 10px; }
@@ -614,7 +615,7 @@ body { background: var(--amb-bg); }
   }
   .amb-mobile-bottom-nav-item svg.ic { width: 20px; height: 20px; }
   .amb-mobile-bottom-nav-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-  .amb-mobile-bottom-nav-item.active { color: var(--amb-blue); }
+  .amb-mobile-bottom-nav-item.active { color: var(--amb-orange); }
 }
 @media (min-width: 769px) { .amb-mobile-bottom-nav { display: none; } }
 

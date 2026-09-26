@@ -102,6 +102,17 @@ const ROLE_LABELS_AR = { ADMIN: 'مدير النظام', MANAGER: 'مدير', EM
  * `data-badge-key` attribute instead of an id so a single lookup can update
  * both copies at once (see the `data-badge-key` query below).
  */
+const COLLAPSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+
+// The collapse toggle only makes sense on the real desktop sidebar — the
+// mobile drawer (idSuffix === '--drawer') always shows fully when open, so
+// it's omitted there rather than rendering a control with no effect.
+function brandRowHtml(idSuffix) {
+  const brand = `<div class="brand">📈 <span>نظام مراقبة المنتجات</span><small>مركز التحكم بالتجارة الإلكترونية</small></div>`;
+  if (idSuffix) return brand;
+  return `<div class="brand-row">${brand}<button type="button" id="sidebarCollapseToggle" class="sidebar-collapse-btn" aria-label="طي/فتح القائمة الجانبية" title="طي/فتح القائمة الجانبية">${COLLAPSE_ICON}</button></div>`;
+}
+
 function navBodyHtml(items, activeKey, user, idSuffix = '') {
   const navLinks = items
     .map(
@@ -112,23 +123,39 @@ function navBodyHtml(items, activeKey, user, idSuffix = '') {
 
   if (!user) {
     return `
-      <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
+      ${brandRowHtml(idSuffix)}
       <nav>${navLinks}</nav>
     `;
   }
 
   return `
-    <div class="brand">📈 نظام مراقبة المنتجات<small>مركز التحكم بالتجارة الإلكترونية</small></div>
+    ${brandRowHtml(idSuffix)}
     <nav>${navLinks}</nav>
     <div class="sidebar-user">
       <div class="sidebar-user-name">${escapeHtml(user.name)}</div>
       <div class="sidebar-user-role">${ROLE_LABELS_AR[user.role] || user.role}</div>
       <button type="button" id="sidebarLogout${idSuffix}" class="sidebar-logout-btn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-        تسجيل الخروج
+        <span>تسجيل الخروج</span>
       </button>
     </div>
   `;
+}
+
+const SIDEBAR_COLLAPSE_KEY = 'sidebarCollapsed';
+
+function wireSidebarCollapse() {
+  const sidebar = document.getElementById('sidebar');
+  const btn = document.getElementById('sidebarCollapseToggle');
+  if (!sidebar || !btn) return;
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === '1'; } catch { /* private-browsing guard */ }
+  sidebar.classList.toggle('collapsed', collapsed);
+  btn.onclick = () => {
+    collapsed = !sidebar.classList.contains('collapsed');
+    sidebar.classList.toggle('collapsed', collapsed);
+    try { localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? '1' : '0'); } catch { /* private-browsing guard */ }
+  };
 }
 
 const MORE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>';
@@ -260,6 +287,7 @@ export async function renderSidebar(activeKey) {
     // every nav item with no user footer instead of crashing.
     el.innerHTML = navBodyHtml(NAV_ITEMS, activeKey, null);
     mountMobileChrome(NAV_ITEMS, activeKey, null);
+    wireSidebarCollapse();
     mountAssistantBubble();
     return;
   }
@@ -272,6 +300,7 @@ export async function renderSidebar(activeKey) {
 
   el.innerHTML = navBodyHtml(visibleItems, activeKey, user);
   mountMobileChrome(visibleItems, activeKey, user);
+  wireSidebarCollapse();
 
   document.getElementById('sidebarLogout')?.addEventListener('click', logout);
 

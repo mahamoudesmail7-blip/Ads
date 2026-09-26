@@ -1,44 +1,55 @@
 /* style.css — shared design system for Product Order Monitoring System.
-   White background, black text everywhere (explicit request) — status
-   colors (green=positive, yellow=warning, red=negative) are the only
-   colors kept, used consistently everywhere. No dark mode: the old
-   Light/Dark toggle has been removed and every page always renders this
-   one theme. No motion: transitions/animations have been stripped
-   throughout (explicit request) — interactions are instant. */
+   Premium white SaaS dashboard, orange (#FF7A1A) as the primary brand
+   accent, green/yellow/red as real status colors, blue as a secondary
+   info accent. No dark mode (removed). Fast micro-animations only
+   (transform/opacity/border/shadow, 120-200ms) — no continuous motion. */
 
 :root {
-  --bg: #ffffff;
+  --bg-primary: #f7f8fa;
+  --bg-secondary: #f3f4f6;
+  --bg: var(--bg-primary);
   --bg-elevated: #ffffff;
   --bg-card: #ffffff;
-  --border: #e5e7f0;
-  --text: #0f1222;
+  --border: #e7eaf0;
+  --border-strong: #dde1e8;
+  --text: #111827;
   --text-dim: #6b7280;
   --text-faint: #9ca3af;
-  --accent: #111111;
-  --accent-2: #333333;
-  --accent-dim: #f0f0f2;
 
-  --green: #159a52;
-  --green-bg: #e6f7ee;
-  --yellow: #b45309;
-  --yellow-bg: #fdf1de;
-  --red: #dc2626;
-  --red-bg: #fdeaea;
+  --accent: #ff7a1a;
+  --accent-hover: #f36a0a;
+  --accent-2: #f36a0a;
+  --accent-dim: #fff2e8;
+
+  --green: #14b86e;
+  --green-bg: #eafbf3;
+  --yellow: #f59e0b;
+  --yellow-bg: #fff7e6;
+  --red: #ef4444;
+  --red-bg: #fff0f0;
   --gray: #64748b;
   --gray-bg: #eef1f6;
-  --purple: #333333;
-  --purple-bg: #eeeeee;
+  --blue: #2684ff;
+  --blue-bg: #eef5ff;
+  --purple: #7c3aed;
+  --purple-bg: #f1e9fe;
 
   --sidebar-bg: #ffffff;
-  --sidebar-border: #e5e7f0;
-  --sidebar-text: #1e2333;
+  --sidebar-border: #e7eaf0;
+  --sidebar-text: #111827;
   --sidebar-text-dim: #6b7280;
-  --sidebar-hover-bg: #f0f1f5;
-  --sidebar-active-bg: #111111;
+  --sidebar-hover-bg: #fff3e8;
+  --sidebar-active-bg: #ff7a1a;
   --sidebar-active-text: #ffffff;
+  --sidebar-width: 250px;
+  --sidebar-width-collapsed: 76px;
 
   --radius: 14px;
-  --shadow: 0 10px 28px rgba(20,30,60,0.07), 0 2px 6px rgba(20,30,60,0.05);
+  --radius-sm: 12px;
+  --radius-lg: 16px;
+  --shadow: 0 8px 24px rgba(15,23,42,0.07);
+  --shadow-sm: 0 2px 8px rgba(15,23,42,0.05);
+  --shadow-md: 0 8px 24px rgba(15,23,42,0.07);
 }
 
 * { box-sizing: border-box; }
@@ -67,7 +78,7 @@ a:hover { text-decoration: underline; }
 }
 
 .sidebar {
-  width: 220px;
+  width: var(--sidebar-width);
   flex-shrink: 0;
   background: var(--sidebar-bg);
   border-left: 1px solid var(--sidebar-border);
@@ -78,15 +89,40 @@ a:hover { text-decoration: underline; }
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  transition: width 200ms ease;
+}
+.sidebar.collapsed {
+  width: var(--sidebar-width-collapsed);
+  padding-inline: 10px;
 }
 
+.sidebar .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .sidebar .brand {
   font-size: 16px;
   font-weight: 700;
-  color: #fff;
+  color: var(--sidebar-text);
   margin-bottom: 4px;
 }
 .sidebar .brand small { display:block; font-weight:400; color: var(--sidebar-text-dim); font-size: 11px; margin-top:2px; }
+.sidebar.collapsed .brand span, .sidebar.collapsed .brand small { display: none; }
+
+.sidebar-collapse-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, transform 200ms ease;
+}
+.sidebar-collapse-btn:hover { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+.sidebar-collapse-btn svg { width: 15px; height: 15px; transition: transform 200ms ease; }
+.sidebar.collapsed .sidebar-collapse-btn svg { transform: rotate(180deg); }
 
 /* flex:1 + min-height:0 + its own overflow-y makes the nav list (not the
    whole sidebar) the scrollable region on short screens, so the logout
@@ -110,11 +146,15 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: 10px;
+  transition: background-color 150ms ease, color 150ms ease;
 }
-.sidebar nav a:hover { background: var(--sidebar-hover-bg); color: #fff; text-decoration: none; }
-.sidebar nav a.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
+.sidebar nav a:hover { background: var(--sidebar-hover-bg); color: var(--accent); text-decoration: none; }
+.sidebar nav a.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; box-shadow: 0 4px 12px rgba(255,122,26,0.28); }
 .sidebar nav a svg { flex-shrink: 0; width: 18px; height: 18px; }
 .sidebar nav a span { flex: 1; }
+.sidebar.collapsed nav a { justify-content: center; padding-inline: 10px; }
+.sidebar.collapsed nav a span:not(.nav-badge) { display: none; }
+.sidebar.collapsed nav a .nav-badge { position: absolute; margin-inline-start: 14px; margin-block-start: -14px; }
 .nav-badge {
   flex-shrink: 0;
   min-width: 18px;
@@ -130,18 +170,16 @@ a:hover { text-decoration: underline; }
   justify-content: center;
 }
 
-/* Sidebar footer — user identity + logout. Fixed dark-navy sidebar colors
-   only (not the theme-dependent --red/--red-bg), same reasoning as every
-   other --sidebar-* token: this footer must stay legible against the
-   always-dark sidebar background regardless of Light/Dark app theme. */
 .sidebar-user {
   margin-top: auto;
   padding: 14px 16px;
   border-top: 1px solid var(--sidebar-border);
   font-size: 12.5px;
 }
-.sidebar-user-name { color: #fff; font-weight: 600; }
+.sidebar-user-name { color: var(--sidebar-text); font-weight: 600; }
 .sidebar-user-role { color: var(--sidebar-text-dim); margin-top: 1px; }
+.sidebar.collapsed .sidebar-user-name, .sidebar.collapsed .sidebar-user-role { display: none; }
+.sidebar.collapsed .sidebar-user { text-align: center; }
 
 .sidebar-logout-btn {
   display: flex;
@@ -151,17 +189,20 @@ a:hover { text-decoration: underline; }
   margin-top: 10px;
   padding: 8px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(248, 113, 113, 0.32);
-  background: rgba(248, 113, 113, 0.08);
-  color: #f0a3a3;
+  border: 1px solid var(--red-bg);
+  background: var(--red-bg);
+  color: var(--red);
   font-size: 12.5px;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
 }
 .sidebar-logout-btn svg { flex-shrink: 0; width: 15px; height: 15px; }
-.sidebar-logout-btn:hover { background: rgba(248, 113, 113, 0.18); color: #ffffff; border-color: rgba(248, 113, 113, 0.55); }
-.sidebar-logout-btn:active { background: rgba(248, 113, 113, 0.26); }
+.sidebar-logout-btn:hover { background: var(--red); color: #ffffff; border-color: var(--red); }
+.sidebar-logout-btn:active { filter: brightness(0.95); }
+.sidebar.collapsed .sidebar-logout-btn { justify-content: center; padding-inline: 8px; }
+.sidebar.collapsed .sidebar-logout-btn span { display: none; }
 
 /* Theme toggle removed — the system has one theme now (white/black, no dark mode). */
 
@@ -190,6 +231,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius);
   padding: 20px;
   box-shadow: var(--shadow);
+  transition: box-shadow 150ms ease, border-color 150ms ease;
 }
 
 .stat-grid {
@@ -206,6 +248,7 @@ a:hover { text-decoration: underline; }
   padding: 16px 18px;
   box-shadow: var(--shadow);
   position: relative;
+  transition: box-shadow 150ms ease, border-color 150ms ease;
 }
 .stat-tile .label { font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; font-weight: 600; }
 .stat-tile .value { font-size: 26px; font-weight: 700; line-height: 1; }
@@ -305,8 +348,9 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   max-height: 220px; overflow-y: auto;
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow);
+  animation: fadeSlideIn 150ms ease;
 }
-.combobox-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer; }
+.combobox-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer; transition: background-color 120ms ease; }
 .combobox-item:hover, .combobox-item.highlighted { background: var(--accent-dim); }
 .combobox-item .name { font-size: 13.5px; font-weight: 600; }
 .combobox-item .role { font-size: 11.5px; color: var(--text-dim); }
@@ -317,14 +361,19 @@ table.data td.num { font-variant-numeric: tabular-nums; }
 .confirm-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(15, 23, 42, 0.35);
   z-index: 200;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 20px;
+  animation: fadeIn 170ms ease;
 }
-.confirm-modal-card { width: 380px; max-width: 100%; }
+.confirm-modal-card { width: 380px; max-width: 100%; border-radius: var(--radius-lg); animation: fadeScaleIn 170ms ease; }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fadeScaleIn { from { opacity: 0; transform: scale(0.97) translateY(4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes fadeSlideIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 
 .rec-pill {
   display: inline-block;
@@ -361,7 +410,9 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   margin-bottom: 8px;
   border-inline-start: 4px solid var(--gray);
   cursor: pointer;
+  transition: box-shadow 150ms ease, border-color 150ms ease;
 }
+.action-card:hover { box-shadow: var(--shadow-sm); }
 .action-card.SCALE { border-inline-start-color: var(--green); }
 .action-card.WATCH { border-inline-start-color: var(--yellow); }
 .action-card.FIX { border-inline-start-color: var(--yellow); }
@@ -369,7 +420,7 @@ table.data td.num { font-variant-numeric: tabular-nums; }
 .action-card.RESTOCK { border-inline-start-color: var(--purple); }
 .action-card.SCALE_UP { border-inline-start-color: var(--green); }
 .action-card.REDUCE { border-inline-start-color: var(--yellow); }
-.action-card.REVIEW_NOW { border-inline-start-color: #f97316; }
+.action-card.REVIEW_NOW { border-inline-start-color: var(--accent); }
 .action-card.STOP_CANDIDATE { border-inline-start-color: var(--red); }
 .action-card.CONTINUE { border-inline-start-color: var(--gray); }
 .action-card.INSUFFICIENT_DATA { border-inline-start-color: var(--accent); }
@@ -387,6 +438,7 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   border-radius: var(--radius);
   padding: 14px 16px;
   cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease;
 }
 .employee-card:hover { border-color: var(--accent); }
 .employee-card.active { border-color: var(--accent); background: var(--accent-dim); }
@@ -475,10 +527,12 @@ table.data td.num { font-variant-numeric: tabular-nums; }
 /* ---------------- Product Drawer ---------------- */
 
 .drawer-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 200;
+  position: fixed; inset: 0; background: rgba(15,23,42,0.35); z-index: 200;
   display: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
 }
-.drawer-overlay.open { display: block; }
+.drawer-overlay.open { display: block; opacity: 1; }
 .drawer-panel {
   position: fixed; top: 0; bottom: 0; inset-inline-end: 0;
   width: 420px; max-width: 92vw;
@@ -486,6 +540,7 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   box-shadow: var(--shadow);
   overflow-y: auto; padding: 22px;
   transform: translateX(100%);
+  transition: transform 180ms ease-out;
 }
 [dir="rtl"] .drawer-panel { transform: translateX(-100%); }
 .drawer-overlay.open .drawer-panel { transform: translateX(0); }
@@ -512,9 +567,11 @@ input, select, textarea {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 13px;
+  min-height: 42px;
   color: var(--text);
   font-size: 14px;
   font-family: inherit;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 
@@ -543,9 +600,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+  box-shadow: 0 4px 12px rgba(255,122,26,0.28);
+  transition: filter 120ms ease, box-shadow 120ms ease, transform 120ms ease, background-color 120ms ease, border-color 120ms ease;
 }
-.btn:hover { filter: brightness(1.08); box-shadow: 0 6px 16px rgba(0,0,0,0.24); }
+.btn:hover { filter: brightness(1.06); box-shadow: 0 6px 16px rgba(255,122,26,0.36); }
+.btn:active { transform: scale(0.97); }
 .btn.secondary { background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
 .btn.secondary:hover { background: var(--bg-card); filter: none; box-shadow: none; border-color: var(--accent); }
 .btn.danger { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); box-shadow: none; }
@@ -611,6 +670,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   color: var(--text-dim);
   font-size: 13px;
   cursor: pointer;
+  transition: background-color 130ms ease, color 130ms ease, border-color 130ms ease;
 }
 .chip.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
 

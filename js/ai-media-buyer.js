@@ -983,7 +983,7 @@ function renderSide(ov, meta, hWin, active) {
 
 function donutSvg(counts, total) {
   const segs = [
-    ['#15924f', counts.Scaling], ['#d33f3f', counts.Pause], ['#171e2e', counts.Creative], ['#98a0ad', counts.Other],
+    ['#14b86e', counts.Scaling], ['#ef4444', counts.Pause], ['#2684ff', counts.Creative], ['#98a0ad', counts.Other],
   ].filter(([, v]) => v > 0);
   const sum = segs.reduce((s, [, v]) => s + v, 0) || 1;
   const R = 42, C = 2 * Math.PI * R;
