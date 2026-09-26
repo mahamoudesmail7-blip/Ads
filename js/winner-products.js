@@ -11,6 +11,7 @@ import { api } from './api-client.js';
 const WP_API = '/api/winner-products';
 
 const PLATFORM_LABEL = { instagram: 'Instagram', facebook: 'Facebook', tiktok: 'TikTok', youtube: 'YouTube', META_AD_LIBRARY: 'Meta Ads Library' };
+const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
 const MARKET_LABEL = {
   EG: 'مصر', EG_GAP: '🔥 فرصة مصر', GULF: 'الخليج', SA: 'السعودية', AE: 'الإمارات',
   US: 'أمريكا', CA: 'كندا', UK: 'بريطانيا', EU: 'أوروبا', ASIA: 'آسيا', WORLD: 'كل العالم',
@@ -27,6 +28,8 @@ const wp = {
   currentSearchId: null,
   pollTimer: null,
   view: 'search', // 'search' | 'saved'
+  platformFilter: 'ALL', // 'ALL' | one of GENERIC_PLATFORMS below
+  lastProducts: [],
 };
 
 function escapeHtml(s) { return UI.escapeHtml ? UI.escapeHtml(String(s ?? '')) : String(s ?? ''); }
@@ -111,10 +114,13 @@ async function startSearch() {
   const timeRange = document.getElementById('wpTimeRange')?.value || '7d';
 
   wp.view = 'search';
+  wp.platformFilter = 'ALL';
+  wp.lastProducts = [];
   const btn = document.getElementById('wpBtnStartSearch');
   if (btn) btn.disabled = true;
   document.getElementById('wpResultsEmpty').style.display = 'none';
   document.getElementById('wpResultGrid').innerHTML = '';
+  document.getElementById('wpPlatformFilterPanel').style.display = 'none';
   setStatusLine('⏳ جارِ إنشاء البحث...');
 
   try {
@@ -212,19 +218,99 @@ function productCardHtml(p, opts = {}) {
   </div>`;
 }
 
-function renderResults(products) {
+// --- Per-platform raw item view ("عايز اعرف كل منصه لوحدها") ---
+// Each WinnerProduct is a same-title cluster that can span several
+// platforms (platforms_json) — the clustered card alone can't show "TikTok
+// alone" vs "Facebook alone". raw_sources_json (already sent to the
+// frontend, no backend change needed) keeps every individual item with its
+// own `platform` tag, so filtering just flattens that instead of the
+// clustered rows.
+function rawSourcesOf(product) {
+  try { return JSON.parse(product.raw_sources_json || '[]'); } catch { return []; }
+}
+
+function rawItemCardHtml(item) {
+  return `<div class="icd-result-card">
+    ${item.thumbnail ? `<img class="icd-result-thumb" src="${escapeHtml(item.thumbnail)}" loading="lazy" />` : `<div class="icd-result-thumb-placeholder">🔎</div>`}
+    <div class="icd-result-body">
+      <div class="icd-result-platform">${escapeHtml(PLATFORM_LABEL[item.platform] || item.platform)}</div>
+      <div class="icd-result-title">${escapeHtml(item.title || '—')}</div>
+      <div class="icd-result-meta">${[item.accountName ? `🏷️ ${escapeHtml(item.accountName)}` : '', item.publishedAt ? `🗓️ ${escapeHtml(String(item.publishedAt))}` : ''].filter(Boolean).join(' · ') || '—'}</div>
+      <div class="icd-result-actions">
+        ${item.url ? `<a class="icd-btn secondary small" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">🔗 فتح الرابط</a>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderPlatformFilterBar(products) {
+  const panel = document.getElementById('wpPlatformFilterPanel');
+  const row = document.getElementById('wpPlatformFilterRow');
+  if (!panel || !row) return;
+  const counts = {};
+  let total = 0;
+  for (const p of products) {
+    for (const item of rawSourcesOf(p)) {
+      counts[item.platform] = (counts[item.platform] || 0) + 1;
+      total += 1;
+    }
+  }
+  const platformsPresent = GENERIC_PLATFORMS.filter((pl) => counts[pl]);
+  if (!platformsPresent.length) {
+    panel.style.display = 'none';
+    return;
+  }
+  // If the active filter no longer has any items (e.g. a fresh search), fall back to ALL.
+  if (wp.platformFilter !== 'ALL' && !counts[wp.platformFilter]) wp.platformFilter = 'ALL';
+  panel.style.display = 'block';
+  const chips = [{ key: 'ALL', label: `الكل (${total})` }, ...platformsPresent.map((pl) => ({ key: pl, label: `${PLATFORM_LABEL[pl] || pl} (${counts[pl]})` }))];
+  row.innerHTML = chips.map((c) => {
+    const active = wp.platformFilter === c.key;
+    return `<span class="icd-mini-badge${active ? ' cyan' : ''}" style="cursor:pointer;" data-wp-platform-filter="${c.key}">${escapeHtml(c.label)}</span>`;
+  }).join('');
+  row.querySelectorAll('[data-wp-platform-filter]').forEach((chip) => {
+    chip.onclick = () => {
+      wp.platformFilter = chip.dataset.wpPlatformFilter;
+      renderResults(wp.lastProducts, { saved: wp.view === 'saved' });
+    };
+  });
+}
+
+function renderResults(products, opts = {}) {
   const grid = document.getElementById('wpResultGrid');
   const empty = document.getElementById('wpResultsEmpty');
   if (!grid || !empty) return;
-  if (!products.length) {
+  wp.lastProducts = products;
+  renderPlatformFilterBar(products);
+
+  if (wp.platformFilter === 'ALL') {
+    if (!products.length) {
+      grid.innerHTML = '';
+      empty.style.display = 'block';
+      empty.textContent = 'مفيش منتجات مكتشفة لسه — البحث لسه شغال أو مفيش نتائج حقيقية اتلاقت.';
+      return;
+    }
+    empty.style.display = 'none';
+    grid.innerHTML = products.map((p) => productCardHtml(p, opts)).join('');
+    wireCardActions(grid);
+    return;
+  }
+
+  // Single-platform view: flatten raw items tagged with that platform across every cluster.
+  const items = [];
+  for (const p of products) {
+    for (const item of rawSourcesOf(p)) {
+      if (item.platform === wp.platformFilter) items.push(item);
+    }
+  }
+  if (!items.length) {
     grid.innerHTML = '';
     empty.style.display = 'block';
-    empty.textContent = 'مفيش منتجات مكتشفة لسه — البحث لسه شغال أو مفيش نتائج حقيقية اتلاقت.';
+    empty.textContent = `مفيش نتائج من ${escapeHtml(PLATFORM_LABEL[wp.platformFilter] || wp.platformFilter)} في البحث ده.`;
     return;
   }
   empty.style.display = 'none';
-  grid.innerHTML = products.map((p) => productCardHtml(p, { saved: false })).join('');
-  wireCardActions(grid);
+  grid.innerHTML = items.map(rawItemCardHtml).join('');
 }
 
 function wireCardActions(container) {
@@ -249,6 +335,7 @@ function wireCardActions(container) {
 
 async function loadSaved() {
   wp.view = 'saved';
+  wp.platformFilter = 'ALL';
   stopPolling();
   document.getElementById('wpPlatformPanel').style.display = 'none';
   document.getElementById('wpBtnCancelSearch').style.display = 'none';
@@ -259,14 +346,14 @@ async function loadSaved() {
     const data = await api.get(`${WP_API}/saved`);
     const products = data.products || [];
     if (!products.length) {
+      wp.lastProducts = [];
+      document.getElementById('wpPlatformFilterPanel').style.display = 'none';
       grid.innerHTML = '';
       empty.style.display = 'block';
       empty.textContent = 'مفيش منتجات محفوظة لسه.';
       return;
     }
-    empty.style.display = 'none';
-    grid.innerHTML = products.map((p) => productCardHtml(p, { saved: true })).join('');
-    wireCardActions(grid);
+    renderResults(products, { saved: true });
   } catch (err) {
     UI.toast?.(err.message, 'error');
   }
