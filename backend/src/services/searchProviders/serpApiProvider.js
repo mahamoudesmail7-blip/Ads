@@ -108,6 +108,17 @@ export async function search({ query, platform, resultsLimit = 10 }) {
  * disclosed honestly, not hidden.
  * @param {{query: string, resultsLimit?: number}} params
  */
+// Google's indexed title for a facebook.com/ads/library page is often
+// literally "Ad Library - <Page Name>" (confirmed against live production
+// results) — real attribution text already in the title, extracted the
+// same honest way as extractCreatorHandle() above. Returns null (never a
+// guess) when the title doesn't match this exact pattern.
+const AD_LIBRARY_TITLE_RE = /^ad library\s*-\s*(.+)$/i;
+function extractAdLibraryAdvertiser(title) {
+  const m = typeof title === 'string' ? title.match(AD_LIBRARY_TITLE_RE) : null;
+  return m ? m[1].trim() || null : null;
+}
+
 export async function searchAdLibrary({ query, resultsLimit = 10 }) {
   const items = await runGoogleQuery(`site:facebook.com/ads/library ${query}`, resultsLimit, { platform: 'META_AD_LIBRARY' });
   return items.map((item) => ({
@@ -115,7 +126,7 @@ export async function searchAdLibrary({ query, resultsLimit = 10 }) {
     title: item.title,
     snippet: item.snippet,
     thumbnail: item.thumbnail || null,
-    accountName: null,
+    accountName: extractAdLibraryAdvertiser(item.title),
     publishedAt: null,
     metrics: { adId: null, endDate: null, activeStatus: null, platformsShownOn: [], cta: null, mediaType: null, description: null, country: null },
     raw: item,
