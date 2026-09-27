@@ -309,7 +309,61 @@ a:hover { text-decoration: underline; }
 .sidebar.collapsed .sidebar-logout-btn { justify-content: center; padding-inline: 8px; }
 .sidebar.collapsed .sidebar-logout-btn span { display: none; }
 
-/* Theme toggle removed — the system has one theme now (white/black, no dark mode). */
+/* ---------------- Theme toggle (floating, every page) ---------------- */
+
+/* Fixed to the physical top-left corner of the viewport on every page
+   (spec: "عايز يكون فوق على الشمال" — left, not RTL-start/right — so this
+   uses plain `left`, not inset-inline-start, on purpose). Sits above the
+   sidebar/content via z-index; theme-aware colors so it reads correctly
+   whether it's floating over a light or dark page. */
+.theme-toggle-fixed {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 300;
+}
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  user-select: none;
+  transition: border-color 150ms ease;
+}
+.theme-toggle:hover { border-color: var(--accent); }
+.theme-toggle .theme-toggle-icons { display: flex; align-items: center; gap: 6px; }
+.theme-toggle .theme-toggle-icon { opacity: 0.4; font-size: 13px; transition: opacity 150ms ease; }
+.theme-toggle .theme-toggle-icon.current { opacity: 1; }
+.theme-toggle-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background-color 150ms ease;
+}
+.theme-toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: inset-inline-start 150ms ease;
+}
+.theme-toggle-switch.is-dark { background: var(--accent); }
+.theme-toggle-switch.is-dark::after { inset-inline-start: 18px; }
 
 .main {
   flex: 1;
@@ -881,8 +935,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .mobile-bottom-nav-item.active { color: var(--sidebar-active-text); }
 
   /* On narrow screens the sidebar is gone (rule above) and the fixed mobile
-     header/bottom-nav take its place — raise the toast above the bottom
-     nav instead of the old "stacked sidebar" bottom-16px offset. */
+     header/bottom-nav take its place — raise the toggle and toast above the
+     bottom nav instead of the old "stacked sidebar" bottom-16px offset. */
+  .theme-toggle-fixed { top: auto; bottom: 80px; }
   .toast { bottom: 80px; }
 
   table.data { min-width: 640px; width: max-content; }

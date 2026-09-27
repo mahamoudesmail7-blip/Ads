@@ -288,6 +288,8 @@ export async function renderSidebar(activeKey) {
     el.innerHTML = navBodyHtml(NAV_ITEMS, activeKey, null);
     mountMobileChrome(NAV_ITEMS, activeKey, null);
     wireSidebarCollapse();
+    const { mountThemeToggle } = await import('./theme.js');
+    mountThemeToggle();
     mountAssistantBubble();
     return;
   }
@@ -301,6 +303,8 @@ export async function renderSidebar(activeKey) {
   el.innerHTML = navBodyHtml(visibleItems, activeKey, user);
   mountMobileChrome(visibleItems, activeKey, user);
   wireSidebarCollapse();
+  const { mountThemeToggle } = await import('./theme.js');
+  mountThemeToggle();
 
   document.getElementById('sidebarLogout')?.addEventListener('click', logout);
 

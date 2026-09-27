@@ -4,10 +4,13 @@
 // page (register.html) — every new signup is PENDING until the Owner
 // approves it, so login.html no longer has a "first user becomes Admin"
 // bootstrap path (that already happened once, for real, and won't recur).
+import { mountThemeToggle } from './theme.js';
+
 const params = new URLSearchParams(location.search);
 const next = params.get('next') || 'index.html';
 
 async function init() {
+  mountThemeToggle();
   document.getElementById('btnLogin').onclick = submit;
   document.getElementById('fPassword').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submit();
