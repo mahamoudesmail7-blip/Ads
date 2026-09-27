@@ -224,6 +224,14 @@ function productCardHtml(p, opts = {}) {
   const ev = breakdown?.evidence;
   const scoreText = p.winner_score != null ? `🔥 ${p.winner_score}/100` : 'Winner Score: غير متاح';
   const confText = p.confidence != null ? `📊 تغطية الأدلة: ${p.confidence}%` : '';
+  // "افتح المصدر" links to the real item behind whichever thumbnail is
+  // shown; "تحميل الفيديو" only appears when a real direct video file URL
+  // exists (Meta Ad Library's Apify path only — see winnerProducts.js's
+  // item shape comment) — never a fake/non-functional download button for
+  // platforms where no such URL exists in the data.
+  const sources = rawSourcesOf(p);
+  const primarySource = sources.find((s) => s.thumbnail && s.thumbnail === p.thumbnail) || sources.find((s) => s.url) || null;
+  const videoSource = sources.find((s) => s.videoUrl) || null;
   return `<div class="icd-result-card" data-product-id="${p.id}">
     ${p.thumbnail ? `<img class="icd-result-thumb" src="${escapeHtml(p.thumbnail)}" loading="lazy" />` : `<div class="icd-result-thumb-placeholder">🔥</div>`}
     <div class="icd-result-body">
@@ -243,6 +251,8 @@ function productCardHtml(p, opts = {}) {
       </div>
       ${evidenceBulletsHtml(breakdown)}
       <div class="icd-result-actions">
+        ${primarySource?.url ? `<a class="icd-btn secondary small" href="${escapeHtml(primarySource.url)}" target="_blank" rel="noopener noreferrer">🔗 فتح المصدر</a>` : ''}
+        ${videoSource?.videoUrl ? `<a class="icd-btn secondary small" href="${escapeHtml(videoSource.videoUrl)}" download target="_blank" rel="noopener noreferrer">⬇️ تحميل الفيديو</a>` : ''}
         ${opts.saved ? `<button class="icd-btn secondary small" data-unsave="${p.id}">🗑️ إلغاء الحفظ</button>`
                      : `<button class="icd-btn secondary small" data-save="${p.id}">💾 حفظ المنتج</button>`}
       </div>
@@ -270,6 +280,7 @@ function rawItemCardHtml(item) {
       <div class="icd-result-meta">${[item.accountName ? `🏷️ ${escapeHtml(item.accountName)}` : '', item.publishedAt ? `🗓️ ${escapeHtml(String(item.publishedAt))}` : ''].filter(Boolean).join(' · ') || '—'}</div>
       <div class="icd-result-actions">
         ${item.url ? `<a class="icd-btn secondary small" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">🔗 فتح الرابط</a>` : ''}
+        ${item.videoUrl ? `<a class="icd-btn secondary small" href="${escapeHtml(item.videoUrl)}" download target="_blank" rel="noopener noreferrer">⬇️ تحميل الفيديو</a>` : ''}
       </div>
     </div>
   </div>`;

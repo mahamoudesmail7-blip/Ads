@@ -178,6 +178,13 @@ async function runSearchPipeline(searchId) {
             viewCount: it.viewCount ?? null,
             likeCount: it.likeCount ?? null,
             commentCount: it.commentCount ?? null,
+            // Real direct-download media URLs — only Meta Ad Library's
+            // Apify path returns these (confirmed real CDN files, not
+            // resized previews — see metaAdLibraryProvider.js's
+            // mapApifyItem() comment). Every other path/platform has none,
+            // so these stay null rather than pointing at the page URL.
+            videoUrl: it.metrics?.videoUrl || null,
+            imageUrl: it.metrics?.imageUrl || null,
           });
         }
         platformOk = true;
