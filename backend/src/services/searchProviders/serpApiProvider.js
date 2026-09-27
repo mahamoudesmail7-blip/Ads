@@ -71,6 +71,18 @@ async function runGoogleQuery(fullQuery, resultsLimit, logContext) {
  * @param {{query: string, platform: string, resultsLimit?: number}} params
  * @returns {Promise<object[]>} raw-ish items (same shape googleSearchProvider.js returns, normalized by the caller — see productResearchNormalize.js)
  */
+// SerpApi's organic_results carry the account/page name for real inside the
+// `source` field as "Platform · handle" (e.g. "Instagram · misbar_uae",
+// confirmed against live production responses) — Google's own attribution
+// text, not anything we compute. Used by the Winner Discovery Engine's
+// creator-spread signal (real distinct-creator counting, never fabricated);
+// returns null rather than a guess when the field doesn't match.
+const SOURCE_HANDLE_RE = /^(?:Instagram|Facebook|TikTok)\s*·\s*(.+)$/i;
+function extractCreatorHandle(source) {
+  const m = typeof source === 'string' ? source.match(SOURCE_HANDLE_RE) : null;
+  return m ? m[1].trim() || null : null;
+}
+
 export async function search({ query, platform, resultsLimit = 10 }) {
   const siteFilter = SITE_FILTER[platform];
   if (!siteFilter) throw new Error(`SerpApi provider هنا بيغطي بس instagram/facebook/tiktok — منصة غير مدعومة: ${platform}`);
@@ -81,6 +93,7 @@ export async function search({ query, platform, resultsLimit = 10 }) {
     title: item.title,
     snippet: item.snippet,
     thumbnail: item.thumbnail || null,
+    accountName: extractCreatorHandle(item.source),
     raw: item,
   }));
 }

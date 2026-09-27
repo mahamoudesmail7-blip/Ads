@@ -3068,13 +3068,14 @@ model WinnerProduct {
   ads_count          Int                 @default(0)
   advertisers_count  Int                 @default(0)
   markets_json       String? // real detected countries, when available — never invented
-  trend_stage        String? // EMERGING|RISING|WINNER|SATURATED — null = not yet scored (later phase)
-  winner_score       Int? // 0-100, null = not yet computed
-  egypt_saturation   Int? // 0-100, null = not yet computed
-  opportunity_gap    Int? // null = not yet computed
-  confidence         Int? // 0-100, null = not yet computed
-  growth_pct         Float? // null = not enough historical data yet
-  raw_sources_json   String? // real provider hits (platform/url/title/thumbnail/publishedAt) backing this card — the honest evidence trail
+  trend_stage        String? // PROVEN_WINNER|STRONG_SIGNAL|RISING|WATCH|INSUFFICIENT_EVIDENCE — null = not yet scored
+  winner_score       Int? // 0-100 weighted multi-signal score, null = not yet computed (see winnerScoring.js)
+  egypt_saturation   Int? // 0-100, null = not yet computed (a later slice)
+  opportunity_gap    Int? // null = not yet computed (a later slice — distinct from winner_score)
+  confidence         Int? // 0-100 = % of the 8 scoring components that had real data for this cluster ("coverage")
+  growth_pct         Float? // null = not enough historical data yet (a later slice's snapshot history)
+  raw_sources_json   String? // real provider hits (platform/url/title/thumbnail/publishedAt/viewCount/likeCount/commentCount) backing this card — the honest evidence trail
+  score_breakdown_json String? // full explainable Winner Score breakdown: weights used, per-component scores, real evidence numbers, evidence bullets — see winnerScoring.js
   first_detected_at  DateTime            @default(now())
   last_detected_at   DateTime            @default(now())
   created_at         DateTime            @default(now())

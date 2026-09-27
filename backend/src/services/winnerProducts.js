@@ -1,11 +1,13 @@
-// Winner Products Discovery Engine — "🔥 منتجات وينر". Phase 1 only: real
+// Winner Products Discovery Engine — "🔥 منتجات وينر". Phase 1: real
 // per-category discovery reusing the EXISTING provider registry
 // (searchProviders/index.js — the same Instagram/Facebook/TikTok/YouTube/
 // Meta Ads Library connections experimentalCreativeDiscovery.js already
 // uses), basic same-title clustering (real fuzzy alias/image clustering is
-// Phase 2), and honest evidence storage. Winner Score / Egypt Saturation /
-// Opportunity Gap / trend stage are intentionally left null here — a later
-// phase computes them from real signals; Phase 1 never fabricates them.
+// a later phase), and honest evidence storage. Slice 1 (this file) adds
+// real multi-signal Winner scoring on top of those same clusters — see
+// winnerScoring.js for exactly what's real vs honestly UNKNOWN per
+// platform. Egypt Saturation / Opportunity Gap are intentionally still left
+// null here — a later slice computes them; this file never fabricates them.
 //
 // Fully isolated from every other module: its own tables
 // (winner_product_*), its own routes (/api/winner-products/*), its own
@@ -15,6 +17,7 @@ import { prisma } from '../prisma.js';
 import { logger } from '../logger.js';
 import { runProviderSearch, isAnyProviderConfigured, getProviderStatus } from './searchProviders/index.js';
 import { fetchOgImage, runWithConcurrency } from './ogImageFetch.js';
+import { scoreClusters } from './winnerScoring.js';
 
 const LOG_PREFIX = '[WinnerProducts]';
 const GENERIC_PLATFORMS = ['instagram', 'facebook', 'tiktok', 'youtube', 'META_AD_LIBRARY'];
@@ -116,7 +119,11 @@ export async function startSearch({ userId, category, market, timeRange, mode })
 export async function getSearch(searchId) {
   const search = await prisma.winnerProductSearch.findUnique({ where: { id: searchId } });
   if (!search) return null;
-  const products = await prisma.winnerProduct.findMany({ where: { search_id: searchId }, orderBy: { videos_count: 'desc' } });
+  // Default sort: real Winner Score first (spec: "Default Winner mode: Winner Score descending"), nulls (scoring failed/skipped) sink to the bottom rather than polluting the top of the list; videos_count as a tie-breaker among equally-scored or unscored rows.
+  const products = await prisma.winnerProduct.findMany({
+    where: { search_id: searchId },
+    orderBy: [{ winner_score: { sort: 'desc', nulls: 'last' } }, { videos_count: 'desc' }],
+  });
   return { search, products };
 }
 
@@ -155,10 +162,22 @@ async function runSearchPipeline(searchId) {
           allItems.push({
             platform,
             title: it.title || it.snippet || null,
+            // Kept separately (not just folded into title) so commercial-
+            // intent keyword detection has real text to scan even when a
+            // title exists — see winnerScoring.js's detectCommercialIntent().
+            snippet: it.snippet || null,
             url: it.url || it.canonical_url || null,
             thumbnail: it.thumbnail || null,
             accountName: it.accountName || it.account_name || null,
             publishedAt: it.publishedAt || it.published_at || null,
+            // Real structured engagement — only YouTube's Data API provides
+            // these today (see youtubeSearchProvider.js); every other
+            // platform legitimately has none, so these stay null rather
+            // than 0 (Winner Discovery Engine scoring treats null as
+            // UNKNOWN, never as "zero engagement").
+            viewCount: it.viewCount ?? null,
+            likeCount: it.likeCount ?? null,
+            commentCount: it.commentCount ?? null,
           });
         }
         platformOk = true;
@@ -201,6 +220,22 @@ async function runSearchPipeline(searchId) {
 
   await updateSearch(searchId, { status: 'SCORING' });
 
+  // Real multi-signal Winner Score — see winnerScoring.js's own header for
+  // exactly what's real vs honestly UNKNOWN per platform. Scored once across
+  // all clusters together so reach/engagement/velocity can be ranked
+  // relative to this search's own batch (there's no external benchmark
+  // dataset to compare against).
+  const clusterList = [...clusters.entries()].map(([key, c]) => ({ key, displayName: c.displayName, items: c.items }));
+  let scoresByKey = new Map();
+  try {
+    scoresByKey = await scoreClusters(clusterList);
+  } catch (err) {
+    logger.error(`${LOG_PREFIX} SCORING_FAILED`, { searchId, message: err.message });
+    // Scoring is an enhancement over real discovery data, not a requirement
+    // for it — a scoring bug must never hide the real search results
+    // themselves (every WinnerProduct row below just keeps null scores).
+  }
+
   const rows = [];
   for (const [normalizedName, cluster] of clusters.entries()) {
     const platforms = [...new Set(cluster.items.map((i) => i.platform))];
@@ -208,6 +243,7 @@ async function runSearchPipeline(searchId) {
     const videosCount = cluster.items.filter((i) => i.platform !== 'META_AD_LIBRARY').length;
     const advertisersCount = new Set(cluster.items.filter((i) => i.platform === 'META_AD_LIBRARY' && i.accountName).map((i) => i.accountName)).size;
     const thumbnail = cluster.items.find((i) => i.thumbnail)?.thumbnail || null;
+    const scored = scoresByKey.get(normalizedName);
     rows.push({
       search_id: searchId,
       category: search.category,
@@ -219,6 +255,10 @@ async function runSearchPipeline(searchId) {
       ads_count: adsCount,
       advertisers_count: advertisersCount,
       raw_sources_json: JSON.stringify(cluster.items.slice(0, 30)), // evidence trail, capped for row size
+      winner_score: scored?.winnerScore ?? null,
+      confidence: scored?.confidence ?? null,
+      trend_stage: scored?.trendStage ?? null,
+      score_breakdown_json: scored?.breakdown ? JSON.stringify(scored.breakdown) : null,
     });
   }
 

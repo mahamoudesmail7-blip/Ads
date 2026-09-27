@@ -49,6 +49,10 @@ export async function search({ query, resultsLimit = 10 }) {
     statsUrl.searchParams.set('key', apiKey);
     statsUrl.searchParams.set('id', videoIds.join(','));
     statsUrl.searchParams.set('part', 'statistics');
+    // statistics already returns commentCount alongside viewCount/likeCount at
+    // no extra quota cost — read all three for the Winner Discovery Engine's
+    // real per-item engagement signals (Winner scoring: real views/likes/
+    // comments for YouTube, honestly UNKNOWN for platforms with no structured API).
     try {
       const statsRes = await fetch(statsUrl.toString());
       const statsData = await statsRes.json().catch(() => null);
@@ -70,6 +74,9 @@ export async function search({ query, resultsLimit = 10 }) {
       thumbnail: item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || null,
       accountName: item.snippet?.channelTitle,
       publishedAt: item.snippet?.publishedAt || null,
+      viewCount: stats?.viewCount != null ? Number(stats.viewCount) : null,
+      likeCount: stats?.likeCount != null ? Number(stats.likeCount) : null,
+      commentCount: stats?.commentCount != null ? Number(stats.commentCount) : null,
       metrics: stats ? { views: stats.viewCount ? Number(stats.viewCount) : null, likes: stats.likeCount ? Number(stats.likeCount) : null } : {},
       raw: item,
     };

@@ -309,7 +309,7 @@ function distinctiveAttributeScore(identity, result) {
 // Step: exact product matching. Real Settings row, same access pattern
 // already established in adsIntelligence.js's loadThresholds() — configurable
 // from the Settings page with zero redeploy, never hardcoded blindly.
-async function loadExactMatchThresholds() {
+export async function loadExactMatchThresholds() {
   const row = await prisma.settings.findUnique({ where: { id: 'default' } }).catch(() => null);
   const saved = row ? JSON.parse(row.data) : {};
   return {
@@ -334,7 +334,7 @@ async function loadExactMatchThresholds() {
  * Returns null when no real visual comparison ran at all (embSim and
  * hashSim both null) — never invented from text alone.
  */
-function computeExactMatchScore({ embSim, hashSim, brandBonus, hasBrandOrModel, textMatchScore, colorMatch }) {
+export function computeExactMatchScore({ embSim, hashSim, brandBonus, hasBrandOrModel, textMatchScore, colorMatch }) {
   if (embSim === null && hashSim === null) return null;
   const components = [];
   if (embSim !== null) components.push({ weight: 0.45, value: embSim });
@@ -351,7 +351,7 @@ function computeExactMatchScore({ embSim, hashSim, brandBonus, hasBrandOrModel, 
   return Math.max(0, Math.min(100, Math.round(weighted / totalWeight)));
 }
 
-function decideMatch(exactMatchScore, thresholds) {
+export function decideMatch(exactMatchScore, thresholds) {
   if (exactMatchScore === null) return null;
   if (exactMatchScore >= thresholds.exactThreshold) return 'EXACT';
   if (exactMatchScore >= thresholds.reviewThreshold) return 'REVIEW';

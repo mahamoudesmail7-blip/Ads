@@ -188,28 +188,60 @@ async function pollOnce(searchId) {
   }
 }
 
+// 5-state Winner classification (winnerScoring.js on the backend) — never
+// a single-signal "PROVEN WINNER" claim, matching the real evidence bar
+// enforced server-side.
+const WINNER_STATE_CHIP = {
+  PROVEN_WINNER: ['🔥 منتج فائز مؤكد', 'green'],
+  STRONG_SIGNAL: ['🚀 إشارة قوية', 'green'],
+  RISING: ['⚡ صاعد', 'cyan'],
+  WATCH: ['👀 تحت المراقبة', 'yellow'],
+  INSUFFICIENT_EVIDENCE: ['❔ بيانات غير كافية', ''],
+};
 function trendStageChip(stage) {
   if (!stage) return '';
-  const map = { EMERGING: ['🆕 Emerging', ''], RISING: ['🚀 Rising', 'cyan'], WINNER: ['🔥 Winner', 'green'], SATURATED: ['⚠️ Saturated', 'yellow'] };
-  const [label, cls] = map[stage] || [stage, ''];
-  return `<span class="icd-mini-badge ${cls}">${label}</span>`;
+  const [label, cls] = WINNER_STATE_CHIP[stage] || [stage, ''];
+  return `<span class="icd-mini-badge ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function na(value, suffix = '') {
+  return value == null ? '<span class="icd-faint">غير متاح</span>' : `${escapeHtml(String(value))}${suffix}`;
+}
+
+function evidenceBulletsHtml(breakdown) {
+  const bullets = breakdown?.evidenceBullets || [];
+  if (!bullets.length) return '';
+  return `<div class="icd-ad-analysis">
+    <div class="icd-ad-row"><b>ليه Winner؟</b></div>
+    ${bullets.map((b) => `<div class="icd-ad-row">• ${escapeHtml(b)}</div>`).join('')}
+  </div>`;
 }
 
 function productCardHtml(p, opts = {}) {
   const platforms = p.platforms_json ? JSON.parse(p.platforms_json) : [];
-  const scoreText = p.winner_score != null ? `🔥 ${p.winner_score}/100` : 'Winner Score: قريبًا';
-  const satText = p.egypt_saturation != null ? `🇪🇬 ${p.egypt_saturation}/100` : 'تشبع مصر: قريبًا';
+  let breakdown = null;
+  try { breakdown = p.score_breakdown_json ? JSON.parse(p.score_breakdown_json) : null; } catch { /* malformed/legacy row — degrade to no breakdown */ }
+  const ev = breakdown?.evidence;
+  const scoreText = p.winner_score != null ? `🔥 ${p.winner_score}/100` : 'Winner Score: غير متاح';
+  const confText = p.confidence != null ? `📊 تغطية الأدلة: ${p.confidence}%` : '';
   return `<div class="icd-result-card" data-product-id="${p.id}">
     ${p.thumbnail ? `<img class="icd-result-thumb" src="${escapeHtml(p.thumbnail)}" loading="lazy" />` : `<div class="icd-result-thumb-placeholder">🔥</div>`}
     <div class="icd-result-body">
       <div class="icd-result-platform">${platforms.map((pl) => escapeHtml(PLATFORM_LABEL[pl] || pl)).join(' · ') || '—'}</div>
       <div class="icd-result-title">${escapeHtml(p.display_name)}</div>
       <div class="icd-result-meta">🎬 ${p.videos_count} فيديو · 📢 ${p.ads_count} إعلان · 🏪 ${p.advertisers_count} معلن</div>
+      ${ev ? `<div class="icd-result-meta">
+        👀 مشاهدات يوتيوب: ${na(ev.totalViews)} · 📈 تفاعل: ${na(ev.engagementRatePct, '%')} · ⚡ سرعة: ${na(ev.viewsPerDay, ' مشاهدة/يوم')}<br/>
+        👤 صنّاع محتوى: ${na(ev.uniqueCreators)} · 🌍 منصات: ${na(ev.platformCount)}
+        ${ev.commercialIntent?.signal ? ' · 🛒 إشارة شراء' : ''}
+        ${ev.productMatch?.tier ? ` · 🎯 ${escapeHtml(ev.productMatch.tier)}` : ''}
+      </div>` : ''}
       <div class="icd-result-badges">
         ${trendStageChip(p.trend_stage)}
         <span class="icd-mini-badge">${escapeHtml(scoreText)}</span>
-        <span class="icd-mini-badge">${escapeHtml(satText)}</span>
+        ${confText ? `<span class="icd-mini-badge">${escapeHtml(confText)}</span>` : ''}
       </div>
+      ${evidenceBulletsHtml(breakdown)}
       <div class="icd-result-actions">
         ${opts.saved ? `<button class="icd-btn secondary small" data-unsave="${p.id}">🗑️ إلغاء الحفظ</button>`
                      : `<button class="icd-btn secondary small" data-save="${p.id}">💾 حفظ المنتج</button>`}
