@@ -1,8 +1,21 @@
 /* style.css — shared design system for Product Order Monitoring System.
    Premium white SaaS dashboard, orange (#FF7A1A) as the primary brand
    accent, green/yellow/red as real status colors, blue as a secondary
-   info accent. No dark mode (removed). Fast micro-animations only
-   (transform/opacity/border/shadow, 120-200ms) — no continuous motion. */
+   info accent. Fast micro-animations only (transform/opacity/border/
+   shadow, 120-200ms).
+
+   Theme system: :root holds the LIGHT palette (the default). Dark mode is
+   applied either via [data-theme="dark"] (explicit choice, the "المظهر"
+   toggle on settings.html, wired through js/theme.js) or, when no
+   explicit choice has ever been stored, via the prefers-color-scheme
+   media query — see the two blocks after :root. [data-theme="light"]
+   exists too so an explicit light choice always wins even on a dark-OS
+   system. Every component below is written against these same custom-
+   property names, so the theme switch requires no changes anywhere else
+   in this file. Scoped to THIS shared stylesheet only — AI Media Buyer,
+   Creative Factory, Product Marketing Center and the Product Research
+   experimental tabs each commit to their own single light look regardless
+   of this toggle (by original design, unchanged). */
 
 :root {
   --bg-primary: #f7f8fa;
@@ -52,7 +65,99 @@
   --shadow-md: 0 8px 24px rgba(15,23,42,0.07);
 }
 
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg-primary: #0b0f1a;
+    --bg-secondary: #11172a;
+    --bg: var(--bg-primary);
+    --bg-elevated: #131a2b;
+    --bg-card: #161d30;
+    --border: #262f45;
+    --border-strong: #33395a;
+    --text: #e7e9f5;
+    --text-dim: #9aa3be;
+    --text-faint: #636e8c;
+
+    --accent: #ff8c3d;
+    --accent-hover: #ffa25f;
+    --accent-2: #ff7a1a;
+    --accent-dim: #2e2013;
+
+    --green: #34d399;
+    --green-bg: #0f2e26;
+    --yellow: #fbbf24;
+    --yellow-bg: #332a10;
+    --red: #f87171;
+    --red-bg: #3a1414;
+    --gray: #94a3b8;
+    --gray-bg: #1b2437;
+    --blue: #5b9bff;
+    --blue-bg: #16233d;
+    --purple: #c9a4ff;
+    --purple-bg: #2a1e42;
+
+    --sidebar-bg: #11172a;
+    --sidebar-border: #262f45;
+    --sidebar-text: #e7e9f5;
+    --sidebar-text-dim: #9aa3be;
+    --sidebar-hover-bg: #1c2440;
+    --sidebar-active-bg: #ff7a1a;
+    --sidebar-active-text: #ffffff;
+
+    --shadow: 0 10px 28px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.25);
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
+    --shadow-md: 0 10px 28px rgba(0,0,0,0.35);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg-primary: #0b0f1a;
+  --bg-secondary: #11172a;
+  --bg: var(--bg-primary);
+  --bg-elevated: #131a2b;
+  --bg-card: #161d30;
+  --border: #262f45;
+  --border-strong: #33395a;
+  --text: #e7e9f5;
+  --text-dim: #9aa3be;
+  --text-faint: #636e8c;
+
+  --accent: #ff8c3d;
+  --accent-hover: #ffa25f;
+  --accent-2: #ff7a1a;
+  --accent-dim: #2e2013;
+
+  --green: #34d399;
+  --green-bg: #0f2e26;
+  --yellow: #fbbf24;
+  --yellow-bg: #332a10;
+  --red: #f87171;
+  --red-bg: #3a1414;
+  --gray: #94a3b8;
+  --gray-bg: #1b2437;
+  --blue: #5b9bff;
+  --blue-bg: #16233d;
+  --purple: #c9a4ff;
+  --purple-bg: #2a1e42;
+
+  --sidebar-bg: #11172a;
+  --sidebar-border: #262f45;
+  --sidebar-text: #e7e9f5;
+  --sidebar-text-dim: #9aa3be;
+  --sidebar-hover-bg: #1c2440;
+  --sidebar-active-bg: #ff7a1a;
+  --sidebar-active-text: #ffffff;
+
+  --shadow: 0 10px 28px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.25);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.3);
+  --shadow-md: 0 10px 28px rgba(0,0,0,0.35);
+}
+
 * { box-sizing: border-box; }
+
+body, .sidebar, .card, .stat-tile {
+  transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease;
+}
 
 html, body {
   margin: 0;
