@@ -185,8 +185,26 @@ export async function generateRecommendations({ windowName = null, triggeredById
     netProfitByProduct.set(pid, bundle.netProfit);
   }
 
+  // Campaigns still inside the Clone & Schedule managed lifecycle (created
+  // PAUSED, waiting for their scheduled activation time) get their own
+  // dedicated "الحملات المنقولة والمجدولة" section on the home page — they
+  // must never also surface as noise ("needs a decision") in the main
+  // recommendations feed while they're not live yet. Once a job reaches
+  // ACTIVATED, its campaign drops out of this set and is analyzed normally
+  // like any other live campaign from then on.
+  const scheduledCampaignIds = new Set(
+    (
+      await prisma.ambCloneJob.findMany({
+        where: { destination_ad_account_id: adAccountId, status: { in: ['CLONED_PAUSED', 'ACTIVATION_PENDING'] }, destination_campaign_id: { not: null } },
+        select: { destination_campaign_id: true },
+      })
+    ).map((j) => j.destination_campaign_id)
+  );
+
   const candidates = [];
   for (const ctx of walkExecutableNodes(tree)) {
+    const campaignId = ctx.level === 'campaign' ? ctx.node.id : ctx.campaign?.id;
+    if (campaignId && scheduledCampaignIds.has(campaignId)) continue;
     const m = ctx.node.metrics;
     if (!m) continue;
     // Enrichment: intra-day trend + fatigue only for ad-level (cheap enough, most relevant).

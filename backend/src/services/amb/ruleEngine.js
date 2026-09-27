@@ -10,8 +10,17 @@ const EXECUTABLE = new Set(['PAUSE', 'RESUME', 'INCREASE_BUDGET', 'DECREASE_BUDG
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
 
 // ---------------------------------------------------------------------------
-// SCALING ENGINE — controlled, multi-signal. Never scales off one cheap
-// conversion. Bands are configurable (settings), defaults per spec.
+// SCALING ENGINE — controlled, multi-signal. Bands are configurable
+// (settings), defaults per spec. EARLY_SIGNAL is a deliberate, narrow
+// exception (explicit request): a campaign doesn't have to wait for the
+// full minimum-purchase volume if its very first order(s) already show an
+// outstanding CPA (>=50% below target — the same bar the normal STRONG
+// band already requires) — scaled far more conservatively than a
+// STRONG/GOOD recommendation (a small, capped bump) precisely because the
+// sample is tiny and could be luck. This does NOT touch
+// ambMinPurchasesBeforeScaling itself, which stays the real gate for every
+// other system that relies on it (winner detection, creative fatigue,
+// etc.) — only this one path gets the narrow carve-out.
 // ---------------------------------------------------------------------------
 export function computeScaleRecommendation({ metrics, econ, settings, currentBudget }) {
   const target = n(econ?.targetCpa) ?? n(settings.ambDefaultTargetCpa) ?? 120;
@@ -21,12 +30,16 @@ export function computeScaleRecommendation({ metrics, econ, settings, currentBud
   const maxIncPct = n(settings.ambMaxBudgetIncreasePct) ?? 20;
 
   if (cpa === null || currentBudget == null) return { shouldScale: false, band: 'NONE', reason: 'مفيش CPA أو ميزانية حالية معروفة.' };
-  if (purchases < minPurch) return { shouldScale: false, band: 'INSUFFICIENT_VOLUME', reason: `عدد المشتريات (${purchases}) أقل من الحد الأدنى للتوسع (${minPurch}).` };
-  if (metrics.dataSufficiency === 'WEAK') return { shouldScale: false, band: 'WEAK_DATA', reason: 'كفاية البيانات ضعيفة — مش وقت توسع.' };
 
   const better = (target - cpa) / target; // fraction below target
+  const belowMinVolume = purchases < minPurch;
+  const earlySignalEligible = purchases >= 1 && better >= 0.5;
+
+  if (belowMinVolume && !earlySignalEligible) return { shouldScale: false, band: 'INSUFFICIENT_VOLUME', reason: `عدد المشتريات (${purchases}) أقل من الحد الأدنى للتوسع (${minPurch}).` };
+  if (metrics.dataSufficiency === 'WEAK' && !earlySignalEligible) return { shouldScale: false, band: 'WEAK_DATA', reason: 'كفاية البيانات ضعيفة — مش وقت توسع.' };
+
   let pct = 0, band = 'HOLD';
-  if (better >= 0.5) { pct = maxIncPct; band = 'STRONG'; }
+  if (better >= 0.5) { band = belowMinVolume ? 'EARLY_SIGNAL' : 'STRONG'; pct = belowMinVolume ? Math.min(maxIncPct, 10) : maxIncPct; }
   else if (better >= 0.3) { pct = Math.min(maxIncPct, 20); band = 'GOOD'; }
   else if (better >= 0.2) { pct = Math.min(maxIncPct, 15); band = 'MODERATE'; }
   else if (better >= 0.1) { pct = Math.min(maxIncPct, 10); band = 'SMALL'; }
@@ -34,7 +47,10 @@ export function computeScaleRecommendation({ metrics, econ, settings, currentBud
 
   pct = Math.min(pct, maxIncPct); // hard cap per action
   const newBudget = Math.round(currentBudget * (1 + pct / 100));
-  return { shouldScale: true, band, changePct: pct, currentBudget, newBudget, reason: `CPA أحسن من الهدف بـ${Math.round(better * 100)}% مع ${purchases} شراء — توسّع محسوب +${pct}%.` };
+  const reason = band === 'EARLY_SIGNAL'
+    ? `أول ${purchases} ${purchases === 1 ? 'شراء' : 'مشتريات'} بس، لكن الـCPA ممتاز جدًا (أحسن من الهدف بـ${Math.round(better * 100)}%) — إشارة توسع مبكرة بحذر +${pct}%.`
+    : `CPA أحسن من الهدف بـ${Math.round(better * 100)}% مع ${purchases} شراء — توسّع محسوب +${pct}%.`;
+  return { shouldScale: true, band, changePct: pct, currentBudget, newBudget, reason };
 }
 
 // ---------------------------------------------------------------------------

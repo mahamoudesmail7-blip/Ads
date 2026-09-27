@@ -811,8 +811,16 @@ function filteredRecs(active) {
   if (state.filter !== 'all' && state.filter !== 'need') list = list.filter((r) => r.category === state.filter);
   const q = state.search.trim().toLowerCase();
   if (q) list = list.filter((r) => [r.entityName, r.campaignName, r.adsetName, r.adName, r.productName].some((x) => (x || '').toLowerCase().includes(q)));
+  // Sorted by real order count first (explicit request: "الكامبين اللي
+  // جايبه اوردرات أكتر تكون فوق") — priority and recency only break ties
+  // between campaigns with the same order count (mostly the many 0-order
+  // entries), they no longer outrank a campaign with real orders.
   const order = { P0: 0, P1: 1, P2: 2, P3: 3 };
-  return [...list].sort((a, b) => (order[a.priority] ?? 9) - (order[b.priority] ?? 9) || new Date(b.createdAt) - new Date(a.createdAt));
+  return [...list].sort((a, b) =>
+    (b.currentMetrics?.purchases || 0) - (a.currentMetrics?.purchases || 0)
+    || (order[a.priority] ?? 9) - (order[b.priority] ?? 9)
+    || new Date(b.createdAt) - new Date(a.createdAt)
+  );
 }
 
 function renderRecList(active) {
