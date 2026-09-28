@@ -168,7 +168,11 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
   };
 }
 
-const JOB_TERMINAL = new Set(['CLONED_PAUSED', 'ACTIVATED', 'FAILED', 'ACTIVATION_FAILED', 'NEEDS_INPUT', 'NEEDS_DECISION', 'CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY']);
+// SCHEDULED_NATIVE = native-schedule jobs are ACTIVE-on-Meta-with-future-
+// start_time immediately, the same finished state as CLONED_PAUSED for a
+// legacy job — omitting it here made waitAndVerifyScale time out and report
+// a false FAILED on an already-successful native-scheduled scale.
+const JOB_TERMINAL = new Set(['CLONED_PAUSED', 'SCHEDULED_NATIVE', 'ACTIVATED', 'FAILED', 'ACTIVATION_FAILED', 'NEEDS_INPUT', 'NEEDS_DECISION', 'CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY']);
 
 /**
  * Wait for the clone worker to finish the batch, then PROVE the whole scale
@@ -397,6 +401,12 @@ export async function executeScale({
       campaignNameOverride: nameOverride,
       executionMode: mode === 'STAY_PAUSED' ? null : mode,
       startAt: mode === 'SCHEDULE' ? startAt : null,
+      // Scale's SCHEDULE must look "open" in Ads Manager while it waits, not
+      // PAUSED — native Meta scheduling creates the campaign/ad set/ad ACTIVE
+      // right away (Meta reviews immediately, zero spend) and stamps the ad
+      // set's own start_time so Meta itself — not our 60s tick — holds and
+      // then releases delivery at the exact requested instant.
+      nativeSchedule: mode === 'SCHEDULE',
       allowPageOnlyIg: true,
       userId,
       ...batchArgs,

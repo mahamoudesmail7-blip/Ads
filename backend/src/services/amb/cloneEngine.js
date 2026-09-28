@@ -1252,6 +1252,12 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
     billing_event: as.billing_event,
     optimization_goal: as.optimization_goal,
     targeting: transformTargeting(as.targeting, resolved),
+    // Real Meta Ads Manager field behind the "Customer lifecycle strategy" UI
+    // control (same field launchPublish.js's wizard always sets). 100 = no
+    // restriction on existing-customer budget = "Get conversions from all
+    // audiences". Every clone/scale must set this explicitly — Meta leaves it
+    // blank on create otherwise, which is what showed empty in Ads Manager.
+    existing_customer_budget_percentage: 100,
   };
   // Winner → Scale forced a campaign (CBO) budget: pin the ad set to the same
   // no-cap strategy as the campaign and carry NO bid cap (a scale has none).
