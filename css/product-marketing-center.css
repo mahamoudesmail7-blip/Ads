@@ -116,6 +116,12 @@
 .pmc-diag-item .dot.HIGH { background: var(--amb-red); } .pmc-diag-item .dot.MEDIUM { background: var(--amb-amber); } .pmc-diag-item .dot.INFO { background: var(--amb-blue); }
 .pmc-diag-item .t { font-weight: 700; font-size: 13px; } .pmc-diag-item .e { font-size: 12px; color: var(--amb-text-dim); margin: 2px 0; } .pmc-diag-item .a { font-size: 12px; color: var(--amb-blue); }
 
+.pmc-timeline { margin-top: 4px; }
+.pmc-timeline-item { display: flex; gap: 10px; padding: 5px 0; font-size: 12px; border-bottom: 1px dashed var(--amb-border); }
+.pmc-timeline-item:last-child { border-bottom: none; }
+.pmc-timeline-item .t { color: var(--amb-text-faint); flex-shrink: 0; min-width: 70px; }
+.pmc-timeline-item .l { color: var(--amb-text-dim); }
+
 .pmc-angle-mini { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px dashed var(--amb-border); font-size: 12.5px; }
 .pmc-angle-mini:last-child { border-bottom: none; }
 

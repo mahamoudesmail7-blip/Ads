@@ -10,6 +10,7 @@ import { prisma } from '../prisma.js';
 import * as PM from '../services/amb/productMarketing.js';
 import * as PMT from '../services/amb/productMarketingTests.js';
 import * as MAB from '../services/amb/metaAudienceBreakdown.js';
+import * as LCS from '../services/amb/liveCampaignStatus.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -195,6 +196,15 @@ function snapshotSlice(field) {
     res.json({ stale: false, [field]: snap[field] });
   });
 }
+// ---- Live Campaign Intelligence, Slice 1 (§5/§24) — pure composition over ----
+// ---- already-computed data; safe to poll, triggers no new Meta/EasyOrders call ----
+router.get('/profiles/:id/live-status', asyncRoute(async (req, res) => {
+  res.json(await LCS.getLiveCampaignStatus({ profileId: idParam(req.params.id), windowName: req.query.window }));
+}));
+router.get('/profiles/:id/timeline', asyncRoute(async (req, res) => {
+  res.json(await LCS.buildProductTimeline({ profileId: idParam(req.params.id) }));
+}));
+
 router.get('/profiles/:id/markets', snapshotSlice('markets'));
 router.get('/profiles/:id/buyer-insights', snapshotSlice('buyerInsights'));
 router.get('/profiles/:id/winner-intel', asyncRoute(async (req, res) => {

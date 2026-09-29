@@ -67,6 +67,18 @@ function pmcIcon(name, cls = '') {
   return `<svg class="pmc-ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${PMC_ICON_PATHS[name] || ''}</svg>`;
 }
 
+/** "شغالة منذ Xي Yس" style duration formatter (Arabic) — Live Campaign Header only, for durations that can span many days (unlike timeAgoAr's short relative times). */
+function fmtDurationAr(ms) {
+  if (ms == null || ms < 0) return null;
+  const mins = Math.floor(ms / 60000);
+  const days = Math.floor(mins / 1440);
+  const hrs = Math.floor((mins % 1440) / 60);
+  const rem = mins % 60;
+  if (days > 0) return `${days}ي ${hrs}س`;
+  if (hrs > 0) return `${hrs}س ${rem}د`;
+  return `${Math.max(rem, 1)}د`;
+}
+
 /** Small local relative-time formatter (Arabic) — no such helper exists yet in ui-common.js. Used ONLY for real timestamps (snapshot.computedAt); never called with a fabricated date. */
 function timeAgoAr(dateInput) {
   if (!dateInput) return null;
@@ -253,6 +265,7 @@ function renderNav() {
 
 /** Switches state.tab and updates ONLY the active-state classes + the tab body — never rebuilds the sidebar/hero/nav-cards on a tab switch (perf). Shared by the sidebar nav items AND the large nav cards below the hero. */
 function selectPmcTab(tabKey) {
+  stopLiveHeaderRefresh(); // renderOverview() restarts it if the new tab is 'overview'
   state.tab = tabKey;
   updateActiveNav();
   renderTabBody();
@@ -478,6 +491,7 @@ async function lockFromUpload() {
   } catch (e) { UI.toast(e.message, 'error'); }
 }
 function resetWorkspace() {
+  stopLiveHeaderRefresh();
   state.tab = 'overview'; state.snapshot = null; state.memory = null; state.actions = null; state.competitors = null;
   state.hookResult = null; state.postResult = null; state.ideaResult = null; state.testPackResult = null;
   state.metaMapping = null; state.metaMappingLoading = false; state.metaMappingSelected = {}; state.metaMappingBusy = false;
@@ -828,12 +842,98 @@ function locationsBarHtml(s) {
   </div>`;
 }
 
+// ---------------------------------------------------------------------------
+// Live Campaign Intelligence, Slice 1 — a live status header on Overview
+// only. Polls the already-composed /live-status endpoint (never triggers a
+// new Meta/EasyOrders call itself — it just re-reads what the backend
+// already knows) so the open tab stays current without a manual reload.
+// Exact pattern as js/easy-orders.js's own REFRESH_INTERVAL_MS ticker: a
+// request-generation counter discards a stale in-flight response, and the
+// timer is stopped on tab-switch/profile-switch/page-unload.
+// ---------------------------------------------------------------------------
+const LIVE_REFRESH_MS = 60000;
+let liveHeaderTimer = null;
+let liveHeaderGen = 0;
+
+function stopLiveHeaderRefresh() {
+  if (liveHeaderTimer) { clearInterval(liveHeaderTimer); liveHeaderTimer = null; }
+}
+function startLiveHeaderRefresh() {
+  stopLiveHeaderRefresh();
+  liveHeaderTimer = setInterval(() => fetchAndRenderLiveHeader(), LIVE_REFRESH_MS);
+}
+window.addEventListener('beforeunload', stopLiveHeaderRefresh);
+
+const BADGE_DOT = { GREEN: '🟢', YELLOW: '🟡', RED: '🔴' };
+
+function liveHeaderSkeletonHtml() {
+  return `<div class="pmc-card" id="pmcLiveHeader" style="margin-bottom:14px;"><div class="amb-loading">جارِ تحميل الحالة الحيّة…</div></div>`;
+}
+
+function liveHeaderHtml(live, timeline) {
+  if (!live?.linked) {
+    return `<div class="h">📡 حالة الحملة الحيّة</div><div class="pmc-empty" style="padding:10px;">${E(live?.reason || 'المنتج لسه مش مربوط بحملة Meta حقيقية.')}</div>`;
+  }
+  const activeCampaigns = (live.campaigns || []).filter((c) => c.status === 'ACTIVE');
+  const statePill = activeCampaigns.length
+    ? `<span class="badge green">🟢 ${activeCampaigns.length} حملة نشطة الآن</span>`
+    : `<span class="badge gray">⏸ كل الحملات متوقفة حاليًا</span>`;
+  const running = live.launch?.timeRunningMs != null ? fmtDurationAr(live.launch.timeRunningMs) : null;
+  const runningLabel = running
+    ? `شغالة منذ ${running}${live.launch.source === 'EARLIEST_KNOWN_ACTIVITY' ? ' (أقدم نشاط معروف)' : ''}`
+    : '';
+  const k = live.kpis || {};
+  const fr = live.freshness || {};
+  const timelineHtml = (timeline?.events || []).length
+    ? `<div class="pmc-timeline">${timeline.events.slice(-8).reverse().map((ev) => `<div class="pmc-timeline-item"><span class="t">${E(timeAgoAr(ev.at) || '')}</span><span class="l">${E(ev.label)}</span></div>`).join('')}</div>`
+    : '';
+  return `
+    <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+      <span>📡 حالة الحملة الحيّة</span>${statePill}
+    </div>
+    <div class="faint" style="font-size:12px;margin:2px 0 8px;">${E(runningLabel)}</div>
+    <div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));">
+      <div class="pmc-kv"><span>المصروف</span><b>${fmtEGP(k.spend)}</b></div>
+      <div class="pmc-kv"><span>مشتريات Meta</span><b>${fmtNum(k.purchases)}</b></div>
+      <div class="pmc-kv"><span>CPA</span><b>${k.cpa != null ? fmtEGP(k.cpa) : '—'}</b></div>
+      <div class="pmc-kv"><span>CTR</span><b>${fmtPct1(k.ctr != null ? k.ctr / 100 : null)}</b></div>
+      <div class="pmc-kv"><span>CPM</span><b>${k.cpm != null ? fmtEGP(k.cpm) : '—'}</b></div>
+      <div class="pmc-kv"><span>معدل التأكيد (Easy Orders)</span><b>${fmtPct1(k.easyOrdersConfirmationRate)}</b></div>
+    </div>
+    <div class="faint" style="font-size:11.5px;margin-top:8px;">
+      ${BADGE_DOT[fr.badge] || ''} Meta: ${E(timeAgoAr(fr.meta?.lastSuccessAt) || 'غير معروف')}
+      ${fr.easyOrders?.lastUpdatedAt ? ` · Easy Orders: ${E(timeAgoAr(fr.easyOrders.lastUpdatedAt))}` : ''}
+    </div>
+    ${timelineHtml ? `<div class="faint" style="font-size:11px;margin-top:10px;font-weight:700;">الجدول الزمني</div>${timelineHtml}` : ''}
+  `;
+}
+
+async function fetchAndRenderLiveHeader() {
+  const host = $('pmcLiveHeader');
+  if (!host || !state.profile) return;
+  const myGen = ++liveHeaderGen;
+  try {
+    const [live, timeline] = await Promise.all([
+      api.get(`/api/product-marketing/profiles/${state.profile.id}/live-status`),
+      api.get(`/api/product-marketing/profiles/${state.profile.id}/timeline`),
+    ]);
+    if (myGen !== liveHeaderGen) return; // a newer request (tab re-entered, or a later tick) already won
+    const el = $('pmcLiveHeader');
+    if (el) el.innerHTML = liveHeaderHtml(live, timeline);
+  } catch {
+    // Non-critical — the rest of Overview already rendered from the real
+    // snapshot; a failed live-header refresh just leaves the last-known
+    // header in place rather than erroring the whole tab.
+  }
+}
+
 function renderOverview(mount, s) {
   const op = s.opportunity || {};
   const scoreColor = op.label === 'قوية' ? 'strong' : op.label === 'متوسطة' ? 'medium' : 'weak';
   const ring = op.score != null ? scoreRingSvg(op.score, scoreColor) : '<div class="pmc-empty" style="padding:16px;">البيانات غير كافية للحكم</div>';
   const m = s.metrics || {};
   mount.innerHTML = `
+    ${liveHeaderSkeletonHtml()}
     ${kpiRowHtml(s, state.profile)}
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
@@ -885,6 +985,8 @@ function renderOverview(mount, s) {
       ${s.aiFailed ? `<div class="faint" style="font-size:11.5px;margin-top:6px;">⚠️ تعذّر توليد التوصيات الذكية: ${E(s.aiFailReason || '')}</div>` : ''}
     </div>`;
   wireActionButtons(mount);
+  fetchAndRenderLiveHeader();
+  startLiveHeaderRefresh();
 }
 
 function needsAttentionListHtml(items) {
