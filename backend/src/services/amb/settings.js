@@ -26,6 +26,26 @@ export const AMB_DEFAULT_SETTINGS = {
   ambAnalysisLookbackDays: 7,
   ambScaleCpaBetterPct: 10,            // CPA must be at least this % under target before any scale is considered
   ambCreativeFatigueFreqThreshold: 3.5,
+  // Live Campaign Intelligence Slice 2 — periodic audience-breakdown history
+  // capture (age/gender/geo). Deliberately its own, much longer interval than
+  // ambSyncIntervalMinutes: a Meta breakdown call is a heavier request than
+  // the core performance sync and only needs enough resolution for real
+  // hour-scale trend arrows, never every-15-minutes.
+  ambAudienceBreakdownIntervalMinutes: 60,
+  ambAudienceBreakdownMaxProductsPerTick: 5, // rate-limit guard — bounded batch per tick, same convention as activateDueJobs()'s take:50
+  // Live Campaign Intelligence Slice 4 — configurable continuous alerts.
+  // Default OFF: this turns on a NEW automatic background behavior (calling
+  // the existing get_incidents() pipeline + two new custom-threshold checks
+  // for every live product on a timer) that didn't run unattended before —
+  // same "every dangerous/new automatic action defaults OFF" rule as every
+  // other autopilot-style setting above. Turning it on raises real alerts
+  // through the EXISTING generic alerts.js pipeline; it never executes an
+  // action by itself.
+  ambLiveAlertsEnabled: false,
+  ambLiveAlertIntervalMinutes: 30,
+  ambLiveAlertMaxProductsPerTick: 5,
+  ambLiveAlertCpaThreshold: null,             // EGP — null = this specific check is off; still requires the existing ambMinPurchasesBeforeScaling sample gate before it can fire
+  ambLiveAlertSpendNoPurchaseThreshold: null, // EGP — null = off
   // Autopilot action allow-list (all OFF by default)
   ambAllowAutoPause: false,
   ambAllowAutoBudgetIncrease: false,

@@ -15,6 +15,23 @@ import { prisma } from '../../prisma.js';
 import { getProductPerformance, resolveProductCampaigns } from './productPerformance.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { resolveEffectiveProductId } from './productMarketing.js';
+import { getAudienceBreakdownTrend } from './audienceBreakdownSync.js';
+import { governorateTrendForProduct } from './customerQuality.js';
+import { resolveWindow } from './metricsEngine.js';
+// Slice 3 reuses the EXACT same building blocks aiTools.js's own
+// get_testing_brain/get_growth_plan assemble from (never aiTools.js itself —
+// this file is imported BY aiTools.js for Slice 4's new AI tool, so
+// depending on aiTools.js back would be a circular import). Same functions,
+// same assembly order, so this can never silently diverge from what the
+// Assistant already answers for "أنهي اختبار جاي؟"/"عامل إيه دلوقتي؟".
+import { getAmbSettings } from './settings.js';
+import { getConnection } from '../metaAuth.js';
+import { buildProductDecisionPackage } from './productDecision.js';
+import { buildTestMatrix, nextBestTest, buildControlledTestDesign } from './testingBrain.js';
+import { buildGrowthPlan } from './growthStrategist.js';
+import { computeTruePerformance } from '../truePerformance.js';
+import { classifyProfitState } from './profitBrain.js';
+import { stockGuardForProduct } from './stockGuard.js';
 
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 
@@ -85,7 +102,11 @@ function freshnessBadge({ metaAgeMs, metaIntervalMs, metaDataState }) {
 export async function getLiveCampaignStatus({ profileId, windowName = 'today' }) {
   const { productId } = await resolveProductId(profileId);
   if (!productId) return { linked: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
+  return getLiveCampaignStatusByProductId({ productId, windowName });
+}
 
+/** Same as getLiveCampaignStatus(), keyed directly by Product.id — for callers that already have it (e.g. the Slice 4 alert scheduler, which iterates products, not PMC profiles) instead of a PMC profile id. */
+export async function getLiveCampaignStatusByProductId({ productId, windowName = 'today' }) {
   const [perf, campaigns, syncStatus] = await Promise.all([
     getProductPerformance({ productId, windowName }),
     resolveProductCampaigns(productId),
@@ -161,4 +182,76 @@ export async function buildProductTimeline({ profileId }) {
 
   events.sort((a, b) => new Date(a.at) - new Date(b.at));
   return { linked: true, events };
+}
+
+/**
+ * Live Campaign Intelligence Slice 2 — Meta age/gender/geo trend for one
+ * profile's product, from real persisted history (see
+ * audienceBreakdownSync.js). `lookbackHours` picks how far back to look for
+ * a real comparison point — never a fabricated one.
+ */
+export async function getAudienceTrend({ profileId, lookbackHours = 6 }) {
+  const { productId } = await resolveProductId(profileId);
+  if (!productId) return { linked: false, available: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
+  return { linked: true, ...(await getAudienceBreakdownTrend({ productId, lookbackHours })) };
+}
+
+/**
+ * Live Campaign Intelligence Slice 2 — governorate trend for one profile's
+ * product, derived from Easy Orders' already-near-real-time data (no new
+ * history table needed — see governorateTrendForProduct()'s own comment).
+ */
+export async function getGovernorateTrend({ profileId, windowName = 'last7', minOrders = 10 }) {
+  const { productId } = await resolveProductId(profileId);
+  if (!productId) return { linked: false, markets: [] };
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { store_id: true } });
+  const window = resolveWindow(windowName);
+  return { linked: true, ...(await governorateTrendForProduct({ productId, storeId: product?.store_id || undefined, from: window.from, to: window.to, minOrders })) };
+}
+
+/**
+ * Live Campaign Intelligence Slice 3 — Testing Brain + Growth Strategist
+ * verdicts for the live header's "current best signal / biggest problem /
+ * next recommended action" (and the dedicated test matrix). On-demand only,
+ * like PMC's own market-gaps/strategist/audience-breakdown — never on the
+ * 60s auto-refresh tick, since this composes several already-heavier
+ * pipelines (profit/stock/decision package), the same discipline
+ * computeSnapshot()'s own comment already documents for this class of call.
+ */
+export async function getLiveIntelligence({ profileId, windowName = 'last7' }) {
+  const { productId } = await resolveProductId(profileId);
+  if (!productId) return { linked: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
+  return { linked: true, productId, ...(await buildLiveIntelligenceForProduct({ productId, windowName })) };
+}
+
+/**
+ * Same composition as getLiveIntelligence(), keyed directly by Product.id —
+ * shared by the profileId-based route above AND aiTools.js's
+ * get_live_campaign_state tool (Slice 4), so both read the identical
+ * assembly instead of drifting apart. Mirrors get_testing_brain/
+ * get_growth_plan's own bodies in aiTools.js exactly (same functions, same
+ * order) without importing aiTools.js itself (it imports THIS file).
+ */
+export async function buildLiveIntelligenceForProduct({ productId, windowName = 'last7' }) {
+  const settings = await getAmbSettings();
+  const connection = await getConnection();
+  const adAccountId = connection?.selected_ad_account_id || null;
+  const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName, settings, adAccountId });
+
+  const { matrix, hasProfile } = await buildTestMatrix({ productId: Number(productId), pkg });
+  const next = nextBestTest({ pkg, testMatrix: matrix });
+  const design = buildControlledTestDesign({ pkg, next });
+  const testingBrain = { ok: true, hasData: true, productId: pkg.productId, productName: pkg.productName, window: pkg.window, hasMarketingProfile: hasProfile, testMatrix: matrix, nextBestTest: next, controlledTestDesign: design };
+
+  const product = await prisma.product.findUnique({
+    where: { id: Number(productId) },
+    select: { store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, commission: true, expected_return_cost: true },
+  });
+  const trueRows = await computeTruePerformance({ productId: Number(productId) });
+  const profitBrain = classifyProfitState(trueRows.products?.[0] || { real: { actualOrders: 0 } }, product || {}, settings);
+  const stockGuard = await stockGuardForProduct({ productId: Number(productId), storeId: product?.store_id, days: settings.ambStockGuardVelocityWindowDays });
+  const plan = await buildGrowthPlan({ productId: Number(productId), pkg, profitBrain, stockGuard });
+  const growthPlan = { ok: true, hasData: true, ...plan };
+
+  return { testingBrain, growthPlan };
 }

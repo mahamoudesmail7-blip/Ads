@@ -4669,6 +4669,11 @@ const SETTING_FIELDS = [
   ['ambAllowAutoBudgetDecrease', 'أوتوبايلوت: اسمح بتقليل الميزانية', 'bool'],
   ['ambAllowDuplicationActions', 'أوتوبايلوت: اسمح بأكشنز التكرار', 'bool'],
   ['ambCloneNativeSchedule', 'نسخ وجدولة: استخدم جدولة Meta الأصلية (مراجعة فورية، لا صرف قبل الموعد)', 'bool'],
+  ['ambAudienceBreakdownIntervalMinutes', 'الذكاء الحي: كل قد إيه نلتقط تقسيمات الجمهور (Age/Gender) بالدقائق', 'number'],
+  ['ambLiveAlertsEnabled', 'الذكاء الحي: فعّل التنبيهات المستمرة على الحملات الشغالة', 'bool'],
+  ['ambLiveAlertIntervalMinutes', 'الذكاء الحي: كل قد إيه نفحص تنبيهات الحملات الشغالة بالدقائق', 'number'],
+  ['ambLiveAlertCpaThreshold', 'الذكاء الحي: نبّهني لو الـCPA تخطّى (ج.م — سيبه فاضي لإيقاف هذا التنبيه)', 'number'],
+  ['ambLiveAlertSpendNoPurchaseThreshold', 'الذكاء الحي: نبّهني لو الصرف بدون مشتريات تخطّى (ج.م — سيبه فاضي لإيقاف هذا التنبيه)', 'number'],
 ];
 async function renderSettings(panel) {
   const { settings } = await api.get('/api/ai-media-buyer/settings');

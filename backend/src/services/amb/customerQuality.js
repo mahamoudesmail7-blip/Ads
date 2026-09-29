@@ -121,3 +121,32 @@ export async function marketsForProduct({ productId, storeId, from, to, minOrder
     .sort((a, b) => (b.delivered || 0) - (a.delivered || 0));
   return { source: 'easyorders', markets };
 }
+
+/**
+ * Live Campaign Intelligence Slice 2 — governorate trend. Easy Orders is
+ * already near-real-time (webhook + 2-min reconciliation — see
+ * easyOrdersReconcile.js), so a real trend doesn't need a new history table
+ * the way Meta's audience breakdown does: it's just marketsForProduct() run
+ * twice, over the current window and the immediately preceding equal-length
+ * window — the exact same current-vs-prior pattern
+ * productPerformance.js's getProductDiagnosis() already uses for Meta CTR/
+ * CPA fatigue corroboration. `from`/`to` are the CURRENT window (YYYY-MM-DD).
+ */
+export async function governorateTrendForProduct({ productId, storeId, from, to, minOrders = 10 }) {
+  const current = await marketsForProduct({ productId, storeId, from, to, minOrders });
+  const spanDays = Math.max(1, Math.round((new Date(to) - new Date(from)) / 86_400_000) + 1);
+  const priorTo = new Date(new Date(from).getTime() - 86_400_000).toISOString().slice(0, 10);
+  const priorFrom = new Date(new Date(priorTo).getTime() - (spanDays - 1) * 86_400_000).toISOString().slice(0, 10);
+  const prior = await marketsForProduct({ productId, storeId, from: priorFrom, to: priorTo, minOrders });
+
+  const priorByGov = new Map((prior.markets || []).map((m) => [m.government, m]));
+  const markets = (current.markets || []).map((m) => {
+    const p = priorByGov.get(m.government);
+    // Only a real prior INSUFFICIENT_DATA-free band counts as a comparable point — never diff against a governorate the prior window itself couldn't judge.
+    const trend = !p || p.band === 'INSUFFICIENT_DATA' || m.band === 'INSUFFICIENT_DATA'
+      ? null
+      : (m.deliveryRate ?? 0) - (p.deliveryRate ?? 0);
+    return { ...m, priorWindow: p ? { deliveryRate: p.deliveryRate, band: p.band, delivered: p.delivered } : null, deliveryRateTrend: trend };
+  });
+  return { source: current.source, window: { from, to }, priorWindow: { from: priorFrom, to: priorTo }, markets };
+}

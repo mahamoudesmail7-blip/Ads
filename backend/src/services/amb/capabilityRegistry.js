@@ -40,7 +40,7 @@ const TOOL_CATEGORY = {
 const TOOL_MONEY_GUARD = new Set(['prepare_bump', 'prepare_scale', 'prepare_test', 'prepare_campaign']);
 const TOOL_DATA_QUALITY_GATE = new Set([
   'get_amb_product_decision', 'get_growth_plan', 'get_targeting_strategy', 'get_testing_brain', 'get_cod_quality',
-  'get_product_playbook', 'get_scale_ladder', 'get_incidents', 'get_daily_brief', 'prepare_scale', 'prepare_test',
+  'get_product_playbook', 'get_scale_ladder', 'get_incidents', 'get_live_campaign_state', 'get_daily_brief', 'prepare_scale', 'prepare_test',
 ]);
 // Only ADMIN can actually approve/execute a write; MANAGER can read and
 // prepare (see /chat's own requireRole and the ADMIN-only approve route).

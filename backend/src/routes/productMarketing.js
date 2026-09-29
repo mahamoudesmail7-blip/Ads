@@ -204,6 +204,15 @@ router.get('/profiles/:id/live-status', asyncRoute(async (req, res) => {
 router.get('/profiles/:id/timeline', asyncRoute(async (req, res) => {
   res.json(await LCS.buildProductTimeline({ profileId: idParam(req.params.id) }));
 }));
+router.get('/profiles/:id/audience-trend', asyncRoute(async (req, res) => {
+  res.json(await LCS.getAudienceTrend({ profileId: idParam(req.params.id), lookbackHours: req.query.lookbackHours ? Number(req.query.lookbackHours) : undefined }));
+}));
+router.get('/profiles/:id/governorate-trend', asyncRoute(async (req, res) => {
+  res.json(await LCS.getGovernorateTrend({ profileId: idParam(req.params.id), windowName: req.query.window }));
+}));
+router.get('/profiles/:id/live-intelligence', asyncRoute(async (req, res) => {
+  res.json(await LCS.getLiveIntelligence({ profileId: idParam(req.params.id), windowName: req.query.window }));
+}));
 
 router.get('/profiles/:id/markets', snapshotSlice('markets'));
 router.get('/profiles/:id/buyer-insights', snapshotSlice('buyerInsights'));

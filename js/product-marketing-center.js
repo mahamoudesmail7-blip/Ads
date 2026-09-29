@@ -927,6 +927,48 @@ async function fetchAndRenderLiveHeader() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Live Campaign Intelligence, Slice 3 — Growth Strategist / Testing Brain
+// verdict, fetched ONCE per Overview open (never on the 60s ticker — this
+// composes several heavier pipelines, same "never hammer this on a plain
+// tab open" discipline PMC's own market-gaps/strategist calls already
+// follow). Real decision/evidence/hypothesis, never fabricated.
+// ---------------------------------------------------------------------------
+const PMC_DECISION_LABEL_AR = {
+  SCALE_CANDIDATE: '🚀 جاهز للتوسّع', KEEP_TESTING: '🟢 استمر في الاختبار', PAUSE_CANDIDATE: '🔴 مرشّح للإيقاف',
+  NEW_CREATIVE_TEST: '🎨 يحتاج كرياتيف جديد', AUDIENCE_TEST: '👥 يحتاج اختبار جمهور', GEO_TEST: '📍 يحتاج اختبار مناطق',
+  LANDING_PAGE_FIX: '🛠️ يحتاج إصلاح صفحة الهبوط', OFFER_TEST: '🏷️ يحتاج اختبار عرض/سعر', INSUFFICIENT_DATA: '⚪ بيانات غير كافية',
+};
+
+function liveIntelligenceHtml(li) {
+  if (!li?.linked || !li.growthPlan?.ok) return '';
+  const plan = li.growthPlan;
+  const decision = plan.currentState?.decision;
+  const bestSignal = (plan.whatIsWorking || [])[0] || null;
+  return `
+    <div class="pmc-card" style="margin-bottom:14px;" id="pmcLiveIntelBody">
+      <div class="h">🧠 القرار الذكي الحيّ</div>
+      <div class="pmc-kv"><span>الحالة الحالية</span><b>${E(PMC_DECISION_LABEL_AR[decision] || decision || '—')}</b></div>
+      ${bestSignal ? `<div class="pmc-kv"><span>أفضل إشارة</span><b>${E(bestSignal.dimension)}: ${E(bestSignal.key)}</b></div>` : ''}
+      <div class="pmc-kv"><span>المشكلة الحالية</span><b>${E(plan.primaryBottleneck?.label || '—')}</b></div>
+      <div class="faint" style="font-size:12px;margin:4px 0;">${E(plan.primaryBottleneck?.evidence || '')}</div>
+      <div class="pmc-kv"><span>القرار</span><b>${E(plan.hypothesis || plan.nextTest?.note || '—')}</b></div>
+      ${plan.nextTest?.recommendation && plan.nextTest.recommendation !== 'NONE' ? `<div class="faint" style="font-size:11.5px;margin-top:4px;">الخطوة المقترحة: ${E(plan.nextTest.recommendation)}${plan.sampleRequirement ? ` — ${E(plan.sampleRequirement)}` : ''}</div>` : ''}
+    </div>`;
+}
+
+async function fetchAndRenderLiveIntelligence() {
+  const el = $('pmcLiveIntelligence');
+  if (!el || !state.profile) return;
+  try {
+    const li = await api.get(`/api/product-marketing/profiles/${state.profile.id}/live-intelligence`);
+    const fresh = $('pmcLiveIntelligence');
+    if (fresh) fresh.innerHTML = liveIntelligenceHtml(li);
+  } catch {
+    // Non-critical, same reasoning as fetchAndRenderLiveHeader — leave the placeholder empty rather than erroring the tab.
+  }
+}
+
 function renderOverview(mount, s) {
   const op = s.opportunity || {};
   const scoreColor = op.label === 'قوية' ? 'strong' : op.label === 'متوسطة' ? 'medium' : 'weak';
@@ -934,6 +976,7 @@ function renderOverview(mount, s) {
   const m = s.metrics || {};
   mount.innerHTML = `
     ${liveHeaderSkeletonHtml()}
+    <div id="pmcLiveIntelligence"></div>
     ${kpiRowHtml(s, state.profile)}
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
@@ -987,6 +1030,7 @@ function renderOverview(mount, s) {
   wireActionButtons(mount);
   fetchAndRenderLiveHeader();
   startLiveHeaderRefresh();
+  fetchAndRenderLiveIntelligence();
 }
 
 function needsAttentionListHtml(items) {

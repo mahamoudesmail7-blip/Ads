@@ -42,6 +42,7 @@ import { buildDailyBrief } from './amb/dailyBrief.js';
 import { listCapabilities, capabilitySummary } from './amb/capabilityRegistry.js';
 import { resolveProductByIdOrName, getVerifiedFeatures } from './amb/productNameMatch.js';
 import { getConnection } from './metaAuth.js';
+import { getLiveCampaignStatusByProductId } from './amb/liveCampaignStatus.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
 
@@ -549,6 +550,21 @@ export async function get_daily_brief({ window } = {}) {
   }
 }
 
+// Live Campaign Intelligence Slice 4 — wraps liveCampaignStatus.js's Slice 1
+// composition verbatim (same function the Product Marketing Center's own
+// live header calls), so "الكامبين عاملة إيه دلوقتي؟" can never disagree
+// with what the human sees on screen.
+export async function get_live_campaign_state({ productId, window } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    const live = await getLiveCampaignStatusByProductId({ productId: Number(productId), windowName: window || 'today' });
+    if (!live.linked) return { ok: true, hasData: false, reason: live.reason };
+    return { ok: true, hasData: true, ...live };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 export async function get_capabilities({ category } = {}) {
   try {
     const all = listCapabilities();
@@ -858,6 +874,18 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_live_campaign_state',
+    description: '[📡 الحالة الحيّة للحملة] حالة الحملة دلوقتي لحظيًا: هل هي شغالة فعليًا (ACTIVE) على Meta، شغالة منذ قد إيه، الصرف/المشتريات/CPA/CTR/CPM النهارده، معدل تأكيد Easy Orders، ومتى آخر تحديث حقيقي من Meta و Easy Orders (عشان تعرف لو الأرقام قديمة). نفس البيانات اللي شايفها في "حالة الحملة الحيّة" في مركز التسويق الذكي للمنتج — أبدًا رقم مختلف. استخدمه لأسئلة "الكامبين عاملة إيه دلوقتي؟" أو "فيه صرف من غير أوردرات؟".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي today (ده تقرير حيّ، مش تاريخي)' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
     name: 'get_daily_brief',
     description: '[📊 تقرير النهاردة] ملخص كامل الحساب لفترة معينة — الصرف، مشتريات Meta، أوردرات Easy Orders، الإيراد، صافي الربح (لو مؤكد فقط)، متوسط CPA، معدل التحويل الفعلي (Business CR)، المنتجات الفائزة والمحتاجة انتباه، فرص التوسّع/الزيادة، الكرياتيفات المتعبة، الاختبارات الشغالة، آخر الحوادث، والمهام المنتظرة موافقتك — كل قسم معاه وقت آخر تحديث حقيقي بتاعه (Meta/Easy Orders/التحليل) عشان مفيش خلط بين فترات مختلفة. استخدمه لأسئلة "لخصلي النهاردة" أو "عامل إيه الحساب؟".',
     input_schema: {
@@ -963,6 +991,7 @@ export const TOOL_IMPLS = {
   get_price_test_status,
   get_stock_status,
   get_incidents,
+  get_live_campaign_state,
   get_daily_brief,
   get_capabilities,
   get_amb_audience_breakdown,
@@ -978,4 +1007,4 @@ export const TOOL_IMPLS = {
 // covering both pipelines for its "AI E-Commerce Operating System" scope)
 // while the new global bubble leads with the AMB layer, since it's mounted
 // on the AMB-driven pages (Scale Center, Decision Center, Launch Builder).
-export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_headlines', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_daily_brief', 'get_capabilities', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
+export const AMB_TOOL_NAMES = ['get_amb_product_performance', 'get_amb_product_decision', 'get_testing_brain', 'get_growth_plan', 'get_targeting_strategy', 'generate_angles', 'generate_hooks', 'generate_headlines', 'generate_creative_brief', 'get_cod_quality', 'get_product_playbook', 'get_scale_ladder', 'get_price_test_status', 'get_stock_status', 'get_incidents', 'get_live_campaign_state', 'get_daily_brief', 'get_capabilities', 'get_amb_audience_breakdown', 'get_amb_governorate_breakdown', 'get_amb_creative_intel', 'get_amb_scale_center_product', 'get_amb_bump_preview'];
