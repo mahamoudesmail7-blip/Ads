@@ -160,6 +160,7 @@ model Product {
   pmc_profiles                 ProductMarketingProfile[] // AI Product Marketing Center profiles for this product — additive
   launch_jobs                  AmbLaunchJob[] // Smart Decision Center Phase 1 — Campaign Launch Builder jobs deterministically linked to this product — additive
   media_library_assets         MediaLibraryAsset[] // Smart Decision Center Phase 1 — additive
+  audience_breakdown_snapshots AmbAudienceBreakdownSnapshot[] // Live Campaign Intelligence Slice 2 — additive
 
   @@index([active])
   @@index([product_name])
@@ -1274,6 +1275,31 @@ model MetaPerformanceSnapshot {
   @@index([ad_account_id, level, adset_id, date_start, snapshot_at], map: "meta_performance_snapshots_acc_lvl_adset_date_snap_idx")
   @@index([ad_account_id, level, ad_id, date_start, snapshot_at], map: "meta_performance_snapshots_acc_lvl_ad_date_snap_idx")
   @@map("meta_performance_snapshots")
+}
+
+// Live Campaign Intelligence Slice 2 — periodic history of
+// metaAudienceBreakdown.js's fetchAudienceBreakdown() result for one
+// product, so real trend arrows ("was CTR better for women 25-34 6h ago?")
+// can be computed from actual persisted snapshots instead of only ever
+// having "now" (the on-demand PMC audience-breakdown endpoint overwrites a
+// single cached JSON field with no history). Captured by the same
+// interval-gated tick as snapshotSync.js's own Meta sync — never a second
+// Meta-polling pipeline, never a new metrics computation: breakdown_json is
+// the EXACT, unmodified fetchAudienceBreakdown() output, so every consumer
+// (live or historical) reads the identical real shape/fields/sample-size
+// warnings PMC's own on-demand call already produces.
+model AmbAudienceBreakdownSnapshot {
+  id             Int      @id @default(autoincrement())
+  product_id     Int
+  product        Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  ad_account_id  String
+  window_name    String // resolveWindow() key this capture covers, e.g. "today"
+  available      Boolean // mirrors fetchAudienceBreakdown().available — false rows are kept too, so "Meta rejected every breakdown for 3 days straight" is itself a real, visible fact, never silently skipped
+  breakdown_json String // the full, unmodified fetchAudienceBreakdown() result (age/gender/country/region/platform/placement/combos/sampleWarning)
+  captured_at    DateTime @default(now())
+
+  @@index([product_id, window_name, captured_at])
+  @@map("amb_audience_breakdown_snapshots")
 }
 
 // A structured recommendation. Numbers/classification/priority/confidence/
