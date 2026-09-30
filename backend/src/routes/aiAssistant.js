@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 import { runTools, TIERS } from '../services/aiGateway/index.js';
 import { TOOL_DEFINITIONS, TOOL_IMPLS, get_decisions_summary, get_product_profit, get_order_metrics, get_lost_orders_summary, get_inventory_status } from '../services/aiTools.js';
 import { WRITE_TOOL_DEFINITIONS, WRITE_TOOL_IMPLS, WRITE_TOOL_META } from '../services/aiToolsWrite.js';
+import { verifyProductStoreScope } from '../services/amb/storeScope.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -159,12 +160,35 @@ router.post(
         executeTool: async (name, input) => {
           const impl = allToolImpls[name];
           if (!impl) throw new Error(`Tool غير معروف: ${name}`);
+          // Central store-scope gate (2026-09-30): the ~25 individual AMB
+          // tools all follow the same {productId} convention — rather than
+          // adding a per-tool check to each one, verify HERE, once, before
+          // any tool with a real productId argument and a declared page
+          // storeId ever runs. Catches the model citing a productId it saw
+          // earlier in the SAME conversation (e.g. from a different store's
+          // page context in an older turn) even for tools that never call
+          // resolveProductByIdOrName themselves. A tool call with no
+          // productId argument, or no declared storeId (storeless callers),
+          // is unaffected — this only ever narrows, never widens, access.
+          if (input?.productId && context?.storeId) {
+            const scope = await verifyProductStoreScope({ productId: input.productId, storeId: context.storeId });
+            if (!scope.ok) {
+              const output = { ok: false, error: scope.reason, code: scope.code };
+              await logAudit({ actorId: req.user.id, kind: 'TOOL_CALL', action: WRITE_TOOL_META[name] ? 'PREPARE' : 'READ', toolName: name, input, output, success: false, error: scope.reason });
+              return output;
+            }
+          }
           // Write tools need the real authenticated user id for task
           // ownership/approval, and the real page context (e.g. productId)
           // for product resolution (prepare_campaign) — the model never
-          // supplies or sees either directly.
+          // supplies or sees either directly. Read tools also get `context`
+          // now (2026-09-30 store-isolation fix): content-generation tools
+          // (generate_angles/hooks/headlines/creative_brief) and
+          // get_live_campaign_state need context.storeId to resolve products
+          // safely — they must never fall back to a global/default-store
+          // name search just because they're "read-only".
           const isWriteTool = !!WRITE_TOOL_META[name];
-          const output = isWriteTool ? await impl({ ...input, userId: req.user.id, context }) : await impl(input);
+          const output = isWriteTool ? await impl({ ...input, userId: req.user.id, context }) : await impl({ ...input, context });
           if (isWriteTool && output?.ok && output.task) lastTask = output.task;
           await logAudit({ actorId: req.user.id, kind: 'TOOL_CALL', action: isWriteTool ? 'PREPARE' : 'READ', toolName: name, input, output, success: output?.ok !== false, error: output?.ok === false ? output.error : null });
           return output;

@@ -43,6 +43,7 @@ import { listCapabilities, capabilitySummary } from './amb/capabilityRegistry.js
 import { resolveProductByIdOrName, getVerifiedFeatures } from './amb/productNameMatch.js';
 import { getConnection } from './metaAuth.js';
 import { getLiveCampaignStatusByProductId } from './amb/liveCampaignStatus.js';
+import { verifyProductStoreScope } from './amb/storeScope.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
 
@@ -290,9 +291,18 @@ export async function get_testing_brain({ productId, window } = {}) {
   }
 }
 
-export async function get_growth_plan({ productId, window } = {}) {
+export async function get_growth_plan({ productId, window, context } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    // Defense-in-depth store check (2026-09-30): this tool takes a raw
+    // productId with no name resolution of its own, but per the same
+    // asymmetric rule as get_live_campaign_state — verify against the
+    // caller's declared store WHEN one is provided, never trust an id blindly
+    // once a store context exists.
+    if (context?.storeId) {
+      const scope = await verifyProductStoreScope({ productId: Number(productId), storeId: context.storeId });
+      if (!scope.ok) return { ok: false, error: scope.reason, code: scope.code };
+    }
     const settings = await getAmbSettings();
     const adAccountId = await resolveAmbAdAccountId();
     const pkg = await buildProductDecisionPackage({ productId: Number(productId), windowName: window || 'last7', settings, adAccountId });
@@ -331,10 +341,10 @@ async function knownAnglesFor(productId, pkg) {
   return [...new Set(matrix.filter((e) => e.dimension === 'ANGLE').map((e) => e.key))];
 }
 
-export async function generate_angles({ productId, productName, count } = {}) {
+export async function generate_angles({ productId, productName, count, context } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
-    const resolved = await resolveProductByIdOrName({ productId, productName });
+    const resolved = await resolveProductByIdOrName({ productId, productName, storeId: context?.storeId });
     if (!resolved.ok) return resolved;
     const pid = resolved.product.id;
     const settings = await getAmbSettings();
@@ -350,10 +360,10 @@ export async function generate_angles({ productId, productName, count } = {}) {
   }
 }
 
-export async function generate_hooks({ productId, productName, angle, category, count } = {}) {
+export async function generate_hooks({ productId, productName, angle, category, count, context } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
-    const resolved = await resolveProductByIdOrName({ productId, productName });
+    const resolved = await resolveProductByIdOrName({ productId, productName, storeId: context?.storeId });
     if (!resolved.ok) return resolved;
     const res = await generateHooks({ productName: resolved.product.product_name, angle, category, count: count || 5 });
     if (!res.ok) return { ok: false, error: res.reason };
@@ -363,10 +373,10 @@ export async function generate_hooks({ productId, productName, angle, category, 
   }
 }
 
-export async function generate_headlines({ productId, productName, angle, count } = {}) {
+export async function generate_headlines({ productId, productName, angle, count, context } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
-    const resolved = await resolveProductByIdOrName({ productId, productName });
+    const resolved = await resolveProductByIdOrName({ productId, productName, storeId: context?.storeId });
     if (!resolved.ok) return resolved;
     const verifiedFeatures = await getVerifiedFeatures(resolved.product);
     const res = await generateHeadlines({ productName: resolved.product.product_name, verifiedFeatures, angle, count: count || 5 });
@@ -377,10 +387,10 @@ export async function generate_headlines({ productId, productName, angle, count 
   }
 }
 
-export async function generate_creative_brief({ productId, productName, angle, count } = {}) {
+export async function generate_creative_brief({ productId, productName, angle, count, context } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
-    const resolved = await resolveProductByIdOrName({ productId, productName });
+    const resolved = await resolveProductByIdOrName({ productId, productName, storeId: context?.storeId });
     if (!resolved.ok) return resolved;
     const res = await generateCreativeIdeas({ productName: resolved.product.product_name, angle, count: count || 4 });
     if (!res.ok) return { ok: false, error: res.reason };
@@ -554,9 +564,18 @@ export async function get_daily_brief({ window } = {}) {
 // composition verbatim (same function the Product Marketing Center's own
 // live header calls), so "الكامبين عاملة إيه دلوقتي؟" can never disagree
 // with what the human sees on screen.
-export async function get_live_campaign_state({ productId, window } = {}) {
+export async function get_live_campaign_state({ productId, window, context } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    // Defense-in-depth store check: this tool calls the ByProductId variant
+    // directly (no ProductMarketingProfile in between), so it bypasses
+    // liveCampaignStatus.js's own profileId-based resolveProductId() guard —
+    // verify here instead of trusting the caller's raw productId.
+    const storeId = context?.storeId;
+    if (storeId) {
+      const scope = await verifyProductStoreScope({ productId: Number(productId), storeId });
+      if (!scope.ok) return { ok: false, error: scope.reason, code: scope.code };
+    }
     const live = await getLiveCampaignStatusByProductId({ productId: Number(productId), windowName: window || 'today' });
     if (!live.linked) return { ok: true, hasData: false, reason: live.reason };
     return { ok: true, hasData: true, ...live };

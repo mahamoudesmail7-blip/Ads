@@ -7,6 +7,7 @@
 // name returns candidates:[] and the caller must say so honestly, never
 // guess the "closest" one silently.
 import { prisma } from '../../prisma.js';
+import { STORE_CONTEXT_REQUIRED } from './storeScope.js';
 
 // Arabic normalization: unify alef/hamza variants, ta-marbuta/ha, strip
 // diacritics/tatweel and punctuation, collapse whitespace — so "الراديو"
@@ -39,18 +40,41 @@ function tokens(s) {
 }
 
 /**
- * @param {{productId?:number|string, productName?:string}} input
- * @returns {Promise<{ok:true, product:{id:number,product_name:string}} | {ok:false, error?:string, candidates?:Array<{id:number,name:string}>}>}
+ * Store isolation (2026-09-30): `storeId` gates the NAME-based search below —
+ * this is the path that was doing a fully global, every-store name search,
+ * the exact gap an audit found. It is intentionally NOT enforced on the
+ * `productId` branch: a caller that already has a definite Product.id isn't
+ * "guessing" the way a name search is, and several existing, storeless
+ * callers (the AI Command Center's bare {message} chat, Decision/Scale
+ * Center's own page context) legitimately pass a productId with no store to
+ * declare — breaking those is exactly the backward-compatibility the fix
+ * must preserve. When storeId IS supplied on the productId branch, it's
+ * still verified (defense in depth, never just ignored).
+ * @param {{productId?:number|string, productName?:string, storeId?:string|null}} input
+ * @returns {Promise<{ok:true, product:{id:number,product_name:string}} | {ok:false, code?:string, error?:string, candidates?:Array<{id:number,name:string}>}>}
  */
-export async function resolveProductByIdOrName({ productId, productName }) {
+export async function resolveProductByIdOrName({ productId, productName, storeId }) {
   if (productId) {
-    const p = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { id: true, product_name: true, active: true, is_historical: true } });
+    const p = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { id: true, product_name: true, active: true, is_historical: true, store_id: true } });
     if (!p || !p.active || p.is_historical) return { ok: false, error: 'المنتج غير موجود أو غير نشط.' };
+    if (storeId && p.store_id && p.store_id !== storeId) {
+      return { ok: false, code: STORE_CONTEXT_REQUIRED, error: 'هذا المنتج تابع لمتجر مختلف عن المتجر المختار حاليًا.' };
+    }
     return { ok: true, product: p };
   }
   if (!productName || !productName.trim()) return { ok: false, error: 'محتاج اسم المنتج أو رقمه.' };
 
-  const all = await prisma.product.findMany({ where: { active: true, is_historical: false }, select: { id: true, product_name: true } });
+  // The dangerous path this fix targets: resolving by NAME with no declared
+  // store used to search every store's catalogue at once. Fail closed rather
+  // than silently matching a different store's identically/similarly-named
+  // product — a legacy untagged product (store_id: null) still matches
+  // regardless of storeId, same lenient convention as the OR[{store_id},
+  // {store_id:null}] filter already used elsewhere in this codebase.
+  if (!storeId) {
+    return { ok: false, code: STORE_CONTEXT_REQUIRED, error: 'محتاج أعرف إنت شغال على أنهي متجر الأول، عشان مبحثش في منتجات متجر تاني غلط.' };
+  }
+
+  const all = await prisma.product.findMany({ where: { active: true, is_historical: false, OR: [{ store_id: storeId }, { store_id: null }] }, select: { id: true, product_name: true } });
   const qNorm = normalizeAr(productName);
   const qTokens = tokens(productName);
   if (!qTokens.length) return { ok: false, error: 'اسم المنتج المُدخل غير كافٍ للمطابقة.' };

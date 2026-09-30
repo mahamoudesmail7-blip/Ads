@@ -96,12 +96,22 @@ export async function autoResolveAccountAssets(adAccountId, overrides = {}) {
   };
 }
 
-/** Real, non-historical, active Product row — re-verified server-side exactly like validateLaunchConfig() does (never trusted from the model/context as-is). */
-export async function resolveProduct(productId) {
+/**
+ * Real, non-historical, active Product row — re-verified server-side exactly
+ * like validateLaunchConfig() does (never trusted from the model/context as-is).
+ * `storeId`, when provided, is verified too (store isolation, 2026-09-30): a
+ * real, tagged cross-store mismatch is treated as "not found" — the same
+ * fail-closed answer every caller here already handles, so prepare_campaign/
+ * prepare_scale/prepare_test never launch or scale a different store's
+ * product just because someone guessed its numeric id right. Omitted `storeId`
+ * (storeless callers) keeps the old, unscoped behavior — backward compatible.
+ */
+export async function resolveProduct(productId, storeId) {
   const pid = Number(productId);
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const product = await prisma.product.findUnique({ where: { id: pid }, select: { id: true, product_name: true, active: true, is_historical: true, store_id: true } });
   if (!product || !product.active || product.is_historical) return null;
+  if (storeId && product.store_id && product.store_id !== storeId) return null;
   return product;
 }
 

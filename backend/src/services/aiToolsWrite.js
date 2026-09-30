@@ -28,6 +28,7 @@ import { loadTestContext, parseAudienceTestValue } from './assistantTasks/testPr
 import { capturePriceTestBaseline } from './assistantTasks/pricePrepare.js';
 import { createTest as createPmcTest } from './amb/productMarketingTests.js';
 import { resolveProductByIdOrName } from './amb/productNameMatch.js';
+import { verifyProductStoreScope, STORE_CONTEXT_REQUIRED } from './amb/storeScope.js';
 import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
 import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus, canTransitionTask } from './assistantTasks/taskEngine.js';
 import { prisma } from '../prisma.js';
@@ -187,11 +188,12 @@ export async function prepare_campaign(args = {}) {
     // 2. Product — prefer explicit page context, never guessed from the campaign name.
     let productId = merged.productId || context?.productId || null;
     if (!productId && merged.productName) {
-      const p = await prisma.product.findFirst({ where: { product_name: { contains: merged.productName }, active: true, is_historical: false }, select: { id: true } });
-      if (p) productId = p.id;
+      const resolvedByName = await resolveProductByIdOrName({ productName: merged.productName, storeId: context?.storeId });
+      if (resolvedByName.ok) productId = resolvedByName.product.id;
+      else if (resolvedByName.code === STORE_CONTEXT_REQUIRED) return needInput(resolvedByName.error);
     }
     if (!productId) return needInput('عايز تطلق الكامبين ده لأنهي منتج بالظبط؟');
-    const product = await resolveProduct(productId);
+    const product = await resolveProduct(productId, context?.storeId);
     if (!product) return needInput('المنتج ده مش موجود أو مش نشط — عايز تطلق لأنهي منتج؟');
     merged.productId = product.id;
 
@@ -332,11 +334,12 @@ export async function prepare_scale(args = {}) {
     // 1. Product — same convention as prepare_campaign, never guessed.
     let productId = merged.productId || context?.productId || null;
     if (!productId && merged.productName) {
-      const p = await prisma.product.findFirst({ where: { product_name: { contains: merged.productName }, active: true, is_historical: false }, select: { id: true } });
-      if (p) productId = p.id;
+      const resolvedByName = await resolveProductByIdOrName({ productName: merged.productName, storeId: context?.storeId });
+      if (resolvedByName.ok) productId = resolvedByName.product.id;
+      else if (resolvedByName.code === STORE_CONTEXT_REQUIRED) return needInput(resolvedByName.error);
     }
     if (!productId) return needInput('عايز تعمل Scale لأنهي منتج بالظبط؟');
-    const product = await resolveProduct(productId);
+    const product = await resolveProduct(productId, context?.storeId);
     if (!product) return needInput('المنتج ده مش موجود أو مش نشط — عايز تعمل Scale لأنهي منتج؟');
     merged.productId = product.id;
 
@@ -517,11 +520,12 @@ export async function prepare_test(args = {}) {
     // 1. Product — same convention as prepare_campaign/prepare_scale, never guessed.
     let productId = merged.productId || context?.productId || null;
     if (!productId && merged.productName) {
-      const p = await prisma.product.findFirst({ where: { product_name: { contains: merged.productName }, active: true, is_historical: false }, select: { id: true } });
-      if (p) productId = p.id;
+      const resolvedByName = await resolveProductByIdOrName({ productName: merged.productName, storeId: context?.storeId });
+      if (resolvedByName.ok) productId = resolvedByName.product.id;
+      else if (resolvedByName.code === STORE_CONTEXT_REQUIRED) return needInput(resolvedByName.error);
     }
     if (!productId) return needInput('عايز تعمل الاختبار ده لأنهي منتج بالظبط؟');
-    const product = await resolveProduct(productId);
+    const product = await resolveProduct(productId, context?.storeId);
     if (!product) return needInput('المنتج ده مش موجود أو مش نشط — عايز تعمل الاختبار لأنهي منتج؟');
     merged.productId = product.id;
 
@@ -681,10 +685,15 @@ export async function prepare_price_test({ productId, productName, newPrice, use
   try {
     let pid = productId || context?.productId || null;
     if (!pid && productName) {
-      const p = await prisma.product.findFirst({ where: { product_name: { contains: productName }, active: true, is_historical: false }, select: { id: true } });
-      if (p) pid = p.id;
+      const resolvedByName = await resolveProductByIdOrName({ productName, storeId: context?.storeId });
+      if (resolvedByName.ok) pid = resolvedByName.product.id;
+      else if (resolvedByName.code === STORE_CONTEXT_REQUIRED) return { ok: false, error: resolvedByName.error };
     }
     if (!pid) return { ok: false, error: 'عايز تختبر سعر لأنهي منتج بالظبط؟' };
+    if (pid) {
+      const scope = context?.storeId ? await verifyProductStoreScope({ productId: pid, storeId: context.storeId }) : { ok: true };
+      if (!scope.ok) return { ok: false, error: scope.reason, code: scope.code };
+    }
     if (newPrice === undefined || newPrice === null || Number(newPrice) <= 0) return { ok: false, error: 'محتاج السعر الجديد المقترح (رقم أكبر من صفر).' };
 
     const existing = await findActiveTaskForEntity(String(pid));
@@ -821,10 +830,10 @@ export async function get_scale_winners({ window } = {}) {
   }
 }
 
-export async function generate_campaign_copy({ productId, productName, angle, anglesToAvoid, tone } = {}) {
+export async function generate_campaign_copy({ productId, productName, angle, anglesToAvoid, tone, context } = {}) {
   try {
     if (!productId && !productName) return { ok: false, error: 'محتاج اسم المنتج على الأقل.' };
-    const resolved = await resolveProductByIdOrName({ productId, productName });
+    const resolved = await resolveProductByIdOrName({ productId, productName, storeId: context?.storeId });
     if (!resolved.ok) return resolved;
     const { generatePost } = await import('./amb/productMarketingAI.js');
     const { getVerifiedFeatures } = await import('./amb/productNameMatch.js');

@@ -302,6 +302,14 @@ function render() {
   }
   if (!state.profile) renderSourcePicker($('pmcBody'));
   else renderWorkspace($('pmcBody'));
+  // Store isolation (2026-09-30): the floating AI Assistant bubble reads its
+  // page context ONLY from what a page explicitly pushes via
+  // UI.setAssistantContext — this page never called it before, so every
+  // AI-tool call made from here carried NO storeId, letting name-based
+  // product resolution search every store at once. Called on every render
+  // (cheap, idempotent) so the assistant's context can never go stale after
+  // a store switch or a product lock/unlock.
+  UI.setAssistantContext({ page: 'product-marketing-center', storeId: state.storeId, productId: state.profile?.product_id || null, productName: state.profile?.locked_name || null });
 }
 
 // ---------------------------------------------------------------------------
