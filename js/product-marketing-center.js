@@ -5,6 +5,7 @@
 // action here is read/analyze/decide-a-recommendation only.
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
+import * as StoreCtx from './store-context.js';
 
 const E = (s) => UI.escapeHtml(String(s ?? ''));
 const $ = (id) => document.getElementById(id);
@@ -122,10 +123,12 @@ function statusPill(s) { return s ? `<span class="badge ${STATUS_COLOR[s] || 'gr
 
 const state = {
   me: null,
-  // Multi-store — the store must be chosen BEFORE any product/catalog data
-  // loads, and switching it clears every downstream product/analysis state
-  // (see selectStore()) so Store A's data can never linger on screen after
-  // switching to Store B.
+  // Multi-store — mirrors store-context.js's canonical state (the shared,
+  // page-agnostic active-store module: fail-closed selection, persistence,
+  // URL sync). Kept as plain fields here too, unchanged shape, so the ~20
+  // existing state.storeId/state.stores reads throughout this file needed
+  // zero changes — only WHERE these fields get set changed (see
+  // syncStoreState() below, driven by StoreCtx.onChange()).
   stores: null, storesLoading: true, storesError: null,
   storeId: null, storeSelectorOpen: false,
   source: 'EASY_ORDERS', // EASY_ORDERS | MANUAL_UPLOAD (source-picker only, before lock)
@@ -156,8 +159,11 @@ async function init() {
   renderNav();
   UI.mountAmbMobileNav('مركز التسويق الذكي');
   render();
-  await loadStores();
-  loadCatalogSyncBadge(); // fire-and-forget — a slow/failed Easy Orders catalog fetch must never block the rest of the page
+  StoreCtx.onChange(syncStoreState); // fires on every init()/reload()/setActiveStoreId() from here on
+  await StoreCtx.init();
+  // §7 — if the user adds a store from another tab (store-connections.html)
+  // and comes back, the selector must pick it up without a manual refresh.
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') StoreCtx.reload(); });
 }
 
 /** The nav badge's live count — reuses the SAME read-only audit endpoint the Catalog Sync page itself calls, so the two never disagree. Silently shows nothing on any error (wrong role, store not configured, etc.) — this is a convenience nudge, not a page a MANAGER-level user could act on anyway (that page requires ADMIN). */
@@ -171,62 +177,94 @@ async function loadCatalogSyncBadge() {
   renderNav();
 }
 
-async function loadStores() {
-  state.storesLoading = true; state.storesError = null;
-  renderStoreSelector();
-  try {
-    const r = await api.get('/api/product-marketing/stores');
-    state.stores = r.stores || [];
-    if (!state.storeId && state.stores.length) state.storeId = state.stores[0].id;
-  } catch (e) {
-    state.storesError = e.message || 'تعذر تحميل المتاجر المتاحة.';
-    state.stores = null;
+/**
+ * The ONE bridge between store-context.js's canonical state and this page's
+ * own state fields — called on every StoreCtx change (initial load, reload,
+ * or an explicit switch). §6/§12/§13 (fail-closed selection, one-store
+ * auto-pick, persistence-with-validation) all live in store-context.js
+ * itself; this function's only job is reacting to the RESULT: detect an
+ * actual active-store change and, when one happens, clear every downstream
+ * product/analysis state so Store A's data can never linger after switching
+ * to Store B (§4).
+ */
+function syncStoreState(s) {
+  const prevStoreId = state.storeId;
+  state.stores = s.stores;
+  state.storesLoading = s.loading;
+  state.storesError = s.error;
+  state.storeId = s.activeStoreId;
+  if (s.activeStoreId !== prevStoreId) {
+    state.storeSelectorOpen = false;
+    // Product source / catalog state (must reload for the new store):
+    state.eoAll = null; state.eoLoading = false; state.eoError = null;
+    state.eoQuery = ''; state.eoFilter = 'all'; state.eoVisible = 20; state.eoRecentIds = null;
+    state.eoSelected = null;
+    // Locked product + every downstream analysis result:
+    state.profile = null;
+    resetWorkspace();
+    state.catalogSyncMissing = null;
+    renderNav();
+    if (s.activeStoreId) loadCatalogSyncBadge();
   }
-  state.storesLoading = false;
   render();
-}
-
-/** §6 — switching the store must clear EVERYTHING downstream: selected product, lock, Meta mapping, COD, audience, locations, angles, creative, hooks/posts, recommendations. Store A's data must never linger after switching to Store B. */
-function selectStore(storeId) {
-  if (storeId === state.storeId) { state.storeSelectorOpen = false; renderStoreSelector(); return; }
-  state.storeId = storeId;
-  state.storeSelectorOpen = false;
-  // Product source / catalog state (must reload for the new store):
-  state.eoAll = null; state.eoLoading = false; state.eoError = null;
-  state.eoQuery = ''; state.eoFilter = 'all'; state.eoVisible = 20; state.eoRecentIds = null;
-  state.eoSelected = null;
-  // Locked product + every downstream analysis result:
-  state.profile = null;
-  resetWorkspace();
-  render();
-  state.catalogSyncMissing = null; renderNav();
-  loadCatalogSyncBadge();
 }
 
 function renderStoreSelector() {
   const mount = $('pmcStoreSelector');
   if (!mount) return;
   if (state.storesLoading) { mount.innerHTML = ''; return; } // no flash of a selector that might turn out to be single-store
-  if (state.storesError || !state.stores || !state.stores.length) {
-    mount.innerHTML = `<div class="pmc-store-box error"><div class="pmc-store-label">المتجر الحالي</div><div class="pmc-store-current">⚠️ ${E(state.storesError || 'المتجر غير مربوط بـ Easy Orders')}</div></div>`;
+  if (state.storesError || !state.stores) {
+    mount.innerHTML = `<div class="pmc-store-box error"><div class="pmc-store-label">🏪 المتجر الحالي</div><div class="pmc-store-current">⚠️ ${E(state.storesError || 'تعذر تحميل المتاجر.')}</div></div>`;
     return;
   }
-  // §1 — the selector itself (a store name + dropdown to switch) only makes
-  // sense — and should only appear — when there's actually more than one
-  // store to choose between. A single-store deployment (today's real
-  // production) sees NO new UI at all, exactly as before this feature.
-  if (state.stores.length <= 1) { mount.innerHTML = ''; return; }
-  const current = state.stores.find((s) => s.id === state.storeId) || state.stores[0];
+  if (!state.stores.length) {
+    mount.innerHTML = `<div class="pmc-store-box error"><div class="pmc-store-label">🏪 المتجر الحالي</div><div class="pmc-store-current">⚠️ مفيش أي متجر مربوط</div></div>`;
+    return;
+  }
+  // §1 — a single-store deployment auto-selects (§13) and shows just the
+  // name, no dropdown chrome — exactly like before this feature for today's
+  // real single-store production. 2+ stores get the full switcher.
+  if (state.stores.length <= 1) {
+    mount.innerHTML = `<div class="pmc-store-box"><div class="pmc-store-label">🏪 المتجر الحالي</div><div class="pmc-store-current" style="cursor:default;">${E(state.stores[0].name)}</div></div>`;
+    return;
+  }
+  const current = state.stores.find((s) => s.id === state.storeId) || null;
   mount.innerHTML = `
     <div class="pmc-store-box">
-      <div class="pmc-store-label">المتجر الحالي</div>
-      <button class="pmc-store-current" id="pmcStoreToggle">${E(current?.name || '—')} <span class="car">▾</span></button>
+      <div class="pmc-store-label">🏪 المتجر الحالي</div>
+      <button class="pmc-store-current ${current ? '' : 'unselected'}" id="pmcStoreToggle">${current ? E(current.name) : '⚠️ اختر متجر'} <span class="car">▾</span></button>
       ${state.storeSelectorOpen ? `<div class="pmc-store-dropdown">
-        ${state.stores.map((s) => `<button class="pmc-store-opt ${s.id === state.storeId ? 'active' : ''}" data-store="${E(s.id)}" ${s.enabled === false ? 'disabled' : ''}>${E(s.name)}${s.id === state.storeId ? ' ✓' : ''}</button>`).join('')}
+        ${state.stores.map((s) => `<button class="pmc-store-opt ${s.id === state.storeId ? 'active' : ''}" data-store="${E(s.id)}" ${s.enabled === false ? 'disabled' : ''}>
+          <span class="pmc-store-opt-name">${E(s.name)}${s.id === state.storeId ? ' ✓' : ''}</span>
+          <span class="pmc-store-opt-meta">${StoreCtx.storeStatusLabel(s)}${s.domain ? ` · ${E(s.domain)}` : ''}</span>
+        </button>`).join('')}
+        <div class="pmc-store-dropdown-divider"></div>
+        <button class="pmc-store-opt pmc-store-opt-add" id="pmcAddStoreBtn">+ ربط متجر جديد</button>
       </div>` : ''}
     </div>`;
   $('pmcStoreToggle').onclick = () => { state.storeSelectorOpen = !state.storeSelectorOpen; renderStoreSelector(); };
-  mount.querySelectorAll('[data-store]').forEach((b) => { b.onclick = () => selectStore(b.dataset.store); });
+  if (state.storeSelectorOpen) {
+    $('pmcAddStoreBtn').onclick = () => { window.location.href = 'store-connections.html'; };
+    mount.querySelectorAll('[data-store]').forEach((b) => { b.onclick = () => StoreCtx.setActiveStoreId(b.dataset.store); });
+  }
+}
+
+/** §12 — fail closed: 2+ real stores exist but none is chosen (not yet picked, or a remembered/URL id turned out stale). No product/catalog data renders until an explicit choice is made. */
+function needsStoreSelection() { return !!(state.stores && state.stores.length > 1 && !state.storeId); }
+
+function renderChooseStoreGate(mount) {
+  mount.innerHTML = `
+    <div class="amb-panel pmc-store-gate">
+      <div style="font-size:32px;">🏪</div>
+      <div class="section-title" style="margin:10px 0 4px;">اختر المتجر أولًا</div>
+      <div class="faint" style="font-size:13px;max-width:420px;margin:0 auto 16px;">فيه أكتر من متجر مربوط بالحساب ده — لازم تحدد تشتغل على أنهي متجر قبل ما نعرض أي منتج أو حملة، عشان بيانات متجر متختلطش بمتجر تاني.</div>
+      <div class="toolbar" style="justify-content:center;">
+        <button class="btn" id="pmcGateChoose">اختيار متجر</button>
+        <button class="btn secondary" id="pmcGateAddStore">+ ربط متجر جديد</button>
+      </div>
+    </div>`;
+  $('pmcGateChoose').onclick = () => { state.storeSelectorOpen = true; renderStoreSelector(); $('pmcStoreToggle')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+  $('pmcGateAddStore').onclick = () => { window.location.href = 'store-connections.html'; };
 }
 
 // Phase 1 redesign — the 9 PMC sections become the primary sidebar nav
@@ -300,6 +338,10 @@ function render() {
     $('pmcBody').innerHTML = `<div class="amb-panel"><div class="pmc-eo-error"><div style="font-size:22px;">⚠️</div><div style="font-weight:700;margin:6px 0;">المتجر غير مربوط بـ Easy Orders</div><div class="detail">${E(state.storesError || 'لازم تضبط EASYORDERS_API_KEY أو EASYORDERS_STORES_JSON في متغيرات البيئة أولًا.')}</div></div></div>`;
     return;
   }
+  // §12 — fail closed: never fall through to the product picker/workspace
+  // (which would implicitly mean "all stores" or a silently-guessed one)
+  // while 2+ real stores exist and none has been explicitly chosen yet.
+  if (needsStoreSelection()) { renderChooseStoreGate($('pmcBody')); return; }
   if (!state.profile) renderSourcePicker($('pmcBody'));
   else renderWorkspace($('pmcBody'));
   // Store isolation (2026-09-30): the floating AI Assistant bubble reads its

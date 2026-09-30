@@ -22,11 +22,19 @@
 .pmc-store-current { display: inline-flex; align-items: center; gap: 6px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 999px; padding: 7px 14px; font-size: 13px; font-weight: 700; color: var(--amb-text); cursor: pointer; font-family: inherit; }
 .pmc-store-current .car { font-size: 10px; color: var(--amb-text-dim); }
 .pmc-store-box.error .pmc-store-current { color: var(--amb-red); border-color: var(--amb-red); cursor: default; font-weight: 600; font-size: 12px; }
-.pmc-store-dropdown { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; min-width: 180px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.pmc-store-opt { text-align: right; border: none; background: none; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--amb-text); cursor: pointer; font-family: inherit; }
+.pmc-store-dropdown { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 220px; max-width: min(300px, 90vw); background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.pmc-store-opt { text-align: right; border: none; background: none; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--amb-text); cursor: pointer; font-family: inherit; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; }
 .pmc-store-opt:hover { background: var(--amb-surface-2); }
-.pmc-store-opt.active { color: var(--amb-blue); font-weight: 700; }
+.pmc-store-opt.active .pmc-store-opt-name { color: var(--amb-blue); font-weight: 700; }
 .pmc-store-opt:disabled { opacity: 0.5; cursor: not-allowed; }
+.pmc-store-opt-name { font-size: 13px; }
+.pmc-store-opt-meta { font-size: 10.5px; color: var(--amb-text-dim); }
+.pmc-store-dropdown-divider { height: 1px; background: var(--amb-border); margin: 4px 2px; }
+.pmc-store-opt-add { color: var(--amb-blue); font-weight: 700; }
+.pmc-store-current.unselected { color: var(--amb-red); border-color: var(--amb-red); border-style: dashed; }
+
+/* ---- §12 fail-closed gate — shown instead of any product/catalog UI when 2+ stores exist and none is chosen ---- */
+.pmc-store-gate { text-align: center; padding: 48px 24px; }
 
 /* ---- Source picker (§1) — a small segmented control, not two giant panels ---- */
 .pmc-source-seg { display: inline-flex; gap: 4px; background: var(--amb-surface-2); border: 1px solid var(--amb-border); border-radius: 999px; padding: 4px; margin-bottom: 14px; }
