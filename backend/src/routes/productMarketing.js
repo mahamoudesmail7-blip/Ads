@@ -11,6 +11,7 @@ import * as PM from '../services/amb/productMarketing.js';
 import * as PMT from '../services/amb/productMarketingTests.js';
 import * as MAB from '../services/amb/metaAudienceBreakdown.js';
 import * as LCS from '../services/amb/liveCampaignStatus.js';
+import * as LCI from '../services/amb/liveCreativeIntelligence.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -198,20 +199,27 @@ function snapshotSlice(field) {
 }
 // ---- Live Campaign Intelligence, Slice 1 (§5/§24) — pure composition over ----
 // ---- already-computed data; safe to poll, triggers no new Meta/EasyOrders call ----
+// storeId is REQUIRED on every one of these (fail-closed — see storeScope.js):
+// the caller must say which store it's currently viewing, so a MANUAL_UPLOAD
+// profile (or any other ambiguous resolution) can never silently show a
+// different store's product data. Never defaulted/guessed server-side.
 router.get('/profiles/:id/live-status', asyncRoute(async (req, res) => {
-  res.json(await LCS.getLiveCampaignStatus({ profileId: idParam(req.params.id), windowName: req.query.window }));
+  res.json(await LCS.getLiveCampaignStatus({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
 }));
 router.get('/profiles/:id/timeline', asyncRoute(async (req, res) => {
-  res.json(await LCS.buildProductTimeline({ profileId: idParam(req.params.id) }));
+  res.json(await LCS.buildProductTimeline({ profileId: idParam(req.params.id), storeId: req.query.storeId || null }));
 }));
 router.get('/profiles/:id/audience-trend', asyncRoute(async (req, res) => {
-  res.json(await LCS.getAudienceTrend({ profileId: idParam(req.params.id), lookbackHours: req.query.lookbackHours ? Number(req.query.lookbackHours) : undefined }));
+  res.json(await LCS.getAudienceTrend({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, lookbackHours: req.query.lookbackHours ? Number(req.query.lookbackHours) : undefined }));
 }));
 router.get('/profiles/:id/governorate-trend', asyncRoute(async (req, res) => {
-  res.json(await LCS.getGovernorateTrend({ profileId: idParam(req.params.id), windowName: req.query.window }));
+  res.json(await LCS.getGovernorateTrend({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
 }));
 router.get('/profiles/:id/live-intelligence', asyncRoute(async (req, res) => {
-  res.json(await LCS.getLiveIntelligence({ profileId: idParam(req.params.id), windowName: req.query.window }));
+  res.json(await LCS.getLiveIntelligence({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
+}));
+router.get('/profiles/:id/live-creative', asyncRoute(async (req, res) => {
+  res.json(await LCI.getLiveCreativeIntelligence({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
 }));
 
 router.get('/profiles/:id/markets', snapshotSlice('markets'));

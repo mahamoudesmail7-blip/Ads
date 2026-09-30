@@ -106,6 +106,13 @@ function priorityPill(p) { return p ? `<span class="badge ${PRIORITY_COLOR[p] ||
 const BAND_LABEL_AR = { WINNER: '🏆 فائز', PROMISING: '📈 واعد', AVERAGE: '➖ متوسط', WEAK: '🔴 ضعيف', UNTESTED: '⚪ غير مُختبر' };
 const BAND_COLOR = { WINNER: 'green', PROMISING: 'green', AVERAGE: 'yellow', WEAK: 'red', UNTESTED: 'gray' };
 function bandPill(b) { return b ? `<span class="badge ${BAND_COLOR[b] || 'gray'}">${E(BAND_LABEL_AR[b] || b)}</span>` : ''; }
+// classifyCandidate()'s own real vocabulary (creativeIntel.js) — a DIFFERENT
+// taxonomy from BAND_LABEL_AR above (that one is bandCreativeLabel()'s, used
+// for hooks/angles). Kept separate rather than force-fit into bandPill(), so
+// TESTING/FATIGUED never silently fall back to a raw English label.
+const CREATIVE_CLASS_LABEL_AR = { WINNER: '🏆 فائز', GOOD: '📈 جيد', TESTING: '🧪 قيد الاختبار', WEAK: '🔴 ضعيف', FATIGUED: '😮‍💨 متعب', INSUFFICIENT_DATA: '⚪ بيانات غير كافية' };
+const CREATIVE_CLASS_COLOR = { WINNER: 'green', GOOD: 'green', TESTING: 'yellow', WEAK: 'red', FATIGUED: 'red', INSUFFICIENT_DATA: 'gray' };
+function creativeClassPill(c) { return c ? `<span class="badge ${CREATIVE_CLASS_COLOR[c] || 'gray'}">${E(CREATIVE_CLASS_LABEL_AR[c] || c)}</span>` : ''; }
 const MARKET_BAND_LABEL_AR = { SCALE_MARKET: '🏆 وسّع', KEEP_TESTING: '🟢 استمر بالاختبار', MONITOR: '🟡 راقب', REDUCE_PRIORITY: '🔴 قلّل الأولوية', INSUFFICIENT_DATA: '⚪ بيانات غير كافية' };
 const MARKET_BAND_COLOR = { SCALE_MARKET: 'green', KEEP_TESTING: 'green', MONITOR: 'yellow', REDUCE_PRIORITY: 'red', INSUFFICIENT_DATA: 'gray' };
 function marketBandPill(b) { return b ? `<span class="badge ${MARKET_BAND_COLOR[b] || 'gray'}">${E(MARKET_BAND_LABEL_AR[b] || b)}</span>` : ''; }
@@ -266,6 +273,7 @@ function renderNav() {
 /** Switches state.tab and updates ONLY the active-state classes + the tab body — never rebuilds the sidebar/hero/nav-cards on a tab switch (perf). Shared by the sidebar nav items AND the large nav cards below the hero. */
 function selectPmcTab(tabKey) {
   stopLiveHeaderRefresh(); // renderOverview() restarts it if the new tab is 'overview'
+  if (!CREATIVE_TABS.has(tabKey)) stopLiveCreativeRefresh(); // stays running across creative<->hooks<->angles switches (one shared fetch)
   state.tab = tabKey;
   updateActiveNav();
   renderTabBody();
@@ -492,6 +500,8 @@ async function lockFromUpload() {
 }
 function resetWorkspace() {
   stopLiveHeaderRefresh();
+  stopLiveCreativeRefresh();
+  liveCreativeCache = null;
   state.tab = 'overview'; state.snapshot = null; state.memory = null; state.actions = null; state.competitors = null;
   state.hookResult = null; state.postResult = null; state.ideaResult = null; state.testPackResult = null;
   state.metaMapping = null; state.metaMappingLoading = false; state.metaMappingSelected = {}; state.metaMappingBusy = false;
@@ -914,8 +924,8 @@ async function fetchAndRenderLiveHeader() {
   const myGen = ++liveHeaderGen;
   try {
     const [live, timeline] = await Promise.all([
-      api.get(`/api/product-marketing/profiles/${state.profile.id}/live-status`),
-      api.get(`/api/product-marketing/profiles/${state.profile.id}/timeline`),
+      api.get(`/api/product-marketing/profiles/${state.profile.id}/live-status`, { storeId: state.storeId }),
+      api.get(`/api/product-marketing/profiles/${state.profile.id}/timeline`, { storeId: state.storeId }),
     ]);
     if (myGen !== liveHeaderGen) return; // a newer request (tab re-entered, or a later tick) already won
     const el = $('pmcLiveHeader');
@@ -961,12 +971,103 @@ async function fetchAndRenderLiveIntelligence() {
   const el = $('pmcLiveIntelligence');
   if (!el || !state.profile) return;
   try {
-    const li = await api.get(`/api/product-marketing/profiles/${state.profile.id}/live-intelligence`);
+    const li = await api.get(`/api/product-marketing/profiles/${state.profile.id}/live-intelligence`, { storeId: state.storeId });
     const fresh = $('pmcLiveIntelligence');
     if (fresh) fresh.innerHTML = liveIntelligenceHtml(li);
   } catch {
     // Non-critical, same reasoning as fetchAndRenderLiveHeader — leave the placeholder empty rather than erroring the tab.
   }
+}
+
+// ---------------------------------------------------------------------------
+// Closing the Creative/Hooks/Angles gap — same continuous auto-refresh
+// architecture as Overview (§Slice1), ONE shared fetch (the tabs share one
+// backend composition, /live-creative) so switching between them never
+// re-fetches. Polls only while one of these 3 tabs is actually open — exact
+// same setInterval/generation-counter pattern as fetchAndRenderLiveHeader.
+// Never a new Meta/EasyOrders call: /live-creative reads the same canonical
+// synced snapshots Overview's /live-status already reads.
+// ---------------------------------------------------------------------------
+let liveCreativeTimer = null;
+let liveCreativeGen = 0;
+let liveCreativeCache = null;
+const CREATIVE_TABS = new Set(['creative', 'hooks', 'angles']);
+
+function stopLiveCreativeRefresh() {
+  if (liveCreativeTimer) { clearInterval(liveCreativeTimer); liveCreativeTimer = null; }
+}
+function startLiveCreativeRefresh() {
+  stopLiveCreativeRefresh();
+  liveCreativeTimer = setInterval(() => fetchLiveCreative(), LIVE_REFRESH_MS);
+}
+window.addEventListener('beforeunload', stopLiveCreativeRefresh);
+
+async function fetchLiveCreative() {
+  if (!state.profile || !CREATIVE_TABS.has(state.tab)) return;
+  const myGen = ++liveCreativeGen;
+  try {
+    const data = await api.get(`/api/product-marketing/profiles/${state.profile.id}/live-creative`, { window: state.windowName, storeId: state.storeId });
+    if (myGen !== liveCreativeGen) return; // a newer request (tab switch or later tick) already won
+    liveCreativeCache = data;
+    paintLiveCreativeSections();
+  } catch {
+    // Non-critical — the tab's existing (analyzed-snapshot) content stays visible; only the live overlay fails to refresh this tick.
+  }
+}
+
+function liveFreshnessLineHtml(freshness) {
+  if (!freshness?.meta) return '';
+  return `<div class="faint" style="font-size:11px;margin:2px 0 8px;">🔄 آخر تحديث Meta: ${E(timeAgoAr(freshness.meta.lastSuccessAt) || 'غير معروف')}</div>`;
+}
+
+function liveCreativeTableHtml(rows) {
+  if (!rows?.length) return `<div class="pmc-empty" style="padding:10px;">لا توجد إعلانات حقيقية كفاية في هذه الفترة بعد.</div>`;
+  const top = rows.slice(0, 15);
+  return `<div class="table-wrap"><table class="data">
+    <thead><tr><th>الإعلان</th><th>الصرف</th><th>الظهور</th><th>CTR</th><th>CPC</th><th>مشتريات</th><th>CPA</th><th>التكرار</th><th>Hook</th><th>الزاوية</th><th>حالة الإجهاد</th><th>التصنيف</th></tr></thead>
+    <tbody>${top.map((r) => `<tr>
+      <td>${E(r.adName || r.adId)}</td>
+      <td>${fmtEGP(r.spend)}</td>
+      <td>${fmtNum(r.impressions)}</td>
+      <td>${r.ctr != null ? `${r.ctr.toFixed(1)}%` : '—'}</td>
+      <td>${r.cpc != null ? fmtEGP(r.cpc) : '—'}</td>
+      <td>${fmtNum(r.purchases)}</td>
+      <td>${r.cpa != null ? fmtEGP(r.cpa) : '—'}</td>
+      <td>${r.frequency != null ? r.frequency.toFixed(2) : '—'}</td>
+      <td title="${E(r.hook || '')}">${E((r.hook || '—').slice(0, 24))}${r.hook?.length > 24 ? '…' : ''}</td>
+      <td title="${E(r.angle || '')}">${E((r.angle || '—').slice(0, 24))}${r.angle?.length > 24 ? '…' : ''}</td>
+      <td>${E(FATIGUE_STATE_LABEL_AR[r.fatigueState] || r.fatigueState || '—')}</td>
+      <td>${creativeClassPill(r.classification)}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>
+  <div class="faint" style="font-size:11px;margin-top:6px;">عرض أفضل ${top.length} من ${rows.length} إعلان (بالأقل CPA أولًا).</div>`;
+}
+const FATIGUE_STATE_LABEL_AR = { HEALTHY: '✅ سليم', WATCH: '👀 راقبه', FATIGUING: '📉 بدأ يتعب', FATIGUED: '🔴 متعب', NEW: '🆕 جديد', LEARNING: '⏳ بيتعلم', INSUFFICIENT_DATA: '⚪ بيانات غير كافية' };
+
+function paintLiveCreativeSections() {
+  const d = liveCreativeCache;
+  const creativeHost = $('pmcLiveCreativeTable');
+  if (creativeHost) {
+    if (!d?.linked || !d?.mapped) creativeHost.innerHTML = `<div class="pmc-empty" style="padding:10px;">${E(d?.reason || 'جارِ التحميل…')}</div>`;
+    else creativeHost.innerHTML = `${liveFreshnessLineHtml(d.freshness)}${liveCreativeTableHtml(d.creative)}`;
+  }
+  const hooksHost = $('pmcLiveHooksTable');
+  if (hooksHost) {
+    if (!d?.linked || !d?.mapped) hooksHost.innerHTML = `<div class="pmc-empty" style="padding:10px;">${E(d?.reason || 'جارِ التحميل…')}</div>`;
+    else hooksHost.innerHTML = `${liveFreshnessLineHtml(d.freshness)}${winnerIntelTableHtml(d.hooks, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الـ Hooks بعد.')}`;
+  }
+  const anglesHost = $('pmcLiveAnglesTable');
+  if (anglesHost) {
+    if (!d?.linked || !d?.mapped) anglesHost.innerHTML = `<div class="pmc-empty" style="padding:10px;">${E(d?.reason || 'جارِ التحميل…')}</div>`;
+    else anglesHost.innerHTML = `${liveFreshnessLineHtml(d.freshness)}${winnerIntelTableHtml(d.angles, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الزوايا بعد.')}`;
+  }
+}
+
+/** Called by renderCreative/renderHooksTab/renderAngles on entry: paints instantly from any already-cached live data (no flash when switching between these 3 tabs), starts the shared 60s ticker if not already running, and kicks one immediate fetch if there's no cache yet. */
+function enterLiveCreativeTab() {
+  if (liveCreativeCache) paintLiveCreativeSections();
+  if (!liveCreativeTimer) startLiveCreativeRefresh();
+  if (!liveCreativeCache) fetchLiveCreative();
 }
 
 function renderOverview(mount, s) {
@@ -1259,7 +1360,7 @@ function renderAngles(mount, s) {
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h">${pmcIcon('barchart')} أداء زوايا البيع الحقيقي (من الإعلانات الجارية فعليًا)</div>
       ${pmcDataStatus(dc.hooks, 'META')}
-      ${winnerIntelTableHtml(s.angleIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الزوايا بعد.')}
+      <div id="pmcLiveAnglesTable">${winnerIntelTableHtml(s.angleIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الزوايا بعد.')}</div>
     </div>
     <div class="pmc-section-badge suggested">${pmcIcon('target')} زوايا مقترحة للاختبار</div>
     <div class="pmc-card">
@@ -1288,6 +1389,7 @@ function renderAngles(mount, s) {
   mount.querySelectorAll('[data-gen-hooks]').forEach((b) => b.onclick = () => { state.genAngle = s.angles[Number(b.dataset.genHooks)].name; state.tab = 'hooks'; renderTabBody(); generateHooks(); });
   mount.querySelectorAll('[data-gen-post]').forEach((b) => b.onclick = () => { state.genAngle = s.angles[Number(b.dataset.genPost)].name; state.tab = 'hooks'; renderTabBody(); generatePost(); });
   mount.querySelectorAll('[data-gen-idea]').forEach((b) => b.onclick = () => { state.genAngle = s.angles[Number(b.dataset.genIdea)].name; state.tab = 'creative'; renderTabBody(); generateIdeas(); });
+  enterLiveCreativeTab();
 }
 
 // ---- §12/§13/§14/§17 — Creative Intelligence ----
@@ -1312,6 +1414,10 @@ function renderCreative(mount, s) {
   mount.innerHTML = `
     ${pmcDataStatus(dc.creative, 'META')}
     ${winningComponentsHtml(s.winningComponents)}
+    <div class="pmc-card" style="margin-bottom:14px;">
+      <div class="h">${pmcIcon('image')} أداء كل إعلان حقيقي (حيّ)</div>
+      <div id="pmcLiveCreativeTable"><div class="pmc-empty" style="padding:10px;">جارِ التحميل…</div></div>
+    </div>
     <div class="pmc-card">
       <div class="h">${pmcIcon('image')} ذكاء الكرياتيف</div>
       <div class="pmc-angle-fields">
@@ -1350,6 +1456,7 @@ function renderCreative(mount, s) {
   [gen3, gen5, gen10].forEach((b) => b && (b.onclick = () => UI.toast('الاشتقاقات هتتولد من نفس فكرة الإعلان الرابح — استخدم "أفكار كرياتيف" فوق ثم أرسلها لمصنع الإعلانات.', 'info')));
   $('pmcGenIdeas').onclick = generateIdeas;
   $('pmcCfCheck').onclick = checkCfReadiness;
+  enterLiveCreativeTab();
 }
 const IDEA_STATUS_LABEL_AR = { CREATE_MORE_LIKE_THIS: '🏆 اعمل زيها أكتر', REFRESH_WINNER: '📈 جدّد الفائز', NEW_TEST: '🧪 اختبار جديد', STOP_REPEATING: '🔴 وقف التكرار' };
 function ideaStatusPill(st) { return st ? `<span class="badge ${st === 'CREATE_MORE_LIKE_THIS' ? 'green' : st === 'STOP_REPEATING' ? 'red' : 'yellow'}">${E(IDEA_STATUS_LABEL_AR[st] || st)}</span>` : ''; }
@@ -1390,7 +1497,7 @@ function renderHooksTab(mount, s) {
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h">${pmcIcon('zap')} أداء الـ Hooks الحقيقي (من الإعلانات الجارية فعليًا)</div>
       ${pmcDataStatus(s.dataCompleteness?.hooks, 'META')}
-      ${winnerIntelTableHtml(s.hookIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الـ Hooks بعد.')}
+      <div id="pmcLiveHooksTable">${winnerIntelTableHtml(s.hookIntel, 'لا توجد بيانات إعلانات حقيقية كفاية لتصنيف الـ Hooks بعد.')}</div>
     </div>
     <div class="pmc-card">
       <div class="h">${pmcIcon('zap')} مختبر الـ Hooks ${pmcSourceBadge('AI')}</div>
@@ -1421,6 +1528,7 @@ function renderHooksTab(mount, s) {
   $('pmcGenHooks').onclick = () => generateHooks(Number($('pmcHookCount').value));
   $('pmcGenPost').onclick = () => generatePost($('pmcToneSelect').value);
   $('pmcGenPack').onclick = generateTestPack;
+  enterLiveCreativeTab();
 }
 function hooksHtml(hooks) {
   if (!hooks?.length) return '';
@@ -1732,6 +1840,7 @@ function realResultsLeaderboardHtml(s) {
 }
 async function renderTests(mount, s) {
   mount.innerHTML = `
+    <div id="pmcTestsFreshness" class="faint" style="font-size:11px;margin-bottom:8px;">🔄 قائمة الاختبارات: قراءة مباشرة الآن من قاعدة البيانات.</div>
     ${realResultsLeaderboardHtml(s)}
     <div class="pmc-card">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
@@ -1762,6 +1871,14 @@ async function renderTests(mount, s) {
       <div><b>التوصية الجديدة:</b> ${E(JSON.stringify(m.new))}</div>
     </div>`).join('') : '<div class="pmc-empty" id="pmcMemoryBox">مفيش تغييرات في الافتراضات لسه — لسه أول تحليل لهذا المنتج.</div>';
   } catch { /* memory is best-effort */ }
+  try {
+    // Test verdicts ultimately depend on real ad performance — surface the SAME
+    // Meta freshness marker Overview/Creative already show, via the existing
+    // /live-status composition (cheap, DB-only, never a new Meta call).
+    const live = liveCreativeCache || await api.get(`/api/product-marketing/profiles/${state.profile.id}/live-status`, { storeId: state.storeId });
+    const fr = $('pmcTestsFreshness');
+    if (fr && live?.freshness?.meta) fr.textContent = `🔄 قائمة الاختبارات: قراءة مباشرة الآن · بيانات Meta: ${timeAgoAr(live.freshness.meta.lastSuccessAt) || 'غير معروف'}`;
+  } catch { /* freshness caption is best-effort, never blocks the tab */ }
 }
 
 // ---- §24 — AI Product Marketing Strategist (on-demand — own AI call) ----

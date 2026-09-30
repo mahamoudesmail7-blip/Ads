@@ -32,13 +32,25 @@ import { buildGrowthPlan } from './growthStrategist.js';
 import { computeTruePerformance } from '../truePerformance.js';
 import { classifyProfitState } from './profitBrain.js';
 import { stockGuardForProduct } from './stockGuard.js';
+import { verifyProductStoreScope, STORE_CONTEXT_REQUIRED } from './storeScope.js';
 
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 
-async function resolveProductId(profileId) {
+/**
+ * Resolves profileId -> productId (unchanged), THEN verifies the resolved
+ * product actually belongs to the caller's declared storeId — see
+ * storeScope.js's header for why this extra gate exists. `storeError` is set
+ * (and productId nulled out) whenever that verification fails; every
+ * exported function below must check it and fail closed rather than proceed.
+ */
+async function resolveProductId(profileId, storeId) {
   const profile = await prisma.productMarketingProfile.findUnique({ where: { id: Number(profileId) } });
   if (!profile) throw bad('البروفايل غير موجود.', 404);
   const productId = await resolveEffectiveProductId(profile);
+  if (productId) {
+    const scope = await verifyProductStoreScope({ productId, storeId });
+    if (!scope.ok) return { profile, productId: null, storeError: scope };
+  }
   return { profile, productId };
 }
 
@@ -99,8 +111,9 @@ function freshnessBadge({ metaAgeMs, metaIntervalMs, metaDataState }) {
  * freshness. `windowName` defaults to 'today' (this is a LIVE header, not a
  * historical report).
  */
-export async function getLiveCampaignStatus({ profileId, windowName = 'today' }) {
-  const { productId } = await resolveProductId(profileId);
+export async function getLiveCampaignStatus({ profileId, storeId, windowName = 'today' }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, ...storeError };
   if (!productId) return { linked: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
   return getLiveCampaignStatusByProductId({ productId, windowName });
 }
@@ -160,8 +173,9 @@ export async function getLiveCampaignStatusByProductId({ productId, windowName =
  * persisted, already-timestamped real events. No fabricated "early signal"
  * entries yet (those need Slice 2's continuous audience-breakdown history).
  */
-export async function buildProductTimeline({ profileId }) {
-  const { productId } = await resolveProductId(profileId);
+export async function buildProductTimeline({ profileId, storeId }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, events: [], ...storeError };
   if (!productId) return { linked: false, events: [] };
 
   const campaigns = await resolveProductCampaigns(productId);
@@ -190,8 +204,9 @@ export async function buildProductTimeline({ profileId }) {
  * audienceBreakdownSync.js). `lookbackHours` picks how far back to look for
  * a real comparison point — never a fabricated one.
  */
-export async function getAudienceTrend({ profileId, lookbackHours = 6 }) {
-  const { productId } = await resolveProductId(profileId);
+export async function getAudienceTrend({ profileId, storeId, lookbackHours = 6 }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, available: false, ...storeError };
   if (!productId) return { linked: false, available: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
   return { linked: true, ...(await getAudienceBreakdownTrend({ productId, lookbackHours })) };
 }
@@ -201,8 +216,9 @@ export async function getAudienceTrend({ profileId, lookbackHours = 6 }) {
  * product, derived from Easy Orders' already-near-real-time data (no new
  * history table needed — see governorateTrendForProduct()'s own comment).
  */
-export async function getGovernorateTrend({ profileId, windowName = 'last7', minOrders = 10 }) {
-  const { productId } = await resolveProductId(profileId);
+export async function getGovernorateTrend({ profileId, storeId, windowName = 'last7', minOrders = 10 }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, markets: [], ...storeError };
   if (!productId) return { linked: false, markets: [] };
   const product = await prisma.product.findUnique({ where: { id: productId }, select: { store_id: true } });
   const window = resolveWindow(windowName);
@@ -218,8 +234,9 @@ export async function getGovernorateTrend({ profileId, windowName = 'last7', min
  * pipelines (profit/stock/decision package), the same discipline
  * computeSnapshot()'s own comment already documents for this class of call.
  */
-export async function getLiveIntelligence({ profileId, windowName = 'last7' }) {
-  const { productId } = await resolveProductId(profileId);
+export async function getLiveIntelligence({ profileId, storeId, windowName = 'last7' }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, ...storeError };
   if (!productId) return { linked: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
   return { linked: true, productId, ...(await buildLiveIntelligenceForProduct({ productId, windowName })) };
 }
