@@ -12,6 +12,7 @@ import * as PMT from '../services/amb/productMarketingTests.js';
 import * as MAB from '../services/amb/metaAudienceBreakdown.js';
 import * as LCS from '../services/amb/liveCampaignStatus.js';
 import * as LCI from '../services/amb/liveCreativeIntelligence.js';
+import * as DQ from '../services/amb/dataQuality.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -248,6 +249,14 @@ router.post('/profiles/:id/strategist', asyncRoute(async (req, res) => {
 router.get('/profiles/:id/audience-breakdown', snapshotSlice('audienceBreakdown'));
 router.post('/profiles/:id/audience-breakdown', asyncRoute(async (req, res) => {
   res.json(await MAB.computeAudienceBreakdown({ profileId: idParam(req.params.id), windowName: req.body?.window, force: req.body?.force === true }));
+}));
+
+// ---- 🛡️ Data Quality / Reconciliation (2026-10-01) — permanent, store- ----
+// ---- scoped diagnostic: Meta campaign purchases vs age/gender/region ----
+// ---- breakdown vs Easy Orders vs mapping health vs freshness. Never ----
+// ---- forces a fresh Meta call — judges what's already synced/cached. ----
+router.get('/profiles/:id/data-quality', asyncRoute(async (req, res) => {
+  res.json(await DQ.computeDataQualityForProfile({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
 }));
 
 // ---- Testing Lab + Marketing Memory (§17-20) — serialized to camelCase for the frontend, same convention as routes/customers.js ----

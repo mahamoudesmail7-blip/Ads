@@ -1583,6 +1583,25 @@ export async function confirmMetaMapping({ profileId, campaignIds, userId }) {
     results.push({ campaignId, status: 'MAPPED', campaignName: saved.campaign_name, matchSource: isAutoSuggested ? 'AI_SUGGESTED' : 'MANUAL' });
   }
 
+  // Store-isolation-style cache invalidation (2026-10-01, found via the
+  // Smart-EarCleaner purchases discrepancy audit): the confirmed campaign
+  // SET is a direct input to computeAudienceBreakdown()'s Meta fetch
+  // (metaAudienceBreakdown.js's buildResult() queries exactly these MAPPED
+  // rows), but that result is cached per (profile, window) in
+  // audience_breakdown_json and only ever recomputed on an explicit force
+  // refresh — confirming a NEW campaign here never touched that cache, so a
+  // breakdown computed minutes before a confirmation kept being served
+  // afterward, built from the OLD (smaller) campaign set. Null it out
+  // whenever a mapping actually changes, so the next read honestly reports
+  // "not computed yet" (same convention as Market Gaps/Strategist) instead
+  // of silently serving numbers from before this confirmation.
+  if (results.some((r) => r.status === 'MAPPED')) {
+    await prisma.productMarketingSnapshot.updateMany({
+      where: { profile_id: profile.id, audience_breakdown_json: { not: null } },
+      data: { audience_breakdown_json: null },
+    });
+  }
+
   return { ambProductId: ambProduct?.id ?? null, results };
 }
 

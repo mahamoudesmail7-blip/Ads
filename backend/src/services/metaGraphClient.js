@@ -804,11 +804,20 @@ export async function listCampaignsForClone(token, adAccountId, { since, until }
 // cross-surface total = pixel + on-Meta shop). Prefer it explicitly; fall
 // back through the other purchase action types in a fixed order so the value
 // is deterministic (never "whichever the array happened to list first").
+// THE single canonical purchase-action list for this whole app — every
+// purchase count anywhere (campaign snapshots, age/gender/region breakdowns,
+// the clone picker, the debug panel) must come from calling pickPurchases()
+// with this list, never a second hand-rolled Set/find (metaSync.js's
+// extractResults() used to keep its own separate, array-order-dependent
+// list that was missing `onsite_web_app_purchase` and could pick a
+// different, non-de-duplicated purchase type than this one for the exact
+// same Meta response — found via the 2026-10-01 Smart-EarCleaner audit).
 const PURCHASE_PRIORITY = [
   'omni_purchase',
   'purchase',
   'offsite_conversion.fb_pixel_purchase',
   'onsite_web_purchase',
+  'onsite_web_app_purchase',
   'onsite_conversion.purchase',
   'web_in_store_purchase',
 ];

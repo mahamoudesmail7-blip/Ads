@@ -8,18 +8,8 @@
 // analysis file.
 import { prisma } from '../prisma.js';
 import { getDecryptedToken, getConnection, markSynced } from './metaAuth.js';
-import { getInsights } from './metaGraphClient.js';
+import { getInsights, pickPurchases } from './metaGraphClient.js';
 import { matchCampaignToProduct } from './adsImport.js';
-
-// Meta's UI "Results" column is objective-dependent — the API has no single
-// "results" field. For this app's real use case (COD e-commerce, campaigns
-// almost always optimized toward purchases), prefer a purchase-type action
-// when present; otherwise fall back to whichever action_type has the
-// highest count, honestly labelled via result_indicator either way. Never
-// silently mislabels one action type as another.
-export const PURCHASE_ACTION_TYPES = new Set([
-  'omni_purchase', 'purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_web_purchase', 'onsite_web_app_purchase', 'onsite_conversion.purchase',
-]);
 
 function toNum(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -27,12 +17,30 @@ function toNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Picks the "results" figure + which action_type it actually came from, from Meta's raw `actions`/`action_values`/`cost_per_action_type` arrays. */
+/**
+ * Picks the "results" figure + which action_type it actually came from, from
+ * Meta's raw `actions`/`action_values`/`cost_per_action_type` arrays. Meta's
+ * UI "Results" column is objective-dependent — the API has no single
+ * "results" field. For this app's real use case (COD e-commerce, campaigns
+ * almost always optimized toward purchases), prefer a purchase-type action
+ * when present; otherwise fall back to whichever action_type has the
+ * highest count, honestly labelled via result_indicator either way.
+ *
+ * The purchase-type match itself is delegated ENTIRELY to metaGraphClient.js's
+ * pickPurchases() — this file used to keep its own separate PURCHASE_ACTION_TYPES
+ * Set matched in raw array order (first match wins), which could pick a
+ * DIFFERENT, non-de-duplicated action type than the breakdown/clone-debug
+ * paths for the exact same Meta response whenever more than one purchase-like
+ * action was present (e.g. `onsite_web_purchase` appearing before
+ * `omni_purchase` in the array). Found via the 2026-10-01 Smart-EarCleaner
+ * audit — never hardcode a second guessed purchase action type here again.
+ */
 export function extractResults(row) {
   const actions = row.actions || [];
-  const purchaseAction = actions.find((a) => PURCHASE_ACTION_TYPES.has(a.action_type));
+  const pk = pickPurchases(actions);
+  const purchaseAction = pk.actionType ? actions.find((a) => a.action_type === pk.actionType) : null;
   const chosen = purchaseAction || [...actions].sort((a, b) => Number(b.value) - Number(a.value))[0] || null;
-  if (!chosen) return { results: null, resultIndicator: null, revenue: null, costPerResult: null };
+  if (!chosen) return { results: null, resultIndicator: null, revenue: null, costPerResult: null, purchases: null };
 
   const actionValues = row.action_values || [];
   const valueEntry = actionValues.find((a) => a.action_type === chosen.action_type);
@@ -43,6 +51,11 @@ export function extractResults(row) {
     resultIndicator: chosen.action_type,
     revenue: valueEntry ? toNum(valueEntry.value) : null,
     costPerResult: costEntry ? toNum(costEntry.value) : null,
+    // The honest, centrally-matched purchase count — null when Meta reported
+    // NO purchase-type action at all for this row (genuinely unavailable),
+    // never conflated with a real zero. Callers must use THIS, not re-derive
+    // "is resultIndicator a purchase type" themselves (that was the bug).
+    purchases: pk.value,
   };
 }
 
@@ -64,7 +77,7 @@ export async function runSync({ dateFrom, dateTo, triggeredById }) {
   const matchCache = new Map();
 
   const metricRows = insightRows.map((row) => {
-    const { results, resultIndicator, revenue, costPerResult } = extractResults(row);
+    const { results, resultIndicator, revenue, costPerResult, purchases } = extractResults(row);
     const campaignName = row.campaign_name || null;
     if (!matchCache.has(campaignName)) matchCache.set(campaignName, matchCampaignToProduct(campaignName, products));
     const match = matchCache.get(campaignName);
@@ -85,7 +98,7 @@ export async function runSync({ dateFrom, dateTo, triggeredById }) {
       ctr: toNum(row.ctr),
       cpc: toNum(row.cpc),
       cpm: toNum(row.cpm),
-      meta_purchases: PURCHASE_ACTION_TYPES.has(resultIndicator) ? Math.round(results ?? 0) : null,
+      meta_purchases: purchases != null ? Math.round(purchases) : null,
       meta_revenue: revenue,
       meta_roas: row.purchase_roas?.[0]?.value ? toNum(row.purchase_roas[0].value) : null,
       results: results !== null ? Math.round(results) : null,

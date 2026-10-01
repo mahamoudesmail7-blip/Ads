@@ -44,6 +44,7 @@ import { resolveProductByIdOrName, getVerifiedFeatures } from './amb/productName
 import { getConnection } from './metaAuth.js';
 import { getLiveCampaignStatusByProductId } from './amb/liveCampaignStatus.js';
 import { verifyProductStoreScope } from './amb/storeScope.js';
+import { computeProductDataQuality } from './amb/dataQuality.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
 
@@ -594,11 +595,34 @@ export async function get_capabilities({ category } = {}) {
   }
 }
 
-export async function get_amb_audience_breakdown({ productId, window } = {}) {
+export async function get_amb_audience_breakdown({ productId, window, context } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
     const data = await getScaleCenterProductAudience({ productId: Number(productId), windowName: window || 'last7' });
-    return { ok: true, hasData: !!data.available, ...data };
+    // Data Quality gate (2026-10-01, Smart-EarCleaner reconciliation audit):
+    // attach the SAME central reconciliation judgment the PMC "🛡️ جودة
+    // البيانات" panel shows, so this evidence is never presented as settled
+    // fact when it's actually UNAVAILABLE/STALE/MAPPING_ERROR/MISMATCH for
+    // this exact dimension — see dataQuality.js's judgeBreakdown().
+    let dataQuality = null;
+    if (context?.storeId) {
+      const dq = await computeProductDataQuality({ productId: Number(productId), storeId: context.storeId, windowName: window || 'last7' }).catch(() => null);
+      if (dq?.ok) dataQuality = { age: dq.age, gender: dq.gender, overallStatus: dq.overallStatus };
+    }
+    return { ok: true, hasData: !!data.available, ...data, dataQuality };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/** [🛡️ جودة البيانات] Direct data-quality/reconciliation check for one product — the AI must call this (or read the dataQuality field other tools now attach) before presenting Age/Gender/Region evidence as settled fact. */
+export async function get_data_quality({ productId, window, context } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    if (!context?.storeId) return { ok: false, error: 'محتاج سياق المتجر الحالي (storeId) لفحص جودة البيانات بأمان.' };
+    const dq = await computeProductDataQuality({ productId: Number(productId), storeId: context.storeId, windowName: window || 'last7' });
+    if (!dq.ok) return { ok: false, error: dq.reason, code: dq.code };
+    return { ok: true, hasData: true, ...dq };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -926,7 +950,19 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_amb_audience_breakdown',
-    description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية.',
+    description: '[مركز التوسّع] تقسيم الجمهور الحقيقي من Meta (العمر والنوع) لحملات منتج معين — مين بيشتري، رجالة ولا ستات، ومن أي فئة عمرية. الرد بيحمل dataQuality — لو حالة أي بُعد فيه UNAVAILABLE/STALE/MISMATCH ممنوع تقدّمه كحقيقة مؤكدة، قول صراحة إن البيانات غير موثوقة لهذا البُعد.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        productId: { type: 'integer', description: 'رقم المنتج' },
+        window: { type: 'string', description: 'today | yesterday | last3 | last7 | last14 | last30 | last90، افتراضي last7' },
+      },
+      required: ['productId'],
+    },
+  },
+  {
+    name: 'get_data_quality',
+    description: '[🛡️ جودة البيانات] فحص تطابق البيانات الحقيقي لمنتج معين: مشتريات الحملة مقابل تقسيمات العمر/الجنس/المنطقة، حالة ربط Meta، وحداثة البيانات. استدعِه قبل أي رد يعتمد على تقسيم عمر/جنس/منطقة لو مش متأكد من موثوقيته، أو لو المستخدم سأل صراحة "البيانات دي موثوقة؟"/"ليه في تضارب؟". الحالات: OK (مطابق فعليًا) / RECONCILED (كل الأبعاد المتاحة متطابقة) / WARNING (بيانات ناقصة أو لسه محسوبتش) / MAPPING_ERROR (مفيش ربط Meta حقيقي) / STALE (محسوبة من فترة وتغيّر الربط) / PURCHASE_RECONCILIATION_ERROR (تضارب حقيقي محتاج مراجعة). أي بُعد Meta نفسها لا تدعمه يُعرض UNAVAILABLE — ممنوع تتعامل معه كفشل.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1014,6 +1050,7 @@ export const TOOL_IMPLS = {
   get_daily_brief,
   get_capabilities,
   get_amb_audience_breakdown,
+  get_data_quality,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
   get_amb_scale_center_product,

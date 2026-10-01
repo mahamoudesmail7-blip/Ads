@@ -28,6 +28,7 @@ const TABS = [
   { k: 'competitors', label: 'المنافسين', desc: 'تحليل السوق', icon: 'barchart', color: 'green' },
   { k: 'tests', label: 'الاختبارات والنتائج', desc: 'ما الذي يعمل أفضل', icon: 'flask', color: 'blue' },
   { k: 'strategist', label: 'المستشار الذكي', desc: 'توصيات وخطوة قادمة', icon: 'lightbulb', color: 'yellow' },
+  { k: 'dataQuality', label: 'جودة البيانات', desc: 'تطابق المصادر ومصداقيتها', icon: 'shield', color: 'red' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ const PMC_ICON_PATHS = {
   link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   store: '<path d="M3 9h18l-1.5-5H4.5L3 9z"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/>',
+  shield: '<path d="M12 2.5 4 5.5v6c0 5 3.4 9 8 10 4.6-1 8-5 8-10v-6z"/><path d="M9 12l2 2 4-4.5"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   dots: '<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
   cart: '<circle cx="9" cy="21" r="1.4"/><circle cx="18" cy="21" r="1.4"/><path d="M2.5 3h2l2.4 12.4a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 8H6"/>',
@@ -148,6 +150,8 @@ const state = {
   // Phase 1 — Testing Lab (own tab state; tests come straight off state.snapshot elsewhere)
   labTests: null, labTestsLoading: false, labNewTestOpen: false, labBusyId: null,
   catalogSyncMissing: null, // count of Easy Orders catalog products not yet in the internal Product table (nav badge -> easyorders-catalog-sync.html); null until loaded, never shown to a non-ADMIN (that page is ADMIN-only)
+  // 🛡️ جودة البيانات (2026-10-01) — Data Reconciliation layer: own tab state, fetched on-demand like every other on-demand PMC section (Market Gaps/Strategist/Audience Breakdown).
+  dataQuality: null, dataQualityLoading: false,
   // Product <-> Meta Campaign mapping (§ربط إعلانات Meta) — independent of
   // the AI snapshot; loaded/refreshed on its own, never auto-confirmed.
   metaMapping: null, metaMappingLoading: false, metaMappingSelected: {}, metaMappingBusy: false,
@@ -556,6 +560,7 @@ function resetWorkspace() {
   state.hookResult = null; state.postResult = null; state.ideaResult = null; state.testPackResult = null;
   state.metaMapping = null; state.metaMappingLoading = false; state.metaMappingSelected = {}; state.metaMappingBusy = false;
   state.labTests = null; state.labTestsLoading = false; state.labNewTestOpen = false; state.labBusyId = null;
+  state.dataQuality = null; state.dataQualityLoading = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +679,7 @@ function renderTabBody() {
   if (!mount) return;
   if (!state.snapshot) { mount.innerHTML = '<div class="pmc-empty">مفيش تحليل متاح حاليًا.</div>'; return; }
   const s = state.snapshot;
-  const renderers = { overview: renderOverview, audience: renderAudience, angles: renderAngles, creative: renderCreative, hooks: renderHooksTab, locations: renderLocations, competitors: renderCompetitors, tests: renderTests, strategist: renderStrategist };
+  const renderers = { overview: renderOverview, audience: renderAudience, angles: renderAngles, creative: renderCreative, hooks: renderHooksTab, locations: renderLocations, competitors: renderCompetitors, tests: renderTests, strategist: renderStrategist, dataQuality: renderDataQuality };
   (renderers[state.tab] || renderOverview)(mount, s);
 }
 
@@ -1960,6 +1965,87 @@ function renderStrategist(mount, s) {
       box.innerHTML = strategistAnswersHtml(result.answers);
     } catch (e) { UI.toast(e.message, 'error'); box.innerHTML = '<div class="pmc-empty">تعذّر توليد الاستشارة.</div>'; }
   };
+}
+
+// ---------------------------------------------------------------------------
+// 🛡️ جودة البيانات (2026-10-01) — Data Reconciliation / Data Quality tab.
+// Read-only, on-demand (like Market Gaps/Strategist/Audience Breakdown) —
+// never forces a fresh Meta call; judges whatever's already synced/cached.
+// ---------------------------------------------------------------------------
+const DQ_STATUS_LABEL_AR = {
+  OK: '🟢 مطابق', RECONCILED: '🟢 متطابق', WARNING: '🟡 تحذير', STALE: '🟡 قديم',
+  UNAVAILABLE: '⚪ غير متاح من Meta', UNKNOWN: '⚪ غير معروف بعد', MAPPING_ERROR: '🔴 خطأ ربط',
+  MISMATCH: '🔴 تضارب', PURCHASE_RECONCILIATION_ERROR: '🔴 تضارب في المشتريات', BLOCKED: '🔴 موقوف',
+};
+function dqStatusPill(status) {
+  const cls = /^(OK|RECONCILED)$/.test(status) ? 'ok' : /^(WARNING|STALE)$/.test(status) ? 'warn' : /^(UNAVAILABLE|UNKNOWN)$/.test(status) ? 'muted' : 'bad';
+  return `<span class="pmc-dq-pill ${cls}">${E(DQ_STATUS_LABEL_AR[status] || status)}</span>`;
+}
+function dqDimRow(label, d) {
+  if (!d) return '';
+  return `<div class="pmc-dq-dim-row">
+    <div class="pmc-dq-dim-label">${E(label)}</div>
+    ${dqStatusPill(d.status)}
+    <div class="pmc-dq-dim-value">${d.purchases != null ? `${fmtNum(d.purchases)} مشترى` : '—'}</div>
+    <div class="faint" style="font-size:11px;">${E(d.reason || '')}</div>
+  </div>`;
+}
+function dataQualityHtml(dq) {
+  if (!dq) return '<div class="pmc-empty">جارِ فحص جودة البيانات…</div>';
+  if (!dq.ok) return `<div class="pmc-empty">⚠️ ${E(dq.reason || 'تعذّر فحص جودة البيانات.')}</div>`;
+  const fresh = dq.freshness || {};
+  return `
+    <div class="pmc-dq-summary">
+      <div class="pmc-dq-overall">${dqStatusPill(dq.overallStatus)}<span class="lbl">الحالة العامة</span></div>
+      ${dq.discrepancies?.length ? `<div class="pmc-dq-discrepancies">${dq.discrepancies.map((d) => `<div>⚠️ ${E(d)}</div>`).join('')}</div>` : '<div class="faint" style="font-size:12px;">مفيش أي تضارب حقيقي مكتشَف حاليًا.</div>'}
+    </div>
+
+    <div class="section-title" style="font-size:13.5px;margin-top:14px;">مشتريات الحملة (Meta Campaign Purchases)</div>
+    <div class="pmc-dq-dim-row">
+      <div class="pmc-dq-dim-label">إجمالي الحملات المؤكدة</div>
+      ${dqStatusPill(dq.campaignPurchases?.status)}
+      <div class="pmc-dq-dim-value">${dq.campaignPurchases?.value != null ? `${fmtNum(dq.campaignPurchases.value)} مشترى` : '—'}</div>
+      <div class="faint" style="font-size:11px;">${E(dq.mapping?.includedCampaignIds?.length || 0)} حملة مُضمّنة${dq.mapping?.widerSetExtra?.length ? ` · ${dq.mapping.widerSetExtra.length} حملة إطلاق غير مؤكدة بعد` : ''}</div>
+    </div>
+
+    <div class="section-title" style="font-size:13.5px;margin-top:14px;">تطابق تقسيمات الجمهور (Breakdown Reconciliation)</div>
+    ${dqDimRow('العمر (Age)', dq.age)}
+    ${dqDimRow('الجنس (Gender)', dq.gender)}
+    ${dqDimRow('المنطقة (Region)', dq.region)}
+
+    <div class="section-title" style="font-size:13.5px;margin-top:14px;">Easy Orders</div>
+    <div class="pmc-dq-dim-row">
+      <div class="pmc-dq-dim-label">الطلبات</div>
+      <div class="pmc-dq-dim-value">${fmtNum(dq.easyOrders?.total)} إجمالي · ${fmtNum(dq.easyOrders?.mapped)} صالح للتحليل الجغرافي · ${fmtNum(dq.easyOrders?.unmapped)} غير محدد المحافظة</div>
+    </div>
+
+    <div class="section-title" style="font-size:13.5px;margin-top:14px;">الحداثة (Freshness)</div>
+    <div class="pmc-dq-dim-row"><div class="pmc-dq-dim-label">آخر مزامنة Meta</div><div class="pmc-dq-dim-value">${fresh.metaLastSyncAt ? timeAgoAr(fresh.metaLastSyncAt) : 'غير معروف'}</div></div>
+    <div class="pmc-dq-dim-row"><div class="pmc-dq-dim-label">آخر حساب لتقسيم الجمهور</div><div class="pmc-dq-dim-value">${fresh.breakdownGeneratedAt ? timeAgoAr(fresh.breakdownGeneratedAt) : 'لم يُحسب بعد'}${fresh.breakdownStale ? ' <span class="pmc-dq-pill warn">قديم</span>' : ''}</div></div>
+  `;
+}
+function renderDataQuality(mount, s) {
+  mount.innerHTML = `
+    <div class="pmc-card">
+      <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>${pmcIcon('shield')} 🛡️ جودة البيانات</span>
+        <button class="amb-btn sm" id="pmcDqRefresh">🔄 تحديث</button>
+      </div>
+      <div class="faint" style="font-size:11.5px;margin:4px 0 10px;">يقارن مشتريات الحملة على Meta بتقسيمات العمر/الجنس/المنطقة وبيانات Easy Orders — بدون أي استدعاء جديد لـ Meta هنا، فقط حكم على آخر بيانات متزامنة أو محسوبة بالفعل.</div>
+      <div id="pmcDqBox">${dataQualityHtml(state.dataQuality)}</div>
+    </div>`;
+  $('pmcDqRefresh').onclick = () => loadDataQuality(true);
+  if (!state.dataQuality && !state.dataQualityLoading) loadDataQuality(false);
+}
+async function loadDataQuality() {
+  state.dataQualityLoading = true;
+  try {
+    state.dataQuality = await api.get(`/api/product-marketing/profiles/${state.profile.id}/data-quality`, { storeId: state.storeId, window: state.windowName });
+  } catch (e) {
+    state.dataQuality = { ok: false, reason: e.message };
+  }
+  state.dataQualityLoading = false;
+  if (state.tab === 'dataQuality') { const box = $('pmcDqBox'); if (box) box.innerHTML = dataQualityHtml(state.dataQuality); }
 }
 
 document.addEventListener('DOMContentLoaded', init);

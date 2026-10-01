@@ -17,7 +17,7 @@ const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓'
 const REQUIRED_CATEGORIES = [
   'Dashboard', 'Products', 'Meta', 'EasyOrders', 'Smart Decision Center', 'Scale Center', 'Action Plan',
   'Campaign Builder', 'Media', 'Creative Library', 'Recommendations', 'Scheduling', 'Clone', 'Reports',
-  'Settings', 'Experiments', 'Learning', 'Tasks', 'Incidents', 'Growth Intelligence',
+  'Settings', 'Experiments', 'Learning', 'Tasks', 'Incidents', 'Growth Intelligence', 'Data Quality',
 ];
 
 const { listCapabilities, capabilitySummary } = await imp('../services/amb/capabilityRegistry.js');

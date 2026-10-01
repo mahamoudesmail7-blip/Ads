@@ -19,7 +19,7 @@ import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAdAccountInfo, getInsightsByLevel, getEntitiesMeta } from '../metaGraphClient.js';
-import { extractResults, PURCHASE_ACTION_TYPES, runSync } from '../metaSync.js';
+import { extractResults, runSync } from '../metaSync.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
 
@@ -81,10 +81,10 @@ function extractLandingPageViews(row) {
 
 /** One insight row (+ merged metadata) → a MetaPerformanceSnapshot create payload. */
 function toSnapshotRow(row, level, meta, adAccountId) {
-  const { results, resultIndicator, revenue } = extractResults(row);
+  const { results, resultIndicator, revenue, purchases: purchasesRaw } = extractResults(row);
   const spend = toNum(row.spend) ?? 0;
   const clicks = toNum(row.clicks);
-  const purchases = PURCHASE_ACTION_TYPES.has(resultIndicator) ? Math.round(results ?? 0) : null;
+  const purchases = purchasesRaw != null ? Math.round(purchasesRaw) : null;
   const landingPageViews = extractLandingPageViews(row);
   const roasRaw = row.purchase_roas?.[0]?.value ? toNum(row.purchase_roas[0].value) : null;
 
