@@ -156,6 +156,15 @@ try {
   const third = await S.reconcileOrders({ limit: 20, only, deps });
   ok('forced re-pass is stable: 0 changes (delivered/cancelled orders left the active set; 3 remain checked)', third.changed === 0 && third.checked === 3 && third.notFound === 1, JSON.stringify({ c: third.checked, ch: third.changed, nf: third.notFound }));
 
+  // coverage: the resumable cursor must not skip orders between batches
+  S.resetReconcileState(); S.resetRateBuckets();
+  const covIds = Array.from({ length: 10 }, (_, i) => `eotest-cov-${i}`);
+  for (const id of covIds) await prisma.easyOrdersOrder.create({ data: { order_id: id, cart_item_id: `${id}-c`, product_id: null, date: iso(20), status: 'PENDING', raw_status: 'pending', quantity: 1, store_id: SB, matched: false } });
+  const seen = new Set();
+  const covDeps = { ...fast, candidates: [{ storeId: SB, key: 'KEY_B' }], fetchImpl: async (url) => { seen.add(url.split('/').pop()); return resp(200, { status: 'pending' }); } };
+  for (let i = 0; i < 3; i++) await S.reconcileOrders({ limit: 4, only: { orderIds: covIds }, deps: covDeps });
+  ok('cursor coverage: 3 batches of 4 cover all 10 orders (no order skipped between batches)', seen.size === 10, String(seen.size));
+
   // rate-limit storm: stops early instead of grinding through the whole backlog
   S.resetReconcileState(); S.resetRateBuckets();
   const stormDeps = { ...fast, maxRetries: 0, candidates: [{ storeId: SA, key: 'KEY_A' }], fetchImpl: async () => resp(429, '') };

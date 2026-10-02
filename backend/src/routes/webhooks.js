@@ -1,139 +1,126 @@
-// EasyOrders integration — webhook receiver (spec: js/orders-provider.js's
-// EasyOrdersProvider stub, now wired up for real). EasyOrders has no bulk
-// "list orders" endpoint (confirmed against their public docs at
-// public-api-docs.easy-orders.net) — their model is push, not pull: they
-// POST here the instant an order is created or its status changes. This
-// route is deliberately NOT behind requireAuth (EasyOrders' servers can't
-// log in as one of our users).
+// EasyOrders integration — webhook receiver. EasyOrders has no bulk "list orders" endpoint — their model is push: they POST here
+// the instant an order is created or its status changes. Deliberately NOT behind requireAuth (EasyOrders' servers can't log in).
 //
-// Multi-store — a SECOND store's webhooks arrive on an explicit URL path
-// segment, `/easyorders/:storeId`, not anything in the payload body (a body
-// field is never trustworthy input for "which store" — it would let a
-// malicious or buggy sender attribute an order to the wrong store).
-// Register a SEPARATE webhook URL per store in each store's own Easy
-// Orders dashboard:
-//   - the ORIGINAL store keeps using the bare `/easyorders` URL — its
-//     handling below is BYTE-FOR-BYTE the same logic as before multi-store
-//     (verified against git history, commit ae8407d): payload shape is
-//     classified FIRST, unconditionally, before any secret is even looked
-//     at (an unrecognized shape is refused regardless of what secret, or no
-//     secret, it carries), and each of the two payload TYPES is checked
-//     against its OWN dedicated secret (EasyOrders' dashboard issues a
-//     different secret per webhook type even though both post to the same
-//     URL) — zero config change, zero regression risk for the one real
-//     store already working in production today.
-//   - any additional store registers `/easyorders/<its own storeId>`, a
-//     genuinely new code path with its own, simpler contract: the store
-//     must exist (else 404 UNKNOWN_STORE), then its ONE configured
-//     webhookSecretEnv is checked BEFORE the payload shape is classified
-//     (else 400 STORE_WEBHOOK_NOT_CONFIGURED if that store has no secret
-//     configured, or 401 INVALID_SECRET if it doesn't match), and only then
-//     is the shape classified (400 UNRECOGNIZED_PAYLOAD if unknown). This
-//     deliberately does not split by payload type — that split was only
-//     ever confirmed necessary for the original account.
+// 2026-10-02 rewrite of the AUTH + STORE-ATTRIBUTION layer (the ingest/status logic itself is unchanged and still lives in
+// services/easyOrders.js). Audit evidence: production returned 401 to 106/106 deliveries on the bare `/easyorders` URL, and 1,126/1,126
+// audited orders filed under `default` were actually owned by the other Easy Orders account — the old code trusted the URL
+// path alone to pick the store, so a webhook registered on the "wrong" URL was either rejected or silently mis-filed.
 //
-// The actual ingest/status-apply logic lives in services/easyOrders.js,
-// shared with the periodic reconciliation job (services/easyOrdersReconcile.js).
+// Now (services/easyOrdersWebhookAuth.js):
+//   * both `/easyorders` and `/easyorders/:storeId` authenticate against EVERY configured secret (timing-safe); the matching
+//     secret — not the URL, never a body field — decides the store. The default store keeps its two dedicated secrets
+//     (order-created vs status-update); a store's single secret works for both event types.
+//   * for a newly created order the owning Easy Orders ACCOUNT is verified with Easy Orders itself; a verified owner overrides the
+//     secret/route store (logged as TAG_CORRECTED); if verification is impossible the order is still ingested (flagged unverified).
+//   * every rejection logs why (env var NAMES / lengths / "header equals secret X but wrong event type") — never a secret value.
+// Shape rules kept from before: the bare URL classifies the payload shape BEFORE looking at any secret (400 UNRECOGNIZED_PAYLOAD);
+// the store URL requires the store to exist (404) and have a secret (400) first, then authenticates, then classifies.
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../prisma.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
-import { logger } from '../logger.js';
-import { ingestOrder, fetchOrderById, applyStatusToOrder } from '../services/easyOrders.js';
+import { logger as defaultLogger } from '../logger.js';
+import { ingestOrder, applyStatusToOrder } from '../services/easyOrders.js';
 import { getStore, getStoreWebhookSecret, defaultStoreId } from '../services/easyOrdersStores.js';
+import { buildSecretRegistry, matchWebhookSecret, verifyOrderOwner } from '../services/easyOrdersWebhookAuth.js';
+import { resolveOrderAcrossStores } from '../services/easyOrdersStatus.js';
 
-const router = Router();
+/** Counters + the last rejection reason, readable by diagnostics without any secret. */
+export const webhookAuthHealth = { rejected: 0, lastRejectedAt: null, lastRejection: null, accepted: 0, lastAcceptedAt: null, tagCorrected: 0, routeSecretMismatch: 0, ownerUnverified: 0 };
 
-// Every rejected webhook was previously completely silent (production returned 401 to ~100 Easy Orders deliveries in 8h with no
-// log line explaining why). This logs WHY — never a secret value — at most once per 5 min per route+type.
-const authFailLog = new Map();
-export const webhookAuthHealth = { rejected: 0, lastRejectedAt: null, accepted: 0, lastAcceptedAt: null };
-function logAuthFailure({ route, type, storeId, req, expected }) {
-  webhookAuthHealth.rejected++; webhookAuthHealth.lastRejectedAt = new Date().toISOString();
-  const k = `${route}|${type}`; const now = Date.now();
-  const e = authFailLog.get(k) || { count: 0, last: 0 }; e.count++;
-  if (now - e.last < 5 * 60_000) { authFailLog.set(k, e); return; }
-  const got = req.headers['secret'];
-  logger.warn('EasyOrders webhook REJECTED (INVALID_SECRET)', { route, type, storeId, suppressedSincePrevious: e.count - 1, secretHeaderPresent: !!got, secretHeaderLength: got ? String(got).length : 0, expectedConfigured: !!expected, expectedLength: expected ? String(expected).length : 0, lengthsMatch: !!got && !!expected && String(got).length === String(expected).length, userAgent: String(req.headers['user-agent'] || '').slice(0, 40) });
-  e.count = 0; e.last = now; authFailLog.set(k, e);
-}
-
-const webhookLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
-
-/** Classifies the payload shape BEFORE any secret is checked — a request never has to guess/probe a secret just to learn its shape wasn't recognized, and an unrecognized shape is refused (no ingest) regardless of what secret it carries. */
 function classifyEasyOrdersPayload(body) {
   if (body && body.event_type === 'order-status-update') return 'STATUS_UPDATE';
   if (body && body.id && Array.isArray(body.cart_items)) return 'ORDER_CREATED';
   return 'UNKNOWN';
 }
 
-async function handleOrderCreated(body, storeId, res) {
-  await ingestOrder(body, storeId);
-  logger.info('EasyOrders order ingested', { order_id: body.id, items: body.cart_items.length, storeId });
-  res.json({ ok: true });
-}
+export function createWebhooksRouter(overrides = {}) {
+  const d = {
+    logger: defaultLogger,
+    ingestOrder, applyStatusToOrder, getStore, getStoreWebhookSecret, defaultStoreId,
+    registry: () => buildSecretRegistry({ defaultStoreId: defaultStoreId() }),
+    verifyOwner: (orderId, hint) => verifyOrderOwner(orderId, hint),
+    resolveOrder: (orderId, hint) => resolveOrderAcrossStores(orderId, hint, { maxRetries: 1 }),
+    orderRows: (orderId) => prisma.easyOrdersOrder.findMany({ where: { order_id: orderId }, select: { id: true } }),
+    ...overrides,
+  };
+  const router = Router();
+  const webhookLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
 
-async function handleStatusUpdate(body, storeId, res) {
-  const existing = await prisma.easyOrdersOrder.findMany({ where: { order_id: body.order_id } });
-  if (existing.length === 0) {
-    const fetched = await fetchOrderById(body.order_id, storeId);
-    if (fetched) await ingestOrder(fetched, storeId);
+  // log-once-per-5-min per key so a retry storm cannot flood the logs, while the FIRST occurrence always explains itself
+  const throttle = new Map();
+  function logThrottled(level, key, message, fields) {
+    const now = Date.now(); const e = throttle.get(key) || { count: 0, last: 0 }; e.count++;
+    if (now - e.last >= 5 * 60_000) { d.logger[level](message, { ...fields, suppressedSincePrevious: e.count - 1 }); e.count = 0; e.last = now; }
+    throttle.set(key, e);
   }
-  const { totalRows } = await applyStatusToOrder(body.order_id, body.new_status);
-  logger.info('EasyOrders status update processed', { order_id: body.order_id, new_status: body.new_status, rowsAffected: totalRows, storeId });
-  res.json({ ok: true, rowsAffected: totalRows });
+
+  async function handleOrderCreated(body, storeId, res) {
+    const owner = await d.verifyOwner(body.id, storeId);
+    let finalStore = storeId;
+    if (owner.verified) {
+      if (owner.storeId !== storeId) {
+        webhookAuthHealth.tagCorrected++;
+        logThrottled('warn', 'tag-corrected', 'EasyOrders order store CORRECTED by owner verification', { order_id: body.id, secretOrRouteStore: storeId, verifiedOwnerStore: owner.storeId });
+        finalStore = owner.storeId;
+      }
+    } else {
+      webhookAuthHealth.ownerUnverified++;
+      logThrottled('info', 'owner-unverified', 'EasyOrders order ingested with UNVERIFIED store (owner lookup unavailable)', { order_id: body.id, store: storeId, reason: owner.reason });
+    }
+    await d.ingestOrder(body, finalStore);
+    d.logger.info('EasyOrders order ingested', { order_id: body.id, items: body.cart_items.length, storeId: finalStore, ownerVerified: !!owner.verified });
+    res.json({ ok: true });
+  }
+
+  async function handleStatusUpdate(body, storeId, res) {
+    const existing = await d.orderRows(body.order_id);
+    if (existing.length === 0) {
+      const r = await d.resolveOrder(body.order_id, storeId); // any configured key: the order may belong to the other account
+      if (r.kind === 'OK') await d.ingestOrder(r.order, r.foundWithStoreId);
+    }
+    const { totalRows } = await d.applyStatusToOrder(body.order_id, body.new_status);
+    d.logger.info('EasyOrders status update processed', { order_id: body.order_id, new_status: body.new_status, rowsAffected: totalRows, storeId });
+    res.json({ ok: true, rowsAffected: totalRows });
+  }
+
+  function handler(urlStoreId) {
+    return asyncRoute(async (req, res) => {
+      const body = req.body || {};
+      const type = classifyEasyOrdersPayload(body);
+      const route = urlStoreId ? '/easyorders/:storeId' : '/easyorders';
+
+      if (!urlStoreId && type === 'UNKNOWN') return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' }); // shape first, before any secret
+      if (urlStoreId) {
+        if (!d.getStore(urlStoreId)) return res.status(404).json({ error: 'UNKNOWN_STORE' });
+        if (!d.getStoreWebhookSecret(urlStoreId)) return res.status(400).json({ error: 'STORE_WEBHOOK_NOT_CONFIGURED' });
+      }
+
+      const header = req.headers['secret'];
+      const m = matchWebhookSecret(header, type, d.registry());
+      if (!m.ok) {
+        webhookAuthHealth.rejected++; webhookAuthHealth.lastRejectedAt = new Date().toISOString(); webhookAuthHealth.lastRejection = { route, urlStoreId: urlStoreId || null, ...m.diagnosis };
+        logThrottled('warn', `401|${route}|${type}`, 'EasyOrders webhook REJECTED (INVALID_SECRET)', { route, urlStoreId: urlStoreId || null, userAgent: String(req.headers['user-agent'] || '').slice(0, 40), ...m.diagnosis });
+        return res.status(401).json({ error: 'INVALID_SECRET' });
+      }
+      if (type === 'UNKNOWN') return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' });
+
+      const routeStore = urlStoreId || d.defaultStoreId();
+      if (m.storeId !== routeStore) {
+        webhookAuthHealth.routeSecretMismatch++;
+        logThrottled('warn', `mismatch|${route}|${m.storeId}`, 'EasyOrders webhook: the secret belongs to a different store than the URL it was sent to — the SECRET decides the store', { route, urlStore: routeStore, secretStore: m.storeId, secretSource: m.source });
+      }
+      if (m.ambiguous) logThrottled('warn', 'ambiguous', 'EasyOrders webhook secret is shared by more than one store — first match used', { stores: m.ambiguous });
+      webhookAuthHealth.accepted++; webhookAuthHealth.lastAcceptedAt = new Date().toISOString();
+
+      if (type === 'STATUS_UPDATE') return handleStatusUpdate(body, m.storeId, res);
+      return handleOrderCreated(body, m.storeId, res);
+    });
+  }
+
+  router.post('/easyorders', webhookLimiter, handler(null));
+  router.post('/easyorders/:storeId', webhookLimiter, (req, res, next) => handler(req.params.storeId)(req, res, next));
+  return router;
 }
 
-// Original store — untouched logic, untouched URL. storeId is always
-// 'default' here; it is never taken from the request body.
-router.post(
-  '/easyorders',
-  webhookLimiter,
-  asyncRoute(async (req, res) => {
-    const body = req.body || {};
-    const type = classifyEasyOrdersPayload(body);
-
-    if (type === 'UNKNOWN') {
-      return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' });
-    }
-
-    const expectedSecret = type === 'STATUS_UPDATE' ? process.env.EASYORDERS_STATUS_WEBHOOK_SECRET : process.env.EASYORDERS_WEBHOOK_SECRET;
-    if (!expectedSecret || req.headers['secret'] !== expectedSecret) {
-      logAuthFailure({ route: '/easyorders', type, storeId: defaultStoreId(), req, expected: expectedSecret });
-      return res.status(401).json({ error: 'INVALID_SECRET' });
-    }
-    webhookAuthHealth.accepted++; webhookAuthHealth.lastAcceptedAt = new Date().toISOString();
-
-    const storeId = defaultStoreId();
-    if (type === 'STATUS_UPDATE') return handleStatusUpdate(body, storeId, res);
-    return handleOrderCreated(body, storeId, res);
-  })
-);
-
-// Additional stores — one URL, one secret, per store.
-router.post(
-  '/easyorders/:storeId',
-  webhookLimiter,
-  asyncRoute(async (req, res) => {
-    const storeId = req.params.storeId;
-    if (!getStore(storeId)) {
-      return res.status(404).json({ error: 'UNKNOWN_STORE' });
-    }
-
-    const storeSecret = getStoreWebhookSecret(storeId);
-    if (!storeSecret) return res.status(400).json({ error: 'STORE_WEBHOOK_NOT_CONFIGURED' });
-    if (req.headers['secret'] !== storeSecret) { logAuthFailure({ route: '/easyorders/:storeId', type: classifyEasyOrdersPayload(req.body || {}), storeId, req, expected: storeSecret }); return res.status(401).json({ error: 'INVALID_SECRET' }); }
-    webhookAuthHealth.accepted++; webhookAuthHealth.lastAcceptedAt = new Date().toISOString();
-
-    const body = req.body || {};
-    const type = classifyEasyOrdersPayload(body);
-    if (type === 'UNKNOWN') {
-      return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' });
-    }
-
-    if (type === 'STATUS_UPDATE') return handleStatusUpdate(body, storeId, res);
-    return handleOrderCreated(body, storeId, res);
-  })
-);
-
-export default router;
+export default createWebhooksRouter();

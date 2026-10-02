@@ -160,15 +160,16 @@ export async function reconcileOrders({ limit = 30, dryRun = false, only = null,
       select: { order_id: true, store_id: true, date: true, easy_orders_store_id: true }, distinct: ['order_id'], orderBy: [{ date: 'desc' }, { id: 'desc' }], skip, take: page,
     });
     if (!rows.length) { if (wrapped || skip === 0) break; skip = 0; wrapped = true; continue; }
-    for (const r of rows) {
+    let consumed = rows.length;
+    for (const [i, r] of rows.entries()) {
       stats.scanned++;
       const recent = daysBetween(r.date, now) <= 14;
       const t = lastChecked.get(r.order_id);
       if (t && now.getTime() - t < (recent ? RECHECK_MS.recent : RECHECK_MS.old)) continue;
       picked.push(r);
-      if (picked.length >= limit) break;
+      if (picked.length >= limit) { consumed = i + 1; break; } // only advance past what was actually examined — never skip unexamined orders
     }
-    skip += rows.length;
+    skip += consumed;
     if (rows.length < page) { if (picked.length < limit && !wrapped && skip > page) { skip = 0; wrapped = true; continue; } break; }
   }
   cursor.skip = skip;
