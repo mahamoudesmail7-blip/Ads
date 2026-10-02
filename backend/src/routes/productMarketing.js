@@ -96,7 +96,7 @@ router.get('/easy-orders/search', asyncRoute(async (req, res) => {
   // a genuinely empty catalogue — passed straight through, not re-wrapped.
   // storeId is optional — omitting it keeps every pre-multi-store caller
   // working exactly as before (resolves to the one default store).
-  res.json(await PM.searchEasyOrdersProducts(req.query.q, req.query.store_id || undefined));
+  res.json(await PM.searchEasyOrdersProducts(req.query.q, req.query.store_id || undefined, { forceRefresh: req.query.force_refresh === 'true' }));
 }));
 router.post('/profiles/from-easy-orders', asyncRoute(async (req, res) => {
   res.status(201).json(await PM.lockFromEasyOrders({ eoProductId: req.body?.eoProductId, storeId: req.body?.storeId || undefined, userId: req.user.id }));

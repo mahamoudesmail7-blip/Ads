@@ -18,8 +18,12 @@ process.env.EASYORDERS_STORES_JSON = JSON.stringify([
   { id: 's7', name: 'S7', apiKeyEnv: 'EO_TEST_KEY_7' },
   { id: 's8', name: 'S8', apiKeyEnv: 'EO_TEST_KEY_8' },
   { id: 's9', name: 'S9', apiKeyEnv: 'EO_TEST_KEY_9' },
+  { id: 's10', name: 'S10', apiKeyEnv: 'EO_TEST_KEY_10' },
+  { id: 's11', name: 'S11', apiKeyEnv: 'EO_TEST_KEY_11' },
+  { id: 's12', name: 'S12', apiKeyEnv: 'EO_TEST_KEY_12' },
 ]);
-for (let i = 1; i <= 9; i++) process.env[`EO_TEST_KEY_${i}`] = `key-${i}`;
+for (let i = 1; i <= 12; i++) process.env[`EO_TEST_KEY_${i}`] = `key-${i}`;
+process.env.EASYORDERS_LATER_PAGE_DELAY_MS_TEST_OVERRIDE = '5'; // the extra "wait out the rate-limit window" rounds are 20s in production
 process.env.EASYORDERS_PAGE_DELAY_MS_TEST_OVERRIDE = '5'; // real fetch is mocked below — no reason to burn real wall-clock time on production pacing
 
 const { getAllEasyOrdersProductsStatus, getEasyOrdersProducts, getEasyOrdersDiagnostics } = await import(pathToFileURL(process.cwd() + '/src/services/amb/easyOrdersProducts.js').href);
@@ -159,6 +163,59 @@ console.log('\n§10 getEasyOrdersDiagnostics() — real internal counters, never
   ok('reports real per-store last-success timestamps for stores that succeeded', typeof diag.lastSuccessAtByStore.s8 === 'number' && typeof diag.lastSuccessAtByStore.s9 === 'number', JSON.stringify(diag.lastSuccessAtByStore));
   ok('reports real cache age for stores with a warm cache, not a guess', diag.thumbCacheAgeMsByStore.s8 >= 0 && diag.thumbCacheAgeMsByStore.s8 < 5000, JSON.stringify(diag.thumbCacheAgeMsByStore));
   ok('in-flight crawl counts settle back to 0 once every request completes — no leaked entries', diag.inFlightCrawls === 0 && diag.fullInFlightCrawls === 0, JSON.stringify({ inFlight: diag.inFlightCrawls, fullInFlight: diag.fullInFlightCrawls }));
+}
+
+console.log('\n§11 REGRESSION (2026-10-02, Trendy Store showed 100 of 334): a later page rate-limited past the in-request retries is recovered by waiting out the window, NOT silently cached as the full catalogue:');
+{
+  // page 2 returns 429 for a whole retry set (3 attempts) + then succeeds on the extra round.
+  let page2Calls = 0;
+  mockFetch(async (url) => {
+    const page = Number(new URL(url).searchParams.get('page'));
+    if (page === 1) return { ok: true, status: 200, json: async () => Array.from({ length: 100 }, (_, i) => product(i + 1)) };
+    page2Calls++;
+    if (page2Calls <= 3) return { ok: false, status: 429, headers: { get: () => null }, text: async () => '' };
+    return { ok: true, status: 200, json: async () => [product(101), product(102)] };
+  });
+  const result = await getAllEasyOrdersProductsStatus('s10');
+  ok('page 2 recovered after the extra wait — all 102 products returned', result.products.length === 102, String(result.products.length));
+  ok('NOT flagged partial when the crawl actually completed', result.partial === false && result.error === null, JSON.stringify({ partial: result.partial, error: result.error }));
+  restoreFetch();
+}
+
+console.log('\n§12 REGRESSION: page 2 that never recovers -> a FLAGGED partial result with a visible message, cached only briefly, and it can never overwrite a bigger previously-cached list:');
+{
+  mockFetch(async (url) => {
+    const page = Number(new URL(url).searchParams.get('page'));
+    if (page === 1) return { ok: true, status: 200, json: async () => Array.from({ length: 100 }, (_, i) => product(i + 1)) };
+    return { ok: false, status: 429, headers: { get: () => null }, text: async () => '' };
+  });
+  const result = await getAllEasyOrdersProductsStatus('s11');
+  ok('returns the 100 real products it got (ok:true, nothing discarded)', result.ok === true && result.products.length === 100, String(result.products.length));
+  ok('flagged partial:true with an explicit Arabic message — never presented as the whole catalogue', result.partial === true && /منتج فقط/.test(result.error || ''), JSON.stringify({ partial: result.partial, error: result.error }));
+  const diag = getEasyOrdersDiagnostics();
+  ok('the partial list is cached for far less than the normal 1h (age is back-dated so it expires within ~60s)', diag.fullCacheAgeMsByStore.s11 >= 59 * 60 * 1000 - 5000, String(diag.fullCacheAgeMsByStore.s11));
+  const again = await getAllEasyOrdersProductsStatus('s11');
+  ok('an immediately-following request re-crawls instead of serving the short list for an hour', again.partial === true && again.products.length === 100);
+  restoreFetch();
+
+  // a larger previously-complete cache must survive a later partial crawl
+  mockFetch(async (url) => {
+    const page = Number(new URL(url).searchParams.get('page'));
+    if (page === 1) return { ok: true, status: 200, json: async () => Array.from({ length: 100 }, (_, i) => product(i + 1)) };
+    if (page === 2) return { ok: true, status: 200, json: async () => Array.from({ length: 50 }, (_, i) => product(i + 101)) };
+    return { ok: true, status: 200, json: async () => [] };
+  });
+  const full = await getAllEasyOrdersProductsStatus('s12');
+  ok('s12: complete 150-product catalogue cached normally', full.products.length === 150 && full.partial === false);
+  restoreFetch();
+  mockFetch(async (url) => {
+    const page = Number(new URL(url).searchParams.get('page'));
+    if (page === 1) return { ok: true, status: 200, json: async () => Array.from({ length: 100 }, (_, i) => product(i + 1)) };
+    return { ok: false, status: 429, headers: { get: () => null }, text: async () => '' };
+  });
+  const refreshed = await getAllEasyOrdersProductsStatus('s12', { forceRefresh: true });
+  ok('a forced refresh that only gets a partial 100 keeps serving the earlier 150-product list instead of shrinking it', refreshed.products.length === 150 && refreshed.partial === false, JSON.stringify({ n: refreshed.products.length, partial: refreshed.partial }));
+  restoreFetch();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

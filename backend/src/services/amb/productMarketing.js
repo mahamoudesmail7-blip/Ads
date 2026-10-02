@@ -91,8 +91,8 @@ function decodeStoreScopedId(value) {
  * defaults to defaultStoreId() (today: the single EASYORDERS_API_KEY store)
  * so every pre-multi-store caller keeps working unchanged.
  */
-export async function searchEasyOrdersProducts(query, storeId = defaultStoreId()) {
-  const status = await getAllEasyOrdersProductsStatus(storeId);
+export async function searchEasyOrdersProducts(query, storeId = defaultStoreId(), { forceRefresh = false } = {}) {
+  const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh });
   const q = String(query || '').trim().toLowerCase();
   const filtered = q ? status.products.filter((p) => p.name.toLowerCase().includes(q)) : status.products;
   return {
@@ -102,6 +102,8 @@ export async function searchEasyOrdersProducts(query, storeId = defaultStoreId()
     // frontend as an indistinguishable "zero products"; ok/source/error let
     // the UI show the REAL reason (and a retry) instead of a wrong "not found".
     ok: status.ok, source: status.source, error: status.error,
+    // true when EasyOrders rate-limited part of the crawl — the list is incomplete, never to be read as "the whole catalogue".
+    partial: !!status.partial, totalLoaded: status.products.length,
   };
 }
 
@@ -276,8 +278,11 @@ const namesBeingCreated = new Set();
  * @param {{eoId: string, name?: string}[]} items
  * @returns {Promise<{storeId: string, results: object[], summary: object}>}
  */
-export async function createProductsFromEasyOrdersCatalog(storeId = defaultStoreId(), items = []) {
-  const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh: true });
+export async function createProductsFromEasyOrdersCatalog(storeId = defaultStoreId(), items = [], { forceRefresh = true } = {}) {
+  // forceRefresh defaults to true (unchanged behavior for the route). A caller that just fetched
+  // the catalog itself can pass false to reuse that cache instead of re-crawling every page —
+  // a full re-crawl just to add a handful of products can trip EasyOrders' ~40 req/min cap.
+  const status = await getAllEasyOrdersProductsStatus(storeId, { forceRefresh });
   const results = [];
   if (!status.ok) {
     for (const it of items) results.push({ eoId: it?.eoId, status: 'FAILED', message: status.error || 'تعذر الوصول لكتالوج Easy Orders.' });

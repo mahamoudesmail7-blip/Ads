@@ -401,11 +401,13 @@ async function renderEasyOrdersPicker(mount) {
   paintEoGrid();
 }
 
-async function loadEoCatalog() {
-  state.eoLoading = true; state.eoError = null;
+async function loadEoCatalog(force = false) {
+  state.eoLoading = true; state.eoError = null; state.eoPartial = null;
   paintEoGrid();
   try {
-    const r = await api.get('/api/product-marketing/easy-orders/search', { q: '', store_id: state.storeId });
+    const r = await api.get('/api/product-marketing/easy-orders/search', { q: '', store_id: state.storeId, ...(force === true ? { force_refresh: 'true' } : {}) });
+    // Easy Orders rate-limited part of the crawl: the list is real but INCOMPLETE — say so, never present it as the whole catalogue.
+    state.eoPartial = r.partial ? (r.error || `تم تحميل ${r.totalLoaded} منتج فقط.`) : null;
     // §1 — the backend now says explicitly whether this is a REAL catalogue
     // (possibly genuinely empty) or a failure; a failure must never be
     // shown as "لم يتم العثور على منتجات" — show the real technical reason.
@@ -471,7 +473,8 @@ function paintEoGrid() {
   }
 
   const visible = list.slice(0, state.eoVisible);
-  grid.innerHTML = `<div class="pmc-product-grid">${visible.map((p) => `
+  const partialBanner = state.eoPartial ? `<div class="pmc-eo-error" style="margin-bottom:12px;padding:10px 14px;text-align:start;"><div style="font-weight:700;">⚠️ القائمة ناقصة</div><div class="detail">${E(state.eoPartial)}</div><button class="amb-btn sm primary" id="pmcEoReloadFull" style="margin-top:6px;">🔄 تحميل الكتالوج كامل</button></div>` : '';
+  grid.innerHTML = `${partialBanner}<div class="pmc-product-grid">${visible.map((p) => `
     <div class="pmc-pcard ${state.eoSelected?.id === p.id ? 'selected' : ''}" data-pick="${E(p.id)}">
       <div class="thumb">${p.thumb ? `<img src="${E(p.thumb)}" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'pmc-thumb-placeholder',textContent:'📦'}))" />` : `<div class="pmc-thumb-placeholder">📦</div>`}</div>
       <div class="body">
@@ -484,6 +487,7 @@ function paintEoGrid() {
 
   grid.querySelectorAll('[data-pick]').forEach((c) => { c.onclick = () => { state.eoSelected = list.find((p) => String(p.id) === c.dataset.pick); paintEoGrid(); }; });
   const more = $('pmcEoLoadMore'); if (more) more.onclick = () => { state.eoVisible += 20; paintEoGrid(); };
+  const reloadFull = $('pmcEoReloadFull'); if (reloadFull) reloadFull.onclick = () => loadEoCatalog(true);
 
   if (bar) {
     bar.innerHTML = state.eoSelected ? `<div class="pmc-confirm-bar">

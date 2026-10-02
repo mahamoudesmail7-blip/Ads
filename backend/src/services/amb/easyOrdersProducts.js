@@ -23,6 +23,9 @@ import { getStoreApiKey, defaultStoreId } from '../easyOrdersStores.js';
 let cache = new Map(); // storeId -> { at, list } — thumb-only (existing consumers: easyOrdersImageFor)
 let fullCache = new Map(); // storeId -> { at, list } — UN-filtered full catalogue (getAllEasyOrdersProductsStatus), kept apart from `cache` so neither invalidates the other
 const TTL_MS = 60 * 60 * 1000;
+const PARTIAL_TTL_MS = 60 * 1000; // a partial (rate-limited) crawl is cached only this long before the next request re-crawls
+const LATER_PAGE_EXTRA_ROUNDS = Number(process.env.EASYORDERS_LATER_PAGE_ROUNDS_TEST_OVERRIDE) || 2;
+const LATER_PAGE_ROUND_DELAY_MS = Number(process.env.EASYORDERS_LATER_PAGE_DELAY_MS_TEST_OVERRIDE) || 20_000;
 
 // Real production incident fix: a page of N product cards each independently
 // resolves its own image via GET /products/:id/image -> getEasyOrdersProducts()
@@ -112,6 +115,7 @@ async function fetchEasyOrdersProductsRaw(key) {
   let page = 1;
   let pagesFetched = 0;
   let sawPaginationEnvelope = false;
+  let partial = false;
 
   while (page <= EASYORDERS_MAX_PAGES) {
     let raw;
@@ -119,8 +123,23 @@ async function fetchEasyOrdersProductsRaw(key) {
       raw = await fetchOnePageWithRetry(key, page);
     } catch (err) {
       if (page === 1) throw err; // first page failing is a real, surfaced error — unchanged from before
-      logger.warn('EasyOrders products: a later page failed after retries — stopping with what was already fetched, not discarding it', { page, message: err.message });
-      break;
+      // A later page hitting EasyOrders' per-minute cap used to stop the crawl right there
+      // and the short list was then cached for an hour as if complete (a 334-product store
+      // showed only 100). Wait out the rate-limit window and retry THIS page a couple more
+      // times before giving up; if it still fails the result is flagged partial (never
+      // presented/cached as the full catalogue).
+      let recovered = null;
+      for (let round = 1; round <= LATER_PAGE_EXTRA_ROUNDS && !recovered; round++) {
+        logger.warn('EasyOrders products: a later page was rate-limited — waiting for the window to reset', { page, round, message: err.message });
+        await new Promise((r) => setTimeout(r, LATER_PAGE_ROUND_DELAY_MS));
+        try { recovered = await fetchOnePageWithRetry(key, page); } catch { /* try the next round */ }
+      }
+      if (!recovered) {
+        logger.warn('EasyOrders products: a later page kept failing — returning a PARTIAL catalogue (flagged, short-lived cache)', { page, message: err.message });
+        partial = true;
+        break;
+      }
+      raw = recovered;
     }
     pagesFetched++;
     const rows = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : null);
@@ -135,7 +154,7 @@ async function fetchEasyOrdersProductsRaw(key) {
     page++;
     if (page <= EASYORDERS_MAX_PAGES) await new Promise((r) => setTimeout(r, EASYORDERS_PAGE_DELAY_MS));
   }
-  logger.info('EasyOrders products: catalogue fetch complete', { pagesFetched, totalRawRows: allRows.length, sawPaginationEnvelope, hitMaxPages: page > EASYORDERS_MAX_PAGES });
+  logger.info('EasyOrders products: catalogue fetch complete', { pagesFetched, totalRawRows: allRows.length, sawPaginationEnvelope, hitMaxPages: page > EASYORDERS_MAX_PAGES, partial });
 
   const seenIds = new Set();
   const deduped = [];
@@ -168,8 +187,11 @@ async function fetchEasyOrdersProductsRaw(key) {
       logger.warn('AMB EasyOrders products: skipped one malformed row', { message: rowErr.message });
     }
   }
-  return mapped;
+  return { list: mapped, partial };
 }
+
+/** Cache `at` timestamp: a COMPLETE catalogue lives the normal TTL; a PARTIAL one only PARTIAL_TTL_MS, so the very next request re-crawls instead of serving a short list for an hour. */
+function cacheStamp(partial) { return partial ? Date.now() - (TTL_MS - PARTIAL_TTL_MS) : Date.now(); }
 
 /**
  * All EasyOrders products: {id, name, slug, thumb, price, createdAt}. Cached
@@ -192,8 +214,10 @@ export async function getEasyOrdersProducts(storeId = defaultStoreId()) {
   if (inFlight.has(storeId)) return inFlight.get(storeId); // single-flight — see inFlight's own comment above
   const p = (async () => {
     try {
-      const list = (await fetchEasyOrdersProductsRaw(key)).filter((p) => p.thumb);
-      cache.set(storeId, { at: Date.now(), list });
+      const raw = await fetchEasyOrdersProductsRaw(key);
+      const list = raw.list.filter((p) => p.thumb);
+      // never let a short partial crawl replace a larger, previously-complete cached list
+      if (!(raw.partial && entry?.list && entry.list.length >= list.length)) cache.set(storeId, { at: cacheStamp(raw.partial), list });
       diagStats.lastSuccessAt[storeId] = Date.now();
       logger.info('AMB EasyOrders products cached', { storeId, count: list.length });
       return list;
@@ -230,7 +254,10 @@ export async function getAllEasyOrdersProductsStatus(storeId = defaultStoreId(),
   const key = getStoreApiKey(storeId);
   if (!key) return { ok: false, products: [], source: 'error', error: 'هذا المتجر غير مربوط بـ Easy Orders — تأكد من ضبط مفتاح API الخاص به في متغيرات البيئة.' };
   const entry = fullCache.get(storeId);
-  if (!forceRefresh && entry?.list && Date.now() - entry.at < TTL_MS) { diagStats.cacheHits++; return { ok: true, products: entry.list, source: 'live', error: null }; }
+  if (!forceRefresh && entry?.list && Date.now() - entry.at < TTL_MS) {
+    diagStats.cacheHits++;
+    return { ok: true, products: entry.list, source: 'live', partial: !!entry.partial, error: entry.partial ? `تم تحميل ${entry.list.length} منتج فقط — Easy Orders رفضت باقي الصفحات مؤقتًا (حد الطلبات). اضغط تحديث بعد دقيقة لتحميل الكتالوج كامل.` : null };
+  }
   diagStats.cacheMisses++;
   // Single-flight even for forceRefresh: a caller that explicitly asked for
   // fresh data still joins an ALREADY-RUNNING real crawl rather than
@@ -240,11 +267,18 @@ export async function getAllEasyOrdersProductsStatus(storeId = defaultStoreId(),
   if (fullInFlight.has(storeId)) return fullInFlight.get(storeId);
   const p = (async () => {
     try {
-      const list = await fetchEasyOrdersProductsRaw(key);
-      fullCache.set(storeId, { at: Date.now(), list });
+      const raw = await fetchEasyOrdersProductsRaw(key);
+      let list = raw.list;
+      let partial = raw.partial;
+      // A partial crawl must never replace a larger previously-cached list (keep serving that one).
+      if (raw.partial && entry?.list && entry.list.length >= list.length) { list = entry.list; partial = !!entry.partial; }
+      else fullCache.set(storeId, { at: cacheStamp(raw.partial), list, partial: raw.partial });
       diagStats.lastSuccessAt[storeId] = Date.now();
-      logger.info('AMB EasyOrders full catalogue cached', { storeId, count: list.length });
-      return { ok: true, products: list, source: 'live', error: null };
+      logger.info('AMB EasyOrders full catalogue cached', { storeId, count: list.length, partial });
+      return {
+        ok: true, products: list, source: 'live', partial,
+        error: partial ? `تم تحميل ${list.length} منتج فقط — Easy Orders رفضت باقي الصفحات مؤقتًا (حد الطلبات). اضغط تحديث بعد دقيقة لتحميل الكتالوج كامل.` : null,
+      };
     } catch (err) {
       logger.error('AMB EasyOrders full catalogue fetch FAILED', { storeId, message: err.message, httpStatus: err.httpStatus || null });
       if (entry?.list) return { ok: true, products: entry.list, source: 'stale_cache', error: err.message };
