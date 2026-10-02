@@ -17,7 +17,7 @@
 //  3. DIAGNOSTICS WITHOUT SECRETS — a rejection reports env var NAMES, lengths and whether the header equals ANY known secret
 //     (and which one), so a misconfiguration is identifiable from the logs without ever printing a value.
 import crypto from 'node:crypto';
-import { listStores, getStoreWebhookSecret, getStoreApiKey } from './easyOrdersStores.js';
+import { listStores, getStoreWebhookSecretEntries, getStoreApiKey } from './easyOrdersStores.js';
 import { resolveOrderAcrossStores } from './easyOrdersStatus.js';
 
 const digest = (v) => crypto.createHash('sha256').update(String(v)).digest();
@@ -33,15 +33,19 @@ export function safeEqual(a, b) {
  * Registry of every webhook secret the server knows. Entries carry env var NAMES only for diagnostics.
  *  events: 'ORDER_CREATED' | 'STATUS_UPDATE' | 'ANY'
  */
-export function buildSecretRegistry({ env = process.env, stores = listStores(), storeSecret = getStoreWebhookSecret, defaultStoreId = 'default' } = {}) {
+export function buildSecretRegistry({ env = process.env, stores = listStores(), storeSecretEntries = (id) => getStoreWebhookSecretEntries(id, env), defaultStoreId = 'default' } = {}) {
   const reg = [];
+  reg.unsetNames = []; // per-event variables a store is expected to have but doesn't (diagnostics: tells the operator which variable to create)
   const add = (secret, storeId, events, name) => { if (secret && String(secret).trim()) reg.push({ secret: String(secret), storeId, events, name }); };
   add(env.EASYORDERS_WEBHOOK_SECRET, defaultStoreId, 'ORDER_CREATED', 'EASYORDERS_WEBHOOK_SECRET');
   add(env.EASYORDERS_STATUS_WEBHOOK_SECRET, defaultStoreId, 'STATUS_UPDATE', 'EASYORDERS_STATUS_WEBHOOK_SECRET');
   for (const s of stores) {
-    const sec = storeSecret(s.id);
-    // a store whose single secret is the same variable the default store already registered is not added twice
-    if (sec && !reg.some((r) => r.secret === sec && r.storeId === s.id)) add(sec, s.id, 'ANY', `store:${s.id}:webhookSecretEnv`);
+    const { entries, unsetNames } = storeSecretEntries(s.id);
+    for (const e of entries) {
+      // a secret already registered for this store with a NARROWER event scope (the default store's dedicated variables) is not widened
+      if (!reg.some((r) => r.secret === e.value && r.storeId === s.id)) add(e.value, s.id, e.events, e.name);
+    }
+    if (s.id !== defaultStoreId) reg.unsetNames.push(...unsetNames); // the default store has its own dedicated variables
   }
   return reg;
 }
@@ -64,6 +68,7 @@ export function matchWebhookSecret(headerValue, eventType, registry) {
       headerPresent: present,
       headerLength: present ? String(headerValue).length : 0,
       eventType,
+      expectedButUnset: registry.unsetNames || [],
       knownSecrets: registry.map((r) => ({ name: r.name, store: r.storeId, events: r.events, length: r.secret.length, lengthMatches: present && String(headerValue).length === r.secret.length })),
       headerEqualsKnownSecret: equalsKnown.map((r) => ({ name: r.name, store: r.storeId, events: r.events })), // non-empty here means: right secret, wrong EVENT TYPE
     },

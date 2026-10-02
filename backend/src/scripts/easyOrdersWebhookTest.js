@@ -16,9 +16,9 @@ const W = await imp('../routes/webhooks.js');
 // FAKE secrets (never real ones) — chosen so a leak into any log line is detectable by substring
 const SEC = { defOrder: 'FAKE-DEFAULT-ORDER-0001', defStatus: 'FAKE-DEFAULT-STATUS-0002', store2: 'FAKE-STORE-TWO-SECRET-3' };
 const stores = [{ id: 'default', enabled: true }, { id: 'trendy-storeee', enabled: true }, { id: 'nosecret', enabled: true }];
-const storeSecret = (id) => ({ 'trendy-storeee': SEC.store2 })[id] || null;
+const storeSecretEntries = (id) => (id === 'trendy-storeee' ? { entries: [{ name: 'store:trendy-storeee:webhookSecretEnv', value: SEC.store2, events: 'ANY' }], unsetNames: [] } : { entries: [], unsetNames: [] });
 const env = { EASYORDERS_WEBHOOK_SECRET: SEC.defOrder, EASYORDERS_STATUS_WEBHOOK_SECRET: SEC.defStatus };
-const registry = () => A.buildSecretRegistry({ env, stores, storeSecret, defaultStoreId: 'default' });
+const registry = () => A.buildSecretRegistry({ env, stores, storeSecretEntries, defaultStoreId: 'default' });
 
 console.log('§1 secret registry + matching (pure):');
 const reg = registry();
@@ -31,7 +31,7 @@ const nothing = A.matchWebhookSecret('totally-wrong', 'ORDER_CREATED', reg);
 ok('unknown secret -> rejected, diagnosis has lengths/booleans only', !nothing.ok && nothing.diagnosis.headerPresent === true && nothing.diagnosis.headerEqualsKnownSecret.length === 0 && !JSON.stringify(nothing.diagnosis).includes(SEC.defOrder) && !JSON.stringify(nothing.diagnosis).includes('totally-wrong'));
 ok('missing header -> rejected with headerPresent=false', A.matchWebhookSecret(undefined, 'ORDER_CREATED', reg).diagnosis.headerPresent === false);
 ok('safeEqual is exact and empty-safe', A.safeEqual('a', 'a') && !A.safeEqual('a', 'b') && !A.safeEqual('', '') && !A.safeEqual(null, 'x'));
-ok('same secret value registered for two stores -> flagged ambiguous (first match used, never silent)', (() => { const r = A.buildSecretRegistry({ env: { EASYORDERS_WEBHOOK_SECRET: 'DUP' }, stores: [{ id: 'default' }, { id: 'b' }], storeSecret: (id) => (id === 'b' ? 'DUP' : null), defaultStoreId: 'default' }); const m = A.matchWebhookSecret('DUP', 'ORDER_CREATED', r); return m.ok && m.ambiguous?.length === 2; })());
+ok('same secret value registered for two stores -> flagged ambiguous (first match used, never silent)', (() => { const r = A.buildSecretRegistry({ env: { EASYORDERS_WEBHOOK_SECRET: 'DUP' }, stores: [{ id: 'default' }, { id: 'b' }], storeSecretEntries: (id) => (id === 'b' ? { entries: [{ name: 'b-secret', value: 'DUP', events: 'ANY' }], unsetNames: [] } : { entries: [], unsetNames: [] }), defaultStoreId: 'default' }); const m = A.matchWebhookSecret('DUP', 'ORDER_CREATED', r); return m.ok && m.ambiguous?.length === 2; })());
 
 console.log('\n§2 verifyOrderOwner never blocks / throws:');
 ok('verified owner is returned', (await A.verifyOrderOwner('o', 'default', { resolve: async () => ({ kind: 'OK', foundWithStoreId: 'trendy-storeee', order: { store_id: 'EO-UUID' } }) })).storeId === 'trendy-storeee');
@@ -47,7 +47,7 @@ let ownerAnswer = { verified: true, storeId: 'default' };
 let resolveAnswer = { kind: 'NOT_FOUND' };
 const existingRows = new Set(['existing-order']);
 const router = W.createWebhooksRouter({
-  logger: fakeLogger, registry, getStore: (id) => (stores.some((s) => s.id === id) ? { id } : null), getStoreWebhookSecret: storeSecret, defaultStoreId: () => 'default',
+  logger: fakeLogger, registry, getStore: (id) => (stores.some((s) => s.id === id) ? { id } : null), storeHasWebhookSecret: (id) => storeSecretEntries(id).entries.length > 0, defaultStoreId: () => 'default',
   verifyOwner: async () => ownerAnswer, resolveOrder: async () => resolveAnswer,
   orderRows: async (id) => (existingRows.has(id) ? [{ id: 1 }] : []),
   ingestOrder: async (order, storeId) => { calls.ingest.push([order.id, storeId]); }, applyStatusToOrder: async (id, st) => { calls.apply.push([id, st]); return { totalRows: 1, changedRows: 1 }; },
@@ -120,6 +120,57 @@ try {
   ok('store URL: valid secret + unrecognised payload -> 400', r.status === 400);
   ok('health counters moved (accepted / rejected / tagCorrected / routeSecretMismatch)', W.webhookAuthHealth.accepted > 5 && W.webhookAuthHealth.rejected > 5 && W.webhookAuthHealth.tagCorrected >= 1 && W.webhookAuthHealth.routeSecretMismatch >= 1);
 } finally { server.close(); }
+
+// ============================ §4 — per-EVENT secrets per store (Easy Orders issues one secret per webhook TYPE) ============================
+console.log('\n§4 per-event secrets for a store (real config functions, fake secrets, temp env restored after):');
+const S = await imp('../services/easyOrdersStores.js');
+const ENV_KEYS = ['EASYORDERS_STORES_JSON', 'EASYORDERS_WEBHOOK_SECRET', 'EASYORDERS_STATUS_WEBHOOK_SECRET', 'T_DEF_KEY', 'T_TR_KEY', 'T_STORE_2_WEBHOOK_SECRET', 'T_STORE_2_ORDER_WEBHOOK_SECRET', 'T_STORE_2_STATUS_WEBHOOK_SECRET', 'CUSTOM_ORDER', 'CUSTOM_STATUS'];
+const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+const setEnv = (o) => { for (const k of ENV_KEYS) delete process.env[k]; Object.assign(process.env, o); };
+const TR_JSON = JSON.stringify([{ id: 'default', name: 'D', apiKeyEnv: 'T_DEF_KEY' }, { id: 'trendy-storeee', name: 'T', apiKeyEnv: 'T_TR_KEY', webhookSecretEnv: 'T_STORE_2_WEBHOOK_SECRET' }]);
+const base4 = { EASYORDERS_STORES_JSON: TR_JSON, T_DEF_KEY: 'k1', T_TR_KEY: 'k2', EASYORDERS_WEBHOOK_SECRET: 'FAKE-DEF-ORDER-9', EASYORDERS_STATUS_WEBHOOK_SECRET: 'FAKE-DEF-STATUS-9', T_STORE_2_ORDER_WEBHOOK_SECRET: 'FAKE-T2-ORDER-A', T_STORE_2_STATUS_WEBHOOK_SECRET: 'FAKE-T2-STATUS-B' };
+try {
+  setEnv(base4);
+  const names = S.storeWebhookSecretEnvNames('trendy-storeee');
+  ok('convention: <X>_WEBHOOK_SECRET -> <X>_ORDER_WEBHOOK_SECRET / <X>_STATUS_WEBHOOK_SECRET (no JSON edit needed)', names.legacy === 'T_STORE_2_WEBHOOK_SECRET' && names.order === 'T_STORE_2_ORDER_WEBHOOK_SECRET' && names.status === 'T_STORE_2_STATUS_WEBHOOK_SECRET', JSON.stringify(names));
+  const ent = S.getStoreWebhookSecretEntries('trendy-storeee');
+  ok('entries: order secret -> ORDER_CREATED only, status secret -> STATUS_UPDATE only (legacy unset is simply absent)', ent.entries.length === 2 && ent.entries.find((e) => e.name.includes('ORDER')).events === 'ORDER_CREATED' && ent.entries.find((e) => e.name.includes('STATUS')).events === 'STATUS_UPDATE' && ent.unsetNames.length === 0);
+  const reg4 = A.buildSecretRegistry({ env: process.env, stores: S.listStores(), defaultStoreId: 'default' });
+  ok('registry now holds the default store\'s two dedicated secrets + the Trendy store\'s two per-event secrets', reg4.length === 4 && reg4.filter((r) => r.storeId === 'trendy-storeee').length === 2);
+  ok('Trendy "Orders" webhook secret -> ORDER_CREATED -> trendy-storeee', A.matchWebhookSecret('FAKE-T2-ORDER-A', 'ORDER_CREATED', reg4).storeId === 'trendy-storeee');
+  ok('Trendy "Order Status Update" webhook secret -> STATUS_UPDATE -> trendy-storeee', A.matchWebhookSecret('FAKE-T2-STATUS-B', 'STATUS_UPDATE', reg4).storeId === 'trendy-storeee');
+  const crossed = A.matchWebhookSecret('FAKE-T2-ORDER-A', 'STATUS_UPDATE', reg4);
+  ok('the Trendy ORDER secret on a STATUS event is rejected and the diagnosis names the right variable', !crossed.ok && crossed.diagnosis.headerEqualsKnownSecret[0]?.name === 'T_STORE_2_ORDER_WEBHOOK_SECRET');
+  ok("default store's dedicated secrets are untouched by the new variables", A.matchWebhookSecret('FAKE-DEF-ORDER-9', 'ORDER_CREATED', reg4).storeId === 'default' && A.matchWebhookSecret('FAKE-DEF-STATUS-9', 'STATUS_UPDATE', reg4).storeId === 'default' && !A.matchWebhookSecret('FAKE-DEF-STATUS-9', 'ORDER_CREATED', reg4).ok);
+
+  setEnv({ ...base4, T_STORE_2_ORDER_WEBHOOK_SECRET: '' });
+  const regMissing = A.buildSecretRegistry({ env: process.env, stores: S.listStores(), defaultStoreId: 'default' });
+  const miss = A.matchWebhookSecret('anything', 'ORDER_CREATED', regMissing);
+  ok('an expected-but-unset per-event variable is NAMED in the rejection diagnosis (so the operator knows which variable to create)', !miss.ok && miss.diagnosis.expectedButUnset.includes('T_STORE_2_ORDER_WEBHOOK_SECRET') && !JSON.stringify(miss.diagnosis).includes('FAKE-'));
+
+  setEnv({ ...base4, T_STORE_2_WEBHOOK_SECRET: 'FAKE-T2-LEGACY-C', T_STORE_2_ORDER_WEBHOOK_SECRET: '', T_STORE_2_STATUS_WEBHOOK_SECRET: '' });
+  const regLegacy = A.buildSecretRegistry({ env: process.env, stores: S.listStores(), defaultStoreId: 'default' });
+  ok('backward compatible: the legacy single store secret still works for BOTH event types', A.matchWebhookSecret('FAKE-T2-LEGACY-C', 'ORDER_CREATED', regLegacy).storeId === 'trendy-storeee' && A.matchWebhookSecret('FAKE-T2-LEGACY-C', 'STATUS_UPDATE', regLegacy).storeId === 'trendy-storeee');
+
+  const EXPL = JSON.stringify([{ id: 'default', name: 'D', apiKeyEnv: 'T_DEF_KEY' }, { id: 'trendy-storeee', name: 'T', apiKeyEnv: 'T_TR_KEY', orderWebhookSecretEnv: 'CUSTOM_ORDER', statusWebhookSecretEnv: 'CUSTOM_STATUS' }]);
+  setEnv({ ...base4, EASYORDERS_STORES_JSON: EXPL, CUSTOM_ORDER: 'FAKE-CUSTOM-O', CUSTOM_STATUS: 'FAKE-CUSTOM-S' });
+  const regExplicit = A.buildSecretRegistry({ env: process.env, stores: S.listStores(), defaultStoreId: 'default' });
+  ok('explicit orderWebhookSecretEnv / statusWebhookSecretEnv in the store JSON override the convention', A.matchWebhookSecret('FAKE-CUSTOM-O', 'ORDER_CREATED', regExplicit).storeId === 'trendy-storeee' && A.matchWebhookSecret('FAKE-CUSTOM-S', 'STATUS_UPDATE', regExplicit).storeId === 'trendy-storeee');
+
+  // real HTTP: BOTH Trendy webhooks post to the SAME bare URL with different secrets (the configuration the owner confirmed)
+  setEnv(base4);
+  const calls4 = { ingest: [], apply: [] };
+  const router4 = W.createWebhooksRouter({ logger: fakeLogger, verifyOwner: async () => ({ verified: true, storeId: 'trendy-storeee' }), resolveOrder: async () => ({ kind: 'NOT_FOUND' }), orderRows: async () => [{ id: 1 }], ingestOrder: async (o, s) => { calls4.ingest.push([o.id, s]); }, applyStatusToOrder: async (id, st) => { calls4.apply.push([id, st]); return { totalRows: 1, changedRows: 1 }; } });
+  const app4 = express(); app4.use(express.json()); app4.use('/api/webhooks', router4);
+  const server4 = http.createServer(app4); await new Promise((r) => server4.listen(0, r));
+  const base4url = `http://127.0.0.1:${server4.address().port}/api/webhooks`;
+  const post4 = async (body, secret) => { const res = await fetch(base4url + '/easyorders', { method: 'POST', headers: { 'content-type': 'application/json', secret }, body: JSON.stringify(body) }); return res.status; };
+  try {
+    ok('Trendy "Orders" webhook -> bare /easyorders with its OWN secret -> 200 and filed under trendy-storeee', (await post4({ id: 'trendy-o1', cart_items: [{ id: 'c' }] }, 'FAKE-T2-ORDER-A')) === 200 && calls4.ingest.at(-1)?.[1] === 'trendy-storeee');
+    ok('Trendy "Order Status Update" webhook -> same URL with ITS OWN secret -> 200 and applied', (await post4({ event_type: 'order-status-update', order_id: 'trendy-o1', new_status: 'confirmed' }, 'FAKE-T2-STATUS-B')) === 200 && calls4.apply.at(-1)?.[0] === 'trendy-o1');
+    ok('swapped secrets are rejected (order secret on a status event)', (await post4({ event_type: 'order-status-update', order_id: 'trendy-o1', new_status: 'confirmed' }, 'FAKE-T2-ORDER-A')) === 401);
+  } finally { server4.close(); }
+} finally { for (const k of ENV_KEYS) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; } }
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -21,7 +21,7 @@ import { prisma } from '../prisma.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { logger as defaultLogger } from '../logger.js';
 import { ingestOrder, applyStatusToOrder } from '../services/easyOrders.js';
-import { getStore, getStoreWebhookSecret, defaultStoreId } from '../services/easyOrdersStores.js';
+import { getStore, getStoreWebhookSecretEntries, defaultStoreId } from '../services/easyOrdersStores.js';
 import { buildSecretRegistry, matchWebhookSecret, verifyOrderOwner } from '../services/easyOrdersWebhookAuth.js';
 import { resolveOrderAcrossStores } from '../services/easyOrdersStatus.js';
 
@@ -37,7 +37,8 @@ function classifyEasyOrdersPayload(body) {
 export function createWebhooksRouter(overrides = {}) {
   const d = {
     logger: defaultLogger,
-    ingestOrder, applyStatusToOrder, getStore, getStoreWebhookSecret, defaultStoreId,
+    ingestOrder, applyStatusToOrder, getStore, defaultStoreId,
+    storeHasWebhookSecret: (id) => getStoreWebhookSecretEntries(id).entries.length > 0,
     registry: () => buildSecretRegistry({ defaultStoreId: defaultStoreId() }),
     verifyOwner: (orderId, hint) => verifyOrderOwner(orderId, hint),
     resolveOrder: (orderId, hint) => resolveOrderAcrossStores(orderId, hint, { maxRetries: 1 }),
@@ -93,7 +94,7 @@ export function createWebhooksRouter(overrides = {}) {
       if (!urlStoreId && type === 'UNKNOWN') return res.status(400).json({ error: 'UNRECOGNIZED_PAYLOAD' }); // shape first, before any secret
       if (urlStoreId) {
         if (!d.getStore(urlStoreId)) return res.status(404).json({ error: 'UNKNOWN_STORE' });
-        if (!d.getStoreWebhookSecret(urlStoreId)) return res.status(400).json({ error: 'STORE_WEBHOOK_NOT_CONFIGURED' });
+        if (!d.storeHasWebhookSecret(urlStoreId)) return res.status(400).json({ error: 'STORE_WEBHOOK_NOT_CONFIGURED' });
       }
 
       const header = req.headers['secret'];

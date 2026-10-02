@@ -67,6 +67,9 @@ function parseConfiguredStores() {
       stores.push({
         id: String(s.id), name: String(s.name), apiKeyEnv: String(s.apiKeyEnv),
         webhookSecretEnv: s.webhookSecretEnv ? String(s.webhookSecretEnv) : null,
+        // Per-EVENT secrets (Easy Orders issues a different secret per webhook TYPE for one store): optional explicit env var names.
+        orderWebhookSecretEnv: s.orderWebhookSecretEnv ? String(s.orderWebhookSecretEnv) : null,
+        statusWebhookSecretEnv: s.statusWebhookSecretEnv ? String(s.statusWebhookSecretEnv) : null,
         domain: s.domain ? String(s.domain) : null, enabled: s.enabled !== false,
       });
     }
@@ -108,6 +111,39 @@ export function getStoreApiKey(storeId) {
   if (!rec || !rec.enabled) return null;
   const key = process.env[rec.apiKeyEnv];
   return key && key.trim() ? key : null;
+}
+
+const WEBHOOK_SUFFIX = '_WEBHOOK_SECRET';
+/**
+ * Env var NAMES (never values) a store's webhook secrets are read from. Explicit `orderWebhookSecretEnv` / `statusWebhookSecretEnv`
+ * in EASYORDERS_STORES_JSON win; otherwise, when the store has a legacy `webhookSecretEnv` named `<X>_WEBHOOK_SECRET`, the
+ * convention is `<X>_ORDER_WEBHOOK_SECRET` (Easy Orders webhook type "Orders") and `<X>_STATUS_WEBHOOK_SECRET` (type "Order Status Update"),
+ * so adding the two Railway variables is enough — no JSON edit. The legacy single secret keeps working for BOTH event types.
+ */
+export function storeWebhookSecretEnvNames(storeId) {
+  const rec = findStoreRecord(storeId);
+  if (!rec || !rec.enabled) return null;
+  const legacy = rec.webhookSecretEnv || null;
+  const base = legacy && legacy.endsWith(WEBHOOK_SUFFIX) ? legacy.slice(0, -WEBHOOK_SUFFIX.length) : null;
+  return {
+    legacy,
+    order: rec.orderWebhookSecretEnv || (base ? `${base}_ORDER_WEBHOOK_SECRET` : null),
+    status: rec.statusWebhookSecretEnv || (base ? `${base}_STATUS_WEBHOOK_SECRET` : null),
+  };
+}
+
+/** Which of a store's webhook secrets are actually set. `unsetNames` = per-event variables that are expected but empty (diagnostics only). */
+export function getStoreWebhookSecretEntries(storeId, env = process.env) {
+  const names = storeWebhookSecretEnvNames(storeId);
+  const entries = []; const unsetNames = [];
+  if (!names) return { entries, unsetNames };
+  for (const [kind, events] of [['order', 'ORDER_CREATED'], ['status', 'STATUS_UPDATE'], ['legacy', 'ANY']]) {
+    const name = names[kind]; if (!name) continue;
+    const v = env[name];
+    if (v && String(v).trim()) entries.push({ name, value: String(v), events });
+    else if (kind !== 'legacy') unsetNames.push(name);
+  }
+  return { entries, unsetNames };
 }
 
 /** The store's real webhook secret, resolved server-side from its own env var. NEVER return this to a route response — used only to compare against an incoming webhook's `secret` header. Returns null if the store, its webhookSecretEnv, or the underlying env var is missing/misconfigured (the caller must treat that as "this store's webhook isn't set up", never as an open pass). */
