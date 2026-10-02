@@ -49,6 +49,7 @@ export const PROBLEM_LABEL_AR = {
   INSUFFICIENT_DATA: 'بيانات غير كافية',
   STOCK_PROBLEM: 'مشكلة مخزون',
   COD_PROBLEM: 'مشكلة تشغيلية (تأكيد/تسليم الأوردرات)',
+  COD_STATUS_UNKNOWN: 'حالة الأوردرات غير معروفة (كلها PENDING)',
   CREATIVE_FATIGUE: 'إجهاد الكرياتيف',
   CTR_PROBLEM: 'جذب الانتباه ضعيف (CTR)',
   TRAFFIC_PROBLEM: 'تكلفة الوصول عالية',
@@ -88,6 +89,7 @@ const HOOK_ORDER_BY_PROBLEM = {
 
 const pct = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? null : Math.round(Number(v) * 1000) / 10); // COD brain returns 0..1 fractions
 const n = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v));
+const n1days = (v) => (Math.round(Number(v) * 10) / 10).toString();
 const fmt1 = (v) => (v === null || v === undefined ? '—' : (Math.round(v * 10) / 10).toString());
 const hash = (obj) => crypto.createHash('sha1').update(JSON.stringify(obj)).digest('hex').slice(0, 16);
 function sha(s) { return crypto.createHash('sha1').update(String(s)).digest('hex').slice(0, 10); }
@@ -126,7 +128,10 @@ export function mapProblem(inp, gate) {
   const ctr = n(m.ctr), cvr = n(m.cvr), cpc = n(m.cpc), cpa = n(m.avgCpa);
   const evidence = [];
   const add = (s) => { if (s) evidence.push(s); };
-  add(bn.evidence);
+  const pl0 = cod?.productLevel || null;
+  // Every order still PENDING (no confirmed/cancelled/delivered/returned at all) = the status never progressed, so a "0% confirmation" is an artefact, not evidence.
+  const codUnknown = !!pl0 && pl0.confirmed !== undefined && (pl0.orders || 0) > 0 && ((pl0.confirmed || 0) + (pl0.cancelled || 0) + (pl0.delivered || 0) + (pl0.returned || 0)) === 0;
+  if (!(codUnknown && (bn.category === 'CONFIRMATION_PROBLEM' || bn.category === 'DELIVERY_PROBLEM'))) add(bn.evidence);
   if (ctr !== null) add(`CTR ${fmt1(ctr)}%`);
   if (cvr !== null) add(`معدل التحويل (CVR) ${fmt1(cvr)}%`);
   if (cpc !== null) add(`CPC ${fmt1(cpc)} ج`);
@@ -136,7 +141,11 @@ export function mapProblem(inp, gate) {
   if (gate.blocked) { primary = 'DATA_QUALITY_PROBLEM'; evidence.unshift(...gate.reasons); }
   else if (pkg?.decision === 'INSUFFICIENT_DATA' || bn.category === 'INSUFFICIENT_DATA' || spend < minSpend || (purchases === 0 && spend < minSpend * 2)) primary = 'INSUFFICIENT_DATA'; // just over the spend floor with zero purchases is still too thin to optimise on
   else if (stock?.status === 'OUT_OF_STOCK') { primary = 'STOCK_PROBLEM'; add('المخزون الحالي صفر.'); }
-  else if (bn.category === 'CONFIRMATION_PROBLEM' || bn.category === 'DELIVERY_PROBLEM' || (cod?.codBlocksScale && cpa !== null && cpa <= targetCpa)) {
+  else if (codUnknown && (bn.category === 'CONFIRMATION_PROBLEM' || bn.category === 'DELIVERY_PROBLEM')) {
+    primary = 'COD_STATUS_UNKNOWN';
+    rootNote = `الإعلان نفسه شغال${cpa !== null ? ` (CPA ${fmt1(cpa)} ج)` : ''} لكن كل أوردرات Easy Orders (${pl0.orders}) لسه PENDING — مفيش تأكيد/تسليم متسجّل، فمينفعش نحكم على جودة الأوردرات الحقيقية.`;
+    add(`${pl0.orders} أوردر كلها PENDING — الحالة مش متحدّثة (مش معناه إن التأكيد 0%).`);
+  } else if (bn.category === 'CONFIRMATION_PROBLEM' || bn.category === 'DELIVERY_PROBLEM' || (cod?.codBlocksScale && cpa !== null && cpa <= targetCpa)) {
     primary = 'COD_PROBLEM'; rootNote = 'الإعلان نفسه مش المشكلة — المشكلة في تأكيد/تسليم الأوردرات (تشغيلية).';
     if (cod?.productLevel) add(`${cod.productLevel.orders ?? '—'} أوردر · تأكيد ${fmt1(pct(cod.productLevel.confirmationRate))}% · تسليم ${fmt1(pct(cod.productLevel.deliveryRate))}%`);
   } else if ((bn.category === 'CREATIVE_FATIGUE' || (fatigueStates.includes('FATIGUED') && pkg?.winners?.creative)) && ctr !== null && ctr >= 2 && cvr !== null && cvr < 2) {
@@ -256,13 +265,20 @@ export function composePlan(inp) {
   const triedBefore = (dim, key) => lostMatrix.includes(`${dim}:${key}`) || learnedBad.includes(`${dim}:${key}`);
 
   // ---- what is working (do not break) / not working (ranked by impact)
-  const working = (growth?.whatIsWorking || []).slice(0, 5).map((w) => ({ dimension: w.dimension, key: w.key, evidence: w.evidence, kind: 'VERIFIED' }));
+  // An audience slice that Data Quality excludes (age/gender not reliable) must not be shown as "working" either — one source of truth.
+  const audienceExcluded = (w) => {
+    if (w.dimension !== 'AUDIENCE') return false;
+    const k = String(w.key || '');
+    const isAge = /\d/.test(k); const isGender = /male|female|ذكر|أنثى|انثى|رجال|نساء|نسا|ولاد|بنات/i.test(k);
+    return (isAge && BAD_DQ.has(gate.dims.age)) || (isGender && BAD_DQ.has(gate.dims.gender));
+  };
+  const working = (growth?.whatIsWorking || []).slice(0, 5).map((w) => ({ dimension: w.dimension, key: w.key, evidence: w.evidence, kind: 'VERIFIED' })).filter((w) => !audienceExcluded(w));
   if (n(m.ctr) !== null && n(m.ctr) >= 2) working.unshift({ dimension: 'ATTENTION', key: 'CTR', evidence: `CTR ${fmt1(m.ctr)}% — الإعلان بيشد الانتباه.`, kind: 'VERIFIED' });
   if (n(m.avgCpa) !== null && n(m.avgCpa) <= targetCpa && purchases >= minP) working.unshift({ dimension: 'COST', key: 'CPA', evidence: `CPA ${fmt1(m.avgCpa)} ج داخل الهدف (${targetCpa} ج) بعينة ${purchases} شراء.`, kind: 'VERIFIED' });
   const notWorking = [];
   if (problem.primary !== 'NONE' && problem.primary !== 'INSUFFICIENT_DATA') notWorking.push({ rank: 1, problem: problem.primary, label: problem.label, evidence: problem.evidence.slice(0, 3) });
   if (fatigueStates.includes('FATIGUED') && problem.primary !== 'CREATIVE_FATIGUE') notWorking.push({ rank: notWorking.length + 1, problem: 'CREATIVE_FATIGUE', label: PROBLEM_LABEL_AR.CREATIVE_FATIGUE, evidence: ['فيه كرياتيف واحد على الأقل بحالة FATIGUED.'] });
-  if (cod?.codBlocksScale && problem.primary !== 'COD_PROBLEM') notWorking.push({ rank: notWorking.length + 1, problem: 'COD_PROBLEM', label: PROBLEM_LABEL_AR.COD_PROBLEM, evidence: [cod.decisionNote || 'جودة الأوردرات بتمنع التوسّع.'] });
+  if (cod?.codBlocksScale && problem.primary !== 'COD_PROBLEM' && problem.primary !== 'COD_STATUS_UNKNOWN') notWorking.push({ rank: notWorking.length + 1, problem: 'COD_PROBLEM', label: PROBLEM_LABEL_AR.COD_PROBLEM, evidence: [cod.decisionNote || 'جودة الأوردرات بتمنع التوسّع.'] });
   if ((profit?.state === 'UNPROFITABLE' || profit?.state === 'MARGIN_THIN') && problem.primary !== 'PROFIT_PROBLEM') notWorking.push({ rank: notWorking.length + 1, problem: 'PROFIT_PROBLEM', label: PROBLEM_LABEL_AR.PROFIT_PROBLEM, evidence: [`حالة الربح ${profit.state}`] });
   (growth?.whatIsNotWorking || []).slice(0, 3).forEach((x) => notWorking.push({ rank: notWorking.length + 1, problem: `${x.dimension}_WEAK`, label: `${x.dimension}: ${String(x.key).slice(0, 60)}`, evidence: [x.evidence] }));
 
@@ -274,7 +290,7 @@ export function composePlan(inp) {
     const o = stack[dim]?.observation || null;
     const dqStatus = dim === 'governorate' ? null : gate.dims[dim];
     let decision, note, kind = 'EVIDENCE';
-    if (dqStatus && BAD_DQ.has(dqStatus)) { decision = 'EXCLUDED'; kind = 'UNAVAILABLE'; note = `بيانات ${DIM_LABEL_AR[dim]} من Meta غير موثوقة حاليًا (${dqStatus}) — مستبعدة من القرار بدل التخمين.`; }
+    if (dqStatus && BAD_DQ.has(dqStatus)) { decision = 'EXCLUDED'; kind = 'UNAVAILABLE'; note = dqStatus === 'UNKNOWN' ? `تقسيم ${DIM_LABEL_AR[dim]} من Meta لسه ما اتحسبش لهذا المنتج (افتح تاب «الجمهور والأسواق» لحسابه) — مستبعد من القرار لحد ما يتحسب بدل التخمين.` : `بيانات ${DIM_LABEL_AR[dim]} من Meta غير موثوقة حاليًا (${dqStatus}) — مستبعدة من القرار بدل التخمين.`; }
     else if (t?.status === 'PROVEN') { decision = 'KEEP'; note = `${t.value} — مثبت بدليل (${t.evidence || 'عينة كافية'}).`; }
     else if (t?.status === 'PROMISING') { decision = 'TEST'; kind = 'EARLY_SIGNAL'; note = `${t.value} — واعد لكن لسه مش مثبت؛ يستاهل اختبار منفصل.`; }
     else if (t?.status === 'EARLY_SIGNAL' || o?.status === 'EARLY_SIGNAL' || o?.status === 'OBSERVED') { decision = 'DO_NOT_NARROW'; kind = 'EARLY_SIGNAL'; note = `${t?.value || o?.value || 'شريحة'} — إشارة مبكرة فقط. لا تضيّق الاستهداف عليها لحد ما العينة تكفي.`; }
@@ -305,7 +321,7 @@ export function composePlan(inp) {
   const fatigued = fatigueStates.includes('FATIGUED');
   const creative = {
     keepWinner: pkg?.winners?.creative ? { label: typeof pkg.winners.creative === 'string' ? pkg.winners.creative : pkg.winners.creative.label, kind: 'VERIFIED' } : null,
-    replaceFatigued: fatigued,
+    replaceFatigued: fatigued, fatiguedLabels: (inp.fatiguedLabels || []).slice(0, 3),
     challengers: hookDirs.slice(0, 3).map((h, i) => ({
       slot: i + 1, kind: 'HYPOTHESIS', badge: 'NEW CHALLENGER',
       hypothesis: h.tests,
@@ -335,13 +351,19 @@ export function composePlan(inp) {
   };
 
   // ---- COD / profit
+  const pl = cod?.productLevel || null;
+  // Every order still PENDING (nothing confirmed/cancelled/delivered/returned) = status never progressed: the rates are UNKNOWN, not 0%.
+  const statusUnknown = !!pl && pl.confirmed !== undefined && (pl.orders || 0) > 0 && ((pl.confirmed || 0) + (pl.cancelled || 0) + (pl.delivered || 0) + (pl.returned || 0)) === 0;
   const codBlock = {
-    orders: cod?.productLevel?.orders ?? null, confirmationRate: pct(cod?.productLevel?.confirmationRate), deliveryRate: pct(cod?.productLevel?.deliveryRate),
-    cancellationRate: pct(cod?.productLevel?.cancellationRate), returnRate: pct(cod?.productLevel?.returnRate),
+    statusUnknown,
+    orders: pl?.orders ?? null, confirmationRate: statusUnknown ? null : pct(pl?.confirmationRate), deliveryRate: statusUnknown ? null : pct(pl?.deliveryRate),
+    cancellationRate: statusUnknown ? null : pct(pl?.cancellationRate), returnRate: statusUnknown ? null : pct(pl?.returnRate),
     blocksScale: !!cod?.codBlocksScale,
-    verdict: problem.primary === 'COD_PROBLEM' ? 'المشكلة تشغيلية وليست إعلانية.' : (cod?.codBlocksScale ? 'جودة الأوردرات بتمنع التوسّع.' : null),
-    note: cod?.decisionNote || null,
+    verdict: statusUnknown ? 'الحكم التشغيلي معلّق لحد ما حالات الأوردرات تتحدّث.' : problem.primary === 'COD_PROBLEM' ? 'المشكلة تشغيلية وليست إعلانية.' : (cod?.codBlocksScale ? 'جودة الأوردرات بتمنع التوسّع.' : null),
+    note: statusUnknown ? `كل الأوردرات (${pl.orders}) لسه PENDING في Easy Orders — حالة التأكيد/التسليم مش متحدّثة، فمفيش حكم تشغيلي ممكن (مش معناه إن التأكيد 0%).` : (cod?.decisionNote || null),
   };
+  const stockBlock = { status: stock?.status || 'STOCK_UNKNOWN', currentStock: stock?.currentStock ?? null, daysRemaining: stock?.daysRemaining ?? null,
+    note: !stock || stock.status === 'STOCK_UNKNOWN' ? 'المخزون الحالي غير مسجّل — Stock Guard مش قادر يحكم على أمان التوسّع (سجّل المخزون في بيانات المنتج).' : stock.status === 'OUT_OF_STOCK' ? 'المخزون صفر.' : stock.status === 'LOW' ? `المخزون منخفض${stock.daysRemaining != null ? ` (حوالي ${n1days(stock.daysRemaining)} يوم)` : ''}.` : `المخزون آمن${stock.daysRemaining != null ? ` (حوالي ${n1days(stock.daysRemaining)} يوم)` : ''}.` };
   const profitBlock = {
     state: profit?.state || 'INSUFFICIENT_DATA', configState: profit?.configState || 'NOT_CONFIGURED', marginPct: profit?.marginPct ?? null,
     note: profit?.configState === 'NOT_CONFIGURED' || !profit ? 'التكاليف الاقتصادية غير مضبوطة — الربحية UNKNOWN (مش بنستنتج ربح من ROAS).' : (profit.reason || null),
@@ -397,6 +419,7 @@ export function composePlan(inp) {
     // no optimisation action — only waiting (see insufficientPlan)
   } else {
     if (P === 'STOCK_PROBLEM') nowActions.push(action({ ...base, priority: 'P0', owner: 'HUMAN', recType: 'STOCK', title: 'توفير مخزون قبل أي صرف', what: 'إعادة توفير المنتج أو إيقاف الصرف مؤقتًا.', why: 'المخزون صفر — أي أوردر جديد مش هيتسلّم.', how: 'تحديث المخزون الفعلي في بيانات المنتج.', staysFixed: ['الكرياتيف', 'الجمهور'], sources: src('STOCK_GUARD'), variable: 'stock', target: 'restock', successMetric: 'المخزون > 0', checkpoint: 'فور التوفير' }, settings));
+    if (P === 'COD_STATUS_UNKNOWN') nowActions.push(action({ ...base, priority: 'P0', owner: 'HUMAN', recType: 'COD', title: 'تأكيد/تحديث حالات الأوردرات في Easy Orders', what: 'راجع إن حالات الأوردرات (مؤكد/ملغي/مُسلَّم) بتتحدّث فعلًا في Easy Orders وفي النظام (webhook الحالة / فريق التأكيد).', why: `كل أوردرات المنتج (${codBlock.orders}) PENDING — من غير حالات حقيقية مفيش حكم على جودة COD ولا أمان للتوسّع.`, how: 'تأكّد من webhook تحديث الحالة ومن فريق التأكيد. أول ما تظهر حالات حقيقية الخطة بتحسب التأكيد/التسليم تلقائيًا وتحكم.', staysFixed: ['الإعلانات', 'الميزانية', 'الاستهداف', 'الكرياتيف'], sources: src('EASY_ORDERS'), variable: 'cod', target: 'status_sync', successMetric: 'ظهور أوردرات بحالات مؤكد/ملغي/مُسلَّم', checkpoint: 'بعد تحديث الحالات وأول مزامنة', trackable: false }, settings));
     if (P === 'COD_PROBLEM') nowActions.push(action({ ...base, priority: 'P0', owner: 'HUMAN', recType: 'COD', title: 'إصلاح تأكيد/تسليم الأوردرات (تشغيلي)', what: 'مراجعة مكالمات التأكيد وشركة الشحن للمحافظات الأضعف.', why: codBlock.verdict || 'الأوردرات مش بتتأكد/تتسلّم بالمعدل المطلوب.', how: 'ابدأ بالمحافظات الأعلى إلغاءً في تاب "الأسواق والمناطق" وراجع مين بيأكد.', staysFixed: ['الإعلانات', 'الميزانية'], sources: src('EASY_ORDERS', 'COD_QUALITY'), variable: 'cod', target: 'confirmation', successMetric: 'confirmationRate يرتفع', checkpoint: 'بعد 7 أيام من أوردرات جديدة' }, settings));
     if (P === 'PROFIT_PROBLEM' || (profit?.state === 'UNPROFITABLE')) nowActions.push(action({ ...base, priority: 'P0', owner: 'HUMAN', recType: 'PROFIT', title: 'مراجعة السعر/التكلفة (المنتج بيخسر)', what: 'مراجعة سعر البيع وتكلفة المنتج والشحن.', why: `حالة الربح ${profit?.state}`, how: 'عدّل التكاليف الفعلية أو السعر في بيانات المنتج قبل أي صرف إضافي.', staysFixed: ['الكرياتيف', 'الجمهور'], sources: src('PROFIT_BRAIN'), variable: 'profit', target: 'margin', successMetric: 'profit يرتفع', checkpoint: 'بعد تعديل التكاليف' }, settings));
     if (P === 'CREATIVE_FATIGUE') nowActions.push(action({ ...base, priority: 'P0', owner: 'AI', recType: 'CREATIVE', title: 'استبدال الكرياتيف المتعب بتحديات جديدة', what: 'جهّز 3 كرياتيف challengers بدل المتعب مع الإبقاء على الزاوية الرابحة.', why: 'المنتج مش المشكلة — الكرياتيف بدأ يتعب.', how: 'اضغط "جهّز الكرياتيف" وهيتولد Brief للتحديات (فرضيات).', staysFixed: ['الجمهور', 'السعر', 'الصفحة', 'الزاوية الرابحة'], sources: src('CREATIVE_FATIGUE', 'CREATIVE_INTEL'), variable: 'creative', target: 'replace_fatigued', hypothesis: 'كرياتيف جديد بنفس الزاوية بيرجّع الأداء اللي اتآكل.', tool: { name: 'generate_creative_brief', args: { productId: inp.productId }, label: 'جهّز الكرياتيف' } }, settings));
@@ -430,17 +453,17 @@ export function composePlan(inp) {
   // Recovery = repeated AD-SIDE fixes. Operational/data/stock/profit problems are not fixed by new hooks, so they never get a creative recovery ladder.
   const AD_SIDE = ['CTR_PROBLEM', 'TRAFFIC_PROBLEM', 'CONVERSION_PROBLEM', 'OFFER_PROBLEM', 'CPA_PROBLEM'];
   const recoveryPlan = (stage === 'NEEDS_FIX' || stage === 'RECOVERY' || stage === 'VALIDATING') && AD_SIDE.includes(P) ? {
-    attempts: [
-      { n: 1, focus: 'Creative / Hook', applies: ['CTR_PROBLEM', 'TRAFFIC_PROBLEM', 'CREATIVE_FATIGUE', 'CPA_PROBLEM'].includes(P) },
-      { n: 2, focus: 'Offer', applies: true },
-      { n: 3, focus: 'Landing Page / Price', applies: true },
-    ].map((a) => ({ ...a, status: attemptsDone >= a.n ? 'DONE' : attemptsDone + 1 === a.n ? 'NEXT' : 'LATER' })),
+    attempts: (['CONVERSION_PROBLEM', 'OFFER_PROBLEM'].includes(P)
+      ? [{ n: 1, focus: 'Offer', applies: true }, { n: 2, focus: 'Landing Page / Price', applies: true }, { n: 3, focus: 'Creative / Hook', applies: true }]
+      : [{ n: 1, focus: 'Creative / Hook', applies: true }, { n: 2, focus: 'Offer', applies: true }, { n: 3, focus: 'Landing Page / Price', applies: true }]
+    ).map((a) => ({ ...a, status: attemptsDone >= a.n ? 'DONE' : attemptsDone + 1 === a.n ? 'NEXT' : 'LATER' })),
     stopCondition: `لو بعد ${settings.ambAdvisorStopAfterFailedAttempts || 3} محاولات متقيَّمة بعينة كافية فشلت/ضرّت (حاليًا ${failedN})، وCPA لسه فوق ${fmt1(stopCpa)} ج (${settings.ambAdvisorStopCpaMultiplier || 1.5}× الهدف) → يُوصى بالإيقاف.`,
     stopTriggered: failedN >= (settings.ambAdvisorStopAfterFailedAttempts || 3) && n(m.avgCpa) !== null && n(m.avgCpa) > stopCpa,
   } : null;
   const mg2 = evaluateMoneyGuardForScale({ profitState: profit?.state, stockGuard: stock, creativeFatigueState: fatigued ? 'FATIGUED' : null, settings });
   const scalePlan = (stage === 'WINNER' || stage === 'SCALING') ? {
-    ladderStage: ladder?.stage || null, ladderNext: ladder?.next || null, blockers: ladder?.blockers || [], moneyGuard: mg2,
+    ladderStage: ladder?.stage || null, ladderNext: ladder?.next || null, blockers: ladder?.blockers || [],
+    cautions: codBlock.statusUnknown ? ['حالة الأوردرات غير معروفة (كلها PENDING) — جودة COD مش متأكدة؛ راجع تحديث الحالات قبل أي رفع كبير.'] : [], moneyGuard: mg2,
     keepWinners: working.slice(0, 3), addChallengers: creative.challengers.length ? 'أضف 1–2 challenger بميزانية صغيرة جنب الرابح.' : null,
     budgetStrategy: `زيادة تدريجية ≤ ${settings.ambMaxBudgetIncreasePct || 20}% لكل خطوة وبينها ${settings.ambScalingCooldownHours || 24} ساعة (قواعد Money Guard الموجودة).`,
     creativeRotation: fatigued ? 'بدّل الكرياتيف المتعب قبل رفع الميزانية.' : 'راقب Frequency وحالة الإجهاد بعد كل رفع.',
@@ -468,13 +491,14 @@ export function composePlan(inp) {
   else if (P === 'INSUFFICIENT_DATA') executive = 'لسه بنجمع بيانات. متغيّرش أي حاجة، وراجع بعد ما العينة توصل (' + `${minP} مشتريات و${minSpend} ج صرف).`;
   else if (P === 'NONE') executive = `المنتج سليم (${STAGE_LABEL_AR[stage]}). حافظ على ${keepBits.join(' + ') || 'الإعدادات الحالية'}${nextTest ? `، واختبر ${nextTest.variable} فقط كـchallenger` : ''}. ${scalePlan ? 'راجع التوسّع بموافقتك.' : ''}`.trim();
   else if (P === 'CONVERSION_PROBLEM') executive = `الإعلان بيشد الناس (CTR ${fmt1(m.ctr)}%) لكن التحويل ضعيف (CVR ${fmt1(m.cvr)}%). حافظ على ${keepBits.join(' + ') || 'الإعلان الحالي'}، واختبر ${nextTest ? nextTest.variable : 'العرض'} فقط. راجع بعد عينة كافية.`;
+  else if (P === 'COD_STATUS_UNKNOWN') executive = `الإعلانات شغالة${m.avgCpa ? ` (CPA ${fmt1(m.avgCpa)} ج)` : ''} لكن كل أوردرات المنتج لسه PENDING في Easy Orders — مفيش حالات تأكيد/تسليم حقيقية، فمفيش حكم على جودة COD ومينفعش نوسّع بثقة. أكّد تحديث الحالات الأول، ومتغيّرش في الإعلانات.`;
   else if (P === 'COD_PROBLEM') executive = 'المشكلة تشغيلية وليست إعلانية — الأوردرات مش بتتأكد/تتسلّم بالمعدل المطلوب. ركّز على التأكيد والتسليم ومتعملش Scale دلوقتي.';
   else if (P === 'CREATIVE_FATIGUE') executive = 'المنتج مش المشكلة — الكرياتيف بدأ يتعب. بدّل الكرياتيف/الـHook مع الإبقاء على الجمهور والعرض، وراجع بعد عينة كافية.';
   else if (P === 'STOCK_PROBLEM') executive = 'المخزون ناقص — أوقف أي توسّع ووفّر المخزون الأول.';
   else if (P === 'PROFIT_PROBLEM') executive = 'المنتج بيجيب أوردرات لكن الربحية ضعيفة/غير مؤكدة. راجع السعر والتكاليف قبل أي صرف إضافي.';
   else executive = `${PROBLEM_LABEL_AR[P]}${problem.rootNote ? ' — ' + problem.rootNote : ''}. ${now[0] ? `الخطوة الأهم: ${now[0].title}` : 'لا اختبار مقترح بدليل حاليًا'}${keepBits.length ? `، مع الحفاظ على ${keepBits.join(' + ')}` : ''}. راجع بعد عينة كافية.`;
 
-  const objective = P === 'NONE' ? (scalePlan ? 'توسّع آمن' : 'الحفاظ على الأداء واختبار تحسينات') : P === 'INSUFFICIENT_DATA' ? 'جمع عينة كافية' : P === 'DATA_QUALITY_PROBLEM' ? 'تأكيد البيانات' : P === 'COD_PROBLEM' ? 'تحسين تأكيد/تسليم الأوردرات' : P === 'CREATIVE_FATIGUE' ? 'تجديد الكرياتيف' : 'تحسين ' + (P === 'CONVERSION_PROBLEM' ? 'التحويل' : P === 'CTR_PROBLEM' || P === 'TRAFFIC_PROBLEM' ? 'الانتباه/تكلفة الوصول' : 'تكلفة الأوردر');
+  const objective = P === 'NONE' ? (scalePlan ? 'توسّع آمن' : 'الحفاظ على الأداء واختبار تحسينات') : P === 'INSUFFICIENT_DATA' ? 'جمع عينة كافية' : P === 'DATA_QUALITY_PROBLEM' ? 'تأكيد البيانات' : P === 'COD_STATUS_UNKNOWN' ? 'تأكيد حالات الأوردرات' : P === 'COD_PROBLEM' ? 'تحسين تأكيد/تسليم الأوردرات' : P === 'CREATIVE_FATIGUE' ? 'تجديد الكرياتيف' : 'تحسين ' + (P === 'CONVERSION_PROBLEM' ? 'التحويل' : P === 'CTR_PROBLEM' || P === 'TRAFFIC_PROBLEM' ? 'الانتباه/تكلفة الوصول' : 'تكلفة الأوردر');
 
   const plan = {
     productId: inp.productId, productName, storeId: inp.storeId, windowName: inp.windowName, generatedAt: new Date().toISOString(),
@@ -482,7 +506,7 @@ export function composePlan(inp) {
     status: { stage, stageLabel: STAGE_LABEL_AR[stage], primaryProblem: P, primaryProblemLabel: problem.label, rootCause: problem.rootNote || problem.evidence[0] || null, objective, dataQuality: { score: gate.score, gate: gate.gate, overall: gate.overall, blocked: gate.blocked, dims: gate.dims }, confidence },
     diagnosis: { problem, symptom: problem.symptom, strongestSignal: n(m.ctr) !== null ? `CTR ${fmt1(m.ctr)}%` : null, biggestProblem: problem.label, summary: problem.rootNote || (problem.symptom ? `${problem.symptom}.` : problem.label) },
     working, notWorking, staysFixed: [...new Set([...(growth?.whatShouldRemainUnchanged || []), ...(working.slice(0, 2).map((w) => w.dimension))])].filter(Boolean),
-    audience, angle, hooks, creative, offerPage, cod: codBlock, profit: profitBlock,
+    audience, angle, hooks, creative, offerPage, cod: codBlock, stock: stockBlock, profit: profitBlock,
     nextTest: nextTestBlock,
     actions: { now, next: nextActions, later: laterActions, ifWins: nextTest ? `رقّي الفائز (${nextTest.variable}: ${String(nextTest.variant).slice(0, 40)}) واختبر المتغيّر التالي.` : null, ifLoses: nextTest ? 'سجّل الفشل في الـPlaybook وانتقل للمتغيّر التالي في خطة الإنقاذ (مش هنكرر نفس الاختبار).' : null },
     recoveryPlan, scalePlan, fatiguePlan, insufficientPlan,
@@ -545,6 +569,7 @@ export async function gatherAdvisorInputs({ productId, storeId, windowName = 'la
   const profit = await getProductProfitBrain({ productId: pid, dateFrom: w.from, dateTo: w.to });
   const stock = await stockGuardForProduct({ productId: pid, storeId, days: settings.ambStockGuardVelocityWindowDays });
   const cod = await buildCodQualityReport({ productId: pid, storeId, from: w.from, to: w.to, pkg });
+  const fatiguedLabels = (pkg.creativeIntel?.creative?.table || []).filter((r) => r.fatigueRadar?.state === 'FATIGUED').map((r) => r.label);
   const fatigueStates = [
     ...(pkg.creativeIntel?.creative?.table || []),
     ...(pkg.creativeIntel?.hooks?.table || []),
@@ -572,7 +597,7 @@ export async function gatherAdvisorInputs({ productId, storeId, windowName = 'la
     competitor = (gaps?.observed || []).slice(0, 3).map((o) => (typeof o === 'string' ? o : (o.angle || o.hook || o.title || o.name || JSON.stringify(o).slice(0, 120))));
   } catch { competitor = []; }
 
-  return { ok: true, productId: pid, productName: pkg.productName, storeId, windowName, settings, pkg, matrix, nextTest, growth, ladder, profit, stock, cod, fatigueStates, actionPlan, incidents, playbook, learning, dq, priorRecs, competitor, productRow };
+  return { ok: true, productId: pid, productName: pkg.productName, storeId, windowName, settings, pkg, matrix, nextTest, growth, ladder, profit, stock, cod, fatigueStates, actionPlan, incidents, playbook, learning, dq, priorRecs, competitor, productRow, fatiguedLabels };
 }
 
 /** Pure composition over freshly-gathered inputs. */
