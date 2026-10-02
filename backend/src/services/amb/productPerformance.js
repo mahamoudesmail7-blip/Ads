@@ -25,6 +25,7 @@ import { logger } from '../../logger.js';
 import { resolveWindow, addDaysISO, entityWindowMetrics } from './metricsEngine.js';
 import { computeDiagnosis, diagnoseFunnelBottleneck } from './productMarketingScoring.js';
 import { codCountsForProduct, codCountsByGovernorate } from './codOrders.js';
+import { getStoreStatusTrust } from '../easyOrdersStatus.js';
 import { cachedMetaFetch } from '../metaAssetCache.js';
 
 const MIN_COD_SAMPLE = 10; // mirrors codOrders.js's observedRatesForProduct() convention
@@ -183,8 +184,12 @@ async function buildEasyOrdersBlock(productId, storeId, window) {
 
     const sample = cod.orders || 0;
     const sufficient = sample >= MIN_COD_SAMPLE;
-    const confirmationRate = sufficient && cod.confirmed != null && sample > 0 ? cod.confirmed / sample : null;
-    const deliveryRate = sufficient && cod.confirmed != null && cod.confirmed > 0 && cod.delivered != null ? cod.delivered / cod.confirmed : null;
+    // Store-level STATUS TRUST (services/easyOrdersStatus.js): when the store's orders essentially never leave PENDING in Easy Orders,
+    // a confirmation/delivery RATE derived from those statuses is an artefact, not evidence — it is withheld for every consumer.
+    const statusTrust = await getStoreStatusTrust(storeId || null).catch(() => null);
+    const statusUnreliable = statusTrust?.state === 'NO_STATUS_SIGNAL';
+    const confirmationRate = !statusUnreliable && sufficient && cod.confirmed != null && sample > 0 ? cod.confirmed / sample : null;
+    const deliveryRate = !statusUnreliable && sufficient && cod.confirmed != null && cod.confirmed > 0 && cod.delivered != null ? cod.delivered / cod.confirmed : null;
 
     // Freshness proxy: the most recent order timestamp actually counted — a
     // real, observed value, never a synthetic "last synced" clock (Easy
@@ -203,7 +208,8 @@ async function buildEasyOrdersBlock(productId, storeId, window) {
       orders: cod.orders, confirmed: cod.confirmed, delivered: cod.delivered, returned: cod.returned, cancelled: cod.cancelled,
       revenue: cod.revenue, deliveredRevenue: cod.deliveredRevenue,
       confirmationRate, deliveryRate,
-      sample, governorates, lastOrderAt, source: cod.source,
+      sample, governorates, lastOrderAt, source: cod.source, statusTrust,
+      ...(statusUnreliable ? { rateNote: statusTrust.note } : {}),
       ...(sample > 0 && !sufficient ? { rateNote: `عدد الأوردرات (${sample}) أقل من الحد الأدنى (${MIN_COD_SAMPLE}) — نسب التأكيد/التسليم غير معروضة حتى تتوفر عينة كافية.` } : {}),
     };
   } catch (err) {

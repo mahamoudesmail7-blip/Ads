@@ -21,6 +21,9 @@ export function normalizeStatus(raw) {
   const s = String(raw || '').toLowerCase();
   if (s.includes('cancel')) return 'CANCELLED';
   if (s.includes('return')) return 'RETURNED';
+  // in_delivery / out_for_delivery / shipped = handed to the courier, NOT delivered yet (it implies the order was confirmed).
+  // The previous `includes('deliver')` test stored in_delivery as DELIVERED and inflated delivery rates.
+  if (/in[_\s-]?deliver|out[_\s-]?for[_\s-]?deliver|ship/.test(s)) return 'CONFIRMED';
   if (s.includes('deliver')) return 'DELIVERED';
   if (s.includes('confirm') || s === 'paid') return 'CONFIRMED';
   return 'PENDING';

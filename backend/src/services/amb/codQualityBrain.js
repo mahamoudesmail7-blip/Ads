@@ -11,6 +11,7 @@
 // only as a tiebreaker) — the SAME evidence gate Targeting Strategy (Slice
 // 5) and the Winning Stack already trust.
 import { codCountsForProduct } from './codOrders.js';
+import { getStoreStatusTrust } from '../easyOrdersStatus.js';
 
 function rate(numerator, denominator) {
   if (!denominator) return null;
@@ -26,6 +27,8 @@ const GOV_RANK = { PROVEN_WINNER: 3, PROMISING: 2, INSUFFICIENT_DATA: 1, PROVEN_
  */
 export async function buildCodQualityReport({ productId, storeId, from, to, pkg }) {
   const counts = await codCountsForProduct({ productId, storeId, from, to });
+  const statusTrust = await getStoreStatusTrust(storeId || null).catch(() => null);
+  const rateUnreliable = statusTrust?.state === 'NO_STATUS_SIGNAL'; // statuses not maintained in Easy Orders -> rates are not evidence
   const orders = counts.orders ?? 0;
   const confirmed = counts.confirmed ?? 0;
   const delivered = counts.delivered ?? 0;
@@ -36,10 +39,10 @@ export async function buildCodQualityReport({ productId, storeId, from, to, pkg 
   const productLevel = {
     source: counts.source,
     orders, pending, confirmed, cancelled, delivered, returned,
-    confirmationRate: rate(confirmed, orders),
-    cancellationRate: rate(cancelled, orders),
-    deliveryRate: rate(delivered, confirmed),
-    returnRate: rate(returned, confirmed),
+    confirmationRate: rateUnreliable ? null : rate(confirmed, orders),
+    cancellationRate: rateUnreliable ? null : rate(cancelled, orders),
+    deliveryRate: rateUnreliable ? null : rate(delivered, confirmed),
+    returnRate: rateUnreliable ? null : rate(returned, confirmed),
     revenue: counts.revenue ?? null,
     deliveredRevenue: counts.deliveredRevenue ?? null,
   };
@@ -65,5 +68,5 @@ export async function buildCodQualityReport({ productId, storeId, from, to, pkg 
         ? '✅ جودة الـCOD مش هي العنق الحالي — مفيش مؤشر إنها بتمنع التوسع.'
         : null;
 
-  return { productLevel, governorateRows, codBlocksScale, decisionNote };
+  return { productLevel, governorateRows, codBlocksScale, decisionNote, statusTrust };
 }

@@ -20,6 +20,7 @@ import { resolveProductCampaigns } from './productPerformance.js';
 import { entityWindowMetrics, resolveWindow } from './metricsEngine.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { verifyProductStoreScope } from './storeScope.js';
+import { getStoreStatusTrust } from '../easyOrdersStatus.js';
 
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
 
@@ -100,7 +101,7 @@ export async function computeProductDataQuality({ productId, storeId, windowName
       age: { status: 'MAPPING_ERROR', reason: null, purchases: null, reconciled: null },
       gender: { status: 'MAPPING_ERROR', reason: null, purchases: null, reconciled: null },
       region: { status: 'MAPPING_ERROR', reason: null, purchases: null, reconciled: null },
-      easyOrders: { total: 0, mapped: 0, unmapped: 0, lastSyncAt: null },
+      easyOrders: { total: 0, mapped: 0, unmapped: 0, lastSyncAt: null, statusTrust: await getStoreStatusTrust(storeId || null).catch(() => null) },
       freshness: { metaLastSyncAt: null, breakdownGeneratedAt: null },
       overallStatus: 'MAPPING_ERROR',
       discrepancies: ['لا يوجد ربط Meta (AmbProduct) لهذا المنتج.'],
@@ -195,7 +196,8 @@ export async function computeProductDataQuality({ productId, storeId, windowName
     prisma.easyOrdersOrder.count({ where: { ...eoWhere, customer_government: { not: null } } }),
     prisma.easyOrdersOrder.aggregate({ where: eoWhere, _max: { updated_at: true } }),
   ]);
-  const easyOrders = { total: eoTotal, mapped: eoMapped, unmapped: eoTotal - eoMapped, lastSyncAt: eoLast._max.updated_at || null };
+  const statusTrust = await getStoreStatusTrust(storeId || null).catch(() => null);
+  const easyOrders = { total: eoTotal, mapped: eoMapped, unmapped: eoTotal - eoMapped, lastSyncAt: eoLast._max.updated_at || null, statusTrust };
 
   const syncStatus = await getSyncStatus().catch(() => null);
 

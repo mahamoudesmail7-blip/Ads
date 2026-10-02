@@ -130,7 +130,8 @@ export function mapProblem(inp, gate) {
   const add = (s) => { if (s) evidence.push(s); };
   const pl0 = cod?.productLevel || null;
   // Every order still PENDING (no confirmed/cancelled/delivered/returned at all) = the status never progressed, so a "0% confirmation" is an artefact, not evidence.
-  const codUnknown = !!pl0 && pl0.confirmed !== undefined && (pl0.orders || 0) > 0 && ((pl0.confirmed || 0) + (pl0.cancelled || 0) + (pl0.delivered || 0) + (pl0.returned || 0)) === 0;
+  const trustNoSignal = cod?.statusTrust?.state === 'NO_STATUS_SIGNAL';
+  const codUnknown = !!pl0 && (pl0.orders || 0) > 0 && (trustNoSignal || (pl0.confirmed !== undefined && ((pl0.confirmed || 0) + (pl0.cancelled || 0) + (pl0.delivered || 0) + (pl0.returned || 0)) === 0));
   if (!(codUnknown && (bn.category === 'CONFIRMATION_PROBLEM' || bn.category === 'DELIVERY_PROBLEM'))) add(bn.evidence);
   if (ctr !== null) add(`CTR ${fmt1(ctr)}%`);
   if (cvr !== null) add(`معدل التحويل (CVR) ${fmt1(cvr)}%`);
@@ -353,14 +354,14 @@ export function composePlan(inp) {
   // ---- COD / profit
   const pl = cod?.productLevel || null;
   // Every order still PENDING (nothing confirmed/cancelled/delivered/returned) = status never progressed: the rates are UNKNOWN, not 0%.
-  const statusUnknown = !!pl && pl.confirmed !== undefined && (pl.orders || 0) > 0 && ((pl.confirmed || 0) + (pl.cancelled || 0) + (pl.delivered || 0) + (pl.returned || 0)) === 0;
+  const statusUnknown = !!pl && (pl.orders || 0) > 0 && (cod?.statusTrust?.state === 'NO_STATUS_SIGNAL' || (pl.confirmed !== undefined && ((pl.confirmed || 0) + (pl.cancelled || 0) + (pl.delivered || 0) + (pl.returned || 0)) === 0));
   const codBlock = {
     statusUnknown,
     orders: pl?.orders ?? null, confirmationRate: statusUnknown ? null : pct(pl?.confirmationRate), deliveryRate: statusUnknown ? null : pct(pl?.deliveryRate),
     cancellationRate: statusUnknown ? null : pct(pl?.cancellationRate), returnRate: statusUnknown ? null : pct(pl?.returnRate),
     blocksScale: !!cod?.codBlocksScale,
     verdict: statusUnknown ? 'الحكم التشغيلي معلّق لحد ما حالات الأوردرات تتحدّث.' : problem.primary === 'COD_PROBLEM' ? 'المشكلة تشغيلية وليست إعلانية.' : (cod?.codBlocksScale ? 'جودة الأوردرات بتمنع التوسّع.' : null),
-    note: statusUnknown ? `كل الأوردرات (${pl.orders}) لسه PENDING في Easy Orders — حالة التأكيد/التسليم مش متحدّثة، فمفيش حكم تشغيلي ممكن (مش معناه إن التأكيد 0%).` : (cod?.decisionNote || null),
+    note: statusUnknown ? (cod?.statusTrust?.state === 'NO_STATUS_SIGNAL' ? `حالات الأوردرات في Easy Orders غير محدّثة على مستوى المتجر (${Math.round((cod.statusTrust.share || 0) * 1000) / 10}% بس من الأوردرات الأقدم من ${cod.statusTrust.cutoffDate ? 5 : 5} أيام اتغيّرت حالتها) — مفيش حكم تشغيلي ممكن (مش معناه إن التأكيد 0%).` : `كل الأوردرات (${pl.orders}) لسه PENDING في Easy Orders — حالة التأكيد/التسليم مش متحدّثة، فمفيش حكم تشغيلي ممكن (مش معناه إن التأكيد 0%).`) : (cod?.decisionNote || null),
   };
   const stockBlock = { status: stock?.status || 'STOCK_UNKNOWN', currentStock: stock?.currentStock ?? null, daysRemaining: stock?.daysRemaining ?? null,
     note: !stock || stock.status === 'STOCK_UNKNOWN' ? 'المخزون الحالي غير مسجّل — Stock Guard مش قادر يحكم على أمان التوسّع (سجّل المخزون في بيانات المنتج).' : stock.status === 'OUT_OF_STOCK' ? 'المخزون صفر.' : stock.status === 'LOW' ? `المخزون منخفض${stock.daysRemaining != null ? ` (حوالي ${n1days(stock.daysRemaining)} يوم)` : ''}.` : `المخزون آمن${stock.daysRemaining != null ? ` (حوالي ${n1days(stock.daysRemaining)} يوم)` : ''}.` };
@@ -437,6 +438,7 @@ export function composePlan(inp) {
       const canScale = mg.decision !== 'BLOCKED' && !cod?.codBlocksScale && !gate.blocked;
       (nowActions.length < 3 ? nowActions : nextActions).push(action({ ...base, priority: canScale ? 'P0' : 'P1', owner: canScale ? 'AI' : 'HUMAN', recType: 'SCALE', title: canScale ? 'مراجعة التوسّع (Scale)' : 'التوسّع محجوب حاليًا', what: canScale ? 'راجع شرائح الإعلانات الرابحة وجهّز Scale بموافقتك.' : mg.reason, why: canScale ? 'القرار الكلي SCALE_CANDIDATE وMoney Guard سمح.' : `Money Guard: ${mg.decision}${cod?.codBlocksScale ? ' · جودة الأوردرات بتمنع' : ''}`, how: canScale ? 'اضغط "راجع التوسع" — هيجهّز Task بيحتاج موافقتك قبل أي تنفيذ.' : 'حل المانع الأول ثم ارجع.', staysFixed: ['الإعلانات الرابحة الحالية'], sources: src('SCALE_LADDER', 'MONEY_GUARD'), variable: 'budget', target: 'scale', tool: canScale ? { name: 'prepare_scale', args: { productId: inp.productId }, label: 'راجع التوسع' } : null, trackable: canScale }, settings));
     }
+    if (codBlock.statusUnknown && P !== 'COD_STATUS_UNKNOWN') nextActions.push(action({ ...base, priority: 'P1', owner: 'HUMAN', recType: 'COD', title: 'تحديث حالات الأوردرات في Easy Orders', what: 'الحالات (مؤكد/ملغي/مُسلَّم) مش بتتحدّث في Easy Orders، فجودة COD والربحية الحقيقية مش قابلة للقياس.', why: codBlock.note || 'حالات الأوردرات غير معروفة.', how: 'حدّث الحالات في Easy Orders (أو اربط شركة الشحن/فريق التأكيد بـwebhook الحالة). الخطة هتحسب التأكيد/التسليم تلقائيًا أول ما تظهر حالات حقيقية.', staysFixed: ['الإعلانات', 'الميزانية'], sources: src('EASY_ORDERS'), variable: 'cod', target: 'status_sync', trackable: false, successMetric: 'ظهور أوردرات بحالات حقيقية' }, settings));
     if (profit?.configState === 'NOT_CONFIGURED' && P !== 'PROFIT_PROBLEM') nextActions.push(action({ ...base, priority: 'P1', owner: 'HUMAN', recType: 'PROFIT', title: 'ضبط التكاليف الاقتصادية', what: 'إدخال تكلفة المنتج والشحن.', why: 'الربحية UNKNOWN — مش هينفع نحكم على التوسّع من غيرها.', how: 'عدّل بيانات المنتج (تكلفة/شحن/تغليف).', staysFixed: ['كل الإعلانات'], sources: src('PROFIT_BRAIN'), variable: 'profit', target: 'economics', trackable: false, successMetric: 'configState = KNOWN' }, settings));
   }
   const sorted = [...nowActions].sort((a, b) => a.priority.localeCompare(b.priority));

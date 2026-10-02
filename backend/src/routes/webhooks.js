@@ -44,6 +44,20 @@ import { getStore, getStoreWebhookSecret, defaultStoreId } from '../services/eas
 
 const router = Router();
 
+// Every rejected webhook was previously completely silent (production returned 401 to ~100 Easy Orders deliveries in 8h with no
+// log line explaining why). This logs WHY — never a secret value — at most once per 5 min per route+type.
+const authFailLog = new Map();
+export const webhookAuthHealth = { rejected: 0, lastRejectedAt: null, accepted: 0, lastAcceptedAt: null };
+function logAuthFailure({ route, type, storeId, req, expected }) {
+  webhookAuthHealth.rejected++; webhookAuthHealth.lastRejectedAt = new Date().toISOString();
+  const k = `${route}|${type}`; const now = Date.now();
+  const e = authFailLog.get(k) || { count: 0, last: 0 }; e.count++;
+  if (now - e.last < 5 * 60_000) { authFailLog.set(k, e); return; }
+  const got = req.headers['secret'];
+  logger.warn('EasyOrders webhook REJECTED (INVALID_SECRET)', { route, type, storeId, suppressedSincePrevious: e.count - 1, secretHeaderPresent: !!got, secretHeaderLength: got ? String(got).length : 0, expectedConfigured: !!expected, expectedLength: expected ? String(expected).length : 0, lengthsMatch: !!got && !!expected && String(got).length === String(expected).length, userAgent: String(req.headers['user-agent'] || '').slice(0, 40) });
+  e.count = 0; e.last = now; authFailLog.set(k, e);
+}
+
 const webhookLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
 
 /** Classifies the payload shape BEFORE any secret is checked — a request never has to guess/probe a secret just to learn its shape wasn't recognized, and an unrecognized shape is refused (no ingest) regardless of what secret it carries. */
@@ -85,8 +99,10 @@ router.post(
 
     const expectedSecret = type === 'STATUS_UPDATE' ? process.env.EASYORDERS_STATUS_WEBHOOK_SECRET : process.env.EASYORDERS_WEBHOOK_SECRET;
     if (!expectedSecret || req.headers['secret'] !== expectedSecret) {
+      logAuthFailure({ route: '/easyorders', type, storeId: defaultStoreId(), req, expected: expectedSecret });
       return res.status(401).json({ error: 'INVALID_SECRET' });
     }
+    webhookAuthHealth.accepted++; webhookAuthHealth.lastAcceptedAt = new Date().toISOString();
 
     const storeId = defaultStoreId();
     if (type === 'STATUS_UPDATE') return handleStatusUpdate(body, storeId, res);
@@ -106,7 +122,8 @@ router.post(
 
     const storeSecret = getStoreWebhookSecret(storeId);
     if (!storeSecret) return res.status(400).json({ error: 'STORE_WEBHOOK_NOT_CONFIGURED' });
-    if (req.headers['secret'] !== storeSecret) return res.status(401).json({ error: 'INVALID_SECRET' });
+    if (req.headers['secret'] !== storeSecret) { logAuthFailure({ route: '/easyorders/:storeId', type: classifyEasyOrdersPayload(req.body || {}), storeId, req, expected: storeSecret }); return res.status(401).json({ error: 'INVALID_SECRET' }); }
+    webhookAuthHealth.accepted++; webhookAuthHealth.lastAcceptedAt = new Date().toISOString();
 
     const body = req.body || {};
     const type = classifyEasyOrdersPayload(body);
