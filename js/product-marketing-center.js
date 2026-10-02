@@ -6,6 +6,7 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import * as StoreCtx from './store-context.js';
+import { renderAdvisorTab } from './pmc-advisor.js';
 
 const E = (s) => UI.escapeHtml(String(s ?? ''));
 const $ = (id) => document.getElementById(id);
@@ -355,7 +356,7 @@ function render() {
   // product resolution search every store at once. Called on every render
   // (cheap, idempotent) so the assistant's context can never go stale after
   // a store switch or a product lock/unlock.
-  UI.setAssistantContext({ page: 'product-marketing-center', storeId: state.storeId, productId: state.profile?.product_id || null, productName: state.profile?.locked_name || null });
+  UI.setAssistantContext({ page: 'product-marketing-center', storeId: state.storeId, productId: state.profile?.productId ?? state.profile?.product_id ?? null, productName: state.profile?.lockedName ?? state.profile?.locked_name ?? null });
 }
 
 // ---------------------------------------------------------------------------
@@ -1951,7 +1952,11 @@ function strategistAnswersHtml(answers) {
     </div>
   </div>`).join('');
 }
+// 🧠 The tab now leads with the deterministic Smart Advisor (js/pmc-advisor.js); the original on-demand AI Q&A is kept, collapsed, below it.
 function renderStrategist(mount, s) {
+  renderAdvisorTab(mount, { state, renderLegacy: (el) => renderLegacyStrategist(el, s) });
+}
+function renderLegacyStrategist(mount, s) {
   const answers = s.strategist?.answers || [];
   mount.innerHTML = `
     <div class="pmc-card">

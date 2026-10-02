@@ -32,6 +32,8 @@ import { verifyProductStoreScope, STORE_CONTEXT_REQUIRED } from './amb/storeScop
 import { registerVideoSlot, markVideoResult, registerImageSlot, markImageResult } from './amb/launchBuilder.js';
 import { createTask, transitionTask, patchTask, failTaskSafely, enterWaitingForApproval, findActiveTaskForEntity, findActiveTaskForUserKind, listRecentTasksForUser, resolveTaskStatus, canTransitionTask } from './assistantTasks/taskEngine.js';
 import { prisma } from '../prisma.js';
+import { logger } from '../logger.js';
+import { resolveAdvisorLink, linkTaskToRecommendation } from './amb/advisorTracking.js';
 
 export const WRITE_TOOL_META = {
   prepare_bump: { tier: 'PREPARE', requiresApproval: true, writesToMeta: false },
@@ -321,10 +323,14 @@ export async function prepare_scale(args = {}) {
       if (v !== undefined && v !== null && v !== '') merged[k] = v;
     }
 
+    // Smart Advisor traceability: a recommendationId handed over via page context rides on the task (validated: same product+store, still open).
+    const advisorRid = await resolveAdvisorLink({ context, productId: merged.productId || context?.productId });
+    if (advisorRid) merged.advisorRecommendationId = advisorRid;
     const task = existingTask || await createTask({ userId, kind: 'SCALE_CAMPAIGN', toolName: 'prepare_scale', inputJson: merged, conversationRef });
     taskUuid = task.task_uuid;
     if (task.status !== 'PREPARING') await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { input_json: JSON.stringify(merged), progress: 15 } });
     else await patchTask({ taskId: taskUuid, patch: { input_json: JSON.stringify(merged) } });
+    if (advisorRid) await linkTaskToRecommendation({ recommendationId: advisorRid, task }).catch((e) => logger.warn('[advisor] link failed', { message: e.message }));
 
     const needInput = async (message, patch = {}) => {
       await transitionTask({ taskId: taskUuid, to: 'WAITING_FOR_INPUT', patch: { error: message, input_json: JSON.stringify(merged), ...patch } });
@@ -507,10 +513,14 @@ export async function prepare_test(args = {}) {
       if (v !== undefined && v !== null && v !== '') merged[k] = v;
     }
 
+    // Smart Advisor traceability: a recommendationId handed over via page context rides on the task (validated: same product+store, still open).
+    const advisorRid = await resolveAdvisorLink({ context, productId: merged.productId || context?.productId });
+    if (advisorRid) merged.advisorRecommendationId = advisorRid;
     const task = existingTask || await createTask({ userId, kind: 'TEST_CAMPAIGN', toolName: 'prepare_test', inputJson: merged, conversationRef });
     taskUuid = task.task_uuid;
     if (task.status !== 'PREPARING') await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { input_json: JSON.stringify(merged), progress: 15 } });
     else await patchTask({ taskId: taskUuid, patch: { input_json: JSON.stringify(merged) } });
+    if (advisorRid) await linkTaskToRecommendation({ recommendationId: advisorRid, task }).catch((e) => logger.warn('[advisor] link failed', { message: e.message }));
 
     const needInput = async (message, patch = {}) => {
       await transitionTask({ taskId: taskUuid, to: 'WAITING_FOR_INPUT', patch: { error: message, input_json: JSON.stringify(merged), ...patch } });
@@ -702,8 +712,10 @@ export async function prepare_price_test({ productId, productName, newPrice, use
     const baseline = await capturePriceTestBaseline({ productId: pid });
     if (!baseline.ok) return { ok: false, error: baseline.message };
 
-    const task = await createTask({ userId, kind: 'PRICE_TEST', toolName: 'prepare_price_test', entityId: String(pid), entityType: 'product', entityName: baseline.productName, inputJson: { productId: pid, newPrice }, conversationRef });
+    const advisorRid = await resolveAdvisorLink({ context, productId: pid });
+    const task = await createTask({ userId, kind: 'PRICE_TEST', toolName: 'prepare_price_test', entityId: String(pid), entityType: 'product', entityName: baseline.productName, inputJson: { productId: pid, newPrice, ...(advisorRid ? { advisorRecommendationId: advisorRid } : {}) }, conversationRef });
     taskUuid = task.task_uuid;
+    if (advisorRid) await linkTaskToRecommendation({ recommendationId: advisorRid, task }).catch((e) => logger.warn('[advisor] link failed', { message: e.message }));
     await transitionTask({ taskId: taskUuid, to: 'PREPARING', patch: { progress: 30 } });
 
     // Track as a real PMC PRICE test when a marketing profile exists — same graceful, non-fatal fallback prepare_test uses.

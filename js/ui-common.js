@@ -461,6 +461,10 @@ export async function getAssistantContext() {
   const mod = await import('./assistant.js');
   return mod.getAssistantContext();
 }
+export async function openAssistant(opts) {
+  const mod = await import('./assistant.js');
+  mod.openAssistant(opts);
+}
 export async function mountAssistantBubble() {
   const mod = await import('./assistant.js');
   mod.mountAssistantBubble();

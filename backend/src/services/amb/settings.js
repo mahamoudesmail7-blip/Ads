@@ -41,6 +41,15 @@ export const AMB_DEFAULT_SETTINGS = {
   // other autopilot-style setting above. Turning it on raises real alerts
   // through the EXISTING generic alerts.js pipeline; it never executes an
   // action by itself.
+  // Smart Advisor (2026-10-02) — one bounded evaluator tick; it only reads already-synced data and writes the advisor's own tables (never a Meta/EasyOrders call).
+  ambAdvisorEvaluatorEnabled: true,
+  ambAdvisorEvaluatorIntervalMinutes: 30,
+  ambAdvisorMaxProductsPerTick: 4,
+  ambAdvisorImprovePct: 10,            // % relative improvement of the primary metric to count as "improved"
+  ambAdvisorWorsePct: 15,              // % relative deterioration of CPA that counts as a failed guardrail
+  ambAdvisorHarmfulCpaPct: 25,         // % CPA deterioration (with a worse primary metric) that makes an outcome HARMFUL
+  ambAdvisorStopAfterFailedAttempts: 3,     // recovery plan: STOP is recommended after this many evaluated, failed/harmful attempts...
+  ambAdvisorStopCpaMultiplier: 1.5,         // ...while CPA is still above Target CPA × this
   ambLiveAlertsEnabled: false,
   ambLiveAlertIntervalMinutes: 30,
   ambLiveAlertMaxProductsPerTick: 5,

@@ -45,6 +45,7 @@ import { getConnection } from './metaAuth.js';
 import { getLiveCampaignStatusByProductId } from './amb/liveCampaignStatus.js';
 import { verifyProductStoreScope } from './amb/storeScope.js';
 import { computeProductDataQuality } from './amb/dataQuality.js';
+import { runAdvisorForProduct, getAdvisorHistory } from './amb/advisorTracking.js';
 
 const LOST_ORDER_STATUSES = ['NEW', 'PROCESSING', 'CONTACTED', 'CUSTOMER_APPROVED', 'CUSTOMER_REJECTED', 'REPLACEMENT_CREATED', 'CLOSED'];
 
@@ -628,6 +629,34 @@ export async function get_data_quality({ productId, window, context } = {}) {
   }
 }
 
+
+/** [🧠 المستشار الذكي] The SAME deterministic Action Plan the PMC "المستشار الذكي" tab shows — never a second opinion. */
+export async function get_product_action_plan({ productId, window, refresh, context } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    if (!context?.storeId) return { ok: false, error: 'محتاج سياق المتجر الحالي (storeId) لقراءة خطة المستشار بأمان.' };
+    const out = await runAdvisorForProduct({ productId: Number(productId), storeId: context.storeId, windowName: window || 'last7', fresh: !!refresh, trigger: 'ASSISTANT' });
+    if (!out.ok) return { ok: false, error: out.reason, code: out.code };
+    const p = out.plan;
+    const act = (a) => ({ recommendationId: a.recommendationId, priority: a.priority, owner: a.owner, title: a.title, what: a.what, why: a.why, how: a.how, staysFixed: a.staysFixed, successMetric: a.successMetric, checkpoint: a.checkpoint, tool: a.tool?.name || null, confidence: a.confidence });
+    return { ok: true, hasData: true, productId: p.productId, productName: p.productName, planVersion: p.planVersion, executive: p.executive, status: p.status, diagnosis: p.diagnosis, working: p.working, notWorking: p.notWorking, audience: p.audience,
+      nextTest: p.nextTest, actionsNow: p.actions.now.map(act), actionsNext: p.actions.next.map(act), recoveryPlan: p.recoveryPlan, scalePlan: p.scalePlan, fatiguePlan: p.fatiguePlan, insufficientPlan: p.insufficientPlan,
+      contradictions: p.contradictions, memory: p.memory, note: 'ده نفس الخطة اللي بتظهر في تاب المستشار الذكي. لتجهيز أي إجراء استخدم أدوات prepare_* مع recommendationId في الـcontext — مفيش تنفيذ بدون موافقة.' };
+  } catch (err) { return { ok: false, error: err.message }; }
+}
+
+/** [🩺 سجل المشاكل والحلول] Persisted advisor history (problem -> fix -> result) — answers "اتجرب إيه قبل كده؟" from stored facts only. */
+export async function get_advisor_history({ productId, context } = {}) {
+  try {
+    if (!productId) return { ok: false, error: 'productId مطلوب.' };
+    if (!context?.storeId) return { ok: false, error: 'محتاج سياق المتجر الحالي (storeId).' };
+    const scope = await verifyProductStoreScope({ productId: Number(productId), storeId: context.storeId });
+    if (!scope.ok) return { ok: false, error: scope.reason, code: scope.code };
+    const h = await getAdvisorHistory({ productId: Number(productId), storeId: context.storeId });
+    return { ok: true, hasData: h.recommendations.length > 0, problems: h.problems.map((p) => ({ problem: p.label, attempts: p.attempts, resolved: p.resolved, recommendations: p.recommendations.slice(0, 8).map((r) => ({ title: r.title, status: r.status, verdict: r.verdictLabel, executedAt: r.executedAt, outcome: r.outcome && { reason: r.outcome.reason, evidenceKind: r.outcome.evidenceKind, causalClaim: r.outcome.causalClaim } })) })), planVersions: h.planVersions.slice(0, 10), legacy: h.legacy };
+  } catch (err) { return { ok: false, error: err.message }; }
+}
+
 export async function get_amb_governorate_breakdown({ productId, window, storeId } = {}) {
   try {
     if (!productId) return { ok: false, error: 'productId مطلوب.' };
@@ -961,6 +990,16 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'get_product_action_plan',
+    description: '[🧠 المستشار الذكي] الخطة التنفيذية الموحدة لمنتج واحد — نفس الخطة اللي بتظهر في تاب "المستشار الذكي": المرحلة، المشكلة الأساسية والسبب، اللي شغال، الاختبار القادم، حتى 3 إجراءات فورية بأولوياتها ومن بينفذها، وخطة Scale/Recovery/Fatigue أو "لسه بنجمع بيانات". استدعِه لأي سؤال "أعمل إيه في المنتج ده؟" أو "إيه الخطة؟". ممنوع تخترع خطة مختلفة — اقرأ منها بس، ولا تقول إن توصية اتنفذت إلا لو حالتها EXECUTED.',
+    input_schema: { type: 'object', properties: { productId: { type: 'integer', description: 'رقم المنتج' }, window: { type: 'string', description: 'today | last3 | last7 | last14 | last30، افتراضي last7' }, refresh: { type: 'boolean', description: 'true لإعادة الحساب بدل النسخة المخزنة (دقيقتين)' } }, required: ['productId'] },
+  },
+  {
+    name: 'get_advisor_history',
+    description: '[🩺 سجل المستشار] التاريخ الحقيقي المسجّل للمشاكل والحلول والنتائج لمنتج واحد: التوصيات، حالة كل واحدة (RECOMMENDED/PREPARED/APPROVED/EXECUTED/MEASURING/EVALUATED)، حكمها (اتأكدت/اتحسنت/فشلت/غير حاسم...)، ونسخ الخطة. استدعِه لـ"اتجرب إيه قبل كده؟" و"التوصية دي نفعت؟". التاريخ قبل تفعيل المستشار غير متتبَّع — قول ده صراحة ولا تألّف نتائج.',
+    input_schema: { type: 'object', properties: { productId: { type: 'integer', description: 'رقم المنتج' } }, required: ['productId'] },
+  },
+  {
     name: 'get_data_quality',
     description: '[🛡️ جودة البيانات] فحص تطابق البيانات الحقيقي لمنتج معين: مشتريات الحملة مقابل تقسيمات العمر/الجنس/المنطقة، حالة ربط Meta، وحداثة البيانات. استدعِه قبل أي رد يعتمد على تقسيم عمر/جنس/منطقة لو مش متأكد من موثوقيته، أو لو المستخدم سأل صراحة "البيانات دي موثوقة؟"/"ليه في تضارب؟". الحالات: OK (مطابق فعليًا) / RECONCILED (كل الأبعاد المتاحة متطابقة) / WARNING (بيانات ناقصة أو لسه محسوبتش) / MAPPING_ERROR (مفيش ربط Meta حقيقي) / STALE (محسوبة من فترة وتغيّر الربط) / PURCHASE_RECONCILIATION_ERROR (تضارب حقيقي محتاج مراجعة). أي بُعد Meta نفسها لا تدعمه يُعرض UNAVAILABLE — ممنوع تتعامل معه كفشل.',
     input_schema: {
@@ -1051,6 +1090,8 @@ export const TOOL_IMPLS = {
   get_capabilities,
   get_amb_audience_breakdown,
   get_data_quality,
+  get_product_action_plan,
+  get_advisor_history,
   get_amb_governorate_breakdown,
   get_amb_creative_intel,
   get_amb_scale_center_product,

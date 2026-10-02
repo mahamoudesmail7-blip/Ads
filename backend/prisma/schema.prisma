@@ -161,6 +161,8 @@ model Product {
   launch_jobs                  AmbLaunchJob[] // Smart Decision Center Phase 1 — Campaign Launch Builder jobs deterministically linked to this product — additive
   media_library_assets         MediaLibraryAsset[] // Smart Decision Center Phase 1 — additive
   audience_breakdown_snapshots AmbAudienceBreakdownSnapshot[] // Live Campaign Intelligence Slice 2 — additive
+  advisor_recommendations AmbAdvisorRecommendation[] // Smart Advisor — additive
+  advisor_plan_versions AmbAdvisorPlanVersion[] // Smart Advisor — additive
 
   @@index([active])
   @@index([product_name])
@@ -1300,6 +1302,73 @@ model AmbAudienceBreakdownSnapshot {
 
   @@index([product_id, window_name, captured_at])
   @@map("amb_audience_breakdown_snapshots")
+}
+
+// Smart Advisor (2026-10-02) — one row per actionable recommendation the
+// advisor made for a (store, product), carrying a STABLE recommendation_id
+// that also flows into AssistantTask.input_json / approval / execution /
+// outcome / playbook. Lifecycle (status): RECOMMENDED -> PREPARED -> APPROVED
+// -> EXECUTED -> MEASURING -> EVALUATED, or CANCELLED / EXPIRED. The verdict
+// (VALIDATED/IMPROVED/PARTIAL/INCONCLUSIVE/FAILED/HARMFUL) is separate and set
+// only after real post-execution evidence. baseline_json is frozen ONCE (at
+// PREPARED) and never rewritten. No history is ever fabricated for periods
+// before this table existed (see LEGACY_HISTORY_UNTRACKED in advisorTracking.js).
+model AmbAdvisorRecommendation {
+  id                Int      @id @default(autoincrement())
+  recommendation_id String   @unique
+  product_id        Int
+  product           Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  store_id          String
+  plan_version      Int
+  action_key        String // deterministic: recType|variable|target — dedupes the same advice across plan recomputes
+  rec_type          String // CREATIVE|HOOK|ANGLE|AUDIENCE|GEO|OFFER|PRICE|LANDING_PAGE|SCALE|DATA_FIX|COD|PROFIT|STOCK
+  problem_type      String? // diagnosed bottleneck category at recommendation time
+  title             String
+  hypothesis        String?
+  target_variable   String?
+  evidence_json     String? // evidence snapshot at recommendation time
+  data_quality_json String?
+  confidence        String? // HIGH|MEDIUM|LOW
+  success_json      String // {primaryMetric, direction, guardrails[], minSpend, minPurchases, evaluationWindowDays} — defined BEFORE execution
+  context_json      String? // critical-context fingerprint inputs (price, stock, campaign set, DQ, winner)
+  context_hash      String? // changes => the recommendation EXPIRES instead of being executed blindly
+  status            String   @default("RECOMMENDED")
+  verdict           String?
+  baseline_json     String? // frozen once, at PREPARED
+  baseline_frozen_at DateTime?
+  links_json        String? // {taskUuids[], launchJobIds[], campaignIds[], testId}
+  rollback_json     String? // pre-action safe state + trigger (SCALE/budget); never auto-executed
+  executed_at       DateTime?
+  evaluation_json   String? // after metrics, evidence kind, confounders, guardrail results
+  evaluation_key    String? // idempotency fingerprint of the last persisted evaluation
+  evaluated_at      DateTime?
+  learning_json     String?
+  expired_reason    String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@index([store_id, product_id, status])
+  @@index([product_id, action_key])
+  @@map("amb_advisor_recommendations")
+}
+
+// Versioned Action Plans — a new row ONLY on a meaningful state change
+// (state_hash), never on every data sync.
+model AmbAdvisorPlanVersion {
+  id                 Int      @id @default(autoincrement())
+  product_id         Int
+  product            Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  store_id           String
+  version            Int
+  state_hash         String
+  trigger            String
+  plan_json          String
+  change_reasons_json String?
+  created_at         DateTime @default(now())
+
+  @@unique([product_id, store_id, version])
+  @@index([product_id, store_id, created_at])
+  @@map("amb_advisor_plan_versions")
 }
 
 // A structured recommendation. Numbers/classification/priority/confidence/

@@ -30,6 +30,7 @@ const TOOL_CATEGORY = {
   get_product_playbook: 'Learning',
   get_scale_ladder: 'Scale Center', get_amb_audience_breakdown: 'Scale Center', get_amb_governorate_breakdown: 'Scale Center',
   get_data_quality: 'Data Quality',
+  get_product_action_plan: 'Smart Advisor', get_advisor_history: 'Smart Advisor',
   get_amb_scale_center_product: 'Scale Center', get_amb_bump_preview: 'Scale Center', prepare_bump: 'Scale Center', prepare_scale: 'Scale Center',
   get_scale_winners: 'Scale Center', prepare_scale_winner: 'Scale Center',
   generate_angles: 'Creative Library', generate_hooks: 'Creative Library', generate_creative_brief: 'Creative Library', get_amb_creative_intel: 'Creative Library',
@@ -42,7 +43,7 @@ const TOOL_MONEY_GUARD = new Set(['prepare_bump', 'prepare_scale', 'prepare_test
 const TOOL_DATA_QUALITY_GATE = new Set([
   'get_amb_product_decision', 'get_growth_plan', 'get_targeting_strategy', 'get_testing_brain', 'get_cod_quality',
   'get_product_playbook', 'get_scale_ladder', 'get_incidents', 'get_live_campaign_state', 'get_daily_brief', 'prepare_scale', 'prepare_test',
-  'get_amb_audience_breakdown',
+  'get_amb_audience_breakdown', 'get_product_action_plan',
 ]);
 // Only ADMIN can actually approve/execute a write; MANAGER can read and
 // prepare (see /chat's own requireRole and the ADMIN-only approve route).

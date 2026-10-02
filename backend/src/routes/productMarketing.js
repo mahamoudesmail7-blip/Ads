@@ -13,6 +13,7 @@ import * as MAB from '../services/amb/metaAudienceBreakdown.js';
 import * as LCS from '../services/amb/liveCampaignStatus.js';
 import * as LCI from '../services/amb/liveCreativeIntelligence.js';
 import * as DQ from '../services/amb/dataQuality.js';
+import * as ADV from '../services/amb/advisorTracking.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -257,6 +258,47 @@ router.post('/profiles/:id/audience-breakdown', asyncRoute(async (req, res) => {
 // ---- forces a fresh Meta call — judges what's already synced/cached. ----
 router.get('/profiles/:id/data-quality', asyncRoute(async (req, res) => {
   res.json(await DQ.computeDataQualityForProfile({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
+}));
+
+
+// ---- 🧠 Smart Advisor — the single deterministic Action Plan + recommendation tracking. Reads synced data only; ----
+// ---- never writes to Meta; actions are PREPARED through the existing Assistant tasks (PREPARE→PREVIEW→APPROVAL→EXECUTE). ----
+async function advisorScope(req) {
+  const profile = await prisma.productMarketingProfile.findUnique({ where: { id: idParam(req.params.id) }, select: { product_id: true } });
+  if (!profile) { const e = new Error('البروفايل غير موجود.'); e.status = 404; throw e; }
+  if (!profile.product_id) { const e = new Error('المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.'); e.status = 409; throw e; }
+  const storeId = req.query.storeId || req.body?.storeId || null;
+  if (!storeId) { const e = new Error('لازم يكون فيه متجر محدد.'); e.status = 400; throw e; }
+  return { productId: profile.product_id, storeId: String(storeId) };
+}
+router.get('/profiles/:id/action-plan', asyncRoute(async (req, res) => {
+  const { productId, storeId } = await advisorScope(req);
+  const out = await ADV.runAdvisorForProduct({ productId, storeId, windowName: req.query.window || 'last7', fresh: req.query.refresh === '1', trigger: req.query.refresh === '1' ? 'MANUAL_REFRESH' : 'VIEW' });
+  if (!out.ok) return res.status(out.code === 'STORE_CONTEXT_REQUIRED' ? 403 : 400).json(out);
+  res.json(out);
+}));
+router.get('/profiles/:id/advisor-history', asyncRoute(async (req, res) => {
+  const { productId, storeId } = await advisorScope(req);
+  res.json(await ADV.getAdvisorHistory({ productId, storeId }));
+}));
+router.get('/advisor/reliability', asyncRoute(async (req, res) => {
+  if (!req.query.storeId) return res.status(400).json({ ok: false, reason: 'لازم يكون فيه متجر محدد.' });
+  res.json(await ADV.getAdvisorReliability({ storeId: String(req.query.storeId), productId: req.query.productId || null }));
+}));
+router.post('/advisor/recommendations/:rid/start-manual', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  if (!req.body?.storeId) return res.status(400).json({ ok: false, reason: 'لازم يكون فيه متجر محدد.' });
+  const out = await ADV.startManualExecution({ recommendationId: String(req.params.rid), storeId: String(req.body.storeId) });
+  res.status(out.ok ? 200 : 409).json(out);
+}));
+router.post('/advisor/recommendations/:rid/confirm-manual', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  if (!req.body?.storeId) return res.status(400).json({ ok: false, reason: 'لازم يكون فيه متجر محدد.' });
+  const out = await ADV.confirmManualExecution({ recommendationId: String(req.params.rid), storeId: String(req.body.storeId), note: req.body.note || null });
+  res.status(out.ok ? 200 : 409).json(out);
+}));
+router.post('/advisor/recommendations/:rid/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  if (!req.body?.storeId) return res.status(400).json({ ok: false, reason: 'لازم يكون فيه متجر محدد.' });
+  const r = await ADV.cancelRecommendation({ recommendationId: String(req.params.rid), storeId: String(req.body.storeId), reason: 'USER_DISMISSED' });
+  res.status(r.ok ? 200 : 404).json(r);
 }));
 
 // ---- Testing Lab + Marketing Memory (§17-20) — serialized to camelCase for the frontend, same convention as routes/customers.js ----

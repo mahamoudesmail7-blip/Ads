@@ -39,6 +39,21 @@ export function getAssistantContext() {
   return pageContext;
 }
 
+// Smart Advisor hook — lets a page open the assistant with a prefilled (optionally auto-sent) message. `context` is ONE-SHOT: it is merged
+// into the page context for the next send only (e.g. {recommendationId}) so a later unrelated request can never be linked to a recommendation.
+let panelApi = null;
+let oneShotContext = null;
+export function openAssistant({ message = '', autoSend = false, context = null } = {}) {
+  mountAssistantBubble();
+  if (context && typeof context === 'object') oneShotContext = context;
+  if (!panelApi) return;
+  panelApi.setOpen(true);
+  if (message) {
+    panelApi.input.value = message;
+    if (autoSend) panelApi.form.requestSubmit();
+  }
+}
+
 function loadHistory() {
   try {
     const raw = localStorage.getItem(STORAGE_HISTORY_KEY);
@@ -443,6 +458,7 @@ export function mountAssistantBubble() {
     if (v) { input.focus(); scrollToBottom(messagesEl, true); }
   };
 
+  panelApi = { setOpen, input, form };
   wireDrag(bubble, wrap, () => setOpen(!open));
   closeBtn.addEventListener('click', () => setOpen(false));
   minimizeBtn.addEventListener('click', () => setOpen(false));
@@ -493,11 +509,13 @@ export function mountAssistantBubble() {
     const loadingEl = addThinkingMessage(messagesEl);
 
     const history = loadHistory();
+    const sendContext = oneShotContext ? { ...(pageContext || {}), ...oneShotContext } : pageContext;
+    oneShotContext = null; // one-shot: consumed by this send
     try {
       const result = await api.post('/api/ai-assistant/chat', {
         message: text,
         history: history.map((h) => ({ role: h.role, content: h.text })),
-        context: pageContext,
+        context: sendContext,
         image: imageToSend ? { base64: imageToSend.base64, mediaType: imageToSend.mediaType } : undefined,
       });
       const reply = result.reply || 'مفيش رد.';

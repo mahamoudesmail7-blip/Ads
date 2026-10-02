@@ -60,6 +60,7 @@ import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js
 import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbAudienceBreakdownScheduler } from './services/amb/audienceBreakdownSync.js';
 import { startLiveCampaignAlertsScheduler } from './services/amb/liveCampaignAlerts.js';
+import { startAdvisorEvaluatorScheduler } from './services/amb/advisorEvaluator.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startProductExperimentScheduler } from './services/amb/productExperiment.js';
 import { startProductAutoAnalysisScheduler } from './services/amb/productAutoAnalysis.js';
@@ -157,6 +158,7 @@ startEasyOrdersReconciliation();
 startAmbSnapshotScheduler();
 startAmbAudienceBreakdownScheduler();
 startLiveCampaignAlertsScheduler();
+startAdvisorEvaluatorScheduler();
 startAmbOutcomeScheduler();
 startProductExperimentScheduler();
 startProductAutoAnalysisScheduler();
