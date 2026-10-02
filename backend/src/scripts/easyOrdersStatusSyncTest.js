@@ -141,6 +141,9 @@ try {
   ok('dry-run reports the 3 real changes but writes NOTHING', dry.changed === 3 && rowsAfterDry.every((r) => r.status === 'PENDING'), JSON.stringify({ changed: dry.changed, st: rowsAfterDry.map((r) => r.status) }));
   S.resetReconcileState();
   const real = await S.reconcileOrders({ limit: 20, only, deps });
+  ok('the scheduled-job default NEVER fills easy_orders_store_id (no hidden backfill)', (await prisma.easyOrdersOrder.findMany({ where: { order_id: { in: only.orderIds } }, select: { easy_orders_store_id: true } })).every((r) => r.easy_orders_store_id === null));
+  S.resetReconcileState();
+  await S.reconcileOrders({ limit: 20, only, fillStoreId: true, deps });
   const get = async (i) => (await prisma.easyOrdersOrder.findFirst({ where: { order_id: ID(SA, i) } }));
   ok('applied: delivered -> DELIVERED, canceled -> CANCELLED', (await get(1)).status === 'DELIVERED' && (await get(3)).status === 'CANCELLED');
   ok('applied: in_delivery -> CONFIRMED (not DELIVERED) with the raw status kept', (await get(2)).status === 'CONFIRMED' && (await get(2)).raw_status === 'in_delivery');

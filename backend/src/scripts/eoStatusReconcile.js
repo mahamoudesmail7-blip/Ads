@@ -20,7 +20,7 @@ if (has('--reconcile')) {
   const limit = Number(val('--limit', 100)); const only = val('--store', null) ? { storeId: val('--store') } : null;
   const batch = Number(val('--batch', 25)); const agg = { checked: 0, changed: 0, notFound: 0, rateLimited: 0, errors: 0, tagMismatch: {}, eoStatuses: {}, storeIdFilled: 0, changes: [], batches: 0 };
   for (let done = 0; done < limit; done += batch) {
-    const s = await reconcileOrders({ limit: Math.min(batch, limit - done), dryRun: !apply, only, deps: { maxRetries: 4, beforeApply } });
+    const s = await reconcileOrders({ limit: Math.min(batch, limit - done), dryRun: !apply, only, fillStoreId: has('--fill-store-ids'), deps: { maxRetries: 4, beforeApply } });
     agg.batches++; for (const k of ['checked', 'changed', 'notFound', 'rateLimited', 'errors', 'storeIdFilled']) agg[k] += s[k];
     for (const [k, v] of Object.entries(s.tagMismatch)) agg.tagMismatch[k] = (agg.tagMismatch[k] || 0) + v;
     for (const [k, v] of Object.entries(s.eoStatuses)) agg.eoStatuses[k] = (agg.eoStatuses[k] || 0) + v;

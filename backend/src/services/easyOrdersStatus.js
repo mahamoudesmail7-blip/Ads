@@ -148,7 +148,7 @@ function daysBetween(a, b) { return (new Date(b).getTime() - new Date(a).getTime
  * Prioritises recent orders, skips ones checked recently, stops early on sustained rate-limiting, and returns exact counters
  * (checked / changed / notFound / rateLimited / errors / tag mismatches / raw status histogram) so nothing is silent any more.
  */
-export async function reconcileOrders({ limit = 30, dryRun = false, only = null, now = new Date(), deps = {} } = {}) {
+export async function reconcileOrders({ limit = 30, dryRun = false, only = null, now = new Date(), deps = {}, fillStoreId = false } = {}) {
   const stats = { limit, dryRun, scanned: 0, checked: 0, changed: 0, notFound: 0, rateLimited: 0, errors: 0, storeIdFilled: 0, tagMismatch: {}, eoStatuses: {}, changes: [], startedAt: now.toISOString() };
   const page = 400;
   let skip = cursor.skip;
@@ -194,8 +194,9 @@ export async function reconcileOrders({ limit = 30, dryRun = false, only = null,
       if (stats.changes.length < 25) stats.changes.push({ order: row.order_id.slice(0, 8), from: stored[0]?.raw_status, to: raw, normalized: target });
       if (!dryRun) { await deps.beforeApply?.(row.order_id, stored); await applyStatusToOrder(row.order_id, raw); }
     }
-    // additive metadata: Easy Orders' own account UUID, only where it was never recorded
-    if (!dryRun && res.order.store_id && stored.some((s) => !s.easy_orders_store_id)) {
+    // additive metadata: Easy Orders' own account UUID, only where it was never recorded. OPT-IN (`fillStoreId`) — the scheduled job
+    // never sets it, so a routine tick can never become a slow backfill of old orders.
+    if (fillStoreId && !dryRun && res.order.store_id && stored.some((s) => !s.easy_orders_store_id)) {
       const r = await prisma.easyOrdersOrder.updateMany({ where: { order_id: row.order_id, easy_orders_store_id: null }, data: { easy_orders_store_id: String(res.order.store_id) } });
       stats.storeIdFilled += r.count;
     }
