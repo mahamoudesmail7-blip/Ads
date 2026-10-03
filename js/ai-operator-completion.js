@@ -12,6 +12,13 @@ const RES_CLS = { AUTO_FIXABLE: 'blue', NEEDS_USER_VALUE: 'red', NEEDS_EXTERNAL_
 const resPill = (r) => (r && r !== 'NONE' ? `<span class="op-pill ${RES_CLS[r] || 'gray'}">${E(RES_AR[r] || r)}</span>` : '');
 const LINK_TAB = { PRODUCT_ECONOMICS: 'readiness', PRODUCT_INVENTORY: 'readiness', PRODUCT_CAMPAIGN: 'mapping', PRODUCT_ADVISOR: 'control', OPERATOR_RULE: 'rules', DECISION_APPROVAL: 'control', PRODUCT_ORDERS: 'control' };
 
+/** one webhook secret: dedicated variable set / only the old shared secret / not set. Names only — never a value. */
+function whPill(s, kind) {
+  const set = kind === 'order' ? s.orderWebhookSecretSet : s.statusWebhookSecretSet;
+  const name = s.configuredNames?.[kind] || s.legacyName || '—';
+  const pill = set && !s.dedicatedSecretsMissing ? '<span class="op-pill green">مضبوط</span>' : set ? '<span class="op-pill amber">سر مشترك قديم فقط — المتغيّر المخصص ناقص</span>' : '<span class="op-pill red">غير مضبوط</span>';
+  return `<code>${E(name)}</code> ${pill}`;
+}
 function ratio(c) { return c && c.total != null ? `${num(c.value ?? c.connected)}/${num(c.total)}` : c?.value != null ? num(c.value) : '—'; }
 
 export async function drawCompletion(root, { heavy = false, fresh = false } = {}) {
@@ -50,7 +57,7 @@ export async function drawCompletion(root, { heavy = false, fresh = false } = {}
     <div class="amb-panel"><h3>🛡️ اختبار الحواجز الذاتي (${a.guardChecks.filter((x) => x.ok).length}/${a.guardChecks.length})</h3><ul class="op-checklist">${a.guardChecks.map((x) => `<li class="${x.ok ? 'ok' : 'no'}">${x.ok ? '✓' : '✗'} ${E(x.name)}</li>`).join('')}</ul></div>
     <div class="amb-panel"><h3>🛒 Easy Orders — حالة الربط</h3><div class="op-banner amber">${E(a.easyOrders.note)}</div>
       <div class="table-wrap"><table class="data"><thead><tr><th>المتجر</th><th>Webhook الأوردرات</th><th>Webhook تحديث الحالة</th><th>موثوقية الحالات</th><th>آخر استلام</th><th>Order Created</th><th>Status Update</th></tr></thead><tbody>
-      ${a.easyOrders.stores.map((s) => `<tr><td>${E(s.id)}</td><td>${s.configuredNames ? `<code>${E(s.configuredNames.order || '—')}</code> ${s.dedicatedSecretsMissing ? '<span class="op-pill red">غير مضبوط</span>' : '<span class="op-pill green">مضبوط</span>'}` : '<span class="op-pill gray">—</span>'}</td><td>${s.configuredNames ? `<code>${E(s.configuredNames.status || '—')}</code>` : '—'}</td><td><span class="op-pill ${s.trust === 'OK' ? 'green' : 'red'}">${E(s.trust || '—')}</span></td><td>${s.lastIngestAt ? E(ago(s.lastIngestAt)) : '—'}</td><td>${E(s.orderCreatedVerified)}</td><td>${E(s.statusUpdateVerified)}</td></tr>`).join('')}</tbody></table></div>
+      ${a.easyOrders.stores.map((s) => `<tr><td>${E(s.id)}</td><td>${whPill(s, 'order')}</td><td>${whPill(s, 'status')}</td><td><span class="op-pill ${s.trust === 'OK' ? 'green' : 'red'}">${E(s.trust || '—')}</span></td><td>${s.lastIngestAt ? E(ago(s.lastIngestAt)) : '—'}</td><td>${E(s.orderCreatedVerified)}</td><td>${E(s.statusUpdateVerified)}</td></tr>`).join('')}</tbody></table></div>
       <ol class="op-ol">${a.easyOrders.procedure.map((p) => `<li>${E(p)}</li>`).join('')}</ol>
       <div class="op-sub">COD / Confirmation / Delivery: <b>${E(a.easyOrders.codAutomation)}</b> — ${a.easyOrders.codAutomation === 'BLOCKED' ? 'محجوبة لحد التحقق الفعلي. (أسماء المتغيّرات فقط — قيم الأسرار مش بتظهر أبدًا.)' : 'مؤهّلة.'}</div></div>
     <div class="amb-panel"><h3>📋 المنتجات — إيه الناقص وإزاي يتقفل</h3>

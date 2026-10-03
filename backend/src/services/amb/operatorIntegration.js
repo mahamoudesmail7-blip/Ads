@@ -98,9 +98,10 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
   const ambByProductId = new Map([...ambs.values()].filter((a) => a.product_id).map((a) => [a.product_id, a.id]));
   for (const l of launched) { const aid = ambByProductId.get(l.job.product_id); if (aid) (campsByAmb.get(aid) || campsByAmb.set(aid, new Set()).get(aid)).add(l.meta_campaign_id); }
   const allCampIds = [...new Set([...campsByAmb.values()].flatMap((s) => [...s]))];
-  const adsetRows = allCampIds.length ? await prisma.metaPerformanceSnapshot.findMany({ where: { ad_account_id: adAccountId || undefined, level: { in: ['adset', 'ad'] }, campaign_id: { in: allCampIds }, date_start: { gte: since30 } }, distinct: ['campaign_id', 'level'], select: { campaign_id: true, level: true } }) : [];
+  // groupBy (DB-side) — `distinct` would pull every snapshot row of 30 days into memory
+  const adsetRows = allCampIds.length ? await prisma.metaPerformanceSnapshot.groupBy({ by: ['campaign_id', 'level'], where: { ad_account_id: adAccountId || undefined, level: { in: ['adset', 'ad'] }, campaign_id: { in: allCampIds }, date_start: { gte: since30 } } }) : [];
   const hasAdset = new Set(adsetRows.filter((r) => r.level === 'adset').map((r) => r.campaign_id)), hasAd = new Set(adsetRows.filter((r) => r.level === 'ad').map((r) => r.campaign_id));
-  const creativeRows = allCampIds.length ? await prisma.metaPerformanceSnapshot.findMany({ where: { ad_account_id: adAccountId || undefined, level: 'ad', campaign_id: { in: allCampIds }, creative_id: { not: null }, date_start: { gte: since30 } }, distinct: ['campaign_id', 'creative_id'], select: { campaign_id: true, creative_id: true } }) : [];
+  const creativeRows = allCampIds.length ? await prisma.metaPerformanceSnapshot.groupBy({ by: ['campaign_id', 'creative_id'], where: { ad_account_id: adAccountId || undefined, level: 'ad', campaign_id: { in: allCampIds }, creative_id: { not: null }, date_start: { gte: since30 } } }) : [];
   const creativeIds = [...new Set(creativeRows.map((r) => r.creative_id))];
   const refRows = creativeIds.length ? await prisma.mediaLibraryCreativeRef.findMany({ where: { creative_id: { in: creativeIds } }, select: { creative_id: true } }) : [];
   const refSet = new Set(refRows.map((r) => r.creative_id));
@@ -166,7 +167,7 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
     const sugg = suggestionByProduct.get(ambId) || 0;
     if (camps.size) deps.push(dep('MAPPING', 'المنتج ← الحملات (VERIFIED)', ST.CONNECTED, RES.NONE, `${camps.size} حملة VERIFIED`));
     else if (sugg) deps.push(dep('MAPPING', 'المنتج ← الحملات (VERIFIED)', ST.MISSING, RES.NEEDS_REVIEW, `${sugg} ربط مقترح (SUGGESTED) محتاج تأكيدك`));
-    else deps.push(dep('MAPPING', 'المنتج ← الحملات (VERIFIED)', ST.MISSING, RES.NEEDS_USER_VALUE, 'مفيش حملات مربوطة (لسه ما اتعلنش أو الربط محتاج قرارك)', { notAdvertised: true }));
+    else deps.push(dep('MAPPING', 'المنتج ← الحملات (VERIFIED)', ST.MISSING, RES.NEEDS_REVIEW, 'مفيش حملات مربوطة — اربط حملة موجودة (قرارك) أو المنتج لسه ما اتعلنش', { notAdvertised: true }));
     const nAdset = [...camps].filter((c) => hasAdset.has(c)).length, nAd = [...camps].filter((c) => hasAd.has(c)).length;
     deps.push(camps.size ? dep('ADSET_AD', 'الحملة ← Ad Set ← Ad', nAdset && nAd ? ST.CONNECTED : ST.UNVERIFIED, RES.NONE, nAdset ? `${nAdset} حملة بيها Ad Sets/Ads (30 يوم)` : 'مفيش نشاط Ad Set/Ad آخر 30 يوم (حملات متوقفة)', { soft: true }) : dep('ADSET_AD', 'الحملة ← Ad Set ← Ad', ST.MISSING, RES.NONE, 'مفيش حملات', { soft: true }));
     const myCreatives = creativeRows.filter((r) => camps.has(r.campaign_id)).map((r) => r.creative_id);
@@ -195,6 +196,7 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
   const cnt = (key, st = ST.CONNECTED) => out.filter((p) => p.dependencies.find((d) => d.key === key)?.state === st).length;
   const link = (key, label, connected, relevant, resolution, detail, forceState = null) => ({ key, label, state: forceState || (relevant === 0 ? ST.MISSING : connected === relevant ? ST.CONNECTED : connected === 0 ? ST.MISSING : ST.MISSING), coverage: { connected, total: relevant }, partial: connected > 0 && connected < relevant, resolution, detail });
   const advertised = out.filter((p) => p.verifiedCampaigns > 0);
+  const cntAdv = (key) => advertised.filter((p) => p.dependencies.find((d) => d.key === key)?.state === ST.CONNECTED).length; // coverage of a campaign-level link is measured over ADVERTISED products only
   const eoStores = listStores().map((s) => s.id);
   const eo = await eoStatus(eoStores, now);
   const guardChecks = guardSelfCheck();
@@ -219,9 +221,9 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
     link('PRODUCT_INVENTORY', 'Product → Inventory', cnt('STOCK'), total, globalInventoryFeed ? RES.NEEDS_USER_VALUE : RES.NEEDS_EXTERNAL, globalInventoryFeed ? 'مخزون حي من الكتالوج/Snapshots' : 'مفيش مصدر جرد حي متصل فعليًا'),
     link('PRODUCT_ORDERS', 'Product → Orders', cnt('ORDERS'), total, RES.NONE, 'أوردرات Easy Orders آخر 30 يوم'),
     link('PRODUCT_CAMPAIGN', 'Product → Campaign', advertised.length, total, RES.NEEDS_REVIEW, 'حملات VERIFIED'),
-    link('CAMPAIGN_ADSET_AD', 'Campaign → Ad Set → Ad', cnt('ADSET_AD'), advertised.length, RES.NONE, 'Snapshots على مستوى Ad Set/Ad'),
-    link('CAMPAIGN_CREATIVE', 'Campaign → Creative intelligence', cnt('CREATIVE'), advertised.length, RES.NONE, 'كرييتف مربوط بمكتبة الكرياتيف'),
-    link('PRODUCT_ADVISOR', 'Product → Smart Advisor', cnt('ADVISOR'), advertised.length, RES.AUTO_FIXABLE, 'خطة موحّدة (تشمل Testing Brain + Growth + Playbook + Learning)'),
+    link('CAMPAIGN_ADSET_AD', 'Campaign → Ad Set → Ad', cntAdv('ADSET_AD'), advertised.length, RES.NONE, 'Snapshots على مستوى Ad Set/Ad'),
+    link('CAMPAIGN_CREATIVE', 'Campaign → Creative intelligence', cntAdv('CREATIVE'), advertised.length, RES.NONE, 'كرييتف مربوط بمكتبة الكرياتيف'),
+    link('PRODUCT_ADVISOR', 'Product → Smart Advisor', cntAdv('ADVISOR'), advertised.length, RES.AUTO_FIXABLE, 'خطة موحّدة (تشمل Testing Brain + Growth + Playbook + Learning)'),
     { key: 'ADVISOR_OPERATOR', label: 'Advisor → Operator', ...advisorToOperator, coverage: null, resolution: RES.NONE },
     { key: 'OPERATOR_RULE', label: 'Operator → Rule', state: validRules.length ? ST.CONNECTED : ST.MISSING, coverage: { connected: validRules.length, total: enabledRules.length || 0 }, resolution: RES.NEEDS_REVIEW, detail: validRules.length ? `${validRules.length} قاعدة مفعّلة وصالحة` : 'مفيش قاعدة مفعّلة (ابدأ من قالب)' },
     { key: 'RULE_GUARD', label: 'Rule → Guard', state: guardOk ? ST.CONNECTED : ST.BLOCKED, coverage: { connected: guardChecks.filter((c) => c.ok).length, total: guardChecks.length }, resolution: RES.NONE, detail: guardOk ? 'اختبار ذاتي لسلسلة الحواجز نجح' : `فشل: ${guardChecks.filter((c) => !c.ok).map((c) => c.name).join('، ')}` },
@@ -241,7 +243,7 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
     campaignMappingsVerified: mc ? { value: mc.counts.VERIFIED, total: mc.total, review: mc.counts.review, tab: 'mapping' } : { value: 0, total: 0, tab: 'mapping' },
     dataQualityHealthy: heavy ? { value: cnt('DATA_QUALITY'), total, tab: 'readiness' } : { value: null, total, tab: 'readiness', note: 'اضغط "فحص جودة البيانات"' },
     easyOrdersHealthy: { value: eo.healthy ? 1 : 0, total: 1, stores: eo.stores, tab: 'control', externalDependency: !eo.webhooksConfigured },
-    smartAdvisorConnected: { value: cnt('ADVISOR'), total: advertised.length, tab: 'control' },
+    smartAdvisorConnected: { value: cntAdv('ADVISOR'), total: advertised.length, tab: 'control' },
     rulesConfigured: { value: validRules.length, total: enabledRules.length, tab: 'rules' },
     shadowValidated: { value: shadowDecisions, total: null, lastAt: lastShadowAt?.updated_at || null, ok: shadowDecisions > 0, tab: 'today' },
     metaExecutorVerified: { value: verifiedWrites, ok: verifiedWrites > 0, tab: 'performance' },
@@ -265,7 +267,7 @@ async function eoStatus(storeIds, now) {
     const lastCreated = await prisma.easyOrdersOrder.findFirst({ where: { store_id: id }, orderBy: { created_at: 'desc' }, select: { created_at: true } });
     const ageH = last ? (now.getTime() - last.updated_at.getTime()) / 3_600_000 : null;
     const dedicatedMissing = unsetNames.length > 0; // the per-event variables (Orders / Order Status Update) the app expects are not all set
-    stores.push({ id, dedicatedSecretsMissing: dedicatedMissing, usesLegacySharedSecret: !!entries.find((e) => e.events === 'ANY'), configuredNames: names ? { order: names.order, status: names.status } : null, orderWebhookSecretSet: orderSet, statusWebhookSecretSet: statusSet, unsetNames, trust, lastIngestAt: last?.updated_at || null, lastOrderCreatedAt: lastCreated?.created_at || null, ingestAgeHours: ageH != null ? Math.round(ageH) : null,
+    stores.push({ id, dedicatedSecretsMissing: dedicatedMissing, usesLegacySharedSecret: !!entries.find((e) => e.events === 'ANY'), legacyName: names?.legacy || null, configuredNames: names ? { order: names.order, status: names.status } : null, orderWebhookSecretSet: orderSet, statusWebhookSecretSet: statusSet, unsetNames, trust, lastIngestAt: last?.updated_at || null, lastOrderCreatedAt: lastCreated?.created_at || null, ingestAgeHours: ageH != null ? Math.round(ageH) : null,
       orderCreatedVerified: orderSet && !dedicatedMissing ? 'UNVERIFIED' : 'NEEDS_EXTERNAL_CONFIGURATION', statusUpdateVerified: statusSet && !dedicatedMissing && trust === 'OK' ? 'CONNECTED' : (statusSet && !dedicatedMissing ? 'UNVERIFIED' : 'NEEDS_EXTERNAL_CONFIGURATION') });
   }
   const webhooksConfigured = stores.length > 0 && stores.every((s) => s.orderWebhookSecretSet && s.statusWebhookSecretSet && !s.dedicatedSecretsMissing);
@@ -300,7 +302,7 @@ export async function ensureAdvisorPlans({ max = 3, maxMs = 60_000 } = {}) {
   const list = await readinessList({ heavy: false });
   const maps = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: { in: list.map((p) => p.ambProductId) }, status: 'MAPPED' }, select: { amb_product_id: true } });
   const advertised = new Set(maps.map((m) => m.amb_product_id));
-  const have = new Set((await prisma.ambAdvisorPlanVersion.findMany({ where: { product_id: { in: list.map((p) => p.productId) } }, select: { product_id: true }, distinct: ['product_id'] })).map((r) => r.product_id));
+  const have = new Set((await prisma.ambAdvisorPlanVersion.groupBy({ by: ['product_id'], where: { product_id: { in: list.map((p) => p.productId) } } })).map((r) => r.product_id));
   const todo = list.filter((p) => advertised.has(p.ambProductId) && !have.has(p.productId));
   let done = 0, failed = 0; const failures = [];
   for (const p of todo.slice(0, max)) {

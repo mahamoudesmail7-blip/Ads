@@ -66,7 +66,7 @@ export async function resolveCampaignEvidence({ adAccountId, campaigns, ambProdu
 
   // URL evidence: ads -> creatives -> media-library refs -> landing URL slug -> store catalogue slug -> product
   const target = campaigns.filter((c) => !verifiedIds.has(c.id));
-  const adRows = target.length ? await prisma.metaPerformanceSnapshot.findMany({ where: { ad_account_id: adAccountId, level: 'ad', campaign_id: { in: target.map((c) => c.id) }, creative_id: { not: null } }, distinct: ['campaign_id', 'creative_id'], select: { campaign_id: true, creative_id: true } }) : [];
+  const adRows = target.length ? await prisma.metaPerformanceSnapshot.groupBy({ by: ['campaign_id', 'creative_id'], where: { ad_account_id: adAccountId, level: 'ad', campaign_id: { in: target.map((c) => c.id) }, creative_id: { not: null } } }) : [];
   const creativeIds = [...new Set(adRows.map((r) => r.creative_id))];
   const refs = creativeIds.length ? await prisma.mediaLibraryCreativeRef.findMany({ where: { creative_id: { in: creativeIds } }, select: { creative_id: true, asset_id: true } }) : [];
   const assets = refs.length ? new Map((await prisma.mediaLibraryAsset.findMany({ where: { id: { in: [...new Set(refs.map((r) => r.asset_id))] }, sample_link_url: { not: null } }, select: { id: true, sample_link_url: true } })).map((a) => [a.id, a.sample_link_url])) : new Map();
