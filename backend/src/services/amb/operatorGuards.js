@@ -18,6 +18,7 @@ const MS_H = 3_600_000;
 /** Catalogue of block/downgrade/warn codes — one place for UI labels (Arabic) and tests. */
 export const BLOCK_CODES = {
   EMERGENCY_STOP: { group: 'EMERGENCY_STOP', severity: 'BLOCK', message: '🛑 إيقاف الطوارئ مفعّل — مفيش أي تنفيذ على Meta.' },
+  META_WRITES_LOCKED: { group: 'EMERGENCY_STOP', severity: 'BLOCK', message: '🔒 كتابة AI Operator على Meta مقفولة على مستوى النشر — مفيش تنفيذ لحد موافقتك الصريحة.' },
   MODE_OFF: { group: 'EMERGENCY_STOP', severity: 'BLOCK', message: 'AI Operator في وضع OFF.' },
   AMB_ADVISORY_ONLY: { group: 'SAFETY', severity: 'BLOCK', message: 'نظام AI Media Buyer في وضع "استشاري فقط" — مفيش تنفيذ على Meta.' },
   META_NOT_CONNECTED: { group: 'SAFETY', severity: 'BLOCK', message: 'مفيش اتصال Meta Ads صالح.' },
@@ -169,6 +170,7 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
   // ---- 1. EMERGENCY STOP / OFF
   if (config.emergency_stop && consequential) add('EMERGENCY_STOP');
   if (config.mode === 'OFF') add('MODE_OFF');
+  if (config.writesLocked && consequential && eff !== 'SHADOW' && eff !== 'OFF') add('META_WRITES_LOCKED');
   if (productMode === 'OFF' && consequential) add('PRODUCT_AUTOMATION_OFF');
 
   // ---- 2. SAFETY

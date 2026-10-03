@@ -18,6 +18,8 @@ const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  �
 
 if (!process.env.JWT_SECRET) { console.log('JWT_SECRET missing — cannot run the authenticated route tests.'); process.exit(2); }
 const { prisma } = await imp('../prisma.js');
+// the shared DB can drop for seconds (Neon): restoring the global Operator config in the cleanup must survive that, or a test would leave the production mode altered
+const retryDb = async (fn) => { for (let i = 0; i < 10; i++) { try { return await fn(); } catch { await new Promise((r) => setTimeout(r, 4000)); } } return fn(); };
 const { default: operatorRoutes } = await imp('../routes/operator.js');
 const { errorHandler } = await imp('../middleware/errorHandler.js');
 const S = await imp('../services/amb/operatorStore.js');
@@ -28,6 +30,7 @@ const CTX = await imp('../services/amb/operatorContext.js');
 const { getConnection } = await imp('../services/metaAuth.js');
 const { getStoreStatusTrust } = await imp('../services/easyOrdersStatus.js');
 
+const __testStart = new Date();
 const T = '__optest_';
 const created = { users: [], products: [], decisions: [], maps: [] };
 const origCfg = await S.getOperatorConfig();
@@ -245,6 +248,16 @@ try {
   ok('bulk approve of OPEN => 400 (risky action)', r.status === 400);
   r = await call('POST', `/decisions/${d3.id}/retry`, {}, A);
   ok('retry of a non-failed decision => 409', r.status === 409);
+  // the deployment-level lock: even APPROVAL mode with NO Emergency Stop cannot reach the executor
+  ok('precondition: OPERATOR_ALLOW_META_WRITES is not set (locked)', S.metaWritesLocked() === true && (await call('GET', '/config', undefined, A)).json.config.writesLocked === true && (await call('GET', '/overview', undefined, A)).json.writesLocked === true);
+  await call('DELETE', '/emergency-stop', undefined, A);
+  const d5 = await mkDec();
+  ok('precondition: APPROVAL mode, Emergency Stop OFF', (await S.getOperatorConfig()).mode === 'APPROVAL' && (await S.getOperatorConfig()).emergency_stop === false);
+  r = await call('POST', `/decisions/${d5.id}/approve`, {}, A);
+  const d5r = await prisma.ambOperatorDecision.findUnique({ where: { id: d5.id } });
+  ok('APPROVAL mode + no Emergency Stop + approve => STILL not executed: Meta writes are locked at deployment level', r.status === 200 && r.json.executed === false && /مقفولة على مستوى النشر/.test(d5r.error) && (await prisma.ambRecommendation.count({ where: { batch_id: `operator-${d5.id}` } })) === 0);
+  r = await call('PUT', '/mode', { mode: 'AUTOPILOT', confirmAutopilot: true }, A);
+  ok('Autopilot activation refused (gate lists the write lock among the failing checks)', r.status === 409 && JSON.stringify(r.json).includes('OPERATOR_ALLOW_META_WRITES'));
   await call('DELETE', '/emergency-stop', undefined, A); await S.setOperatorMode({ mode: 'SHADOW' });
   ok('no Meta write path was reachable: zero recommendations/actions created by this test run', (await prisma.ambRecommendation.count()) === counts0.recs && (await prisma.ambAction.count()) === counts0.actions);
 
@@ -291,7 +304,7 @@ try {
   server.close();
   try {
     const uids = created.users;
-    await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at } });
+    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at } }));
     const decIds = (await prisma.ambOperatorDecision.findMany({ where: { OR: [{ store_id: { startsWith: T } }, { campaign_id: { startsWith: T } }, { decision_key: { startsWith: T } }] }, select: { id: true } })).map((x) => x.id);
     await prisma.ambOperatorEvent.deleteMany({ where: { OR: [{ decision_id: { in: decIds } }, { campaign_id: { startsWith: T } }, { actor_id: { in: uids } }] } });
     await prisma.ambOperatorDecision.deleteMany({ where: { id: { in: decIds } } });
@@ -302,7 +315,8 @@ try {
     await prisma.ambAlert.deleteMany({ where: { OR: [{ title: { contains: T } }, { message: { contains: T } }, { entity_id: { startsWith: T } }] } });
     await prisma.ambProduct.deleteMany({ where: { OR: [{ product_id: { in: created.products } }, { product_name: { startsWith: T } }] } });
     await prisma.product.deleteMany({ where: { OR: [{ id: { in: created.products } }, { product_name: { startsWith: T } }] } });
-    await prisma.aiAuditLog.deleteMany({ where: { actor_id: { in: uids } } });
+    await prisma.aiAuditLog.deleteMany({ where: { OR: [{ actor_id: { in: uids } }, { kind: { startsWith: 'OPERATOR_' }, actor_id: null, created_at: { gte: __testStart } }] } });
+    await prisma.ambOperatorEvent.deleteMany({ where: { actor_id: null, created_at: { gte: __testStart } } });
     await prisma.user.deleteMany({ where: { id: { in: uids } } });
     const left = {
       decisions: await prisma.ambOperatorDecision.count({ where: { store_id: { startsWith: T } } }), rules: await prisma.ambOperatorRule.count({ where: { name: { startsWith: T } } }),

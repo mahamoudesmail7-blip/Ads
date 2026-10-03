@@ -60,6 +60,7 @@ function drawTop() {
     ${stop ? `<div class="op-banner red">🛑 <b>إيقاف الطوارئ مفعّل</b> — ${E(ov.emergencyReason || '')} (${ago(ov.emergencyAt)}). مفيش أي فتح/إيقاف/تغيير ميزانية على Meta. المراقبة والتحليل شغالين. ${S.isAdmin ? '<button class="amb-btn" id="opResume">إلغاء الإيقاف</button>' : ''}</div>` : ''}
     ${ov.mode === 'SHADOW' ? '<div class="op-banner blue">👻 <b>وضع Shadow</b> — بيسجّل اللي كان هيعمله ولماذا، ومفيش أي تنفيذ على Meta. راجع تقرير Shadow وجاهزية المنتجات قبل ما تنقل لـ"بموافقتي".</div>' : ''}
     ${ov.mode === 'AUTOPILOT' && !stop ? '<div class="op-banner amber">🤖 <b>Autopilot شغال</b> — بينفّذ فقط القواعد المعلّمة Autopilot، بأكشنز مسموحة وبعد كل حواجز الأمان.</div>' : ''}
+    ${ov.writesLocked ? '<div class="op-banner amber">🔒 <b>كتابة AI Operator على Meta مقفولة على مستوى النشر</b> — حتى لو اخترت "بموافقتي" أو Autopilot مفيش تنفيذ. بتتفتح بقرار نشر صريح منك بعد مراجعة Shadow.</div>' : ''}
     ${!ov.connected ? '<div class="op-banner amber">⚠️ مفيش اتصال Meta Ads — اربط الحساب من AI Intelligence.</div>' : ''}
     <div class="op-controlbar">
       <div class="op-modes" role="group" aria-label="وضع التشغيل">

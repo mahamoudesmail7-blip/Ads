@@ -6,6 +6,7 @@
 export const SPEC_CODES = {
   EMERGENCY_STOP: ['EMERGENCY_STOP'],
   MODE_OFF: ['AUTOMATION_DISABLED'],
+  META_WRITES_LOCKED: ['AUTOMATION_DISABLED'],
   AUTOMATION_DISABLED: ['AUTOMATION_DISABLED'],
   AMB_ADVISORY_ONLY: ['AUTOMATION_DISABLED'],
   META_NOT_CONNECTED: ['DATA_QUALITY_BLOCK'],
@@ -87,6 +88,7 @@ export const SETUP_ACTIONS = {
 /** internal code -> {steps, action}. Steps are ordered; they describe what must be TRUE for the block to clear. */
 const PLAN = {
   EMERGENCY_STOP: { steps: ['ألغِ إيقاف الطوارئ بعد ما تتأكد إن السبب انتهى'], action: 'EMERGENCY' },
+  META_WRITES_LOCKED: { steps: ['كتابة AI Operator على Meta مقفولة على مستوى النشر. بتتفتح فقط بقرار نشر صريح منك (متغير OPERATOR_ALLOW_META_WRITES) بعد مراجعة Shadow والموافقة على أول كتابة'], action: null },
   MODE_OFF: { steps: ['غيّر وضع AI Operator من OFF إلى Shadow أو بموافقتي'], action: 'MODE' },
   AMB_ADVISORY_ONLY: { steps: ['وضع AI Media Buyer "استشاري فقط" — غيّره من الإعدادات لو عايز تنفيذ'], action: 'MODE' },
   META_NOT_CONNECTED: { steps: ['اربط حساب Meta Ads واختار الـ Ad Account'], action: 'DATA_QUALITY' },

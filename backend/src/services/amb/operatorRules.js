@@ -251,7 +251,7 @@ export function evaluateConditions(conditions, fields) {
   const one = (c) => {
     const actual = fields[c.field] === undefined ? null : fields[c.field];
     const expected = resolveExpected(c, fields);
-    const d = { field: c.field, label: FIELDS[c.field]?.label || c.field, op: c.op, expected, actual, pass: false, unknown: false };
+    const d = { field: c.field, label: FIELDS[c.field]?.label || c.field, op: c.op, expected, actual, pass: false, unknown: false, ref: c.value && typeof c.value === 'object' && !Array.isArray(c.value) ? c.value.ref || null : null };
     if (actual === null || actual === undefined || expected === null || expected === undefined) { d.unknown = true; details.push(d); return d; }
     if (c.op === 'between') d.pass = Number(actual) >= expected[0] && Number(actual) <= expected[1];
     else if (c.op === 'in') d.pass = (Array.isArray(expected) ? expected : [expected]).includes(actual);

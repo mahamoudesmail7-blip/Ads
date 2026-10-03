@@ -7,6 +7,12 @@ import { logger } from '../../logger.js';
 import { validateRule, detectRuleConflicts, ACTIONS } from './operatorRules.js';
 
 export const OPERATOR_MODES = ['OFF', 'SHADOW', 'APPROVAL', 'AUTOPILOT'];
+/**
+ * DEPLOYMENT-LEVEL write lock. AI Operator may NEVER write to Meta (no approval execution, no Autopilot, no rollback) unless the process is started with
+ * OPERATOR_ALLOW_META_WRITES=true. Default (variable absent) = LOCKED. This is independent of the mode/rules/allowlist stored in the shared database,
+ * so enabling a mode in the UI cannot, by itself, produce a Meta write.
+ */
+export const metaWritesLocked = () => process.env.OPERATOR_ALLOW_META_WRITES !== 'true';
 export const DEFAULT_LIMITS = {
   maxDecreasePct: 30, maxChangesPerCampaignPerDay: 2, maxActionsPerHour: 6, maxActionsPerDay: 30, minDaysCover: 7,
   lossLimits: { campaign: null, product: null, account: null },
@@ -51,7 +57,7 @@ export function shapeConfig(row) {
     id: row.id, mode: row.mode, emergency_stop: !!row.emergency_stop, emergency_reason: row.emergency_reason, emergency_at: row.emergency_at,
     limits: merge(DEFAULT_LIMITS, j(row.limits_json, {})), cooldowns: { ...DEFAULT_COOLDOWNS, ...(j(row.cooldowns_json, {}) || {}) },
     schedule: { ...DEFAULT_SCHEDULE, ...(j(row.schedule_json, {}) || {}) }, updated_at: row.updated_at,
-    storeLimits: j(row.store_limits_json, {}) || {}, limitsConfigured: !!row.limits_json, autopilotAttest: j(row.autopilot_attest_json, {}) || {},
+    writesLocked: metaWritesLocked(), storeLimits: j(row.store_limits_json, {}) || {}, limitsConfigured: !!row.limits_json, autopilotAttest: j(row.autopilot_attest_json, {}) || {},
   };
 }
 
@@ -94,6 +100,7 @@ export async function autopilotGate() {
     { key: 'rules', label: 'فيه قاعدة مفعّلة وكل القواعد المفعّلة صالحة', ok: enabled.length > 0 && invalid.length === 0, detail: `${enabled.length} مفعّلة · ${invalid.length} غير صالحة`, auto: true },
     { key: 'accountLimits', label: 'حدود الحساب اليومية متحددة (أكشنز/ميزانية/خسارة)', ok: accountLimits, detail: accountLimits ? 'تم' : 'حدّد حد واحد على الأقل من "الأمان والحدود"', auto: true },
     { key: 'emergencyStop', label: 'إيقاف الطوارئ اتجرّب (تفعيل ثم إلغاء)', ok: stopTested, detail: stopTested ? 'تم' : 'جرّب 🛑 إيقاف فوري ثم ألغِه مرة واحدة', auto: true },
+    { key: 'writesUnlocked', label: 'كتابة AI Operator على Meta مفتوحة على مستوى النشر (OPERATOR_ALLOW_META_WRITES)', ok: !cfg.writesLocked, detail: cfg.writesLocked ? 'مقفولة — بتتفتح بقرار نشر صريح منك فقط' : 'مفتوحة', auto: true },
     { key: 'emergencyOff', label: 'إيقاف الطوارئ غير مفعّل دلوقتي', ok: !cfg.emergency_stop, detail: cfg.emergency_stop ? 'مفعّل' : 'تمام', auto: true },
     ...Object.entries(ATTEST_KEYS).map(([k, label]) => ({ key: `attest:${k}`, label, ok: !!att[k], detail: att[k] ? `مؤكَّد (${att[k].at})` : 'محتاج تأكيدك الصريح', auto: false })),
   ];

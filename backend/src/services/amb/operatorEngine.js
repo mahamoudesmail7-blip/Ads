@@ -80,7 +80,9 @@ export function buildWhy({ action, rule, details, guards, ctx, params }) {
   const after = { PAUSE: 'الحملة هتتوقف ويوقف الصرف.', OPEN: 'الحملة هتتفعّل وتكمل صرف.', SCALE_UP: `الميزانية هتزيد${params?.pct ? ` ${params.pct}%` : ''}${params?.toBudget ? ` (إلى ${params.toBudget})` : ''}.`, SCALE_DOWN: `الميزانية هتقل${params?.pct ? ` ${params.pct}%` : ''}.`, PREPARE_TEST: 'هيتجهز اختبار كرياتيف عبر المستشار الذكي (من غير نشر).' }[action];
   return {
     what: `${ACTION_LABEL_AR[action] || action} — ${ctx.campaign?.name || ctx.campaign?.id}`,
-    why: rule ? `القاعدة "${rule.name}" اتحققت (${WINDOW_LABEL_AR[rule.window] || rule.window}).` : 'قرار نظام.',
+    why: rule ? ((details || []).some((d) => d.unknown)
+      ? `القاعدة "${rule.name}" (${WINDOW_LABEL_AR[rule.window] || rule.window}): الأرقام المتاحة بتوصل لشرطها، لكن مقدرناش نتأكد من الباقي (${[...new Set((details || []).filter((d) => d.unknown).map((d) => FIELDS[d.actual == null ? d.field : d.ref || d.field]?.label || d.field))].join('، ')}) — فالقرار متوقف لحد ما تتسجل البيانات دي.`
+      : `القاعدة "${rule.name}" اتحققت (${WINDOW_LABEL_AR[rule.window] || rule.window}).`) : 'قرار نظام.',
     basedOn: based, rule: rule ? { id: rule.id, name: rule.name, mode: rule.mode, window: rule.window } : null,
     blocking: blocks, risks, afterExecution: after,
   };
@@ -129,14 +131,15 @@ export async function evaluateOperator({ rules = null, persist = false, only = n
       const windowMetrics = world.windows[rule.window]?.get(ctx.campaign.id) || null;
       // cheap-first: a DEFINITIVE failure on already-synced metrics skips the campaign without loading any heavy product facts
       let ev = evaluateConditions(rule.conditions, fieldsForRule({ ctx, windowMetrics }));
-      const metricUnknown = (e) => e.details.some((d) => d.unknown && !HEAVY_FIELDS.has(d.field)); // e.g. no purchases => no CPA: a plain non-match
+      const unkKey = (d) => (d.actual == null ? d.field : d.ref || d.field); // which fact is actually missing: the metric itself, or the referenced Target/Max/Hard Stop CPA
+      const metricUnknown = (e) => e.details.some((d) => d.unknown && !HEAVY_FIELDS.has(unkKey(d))); // e.g. no purchases => no CPA: a plain non-match
       if (!ev.matched && (!ev.unknown || metricUnknown(ev))) continue;
       await ensureHeavy(ctx);
       ev = evaluateConditions(rule.conditions, fieldsForRule({ ctx, windowMetrics }));
       if (!ev.matched && (!ev.unknown || metricUnknown(ev))) continue;
       // A missing METRIC (e.g. no purchases => no CPA) is a plain non-match. Missing PRODUCT FACTS (stock / economics / data quality) make the
       // rule undecidable: surface it as BLOCKED-by-unknown-data instead of silently dropping it (never converted to zero/pass).
-      const unknownFields = ev.details.filter((d) => d.unknown).map((d) => d.field);
+      const unknownFields = ev.details.filter((d) => d.unknown).map(unkKey);
       const dataUnknown = !ev.matched && ev.unknown && unknownFields.length > 0 && unknownFields.every((f) => HEAVY_FIELDS.has(f));
       if (!ev.matched && !dataUnknown) continue;
 
@@ -348,6 +351,7 @@ export async function executeDecision({ decisionId, source = 'USER', userId = nu
   if (config.emergency_stop) blockedReason = BLOCK_CODES.EMERGENCY_STOP.message;
   else if (config.mode === 'OFF') blockedReason = BLOCK_CODES.MODE_OFF.message;
   else if (config.mode === 'SHADOW') blockedReason = BLOCK_CODES.MODE_SHADOW_NO_EXECUTION.message;
+  else if (config.writesLocked) blockedReason = BLOCK_CODES.META_WRITES_LOCKED.message; // deployment-level lock: no Meta write from the Operator unless explicitly unlocked
   else if (!cand) { blockedReason = BLOCK_CODES.CONDITIONS_CHANGED.message; expire = true; }
   else if (expireReasons.length) { blockedReason = `القرار اتبطل — الأدلة/الحالة اتغيّرت: ${expireReasons.map((r) => `${r.code}${r.detail ? ` (${r.detail})` : ''}`).join('، ')}`; expire = true; }
   else if (cand.blocks.some((b) => b.severity === 'BLOCK' && b.code !== 'RULE_CONFLICT')) blockedReason = cand.primaryBlock?.message || 'ممنوع بحاجز أمان.';

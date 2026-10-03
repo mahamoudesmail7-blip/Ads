@@ -10,7 +10,11 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + detail : ''}`); } };
 
+process.env.OPERATOR_ALLOW_META_WRITES = 'true'; // these suites use an INJECTED executor; the deployment lock itself is asserted explicitly (and re-locked) in the lock tests
+const __testStart = new Date(); // every service-level call below writes actor-less audit/event rows: removed again in the cleanup
 const { prisma } = await imp('../prisma.js');
+// the shared DB can drop for seconds (Neon): restoring the global Operator config in the cleanup must survive that, or a test would leave the production mode altered
+const retryDb = async (fn) => { for (let i = 0; i < 10; i++) { try { return await fn(); } catch { await new Promise((r) => setTimeout(r, 4000)); } } return fn(); };
 const R = await imp('../services/amb/operatorRules.js');
 const G = await imp('../services/amb/operatorGuards.js');
 const S = await imp('../services/amb/operatorStore.js');
@@ -416,13 +420,15 @@ try {
 } finally {
   // cleanup + restore exactly the original global config
   try {
-    await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at } });
+    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at } }));
     const decIds = (await prisma.ambOperatorDecision.findMany({ where: { OR: [{ store_id: `${T}store` }, { decision_key: { startsWith: T } }] }, select: { id: true } })).map((x) => x.id);
     await prisma.ambAction.deleteMany({ where: { recommendation: { batch_id: { in: decIds.map((i) => `operator-${i}`) } } } }).catch(() => {});
     await prisma.ambRecommendation.deleteMany({ where: { batch_id: { in: decIds.map((i) => `operator-${i}`) } } });
     await prisma.ambOperatorDecision.deleteMany({ where: { id: { in: decIds } } });
     await prisma.ambOperatorEvent.deleteMany({ where: { OR: [{ decision_id: { in: decIds } }, { campaign_id: { startsWith: T } }] } });
     await prisma.ambAlert.deleteMany({ where: { OR: [{ title: { contains: T } }, { message: { contains: T } }, { entity_id: { startsWith: T } }] } });
+    await prisma.ambOperatorEvent.deleteMany({ where: { actor_id: null, created_at: { gte: __testStart } } });
+    await prisma.aiAuditLog.deleteMany({ where: { kind: { startsWith: 'OPERATOR_' }, actor_id: null, created_at: { gte: __testStart } } });
     await prisma.ambOperatorRule.deleteMany({ where: { name: { startsWith: T } } });
     await prisma.ambOperatorException.deleteMany({ where: { scope_id: { startsWith: T } } });
     await prisma.ambOperatorProductConfig.deleteMany({ where: { store_id: `${T}store` } });

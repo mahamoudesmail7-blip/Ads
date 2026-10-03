@@ -11,7 +11,11 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + detail : ''}`); } };
 
+process.env.OPERATOR_ALLOW_META_WRITES = 'true'; // these suites use an INJECTED executor; the deployment lock itself is asserted explicitly (and re-locked) in the lock tests
+const __testStart = new Date(); // every service-level call below writes actor-less audit/event rows: removed again in the cleanup
 const { prisma } = await imp('../prisma.js');
+// the shared DB can drop for seconds (Neon): restoring the global Operator config in the cleanup must survive that, or a test would leave the production mode altered
+const retryDb = async (fn) => { for (let i = 0; i < 10; i++) { try { return await fn(); } catch { await new Promise((r) => setTimeout(r, 4000)); } } return fn(); };
 const U = await imp('../services/amb/operatorUnblock.js');
 const D = await imp('../services/amb/operatorDecision.js');
 const G = await imp('../services/amb/operatorGuards.js');
@@ -148,6 +152,22 @@ ok('template parameters are validated', bad && bad.status === 400);
 bad = null; try { TP.instantiateTemplate('TESTING_PROTECTION'); } catch (e) { bad = e; }
 ok('GUARD-kind entries cannot be instantiated as rules', bad && bad.status === 400);
 ok('campaign_age_hours is a real rule field', !!R.FIELDS.campaign_age_hours);
+// regressions found by the real-product Shadow run
+{
+  const nm = R.evaluateConditions({ all: [{ field: 'campaign_tag', op: '!=', value: 'TESTING' }] }, { campaign_tag: '' });
+  ok('untagged campaign (tag "") satisfies tag != TESTING (it used to be UNKNOWN, so most campaigns never matched a template)', nm.matched === true && nm.unknown === false);
+  ok('tagged TESTING campaign fails tag != TESTING', R.evaluateConditions({ all: [{ field: 'campaign_tag', op: '!=', value: 'TESTING' }] }, { campaign_tag: 'TESTING' }).matched === false);
+  const rf = R.evaluateConditions({ all: [{ field: 'cpa', op: '>', value: { ref: 'hard_stop_cpa' } }] }, { cpa: 190, hard_stop_cpa: null });
+  ok('evaluateConditions reports WHICH fact is missing: the referenced Hard Stop CPA (not the CPA metric)', rf.unknown === true && rf.details[0].actual === 190 && rf.details[0].ref === 'hard_stop_cpa');
+  ok('the referenced facts are product facts (heavy) so the engine BLOCKS instead of dropping the rule', CTX.HEAVY_FIELDS.has('hard_stop_cpa') && CTX.HEAVY_FIELDS.has('target_cpa'));
+  const fc = (m) => CTX.fieldsForRule({ ctx: { campaign: { status: 'ACTIVE', tag: null }, econ: {}, stock: null, dq: null, heavyLoaded: false }, windowMetrics: m });
+  ok('a synced row with spend and NO purchase action => purchases 0 (the zero-orders rule can fire)', fc({ spend: 300, purchases: null }).purchases === 0 && fc({ spend: 300, purchases: 4 }).purchases === 4);
+  ok('no metrics row at all => purchases stays UNKNOWN (never converted to 0)', fc(null).purchases === null && fc(undefined).spend === null);
+  ok('CPA is still unknown without purchases (no division by zero)', fc({ spend: 300, purchases: null, cpa: null }).cpa === null);
+  ok('untagged campaign => tag is the empty string', fc({ spend: 1 }).campaign_tag === '');
+  const zt = TP.instantiateTemplate('ZERO_ORDER_STOP').rule.conditions.all.find((c) => c.field === 'data_quality');
+  ok('zero-order template needs data quality VERIFIED or WARNING (never BLOCKED/UNKNOWN)', zt.op === 'in' && zt.value.includes('WARNING') && !zt.value.includes('BLOCKED'));
+}
 
 // =====================================================================================================================
 console.log('\nA5. readiness + profile validation (spec 58–60)');
@@ -183,6 +203,20 @@ v = RD.validateProfilePatch({});
 ok('an empty patch changes nothing', Object.keys(v.clean).length === 0);
 
 // =====================================================================================================================
+console.log('\nA6. deployment-level Meta write lock');
+{
+  const saved = process.env.OPERATOR_ALLOW_META_WRITES;
+  delete process.env.OPERATOR_ALLOW_META_WRITES;
+  ok('lock is ON by default (variable absent => LOCKED)', S.metaWritesLocked() === true);
+  const cfgL = { ...cfg0, writesLocked: true };
+  for (const [mode, expectBlock] of [['SHADOW', false], ['APPROVAL', true], ['AUTOPILOT', true]]) {
+    const gl = G.evaluateGuards({ decision: { action: 'PAUSE', params: {}, ruleMode: mode, confidence: 'HIGH', needs: {}, ruleMinSpend: 150, cooldownHours: 12 }, ctx: mk(), config: { ...cfgL, mode }, settings: set0, counters: {}, now: NOW });
+    ok(`guard: mode ${mode} + lock => ${expectBlock ? 'BLOCKED (META_WRITES_LOCKED)' : 'stays a SHADOW record (nothing to write)'}`, expectBlock ? (gl.blocks.some((b) => b.code === 'META_WRITES_LOCKED' && b.severity === 'BLOCK') && !gl.canExecute && !gl.canAutoExecute) : (gl.wouldBe === 'SHADOW' && !gl.canExecute));
+  }
+  ok('META_WRITES_LOCKED has a spec code + an unblock plan', U.planFor('META_WRITES_LOCKED').steps[0] !== 'راجع سبب المنع في التفاصيل' && U.SPEC_CODES.META_WRITES_LOCKED.length === 1);
+  process.env.OPERATOR_ALLOW_META_WRITES = saved ?? 'true';
+}
+
 console.log('\nB. DB-backed on disposable rows (executor injected; no Meta; no real alerts left)');
 const T = '__optest_';
 const origCfg = await S.getOperatorConfig();
@@ -355,13 +389,15 @@ ${prod.id},12abc,300` });
   fail++; console.log('  ✗ DB part crashed —', err.stack || err.message);
 } finally {
   try {
-    await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at, limits_json: origCfg.limitsConfigured ? JSON.stringify(origCfg.limits) : null, store_limits_json: Object.keys(origCfg.storeLimits || {}).length ? JSON.stringify(origCfg.storeLimits) : null, autopilot_attest_json: Object.keys(origCfg.autopilotAttest || {}).length ? JSON.stringify(origCfg.autopilotAttest) : null } });
+    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at, limits_json: origCfg.limitsConfigured ? JSON.stringify(origCfg.limits) : null, store_limits_json: Object.keys(origCfg.storeLimits || {}).length ? JSON.stringify(origCfg.storeLimits) : null, autopilot_attest_json: Object.keys(origCfg.autopilotAttest || {}).length ? JSON.stringify(origCfg.autopilotAttest) : null } }));
     const decIds = (await prisma.ambOperatorDecision.findMany({ where: { OR: [{ store_id: `${T}store` }, { decision_key: { startsWith: T } }, { campaign_id: { startsWith: T } }] }, select: { id: true } })).map((x) => x.id);
     const batches = decIds.map((i) => `operator-${i}`);
     await prisma.ambAction.deleteMany({ where: { recommendation: { batch_id: { in: batches } } } }).catch(() => {});
     await prisma.ambRecommendation.deleteMany({ where: { batch_id: { in: batches } } });
     await prisma.ambOperatorEvent.deleteMany({ where: { OR: [{ decision_id: { in: decIds } }, { campaign_id: { startsWith: T } }] } });
     await prisma.ambOperatorDecision.deleteMany({ where: { id: { in: decIds } } });
+    await prisma.ambOperatorEvent.deleteMany({ where: { actor_id: null, created_at: { gte: __testStart } } });
+    await prisma.aiAuditLog.deleteMany({ where: { kind: { startsWith: 'OPERATOR_' }, actor_id: null, created_at: { gte: __testStart } } });
     await prisma.ambOperatorRule.deleteMany({ where: { name: { startsWith: T } } });
     await prisma.ambOperatorProductConfig.deleteMany({ where: { store_id: `${T}store` } });
     await prisma.ambOperatorEvent.deleteMany({ where: { kind: { in: ['MODE_CHANGE', 'EMERGENCY_STOP'] }, created_at: { gte: new Date(Date.now() - 20 * 60_000) }, note: { contains: '__optest_' } } });

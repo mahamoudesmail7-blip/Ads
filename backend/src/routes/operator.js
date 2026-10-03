@@ -35,7 +35,7 @@ async function adAccountId() {
 router.get('/overview', asyncRoute(async (req, res) => {
   const acc = await adAccountId();
   const monitored = acc ? (await listCampaignsFromSnapshots({ adAccountId: acc })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status)).length : null;
-  res.json({ ...(await operatorOverview({ monitored })), scheduler: getOperatorSchedulerStatus(), connected: !!acc });
+  res.json({ ...(await operatorOverview({ monitored })), writesLocked: store.metaWritesLocked(), scheduler: getOperatorSchedulerStatus(), connected: !!acc });
 }));
 router.get('/config', asyncRoute(async (req, res) => {
   const [config, settings] = await Promise.all([store.getOperatorConfig(), getAmbSettings()]);

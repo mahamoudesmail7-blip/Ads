@@ -201,10 +201,11 @@ export function fieldsForRule({ ctx, windowMetrics }) {
   const dqState = !ctx.dq || !ctx.dq.gate ? 'UNKNOWN' : ctx.dq.gate === 'DECISION_BLOCKED_DATA_QUALITY' ? 'BLOCKED' : (ctx.dq.overall === 'RECONCILED' ? 'VERIFIED' : 'WARNING');
   const heavy = !!ctx.heavyLoaded; // product-level facts are UNKNOWN (null) until actually loaded — never defaulted
   return {
-    spend: m.spend ?? null, purchases: m.purchases ?? null, cpa: m.cpa ?? null, ctr: m.ctr ?? null, cvr: m.conversionRate ?? null, cpc: m.cpc ?? null, cpm: m.cpm ?? null, roas: m.roas ?? null, frequency: m.frequency ?? null,
+    spend: m.spend ?? null, purchases: m.purchases ?? (m.spend != null ? 0 : null), // Meta omits the purchase action when there are none: a synced row WITH spend and NO purchase action means 0 purchases (no row at all stays unknown)
+     cpa: m.cpa ?? null, ctr: m.ctr ?? null, cvr: m.conversionRate ?? null, cpc: m.cpc ?? null, cpm: m.cpm ?? null, roas: m.roas ?? null, frequency: m.frequency ?? null,
     stock: heavy ? (ctx.stock?.currentStock ?? null) : null, days_of_stock: heavy ? (ctx.stock?.daysRemaining ?? null) : null, margin_pct: heavy ? (e.marginPct ?? null) : null,
     target_cpa: heavy ? (e.targetCpa ?? null) : null, max_cpa: heavy ? (e.maxCpa ?? null) : null, hard_stop_cpa: heavy ? (e.hardStopCpa ?? null) : null,
-    profit_state: heavy ? (e.profitState && e.profitState !== 'UNKNOWN' && e.profitState !== 'INSUFFICIENT_DATA' ? e.profitState : null) : null, data_quality: heavy ? (dqState === 'UNKNOWN' ? null : dqState) : null, campaign_status: ctx.campaign?.status || 'UNKNOWN', campaign_tag: ctx.campaign?.tag || null, campaign_age_hours: ctx.campaign?.firstSeenAt ? Math.floor((Date.now() - new Date(ctx.campaign.firstSeenAt).getTime()) / MS_H) : null,
+    profit_state: heavy ? (e.profitState && e.profitState !== 'UNKNOWN' && e.profitState !== 'INSUFFICIENT_DATA' ? e.profitState : null) : null, data_quality: heavy ? (dqState === 'UNKNOWN' ? null : dqState) : null, campaign_status: ctx.campaign?.status || 'UNKNOWN', campaign_tag: ctx.campaign?.tag || '',  campaign_age_hours: ctx.campaign?.firstSeenAt ? Math.floor((Date.now() - new Date(ctx.campaign.firstSeenAt).getTime()) / MS_H) : null,
   };
 }
 
