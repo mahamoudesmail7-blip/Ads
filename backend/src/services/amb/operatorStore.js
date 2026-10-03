@@ -24,6 +24,8 @@ export const DEFAULT_LIMITS = {
   account: { maxEnablesPerDay: null, maxPausesPerDay: null, maxBudgetIncreasePerDay: null, maxDailySpendUnderAi: null },
   manualOverrideCooldownHours: 24, // after a MANUAL change by the owner the Operator leaves the campaign alone (spec 86)
   minCampaignAgeHours: 24, attributionGraceHours: 6, // never pause on immature conversion data (spec 70/71)
+  recentPurchaseProtectionHours: 3, // a campaign that converted within this window is not stopped (per-product override wins)
+  productOverrides: {}, // {[productId]: {zeroOrder:{mode,fixedSpend,multiple,minCampaignAgeHours,attributionGraceHours,recentPurchaseHours}}} — product-specific thresholds override the global ones
   pendingEvaluationHours: 24, // an executed OPEN/SCALE blocks another risky action until its effect is measured or this long passed
 };
 export const DEFAULT_COOLDOWNS = { OPEN: 24, PAUSE: 12, SCALE_UP: 24, SCALE_DOWN: 12 };
@@ -154,7 +156,7 @@ export function validateLimits(patch) {
   const L = patch.limits || {};
   const chk = (k, min, max) => { if (L[k] !== undefined && L[k] !== null && (!Number.isFinite(Number(L[k])) || Number(L[k]) < min || Number(L[k]) > max)) errors.push(`${k} لازم يكون بين ${min} و${max}.`); };
   chk('maxDecreasePct', 1, 90); chk('maxChangesPerCampaignPerDay', 1, 20); chk('maxActionsPerHour', 1, 200); chk('maxActionsPerDay', 1, 2000); chk('minDaysCover', 0, 365);
-  chk('manualOverrideCooldownHours', 0, 720); chk('minCampaignAgeHours', 0, 720); chk('attributionGraceHours', 0, 168); chk('pendingEvaluationHours', 0, 168);
+  chk('recentPurchaseProtectionHours', 0, 72); chk('manualOverrideCooldownHours', 0, 720); chk('minCampaignAgeHours', 0, 720); chk('attributionGraceHours', 0, 168); chk('pendingEvaluationHours', 0, 168);
   for (const [k, v] of Object.entries(L.lossLimits || {})) if (v !== null && (!Number.isFinite(Number(v)) || Number(v) < 0)) errors.push(`lossLimits.${k} لازم يكون رقم موجب أو null.`);
   const chkScope = (name, o) => { for (const [k, v] of Object.entries(o || {})) { if (!LIMIT_KEYS_ACCOUNT.includes(k)) errors.push(`${name}: حد غير معروف ${k}`); else if (v !== null && (!Number.isFinite(Number(v)) || Number(v) < 0)) errors.push(`${name}.${k} لازم يكون رقم موجب أو null.`); } };
   chkScope('account', L.account);
@@ -166,6 +168,30 @@ export function validateLimits(patch) {
     for (const r of s.ranges || []) if (!/^\d{1,2}:\d{2}$/.test(r.from || '') || !/^\d{1,2}:\d{2}$/.test(r.to || '')) errors.push('نطاق ساعات غير صالح (HH:MM).');
   }
   return errors;
+}
+export const ZERO_ORDER_MODES = ['FIXED_SPEND', 'TARGET_CPA_MULTIPLE'];
+/** Validates one product's zero-order override (spec 80). Pure. Returns {errors[], clean}. */
+export function validateZeroOrderOverride(o) {
+  const errors = [], clean = {};
+  if (!o || typeof o !== 'object') return { errors: ['إعداد غير صالح.'], clean };
+  if (!ZERO_ORDER_MODES.includes(o.mode)) errors.push(`الوضع لازم يكون: ${ZERO_ORDER_MODES.join(' / ')}.`); else clean.mode = o.mode;
+  const num = (k, label, min, max, req = false) => { if (o[k] === undefined || o[k] === null || o[k] === '') { if (req) errors.push(`${label} مطلوب.`); return; } const n = Number(o[k]); if (!Number.isFinite(n) || n < min || n > max) errors.push(`${label}: لازم بين ${min} و${max}.`); else clean[k] = n; };
+  if (o.mode === 'FIXED_SPEND') num('fixedSpend', 'المبلغ الثابت', 1, 1_000_000, true);
+  if (o.mode === 'TARGET_CPA_MULTIPLE') num('multiple', 'المضاعف', 0.5, 20, true);
+  num('minCampaignAgeHours', 'أدنى عمر للحملة (ساعة)', 0, 720); num('attributionGraceHours', 'فترة السماح (ساعة)', 0, 168); num('recentPurchaseHours', 'حماية آخر شراء (ساعة)', 0, 72);
+  return { errors, clean };
+}
+/** Per-product override of the global thresholds, stored inside the Operator config (no extra table). zeroOrder=null clears it. */
+export async function setProductOverride({ productId, zeroOrder, userId = null }) {
+  if (!Number.isInteger(Number(productId))) { const e = new Error('productId غير صالح.'); e.status = 400; throw e; }
+  const pid = String(Number(productId));
+  const cur = await getOperatorConfig();
+  const all = { ...(cur.limits.productOverrides || {}) };
+  if (zeroOrder === null) delete all[pid];
+  else { const v = validateZeroOrderOverride(zeroOrder); if (v.errors.length) { const e = new Error(v.errors.join(' ')); e.status = 400; e.details = v.errors; throw e; } all[pid] = { ...(all[pid] || {}), zeroOrder: v.clean }; }
+  await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify({ ...cur.limits, productOverrides: all }), updated_by_id: userId } });
+  await audit({ actorId: userId, kind: 'OPERATOR_LIMITS', input: { productId: pid, zeroOrder } });
+  return all[pid] || null;
 }
 export async function updateOperatorLimits({ limits, cooldowns, schedule, storeLimits, userId = null }) {
   const errors = validateLimits({ limits, cooldowns, schedule, storeLimits });

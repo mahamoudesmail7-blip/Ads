@@ -15,7 +15,9 @@ import { computeOperatorEconomics } from './operatorGuards.js';
 import { entityWindowMetrics } from './metricsEngine.js';
 import { windowRange } from './operatorRules.js';
 import { SETUP_ACTIONS } from './operatorUnblock.js';
+import { resolveCampaignEvidence, persistStrongSuggestions, campaignPrefix } from './operatorMappingResolver.js';
 import { listCampaignsFromSnapshots, buildCampaignProductIndex, loadProductFacts } from './operatorContext.js';
+import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
 import { listExceptions, addException, removeException, getOperatorConfig } from './operatorStore.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -45,13 +47,16 @@ const valOf = (ambVal, prodVal) => (Number(ambVal) > 0 ? Number(ambVal) : Number
 /** The single automation profile for storeId + productId (spec 58). Every value says where it comes from. */
 export async function getProductProfile({ productId, heavy = false }) {
   const { product, amb, opCfg } = await loadProductBundle(productId);
-  const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg });
+  const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: await loadStoreCatalogIndex(product.store_id) });
+  const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
   const exceptions = (await listExceptions({})).filter((e) => (e.scope_type === 'PRODUCT' && e.scope_id === String(product.id)) || (e.scope_type === 'STORE' && e.scope_id === product.store_id));
   const idx = amb ? await campaignsForAmbProduct(amb.id) : [];
   let facts = null;
   if (heavy && amb) facts = await loadProductFacts({ ambProductId: amb.id, heavy: true });
   const readiness = computeReadiness({ product, amb, opCfg, econ, campaigns: idx, dq: facts ? facts.dq : undefined });
+  const zeroOrder = ((await getOperatorConfig()).limits.productOverrides || {})[String(product.id)]?.zeroOrder || null;
   return {
+    priceResolution, zeroOrder,
     product: { id: product.id, name: product.product_name, code: product.product_code, sku: product.sku, storeId: product.store_id },
     ambProductId: amb?.id ?? null,
     productKey: opCfg?.product_key || null,
@@ -130,6 +135,13 @@ export async function saveProductProfile({ productId, patch, userId = null }) {
     if (!amb) { await createFromCatalogProduct(product.id, userId); amb = await prisma.ambProduct.findUnique({ where: { product_id: product.id } }); }
     await updateProduct(amb.id, ambPatch);
   }
+  // The catalogue Product is the MASTER for price/cost fields and is what Profit Brain / Money Guard / true-performance read; AmbProduct is what the AMB
+  // economics pages read. One save keeps both identical (a single transaction of intent — not two sources of truth drifting apart).
+  const catPatch = {};
+  if (clean.selling_price !== undefined) catPatch.selling_price = clean.selling_price ?? 0;
+  if (clean.product_cost !== undefined) catPatch.product_cost = clean.product_cost ?? 0;
+  for (const k of ['shipping_cost', 'packaging_cost', 'other_cost']) if (clean[k] !== undefined) catPatch[k] = clean[k];
+  if (Object.keys(catPatch).length) await prisma.product.update({ where: { id: product.id }, data: catPatch });
   const stockPatch = {}; if (clean.current_stock !== undefined) stockPatch.current_stock = clean.current_stock; if (clean.minimum_stock !== undefined) stockPatch.minimum_stock = clean.minimum_stock;
   if (Object.keys(stockPatch).length) await prisma.product.update({ where: { id: product.id }, data: stockPatch });
   const opPatch = {}; for (const k of ['hard_stop_cpa', 'product_key', 'automation_mode', 'max_scale_pct', 'testing_spend_allowance', 'testing_min_sample']) if (clean[k] !== undefined) opPatch[k] = clean[k];
@@ -176,14 +188,16 @@ export async function readinessList({ heavy = false } = {}) {
   const maps = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: { in: ambs.map((a) => a.id) } }, select: { amb_product_id: true, campaign_id: true, status: true, match_source: true } });
   const byAmb = new Map(); for (const m of maps) (byAmb.get(m.amb_product_id) || byAmb.set(m.amb_product_id, []).get(m.amb_product_id)).push({ campaignId: m.campaign_id, status: m.status, source: m.match_source, verified: m.status === 'MAPPED' });
   const out = [];
+  const catalogs = {}; for (const sid of new Set([...products.values()].map((p) => p.store_id).filter(Boolean))) catalogs[sid] = await loadStoreCatalogIndex(sid); // cached 1h; null when the store catalogue is unavailable
   for (const amb of ambs) {
     const product = products.get(amb.product_id); if (!product) continue;
     const opCfg = cfgs.get(`${product.id}:${product.store_id}`) || null;
-    const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg });
+    const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null });
+    const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
     let dq;
     if (heavy) { const f = await loadProductFacts({ ambProductId: amb.id, heavy: true }); dq = f.dq || { gate: null }; }
     const readiness = computeReadiness({ product, amb, opCfg, econ, campaigns: byAmb.get(amb.id) || [], dq });
-    out.push({ productId: product.id, ambProductId: amb.id, name: product.product_name, storeId: product.store_id, productKey: opCfg?.product_key || null, automationMode: opCfg?.automation_mode || null, campaignsMapped: (byAmb.get(amb.id) || []).filter((c) => c.verified).length, campaignsSuggested: (byAmb.get(amb.id) || []).filter((c) => !c.verified).length, economicsComplete: !!econ.complete, stockKnown: product.current_stock != null, stock: product.current_stock ?? null, hardStop: opCfg?.hard_stop_cpa ?? null, targetCpa: opCfg?.target_cpa ?? amb.target_cpa ?? null, readiness });
+    out.push({ productId: product.id, ambProductId: amb.id, name: product.product_name, storeId: product.store_id, productKey: opCfg?.product_key || null, automationMode: opCfg?.automation_mode || null, campaignsMapped: (byAmb.get(amb.id) || []).filter((c) => c.verified).length, campaignsSuggested: (byAmb.get(amb.id) || []).filter((c) => !c.verified).length, economicsComplete: !!econ.complete, priceStatus: priceResolution.status, stockKnown: product.current_stock != null, stock: product.current_stock ?? null, hardStop: opCfg?.hard_stop_cpa ?? null, targetCpa: opCfg?.target_cpa ?? amb.target_cpa ?? null, readiness });
   }
   const order = { BLOCKED: 0, PARTIAL: 1, READY: 2 };
   out.sort((a, b) => order[a.readiness.state] - order[b.readiness.state] || a.name.localeCompare(b.name));
@@ -236,7 +250,7 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
   const w7 = windowRange('last7', new Date().toISOString().slice(0, 10));
   const m7 = await entityWindowMetrics({ level: 'campaign', from: w7.from, to: w7.to, adAccountId });
   const spend = new Map([...m7.entries()].map(([id, m]) => [id, m.spend || 0]));
-  const productList = ambs.map((a) => ({ id: a.id, product_name: a.product_name, sku: null }));
+  const evidence = await resolveCampaignEvidence({ adAccountId, campaigns, ambProducts: ambs });
   const rows = [];
   for (const c of campaigns) {
     const nameN = normalizeName(c.name || '');
@@ -253,24 +267,38 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
     if (mappedAmbId && lj && m?.status === 'MAPPED' && lj.id !== m.amb_product_id) { state = 'CONFLICT'; note = `الربط اليدوي بيشاور على "${m.amb_product?.product_name}" لكن حملة الرفع تابعة لـ"${lj.product_name}"`; }
     else if (mappedAmbId && keyProducts.length && !keyProducts.some((k) => k.amb.id === mappedAmbId)) { state = 'CONFLICT'; note = `اسم الحملة فيه Product Key لمنتج تاني ("${keyProducts[0].amb.product_name}")`; }
     else if (keyProducts.length > 1 && !mappedAmbId) { state = 'CONFLICT'; note = 'اسم الحملة بيطابق أكتر من منتج'; }
-    if (state !== 'VERIFIED' && state !== 'CONFLICT' || (state === 'CONFLICT' && !suggestion)) {
-      if (keyProducts.length === 1 && state !== 'VERIFIED') { suggestion = { ambProductId: keyProducts[0].amb.id, productName: keyProducts[0].amb.product_name, confidence: 0.9, source: 'PRODUCT_KEY', evidence: `Product Key "${keyProducts[0].raw}" موجود في اسم الحملة`, weak: false }; if (state === 'UNMAPPED') state = 'SUGGESTED'; }
-      else if (state === 'UNMAPPED') {
-        const g = mapProductByName(c.name || '', productList, 0.6);
-        const shared = g.productId ? normalizeName(c.name || '').split(' ').filter((t) => t.length > 1 && normalizeName(ambs.find((a) => a.id === g.productId)?.product_name || '').split(' ').includes(t)).length : 0;
-        if (g.productId && shared >= 2) { suggestion = { ambProductId: g.productId, productName: ambs.find((a) => a.id === g.productId)?.product_name, confidence: R(g.confidence, 2), source: 'NAME_SIMILARITY', evidence: `تشابه أسماء (${shared} كلمات مشتركة) — اقتراح ضعيف، لازم تأكيدك`, weak: true }; state = 'SUGGESTED'; }
+    // evidence for anything not already VERIFIED — ONE resolver (URL / Product Key / sibling prefix / weak name); never produces VERIFIED
+    const ev = evidence.get(c.id) || null;
+    let review = null;
+    if (state !== 'VERIFIED' && ev) {
+      if (ev.decision === 'AMBIGUOUS') review = 'AMBIGUOUS';
+      else if (ev.pick) {
+        const am = ambs.find((x) => x.id === ev.pick.ambProductId);
+        const strongEv = ev.pick.evidence.find((e) => ['URL_SLUG', 'PRODUCT_KEY', 'SIBLING_PREFIX'].includes(e.type));
+        suggestion = { ambProductId: ev.pick.ambProductId, productName: am?.product_name || null, confidence: strongEv ? 0.9 : R(ev.pick.evidence[0].confidence, 2), source: strongEv?.type || 'NAME_SIMILARITY', evidence: ev.pick.evidence.map((e) => e.detail).join(' · '), weak: ev.decision === 'SUGGEST_WEAK' };
+        if (state === 'UNMAPPED') state = 'SUGGESTED';
+        review = 'CONFIRM';
       }
     }
+    if (state === 'SUGGESTED' && !review) review = 'CONFIRM'; // a persisted SUGGESTED row always waits for a human
+    if (state === 'UNMAPPED' && !review) review = 'UNEXPLAINED'; // no deterministic evidence at all: a human decides (grouped by name family below)
     rows.push({
       campaignId: c.id, campaignName: c.name, campaignStatus: c.status, spend7d: R(spend.get(c.id) || 0, 0),
       detectedProductKey: keyHits[0]?.raw || null, state, source, confidence: confidence ?? suggestion?.confidence ?? (state === 'VERIFIED' ? 1 : null), note,
       product: product ? { ambProductId: product.id, name: product.product_name, productId: product.product_id } : null, suggestion, excluded: excluded.has(c.id),
+      review, evidence: ev?.evidence || [], candidates: ev?.decision === 'AMBIGUOUS' ? ev.candidates.map((c2) => ({ ambProductId: c2.ambProductId, productName: ambs.find((x) => x.id === c2.ambProductId)?.product_name || null, evidence: c2.evidence.map((e) => `${e.type}: ${e.detail}`) })) : [],
     });
   }
   const order = { CONFLICT: 0, UNMAPPED: 1, SUGGESTED: 2, VERIFIED: 3 };
   rows.sort((a, b) => order[a.state] - order[b.state] || b.spend7d - a.spend7d);
   const counts = { VERIFIED: 0, SUGGESTED: 0, UNMAPPED: 0, CONFLICT: 0, excluded: 0 }; for (const r of rows) { counts[r.state]++; if (r.excluded) counts.excluded++; }
-  return { connected: true, rows: rows.slice(0, limit), total: rows.length, counts, note: 'التنفيذ الآلي مبيحصلش على حملة SUGGESTED أو UNMAPPED أو CONFLICT أبدًا.' };
+  const reviewQueue = rows.filter((r) => r.review).sort((x, y) => y.spend7d - x.spend7d);
+  // campaigns of the same name family (e.g. "Smart-Bag _ ...") that still need a decision, so ONE human choice can settle the whole family
+  const fam = new Map();
+  for (const r of reviewQueue) { const pre = campaignPrefix(r.campaignName) || `__single:${r.campaignId}`; const f = fam.get(pre) || { prefix: pre.startsWith('__single:') ? null : pre, campaignIds: [], names: [], spend7d: 0, reviews: new Set(), suggestedProductIds: new Set() }; f.campaignIds.push(r.campaignId); f.names.push(r.campaignName); f.spend7d += r.spend7d; f.reviews.add(r.review); if (r.suggestion) f.suggestedProductIds.add(r.suggestion.ambProductId); fam.set(pre, f); }
+  const families = [...fam.values()].map((f) => ({ prefix: f.prefix, campaignIds: f.campaignIds, count: f.campaignIds.length, sampleNames: f.names.slice(0, 3), spend7d: Math.round(f.spend7d), reviews: [...f.reviews], suggestedAmbProductId: f.suggestedProductIds.size === 1 ? [...f.suggestedProductIds][0] : null })).sort((a, b) => b.spend7d - a.spend7d);
+  counts.families = families.length; counts.unexplained = reviewQueue.filter((r) => r.review === 'UNEXPLAINED').length; counts.review = reviewQueue.length; counts.ambiguous = reviewQueue.filter((r) => r.review === 'AMBIGUOUS').length; counts.strongSuggestions = rows.filter((r) => r.suggestion && !r.suggestion.weak).length;
+  return { connected: true, rows: rows.slice(0, limit), reviewQueue: reviewQueue.slice(0, 300), families: families.slice(0, 80), total: rows.length, counts, note: 'التنفيذ الآلي مبيحصلش على حملة SUGGESTED أو UNMAPPED أو CONFLICT أبدًا.' };
 }
 
 /** Owner confirms / changes a mapping. Always status MAPPED + a human match_source — the only way a campaign becomes VERIFIED besides a launch job. */
@@ -278,6 +306,21 @@ export async function confirmMapping({ adAccountId, campaignId, campaignName = n
   const row = await mapping.setMapping({ adAccountId, campaignId, campaignName, ambProductId, status: 'MAPPED', matchSource: 'MANUAL', userId });
   await audit({ actorId: userId, kind: 'OPERATOR_MAPPING', input: { campaignId, ambProductId, action: 'CONFIRM' } });
   return row;
+}
+/** One explicit human choice for a whole name family. Only campaigns currently in the review queue (never VERIFIED, never excluded) are touched, max 40. */
+export async function confirmFamily({ adAccountId, campaignIds, ambProductId, userId = null }) {
+  const ids = [...new Set((campaignIds || []).map(String))];
+  if (!ids.length || ids.length > 40) { const e = new Error('عدد الحملات لازم يكون بين 1 و40.'); e.status = 400; throw e; }
+  const center = await mappingCenter({ adAccountId });
+  const queue = new Map(center.reviewQueue.map((r) => [r.campaignId, r]));
+  const bad = ids.filter((id) => !queue.has(id));
+  if (bad.length) { const e = new Error(`حملات مش في قائمة المراجعة (اتربطت قبل كده أو مش موجودة): ${bad.slice(0, 5).join(', ')}`); e.status = 409; throw e; }
+  const prefixes = new Set(ids.map((id) => campaignPrefix(queue.get(id).campaignName) || id));
+  if (prefixes.size > 1 && ids.length > 1) { const e = new Error('الحملات لازم تكون من نفس عائلة الاسم.'); e.status = 400; throw e; }
+  let n = 0;
+  for (const id of ids) { await mapping.setMapping({ adAccountId, campaignId: id, campaignName: queue.get(id).campaignName, ambProductId, status: 'MAPPED', matchSource: 'MANUAL', userId }); n++; }
+  await audit({ actorId: userId, kind: 'OPERATOR_MAPPING', input: { action: 'CONFIRM_FAMILY', ambProductId, count: n } });
+  return { ok: true, confirmed: n };
 }
 export async function unmapCampaign({ adAccountId, campaignId, userId = null }) {
   await mapping.removeMapping({ adAccountId, campaignId });
@@ -294,16 +337,10 @@ export async function excludeCampaign({ campaignId, campaignName = null, exclude
 }
 /** Persists ONLY deterministic suggestions (a Product Key in the name) as SUGGESTED rows — never as MAPPED. Name-similarity guesses are shown but not stored. */
 export async function persistDeterministicSuggestions({ adAccountId, userId = null }) {
-  const center = await mappingCenter({ adAccountId });
-  let saved = 0;
-  for (const r of center.rows) {
-    if (r.state === 'SUGGESTED' && r.suggestion && !r.suggestion.weak && !r.product) {
-      await mapping.setMapping({ adAccountId, campaignId: r.campaignId, campaignName: r.campaignName, ambProductId: r.suggestion.ambProductId, status: 'SUGGESTED', matchSource: 'AI_SUGGESTED', matchConfidence: r.suggestion.confidence, aiReason: r.suggestion.evidence, userId });
-      saved++;
-    }
-  }
-  await audit({ actorId: userId, kind: 'OPERATOR_MAPPING', input: { action: 'PERSIST_SUGGESTIONS', saved } });
-  return { saved };
+  const campaigns = (await listCampaignsFromSnapshots({ adAccountId })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status));
+  const r = await persistStrongSuggestions({ adAccountId, campaigns, userId }); // the ONE resolver; STRONG evidence only; always SUGGESTED, never VERIFIED
+  await audit({ actorId: userId, kind: 'OPERATOR_MAPPING', input: { action: 'PERSIST_SUGGESTIONS', ...r } });
+  return { saved: r.created + r.updated, ...r };
 }
 
 // =====================================================================================================================

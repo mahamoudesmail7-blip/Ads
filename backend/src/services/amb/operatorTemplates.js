@@ -7,12 +7,20 @@ const C = (field, op, value) => ({ field, op, value });
 
 export const TEMPLATES = [
   {
-    key: 'ZERO_ORDER_STOP', kind: 'RULE', title: 'إيقاف حملة صرفت من غير أوردرات', category: 'OPTIMIZATION',
+    key: 'ZERO_ORDER_STOP', kind: 'RULE', title: 'إيقاف حملة صرفت من غير أوردرات (حد ثابت لكل المنتجات)', category: 'OPTIMIZATION',
     description: 'بيجهّز إيقاف لما الصرف يوصل X ومفيش أوردرات، بعد عمر أدنى Y ساعة، ومش حملة اختبار، وجودة البيانات سليمة. الاستثناءات بتتغلب عليه دايمًا.',
     params: [{ key: 'spend', label: 'الصرف X (ج.م)', default: 180, min: 1 }, { key: 'minAgeHours', label: 'أدنى عمر للحملة Y (ساعة)', default: 24, min: 0 }],
     defaultMode: 'SHADOW',
     build: (p) => ({ name: `إيقاف: صرف ≥ ${p.spend} بدون أوردرات`, action: 'PAUSE', window: 'today', mode: 'SHADOW', cooldown_hours: 12, priority: 50,
       conditions: { all: [C('spend', '>=', p.spend), C('purchases', '=', 0), C('campaign_age_hours', '>=', p.minAgeHours), C('campaign_status', '=', 'ACTIVE'), C('campaign_tag', '!=', 'TESTING'), C('data_quality', 'in', ['VERIFIED', 'WARNING'])] } }), // not BLOCKED / not UNKNOWN (a WARNING such as missing age/gender breakdown does not affect a stop-loss)
+  },
+  {
+    key: 'ZERO_ORDER_STOP_PER_PRODUCT', kind: 'RULE', title: 'إيقاف بدون أوردرات — الحد حسب كل منتج (مُوصى به)', category: 'OPTIMIZATION',
+    description: 'مفيش رقم عام: كل منتج ليه حد خاص (مبلغ ثابت أو مضاعف Target CPA) بيتحدد من ملف المنتج. المنتج اللي لسه ما اتحددلوش حد بيتمنع (مش بياخد رقم افتراضي). فيه كمان عمر أدنى للحملة، فترة سماح للأوردرات، وحماية لآخر شراء، وبيحترم ميزانية الاختبار وفترة التهدئة.',
+    params: [{ key: 'minAgeHours', label: 'أدنى عمر للحملة (ساعة)', default: 24, min: 0 }],
+    defaultMode: 'SHADOW',
+    build: (p) => ({ name: 'إيقاف: صرف ≥ حد المنتج بدون أوردرات', action: 'PAUSE', window: 'today', mode: 'SHADOW', cooldown_hours: 12, priority: 50,
+      conditions: { all: [C('spend', '>=', { ref: 'zero_order_limit' }), C('purchases', '=', 0), C('campaign_age_hours', '>=', p.minAgeHours), C('campaign_status', '=', 'ACTIVE'), C('campaign_tag', '!=', 'TESTING'), C('data_quality', 'in', ['VERIFIED', 'WARNING'])] } }),
   },
   {
     key: 'HARD_CPA_STOP', kind: 'RULE', title: 'إيقاف عند تجاوز Hard Stop CPA', category: 'HARD_SAFETY',

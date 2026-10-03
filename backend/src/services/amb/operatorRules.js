@@ -60,6 +60,7 @@ export const FIELDS = {
   target_cpa: num('Target CPA', 'EGP', { derived: true }),
   max_cpa: num('Max CPA', 'EGP', { derived: true }),
   hard_stop_cpa: num('Hard Stop CPA', 'EGP', { derived: true }),
+  zero_order_limit: num('حد الصرف بدون أوردرات (حسب إعداد المنتج)', 'EGP', { derived: true }),
   profit_state: en('حالة الربح', ['PROFITABLE', 'MARGIN_THIN', 'BREAK_EVEN', 'UNPROFITABLE', 'PARTIAL_DATA', 'INSUFFICIENT_DATA', 'UNKNOWN']),
   data_quality: en('جودة البيانات', ['VERIFIED', 'WARNING', 'BLOCKED', 'UNKNOWN']),
   campaign_status: en('حالة الحملة', ['ACTIVE', 'PAUSED', 'ARCHIVED', 'DELETED', 'WITH_ISSUES', 'IN_PROCESS', 'UNKNOWN']),

@@ -12,6 +12,7 @@
 import { PRECEDENCE_RANK, ACTION_LABEL_AR } from './operatorRules.js';
 import { evaluateMoneyGuardForScale } from './moneyGuard.js';
 import { specCodesFor } from './operatorUnblock.js';
+import { baseOperationalCost, breakEvenCpa } from './productEconomics.js';
 
 const MS_H = 3_600_000;
 
@@ -61,6 +62,9 @@ export const BLOCK_CODES = {
   STOCK_COVERAGE_LOW: { group: 'INVENTORY', severity: 'BLOCK', message: 'تغطية المخزون (أيام) أقل من الحد المطلوب للتوسع.' },
   STOCK_COVERAGE_WARN: { group: 'INVENTORY', severity: 'WARN', message: 'تغطية المخزون قريبة من الحد — فكّر في توسع أصغر.' },
   ECONOMICS_INCOMPLETE: { group: 'PROFIT', severity: 'BLOCK', message: 'اقتصاديات المنتج غير مكتملة (سعر/تكلفة) — الربحية UNKNOWN والأكشن المعتمد عليها متوقف.' },
+  ZERO_ORDER_NOT_CONFIGURED: { group: 'DATA_QUALITY', severity: 'BLOCK', message: 'حد الإيقاف بدون أوردرات غير محدد لهذا المنتج (ثابت أو مضاعف Target CPA) — مفيش رقم عام افتراضي.' },
+  RECENT_PURCHASE_PROTECTION: { group: 'SAFETY', severity: 'BLOCK', message: 'الحملة جابت أوردر حديثًا — مفيش إيقاف قبل ما فترة حماية آخر شراء تعدي.' },
+  PRICE_CONFLICT: { group: 'PROFIT', severity: 'BLOCK', message: 'سعر البيع فيه تعارض بين مصدرين حقيقيين (AMB / الكتالوج / كتالوج Easy Orders) — الربحية متوقفة لحد ما تحدد السعر الصحيح.' },
   PROFIT_NEGATIVE: { group: 'PROFIT', severity: 'BLOCK', message: 'المنتج بيخسر عند الـCPA الحالي (هامش الوحدة سالب).' },
   MONEY_GUARD_BLOCKED: { group: 'PROFIT', severity: 'BLOCK', message: 'Money Guard منع التوسع.' },
   MONEY_GUARD_WARN: { group: 'PROFIT', severity: 'WARN', message: 'Money Guard: تحذير.' },
@@ -79,6 +83,9 @@ export const BLOCK_CODES = {
   MANUAL_STOP_INTENT_UNKNOWN: { group: 'SAFETY', severity: 'DOWNGRADE', message: 'مفيش دليل إن الحملة اتقفلت من الـOperator (ممكن تكون اتقفلت يدويًا لسبب) — الفتح محتاج موافقتك.' },
   PROFIT_FLOOR: { group: 'PROFIT', severity: 'BLOCK', message: 'الربح الموثّق للوحدة تحت الحد الأدنى المحدد للمنتج.' },
   ADVISOR_DISAGREES: { group: 'ADVISOR', severity: 'DOWNGRADE', message: 'المستشار الذكي مش شايف المنتج جاهز للتوسع حاليًا — هيفضل للموافقة.' },
+  ADVISOR_PLAN_MISSING: { group: 'ADVISOR', severity: 'BLOCK', message: 'مفيش خطة من المستشار الذكي لهذا المنتج — الـOperator مبيتحركش باستراتيجية مختلفة عن خطة المستشار. (بتتحسب تلقائيًا من الإعداد/الصيانة)' },
+  ADVISOR_PLAN_MISSING_WARN: { group: 'ADVISOR', severity: 'WARN', message: 'مفيش خطة من المستشار الذكي لهذا المنتج لسه.' },
+  ADVISOR_CONFLICT: { group: 'ADVISOR', severity: 'DOWNGRADE', message: 'المستشار الذكي شايف المنتج جاهز للتوسع (خطة Scale)، لكن القاعدة دي عايزة تقلل/توقف — التعارض ظاهر وبيفضل بموافقتك (إلا قواعد الأمان).' },
   ADVISOR_DATA_GAP: { group: 'ADVISOR', severity: 'WARN', message: 'المستشار الذكي بيعتبر البيانات غير كافية.' },
 };
 
@@ -102,30 +109,53 @@ export function withinSchedule(schedule, now = new Date()) {
   return schedule.mode === 'HOURS' ? inAny : !inAny;
 }
 
+/**
+ * Zero-order stop limit per product (spec 80). NEVER one global number:
+ *   FIXED_SPEND          -> the product's own fixed EGP amount
+ *   TARGET_CPA_MULTIPLE  -> product Target CPA x multiplier (unknown while the Target CPA is unknown)
+ * No override configured => null (the rule is BLOCKED as "not configured", never defaulted).
+ */
+export function resolveZeroOrderLimit({ override, targetCpa }) {
+  if (!override || !override.mode) return { mode: null, limit: null, reason: 'NOT_CONFIGURED' };
+  if (override.mode === 'FIXED_SPEND') { const v = Number(override.fixedSpend); return Number.isFinite(v) && v > 0 ? { mode: 'FIXED_SPEND', limit: v, reason: null } : { mode: 'FIXED_SPEND', limit: null, reason: 'FIXED_SPEND_MISSING' }; }
+  if (override.mode === 'TARGET_CPA_MULTIPLE') {
+    const m = Number(override.multiple), t = Number(targetCpa);
+    if (!Number.isFinite(m) || m <= 0) return { mode: 'TARGET_CPA_MULTIPLE', limit: null, reason: 'MULTIPLE_MISSING' };
+    if (!Number.isFinite(t) || t <= 0) return { mode: 'TARGET_CPA_MULTIPLE', limit: null, reason: 'TARGET_CPA_MISSING', multiple: m };
+    return { mode: 'TARGET_CPA_MULTIPLE', limit: Math.round(t * m * 100) / 100, reason: null, multiple: m, targetCpa: t };
+  }
+  return { mode: override.mode, limit: null, reason: 'UNKNOWN_MODE' };
+}
+
 /** Unit economics from CONFIGURED values only — never invented, never derived from Easy Orders statuses. */
-export function computeOperatorEconomics({ product, ambProduct, opCfg, observedCpa = null }) {
+export function computeOperatorEconomics({ product, ambProduct, opCfg, observedCpa = null, priceResolution = null, settings = {} }) {
   // AmbProduct columns default to 0 meaning "not entered": a 0 there must never shadow a real catalog value, and a suggested price (cost x multiplier) is NOT a real price.
   const pos = (...vs) => { for (const v of vs) { const n = Number(v); if (Number.isFinite(n) && n > 0) return n; } return 0; };
-  const price = pos(ambProduct?.actual_selling_price, product?.selling_price);
+  // price: the resolver (owner > catalogue > verified store catalogue, with conflict detection) when supplied; otherwise the same owner > catalogue order
+  const priceStatus = priceResolution ? priceResolution.status : (pos(ambProduct?.actual_selling_price, product?.selling_price) > 0 ? 'UNCROSSCHECKED' : 'MISSING');
+  const price = priceResolution ? (priceResolution.value || 0) : pos(ambProduct?.actual_selling_price, product?.selling_price);
   const cost = pos(ambProduct?.product_cost, product?.product_cost);
   const ship = pos(ambProduct?.shipping_cost, product?.shipping_cost);
   const pack = pos(ambProduct?.packaging_cost, product?.packaging_cost);
   const other = pos(ambProduct?.other_cost, product?.other_cost);
-  const complete = price > 0 && cost > 0;
-  const variable = cost + ship + pack + other;
-  const unitMargin = complete ? price - variable : null;
+  // the margin math is the CANONICAL productEconomics engine (never a second implementation); a suggested price can never reach it
+  const econ = { actual_selling_price: price || null, suggested_selling_price: 0, pricing_multiplier: null, product_cost: cost || null, packaging_cost: pack, shipping_cost: ship, other_cost: other };
+  const complete = price > 0 && cost > 0 && priceStatus !== 'CONFLICT';
+  const variable = baseOperationalCost(econ) ?? 0;
+  const unitMargin = complete ? breakEvenCpa(econ) : null;
   const minProfit = Number(opCfg?.min_profit ?? ambProduct?.min_profit) || 0;
   const calculatedMaxCpa = complete ? Math.max(0, unitMargin - minProfit) : null;
   const targetCpa = opCfg?.target_cpa ?? ambProduct?.target_cpa ?? null;
   const maxCpa = opCfg?.max_cpa ?? ambProduct?.max_cpa ?? calculatedMaxCpa;
   const hardStopCpa = opCfg?.hard_stop_cpa ?? null;
+  const band = Number(settings.ambProfitBreakEvenBandPct) || 3, thin = Number(settings.ambProfitMarginThinPct) || 15; // the SAME thresholds Profit Brain uses
   let profitState = 'UNKNOWN', unitProfitAtCpa = null;
   if (complete && observedCpa != null) {
     unitProfitAtCpa = unitMargin - observedCpa;
     const m = price > 0 ? (unitProfitAtCpa / price) * 100 : 0;
-    profitState = unitProfitAtCpa < 0 ? 'UNPROFITABLE' : m < 3 ? 'BREAK_EVEN' : m < 15 ? 'MARGIN_THIN' : 'PROFITABLE';
+    profitState = m < -band ? 'UNPROFITABLE' : m <= band ? 'BREAK_EVEN' : m <= thin ? 'MARGIN_THIN' : 'PROFITABLE';
   } else if (complete) profitState = 'INSUFFICIENT_DATA';
-  return { complete, price, variable, unitMargin, calculatedMaxCpa, targetCpa, maxCpa, hardStopCpa, hardStopSource: hardStopCpa != null ? 'MANUAL' : null, minProfit, profitState, unitProfitAtCpa, marginPct: unitProfitAtCpa != null && price ? (unitProfitAtCpa / price) * 100 : null };
+  return { complete, price, priceStatus, priceSource: priceResolution?.source || null, priceConflict: priceStatus === 'CONFLICT' ? priceResolution.conflict : null, variable, unitMargin, calculatedMaxCpa, targetCpa, maxCpa, hardStopCpa, hardStopSource: hardStopCpa != null ? 'MANUAL' : null, minProfit, profitState, unitProfitAtCpa, marginPct: unitProfitAtCpa != null && price ? (unitProfitAtCpa / price) * 100 : null };
 }
 
 /**
@@ -227,7 +257,8 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
   if (consequential && ctx.recent?.manualOverrideAt && now.getTime() - new Date(ctx.recent.manualOverrideAt).getTime() < moH * MS_H) add('MANUAL_OVERRIDE_COOLDOWN', { detail: `${moH}h` });
   // attribution delay / campaign maturity (spec 70/71): do not pause on immature conversion data
   if (a === 'PAUSE' && !decision.severeOverride) {
-    const minAge = Number(lim.minCampaignAgeHours ?? 24), grace = Number(lim.attributionGraceHours ?? 6);
+    const po = ctx.productOverride?.zeroOrder || {};
+    const minAge = Number(po.minCampaignAgeHours ?? lim.minCampaignAgeHours ?? 24), grace = Number(po.attributionGraceHours ?? lim.attributionGraceHours ?? 6);
     const firstSeen = ctx.campaign?.firstSeenAt;
     if (firstSeen && minAge > 0 && now.getTime() - new Date(firstSeen).getTime() < minAge * MS_H) add('ATTRIBUTION_GRACE', { detail: `عمر الحملة أقل من ${minAge}س` });
     else {
@@ -235,6 +266,13 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
       if (grace > 0 && lastEdit && now.getTime() - lastEdit < grace * MS_H) add('ATTRIBUTION_GRACE', { detail: `آخر تعديل منذ أقل من ${grace}س` });
     }
   }
+  // recent purchase protection: a campaign that just converted is not stopped on lagging data (unknown last purchase => no block, the other maturity guards still apply)
+  if (a === 'PAUSE' && !decision.severeOverride && ctx.lastPurchaseAt) {
+    const rp = Number(ctx.productOverride?.zeroOrder?.recentPurchaseHours ?? lim.recentPurchaseProtectionHours ?? 3);
+    if (rp > 0 && now.getTime() - new Date(ctx.lastPurchaseAt).getTime() < rp * MS_H) add('RECENT_PURCHASE_PROTECTION', { detail: `آخر شراء منذ ${Math.round((now.getTime() - new Date(ctx.lastPurchaseAt).getTime()) / 60_000)} دقيقة` });
+  }
+  // zero-order limit must be configured for the product when the rule references it
+  if (needs.zeroOrder && ctx.zeroOrder && ctx.zeroOrder.limit == null) add('ZERO_ORDER_NOT_CONFIGURED', { detail: ctx.zeroOrder.reason });
   // a previous action whose effect has not been measured yet (spec 56 RECENT_ACTION_PENDING_EVALUATION)
   if (risky && !decision.severeOverride && ctx.recent?.pendingEvaluationAt) add('RECENT_ACTION_PENDING_EVALUATION', { detail: `منذ ${Math.round((now.getTime() - new Date(ctx.recent.pendingEvaluationAt).getTime()) / MS_H)}س` });
   // opening a campaign whose manual-stop intent cannot be known needs a human (spec 69)
@@ -285,6 +323,7 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
   // ---- 6. PROFIT / MONEY GUARD
   if (needs.profit && risky) {
     const e = ctx.econ || {};
+    if (e.priceStatus === 'CONFLICT') add('PRICE_CONFLICT', { detail: JSON.stringify(e.priceConflict) });
     if (!e.complete) add('ECONOMICS_INCOMPLETE');
     else if (e.profitState === 'UNPROFITABLE') add('PROFIT_NEGATIVE');
     if (e.complete && e.minProfit > 0 && e.unitProfitAtCpa != null && e.unitProfitAtCpa < e.minProfit) add('PROFIT_FLOOR', { detail: `${Math.round(e.unitProfitAtCpa)} < ${e.minProfit}` });
@@ -300,20 +339,26 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
   const tag = ctx.campaign?.tag;
   if (tag === 'TESTING') {
     const t = ctx.campaign?.testing || {};
-    if (a === 'PAUSE' && !(t.stopSpend != null && (m.spend ?? 0) >= t.stopSpend)) add('TESTING_PROTECTED');
-    if (a === 'SCALE_UP' && (m.purchases ?? 0) < (t.minSample ?? Math.max(10, minP * 2))) add('TESTING_SAMPLE');
+    const stopSpend = t.stopSpend ?? ctx.product?.testingAllowance ?? null; // per-campaign setting wins, then the PRODUCT's testing allowance
+    const minSample = t.minSample ?? ctx.product?.testingMinSample ?? Math.max(10, minP * 2);
+    if (a === 'PAUSE' && !(stopSpend != null && (m.spend ?? 0) >= stopSpend)) add('TESTING_PROTECTED');
+    if (a === 'SCALE_UP' && (m.purchases ?? 0) < minSample) add('TESTING_SAMPLE');
   }
 
   // ---- 8. USER RULE metadata
   if (eff === 'AUTOPILOT' && decision.confidence !== 'HIGH') add('CONFIDENCE_TOO_LOW_FOR_AUTOPILOT');
   if ((ctx.ruleConflicts || []).length) add('RULE_CONFLICT', { detail: ctx.ruleConflicts[0].message });
 
-  // ---- 9. ADVISOR (lowest precedence)
+  // ---- 9. ADVISOR (lowest precedence) — ONE strategy: the Operator converts the canonical Smart Advisor plan + deterministic rules into safe actions and never
+  //      acts on a strategy the Advisor does not hold. A contradiction is SURFACED (downgrade to approval), never silently resolved.
   const adv = ctx.advisor || null;
-  if (a === 'SCALE_UP' && adv) {
-    if (['INSUFFICIENT_DATA'].includes(adv.stage) || adv.dqBlocked) add('ADVISOR_DATA_GAP');
-    else if (adv.primaryProblem && adv.primaryProblem !== 'NONE' && !['COD_STATUS_UNKNOWN'].includes(adv.primaryProblem)) add('ADVISOR_DISAGREES', { detail: adv.primaryProblem });
-  }
+  if (a === 'SCALE_UP') {
+    if (!adv) add('ADVISOR_PLAN_MISSING');
+    else if (adv.stage === 'INSUFFICIENT_DATA' || adv.dqBlocked) add('ADVISOR_DATA_GAP');
+    else if (!adv.scalePlanPresent) add('ADVISOR_DISAGREES', { detail: adv.primaryProblem || adv.stage || 'NO_SCALE_PLAN' });
+    else if (adv.scaleMoneyGuard === 'BLOCKED') add('ADVISOR_DISAGREES', { detail: 'MONEY_GUARD' });
+  } else if (a === 'OPEN' && !adv) add('ADVISOR_PLAN_MISSING_WARN');
+  else if (['PAUSE', 'SCALE_DOWN'].includes(a) && adv?.scalePlanPresent && !decision.severeOverride) add('ADVISOR_CONFLICT', { detail: adv.stage });
 
   out.sort((x, y) => (PRECEDENCE_RANK[x.group] ?? 99) - (PRECEDENCE_RANK[y.group] ?? 99) || (x.severity === 'BLOCK' ? -1 : 1));
   const downgrade = out.some((b) => b.severity === 'DOWNGRADE');

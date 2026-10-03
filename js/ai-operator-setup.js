@@ -3,6 +3,7 @@
 // Presentation only: every number, guard and permission comes from /api/operator/* (the server is the authority).
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
+import { drawCompletion } from './ai-operator-completion.js';
 import { E, $, num, egp, ago, dt, S, MODES, ACTION_ICON, STATUS_CLS, READY_CLS, PROFIT_AR, openDrawer, closeDrawer, drawerHead, kpi, fld, condText, blockPanel, wireSetupButtons } from './ai-operator-core.js';
 
 const refresh = async () => { await S.hooks.refreshTop?.(); S.hooks.drawTop?.(); };
@@ -44,6 +45,12 @@ export async function showProfile(productId, { heavy = false, focus = null } = {
         <div class="op-form">${f('سعر البيع', 'selling_price', ec.sellingPrice)}${f('تكلفة الشراء', 'product_cost', ec.purchaseCost)}${f('الشحن', 'shipping_cost', ec.shipping)}${f('التغليف', 'packaging_cost', ec.packaging)}${f('تكاليف أخرى', 'other_cost', ec.other)}</div>
         <div class="op-sub">هامش الوحدة (قبل الإعلانات): <b>${ec.unitMargin == null ? '— غير معروف' : egp(ec.unitMargin)}</b></div>
         <div class="op-form">${f('Target CPA', 'target_cpa', ec.targetCpa)}${f('Max CPA', 'max_cpa', ec.maxCpa)}${f('Hard Stop CPA', 'hard_stop_cpa', ec.hardStopCpa)}${f('أدنى ربح للوحدة', 'min_profit', ec.minProfit)}</div></div>
+      ${priceBlock(p.priceResolution)}
+      <div class="op-block"><h4>⛔ حد الإيقاف بدون أوردرات (لكل منتج)</h4><div class="op-sub">مفيش رقم عام ثابت. اختار طريقة لهذا المنتج — مع حماية عمر الحملة وآخر شراء وفترة السماح.${p.zeroOrder ? '' : ' <b class="op-bad">غير مضبوط → إيقاف الصفر-أوردرات محجوب لهذا المنتج.</b>'}</div>
+        <div class="op-form"><label>الطريقة<select id="zo_mode" ${dis}><option value="">— غير مضبوط —</option><option value="FIXED_SPEND" ${p.zeroOrder?.mode === 'FIXED_SPEND' ? 'selected' : ''}>مبلغ ثابت (ج.م)</option><option value="TARGET_CPA_MULTIPLE" ${p.zeroOrder?.mode === 'TARGET_CPA_MULTIPLE' ? 'selected' : ''}>مضاعف Target CPA</option></select></label>
+        <label>المبلغ الثابت<input id="zo_fixed" type="number" min="1" value="${p.zeroOrder?.fixedSpend ?? ''}" ${dis} /></label><label>المضاعف (× Target CPA)<input id="zo_mult" type="number" min="0.5" step="0.1" value="${p.zeroOrder?.multiple ?? ''}" ${dis} /></label>
+        <label>أدنى عمر للحملة (ساعة)<input id="zo_age" type="number" min="0" value="${p.zeroOrder?.minCampaignAgeHours ?? ''}" ${dis} /></label><label>فترة السماح (ساعة)<input id="zo_grace" type="number" min="0" value="${p.zeroOrder?.attributionGraceHours ?? ''}" ${dis} /></label><label>حماية آخر شراء (ساعة)<input id="zo_recent" type="number" min="0" max="72" value="${p.zeroOrder?.recentPurchaseHours ?? ''}" ${dis} /></label></div>
+        ${S.isAdmin ? '<button class="amb-btn" id="zoSave">حفظ حد الإيقاف</button>' : ''}</div>
       <div class="op-block"><h4>📦 المخزون</h4><div class="op-form">${f('المخزون الحالي', 'current_stock', { value: st.current, source: st.known ? 'CATALOG' : null })}${f('الحد الأدنى', 'minimum_stock', { value: st.minimum, source: st.minimum != null ? 'CATALOG' : null })}</div>
         <div class="op-sub">${st.known ? `الحالة: ${E(st.status || '—')}${st.daysRemaining != null ? ` · تغطية ${num(st.daysRemaining, 1)} يوم` : ''}` : 'المخزون غير مسجّل — الفتح والتوسع بيتمنعوا لحد ما تسجله.'}</div></div>
       <div class="op-block"><h4>⚙️ حدود الأتمتة</h4><div class="op-form">${f('أقصى نسبة توسع في الخطوة %', 'max_scale_pct', { value: p.scale.maxScalePct, source: p.scale.maxScalePct != null ? 'MANUAL' : null })}${f('ميزانية الاختبار (ج.م)', 'testing_spend_allowance', { value: p.testing.spendAllowance, source: p.testing.spendAllowance != null ? 'MANUAL' : null })}${f('أدنى عينة اختبار (أوردرات)', 'testing_min_sample', { value: p.testing.minSample, source: p.testing.minSample != null ? 'MANUAL' : null })}
@@ -56,9 +63,22 @@ export async function showProfile(productId, { heavy = false, focus = null } = {
   wireProfile(p, productId);
   if (focus) { const map = { ECONOMICS: 'f_product_cost', STOCK: 'f_current_stock', HARD_STOP: 'f_hard_stop_cpa' }; setTimeout(() => $(map[focus] || '')?.focus(), 300); }
 }
+function priceBlock(pr) {
+  if (!pr) return '';
+  const lab = { OWNER_ENTERED: 'AMB (إدخالك)', CATALOG: 'كتالوج المنتجات', STORE_CATALOG: 'كتالوج المتجر (Easy Orders)' };
+  if (pr.status === 'CONFLICT') return `<div class="op-banner red">⚠️ <b>تعارض في سعر البيع</b> — ${E(pr.reason)}<br>${Object.entries(pr.conflict || {}).map(([k, v]) => `<span class="op-pill amber">${E({ owner: 'AMB', catalog: 'الكتالوج', storeCatalog: 'كتالوج المتجر' }[k] || k)}: ${num(v)} ج.م</span>`).join(' ')}<br>القرارات المعتمدة على الربح متوقفة لحد ما تحسم السعر الصحيح (الحقل اللي تحت).</div>`;
+  if (pr.status === 'FROM_STORE_CATALOG') return `<div class="op-banner blue">💡 السعر <b>${num(pr.value)} ج.م</b> مأخوذ من ${E(lab.STORE_CATALOG)} (مطابقة اسم دقيقة وفريدة داخل نفس المتجر) — مقترح للمراجعة، اكتبه في «سعر البيع» لو صح.</div>`;
+  if (pr.status === 'MISSING') return `<div class="op-banner amber">سعر البيع: ${E(pr.reason || 'غير موجود')}</div>`;
+  return `<div class="op-sub">سعر البيع الموثَّق: <b>${num(pr.value)} ج.م</b> — ${E(lab[pr.source] || pr.source)} ${pr.status === 'VERIFIED' ? '✓ مطابق لكتالوج المتجر' : '(لم يُقارَن بكتالوج المتجر)'}</div>`;
+}
 function wireProfile(p, productId) {
   const root = $('ambDrawerPanel');
   root.querySelectorAll('[data-focus]').forEach((b) => { b.onclick = () => { const m = { ECONOMICS: 'f_product_cost', STOCK: 'f_current_stock', MIN_STOCK: 'f_minimum_stock', TARGET_CPA: 'f_target_cpa', HARD_STOP: 'f_hard_stop_cpa' }[b.dataset.focus]; if (m) $(m)?.focus(); else if (b.dataset.focus === 'MAPPING') { closeDrawer(); S.hooks.switchTab('mapping'); } else if (b.dataset.focus === 'DATA_QUALITY') $('opProfDq')?.click(); }; });
+  if ($('zoSave')) $('zoSave').onclick = async () => {
+    const mode = $('zo_mode').value; const n = (id) => { const v = $(id).value.trim(); return v === '' ? undefined : Number(v); };
+    const zeroOrder = mode ? { mode, fixedSpend: mode === 'FIXED_SPEND' ? n('zo_fixed') : undefined, multiple: mode === 'TARGET_CPA_MULTIPLE' ? n('zo_mult') : undefined, minCampaignAgeHours: n('zo_age'), attributionGraceHours: n('zo_grace'), recentPurchaseHours: n('zo_recent') } : null;
+    try { await api.put(`/api/operator/products/${productId}/zero-order`, { zeroOrder }); UI.toast('تم الحفظ'); await refresh(); showProfile(productId); } catch (e) { $('opProfMsg') ? ($('opProfMsg').innerHTML = `<div class="op-bad">✗ ${E(e.message)}</div>`) : UI.toast(e.message, 'error'); }
+  };
   if ($('opProfDq')) $('opProfDq').onclick = () => showProfile(productId, { heavy: true });
   if ($('opProfSave')) $('opProfSave').onclick = async () => {
     const patch = {};
@@ -129,6 +149,12 @@ function showImport() {
 // campaign mapping center (spec 62/63)
 // =====================================================================================================================
 let mapFilter = 'ALL'; let mapSearch = '';
+/** Review queue grouped by name family — ONE human decision per family (still confirm-only: nothing becomes VERIFIED without the click). */
+function famPanel(r) {
+  const fams = (r.families || []).slice(0, 12); if (!fams.length) return '';
+  const opts = (sel) => `<option value="">— المنتج —</option>${(S.products || []).map((p) => `<option value="${p.ambProductId}" ${sel === p.ambProductId ? 'selected' : ''}>${E(p.name)} · ${E(p.storeId)}</option>`).join('')}`;
+  return `<div class="amb-panel"><h3>🗂️ قائمة المراجعة (${num(r.counts.review)} حملة · ${num(r.counts.families)} عائلة)</h3><div class="op-sub">حملات ملهاش دليل حاسم، متجمّعة بعائلة الاسم — قرار واحد لكل عائلة. ${num(r.counts.ambiguous)} فيها أكتر من منتج محتمل.</div>${fams.map((f, i) => `<div class="op-fam"><div><b>${E(f.prefix || '—')}</b> · ${num(f.count)} حملة · صرف 7 أيام ${num(f.spend7d)} ج.م<div class="op-camp">${E(f.sampleNames.join(' | '))}${f.reviews.includes('AMBIGUOUS') ? ' · <b class="op-bad">غامضة</b>' : ''}</div></div>${S.isAdmin ? `<select id="famPick_${i}">${opts(f.suggestedAmbProductId)}</select><button class="amb-btn success sm" data-fam="${i}">أكّد العائلة</button>` : ''}</div>`).join('')}</div>`;
+}
 const MAP_CLS = { VERIFIED: 'green', SUGGESTED: 'amber', UNMAPPED: 'gray', CONFLICT: 'red' };
 export async function drawMapping(body) {
   body.innerHTML = '<div class="amb-loading">جارِ التحميل… (264 حملة تقريبًا)</div>';
@@ -141,6 +167,7 @@ export async function drawMapping(body) {
     <div class="op-banner blue">🔗 ${E(r.note)} (VERIFIED فقط = ربط يدوي مؤكَّد أو حملة اترفعت من النظام.)</div>
     <div class="op-toolbar"><div class="amb-filters" style="margin:0">${['ALL', 'CONFLICT', 'UNMAPPED', 'SUGGESTED', 'VERIFIED'].map((k) => `<button class="amb-fbtn ${mapFilter === k ? 'active' : ''}" data-mf="${k}">${k === 'ALL' ? `الكل (${r.total})` : `${k} (${r.counts[k]})`}</button>`).join('')}</div>
       <div><input id="mapSearch" class="op-search" placeholder="بحث باسم الحملة" value="${E(mapSearch)}" />${S.isAdmin ? ' <button class="amb-btn" id="mapSuggest" title="يحفظ كاقتراح (SUGGESTED) أي حملة اسمها فيه Product Key معروف — مبيأكدش حاجة">اقترح ربط بالـProduct Key</button>' : ''}</div></div>
+    ${famPanel(r)}
     <div class="table-wrap"><table class="data op-table2"><thead><tr><th>الحملة</th><th>صرف 7 أيام</th><th>Product Key المكتشف</th><th>المنتج الحالي / المقترح</th><th>الثقة</th><th>المصدر</th><th>الحالة</th><th></th></tr></thead><tbody>
     ${rows.map((x) => `<tr class="${S.mapFocus === x.campaignId ? 'op-focus' : ''} ${x.state === 'CONFLICT' ? 'blocked' : ''}" id="mrow_${E(x.campaignId)}"><td><div class="op-prod" title="${E(x.campaignId)}">${E(x.campaignName || x.campaignId)}</div><div class="op-camp">${E(x.campaignStatus)}${x.excluded ? ' · <b>مستبعدة</b>' : ''}</div></td><td>${egp(x.spend7d)}</td><td>${E(x.detectedProductKey || '—')}</td>
       <td>${x.product ? `<b>${E(x.product.name)}</b>` : x.suggestion ? `<span class="op-sugg">${E(x.suggestion.productName)}</span><div class="op-camp">${E(x.suggestion.evidence)}</div>` : '<span class="op-unk">—</span>'}${x.note ? `<div class="op-bad">${E(x.note)}</div>` : ''}</td>
@@ -148,6 +175,12 @@ export async function drawMapping(body) {
       <td class="op-btns">${S.isAdmin ? `${x.suggestion && x.state !== 'VERIFIED' ? `<button class="amb-btn success sm" data-mc="confirm" data-cid="${E(x.campaignId)}" data-pid="${x.suggestion.ambProductId}">أكّد الربط</button>` : ''}<button class="amb-btn sm" data-mc="change" data-cid="${E(x.campaignId)}">${x.product ? 'غيّر المنتج' : 'اختار منتج'}</button>${x.state === 'VERIFIED' ? `<button class="amb-btn sm" data-mc="unmap" data-cid="${E(x.campaignId)}">فك الربط</button>` : ''}<button class="amb-btn sm" data-mc="${x.excluded ? 'include' : 'exclude'}" data-cid="${E(x.campaignId)}">${x.excluded ? 'رجّع للأتمتة' : 'استبعد'}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
   body.querySelectorAll('[data-mf]').forEach((b) => { b.onclick = () => { mapFilter = b.dataset.mf; S.mapFocus = null; drawMapping(body); }; });
   $('mapSearch').onchange = (e) => { mapSearch = e.target.value; S.mapFocus = null; drawMapping(body); };
+  body.querySelectorAll('[data-fam]').forEach((b) => { b.onclick = async () => {
+    const f = (r.families || [])[Number(b.dataset.fam)]; const sel = body.querySelector(`#famPick_${b.dataset.fam}`); const pid = Number(sel?.value); if (!f || !pid) return UI.toast('اختار المنتج الأول.');
+    const pn = (S.products || []).find((x) => x.ambProductId === pid)?.name || '';
+    if (!(await UI.confirmModal({ title: 'تأكيد ربط عائلة حملات', message: `ربط ${f.count} حملة (${f.prefix}) بالمنتج «${pn}» كـVERIFIED. الأتمتة هتبقى مسموحة عليهم. إنت اللي بتقرر — مفيش ربط تلقائي.`, confirmLabel: 'أكّد الكل' }))) return;
+    try { const x = await api.post('/api/operator/mapping/confirm-family', { campaignIds: f.campaignIds.slice(0, 40), ambProductId: pid }); UI.toast(`اتأكد ${x.confirmed} ربط`); await refresh(); drawMapping(body); } catch (e) { UI.toast(e.message, 'error'); }
+  }; });
   if ($('mapSuggest')) $('mapSuggest').onclick = async () => { try { const x = await api.post('/api/operator/mapping/suggest', {}); UI.toast(`اتحفظ ${x.saved} اقتراح (SUGGESTED) — محتاجين تأكيدك`); drawMapping(body); } catch (e) { UI.toast(e.message, 'error'); } };
   const byId = new Map(r.rows.map((x) => [x.campaignId, x]));
   body.querySelectorAll('[data-mc]').forEach((b) => { b.onclick = async () => {
@@ -230,13 +263,9 @@ export async function drawPerformance(body) {
 // =====================================================================================================================
 export async function drawControl(body) {
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
-  const [w, g, hl, br] = await Promise.all([api.get('/api/operator/wizard'), api.get('/api/operator/global-readiness'), api.get('/api/operator/health'), api.get('/api/operator/brief')]);
-  const stepBtn = (s) => `<button class="amb-btn sm" data-goto="${E(s.tab)}">افتح</button>`;
+  const [g, hl, br] = await Promise.all([api.get('/api/operator/global-readiness'), api.get('/api/operator/health'), api.get('/api/operator/brief')]);
   body.innerHTML = `
-    <div class="amb-panel"><h3>🚀 تجهيز AI Operator — ${w.progress.done}/${w.progress.total} (${w.progress.pct}%)</h3>
-      <div class="op-progress"><div style="width:${w.progress.pct}%"></div></div>
-      <ol class="op-steps">${w.steps.map((s, i) => `<li class="${s.done ? 'done' : ''}"><span class="op-stepno">${s.done ? '✓' : i + 1}</span><div><b>${E(s.title)}</b>${s.progress && s.progress.total ? ` <small>${num(s.progress.done)}/${num(s.progress.total)}</small>` : ''}<div class="op-camp">${E(s.hint)}</div></div>${stepBtn(s)}</li>`).join('')}</ol>
-      <div class="op-banner amber">⚠️ ${E(w.note)}</div></div>
+    <div id="opCompletion"></div>
     <div class="amb-panel"><h3>🧭 جاهزية الأتمتة (إيه اللازم تظبطه قبل Autopilot)</h3>
       <div class="amb-kpis op-kpis">${kpi('🟢 منتجات جاهزة', g.products.ready, 'green')}${kpi('🟡 جزئية', g.products.partial, 'amber')}${kpi('🔴 متوقفة', g.products.blocked, 'red')}${kpi('حملات مربوطة', g.campaigns.mapped, 'blue')}${kpi('حملات غير مربوطة', g.campaigns.unmapped, 'gray', g.campaigns.suggested ? `+${g.campaigns.suggested} مقترح` : '')}${kpi('منتجات بدون اقتصاديات', g.missingEconomics, 'red')}${kpi('منتجات بدون مخزون', g.missingStock, 'red')}${kpi('متوقفة بجودة البيانات', g.blockedByDataQuality, 'amber', g.dataQualityChecked ? '' : 'لسه ما اتفحصتش')}</div>
       <button class="amb-btn" data-goto="readiness">فتح جاهزية المنتجات</button> <button class="amb-btn" data-goto="mapping">فتح ربط الحملات</button></div>
@@ -253,6 +282,7 @@ export async function drawControl(body) {
         <div><h4>أكبر خطر / فرصة</h4><div>${br.topRisk ? `<div class="op-bad">⚠️ ${E(br.topRisk.text)}</div>` : '<span class="op-unk">لا خطر مرصود</span>'}${br.topOpportunity ? `<div class="op-ok">📈 ${E(br.topOpportunity.campaign || '')}</div>` : ''}</div></div></div></div>
     <div id="opSafety"></div><div id="opCmdBox"></div>`;
   body.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => S.hooks.switchTab(b.dataset.goto); });
+  drawCompletion($('opCompletion')); // end-to-end Completion Center (replaces the old step wizard; same data sources, clickable)
   $('opWhat').onclick = whatWillHappen;
   drawSafety($('opSafety'));
   drawCommand($('opCmdBox'));

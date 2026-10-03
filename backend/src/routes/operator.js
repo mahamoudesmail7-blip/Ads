@@ -16,6 +16,7 @@ import { operatorOverview, listDecisions, shadowReport, shapeDecision } from '..
 import { interpretCommand } from '../services/amb/operatorCommand.js';
 import { getOperatorSchedulerStatus, runOperatorTick } from '../services/amb/operatorScheduler.js';
 import * as readiness from '../services/amb/operatorReadiness.js';
+import { buildIntegrationAudit, autoFixIntegration } from '../services/amb/operatorIntegration.js';
 import { listTemplates, instantiateTemplate } from '../services/amb/operatorTemplates.js';
 import { performanceReport, executedWithOutcomes, operatorHealth, ruleAuditLog, whatWillHappen, bulkApprove, dailyBrief, notifyEmergencyStop } from '../services/amb/operatorOps.js';
 import { decisionEvents } from '../services/amb/operatorReports.js';
@@ -30,6 +31,22 @@ async function adAccountId() {
   const c = await getConnection();
   return c && c.status === 'CONNECTED' ? c.selected_ad_account_id || null : null;
 }
+
+// ---- end-to-end integration audit / Completion Center (read-only; cached 2 minutes because it reads every source) ----------
+let integrationCache = null;
+router.get('/integration', asyncRoute(async (req, res) => {
+  const heavy = req.query.heavy === '1';
+  if (!req.query.fresh && integrationCache && integrationCache.heavy >= heavy && Date.now() - integrationCache.at < 120_000) return res.json({ ...integrationCache.value, cached: true });
+  const value = await buildIntegrationAudit({ heavy });
+  integrationCache = { at: Date.now(), heavy, value };
+  res.json(value);
+}));
+// closes ONLY the AUTO_FIXABLE gaps: Smart Advisor plan versions + SUGGESTED (never VERIFIED) mappings. No economics/stock/Meta/Easy Orders write.
+router.post('/integration/autofix', ADMIN, asyncRoute(async (req, res) => { const r = await autoFixIntegration({ userId: req.user.id }); integrationCache = null; res.json(r); }));
+router.put('/products/:productId/zero-order', ADMIN, asyncRoute(async (req, res) => {
+  const r = await store.setProductOverride({ productId: req.params.productId, zeroOrder: req.body?.zeroOrder ?? null, userId: req.user.id });
+  integrationCache = null; clearOperatorFactsCache(); res.status(r?.ok === false ? 400 : 200).json(r);
+}));
 
 // ---- overview / config -----------------------------------------------------------------------------------------------
 router.get('/overview', asyncRoute(async (req, res) => {
@@ -158,6 +175,12 @@ router.post('/mapping/confirm', ADMIN, asyncRoute(async (req, res) => {
 }));
 router.delete('/mapping/:campaignId', ADMIN, asyncRoute(async (req, res) => { const acc = await adAccountId(); if (!acc) return res.status(400).json({ error: 'NO_META', message: 'اربط حساب Meta الأول.' }); res.json(await readiness.unmapCampaign({ adAccountId: acc, campaignId: req.params.campaignId, userId: req.user.id })); }));
 router.post('/mapping/exclude', ADMIN, asyncRoute(async (req, res) => { const b = req.body || {}; if (!b.campaignId) return res.status(400).json({ error: 'BAD_REQUEST', message: 'campaignId مطلوب.' }); res.json(await readiness.excludeCampaign({ campaignId: String(b.campaignId), campaignName: b.campaignName || null, exclude: b.exclude !== false, reason: b.reason || null, userId: req.user.id })); }));
+router.post('/mapping/confirm-family', ADMIN, asyncRoute(async (req, res) => {
+  const acc = await adAccountId(); if (!acc) return res.status(400).json({ error: 'NO_META', message: 'اربط حساب Meta الأول.' });
+  const b = req.body || {}; if (!Array.isArray(b.campaignIds) || !b.campaignIds.length || !b.ambProductId) return res.status(400).json({ error: 'BAD_REQUEST', message: 'campaignIds و ambProductId مطلوبين.' });
+  const r = await readiness.confirmFamily({ adAccountId: acc, campaignIds: b.campaignIds.map(String), ambProductId: b.ambProductId, userId: req.user.id });
+  integrationCache = null; res.status(r.ok === false ? 400 : 200).json(r);
+}));
 router.post('/mapping/suggest', ADMIN, asyncRoute(async (req, res) => { const acc = await adAccountId(); if (!acc) return res.status(400).json({ error: 'NO_META', message: 'اربط حساب Meta الأول.' }); res.json(await readiness.persistDeterministicSuggestions({ adAccountId: acc, userId: req.user.id })); }));
 
 router.get('/import/template', asyncRoute(async (req, res) => { res.setHeader('Content-Type', 'text/csv; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="operator-product-setup.csv"'); res.send('\uFEFF' + await readiness.bulkSetupTemplate()); }));

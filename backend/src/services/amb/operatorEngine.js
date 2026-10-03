@@ -15,7 +15,7 @@ import { ACTION_LABEL_AR, usesCodField, evaluateConditions, describeCondition, d
 import { evaluateGuards, decisionConfidence, effectiveMode, BLOCK_CODES } from './operatorGuards.js';
 import { listRules, getOperatorConfig } from './operatorStore.js';
 import { lifecycleOf, riskRank, isHardSafetyRule, classifyError, evidenceDrift, expectedState, stateMatches, buildCanonical } from './operatorDecision.js';
-import { buildOperatorWorld, buildCampaignContext, fieldsForRule, loadRecentActions, loadCounters, ensureHeavy, HEAVY_FIELDS, computeVelocity } from './operatorContext.js';
+import { buildOperatorWorld, buildCampaignContext, fieldsForRule, loadRecentActions, loadCounters, ensureHeavy, HEAVY_FIELDS, computeVelocity, computeLastPurchaseAt } from './operatorContext.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 const round = (v, d = 2) => (v === null || v === undefined ? null : Math.round(v * 10 ** d) / 10 ** d);
@@ -60,6 +60,7 @@ export function dependenciesOf(rule) {
     profit: a === 'OPEN' || a === 'SCALE_UP' || fields.has('profit_state') || fields.has('margin_pct'),
     hardStop: refs.has('hard_stop_cpa') || fields.has('hard_stop_cpa'),
     targetCpa: refs.has('target_cpa') || fields.has('target_cpa') || refs.has('max_cpa'),
+    zeroOrder: refs.has('zero_order_limit') || fields.has('zero_order_limit'),
   };
 }
 export function lossFor(metrics, econ) {
@@ -156,6 +157,7 @@ export async function evaluateOperator({ rules = null, persist = false, only = n
       const confidence = decisionConfidence({ action: a, metrics: windowMetrics, settings, mappingVerified: !!ctx.product?.mappingVerified, dqOk: ctx.dq?.gate !== 'DECISION_BLOCKED_DATA_QUALITY' && !!ctx.dq?.gate, econKnown: !!ctx.econ?.complete, stockKnown: !!ctx.stock && ctx.stock.status !== 'STOCK_UNKNOWN', needs });
       const category = isHardSafetyRule(rule) ? 'HARD_SAFETY' : 'OPTIMIZATION';
       const myConflicts = conflicts.filter((c) => (c.a === rule.id || c.b === rule.id) && c.winner !== rule.id);
+      if (a === 'PAUSE' && !ctx.lastPurchaseLoaded) { ctx.lastPurchaseLoaded = true; ctx.lastPurchaseAt = await computeLastPurchaseAt({ campaignId: ctx.campaign.id, now }).catch(() => null); }
       if (a === 'SCALE_UP' && ctx.velocity === null && !ctx.velocityLoaded) { ctx.velocityLoaded = true; ctx.velocity = await computeVelocity({ campaignId: ctx.campaign.id, now, cfg: config.limits.spendVelocity }).catch(() => null); }
       const guardCtx = { ...ctx, metrics: windowMetrics || {}, ruleConflicts: myConflicts };
       const guards = evaluateGuards({
@@ -421,7 +423,10 @@ export async function retryFailedDecision({ decisionId, userId = null }) {
 
 /** Smart Advisor link: an executed SCALE_UP is attached to the product's open SCALE recommendation so Advisor measures its real result. */
 async function linkAdvisorAfterExecution({ row, cand }) {
-  if (row.action !== 'SCALE_UP' || !row.product_id || !row.store_id) return;
+  if (!row.product_id || !row.store_id) return;
+  // any executed Operator action changes the product's reality: the Advisor's cached plan must be recomputed from fresh data (one strategy, no stale plan)
+  try { (await import('./advisorTracking.js')).invalidatePlanCache(row.product_id, row.store_id); } catch { /* cache invalidation is best-effort */ }
+  if (row.action !== 'SCALE_UP') return;
   const rec = await prisma.ambAdvisorRecommendation.findFirst({ where: { product_id: row.product_id, store_id: row.store_id, rec_type: 'SCALE', status: { in: ['RECOMMENDED', 'PREPARED'] } }, orderBy: { created_at: 'desc' } });
   if (!rec) return;
   const T = await import('./advisorTracking.js');

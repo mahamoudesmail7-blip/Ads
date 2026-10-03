@@ -11,6 +11,7 @@ import { getOperatorConfig, listRules } from './operatorStore.js';
 import { evaluateOperator, detectPostScaleDeterioration, detectManualOverrides } from './operatorEngine.js';
 import { reconcileShadowOutcomes } from './operatorReports.js';
 import { emitOperatorNotifications } from './operatorOps.js';
+import { ensureAdvisorPlans } from './operatorIntegration.js';
 
 const INTERVAL_MS = 10 * 60_000;
 const TICK_TIMEOUT_MS = 5 * 60_000;
@@ -32,6 +33,8 @@ export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
   if (config.mode === 'OFF') return { skipped: 'MODE_OFF' };
   const rules = (await listRules()).filter((r) => r.enabled);
   const out = { mode: config.mode, emergencyStop: config.emergency_stop, rules: rules.length };
+  // one strategy: make sure every advertised product has a Smart Advisor plan before rules are judged against it (bounded: 3 products per tick)
+  if (rules.length) out.advisorPlans = await ensureAdvisorPlans({ max: 3, maxMs: 60_000 }).catch((e) => ({ error: e.message }));
   if (rules.length) {
     const res = await evaluateOperator({ persist: true, now, deps, autoExecute: config.mode === 'AUTOPILOT' });
     out.evaluated = res.campaignsEvaluated; out.candidates = res.candidates.length; out.autoExecuted = res.autoExecuted || 0; out.summary = res.summary; out.expired = res.expired || 0;

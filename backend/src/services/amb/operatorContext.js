@@ -13,7 +13,8 @@ import { stockGuardForProduct } from './stockGuard.js';
 import { computeProductDataQuality } from './dataQuality.js';
 import { getStoreStatusTrust } from '../easyOrdersStatus.js';
 import { windowRange, WINDOW_KEYS } from './operatorRules.js';
-import { computeOperatorEconomics } from './operatorGuards.js';
+import { computeOperatorEconomics, resolveZeroOrderLimit } from './operatorGuards.js';
+import { loadStoreCatalogIndex, resolveSellingPrice } from './productPriceResolver.js';
 import { getOperatorConfig, listExceptions, exceptionsFor, loadCampaignTags } from './operatorStore.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -52,6 +53,7 @@ async function loadProductIdentity({ ambProductId, cache }) {
   if (amb?.product_id) {
     facts.product = await prisma.product.findUnique({ where: { id: amb.product_id }, select: { id: true, product_name: true, store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, current_stock: true, minimum_stock: true } });
     facts.storeId = facts.product?.store_id || null; // null = fail closed (STORE_AMBIGUOUS)
+    if (facts.storeId) { const storeCatalog = await loadStoreCatalogIndex(facts.storeId); facts.priceResolution = resolveSellingPrice({ product: facts.product, ambProduct: amb, storeCatalog }); }
     if (facts.storeId) facts.opCfg = await prisma.ambOperatorProductConfig.findUnique({ where: { product_id_store_id: { product_id: amb.product_id, store_id: facts.storeId } } });
   }
   cache.set(ambProductId, facts);
@@ -62,6 +64,16 @@ export async function loadProductFacts({ ambProductId, heavy = false, cache = ne
   const f = await loadProductIdentity({ ambProductId, cache });
   if (heavy) await loadProductHeavy(f);
   return f;
+}
+/** The slice of the canonical Smart Advisor plan the Operator acts on / explains. Pure. */
+export function advisorView(plan, pj) {
+  const sp = pj.scalePlan || null;
+  return {
+    planVersion: plan.version, planAt: plan.created_at, stage: pj.status?.stage || null, stageLabel: pj.status?.stageLabel || null, primaryProblem: pj.status?.primaryProblem || null, primaryProblemLabel: pj.status?.primaryProblemLabel || null,
+    objective: pj.status?.objective || null, executive: pj.executive || null, dqBlocked: !!pj.status?.dataQuality?.blocked, fatigued: !!pj.fatiguePlan,
+    scalePlanPresent: !!sp, scaleBlockers: sp?.blockers || [], scaleMoneyGuard: sp?.moneyGuard?.decision || null, recoveryStopTriggered: !!pj.recoveryPlan?.stopTriggered,
+    nextActionNow: (pj.actions?.now || [])[0]?.title || null, profitState: pj.profit?.state || null, profitConfig: pj.profit?.configState || null, codStatusUnknown: !!pj.cod?.statusUnknown, sampleSufficient: !!pj.sampleSufficient,
+  };
 }
 /** Heavy, per-product facts (stock guard, data quality, store status trust, advisor plan) — loaded ONLY when a rule actually needs them. */
 const HEAVY_TTL_MS = 5 * 60_000;
@@ -82,7 +94,8 @@ async function loadProductHeavy(facts) {
       facts.dq = dq && dq.ok ? { gate: ['MAPPING_ERROR', 'PURCHASE_RECONCILIATION_ERROR'].includes(dq.overallStatus) ? 'DECISION_BLOCKED_DATA_QUALITY' : 'VERIFIED', overall: dq.overallStatus, statusTrust: trust, mappingStatus: dq.mapping?.status } : { gate: null, overall: null, statusTrust: trust };
       const plan = await prisma.ambAdvisorPlanVersion.findFirst({ where: { product_id: amb.product_id, store_id: facts.storeId }, orderBy: { version: 'desc' }, select: { version: true, plan_json: true, created_at: true } });
       const pj = plan ? j(plan.plan_json, null) : null;
-      facts.advisor = pj ? { planVersion: plan.version, stage: pj.status?.stage, primaryProblem: pj.status?.primaryProblem, dqBlocked: !!pj.status?.dataQuality?.blocked, fatigued: !!pj.fatiguePlan, planAt: plan.created_at } : null;
+      // ONE strategy: the Operator reads the SAME canonical Smart Advisor plan (never recomputes or invents its own)
+      facts.advisor = pj ? advisorView(plan, pj) : null;
     }
   }
   if (amb) heavyCache.set(amb.id, { at: Date.now(), stock: facts.stock, dq: facts.dq, advisor: facts.advisor });
@@ -175,6 +188,7 @@ export async function buildCampaignContext({ world, campaign, recentByCampaign, 
     campaign: { ...campaign, tag: tagRow?.tag || null, testing: tagRow?.testing || null },
     product: facts?.ambProduct ? { id: productId, ambProductId: facts.ambProduct.id, name: facts.ambProduct.product_name, productKey: facts.opCfg?.product_key || null, automationMode: facts.opCfg?.automation_mode || null, maxScalePct: facts.opCfg?.max_scale_pct ?? null, testingAllowance: facts.opCfg?.testing_spend_allowance ?? null, testingMinSample: facts.opCfg?.testing_min_sample ?? null, mappingVerified: !!idx?.verified, mappingSource: idx?.via || 'NONE' } : { mappingVerified: false, mappingSource: idx?.via || 'NONE' },
     metrics: todayM || {}, econ: { complete: false, profitState: 'UNKNOWN' }, stock: null, dq: null, advisor: null, exceptions: excs, recent, incidents: [], velocity: null, ruleConflicts: [],
+    productOverride: productId != null ? ((config.limits?.productOverrides || {})[String(productId)] || null) : null, zeroOrder: null, lastPurchaseAt: null,
     config, _facts: facts, _world: world, heavyLoaded: false,
   };
 }
@@ -185,14 +199,15 @@ export async function ensureHeavy(ctx) {
   const facts = await loadProductHeavy(ctx._facts);
   const w = ctx._world;
   const observedCpa = (w.windows.last14?.get(ctx.campaign.id)?.cpa ?? w.windows.last7?.get(ctx.campaign.id)?.cpa ?? w.windows.today?.get(ctx.campaign.id)?.cpa) ?? null;
-  ctx.econ = facts.ambProduct ? computeOperatorEconomics({ product: facts.product, ambProduct: facts.ambProduct, opCfg: facts.opCfg, observedCpa }) : { complete: false, profitState: 'UNKNOWN' };
+  ctx.econ = facts.ambProduct ? computeOperatorEconomics({ product: facts.product, ambProduct: facts.ambProduct, opCfg: facts.opCfg, observedCpa, priceResolution: facts.priceResolution || null, settings: w.settings }) : { complete: false, profitState: 'UNKNOWN' };
   ctx.stock = facts.stock ? { ...facts.stock, daysRemaining: facts.stock.daysRemaining ?? null } : null;
+  ctx.zeroOrder = resolveZeroOrderLimit({ override: ctx.productOverride?.zeroOrder, targetCpa: ctx.econ?.targetCpa });
   ctx.dq = facts.dq || null; ctx.advisor = facts.advisor || null; ctx.heavyLoaded = true;
   return ctx;
 }
 
 /** Which rule fields can only be answered with the heavy per-product facts. */
-export const HEAVY_FIELDS = new Set([...COD_FIELDS, 'stock', 'days_of_stock', 'margin_pct', 'target_cpa', 'max_cpa', 'hard_stop_cpa', 'profit_state', 'data_quality']);
+export const HEAVY_FIELDS = new Set([...COD_FIELDS, 'zero_order_limit', 'stock', 'days_of_stock', 'margin_pct', 'target_cpa', 'max_cpa', 'hard_stop_cpa', 'profit_state', 'data_quality']);
 
 /** Flat field values for rule evaluation over one window (null = unknown, never zero). */
 export function fieldsForRule({ ctx, windowMetrics }) {
@@ -204,6 +219,7 @@ export function fieldsForRule({ ctx, windowMetrics }) {
     spend: m.spend ?? null, purchases: m.purchases ?? (m.spend != null ? 0 : null), // Meta omits the purchase action when there are none: a synced row WITH spend and NO purchase action means 0 purchases (no row at all stays unknown)
      cpa: m.cpa ?? null, ctr: m.ctr ?? null, cvr: m.conversionRate ?? null, cpc: m.cpc ?? null, cpm: m.cpm ?? null, roas: m.roas ?? null, frequency: m.frequency ?? null,
     stock: heavy ? (ctx.stock?.currentStock ?? null) : null, days_of_stock: heavy ? (ctx.stock?.daysRemaining ?? null) : null, margin_pct: heavy ? (e.marginPct ?? null) : null,
+    zero_order_limit: heavy ? (ctx.zeroOrder?.limit ?? null) : null,
     target_cpa: heavy ? (e.targetCpa ?? null) : null, max_cpa: heavy ? (e.maxCpa ?? null) : null, hard_stop_cpa: heavy ? (e.hardStopCpa ?? null) : null,
     profit_state: heavy ? (e.profitState && e.profitState !== 'UNKNOWN' && e.profitState !== 'INSUFFICIENT_DATA' ? e.profitState : null) : null, data_quality: heavy ? (dqState === 'UNKNOWN' ? null : dqState) : null, campaign_status: ctx.campaign?.status || 'UNKNOWN', campaign_tag: ctx.campaign?.tag || '',  campaign_age_hours: ctx.campaign?.firstSeenAt ? Math.floor((Date.now() - new Date(ctx.campaign.firstSeenAt).getTime()) / MS_H) : null,
   };
@@ -223,4 +239,20 @@ export async function computeVelocity({ campaignId, now = new Date(), cfg = { wi
   const spendDelta = (last.spend - base.spend) / hours * (Number(cfg.windowHours) || 1);
   const purchasesDelta = (last.meta_purchases ?? 0) - (base.meta_purchases ?? 0);
   return { spendPerWindow: Math.round(spendDelta * 10) / 10, purchasesDelta, hours: Math.round(hours * 100) / 100, abnormal: spendDelta >= (Number(cfg.minSpend) || 100) && (cfg.requireNoResult ? purchasesDelta <= 0 : true) };
+}
+
+/**
+ * When did this campaign last record a purchase? From the synced snapshots only (per-day cumulative purchases: the newest snapshot whose cumulative
+ * count rose vs the previous snapshot of the same day, or the first snapshot of a day that already shows purchases). null = unknown / none seen.
+ */
+export async function computeLastPurchaseAt({ campaignId, now = new Date(), hours = 72 }) {
+  const rows = await prisma.metaPerformanceSnapshot.findMany({ where: { level: 'campaign', campaign_id: campaignId, snapshot_at: { gte: new Date(now.getTime() - hours * MS_H) } }, orderBy: { snapshot_at: 'asc' }, select: { snapshot_at: true, date_start: true, meta_purchases: true } });
+  let last = null; const prev = new Map();
+  for (const r of rows) {
+    const before = prev.get(r.date_start);
+    const cur = r.meta_purchases ?? 0;
+    if (before === undefined ? cur > 0 : cur > before) last = r.snapshot_at;
+    prev.set(r.date_start, cur);
+  }
+  return last;
 }
