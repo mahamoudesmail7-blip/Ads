@@ -8,6 +8,7 @@
 // main cards.
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
+import { renderOperator, stopOperatorPolling } from './ai-operator.js';
 
 const E = (s) => UI.escapeHtml(String(s ?? ''));
 const $ = (id) => document.getElementById(id);
@@ -66,6 +67,7 @@ const IC = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   play: '<circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4z"/>',
   chevronLeft: '<polyline points="15 18 9 12 15 6"/>',
+  bot: '<rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9 16.5h6"/><circle cx="12" cy="3.5" r="1"/>',
 };
 function ic(name, cls = 'ic') {
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${IC[name] || ''}</svg>`;
@@ -78,6 +80,7 @@ const NAV = [
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
   { key: 'decisions', label: 'مركز القرار الذكي', icon: 'target', badge: true },
   { key: 'scale', label: 'مركز التوسّع', icon: 'rocket' },
+  { key: 'operator', label: 'AI Operator', icon: 'bot' },
   { key: 'winners', label: 'الأبطال', icon: 'image' },
   { key: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'grid' },
   { key: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
@@ -86,10 +89,10 @@ const NAV = [
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, tasks: renderTasks, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'مركز القرار الذكي', scale: 'مركز التوسّع', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
-const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', tasks: 'doc', history: 'doc', settings: 'gear' };
-const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale', 'tasks']);
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, operator: (panel) => renderOperator(panel, { isAdmin: state.isAdmin }), winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, tasks: renderTasks, history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'مركز القرار الذكي', scale: 'مركز التوسّع', operator: 'AI Operator — التحكم الذكي في الحملات', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', operator: 'bot', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', tasks: 'doc', history: 'doc', settings: 'gear' };
+const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale', 'tasks', 'operator']);
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
 // existing resolveWindow() keys, so every window-aware endpoint honours them.
@@ -213,6 +216,7 @@ function renderNav() {
 function route() {
   if (cloneState.poll) { clearInterval(cloneState.poll); cloneState.poll = null; }
   if (schedState.ticker) { clearInterval(schedState.ticker); schedState.ticker = null; }
+  stopOperatorPolling();
   const hash = (location.hash || '#home').slice(1);
   state.tab = NAV.find((n) => n.key === hash) ? hash : 'home';
   renderNav();
@@ -4664,6 +4668,7 @@ const SETTING_FIELDS = [
   ['ambAnalysisLookbackDays', 'نافذة التحليل (أيام)', 'number'],
   ['ambScaleCpaBetterPct', 'CPA لازم يكون أحسن من الهدف بـ % قبل التوسّع', 'number'],
   ['ambCreativeFatigueFreqThreshold', 'حد التكرار لإجهاد الكرييتف', 'number'],
+  ['ambAllowAutoOpen', 'أوتوبايلوت: اسمح بفتح الحملات تلقائيًا (AI Operator)', 'bool'],
   ['ambAllowAutoPause', 'أوتوبايلوت: اسمح بالإيقاف التلقائي', 'bool'],
   ['ambAllowAutoBudgetIncrease', 'أوتوبايلوت: اسمح بزيادة الميزانية', 'bool'],
   ['ambAllowAutoBudgetDecrease', 'أوتوبايلوت: اسمح بتقليل الميزانية', 'bool'],

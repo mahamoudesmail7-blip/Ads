@@ -56,6 +56,7 @@ export const AMB_DEFAULT_SETTINGS = {
   ambLiveAlertCpaThreshold: null,             // EGP — null = this specific check is off; still requires the existing ambMinPurchasesBeforeScaling sample gate before it can fire
   ambLiveAlertSpendNoPurchaseThreshold: null, // EGP — null = off
   // Autopilot action allow-list (all OFF by default)
+  ambAllowAutoOpen: false,                  // AI Operator: allow AUTOPILOT to re-activate a PAUSED campaign (opening is riskier than pausing, so it has its own switch)
   ambAllowAutoPause: false,
   ambAllowAutoBudgetIncrease: false,
   ambAllowAutoBudgetDecrease: false,

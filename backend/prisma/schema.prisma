@@ -3196,3 +3196,189 @@ model WinnerProductSaved {
   @@unique([user_id, winner_product_id])
   @@map("winner_product_saved")
 }
+
+// ---------------------------------------------------------------------------
+// 🤖 AI Operator (2026-10-03) — execution + automation layer on top of Smart Advisor.
+// Additive tables only. product_id/ids are plain columns (no FK) on purpose: an Operator audit trail must
+// outlive a deleted product/campaign. Meta writes still go ONLY through the existing executor (AmbRecommendation -> AmbAction).
+// ---------------------------------------------------------------------------
+
+/// Global Operator state: mode (default SHADOW — never AUTOPILOT), Emergency Stop, limits, cooldowns, schedule.
+model AmbOperatorConfig {
+  id               Int      @id @default(autoincrement())
+  scope            String   @unique @default("GLOBAL")
+  mode             String   @default("SHADOW") // OFF | SHADOW | APPROVAL | AUTOPILOT
+  emergency_stop   Boolean  @default(false)
+  emergency_reason String?
+  emergency_by_id  Int?
+  emergency_at     DateTime?
+  limits_json      String? // {maxDecreasePct, maxChangesPerCampaignPerDay, maxActionsPerHour, maxActionsPerDay, lossLimits:{campaign,product,account}, spendVelocity:{...}, ...}
+  cooldowns_json   String? // {OPEN:h, PAUSE:h, SCALE_UP:h, SCALE_DOWN:h}
+  store_limits_json   String? // {[storeId]: {maxBudgetIncreasePerDay, maxEnablesPerDay, maxPausesPerDay, ...}} — per-store overrides, never leak across stores
+  autopilot_attest_json String? // {regression, executor, idempotency: {by, at}} — explicit human attestations required by the Autopilot gate
+  schedule_json    String? // {mode:'ALWAYS'|'HOURS'|'EXCLUDED_HOURS', ranges:[{from,to}], tz}
+  updated_by_id    Int?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@map("amb_operator_config")
+}
+
+/// A user rule (builder or compiled from Arabic text). Structured only — free text is never executed.
+model AmbOperatorRule {
+  id               Int      @id @default(autoincrement())
+  rule_uuid        String   @unique
+  name             String
+  description      String?
+  enabled          Boolean  @default(false)
+  store_id         String? // null = every store
+  scope_json       String? // {productIds:[], productKeys:[], campaignIds:[], tags:[], excludeTags:[]}
+  window           String   @default("today") // today | last3 | last7 | last14 | last30 | last60
+  conditions_json  String // {all:[{field,op,value}], any:[...]}
+  action           String // OPEN | PAUSE | SCALE_UP | SCALE_DOWN | PREPARE_TEST
+  action_params_json String? // {pct, ...}
+  mode             String   @default("SHADOW") // SHADOW | APPROVAL | AUTOPILOT
+  cooldown_hours   Int      @default(24)
+  priority         Int      @default(100)
+  source           String   @default("BUILDER") // BUILDER | NL | SYSTEM
+  nl_text          String?
+  validation_json  String?
+  version          Int      @default(1)
+  created_by_id    Int?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@index([enabled, store_id])
+  @@map("amb_operator_rules")
+}
+
+/// Protection that always overrides automation. expires_at != null => a temporary override.
+model AmbOperatorException {
+  id            Int      @id @default(autoincrement())
+  store_id      String?
+  scope_type    String // STORE | PRODUCT | CAMPAIGN | ADSET | AD | TAG
+  scope_id      String
+  scope_label   String?
+  types_json    String // ["NO_AUTO_STOP","NO_AUTO_OPEN","NO_AUTO_SCALE","NO_BUDGET_CHANGE","NO_AUTOMATION"]
+  reason        String?
+  expires_at    DateTime?
+  active        Boolean  @default(true)
+  created_by_id Int?
+  created_at    DateTime @default(now())
+
+  @@index([scope_type, scope_id, active])
+  @@map("amb_operator_exceptions")
+}
+
+/// Per-product Operator settings: stable Product Key, manual CPA thresholds. Costs stay on AmbProduct/Product (single source).
+model AmbOperatorProductConfig {
+  id               Int      @id @default(autoincrement())
+  product_id       Int
+  store_id         String
+  product_key      String? // e.g. "FUN MASSAGE"
+  target_cpa       Float?
+  max_cpa          Float?
+  hard_stop_cpa    Float?
+  min_profit       Float?
+  min_margin_pct   Float?
+  min_stock        Float? // legacy fallback — canonical minimum stock lives on Product.minimum_stock
+  automation_mode  String? // null = inherit global; else OFF | SHADOW | APPROVAL | AUTOPILOT (stricter of this and the global mode wins)
+  max_scale_pct    Float? // per-product cap on a single budget step
+  testing_spend_allowance Float?
+  testing_min_sample Int?
+  notes            String?
+  updated_by_id    Int?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@unique([product_id, store_id])
+  @@map("amb_operator_product_config")
+}
+
+/// Explicit campaign tag (TESTING / SCALE / RETARGET / PROTECTED ...). TESTING campaigns get their own thresholds.
+model AmbOperatorCampaignTag {
+  id            Int      @id @default(autoincrement())
+  ad_account_id String
+  campaign_id   String
+  store_id      String?
+  product_id    Int?
+  tag           String
+  testing_json  String? // {spendAllowance, minSample, evaluationDays, stopSpend}
+  created_by_id Int?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@unique([ad_account_id, campaign_id])
+  @@map("amb_operator_campaign_tags")
+}
+
+/// One evaluated candidate action — the shadow log AND the permanent action history.
+model AmbOperatorDecision {
+  id                    Int      @id @default(autoincrement())
+  decision_key          String   @unique // idempotency key: rule|campaign|action|cooldown-bucket
+  store_id              String
+  product_id            Int?
+  amb_product_id        Int?
+  ad_account_id         String
+  campaign_id           String
+  campaign_name         String?
+  action                String // OPEN | PAUSE | SCALE_UP | SCALE_DOWN | PREPARE_TEST | ROLLBACK
+  rule_id               Int?
+  rule_name             String?
+  mode_at_decision      String // effective mode: SHADOW | APPROVAL | AUTOPILOT
+  status                String   @default("SHADOW") // SHADOW | BLOCKED | PREPARED | APPROVED | EXECUTING | EXECUTED | VERIFIED | FAILED | ROLLED_BACK | REJECTED | SNOOZED | EXPIRED
+  confidence            String   @default("LOW")
+  blocked_codes_json    String? // [{code, level, severity, message}] in deterministic priority order
+  evidence_json         String? // metrics, window, rule match details, economics, stock, profit, data quality
+  why_json              String? // ماذا/لماذا/بناءً على/أي Rule/ما يمنع/المخاطر/ماذا سيحدث
+  params_json           String? // {fromBudget,toBudget,pct,...}
+  before_json           String?
+  after_json            String?
+  rollback_json         String? // exact previous state, captured BEFORE the write
+  advisor_rec_id        String? // Smart Advisor recommendation_id this action implements/relates to
+  advisor_plan_version  Int?
+  amb_recommendation_id Int?
+  amb_action_id         Int?
+  approval_source       String? // USER | AUTOPILOT
+  approved_by_id        Int?
+  approved_at           DateTime?
+  executed_at           DateTime?
+  verified_at           DateTime?
+  verify_json           String?
+  error                 String?
+  outcome_json          String? // later result (before/after) — feeds Smart Advisor learning
+  shadow_json           String? // {userDidSame, hindsight:{...}} — evaluated later
+  snoozed_until         DateTime?
+  rule_version          Int? // version of the rule when this decision was made — history never changes meaning
+  rule_snapshot_json    String? // {version, name, window, conditions, action, mode, cooldown_hours} frozen at decision time
+  error_category        String? // RETRYABLE | PERMANENT | DATA | GUARD — only RETRYABLE is ever retried
+  reject_reason         String?
+  expected_state_json   String? // {status, budget} the campaign must still have right before the write
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  @@index([store_id, status])
+  @@index([campaign_id, action, created_at])
+  @@index([created_at])
+  @@map("amb_operator_decisions")
+}
+
+/// Persisted lifecycle transitions + notable operator events (MANUAL_OVERRIDE, EMERGENCY_STOP, ...) — the audit trail behind every decision.
+model AmbOperatorEvent {
+  id          Int      @id @default(autoincrement())
+  decision_id Int?
+  kind        String // TRANSITION | MANUAL_OVERRIDE | EMERGENCY_STOP | MODE_CHANGE | RULE_CHANGE | NOTE
+  from_status String?
+  to_status   String?
+  actor       String? // USER | AUTOPILOT | SYSTEM
+  actor_id    Int?
+  note        String?
+  data_json   String?
+  campaign_id String?
+  created_at  DateTime @default(now())
+
+  @@index([decision_id, created_at])
+  @@index([campaign_id, kind, created_at])
+  @@index([kind, created_at])
+  @@map("amb_operator_events")
+}

@@ -47,6 +47,7 @@ import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
 import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
+import operatorRoutes from './routes/operator.js';
 import scaleCenterRoutes from './routes/scaleCenter.js';
 import assistantTasksRoutes from './routes/assistantTasks.js';
 import creativeFactoryRoutes from './routes/creativeFactory.js';
@@ -61,6 +62,7 @@ import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
 import { startAmbAudienceBreakdownScheduler } from './services/amb/audienceBreakdownSync.js';
 import { startLiveCampaignAlertsScheduler } from './services/amb/liveCampaignAlerts.js';
 import { startAdvisorEvaluatorScheduler } from './services/amb/advisorEvaluator.js';
+import { startOperatorScheduler } from './services/amb/operatorScheduler.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startProductExperimentScheduler } from './services/amb/productExperiment.js';
 import { startProductAutoAnalysisScheduler } from './services/amb/productAutoAnalysis.js';
@@ -111,6 +113,7 @@ app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
 app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new module INSIDE AI Intelligence (see routes/aiMediaBuyer.js)
+app.use('/api/operator', operatorRoutes); // 🤖 AI Operator — execution/automation layer INSIDE AI Media Buyer (SHADOW by default, see routes/operator.js)
 app.use('/api/scale-center', scaleCenterRoutes); // 🚀 مركز التوسّع — Scale/Bump execution only, deliberately separate from AI Media Buyer's Decision Center (see routes/scaleCenter.js)
 app.use('/api/assistant-tasks', assistantTasksRoutes); // 🤖 AI Media Buyer Operator — Task Engine (Phase 2 Slice 1, see routes/assistantTasks.js)
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
@@ -159,6 +162,7 @@ startAmbSnapshotScheduler();
 startAmbAudienceBreakdownScheduler();
 startLiveCampaignAlertsScheduler();
 startAdvisorEvaluatorScheduler();
+startOperatorScheduler();
 startAmbOutcomeScheduler();
 startProductExperimentScheduler();
 startProductAutoAnalysisScheduler();
