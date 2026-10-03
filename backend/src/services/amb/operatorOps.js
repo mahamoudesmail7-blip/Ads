@@ -94,8 +94,13 @@ export async function ruleAuditLog({ ruleId = null, limit = 100 } = {}) {
 // "What will happen today?" (spec 101) + dry run (spec 76)
 // =====================================================================================================================
 /** Shadow simulation of every enabled rule over the live world. NO writes. A candidate that is not BLOCKED is what the Operator would do; mode is irrelevant here. */
-export async function whatWillHappen({ rules = null } = {}) {
-  const r = await evaluateOperator({ rules, persist: false });
+export async function whatWillHappen({ rules = null, only = null } = {}) {
+  const r = await evaluateOperator({ rules, persist: false, only });
+  return { simulation: true, wrote: false, ...summarizeSimulation(r) };
+}
+
+/** Pure: turns an evaluateOperator() result into the Shadow summary (would open / pause / scale / blocked ...). */
+export function summarizeSimulation(r) {
   const live = r.candidates.filter((c) => c.wouldBe !== 'BLOCKED');
   const blocked = r.candidates.filter((c) => c.wouldBe === 'BLOCKED');
   const unknownGroups = new Set(['DATA_QUALITY', 'INVENTORY']);
@@ -105,7 +110,7 @@ export async function whatWillHappen({ rules = null } = {}) {
     blocked: blocked.length, excluded: blocked.filter((c) => c.primaryBlock?.group === 'EXCEPTION').length, protected: blocked.filter((c) => ['TESTING_PROTECTED', 'PRODUCT_AUTOMATION_OFF'].includes(c.primaryBlock?.code)).length,
     unknown: blocked.filter((c) => unknownGroups.has(c.primaryBlock?.group) || ['DATA_UNKNOWN', 'ECONOMICS_INCOMPLETE', 'MAPPING_UNRELIABLE'].includes(c.primaryBlock?.code)).length,
   };
-  return { simulation: true, wrote: false, summary, engineSummary: r.summary, ms: r.ms, conflicts: r.conflicts, candidates: r.candidates.slice(0, 300).map((c) => ({ key: c.key, action: c.action, actionLabel: ACTION_LABEL_AR[c.action], store: c.store, productName: c.productName, campaign: c.campaign, ruleName: c.ruleName, wouldBe: c.wouldBe, confidence: c.confidence, params: c.params, primaryBlock: c.primaryBlock, canonical: c.canonical })) };
+  return { summary, engineSummary: r.summary, ms: r.ms, conflicts: r.conflicts, candidates: r.candidates.slice(0, 300).map((c) => ({ key: c.key, action: c.action, actionLabel: ACTION_LABEL_AR[c.action], store: c.store, productName: c.productName, campaign: c.campaign, ruleName: c.ruleName, wouldBe: c.wouldBe, confidence: c.confidence, params: c.params, primaryBlock: c.primaryBlock, canonical: c.canonical })) };
 }
 
 // =====================================================================================================================

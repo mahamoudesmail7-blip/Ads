@@ -83,6 +83,7 @@ export const SETUP_ACTIONS = {
   STOCK: { type: 'STOCK', label: 'ربط/تحديث المخزون' },
   MAPPING: { type: 'MAPPING', label: 'اربط الحملة بالمنتج' },
   HARD_STOP: { type: 'ECONOMICS', label: 'حدّد Hard Stop CPA' },
+  ZERO_ORDER: { type: 'ECONOMICS', label: 'اضبط حد الإيقاف بدون أوردرات' },
   DATA_QUALITY: { type: 'DATA_QUALITY', label: 'افتح فحص جودة البيانات' },
   EXCEPTIONS: { type: 'EXCEPTIONS', label: 'راجع الاستثناءات' },
   RULES: { type: 'RULES', label: 'راجع القواعد' },

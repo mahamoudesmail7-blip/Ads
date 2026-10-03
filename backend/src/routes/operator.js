@@ -17,6 +17,7 @@ import { interpretCommand } from '../services/amb/operatorCommand.js';
 import { getOperatorSchedulerStatus, runOperatorTick } from '../services/amb/operatorScheduler.js';
 import * as readiness from '../services/amb/operatorReadiness.js';
 import { buildIntegrationAudit, autoFixIntegration } from '../services/amb/operatorIntegration.js';
+import * as setupGrid from '../services/amb/operatorSetupGrid.js';
 import { listTemplates, instantiateTemplate } from '../services/amb/operatorTemplates.js';
 import { performanceReport, executedWithOutcomes, operatorHealth, ruleAuditLog, whatWillHappen, bulkApprove, dailyBrief, notifyEmergencyStop } from '../services/amb/operatorOps.js';
 import { decisionEvents } from '../services/amb/operatorReports.js';
@@ -43,6 +44,13 @@ router.get('/integration', asyncRoute(async (req, res) => {
 }));
 // closes ONLY the AUTO_FIXABLE gaps: Smart Advisor plan versions + SUGGESTED (never VERIFIED) mappings. No economics/stock/Meta/Easy Orders write.
 router.post('/integration/autofix', ADMIN, asyncRoute(async (req, res) => { const r = await autoFixIntegration({ userId: req.user.id }); integrationCache = null; res.json(r); }));
+// ---- Setup Grid: every product in one editable table (validate / preview / apply write through the canonical savers; Shadow is read-only) -------------
+router.get('/setup-grid', asyncRoute(async (req, res) => res.json(await setupGrid.buildSetupGrid())));
+router.post('/setup-grid/validate', asyncRoute(async (req, res) => res.json(await setupGrid.validateGrid({ changes: req.body?.changes }))));
+router.post('/setup-grid/preview', asyncRoute(async (req, res) => res.json(await setupGrid.previewGrid({ changes: req.body?.changes }))));
+router.post('/setup-grid/apply', ADMIN, asyncRoute(async (req, res) => { const r = await setupGrid.applyGrid({ changes: req.body?.changes, skipInvalid: !!req.body?.skipInvalid, userId: req.user.id }); integrationCache = null; clearOperatorFactsCache(); res.json(r); }));
+router.post('/setup-grid/recompute', asyncRoute(async (req, res) => res.json({ readiness: await setupGrid.recomputeReadiness({ productIds: req.body?.productIds }) })));
+router.post('/setup-grid/shadow', asyncRoute(async (req, res) => res.json(await setupGrid.shadowForProducts({ productIds: req.body?.productIds }))));
 router.put('/products/:productId/zero-order', ADMIN, asyncRoute(async (req, res) => {
   const r = await store.setProductOverride({ productId: req.params.productId, zeroOrder: req.body?.zeroOrder ?? null, userId: req.user.id });
   integrationCache = null; clearOperatorFactsCache(); res.status(r?.ok === false ? 400 : 200).json(r);

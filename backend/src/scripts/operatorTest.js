@@ -212,7 +212,7 @@ ok('AMB settings: every autopilot allowlist flag defaults OFF', ['ambAllowAutoOp
 ok('default limits: allowAutoRollback is OFF', S.DEFAULT_LIMITS.allowAutoRollback === false);
 const routeSrc = readFileSync(join(__dirname, '../routes/operator.js'), 'utf8');
 const mutating = routeSrc.split('\n').filter((l) => /^router\.(post|put|delete)\(/.test(l));
-const openToManager = ['/emergency-stop', '/rules/validate', '/rules/parse', '/rules/simulate', '/command', '/templates/:key/instantiate', '/rules/:id/dry-run', '/what-will-happen']; // the last four only COMPUTE (no writes — proven by the read-only tests)
+const openToManager = ['/emergency-stop', '/rules/validate', '/rules/parse', '/rules/simulate', '/command', '/templates/:key/instantiate', '/rules/:id/dry-run', '/what-will-happen', '/setup-grid/validate', '/setup-grid/preview', '/setup-grid/recompute', '/setup-grid/shadow']; // the last eight only COMPUTE (no writes — proven by the read-only tests; /setup-grid/apply stays ADMIN)
 const unguarded = mutating.filter((l) => !/ADMIN/.test(l) && !openToManager.some((p) => l.includes(`'${p}'`)));
 ok('every mutating route is ADMIN-only except stop/validate/parse/simulate/command', unguarded.length === 0, unguarded.join(' | '));
 ok('Emergency Stop ACTIVATION is open to managers but DEACTIVATION is ADMIN-only', /router\.post\('\/emergency-stop', asyncRoute/.test(routeSrc) && /router\.delete\('\/emergency-stop', ADMIN/.test(routeSrc));

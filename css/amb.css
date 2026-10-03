@@ -855,3 +855,10 @@ body { background: var(--amb-bg); }
 .op-pill.blue { background: var(--amb-blue-bg, #dbeafe); color: var(--amb-blue, #1d4ed8); } .op-pill.gray { background: #e5e7eb; color: #374151; }
 .op-miss { display: inline-block; margin: 2px 4px 2px 0; font-size: 12px; }
 .op-fam { border: 1px dashed var(--amb-border, #d1d5db); border-radius: 10px; padding: 8px 10px; margin: 6px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* AI Operator — Setup Grid */
+.op-grid th, .op-grid td { vertical-align: top; } .op-gc { width: 92px; padding: 4px 6px; border: 1px solid var(--amb-border, #d1d5db); border-radius: 6px; background: var(--amb-surface, #fff); color: inherit; font: inherit; }
+.op-gc.dirty { border-color: var(--amb-blue, #2563eb); background: var(--amb-blue-bg, #eff6ff); } .op-gc.conflict { border-color: var(--amb-red, #dc2626); background: var(--amb-red-bg, #fef2f2); }
+.op-gzo { display: flex; flex-direction: column; gap: 4px; min-width: 130px; } .op-gzo select { padding: 4px; border-radius: 6px; border: 1px solid var(--amb-border, #d1d5db); font: inherit; }
+.op-gbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; position: sticky; top: 0; background: var(--amb-surface, #fff); padding: 6px 0; z-index: 2; }
+.amb-link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--amb-blue, #2563eb); font: inherit; text-align: right; }

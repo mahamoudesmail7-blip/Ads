@@ -157,7 +157,7 @@ export async function saveProductProfile({ productId, patch, userId = null }) {
  * READY / PARTIAL / BLOCKED. BLOCKED = something critical is missing (campaign mapping, economics, data quality). PARTIAL = only softer items are missing
  * (stock, Hard Stop CPA). `dq === undefined` means "not checked yet" (light mode) — it is reported as such, never as OK.
  */
-export function computeReadiness({ product, amb, opCfg, econ, campaigns, dq }) {
+export function computeReadiness({ product, amb, opCfg, econ, campaigns, dq, zeroOrder }) {
   const verified = (campaigns || []).filter((c) => c.verified);
   const dqKnown = dq !== undefined;
   const dqBlocked = dqKnown && dq?.gate === 'DECISION_BLOCKED_DATA_QUALITY';
@@ -169,6 +169,8 @@ export function computeReadiness({ product, amb, opCfg, econ, campaigns, dq }) {
     { key: 'STOCK', label: 'المخزون الحالي مسجّل', ok: product?.current_stock != null, severity: 'SOFT', detail: product?.current_stock != null ? `${product.current_stock} قطعة` : 'غير مسجّل — الفتح/التوسع هيتمنعوا', action: SETUP_ACTIONS.STOCK },
     { key: 'MIN_STOCK', label: 'الحد الأدنى للمخزون', ok: (product?.minimum_stock ?? opCfg?.min_stock) != null, severity: 'SOFT', detail: (product?.minimum_stock ?? opCfg?.min_stock) != null ? `${product?.minimum_stock ?? opCfg?.min_stock}` : 'غير محدد', action: SETUP_ACTIONS.STOCK },
     { key: 'TARGET_CPA', label: 'Target CPA', ok: (opCfg?.target_cpa ?? amb?.target_cpa) != null, severity: 'SOFT', detail: (opCfg?.target_cpa ?? amb?.target_cpa) != null ? `${opCfg?.target_cpa ?? amb?.target_cpa}` : 'غير محدد', action: SETUP_ACTIONS.ECONOMICS },
+    // per-product zero-order stop. Only evaluated when the caller supplies it (undefined = not asked), so older callers keep their exact item list.
+    ...(zeroOrder === undefined ? [] : [{ key: 'ZERO_ORDER', label: 'حد الإيقاف بدون أوردرات', ok: !!zeroOrder, severity: 'SOFT', detail: zeroOrder ? (zeroOrder.mode === 'FIXED_SPEND' ? `ثابت ${zeroOrder.fixedSpend}` : `Target CPA × ${zeroOrder.multiple}`) : 'غير مضبوط — إيقاف الصفر-أوردرات ممنوع', action: SETUP_ACTIONS.ZERO_ORDER || SETUP_ACTIONS.HARD_STOP }]),
     { key: 'HARD_STOP', label: 'Hard Stop CPA', ok: opCfg?.hard_stop_cpa != null, severity: 'SOFT', detail: opCfg?.hard_stop_cpa != null ? `${opCfg.hard_stop_cpa}` : 'غير محدد', action: SETUP_ACTIONS.HARD_STOP },
   ];
   const criticalMissing = items.filter((i) => i.severity === 'CRITICAL' && !i.ok);
@@ -180,7 +182,7 @@ export function computeReadiness({ product, amb, opCfg, econ, campaigns, dq }) {
 }
 
 /** Readiness of every active AMB product (the product universe the Operator can ever act on). `heavy` adds the data-quality check (cached 5 min). */
-export async function readinessList({ heavy = false } = {}) {
+export async function readinessList({ heavy = false, heavyFor = null } = {}) {
   const ambs = await prisma.ambProduct.findMany({ where: { active: true, product_id: { not: null } }, select: { id: true, product_id: true, product_name: true, product_cost: true, actual_selling_price: true, shipping_cost: true, packaging_cost: true, other_cost: true, target_cpa: true, max_cpa: true, min_profit: true } });
   const productIds = ambs.map((a) => a.product_id);
   const products = new Map((await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, product_name: true, store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, current_stock: true, minimum_stock: true } })).map((p) => [p.id, p]));
@@ -188,6 +190,7 @@ export async function readinessList({ heavy = false } = {}) {
   const maps = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: { in: ambs.map((a) => a.id) } }, select: { amb_product_id: true, campaign_id: true, status: true, match_source: true } });
   const byAmb = new Map(); for (const m of maps) (byAmb.get(m.amb_product_id) || byAmb.set(m.amb_product_id, []).get(m.amb_product_id)).push({ campaignId: m.campaign_id, status: m.status, source: m.match_source, verified: m.status === 'MAPPED' });
   const out = [];
+  const cfgGlobal = await getOperatorConfig();
   const catalogs = {}; for (const sid of new Set([...products.values()].map((p) => p.store_id).filter(Boolean))) catalogs[sid] = await loadStoreCatalogIndex(sid); // cached 1h; null when the store catalogue is unavailable
   for (const amb of ambs) {
     const product = products.get(amb.product_id); if (!product) continue;
@@ -195,8 +198,8 @@ export async function readinessList({ heavy = false } = {}) {
     const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null });
     const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
     let dq;
-    if (heavy) { const f = await loadProductFacts({ ambProductId: amb.id, heavy: true }); dq = f.dq || { gate: null }; }
-    const readiness = computeReadiness({ product, amb, opCfg, econ, campaigns: byAmb.get(amb.id) || [], dq });
+    if (heavy || heavyFor?.has(product.id)) { const f = await loadProductFacts({ ambProductId: amb.id, heavy: true }); dq = f.dq || { gate: null }; }
+    const readiness = computeReadiness({ product, amb, opCfg, econ, campaigns: byAmb.get(amb.id) || [], dq, zeroOrder: ((cfgGlobal.limits.productOverrides || {})[String(product.id)]?.zeroOrder) || null });
     out.push({ productId: product.id, ambProductId: amb.id, name: product.product_name, storeId: product.store_id, productKey: opCfg?.product_key || null, automationMode: opCfg?.automation_mode || null, campaignsMapped: (byAmb.get(amb.id) || []).filter((c) => c.verified).length, campaignsSuggested: (byAmb.get(amb.id) || []).filter((c) => !c.verified).length, economicsComplete: !!econ.complete, priceStatus: priceResolution.status, stockKnown: product.current_stock != null, stock: product.current_stock ?? null, hardStop: opCfg?.hard_stop_cpa ?? null, targetCpa: opCfg?.target_cpa ?? amb.target_cpa ?? null, readiness });
   }
   const order = { BLOCKED: 0, PARTIAL: 1, READY: 2 };

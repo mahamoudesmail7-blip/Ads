@@ -4,6 +4,7 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { drawCompletion } from './ai-operator-completion.js';
+import { drawSetupGrid } from './ai-operator-grid.js';
 import { E, $, num, egp, ago, dt, S, MODES, ACTION_ICON, STATUS_CLS, READY_CLS, PROFIT_AR, openDrawer, closeDrawer, drawerHead, kpi, fld, condText, blockPanel, wireSetupButtons } from './ai-operator-core.js';
 
 const refresh = async () => { await S.hooks.refreshTop?.(); S.hooks.drawTop?.(); };
@@ -96,6 +97,12 @@ function wireProfile(p, productId) {
 // =====================================================================================================================
 let readyFilter = 'ALL';
 export async function drawReadiness(body, { heavy = false } = {}) {
+  // default view = the editable Setup Grid (all products in one table); the classic list (with the data-quality check) is one click away
+  if (S.readyView !== 'list') {
+    body.innerHTML = '<div class="op-toolbar"><div><button class="amb-btn" id="opViewList">📋 عرض القائمة وفحص جودة البيانات</button></div></div><div id="opGridRoot"></div>';
+    $('opViewList').onclick = () => { S.readyView = 'list'; drawReadiness(body); };
+    return drawSetupGrid($('opGridRoot'));
+  }
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   const r = await api.get('/api/operator/readiness', { heavy: heavy ? 1 : 0 });
   S.products = r.products;
@@ -103,7 +110,7 @@ export async function drawReadiness(body, { heavy = false } = {}) {
   const rows = r.products.filter((p) => readyFilter === 'ALL' || p.readiness.state === readyFilter);
   body.innerHTML = `
     <div class="op-toolbar"><div class="amb-filters" style="margin:0">${['ALL', 'BLOCKED', 'PARTIAL', 'READY'].map((k) => `<button class="amb-fbtn ${readyFilter === k ? 'active' : ''}" data-rf="${k}">${k === 'ALL' ? `الكل (${r.products.length})` : `${{ BLOCKED: '🔴', PARTIAL: '🟡', READY: '🟢' }[k]} ${k} (${c[k]})`}</button>`).join('')}</div>
-      <div>${heavy ? '' : '<button class="amb-btn" id="opRdDq">فحص جودة البيانات (ياخد وقت)</button>'} ${S.isAdmin ? '<button class="amb-btn orange" id="opRdImport">📥 إعداد جماعي (CSV)</button>' : ''}</div></div>
+      <div><button class="amb-btn orange" id="opViewGrid">📝 جدول الإعداد الشامل</button> ${heavy ? '' : '<button class="amb-btn" id="opRdDq">فحص جودة البيانات (ياخد وقت)</button>'} ${S.isAdmin ? '<button class="amb-btn orange" id="opRdImport">📥 إعداد جماعي (CSV)</button>' : ''}</div></div>
     ${heavy ? '' : '<div class="op-sub">جودة البيانات لسه ما اتفحصتش — المنتج مش بيتحسب READY قبل ما تتفحص.</div>'}
     <div class="table-wrap"><table class="data op-table2"><thead><tr><th>الجاهزية</th><th>المنتج</th><th>المتجر</th><th>حملات مربوطة</th><th>الاقتصاديات</th><th>المخزون</th><th>Target</th><th>Hard Stop</th><th>الأتمتة</th><th>الناقص</th><th></th></tr></thead><tbody>
     ${rows.map((p) => `<tr><td><span class="op-pill ${READY_CLS[p.readiness.state]}">${p.readiness.icon} ${E(p.readiness.state)}</span></td><td><b>${E(p.name)}</b>${p.productKey ? `<div class="op-camp">${E(p.productKey)}</div>` : ''}</td><td>${E(p.storeId)}</td>
@@ -113,6 +120,7 @@ export async function drawReadiness(body, { heavy = false } = {}) {
   body.querySelectorAll('[data-rf]').forEach((b) => { b.onclick = () => { readyFilter = b.dataset.rf; drawReadiness(body, { heavy }); }; });
   body.querySelectorAll('[data-prof]').forEach((b) => { b.onclick = () => showProfile(Number(b.dataset.prof)); });
   if ($('opRdDq')) $('opRdDq').onclick = () => { $('opRdDq').disabled = true; $('opRdDq').textContent = '⏳ بيفحص…'; drawReadiness(body, { heavy: true }).catch((e) => UI.toast(e.message, 'error')); };
+  if ($('opViewGrid')) $('opViewGrid').onclick = () => { S.readyView = 'grid'; drawReadiness(body); };
   if ($('opRdImport')) $('opRdImport').onclick = showImport;
   wireSetupButtons(body);
 }
@@ -151,7 +159,7 @@ function showImport() {
 let mapFilter = 'ALL'; let mapSearch = '';
 /** Review queue grouped by name family — ONE human decision per family (still confirm-only: nothing becomes VERIFIED without the click). */
 function famPanel(r) {
-  const fams = (r.families || []).slice(0, 12); if (!fams.length) return '';
+  const fams = [...(r.families || [])].sort((a, b) => (b.reviews.includes('CONFIRM') ? 1 : 0) - (a.reviews.includes('CONFIRM') ? 1 : 0) || b.spend7d - a.spend7d).slice(0, 80); if (!fams.length) return '';
   const opts = (sel) => `<option value="">— المنتج —</option>${(S.products || []).map((p) => `<option value="${p.ambProductId}" ${sel === p.ambProductId ? 'selected' : ''}>${E(p.name)} · ${E(p.storeId)}</option>`).join('')}`;
   return `<div class="amb-panel"><h3>🗂️ قائمة المراجعة (${num(r.counts.review)} حملة · ${num(r.counts.families)} عائلة)</h3><div class="op-sub">حملات ملهاش دليل حاسم، متجمّعة بعائلة الاسم — قرار واحد لكل عائلة. ${num(r.counts.ambiguous)} فيها أكتر من منتج محتمل.</div>${fams.map((f, i) => `<div class="op-fam"><div><b>${E(f.prefix || '—')}</b> · ${num(f.count)} حملة · صرف 7 أيام ${num(f.spend7d)} ج.م<div class="op-camp">${E(f.sampleNames.join(' | '))}${f.reviews.includes('AMBIGUOUS') ? ' · <b class="op-bad">غامضة</b>' : ''}</div></div>${S.isAdmin ? `<select id="famPick_${i}">${opts(f.suggestedAmbProductId)}</select><button class="amb-btn success sm" data-fam="${i}">أكّد العائلة</button>` : ''}</div>`).join('')}</div>`;
 }
