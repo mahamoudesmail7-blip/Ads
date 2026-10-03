@@ -7,6 +7,7 @@ import { logger } from '../../logger.js';
 import { getConnection } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
 import { entityWindowMetrics } from './metricsEngine.js';
+import { COD_FIELDS } from './operatorRules.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { stockGuardForProduct } from './stockGuard.js';
 import { computeProductDataQuality } from './dataQuality.js';
@@ -191,7 +192,7 @@ export async function ensureHeavy(ctx) {
 }
 
 /** Which rule fields can only be answered with the heavy per-product facts. */
-export const HEAVY_FIELDS = new Set(['stock', 'days_of_stock', 'margin_pct', 'target_cpa', 'max_cpa', 'hard_stop_cpa', 'profit_state', 'data_quality']);
+export const HEAVY_FIELDS = new Set([...COD_FIELDS, 'stock', 'days_of_stock', 'margin_pct', 'target_cpa', 'max_cpa', 'hard_stop_cpa', 'profit_state', 'data_quality']);
 
 /** Flat field values for rule evaluation over one window (null = unknown, never zero). */
 export function fieldsForRule({ ctx, windowMetrics }) {

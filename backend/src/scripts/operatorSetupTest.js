@@ -205,6 +205,10 @@ try {
   ok('unknown product => ERROR (never guessed)', pv.rows[0].status === 'ERROR' && /مفيش تخمين/.test(pv.rows[0].errors[0]));
   pv = await RD.previewBulkSetup({ csv: `product_id,purchase_cost\n${prod.id},abc` });
   ok('non-numeric cell => ERROR', pv.rows[0].status === 'ERROR');
+  pv = await RD.previewBulkSetup({ csv: `product_id,purchase_cost,selling_price
+${prod.id},abc,300
+${prod.id},12abc,300` });
+  ok('garbage next to valid cells is an ERROR too (regression: it used to be treated as an empty cell)', pv.rows[0].status === 'ERROR' && /غير رقمية/.test(pv.rows[0].errors.join(' ')));
   pv = await RD.previewBulkSetup({ csv: `product_id,purchase_cost,selling_price\n${prod.id},50,100\n${prod.id},60,110` });
   ok('product repeated in the file => ERROR on the second row', pv.rows[1].errors.some((e) => /متكرر/.test(e)));
   pv = await RD.previewBulkSetup({ csv: `product_id,target_cpa,hard_stop_cpa\n${prod.id},150,100` });

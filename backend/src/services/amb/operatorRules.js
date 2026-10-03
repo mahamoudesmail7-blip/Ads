@@ -66,6 +66,15 @@ export const FIELDS = {
   campaign_age_hours: num('عمر الحملة (منذ أقدم ظهور)', 'ساعة'),
   campaign_tag: { type: 'string', label: 'وسم الحملة (TESTING/SCALE/...)' },
 };
+/**
+ * COD / confirmation / delivery / return conditions. Deliberately NOT supported as rule fields: Easy Orders order statuses are not yet verified as
+ * maintained (see easyOrdersStatus.getStoreStatusTrust), so a rule built on them would act on numbers that are not evidence. They are rejected at
+ * validation, refused by the Arabic parser (never silently dropped from a sentence) and — as defence in depth — any rule that still carries one is
+ * evaluated as COD-dependent (blocked with COD_UNRELIABLE unless the store's status trust is OK, and even then DATA_UNKNOWN: there is no source field).
+ */
+export const COD_FIELDS = ['confirmation_rate', 'delivery_rate', 'return_rate', 'confirmed_orders', 'delivered_orders', 'returned_orders', 'cod_confirmed', 'cod_delivered', 'cod_returned'];
+export const usesCodField = (rule) => [...(rule?.conditions?.all || []), ...(rule?.conditions?.any || [])].some((c) => COD_FIELDS.includes(c?.field));
+const COD_TERMS = /(تاكيد|مؤكد|اتاكد|تسليم|اتسلم|مسلم|مرتجع|مرتجعات|كاش|\bcod\b|confirmation|confirmed|deliver)/;
 const NUMERIC_OPS = ['>', '>=', '<', '<=', '=', '!=', 'between'];
 const ENUM_OPS = ['=', '!=', 'in'];
 const STRING_OPS = ['=', '!=', 'in'];
@@ -137,6 +146,7 @@ export function validateRule(rule) {
 
 function validateCondition(c, path, errors) {
   if (!c || typeof c !== 'object') return errors.push(err('CONDITION_INVALID', 'شرط غير صالح.', path));
+  if (COD_FIELDS.includes(c.field)) return errors.push(err('COD_FIELD_UNSUPPORTED', 'شروط التأكيد/التسليم/المرتجعات (COD) مش مدعومة في القواعد لحد ما حالات Easy Orders تتوثق — ممنوعة.', `${path}.field`));
   const f = FIELDS[c.field];
   if (!f) return errors.push(err('FIELD_UNKNOWN', `الحقل "${c.field}" غير معروف.`, `${path}.field`));
   if (!OPS_FOR[f.type].includes(c.op)) return errors.push(err('OP_INVALID', `المعامل "${c.op}" مش مناسب لحقل "${f.label}".`, `${path}.op`));
@@ -280,6 +290,8 @@ export function parseArabicRule(text) {
   else if (/(زود|زوّد|كبر|وسع|ارفع)/.test(t)) action = 'SCALE_UP';
   else if (/(قلل|نزل|خفض)/.test(t)) action = 'SCALE_DOWN';
   if (!action) { out.notes.push('مقدرتش أحدد الأكشن (إيقاف/فتح/زيادة/تقليل ميزانية).'); return out; }
+  // never drop a COD clause silently (that would make the rule broader than the user wrote)
+  if (COD_TERMS.test(t)) { out.unparsed.push('COD'); out.notes.push('الجملة فيها شرط تأكيد/تسليم/مرتجعات (COD) — مش مدعوم كشرط في القواعد لحد ما حالات Easy Orders تتوثق. شيله من النص وجرّب تاني.'); return out; }
 
   const all = [];
   const nums = (re) => { const m = t.match(re); return m ? Number(m[1]) : null; };

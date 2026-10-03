@@ -332,7 +332,7 @@ function parseCsv(text) {
   cur.push(cell); if (cur.some((c) => c.trim() !== '')) rows.push(cur);
   return rows;
 }
-const parseNum = (raw) => { const s = String(raw ?? '').trim().replace(/[٠-٩]/g, (d) => AR_DIGITS[d]).replace(/٫/g, '.').replace(/[,٬\s]/g, (m) => (m === ',' ? '' : '')).replace(/[^\d.\-]/g, ''); if (s === '') return { empty: true }; const n = Number(s); return Number.isFinite(n) ? { value: n } : { invalid: true }; };
+const parseNum = (raw) => { const s = String(raw ?? '').trim().replace(/[٠-٩]/g, (d) => AR_DIGITS[d]).replace(/٫/g, '.').replace(/[,٬\s]/g, ''); if (s === '') return { empty: true }; if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(s)) return { invalid: true }; const n = Number(s); return Number.isFinite(n) ? { value: n } : { invalid: true }; }; // anything that is not a plain number is INVALID (never silently treated as empty)
 
 /** CSV text -> validated plan. NOTHING is written. Each row resolves to ONE product (id / code / sku / exact normalised name within the store) or is an ERROR — never fuzzy. */
 export async function previewBulkSetup({ csv, maxRows = 500 }) {

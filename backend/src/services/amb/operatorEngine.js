@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { raiseAlert } from './alerts.js';
-import { ACTION_LABEL_AR, evaluateConditions, describeCondition, detectRuleConflicts, windowRange, WINDOW_LABEL_AR, FIELDS } from './operatorRules.js';
+import { ACTION_LABEL_AR, usesCodField, evaluateConditions, describeCondition, detectRuleConflicts, windowRange, WINDOW_LABEL_AR, FIELDS } from './operatorRules.js';
 import { evaluateGuards, decisionConfidence, effectiveMode, BLOCK_CODES } from './operatorGuards.js';
 import { listRules, getOperatorConfig } from './operatorStore.js';
 import { lifecycleOf, riskRank, isHardSafetyRule, classifyError, evidenceDrift, expectedState, stateMatches, buildCanonical } from './operatorDecision.js';
@@ -156,7 +156,7 @@ export async function evaluateOperator({ rules = null, persist = false, only = n
       if (a === 'SCALE_UP' && ctx.velocity === null && !ctx.velocityLoaded) { ctx.velocityLoaded = true; ctx.velocity = await computeVelocity({ campaignId: ctx.campaign.id, now, cfg: config.limits.spendVelocity }).catch(() => null); }
       const guardCtx = { ...ctx, metrics: windowMetrics || {}, ruleConflicts: myConflicts };
       const guards = evaluateGuards({
-        decision: { action: a, params, ruleMode: rule.mode, confidence, needs, usesCod: false, cooldownHours: rule.cooldown_hours, ruleMinSpend: spendCond?.value ?? null, severeOverride: category === 'HARD_SAFETY' },
+        decision: { action: a, params, ruleMode: rule.mode, confidence, needs, usesCod: usesCodField(rule), cooldownHours: rule.cooldown_hours, ruleMinSpend: spendCond?.value ?? null, severeOverride: category === 'HARD_SAFETY' },
         ctx: guardCtx, config, settings, now,
         counters: { ...run.counters, campaignActionsToday: ctx.recent.todayCount, loss: { campaign: lossBy.campaign.get(ctx.campaign.id) || 0, product: ctx.product?.id != null ? lossBy.product.get(ctx.product.id) || 0 : 0, account: lossBy.account } },
       });
