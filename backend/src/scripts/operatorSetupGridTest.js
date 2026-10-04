@@ -16,6 +16,7 @@ const { prisma } = await imp('../prisma.js');
 const G = await imp('../services/amb/operatorSetupGrid.js');
 const R = await imp('../services/amb/operatorReadiness.js');
 const { createFromCatalogProduct } = await imp('../services/amb/ambProducts.js');
+const CV = await imp('../services/amb/operatorCoverage.js');
 
 const origCfg = await retryDb(() => prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }));
 const counts0 = { recs: await retryDb(() => prisma.ambRecommendation.count()), actions: await retryDb(() => prisma.ambAction.count()), decisions: await retryDb(() => prisma.ambOperatorDecision.count()) };
@@ -25,6 +26,9 @@ try {
   const pA = await mk('A', { selling_price: 500 });           // catalogue price only
   const pB = await mk('B', { selling_price: 500 });           // will get a conflicting owner price
   const pC = await mk('C');                                   // nothing at all
+  // a real catalogue product that has NO AMB row and NO campaign (the case the old grid silently dropped)
+  const pD = await retryDb(() => prisma.product.create({ data: { product_name: `${T}D_no_amb`, product_code: `${T}D_${Date.now()}`, store_id: 'default', selling_price: 0, product_cost: 0 } })); createdProducts.push(pD.id);
+  const productRowsBefore = await retryDb(() => prisma.product.count());
   await retryDb(() => prisma.ambProduct.update({ where: { product_id: pB.id }, data: { actual_selling_price: 700 } }));
   const row = (g, p) => g.rows.find((r) => r.productId === p.id);
 
@@ -38,6 +42,13 @@ try {
   ok('every row carries mapping status + readiness', g.rows.every((r) => ['VERIFIED', 'SUGGESTED', 'UNMAPPED'].includes(r.mapping.state) && ['READY', 'PARTIAL', 'BLOCKED'].includes(r.readiness.state)));
   ok('fixtures without campaigns are UNMAPPED and BLOCKED', a.mapping.state === 'UNMAPPED' && a.readiness.state === 'BLOCKED');
   ok('counts add up', g.counts.READY + g.counts.PARTIAL + g.counts.BLOCKED === g.counts.total);
+
+  const d = row(g, pD);
+  ok('a catalogue product WITHOUT an AMB row is listed (not dropped)', !!d && d.operatorLinked === false && d.ambProductId === null);
+  ok('no campaign -> NOT_ADVERTISED (not deleted), readiness BLOCKED with an AMB_LINK + mapping gap', d.advertising === 'NOT_ADVERTISED' && d.readiness.state === 'BLOCKED' && d.readiness.missing.some((m) => m.key === 'AMB_LINK') && d.readiness.missing.some((m) => m.key === 'MAPPING'));
+  ok('store isolation: every row belongs to a configured store and the fixture only to its own', g.rows.every((r) => g.stores.includes(r.store)) && g.rows.filter((r) => r.productId === pD.id).length === 1 && d.store === 'default');
+  ok('per-store counts add up to the grid size', Object.values(g.counts.byStore).reduce((a, b) => a + b.total, 0) === g.rows.length && g.counts.total === g.rows.length);
+  ok('advertised + not-advertised(+suggested) = total, per store', Object.values(g.counts.byStore).every((b) => b.advertised + b.notAdvertised + b.suggestedOnly === b.total));
 
   console.log('2) validate: blank is never zero, garbage is rejected');
   let v = await G.validateGrid({ changes: [{ productId: pA.id, values: { purchase_cost: '', target_cpa: '   ' } }] });
@@ -91,6 +102,26 @@ try {
   ok('grid reflects the saved values', a2.purchase_cost === 200 && a2.target_cpa === 90 && a2.hard_stop_cpa === 150 && a2.current_stock === 30 && a2.zero_order?.mode === 'FIXED_SPEND' && a2.zero_order.value === 250);
   ok('conflict gone after the owner decided', b2.price.status !== 'CONFLICT' && b2.price.value === 600, JSON.stringify(b2.price));
   ok('zero-order readiness item is satisfied for A, still missing for C', !row(g, pA).readiness.missing.some((m) => m.key === 'ZERO_ORDER') && row(g, pC).readiness.missing.some((m) => m.key === 'ZERO_ORDER'));
+
+  console.log('4b) a product without an AMB row: Apply creates ONLY its AMB record (never a catalogue product)');
+  const apD = await G.applyGrid({ changes: [{ productId: pD.id, values: { purchase_cost: '75', current_stock: '12' } }], userId: null });
+  const ambD = await retryDb(() => prisma.ambProduct.findUnique({ where: { product_id: pD.id } }));
+  ok('saved, AMB record now exists and carries the cost', apD.summary.saved === 1 && !!ambD && ambD.product_cost === 75);
+  ok('no Product row was created or removed', (await retryDb(() => prisma.product.count())) === productRowsBefore);
+  const gD = row(await retryDb(() => G.buildSetupGrid()), pD);
+  ok('the product is now operator-linked and still NOT_ADVERTISED', gD.operatorLinked === true && gD.advertising === 'NOT_ADVERTISED' && gD.purchase_cost === 75 && gD.current_stock === 12);
+
+  console.log('4c) coverage audit is read-only and internally consistent');
+  const cv0 = { products: await retryDb(() => prisma.product.count()), amb: await retryDb(() => prisma.ambProduct.count()) };
+  const cov = await retryDb(() => CV.coverageAudit());
+  const cv1 = { products: await retryDb(() => prisma.product.count()), amb: await retryDb(() => prisma.ambProduct.count()) };
+  ok('coverage wrote nothing', cv0.products === cv1.products && cv0.amb === cv1.amb && cov.readOnly === true);
+  const sts = Object.values(cov.stores);
+  ok('every store: operator products == catalogue products (nothing excluded)', sts.every((x) => x.operatorProducts === x.totalCatalogProducts));
+  ok('every store: with + without campaigns == catalogue products', sts.every((x) => x.withCampaigns + x.withoutCampaigns + x.withSuggestedOnly === x.totalCatalogProducts));
+  ok('every store: linked + missing == operator products', sts.every((x) => x.operatorLinked + x.missingFromOperatorActingLayer === x.operatorProducts));
+  ok('grid size == coverage total', (await retryDb(() => G.buildSetupGrid())).rows.length === cov.totals.totalCatalogProducts);
+  ok('unresolved-store products are reported, never silently attached to a store', Array.isArray(cov.unresolvedStore) && typeof cov.totals.unresolvedStore === 'number');
 
   console.log('5) apply refuses bad rows atomically (unless skipInvalid)');
   let refused = false; try { await G.applyGrid({ changes: [{ productId: pC.id, values: { purchase_cost: '50' } }, { productId: pA.id, values: { purchase_cost: 'x' } }], userId: null }); } catch (e) { refused = e.status === 400; }

@@ -54,6 +54,7 @@ export async function drawCompletion(root, { heavy = false, fresh = false } = {}
       <div class="table-wrap"><table class="data op-table2"><thead><tr><th>الحلقة</th><th>الحالة</th><th>التغطية</th><th>التفاصيل</th><th></th></tr></thead><tbody>
       ${a.chain.map((l) => `<tr><td><b>${E(l.label)}</b></td><td><span class="op-pill ${ST_CLS[l.state]}">${E(ST_AR[l.state])}</span>${l.partial ? ' <small class="op-unk">جزئي</small>' : ''}</td><td>${l.coverage ? `${num(l.coverage.connected)}/${num(l.coverage.total)}` : '—'}</td><td class="op-why">${E(l.detail || '')}</td><td>${resPill(l.state === 'CONNECTED' ? null : l.resolution)}${LINK_TAB[l.key] && l.state !== 'CONNECTED' ? ` <button class="amb-btn sm" data-goto="${LINK_TAB[l.key]}">افتح</button>` : ''}</td></tr>`).join('')}
       </tbody></table></div></div>
+    <div class="amb-panel" id="opCoverage"><h3>📦 تغطية المنتجات — متجر بمتجر</h3><div class="amb-loading">جارِ حساب التغطية…</div></div>
     <div class="amb-panel"><h3>🛡️ اختبار الحواجز الذاتي (${a.guardChecks.filter((x) => x.ok).length}/${a.guardChecks.length})</h3><ul class="op-checklist">${a.guardChecks.map((x) => `<li class="${x.ok ? 'ok' : 'no'}">${x.ok ? '✓' : '✗'} ${E(x.name)}</li>`).join('')}</ul></div>
     <div class="amb-panel"><h3>🛒 Easy Orders — حالة الربط</h3><div class="op-banner amber">${E(a.easyOrders.note)}</div>
       <div class="table-wrap"><table class="data"><thead><tr><th>المتجر</th><th>Webhook الأوردرات</th><th>Webhook تحديث الحالة</th><th>موثوقية الحالات</th><th>آخر استلام</th><th>Order Created</th><th>Status Update</th></tr></thead><tbody>
@@ -65,6 +66,7 @@ export async function drawCompletion(root, { heavy = false, fresh = false } = {}
       ${a.products.map((p) => `<tr><td><button class="amb-link" data-prof="${p.productId}">${E(p.name)}</button></td><td>${E(p.store)}</td><td>${E(p.readiness)}</td><td>${num(p.verifiedCampaigns)}${p.suggestedCampaigns ? ` <small class="op-unk">(+${p.suggestedCampaigns} مقترح)</small>` : ''}</td><td>${p.dependencies.filter((d) => d.state !== 'CONNECTED' && !d.soft).map((d) => `<span class="op-miss" title="${E(d.detail)}">${E(d.label)} ${resPill(d.resolution)}</span>`).join(' ') || '<span class="op-ok">لا شيء</span>'}</td></tr>`).join('')}</tbody></table></div></div>`;
   root.querySelectorAll('[data-goto]').forEach((b) => { b.onclick = () => S.hooks.switchTab(b.dataset.goto); });
   root.querySelectorAll('[data-prof]').forEach((b) => { b.onclick = () => S.hooks.setupAction('ECONOMICS', { productId: Number(b.dataset.prof) }); });
+  drawCoverage($('opCoverage'));
   $('opAuditRefresh').onclick = () => drawCompletion(root, { heavy, fresh: true });
   $('opDqRun').onclick = () => drawCompletion(root, { heavy: true, fresh: true });
   if ($('opAutofix')) $('opAutofix').onclick = async () => {
@@ -72,4 +74,31 @@ export async function drawCompletion(root, { heavy = false, fresh = false } = {}
     try { const r = await api.post('/api/operator/integration/autofix', {}); out.innerHTML = `<div class="op-banner blue">${r.log.map(E).join('<br>')}${r.advisorRemaining ? `<br>باقي ${num(r.advisorRemaining)} منتج — اضغط تاني.` : ''}<br><small>🔒 بيكتب بس: خطط المستشار + ربط مقترح (SUGGESTED). مفيش اقتصاديات/مخزون/Meta/VERIFIED.</small></div>`; UI.toast('تم'); setTimeout(() => drawCompletion(root, { heavy, fresh: true }), 1500); }
     catch (e) { out.innerHTML = `<div class="op-bad">${E(e.message)}</div>`; $('opAutofix').disabled = false; }
   };
+}
+
+/** Store-by-store product coverage (read-only): Easy Orders catalogue vs Product Master vs AMB vs PMC vs Operator grid vs campaigns. */
+async function drawCoverage(el) {
+  if (!el) return;
+  let c; try { c = await api.get('/api/operator/coverage'); } catch (e) { el.innerHTML = `<h3>📦 تغطية المنتجات</h3><div class="op-bad">${E(e.message)}</div>`; return; }
+  const st = Object.values(c.stores); const tot = c.totals;
+  const row = (label, f, hint = '') => `<tr><td><b>${E(label)}</b>${hint ? `<div class="op-camp">${E(hint)}</div>` : ''}</td>${st.map((s) => `<td>${f(s) == null ? '—' : num(f(s))}</td>`).join('')}<td><b>${num(f(tot, true))}</b></td></tr>`;
+  el.innerHTML = `<h3>📦 تغطية المنتجات — متجر بمتجر (قراءة فقط)</h3>
+    <div class="op-banner blue">الجدول بيعرض <b>كل</b> منتجات الكتالوج في كل متجر حتى اللي ملهاش حملات (NOT_ADVERTISED). المنتج بيتأثر بالأتمتة بس لما يبقى له سجل AMB — وده بيتنشأ أول ما تحفظ بياناته من جدول الإعداد.</div>
+    <div class="table-wrap"><table class="data op-table2"><thead><tr><th></th>${st.map((s) => `<th>${E(s.store)}<div class="op-camp">${E(s.name || '')}</div></th>`).join('')}<th>الإجمالي</th></tr></thead><tbody>
+    ${row('Total Catalog Products', (s) => s.totalCatalogProducts, 'منتجات حقيقية (نشطة وغير تجريبية/قديمة)')}
+    ${row('Operator Products (في الجدول)', (s) => s.operatorProducts)}
+    ${row('منهم مربوطين بسجل AMB', (s) => s.operatorLinked, 'الأتمتة بتشتغل عليهم')}
+    ${row('Missing From Operator (بدون سجل AMB)', (s) => s.missingFromOperatorActingLayer, 'ظاهرين في الجدول — السجل بيتنشأ عند الحفظ')}
+    ${row('With Campaigns', (s) => s.withCampaigns)}
+    ${row('Without Campaigns (NOT_ADVERTISED)', (s) => s.withoutCampaigns)}
+    ${row('معلَنين لكن بدون سجل AMB', (s) => s.advertisedButNotLinked, 'حملات اتعملت من الـWizard ولا يقدر الـOperator يشوفها')}
+    ${row('Duplicates (نفس الاسم داخل المتجر)', (s) => s.duplicates)}
+    ${row('Legacy / Inactive', (s) => s.legacyInactive)}
+    ${row('Unresolved Store', (s, isTot) => (isTot ? s.unresolvedStore : 0))}
+    ${row('منتجات Easy Orders في المتجر', (s) => s.eoCatalogProducts, 'من كتالوج المتجر الحي')}
+    ${row('في Easy Orders وغير موجودة في الكتالوج', (s) => s.eoNotInCatalogue, 'لسه ما اتزامنتش — مش بنعملها صفوف تلقائيًا')}
+    ${row('في الكتالوج وغير موجودة في Easy Orders', (s) => s.notInEoCatalog, 'منتجات قديمة (PRD-…) — لو ليها أوردرات فهي بتتباع فعلًا')}
+    ${row('منهم بأوردرات آخر 30 يوم', (s) => s.notInEoCatalogWithOrders30d)}
+    </tbody></table></div>
+    <div class="op-sub">AMB: ${num(c.ambRows)} سجل · Product Marketing Center: ${num(c.pmc.linkedProfiles)} ملف مربوط بمنتج و${num(c.pmc.unlinkedProfiles)} ملف غير مربوط · ${c.unresolvedStore.length ? `منتجات بمتجر غير معروف: ${c.unresolvedStore.map((p) => E(p.name)).join('، ')}` : 'مفيش منتجات بمتجر غير معروف'}</div>`;
 }

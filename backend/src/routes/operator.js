@@ -18,6 +18,7 @@ import { getOperatorSchedulerStatus, runOperatorTick } from '../services/amb/ope
 import * as readiness from '../services/amb/operatorReadiness.js';
 import { buildIntegrationAudit, autoFixIntegration } from '../services/amb/operatorIntegration.js';
 import * as setupGrid from '../services/amb/operatorSetupGrid.js';
+import { coverageAudit } from '../services/amb/operatorCoverage.js';
 import { listTemplates, instantiateTemplate } from '../services/amb/operatorTemplates.js';
 import { performanceReport, executedWithOutcomes, operatorHealth, ruleAuditLog, whatWillHappen, bulkApprove, dailyBrief, notifyEmergencyStop } from '../services/amb/operatorOps.js';
 import { decisionEvents } from '../services/amb/operatorReports.js';
@@ -45,6 +46,8 @@ router.get('/integration', asyncRoute(async (req, res) => {
 // closes ONLY the AUTO_FIXABLE gaps: Smart Advisor plan versions + SUGGESTED (never VERIFIED) mappings. No economics/stock/Meta/Easy Orders write.
 router.post('/integration/autofix', ADMIN, asyncRoute(async (req, res) => { const r = await autoFixIntegration({ userId: req.user.id }); integrationCache = null; res.json(r); }));
 // ---- Setup Grid: every product in one editable table (validate / preview / apply write through the canonical savers; Shadow is read-only) -------------
+// read-only store-by-store product coverage (Easy Orders catalogue vs Product Master vs AMB vs PMC vs Operator grid vs campaigns)
+router.get('/coverage', asyncRoute(async (req, res) => res.json(await coverageAudit())));
 router.get('/setup-grid', asyncRoute(async (req, res) => res.json(await setupGrid.buildSetupGrid())));
 router.post('/setup-grid/validate', asyncRoute(async (req, res) => res.json(await setupGrid.validateGrid({ changes: req.body?.changes }))));
 router.post('/setup-grid/preview', asyncRoute(async (req, res) => res.json(await setupGrid.previewGrid({ changes: req.body?.changes }))));

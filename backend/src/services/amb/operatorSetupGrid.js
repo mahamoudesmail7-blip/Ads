@@ -11,7 +11,9 @@
 //   * nothing here can VERIFY a campaign mapping.
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
-import { readinessList, validateProfilePatch, saveProductProfile } from './operatorReadiness.js';
+import { readinessList, validateProfilePatch, saveProductProfile, computeReadiness } from './operatorReadiness.js';
+import { computeOperatorEconomics } from './operatorGuards.js';
+import { loadProductUniverse } from './operatorCoverage.js';
 import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
 import { getOperatorConfig, setProductOverride, validateZeroOrderOverride, ZERO_ORDER_MODES } from './operatorStore.js';
 import { evaluateOperator } from './operatorEngine.js';
@@ -48,28 +50,26 @@ function currentValues({ product, amb, cfg }) {
 }
 
 // =====================================================================================================================
+/**
+ * Every REAL catalogue product of every store (Product Master = source of truth), with its store, advertising state, EO link and readiness.
+ * A product with no campaign is NOT_ADVERTISED — never dropped. A product with no AMB record is listed too (operatorLinked=false); its AMB record is
+ * created only by an explicit Apply. Readiness here is the LIGHT one (data quality is checked on demand).
+ */
 export async function buildSetupGrid() {
-  const list = await readinessList({ heavy: false });
-  const productIds = list.map((p) => p.productId);
-  const { products, ambs, cfgs } = await loadBundles(productIds);
+  const u = await loadProductUniverse();
   const config = await getOperatorConfig();
   const overrides = config.limits.productOverrides || {};
-  const ambIds = list.map((p) => p.ambProductId);
-  const maps = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: { in: ambIds } }, select: { amb_product_id: true, status: true } });
-  const launched = await prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { not: null }, job: { product_id: { in: productIds } } }, select: { job: { select: { product_id: true } } } });
-  const launchedBy = new Map(); for (const l of launched) launchedBy.set(l.job.product_id, (launchedBy.get(l.job.product_id) || 0) + 1);
-  const mapBy = new Map(); for (const m of maps) { const r = mapBy.get(m.amb_product_id) || { verified: 0, suggested: 0 }; if (m.status === 'MAPPED') r.verified++; else r.suggested++; mapBy.set(m.amb_product_id, r); }
-  const catalogs = {}; for (const s of new Set([...products.values()].map((p) => p.store_id).filter(Boolean))) catalogs[s] = await loadStoreCatalogIndex(s);
-
-  const rows = list.map((r) => {
-    const product = products.get(r.productId), amb = ambs.get(r.productId), cfg = cfgs.get(`${product.id}:${product.store_id}`);
+  const rows = u.products.map((r) => {
+    const { product, amb, cfg } = r;
     const cur = currentValues({ product, amb, cfg });
-    const pr = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null });
-    const m = mapBy.get(r.ambProductId) || { verified: 0, suggested: 0 };
-    const verified = m.verified + (launchedBy.get(r.productId) || 0);
+    const pr = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: u.eo[product.store_id]?.byKey || null });
+    const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg: cfg, priceResolution: pr });
     const zo = overrides[String(product.id)]?.zeroOrder || null;
+    const campaigns = [...Array(r.verifiedCampaigns).fill({ verified: true }), ...Array(r.suggestedCampaigns).fill({ verified: false })];
+    const rd = computeReadiness({ product, amb, opCfg: cfg, econ, campaigns, dq: undefined, zeroOrder: zo, ambLinked: !!amb });
     return {
-      productId: r.productId, ambProductId: r.ambProductId, name: product.product_name, store: product.store_id,
+      productId: product.id, ambProductId: amb?.id ?? null, operatorLinked: !!amb, name: product.product_name, store: product.store_id,
+      advertising: r.advertising, catalogLink: r.catalogLink, orders30d: r.orders30d, pmcProfiles: r.pmcProfiles,
       price: {
         value: pr.status === 'CONFLICT' ? null : cur.selling_price, source: pr.status === 'CONFLICT' ? null : srcOf(amb?.actual_selling_price, product.selling_price),
         status: pr.status, conflict: pr.status === 'CONFLICT' ? pr.conflict : null, reason: pr.reason || null,
@@ -78,13 +78,25 @@ export async function buildSetupGrid() {
       purchase_cost: cur.product_cost, shipping: cur.shipping_cost, packaging: cur.packaging_cost, target_cpa: cur.target_cpa, hard_stop_cpa: cur.hard_stop_cpa,
       zero_order: zo ? { mode: zo.mode, value: zo.mode === 'FIXED_SPEND' ? zo.fixedSpend ?? null : zo.multiple ?? null } : null,
       current_stock: cur.current_stock, minimum_stock: cur.minimum_stock,
-      mapping: { state: verified ? 'VERIFIED' : m.suggested ? 'SUGGESTED' : 'UNMAPPED', verified, suggested: m.suggested },
-      readiness: { state: r.readiness.state, icon: r.readiness.icon, missing: r.readiness.missing.map((x) => ({ key: x.key, label: x.label, severity: x.severity })) },
+      mapping: { state: r.verifiedCampaigns ? 'VERIFIED' : r.suggestedCampaigns ? 'SUGGESTED' : 'UNMAPPED', verified: r.verifiedCampaigns, suggested: r.suggestedCampaigns },
+      readiness: { state: rd.state, icon: rd.icon, missing: rd.missing.map((x) => ({ key: x.key, label: x.label, severity: x.severity })) },
     };
   });
-  const counts = { total: rows.length, READY: 0, PARTIAL: 0, BLOCKED: 0, priceConflicts: rows.filter((x) => x.price.status === 'CONFLICT').length, priceMissing: rows.filter((x) => x.price.value == null && x.price.status !== 'CONFLICT').length };
-  for (const x of rows) counts[x.readiness.state]++;
-  return { columns: GRID_COLUMNS, zeroOrderModes: ZERO_ORDER_MODES, rows, counts, note: 'الخانة الفاضية = "سيبها زي ما هي" (مش بتتحول لصفر ومش بتمسح قيمة موجودة). القيم المعروضة كلها موجودة فعلًا في النظام — مفيش حاجة اتملت بتخمين.' };
+  const order = { ADVERTISED: 0, SUGGESTED_ONLY: 1, NOT_ADVERTISED: 2 };
+  rows.sort((x, y) => x.store.localeCompare(y.store) || order[x.advertising] - order[y.advertising] || y.orders30d - x.orders30d || x.name.localeCompare(y.name));
+  const bucket = () => ({ total: 0, advertised: 0, notAdvertised: 0, suggestedOnly: 0, READY: 0, PARTIAL: 0, BLOCKED: 0, notLinked: 0, priceConflicts: 0, priceMissing: 0, withOrders30d: 0 });
+  const counts = { ...bucket(), byStore: {} };
+  for (const x of rows) {
+    for (const t of [counts, (counts.byStore[x.store] ||= bucket())]) {
+      t.total++; t[x.readiness.state]++;
+      if (x.advertising === 'ADVERTISED') t.advertised++; else if (x.advertising === 'SUGGESTED_ONLY') t.suggestedOnly++; else t.notAdvertised++;
+      if (!x.operatorLinked) t.notLinked++; if (x.price.status === 'CONFLICT') t.priceConflicts++; else if (x.price.value == null) t.priceMissing++; if (x.orders30d > 0) t.withOrders30d++;
+    }
+  }
+  return {
+    columns: GRID_COLUMNS, zeroOrderModes: ZERO_ORDER_MODES, stores: u.stores.map((s) => s.id), rows, counts,
+    note: 'الجدول بيعرض كل المنتجات الحقيقية في الكتالوج (Product Master) لكل متجر — حتى اللي ملهاش حملات (NOT_ADVERTISED). الخانة الفاضية = "سيبها زي ما هي" (مش بتتحول لصفر ومش بتمسح قيمة موجودة). القيم المعروضة كلها موجودة فعلًا في النظام — مفيش حاجة اتملت بتخمين.',
+  };
 }
 
 // =====================================================================================================================
@@ -174,7 +186,10 @@ export async function applyGrid({ changes, skipInvalid = false, userId = null })
   // recompute readiness for what was touched, then simulate (read-only) for the products that are now READY
   const touched = new Set(results.filter((x) => x.status === 'SAVED').map((x) => x.productId));
   const list = await readinessList({ heavy: false, heavyFor: touched }); // data quality is checked ONLY for the products that were just edited
-  const readinessAfter = list.filter((p) => touched.has(p.productId)).map((p) => ({ productId: p.productId, name: p.name, state: p.readiness.state, missing: p.readiness.missing.map((m) => m.label) }));
+  const fromList = new Map(list.filter((p) => touched.has(p.productId)).map((p) => [p.productId, { productId: p.productId, name: p.name, state: p.readiness.state, missing: p.readiness.missing.map((m) => m.label) }]));
+  const rest = [...touched].filter((id) => !fromList.has(id));
+  if (rest.length) { const g = await buildSetupGrid(); for (const r of g.rows) if (rest.includes(r.productId)) fromList.set(r.productId, { productId: r.productId, name: r.name, state: r.readiness.state, missing: r.readiness.missing.map((m) => m.label) }); }
+  const readinessAfter = [...fromList.values()];
   const readyIds = readinessAfter.filter((p) => p.state === 'READY').map((p) => p.productId);
   const shadow = readyIds.length ? await shadowForProducts({ productIds: readyIds }) : { skipped: 'NO_READY_PRODUCTS', message: 'مفيش منتج وصل لحالة READY بعد الحفظ — Shadow Simulation اتخطّت.' };
   return { ok: true, summary, results, readinessAfter, shadow, wroteMeta: false };

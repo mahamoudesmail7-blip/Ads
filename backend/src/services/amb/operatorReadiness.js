@@ -157,12 +157,14 @@ export async function saveProductProfile({ productId, patch, userId = null }) {
  * READY / PARTIAL / BLOCKED. BLOCKED = something critical is missing (campaign mapping, economics, data quality). PARTIAL = only softer items are missing
  * (stock, Hard Stop CPA). `dq === undefined` means "not checked yet" (light mode) — it is reported as such, never as OK.
  */
-export function computeReadiness({ product, amb, opCfg, econ, campaigns, dq, zeroOrder }) {
+export function computeReadiness({ product, amb, opCfg, econ, campaigns, dq, zeroOrder, ambLinked }) {
   const verified = (campaigns || []).filter((c) => c.verified);
   const dqKnown = dq !== undefined;
   const dqBlocked = dqKnown && dq?.gate === 'DECISION_BLOCKED_DATA_QUALITY';
   const dqUnknown = dqKnown && !dq?.gate;
   const items = [
+    // the Operator ACTS only on products that have an AMB record. A catalogue product without one is still listed (never dropped) but cannot be automated yet.
+    ...(ambLinked === false ? [{ key: 'AMB_LINK', label: 'سجل AMB للمنتج (بيتنشأ أول ما تحفظ بياناته من الجدول)', ok: false, severity: 'CRITICAL', detail: 'المنتج موجود في الكتالوج بس لسه مفيش له سجل في AMB — الأتمتة مش هتشتغل عليه قبل الحفظ.', action: SETUP_ACTIONS.ECONOMICS }] : []),
     { key: 'MAPPING', label: 'ربط الحملات بالمنتج (VERIFIED)', ok: verified.length > 0, severity: 'CRITICAL', detail: verified.length ? `${verified.length} حملة مربوطة` : (campaigns?.length ? 'فيه ربط مقترح بس (SUGGESTED) — مش كفاية' : 'مفيش حملات مربوطة'), action: SETUP_ACTIONS.MAPPING },
     { key: 'ECONOMICS', label: 'الاقتصاديات (سعر البيع + تكلفة الشراء)', ok: !!econ?.complete, severity: 'CRITICAL', detail: econ?.complete ? `هامش الوحدة ${R(econ.unitMargin, 1)} ج.م` : 'سعر البيع/التكلفة ناقصين — الربحية UNKNOWN', action: SETUP_ACTIONS.ECONOMICS },
     { key: 'DATA_QUALITY', label: 'جودة البيانات', ok: dqKnown ? !dqBlocked && !dqUnknown : false, severity: 'CRITICAL', pending: !dqKnown, detail: !dqKnown ? 'لسه ما اتفحصتش' : dqBlocked ? 'جودة البيانات بتمنع القرارات' : dqUnknown ? 'غير محسوبة (اربط الحملات وانتظر المزامنة)' : 'سليمة', action: SETUP_ACTIONS.DATA_QUALITY },
@@ -189,6 +191,9 @@ export async function readinessList({ heavy = false, heavyFor = null } = {}) {
   const cfgs = new Map((await prisma.ambOperatorProductConfig.findMany({ where: { product_id: { in: productIds } } })).map((c) => [`${c.product_id}:${c.store_id}`, c]));
   const maps = await prisma.ambProductCampaignMap.findMany({ where: { amb_product_id: { in: ambs.map((a) => a.id) } }, select: { amb_product_id: true, campaign_id: true, status: true, match_source: true } });
   const byAmb = new Map(); for (const m of maps) (byAmb.get(m.amb_product_id) || byAmb.set(m.amb_product_id, []).get(m.amb_product_id)).push({ campaignId: m.campaign_id, status: m.status, source: m.match_source, verified: m.status === 'MAPPED' });
+  const launchedRows = await prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { not: null }, job: { product_id: { in: productIds } } }, select: { meta_campaign_id: true, job: { select: { product_id: true } } } });
+  const ambOfProduct = new Map(ambs.map((a) => [a.product_id, a.id]));
+  for (const l of launchedRows) { const aid = ambOfProduct.get(l.job.product_id); if (!aid) continue; const arr = byAmb.get(aid) || byAmb.set(aid, []).get(aid); const ex = arr.find((c) => c.campaignId === l.meta_campaign_id); if (ex) { ex.verified = true; ex.status = 'MAPPED'; } else arr.push({ campaignId: l.meta_campaign_id, status: 'MAPPED', source: 'LAUNCH_JOB', verified: true }); }
   const out = [];
   const cfgGlobal = await getOperatorConfig();
   const catalogs = {}; for (const sid of new Set([...products.values()].map((p) => p.store_id).filter(Boolean))) catalogs[sid] = await loadStoreCatalogIndex(sid); // cached 1h; null when the store catalogue is unavailable
