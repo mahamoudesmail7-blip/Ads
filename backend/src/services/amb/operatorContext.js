@@ -38,10 +38,10 @@ export async function listCampaignsFromSnapshots({ adAccountId, days = 60 }) {
 export async function buildCampaignProductIndex({ adAccountId }) {
   const idx = new Map();
   const maps = await prisma.ambProductCampaignMap.findMany({ where: { ad_account_id: adAccountId }, select: { campaign_id: true, amb_product_id: true, status: true, match_source: true } });
-  for (const m of maps) idx.set(m.campaign_id, { ambProductId: m.amb_product_id, via: m.status === 'MAPPED' ? 'EXPLICIT_MAPPING' : 'SUGGESTED', verified: m.status === 'MAPPED' });
+  for (const m of maps) idx.set(m.campaign_id, { ambProductId: m.amb_product_id, via: m.match_source === 'LANDING_CONFLICT' ? 'LANDING_CONFLICT' : m.status === 'MAPPED' ? 'EXPLICIT_MAPPING' : 'SUGGESTED', verified: m.status === 'MAPPED' && m.match_source !== 'LANDING_CONFLICT' });
   const launched = await prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { not: null }, job: { ad_account_id: adAccountId, product_id: { not: null } } }, select: { meta_campaign_id: true, job: { select: { product_id: true } } } });
   const ambByProduct = new Map((await prisma.ambProduct.findMany({ where: { product_id: { in: [...new Set(launched.map((l) => l.job.product_id))] } }, select: { id: true, product_id: true } })).map((a) => [a.product_id, a.id]));
-  for (const l of launched) { if (!idx.has(l.meta_campaign_id) || !idx.get(l.meta_campaign_id).verified) { const amb = ambByProduct.get(l.job.product_id); if (amb) idx.set(l.meta_campaign_id, { ambProductId: amb, via: 'LAUNCH_JOB', verified: true }); } }
+  for (const l of launched) { if (idx.get(l.meta_campaign_id)?.via === 'LANDING_CONFLICT') continue; /* launch identity and landing page disagree: stays unverified */ if (!idx.has(l.meta_campaign_id) || !idx.get(l.meta_campaign_id).verified) { const amb = ambByProduct.get(l.job.product_id); if (amb) idx.set(l.meta_campaign_id, { ambProductId: amb, via: 'LAUNCH_JOB', verified: true }); } }
   return idx;
 }
 

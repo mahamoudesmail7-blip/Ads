@@ -267,7 +267,9 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
     const keyHits = keys.filter((k) => nameN.includes(k.key));
     const keyProducts = [...new Map(keyHits.map((k) => [k.amb.id, k])).values()];
     let state = 'UNMAPPED', product = null, source = 'NONE', confidence = null, suggestion = null, note = null;
-    if (m && m.status === 'MAPPED') { state = 'VERIFIED'; product = m.amb_product; source = m.match_source === 'MANUAL' ? 'EXPLICIT_MAPPING' : m.match_source; }
+    // a persisted landing-page CONFLICT (landing page vs launch record / suggestion): never VERIFIED, never automated — a human decides
+    if (m && m.match_source === 'LANDING_CONFLICT') { state = 'CONFLICT'; product = m.amb_product; source = 'LANDING_CONFLICT'; let det = null; try { det = JSON.parse(m.ai_reason || 'null'); } catch { /* */ } note = det?.conflicts ? `أدلة متعارضة: ${det.conflicts.map((c) => `${c.kind} → #${c.productId}`).join(' ≠ ')}` : 'أدلة متعارضة (رابط الهبوط مقابل سجل الإطلاق/الاقتراح)'; }
+    else if (m && m.status === 'MAPPED') { state = 'VERIFIED'; product = m.amb_product; source = m.match_source === 'MANUAL' ? 'EXPLICIT_MAPPING' : m.match_source; }
     else if (lj) { state = 'VERIFIED'; product = lj; source = 'LAUNCH_JOB'; }
     else if (m && m.status === 'SUGGESTED') { state = 'SUGGESTED'; product = m.amb_product; source = m.match_source; confidence = m.match_confidence; }
     // conflicts: two pieces of deterministic evidence pointing at different products
@@ -288,6 +290,7 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
         review = 'CONFIRM';
       }
     }
+    if (state === 'CONFLICT' && !review) review = 'CONFLICT';
     if (state === 'SUGGESTED' && !review) review = 'CONFIRM'; // a persisted SUGGESTED row always waits for a human
     if (state === 'UNMAPPED' && !review) review = 'UNEXPLAINED'; // no deterministic evidence at all: a human decides (grouped by name family below)
     rows.push({
