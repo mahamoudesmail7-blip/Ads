@@ -12,6 +12,7 @@ import * as store from '../services/amb/operatorStore.js';
 import { controlStatus, setAutoActions } from '../services/amb/operatorControl.js';
 import { inventoryOverview, compareManualVsApi, setInventoryLink, removeInventoryLink, setInventoryPrimary } from '../services/amb/inventoryApi.js';
 import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
+import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetActionHistory } from '../services/amb/budgetOptimizer.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
 import { evaluateOperator, approveDecision, rejectDecision, snoozeDecision, prepareRollback } from '../services/amb/operatorEngine.js';
@@ -86,6 +87,12 @@ router.post('/inventory/links', ADMIN, asyncRoute(async (req, res) => res.json(a
 router.delete('/inventory/links', ADMIN, asyncRoute(async (req, res) => res.json(await removeInventoryLink({ kind: req.body?.kind, value: req.body?.value, userId: req.user.id }))));
 router.put('/inventory/products/:productId/primary', ADMIN, asyncRoute(async (req, res) => { const r = await setInventoryPrimary({ productId: req.params.productId, on: req.body?.on === true, userId: req.user.id }); integrationCache = null; res.json({ ...r, compare: await compareManualVsApi(req.params.productId) }); }));
 router.post('/inventory/reconcile', ADMIN, asyncRoute(async (req, res) => res.json(await runInventoryReconcile())));
+
+// ---- Dynamic Budget Optimizer (SHADOW): policy (disabled by default), read-only account-wide preview, action history ------------------------------------------------
+router.get('/budget-optimizer/policy', asyncRoute(async (req, res) => res.json({ policy: await getBudgetPolicy() })));
+router.put('/budget-optimizer/policy', ADMIN, asyncRoute(async (req, res) => res.json({ policy: await setBudgetPolicy({ patch: req.body, userId: req.user.id }) })));
+router.post('/budget-optimizer/preview', ADMIN, asyncRoute(async (req, res) => res.json(await evaluateBudgetOptimization({ persist: false, live: req.body?.live === true }))));
+router.get('/budget-optimizer/history', asyncRoute(async (req, res) => res.json({ history: await budgetActionHistory({ campaignId: req.query.campaignId || null, limit: req.query.limit }) })));
 
 // global control strip (MANUAL / SHADOW / APPROVAL / AUTOPILOT + Pause/Open/Scale/Budget permissions). Toggles are ADMIN-only and never execute anything by themselves.
 router.get('/control', asyncRoute(async (req, res) => res.json(await controlStatus())));

@@ -9,6 +9,7 @@
 import { logger } from '../../logger.js';
 import { getOperatorConfig, listRules } from './operatorStore.js';
 import { evaluateOperator, detectPostScaleDeterioration, detectManualOverrides } from './operatorEngine.js';
+import { getBudgetPolicy, evaluateBudgetOptimization } from './budgetOptimizer.js';
 import { reconcileShadowOutcomes } from './operatorReports.js';
 import { emitOperatorNotifications } from './operatorOps.js';
 import { ensureAdvisorPlans } from './operatorIntegration.js';
@@ -40,6 +41,8 @@ export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
     const res = await evaluateOperator({ persist: true, now, deps, autoExecute: config.mode === 'AUTOPILOT' });
     out.evaluated = res.campaignsEvaluated; out.candidates = res.candidates.length; out.autoExecuted = res.autoExecuted || 0; out.summary = res.summary; out.expired = res.expired || 0;
   }
+  // Dynamic Budget Optimizer: OFF by default (policy.enabled=false). When the owner enables it, it records SHADOW/PREPARED decisions with their action history; it never writes to Meta from here.
+  try { const pol = await getBudgetPolicy(); if (pol.enabled) { const r = await evaluateBudgetOptimization({ persist: true, now }); out.budgetOptimizer = { counts: r.counts, persisted: r.persisted }; } } catch (e) { out.budgetOptimizer = { error: e.message }; }
   // monitoring-side jobs always run (they only write the Operator's own rows / prepare rollbacks, never execute)
   out.manualOverrides = await detectManualOverrides({ now }).catch((e) => ({ error: e.message }));
   out.shadow = await reconcileShadowOutcomes({ now }).catch((e) => ({ error: e.message }));

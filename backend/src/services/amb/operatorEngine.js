@@ -280,7 +280,7 @@ async function persistCandidate(c, { adAccountId, mode, now }) {
 }
 /** Pre-execution decisions that stopped being produced are EXPIRED (context changed) — never silently left as "actionable". */
 async function expireStale({ seen, now }) {
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, select: { id: true, decision_key: true } });
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] }, NOT: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' } } }, select: { id: true, decision_key: true } }); // the Dynamic Budget Optimizer expires its own rows
   const stale = rows.filter((r) => !seen.has(r.decision_key)).map((r) => r.id);
   if (!stale.length) return 0;
   const r = await prisma.ambOperatorDecision.updateMany({ where: { id: { in: stale }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, data: { status: 'EXPIRED', error: 'NO_LONGER_APPLICABLE' } });
