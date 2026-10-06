@@ -8,10 +8,11 @@ import { Router, raw } from 'express';
 import rateLimit from 'express-rate-limit';
 import { logger as defaultLogger } from '../logger.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
+import { diagnoseInventoryRequest } from '../services/amb/inventoryDiagnostics.js';
 import { verifyWebhookAuth, parseCanonicalEvent, ADAPTERS, DEFAULT_EVENT_TYPES, MAX_BODY_BYTES, processInventoryEvent, invalidateStockCaches, SOURCE_WEBHOOK } from '../services/amb/inventoryApi.js';
 
 /** Counters + last rejection reason (no secret value ever), readable by diagnostics. */
-export const inventoryWebhookHealth = { accepted: 0, rejected: 0, ignored: 0, lastAcceptedAt: null, lastRejectedAt: null, lastRejection: null, lastEventAt: null, applied: 0, unresolved: 0 };
+export const inventoryWebhookHealth = { diagnostics: [], accepted: 0, rejected: 0, ignored: 0, lastAcceptedAt: null, lastRejectedAt: null, lastRejection: null, lastEventAt: null, applied: 0, unresolved: 0 };
 
 const envTypes = () => String(process.env.INVENTORY_WEBHOOK_EVENT_TYPES || '').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -29,6 +30,15 @@ export function createInventoryWebhookRouter(overrides = {}) {
   const router = Router();
   const limiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: true, legacyHeaders: false });
   const throttle = new Map();
+  // TEMPORARY diagnostics (INVENTORY_WEBHOOK_DIAGNOSTICS=off disables): header NAMES, sizes, top-level JSON key names, which header carries a signature/secret (by NAME, computed in memory) — never a value.
+  function diagnose(req, rawBody, outcome) {
+    if (String(process.env.INVENTORY_WEBHOOK_DIAGNOSTICS || '').toLowerCase() === 'off') return;
+    try {
+      const rec = { at: d.now().toISOString(), outcome, ...diagnoseInventoryRequest({ headers: req.headers, rawBody, secret: d.secret(), now: d.now().getTime() }) };
+      inventoryWebhookHealth.diagnostics = [rec, ...inventoryWebhookHealth.diagnostics].slice(0, 10);
+      d.logger.warn('Inventory webhook DIAGNOSTIC', rec);
+    } catch (e) { d.logger.warn('Inventory webhook diagnostic failed', { message: e.message }); }
+  }
   function logThrottled(level, key, message, fields) { const now = Date.now(); const e = throttle.get(key) || { count: 0, last: 0 }; e.count++; if (now - e.last >= 5 * 60_000) { d.logger[level](message, { ...fields, suppressedSincePrevious: e.count - 1 }); e.count = 0; e.last = now; } throttle.set(key, e); }
 
   router.post('/', limiter, raw({ type: () => true, limit: MAX_BODY_BYTES }), asyncRoute(async (req, res) => {
@@ -39,17 +49,19 @@ export function createInventoryWebhookRouter(overrides = {}) {
     if (!auth.ok) {
       inventoryWebhookHealth.rejected++; inventoryWebhookHealth.lastRejectedAt = d.now().toISOString(); inventoryWebhookHealth.lastRejection = { reason: auth.reason };
       logThrottled('warn', `401|${auth.reason}`, 'Inventory webhook REJECTED', { reason: auth.reason, userAgent: String(req.headers['user-agent'] || '').slice(0, 40), hasSignature: !!req.headers['x-inventory-signature'], hasSecretHeader: !!req.headers['x-inventory-secret'] }); // header PRESENCE only, never a value
+      diagnose(req, rawBody, `REJECTED:${auth.reason}`);
       return res.status(401).json({ error: 'UNAUTHORIZED', reason: auth.reason });
     }
     let body;
-    try { body = JSON.parse(rawBody.toString('utf8')); } catch { return res.status(400).json({ error: 'INVALID_JSON' }); }
+    try { body = JSON.parse(rawBody.toString('utf8')); } catch { diagnose(req, rawBody, 'INVALID_JSON'); return res.status(400).json({ error: 'INVALID_JSON' }); }
     const adapt = ADAPTERS[d.adapter()];
     if (!adapt) return res.status(503).json({ error: 'ADAPTER_NOT_CONFIGURED' });
     let canonical; try { canonical = adapt(body); } catch { return res.status(400).json({ error: 'INVALID_PAYLOAD', errors: ['ADAPTER_FAILED'] }); }
     const parsed = parseCanonicalEvent(canonical, { allowedTypes: d.allowedTypes(), rawBody });
+    if (!parsed.ok) diagnose(req, rawBody, `INVALID_PAYLOAD:${(parsed.errors || []).join(',').slice(0, 80)}`);
     if (!parsed.ok) return res.status(parsed.code === 'PAYLOAD_TOO_LARGE' ? 413 : 400).json({ error: parsed.code, errors: parsed.errors });
     inventoryWebhookHealth.accepted++; inventoryWebhookHealth.lastAcceptedAt = d.now().toISOString();
-    if (parsed.ignored) { inventoryWebhookHealth.ignored++; return res.status(200).json({ ok: true, ignored: true, reason: 'EVENT_TYPE_NOT_SUPPORTED', eventType: parsed.eventType }); }
+    if (parsed.ignored) { inventoryWebhookHealth.ignored++; diagnose(req, rawBody, 'IGNORED_EVENT_TYPE'); return res.status(200).json({ ok: true, ignored: true, reason: 'EVENT_TYPE_NOT_SUPPORTED', eventType: parsed.eventType }); }
     const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
     const out = await d.process({ event: parsed.event, source: SOURCE_WEBHOOK, now: d.now(), dryRun });
     if (!dryRun) {
