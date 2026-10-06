@@ -96,7 +96,9 @@ function queryLoopProgress(completed, total) {
 // orchestrator level gets the same real protection without editing a
 // shared file. On timeout the specific query is marked FAILED with a
 // clear reason and every other platform/query continues unaffected.
-const PROVIDER_TIMEOUT_MS = 30000;
+const PROVIDER_TIMEOUT_MS = 30000; // AI product analysis (a real model call)
+// A healthy search query answers in ~1-3s (measured on production: 18 successful Instagram queries took ~20s in total) while a hung one used to burn 30s EACH (up to ~10 of 20 queries per platform => a deep search ran 14-22 minutes). Search queries get their own, tighter budget.
+const SEARCH_QUERY_TIMEOUT_MS = 15000;
 const META_AD_LIBRARY_TIMEOUT_MS = 120000; // Apify actor runs are real, slower background jobs — a longer, still-bounded budget
 function withTimeout(promise, ms, label) {
   return Promise.race([
@@ -156,7 +158,10 @@ async function saveIncrementalResults(searchId, normalizedBatch) {
 // FAILED — honestly, visibly, and promptly — instead of hanging the UI
 // forever on a page that keeps polling a row nothing will ever update
 // again. ---
-const STALE_SEARCH_TIMEOUT_MS = 6 * 60 * 1000; // safely past the 180s worker-call timeout plus normal per-step overhead
+// BUG FIXED: this used to compare `created_at` with a 6-minute cutoff, but a legitimate DEEP search takes 14-22 minutes — so a LIVE search was marked FAILED at ~6 minutes (the user saw "فشل البحث" at 60% with partial results while the pipeline kept running and finished later). Now: a search is stale only when it has shown NO activity (every real progress step touches updated_at) for 10 minutes AND it is not running in this process.
+const STALE_SEARCH_TIMEOUT_MS = 10 * 60 * 1000;
+const runningSearches = new Set(); // ids of pipelines alive in THIS process
+export const __runningSearchesForTests = runningSearches;
 const STALE_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
 const STALE_SEARCH_MESSAGE = 'انقطعت المعالجة بشكل غير متوقع (مشكلة مؤقتة في السيرفر) قبل ما تخلص — جرب تبحث تاني.';
 
@@ -164,7 +169,7 @@ const STALE_SEARCH_MESSAGE = 'انقطعت المعالجة بشكل غير مت
 export async function reapStaleExperimentalSearches() {
   const cutoff = new Date(Date.now() - STALE_SEARCH_TIMEOUT_MS);
   const stale = await prisma.experimentalCreativeSearch.findMany({
-    where: { status: { in: ['PENDING', 'ANALYZING', 'GENERATING_QUERIES', 'SEARCHING'] }, created_at: { lt: cutoff } },
+    where: { status: { in: ['PENDING', 'ANALYZING', 'GENERATING_QUERIES', 'SEARCHING'] }, updated_at: { lt: cutoff }, ...(runningSearches.size ? { id: { notIn: [...runningSearches] } } : {}) },
     select: { id: true, status: true },
   });
   for (const s of stale) {
@@ -360,6 +365,10 @@ export function decideMatch(exactMatchScore, thresholds) {
 
 /** @param {number} searchId */
 export async function runExperimentalSearchPipeline(searchId) {
+  runningSearches.add(searchId);
+  try { return await runExperimentalSearchPipelineInner(searchId); } finally { runningSearches.delete(searchId); }
+}
+async function runExperimentalSearchPipelineInner(searchId) {
   const startedAtMs = Date.now();
   const search = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId } });
   if (!search) { logger.error(`${LOG_PREFIX} MISSING_SEARCH`, { searchId }); return; }
@@ -382,7 +391,7 @@ export async function runExperimentalSearchPipeline(searchId) {
 
   const apifyHandlesAdLibrary = platforms.includes('META_AD_LIBRARY') && apifyProvider.isConfigured();
   const usesGoogle = platforms.includes('google') && googleSearchProvider.isConfigured();
-  const genericPlatforms = platforms.filter((p) => GENERIC_PLATFORMS.includes(p));
+  const genericPlatforms = platforms.filter((p) => GENERIC_PLATFORMS.includes(p)).sort((a, b) => (a === 'youtube' ? -1 : 0) - (b === 'youtube' ? -1 : 0)); // YouTube (an API answering in seconds) first: it must not wait ~10 minutes behind the slower scraped platforms
 
   try {
     await updateSearch(searchId, { status: 'ANALYZING', started_at: new Date(), platform_status_json: JSON.stringify(platformStatus), platform_progress_json: JSON.stringify(platformProgress) });
@@ -559,7 +568,7 @@ export async function runExperimentalSearchPipeline(searchId) {
       let googleCompletedUnits = 0;
       await setPlatformProgress(searchId, platformProgress, 'google', PLATFORM_PROGRESS_STAGE.QUERIES_PREPARED);
       const gStartedAt = Date.now();
-      let gSuccess = false, gFailure = false;
+      let gSuccess = false, gFailure = false, googleAccessDenied = false; // googleAccessDenied: the Google project has no access to the Custom Search API — permanent, so stop instead of failing every remaining query
       const googleRawItems = [];
       const googleNormalizedBatch = [];
       for (const q of googleQueries) {
@@ -572,7 +581,7 @@ export async function runExperimentalSearchPipeline(searchId) {
           // touch. googleSearchProvider.search() itself needs zero
           // change: an unrecognized platform value already falls through
           // to a plain, unfiltered query (confirmed by reading its code).
-          const items = await withTimeout(googleSearchProvider.search({ query: q.query, platform: 'google', resultsLimit: 10 }), PROVIDER_TIMEOUT_MS, 'google');
+          const items = await withTimeout(googleSearchProvider.search({ query: q.query, platform: 'google', resultsLimit: 10 }), SEARCH_QUERY_TIMEOUT_MS, 'google');
           googleRawItems.push(...items);
           const normalized = items.map((raw) => normalizeGoogleResult(raw, q.query)).filter(Boolean);
           googleNormalizedBatch.push(...normalized);
@@ -583,6 +592,7 @@ export async function runExperimentalSearchPipeline(searchId) {
           logger.error(`${LOG_PREFIX} QUERY_FAILED`, { searchId, platform: 'google', query: q.query, errorType: err.code === 'PROVIDER_TIMEOUT' ? 'TIMEOUT' : err.name || 'Error' });
           await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: q.query, query_type: q.queryType, provider: 'google_custom_search', status: 'FAILED', error: err.message } });
           gFailure = true;
+          if (/does not have the access|accessNotConfigured|has not been used in project|PERMISSION_DENIED/i.test(err.message || '')) { googleAccessDenied = true; break; }
         }
         googleCompletedUnits += 1;
         await setPlatformProgress(searchId, platformProgress, 'google', queryLoopProgress(googleCompletedUnits, googleTotalUnits));
@@ -595,9 +605,9 @@ export async function runExperimentalSearchPipeline(searchId) {
       // tier's request volume. ---
       let imgSuccess = false, imgFailure = false, imgCount = 0;
       const primaryQuery = googleQueries[0];
-      if (primaryQuery && !isCancelled(searchId)) {
+      if (primaryQuery && !isCancelled(searchId) && !googleAccessDenied) {
         try {
-          const imageItems = await withTimeout(googleSearchProvider.searchImages({ query: primaryQuery.query, resultsLimit: 10 }), PROVIDER_TIMEOUT_MS, 'google_image');
+          const imageItems = await withTimeout(googleSearchProvider.searchImages({ query: primaryQuery.query, resultsLimit: 10 }), SEARCH_QUERY_TIMEOUT_MS, 'google_image');
           const normalizedImages = imageItems.map((raw) => normalizeGoogleImageResult(raw, primaryQuery.query)).filter(Boolean);
           googleNormalizedBatch.push(...normalizedImages);
           imgCount = normalizedImages.length;
@@ -670,7 +680,7 @@ export async function runExperimentalSearchPipeline(searchId) {
       let platformCompletedQueries = 0;
       for (const q of platformQueries) {
         try {
-          const result = await withTimeout(runProviderSearch({ platform, query: q.query, resultsLimit: 25, country: search.country }), PROVIDER_TIMEOUT_MS, platform);
+          const result = await withTimeout(runProviderSearch({ platform, query: q.query, resultsLimit: 25, country: search.country }), SEARCH_QUERY_TIMEOUT_MS, platform);
           const normalized = result.items.map((raw) => normalizeResult(raw, { platform, provider: result.providerName, query: q.query, queryType: q.query_type })).filter(Boolean);
           platformNormalizedBatch.push(...normalized);
           await prisma.experimentalCreativeQuery.update({ where: { id: q.id }, data: { status: 'COMPLETE', provider: result.providerName, result_count: normalized.length } });

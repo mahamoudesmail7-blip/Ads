@@ -26,7 +26,7 @@ const PLATFORM_ERROR_LABEL_AR = {
   QUOTA_EXCEEDED: 'انتهت حصة/رصيد المزود (مؤقت — هيرجع لوحده)', RATE_LIMITED: 'تم تجاوز حد الطلبات (مؤقت)',
   INVALID_CREDENTIALS: 'بيانات اعتماد المزود غير صحيحة', INSUFFICIENT_CREDITS: 'الرصيد/الفوترة غير متاح عند المزود',
   TIMEOUT: 'انتهت المهلة أثناء الاتصال بالمزود', NETWORK_ERROR: 'مشكلة اتصال مؤقتة بالمزود', SERVER_ERROR: 'خطأ من طرف المزود',
-  VALIDATION_ERROR: 'طلب غير صحيح للمزود', UNKNOWN_ERROR: 'خطأ غير معروف من المزود',
+  VALIDATION_ERROR: 'طلب غير صحيح للمزود', API_ACCESS_DENIED: 'المشروع ملوش صلاحية على الـAPI عند المزود (لازم يتفعّل)', UNKNOWN_ERROR: 'خطأ غير معروف من المزود',
 };
 
 const chips = { alt: [], ar: [], en: [], kw: [] };
@@ -121,7 +121,7 @@ const STATUS_BADGE = { CONNECTED: 'green', DEGRADED: 'yellow', ERROR: 'red', NOT
 const STATUS_LABEL = { CONNECTED: '✅ متصل', DEGRADED: '🟡 غير مستقر', ERROR: '⚠️ خطأ', NOT_CONFIGURED: '⚪ غير مربوط' };
 const ERROR_TYPE_LABEL_AR = {
   INVALID_CREDENTIALS: 'بيانات اعتماد غير صحيحة', INSUFFICIENT_CREDITS: 'الرصيد/الفوترة غير متاح', RATE_LIMITED: 'تم تجاوز حد الطلبات',
-  TIMEOUT: 'انتهت المهلة', NETWORK_ERROR: 'مشكلة اتصال مؤقتة', SERVER_ERROR: 'خطأ من طرف المزود', VALIDATION_ERROR: 'طلب غير صحيح', UNKNOWN_ERROR: 'خطأ غير معروف',
+  TIMEOUT: 'انتهت المهلة', NETWORK_ERROR: 'مشكلة اتصال مؤقتة', SERVER_ERROR: 'خطأ من طرف المزود', VALIDATION_ERROR: 'طلب غير صحيح', API_ACCESS_DENIED: 'المشروع ملوش صلاحية على الـAPI (لازم يتفعّل)', UNKNOWN_ERROR: 'خطأ غير معروف',
 };
 
 async function loadProviderStatus() {

@@ -29,7 +29,7 @@ const PROVIDER_STATUS_LABEL = { CONNECTED: '✅ متصل', DEGRADED: '🟡 غي�
 const PLATFORM_ERROR_LABEL_AR = {
   QUOTA_EXCEEDED: 'انتهت حصة المزود (مؤقت)', RATE_LIMITED: 'تجاوز حد الطلبات', INVALID_CREDENTIALS: 'بيانات اعتماد غير صحيحة',
   INSUFFICIENT_CREDITS: 'الرصيد غير متاح', TIMEOUT: 'انتهت المهلة', NETWORK_ERROR: 'مشكلة اتصال', SERVER_ERROR: 'خطأ من المزود',
-  VALIDATION_ERROR: 'طلب غير صحيح', UNKNOWN_ERROR: 'خطأ غير معروف',
+  VALIDATION_ERROR: 'طلب غير صحيح', API_ACCESS_DENIED: 'المشروع ملوش صلاحية على الـAPI (لازم يتفعّل)', UNKNOWN_ERROR: 'خطأ غير معروف',
 };
 
 // --- Visual-only additions (premium redesign) ---

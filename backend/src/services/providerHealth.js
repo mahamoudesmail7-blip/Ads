@@ -82,6 +82,8 @@ export function classifyErrorType(err) {
   // at all. Getting this wrong previously classified a real, resettable
   // quota exhaustion as a permanent INVALID_CREDENTIALS/UNKNOWN failure.
   if (QUOTA_PATTERN.test(message)) return 'QUOTA_EXCEEDED';
+  if (err?.code === 'PROVIDER_TIMEOUT' || /مهلة الطلب|انتهت المهلة/.test(message)) return 'TIMEOUT'; // the orchestrator's own Arabic timeout message used to fall through to UNKNOWN_ERROR
+  if (/does not have the access|accessNotConfigured|has not been used in project|API is not enabled/i.test(message)) return 'API_ACCESS_DENIED'; // the project has no access to the API (needs enabling) — permanent, not a credential typo
   if (status === 429) return 'RATE_LIMITED';
   if (status === 401 || status === 403) return 'INVALID_CREDENTIALS';
   if (status === 402 || /insufficient.?credit|billing/i.test(message)) return 'INSUFFICIENT_CREDITS';
