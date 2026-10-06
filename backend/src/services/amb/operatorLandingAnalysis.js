@@ -18,6 +18,7 @@ import * as G from '../metaGraphClient.js';
 import { extractCreativeContent } from './mediaLibrary.js';
 import { setMapping } from './mapping.js';
 import { createFromCatalogProduct } from './ambProducts.js';
+import { addException, listExceptions } from './operatorStore.js';
 import { resolveCampaignEvidence } from './operatorMappingResolver.js';
 
 export const TIERS = { EXPLICIT: 1, LAUNCH: 2, LANDING_VERIFIED: 3, KEY_OR_SIBLING: 4 };
@@ -106,7 +107,7 @@ async function collectCampaignLinksOnce(token, campaignId) {
  *   VERIFIED (tier 3, nothing else disagrees) -> MAPPED / LANDING_URL      CONFLICT -> SUGGESTED / LANDING_CONFLICT (+ evidence JSON)
  * An AMB record is created only with createAmb=true (and only from the catalogue's existing values). Nothing else is written anywhere.
  */
-export async function analyzeLandingEvidence({ adAccountId = null, apply = false, createAmb = false, userId = null, maxCampaigns = 400, excludeCampaignIds = new Set(), onlyCampaignIds = null, deps = {} } = {}) {
+export async function analyzeLandingEvidence({ adAccountId = null, apply = false, createAmb = false, includeHumanVerified = false, userId = null, maxCampaigns = 400, excludeCampaignIds = new Set(), onlyCampaignIds = null, deps = {} } = {}) {
   const t0 = Date.now();
   const acc = adAccountId || (await getConnection())?.selected_ad_account_id;
   if (!acc) { const e = new Error('اربط حساب Meta الأول.'); e.status = 400; throw e; }
@@ -131,7 +132,7 @@ export async function analyzeLandingEvidence({ adAccountId = null, apply = false
   const scope = mc.rows.filter((r) => {
     const m = mapBy.get(r.campaignId);
     const humanVerified = m && m.status === 'MAPPED' && m.match_source === 'MANUAL';
-    return !humanVerified && !excludeCampaignIds.has(r.campaignId) && (!onlyCampaignIds || onlyCampaignIds.has(r.campaignId));
+    return (!humanVerified || (includeHumanVerified && onlyCampaignIds)) && !excludeCampaignIds.has(r.campaignId) && (!onlyCampaignIds || onlyCampaignIds.has(r.campaignId));
   }).slice(0, maxCampaigns);
   const results = []; const proofs = new Map();
   for (const r of scope) {
@@ -154,17 +155,22 @@ export async function analyzeLandingEvidence({ adAccountId = null, apply = false
     else if (distinctLanding.length === 1) landing = { productId: distinctLanding[0], proven: false, reason: 'MIXED_PROVEN_AND_UNPROVEN_LINKS(' + [...new Set(unproven)].join(',') + ')', name: lp[0].name, store: lp[0].store };
     else if (distinctLanding.length > 1) landing = { productId: null, proven: false, reason: 'LINKS_POINT_TO_DIFFERENT_PRODUCTS' };
     else if (linkInfo.links.length) landing = { productId: null, proven: false, reason: [...new Set(unproven)].join(',') || 'NO_PROOF' };
+    const externalStore = !!landing && !landing.proven && landing.reason === 'PAGE_BELONGS_TO_A_STORE_WE_DO_NOT_OWN';
     const ev = evidence.get(r.campaignId); const sibling = ev?.pick?.evidence?.some((e) => ['SIBLING_PREFIX', 'PRODUCT_KEY'].includes(e.type)) ? productByAmb.get(ev.pick.ambProductId) : null;
     const lineage = (rel.get(r.campaignId) || []).map(verifiedProductOf).filter(Boolean);
     const explicitMap = m && m.status === 'MAPPED' && m.match_source === 'MANUAL' ? m.amb_product?.product_id : null;
     const existingMap = m && m.status === 'MAPPED' && ['AUTO_SLUG_MATCH', 'AI_SUGGESTED'].includes(m.match_source) ? m.amb_product?.product_id : null;
     const decision = isPersistedConflict(m) ? { state: 'CONFLICT', tier: null, productId: null, basis: 'PERSISTED_CONFLICT', conflicts: (() => { try { return JSON.parse(m.ai_reason || '{}').conflicts || []; } catch { return []; } })(), warnings: [] } : classifyCampaignEvidence({ explicit: explicitMap, existing: existingMap, launch: launchBy.get(r.campaignId) ?? null, landing, lineage, keyOrSibling: sibling });
-    results.push({ campaignId: r.campaignId, name: r.campaignName, currentState: r.state, links: linkInfo.links.length, landing: landing && { productId: landing.productId, proven: landing.proven, name: landing.name || null, store: landing.store || null, reason: landing.reason || null }, ...decision, launchProduct: launchBy.get(r.campaignId) ?? null, siblingProduct: sibling, hasAmb: decision.productId ? ambByProduct.has(decision.productId) : null });
+    results.push({ campaignId: r.campaignId, name: r.campaignName, currentState: r.state, externalStore, pageStoreIds: [...new Set(linkInfo.links.map((u) => proofs.get(u)?.eoStoreIds || []).flat())], links: linkInfo.links.length, landing: landing && { productId: landing.productId, proven: landing.proven, name: landing.name || null, store: landing.store || null, reason: landing.reason || null }, ...decision, launchProduct: launchBy.get(r.campaignId) ?? null, siblingProduct: sibling, hasAmb: decision.productId ? ambByProduct.has(decision.productId) : null });
   }
-  const applied = { verified: 0, conflicts: 0, suggested: 0, ambCreated: 0, skipped: [] };
+  const applied = { verified: 0, conflicts: 0, suggested: 0, ambCreated: 0, externalFlagged: 0, skipped: [] };
   if (apply) {
+    const existingExt = new Set((await listExceptions({})).filter((e) => e.scope_type === 'CAMPAIGN' && String(e.reason || '').startsWith('EXTERNAL_STORE')).map((e) => e.scope_id));
     for (const d of results) {
       if (d.state === 'ERROR') continue;
+      // landing page proven to belong to a store we do NOT own: protective NO_AUTOMATION exception (reason EXTERNAL_STORE). Never links, never edits an existing mapping.
+      if (d.externalStore && !existingExt.has(d.campaignId)) { await addException({ scopeType: 'CAMPAIGN', scopeId: d.campaignId, scopeLabel: d.name, types: ['NO_AUTOMATION'], reason: `EXTERNAL_STORE: صفحة الهبوط تابعة لمتجر Easy Orders مش بتاعنا (${(d.pageStoreIds || []).join(', ') || 'store غير معروف'})`, userId }); applied.externalFlagged++; existingExt.add(d.campaignId); }
+      if (d.externalStore) continue;
       const m = mapBy.get(d.campaignId);
       const humanVerified = m && m.status === 'MAPPED' && m.match_source === 'MANUAL';
       if (humanVerified) continue;

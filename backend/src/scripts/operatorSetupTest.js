@@ -427,7 +427,7 @@ if (!process.argv.includes('--skip-world')) {
     ok('global readiness: product states add up, missing-economics/stock counted', g.products.ready + g.products.partial + g.products.blocked === g.products.total && typeof g.missingEconomics === 'number' && typeof g.missingStock === 'number');
     if (acc) {
       const mc = await RD.mappingCenter({ adAccountId: acc });
-      ok(`mapping center: ${mc.total} campaigns — states add up`, mc.counts.VERIFIED + mc.counts.SUGGESTED + mc.counts.UNMAPPED + mc.counts.CONFLICT === mc.total);
+      ok(`mapping center: ${mc.total} campaigns — states add up`, mc.counts.VERIFIED + mc.counts.SUGGESTED + mc.counts.UNMAPPED + mc.counts.CONFLICT + (mc.counts.EXTERNAL_STORE || 0) === mc.total);
       ok('VERIFIED rows always have a product; SUGGESTED/UNMAPPED never claim to be verified', mc.rows.filter((r) => r.state === 'VERIFIED').every((r) => r.product) && mc.rows.filter((r) => r.state !== 'VERIFIED').every((r) => !(r.source === 'EXPLICIT_MAPPING' && !r.product)));
       ok('name-similarity suggestions are flagged WEAK and need >=2 shared words', mc.rows.filter((r) => r.suggestion?.source === 'NAME_SIMILARITY').every((r) => r.suggestion.weak === true));
       const w = await RD.setupWizard({ adAccountId: acc, heavy: false });

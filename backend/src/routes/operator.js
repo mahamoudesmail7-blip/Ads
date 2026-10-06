@@ -20,6 +20,7 @@ import { buildIntegrationAudit, autoFixIntegration } from '../services/amb/opera
 import * as setupGrid from '../services/amb/operatorSetupGrid.js';
 import { coverageAudit } from '../services/amb/operatorCoverage.js';
 import { analyzeLandingEvidence } from '../services/amb/operatorLandingAnalysis.js';
+import { mappingHealthReport } from '../services/amb/operatorMappingHealth.js';
 import { listTemplates, instantiateTemplate } from '../services/amb/operatorTemplates.js';
 import { performanceReport, executedWithOutcomes, operatorHealth, ruleAuditLog, whatWillHappen, bulkApprove, dailyBrief, notifyEmergencyStop } from '../services/amb/operatorOps.js';
 import { decisionEvents } from '../services/amb/operatorReports.js';
@@ -193,10 +194,12 @@ router.post('/mapping/confirm-family', ADMIN, asyncRoute(async (req, res) => {
   const r = await readiness.confirmFamily({ adAccountId: acc, campaignIds: b.campaignIds.map(String), ambProductId: b.ambProductId, userId: req.user.id });
   integrationCache = null; res.status(r.ok === false ? 400 : 200).json(r);
 }));
+// mapping health by campaign FAMILY (VERIFIED / SUGGESTED / UNMAPPED / CONFLICT / EXTERNAL_STORE) — read-only
+router.get('/mapping/health', asyncRoute(async (req, res) => res.json(await mappingHealthReport({ adAccountId: await adAccountId() }))));
 // landing-page evidence with the evidence hierarchy + conflict detection. dry-run unless apply=true; apply writes ONLY mapping rows (and an AMB record only with createAmb=true)
 router.post('/mapping/analyze-landing', ADMIN, asyncRoute(async (req, res) => {
   const acc = await adAccountId(); if (!acc) return res.status(400).json({ error: 'NO_META', message: 'اربط حساب Meta الأول.' });
-  const b = req.body || {}; const r = await analyzeLandingEvidence({ adAccountId: acc, apply: b.apply === true, createAmb: b.createAmb === true, maxCampaigns: Math.min(Math.max(Number(b.maxCampaigns) || 40, 1), 60), userId: req.user.id }); // bounded per call (Meta + page reads): the scope is processed in chunks
+  const b = req.body || {}; const r = await analyzeLandingEvidence({ adAccountId: acc, apply: b.apply === true, createAmb: b.createAmb === true, includeHumanVerified: false, maxCampaigns: Math.min(Math.max(Number(b.maxCampaigns) || 40, 1), 60), userId: req.user.id }); // bounded per call (Meta + page reads): the scope is processed in chunks
   if (b.apply === true) { clearOperatorFactsCache(); integrationCache = null; }
   res.json(r);
 }));

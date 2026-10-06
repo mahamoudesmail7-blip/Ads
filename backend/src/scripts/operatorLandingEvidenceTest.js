@@ -82,6 +82,26 @@ console.log('4) analysis dry-run on real data with an injected offline link sour
     ok('every campaign got a decision (scope respected)', res.scope <= 5 && res.results.length === res.scope);
   }
 }
+console.log('5) mapping health by campaign family');
+{
+  const H = await imp('../services/amb/operatorMappingHealth.js');
+  ok('family stems', H.familyKeyOf('\u200eSelicon _ scale - 4 - Scale') === 'selicon' && H.familyKeyOf('Hair-Cap - Ci -Gi') === 'hair-cap' && H.familyKeyOf('Smart-Bag-Scale-ABO') === 'smart-bag' && H.familyKeyOf('Mini Camera _ scale 7') === 'mini camera' && H.familyKeyOf('Fire-Radio-NewTest-VO') === 'fire-radio' && H.familyKeyOf('Face-Hair-NewTest-AR') === 'face-hair' && H.familyKeyOf('Smart-Bag-NewTest-AI') === 'smart-bag', [H.familyKeyOf('\u200eSelicon _ scale - 4 - Scale'), H.familyKeyOf('Hair-Cap - Ci -Gi'), H.familyKeyOf('Smart-Bag-Scale-ABO'), H.familyKeyOf('Mini Camera _ scale 7')].join('|'));
+  const rows = [
+    { campaignId: '1', campaignName: 'Selicon _ scale', state: 'VERIFIED', product: { productId: 141, name: 'brush' }, spend7d: 10 },
+    { campaignId: '2', campaignName: 'Selicon _ scale - 2', state: 'VERIFIED', product: { productId: 159, name: 'mask' }, spend7d: 5 },
+    { campaignId: '3', campaignName: 'Selicon _ scale - 6', state: 'CONFLICT', spend7d: 0 },
+    { campaignId: '4', campaignName: 'Quran _ scale', state: 'SUGGESTED', spend7d: 0 },
+    { campaignId: '5', campaignName: 'microscope - Test', state: 'VERIFIED', product: { productId: 36, name: 'micro' }, spend7d: 100 },
+    { campaignId: '6', campaignName: 'Air-Blower _ scale', state: 'VERIFIED', product: { productId: 320, name: 'air' }, spend7d: 1 },
+    { campaignId: '7', campaignName: 'Air-Blower _ scale - 2', state: 'VERIFIED', product: { productId: 320, name: 'air' }, spend7d: 1 },
+  ];
+  const rep = H.buildFamilyReport(rows, { externalIds: new Set(['5']) });
+  ok('counts include EXTERNAL_STORE and add up', rep.counts.VERIFIED === 4 && rep.counts.EXTERNAL_STORE === 1 && rep.counts.CONFLICT === 1 && rep.counts.SUGGESTED === 1 && Object.values(rep.counts).reduce((a, b) => a + b, 0) === rows.length, JSON.stringify(rep.counts));
+  const sel = rep.families.find((f) => f.family === 'selicon');
+  ok('a family verified to two products is flagged MULTI_PRODUCT + HAS_CONFLICT -> NEEDS_DECISION', sel.flags.includes('MULTI_PRODUCT') && sel.flags.includes('HAS_CONFLICT') && sel.health === 'NEEDS_DECISION' && sel.total === 3);
+  ok('a fully verified single-product family is HEALTHY', rep.families.find((f) => f.family === 'air-blower').health === 'HEALTHY');
+  ok('external-store family needs a decision', rep.families.find((f) => f.family === 'microscope').health === 'NEEDS_DECISION');
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 await prisma.$disconnect();
 process.exit(fail ? 1 : 0);

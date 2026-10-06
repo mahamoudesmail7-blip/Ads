@@ -254,6 +254,8 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
   const keys = (await prisma.ambOperatorProductConfig.findMany({ where: { product_key: { not: null } }, select: { product_id: true, product_key: true } })).map((k) => ({ key: normalizeName(k.product_key), raw: k.product_key, amb: ambByProduct.get(k.product_id) || null })).filter((k) => k.key && k.amb);
   const exceptions = await listExceptions({});
   const excluded = new Set(exceptions.filter((e) => e.scope_type === 'CAMPAIGN' && e.types.includes('NO_AUTOMATION')).map((e) => e.scope_id));
+  // campaigns whose landing page is PROVEN to belong to an Easy Orders store we do not own (set by the landing analysis as a protective NO_AUTOMATION exception)
+  const externalStore = new Map(exceptions.filter((e) => e.scope_type === 'CAMPAIGN' && String(e.reason || '').startsWith('EXTERNAL_STORE')).map((e) => [e.scope_id, e.reason]));
   // 7-day spend from the SAME canonical reduction every other screen uses (never a raw sum over snapshot rows — those repeat the day's cumulative spend)
   const w7 = windowRange('last7', new Date().toISOString().slice(0, 10));
   const m7 = await entityWindowMetrics({ level: 'campaign', from: w7.from, to: w7.to, adAccountId });
@@ -277,10 +279,12 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
     if (mappedAmbId && lj && m?.status === 'MAPPED' && lj.id !== m.amb_product_id) { state = 'CONFLICT'; note = `الربط اليدوي بيشاور على "${m.amb_product?.product_name}" لكن حملة الرفع تابعة لـ"${lj.product_name}"`; }
     else if (mappedAmbId && keyProducts.length && !keyProducts.some((k) => k.amb.id === mappedAmbId)) { state = 'CONFLICT'; note = `اسم الحملة فيه Product Key لمنتج تاني ("${keyProducts[0].amb.product_name}")`; }
     else if (keyProducts.length > 1 && !mappedAmbId) { state = 'CONFLICT'; note = 'اسم الحملة بيطابق أكتر من منتج'; }
+    // a campaign selling on a store we do not own is shown as EXTERNAL_STORE whatever else is recorded about it (an existing manual mapping is left untouched, just flagged)
+    if (externalStore.has(c.id)) { note = `${externalStore.get(c.id)}${state === 'VERIFIED' ? ' — فيه ربط يدوي موجود (متغيّرش)' : ''}`; state = 'EXTERNAL_STORE'; }
     // evidence for anything not already VERIFIED — ONE resolver (URL / Product Key / sibling prefix / weak name); never produces VERIFIED
     const ev = evidence.get(c.id) || null;
     let review = null;
-    if (state !== 'VERIFIED' && ev) {
+    if (state !== 'VERIFIED' && state !== 'EXTERNAL_STORE' && ev) {
       if (ev.decision === 'AMBIGUOUS') review = 'AMBIGUOUS';
       else if (ev.pick) {
         const am = ambs.find((x) => x.id === ev.pick.ambProductId);
@@ -300,9 +304,9 @@ export async function mappingCenter({ adAccountId, limit = 400 }) {
       review, evidence: ev?.evidence || [], candidates: ev?.decision === 'AMBIGUOUS' ? ev.candidates.map((c2) => ({ ambProductId: c2.ambProductId, productName: ambs.find((x) => x.id === c2.ambProductId)?.product_name || null, evidence: c2.evidence.map((e) => `${e.type}: ${e.detail}`) })) : [],
     });
   }
-  const order = { CONFLICT: 0, UNMAPPED: 1, SUGGESTED: 2, VERIFIED: 3 };
+  const order = { CONFLICT: 0, EXTERNAL_STORE: 1, UNMAPPED: 2, SUGGESTED: 3, VERIFIED: 4 };
   rows.sort((a, b) => order[a.state] - order[b.state] || b.spend7d - a.spend7d);
-  const counts = { VERIFIED: 0, SUGGESTED: 0, UNMAPPED: 0, CONFLICT: 0, excluded: 0 }; for (const r of rows) { counts[r.state]++; if (r.excluded) counts.excluded++; }
+  const counts = { VERIFIED: 0, SUGGESTED: 0, UNMAPPED: 0, CONFLICT: 0, EXTERNAL_STORE: 0, excluded: 0 }; for (const r of rows) { counts[r.state]++; if (r.excluded) counts.excluded++; }
   const reviewQueue = rows.filter((r) => r.review).sort((x, y) => y.spend7d - x.spend7d);
   // campaigns of the same name family (e.g. "Smart-Bag _ ...") that still need a decision, so ONE human choice can settle the whole family
   const fam = new Map();
