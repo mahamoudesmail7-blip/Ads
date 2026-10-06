@@ -17,6 +17,7 @@ import { loadProductUniverse } from './operatorCoverage.js';
 import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
 import { getOperatorConfig, setProductOverride, validateZeroOrderOverride, ZERO_ORDER_MODES, ownerPriceOf, provenanceOf } from './operatorStore.js';
 import { evaluateOperator } from './operatorEngine.js';
+import { inventoryStateMap, effectiveStock } from './inventoryApi.js';
 import { summarizeSimulation } from './operatorOps.js';
 
 const pos = (v) => { const n = Number(v); return v != null && v !== '' && Number.isFinite(n) && n > 0 ? n : null; };
@@ -59,6 +60,7 @@ export async function buildSetupGrid() {
   const u = await loadProductUniverse();
   const config = await getOperatorConfig();
   const overrides = config.limits.productOverrides || {};
+  const invMap = await inventoryStateMap(u.products.map((r) => r.product.id), { config });
   const rows = u.products.map((r) => {
     const { product, amb, cfg } = r;
     const cur = currentValues({ product, amb, cfg });
@@ -66,7 +68,9 @@ export async function buildSetupGrid() {
     const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg: cfg, priceResolution: pr });
     const zo = overrides[String(product.id)]?.zeroOrder || null;
     const campaigns = [...Array(r.verifiedCampaigns).fill({ verified: true }), ...Array(r.suggestedCampaigns).fill({ verified: false })];
-    const rd = computeReadiness({ product, amb, opCfg: cfg, econ, campaigns, dq: undefined, zeroOrder: zo, ambLinked: !!amb });
+    const inv = invMap.get(product.id);
+    const eff = effectiveStock({ manual: cur.current_stock, api: inv });
+    const rd = computeReadiness({ product: { ...product, current_stock: eff.value }, amb, opCfg: cfg, econ, campaigns, dq: undefined, zeroOrder: zo, ambLinked: !!amb });
     return {
       productId: product.id, ambProductId: amb?.id ?? null, operatorLinked: !!amb, name: product.product_name, store: product.store_id,
       advertising: r.advertising, catalogLink: r.catalogLink, orders30d: r.orders30d, pmcProfiles: r.pmcProfiles,
@@ -77,7 +81,7 @@ export async function buildSetupGrid() {
       },
       purchase_cost: cur.product_cost, shipping: cur.shipping_cost, packaging: cur.packaging_cost, target_cpa: cur.target_cpa, hard_stop_cpa: cur.hard_stop_cpa,
       zero_order: zo ? { mode: zo.mode, value: zo.mode === 'FIXED_SPEND' ? zo.fixedSpend ?? null : zo.multiple ?? null } : null,
-      current_stock: cur.current_stock, minimum_stock: cur.minimum_stock, provenance: provenanceOf(config, product.id),
+      current_stock: eff.value, stock_source: eff.source, inventory: inv && inv.state !== 'UNKNOWN' ? { state: inv.state, primary: inv.primary, apiAvailable: inv.available, lastSyncAt: inv.lastSyncAt } : null, minimum_stock: cur.minimum_stock, provenance: provenanceOf(config, product.id),
       mapping: { state: r.verifiedCampaigns ? 'VERIFIED' : r.suggestedCampaigns ? 'SUGGESTED' : 'UNMAPPED', verified: r.verifiedCampaigns, suggested: r.suggestedCampaigns },
       readiness: { state: rd.state, icon: rd.icon, missing: rd.missing.map((x) => ({ key: x.key, label: x.label, severity: x.severity })) },
     };

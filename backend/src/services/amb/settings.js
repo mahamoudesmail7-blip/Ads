@@ -58,6 +58,7 @@ export const AMB_DEFAULT_SETTINGS = {
   // Autopilot action allow-list (all OFF by default)
   ambAllowAutoOpen: false,                  // AI Operator: allow AUTOPILOT to re-activate a PAUSED campaign (opening is riskier than pausing, so it has its own switch)
   ambAllowAutoPause: false,
+  ambInventoryApiStaleHours: 72,            // Inventory API stock older than this is STALE (stock unknown — never zero) for a product approved as API-primary
   ambAllowAutoScale: false,                 // AI Operator: the strategic permission to scale a winner (SCALE_UP also needs ambAllowAutoBudgetIncrease)
   ambAllowAutoBudgetIncrease: false,
   ambAllowAutoBudgetDecrease: false,

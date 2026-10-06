@@ -19,6 +19,7 @@ import { resolveCampaignEvidence, persistStrongSuggestions, campaignPrefix } fro
 import { listCampaignsFromSnapshots, buildCampaignProductIndex, loadProductFacts } from './operatorContext.js';
 import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
 import { listExceptions, addException, removeException, getOperatorConfig, ownerPriceOf } from './operatorStore.js';
+import { inventoryStateMap, effectiveStock } from './inventoryApi.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -49,6 +50,7 @@ export async function getProductProfile({ productId, heavy = false }) {
   const { product, amb, opCfg } = await loadProductBundle(productId);
   const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: await loadStoreCatalogIndex(product.store_id), ownerConfirmed: ownerPriceOf(await getOperatorConfig(), product.id) });
   const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
+  const stockEff = effectiveStock({ manual: product.current_stock, api: (await inventoryStateMap([product.id])).get(product.id) });
   const exceptions = (await listExceptions({})).filter((e) => (e.scope_type === 'PRODUCT' && e.scope_id === String(product.id)) || (e.scope_type === 'STORE' && e.scope_id === product.store_id));
   const idx = amb ? await campaignsForAmbProduct(amb.id) : [];
   let facts = null;
@@ -73,7 +75,7 @@ export async function getProductProfile({ productId, heavy = false }) {
       minProfit: { value: opCfg?.min_profit ?? amb?.min_profit ?? null, source: opCfg?.min_profit != null ? 'OPERATOR_OVERRIDE' : amb?.min_profit != null ? 'AMB' : null },
       unitMargin: econ.unitMargin, complete: econ.complete,
     },
-    stock: { current: product.current_stock ?? null, minimum: product.minimum_stock ?? opCfg?.min_stock ?? null, known: product.current_stock != null, status: facts?.stock?.status || null, daysRemaining: facts?.stock?.daysRemaining ?? null },
+    stock: { current: stockEff.value, source: stockEff.source, inventoryState: stockEff.state, minimum: product.minimum_stock ?? opCfg?.min_stock ?? null, known: stockEff.value != null, status: facts?.stock?.status || null, daysRemaining: facts?.stock?.daysRemaining ?? null },
     testing: { spendAllowance: opCfg?.testing_spend_allowance ?? null, minSample: opCfg?.testing_min_sample ?? null },
     scale: { maxScalePct: opCfg?.max_scale_pct ?? null },
     automationMode: opCfg?.automation_mode || null,
@@ -197,6 +199,7 @@ export async function readinessList({ heavy = false, heavyFor = null } = {}) {
   const out = [];
   const cfgGlobal = await getOperatorConfig();
   const catalogs = {}; for (const sid of new Set([...products.values()].map((p) => p.store_id).filter(Boolean))) catalogs[sid] = await loadStoreCatalogIndex(sid); // cached 1h; null when the store catalogue is unavailable
+  const invMap = await inventoryStateMap(productIds, { config: cfgGlobal }); // Inventory API state per product (one query)
   for (const amb of ambs) {
     const product = products.get(amb.product_id); if (!product) continue;
     const opCfg = cfgs.get(`${product.id}:${product.store_id}`) || null;
@@ -204,7 +207,8 @@ export async function readinessList({ heavy = false, heavyFor = null } = {}) {
     const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
     let dq;
     if (heavy || heavyFor?.has(product.id)) { const f = await loadProductFacts({ ambProductId: amb.id, heavy: true }); dq = f.dq || { gate: null }; }
-    const readiness = computeReadiness({ product, amb, opCfg, econ, campaigns: byAmb.get(amb.id) || [], dq, zeroOrder: ((cfgGlobal.limits.productOverrides || {})[String(product.id)]?.zeroOrder) || null });
+    const eff = effectiveStock({ manual: product.current_stock, api: invMap.get(product.id) }); // the API figure only for an API-approved product; stale/errored approved API = unknown, never zero
+    const readiness = computeReadiness({ product: { ...product, current_stock: eff.value }, amb, opCfg, econ, campaigns: byAmb.get(amb.id) || [], dq, zeroOrder: ((cfgGlobal.limits.productOverrides || {})[String(product.id)]?.zeroOrder) || null });
     out.push({ productId: product.id, ambProductId: amb.id, name: product.product_name, storeId: product.store_id, productKey: opCfg?.product_key || null, automationMode: opCfg?.automation_mode || null, campaignsMapped: (byAmb.get(amb.id) || []).filter((c) => c.verified).length, campaignsSuggested: (byAmb.get(amb.id) || []).filter((c) => !c.verified).length, economicsComplete: !!econ.complete, priceStatus: priceResolution.status, stockKnown: product.current_stock != null, stock: product.current_stock ?? null, hardStop: opCfg?.hard_stop_cpa ?? null, targetCpa: opCfg?.target_cpa ?? amb.target_cpa ?? null, readiness });
   }
   const order = { BLOCKED: 0, PARTIAL: 1, READY: 2 };

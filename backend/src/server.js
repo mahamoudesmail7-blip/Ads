@@ -39,6 +39,7 @@ import inventoryRoutes from './routes/inventory.js';
 import adminRoutes from './routes/admin.js';
 import usersRoutes from './routes/users.js';
 import webhookRoutes from './routes/webhooks.js';
+import inventoryWebhookRoutes from './routes/inventoryWebhook.js';
 import easyOrdersRoutes from './routes/easyorders.js';
 import easyOrdersImportRoutes from './routes/easyOrdersImport.js';
 import lostOrdersRoutes from './routes/lostOrders.js';
@@ -87,6 +88,8 @@ app.use(
   })
 );
 app.use(cookieParser());
+// Inventory webhook: mounted BEFORE the global JSON parser — it needs the raw body (HMAC) and its own 256 KB limit. Public; authenticated by INVENTORY_WEBHOOK_SECRET.
+app.use('/api/webhooks/inventory', inventoryWebhookRoutes);
 app.use(express.json({ limit: '20mb' })); // 20mb: covers the IndexedDB export/import payload (admin.js) and base64-encoded Meta Ads export uploads (adsIntelligence.js).
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', { stream: { write: (msg) => logger.info(msg.trim()) } }));
 

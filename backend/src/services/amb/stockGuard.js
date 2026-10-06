@@ -34,7 +34,9 @@ export const SNAPSHOT_MAX_AGE_DAYS = 3;
 
 /**
  * THE one place that decides where a product's stock number comes from (every consumer — Advisor, Money Guard, Operator — goes through here):
- *   1. Product.current_stock (catalog, the master)           -> source CATALOG
+ *   0. Inventory API (webhook / reconciliation) — ONLY for a product the owner approved as API-primary: fresh -> source INVENTORY_API (Available Stock);
+ *      stale / errored -> current null (UNKNOWN, never zero, manual NOT used behind the owner's back)
+ *   1. Product.current_stock (catalog, the master / manual fallback) -> source CATALOG
  *   2. the latest InventorySnapshot (the Daily Stock Tracking module) when it is fresh -> source INVENTORY_SNAPSHOT (+ asOf date)
  *   3. a stale snapshot is shown (staleValue) but NOT used     -> source INVENTORY_SNAPSHOT_STALE, current stays null
  *   4. nothing                                                 -> source null (STOCK_UNKNOWN)
@@ -44,14 +46,34 @@ export async function resolveStockInputs(productId, { now = new Date() } = {}) {
   const { prisma } = await import('../../prisma.js');
   const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { current_stock: true, minimum_stock: true } });
   const minimum = product?.minimum_stock ?? null;
-  if (product?.current_stock != null) return { current: product.current_stock, minimum, source: 'CATALOG', asOf: null, stale: false, staleValue: null };
-  const snap = await prisma.inventorySnapshot.findFirst({ where: { product_id: Number(productId) }, orderBy: { date: 'desc' }, select: { date: true, closing_stock: true, source: true } });
+  // Inventory API (webhook / reconciliation): the OFFICIAL source only for a product whose owner approved it (productOverrides[pid].inventory.primary).
+  // Until then API snapshots are stored and exposed as `apiShadow` for comparison and the manual/catalogue stock stays authoritative.
+  const api = await import('./inventoryApi.js');
+  const latest = await api.latestApiSnapshot(productId);
+  let apiShadow = null;
+  if (latest) {
+    const cfg = await (await import('./operatorStore.js')).getOperatorConfig();
+    const s = api.apiStateOf({ snapshot: latest, now, staleHours: await api.getStaleHours(), lastReconcile: await api.lastReconcileResult() });
+    const t = latest.state?.totals || {};
+    const available = t.available ?? latest.row.closing_stock;
+    const view = { apiState: s.state, lastSyncAt: s.lastSyncAt, onHand: t.current ?? null, reserved: t.reserved ?? null, available };
+    if (api.primaryOf(cfg, productId)?.primary) {
+      const apiMin = minimum ?? latest.state?.minimumStock ?? null;
+      // approved: fresh => Available Stock; stale / errored => UNKNOWN (never zero, and NOT silently replaced by the manual number)
+      if (s.state === 'VERIFIED') return { current: available, minimum: apiMin, source: 'INVENTORY_API', asOf: s.lastSyncAt, stale: false, staleValue: null, ...view };
+      return { current: null, minimum: apiMin, source: `INVENTORY_API_${s.state}`, asOf: s.lastSyncAt, stale: true, staleValue: available, ...view };
+    }
+    apiShadow = { ...view, note: 'API data received but not approved as the primary source for this product' };
+  }
+  const shadow = apiShadow ? { apiShadow } : {};
+  if (product?.current_stock != null) return { current: product.current_stock, minimum, source: 'CATALOG', asOf: null, stale: false, staleValue: null, ...shadow };
+  const snap = await prisma.inventorySnapshot.findFirst({ where: { product_id: Number(productId), OR: [{ source: null }, { NOT: { source: { startsWith: 'INVENTORY_API' } } }] }, orderBy: { date: 'desc' }, select: { date: true, closing_stock: true, source: true } });
   if (snap) {
     const ageDays = (now.getTime() - new Date(`${snap.date}T00:00:00Z`).getTime()) / 86_400_000;
     const stale = !(ageDays <= SNAPSHOT_MAX_AGE_DAYS);
-    return { current: stale ? null : snap.closing_stock, minimum, source: stale ? 'INVENTORY_SNAPSHOT_STALE' : 'INVENTORY_SNAPSHOT', asOf: snap.date, stale, staleValue: stale ? snap.closing_stock : null, snapshotSource: snap.source || null };
+    return { current: stale ? null : snap.closing_stock, minimum, source: stale ? 'INVENTORY_SNAPSHOT_STALE' : 'INVENTORY_SNAPSHOT', asOf: snap.date, stale, staleValue: stale ? snap.closing_stock : null, snapshotSource: snap.source || null, ...shadow };
   }
-  return { current: null, minimum, source: null, asOf: null, stale: false, staleValue: null };
+  return { current: null, minimum, source: null, asOf: null, stale: false, staleValue: null, ...shadow };
 }
 
 /**
@@ -74,6 +96,6 @@ export async function stockGuardForProduct({ productId, storeId, days = 14 }) {
   const avgDailyOrders = await ordersVelocityForProduct({ productId, storeId, days });
   return {
     ...base, avgDailyDelivered, daysRemaining: daysRemaining({ currentStock: base.currentStock, avgDailyDelivered }),
-    source: inputs.source, asOf: inputs.asOf, staleValue: inputs.staleValue, avgDailyOrders, daysRemainingConservative: daysRemaining({ currentStock: base.currentStock, avgDailyDelivered: avgDailyOrders }),
+    source: inputs.source, asOf: inputs.asOf, staleValue: inputs.staleValue, apiState: inputs.apiState ?? null, reserved: inputs.reserved ?? null, onHand: inputs.onHand ?? null, lastSyncAt: inputs.lastSyncAt ?? null, apiShadow: inputs.apiShadow ?? null, avgDailyOrders, daysRemainingConservative: daysRemaining({ currentStock: base.currentStock, avgDailyDelivered: avgDailyOrders }),
   };
 }

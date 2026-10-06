@@ -29,6 +29,7 @@ import { getSyncStatus } from './snapshotSync.js';
 import { getConnection } from '../metaAuth.js';
 import { listStores, getStoreWebhookSecretEntries, storeWebhookSecretEnvNames } from '../easyOrdersStores.js';
 import { getStoreStatusTrust } from '../easyOrdersStatus.js';
+import { inventoryStateMap, effectiveStock } from './inventoryApi.js';
 import { runAdvisorForProduct } from './advisorTracking.js';
 
 export const RES = { AUTO_FIXABLE: 'AUTO_FIXABLE', NEEDS_USER_VALUE: 'NEEDS_USER_VALUE', NEEDS_EXTERNAL: 'NEEDS_EXTERNAL_CONFIGURATION', NEEDS_REVIEW: 'NEEDS_REVIEW', NONE: 'NONE' };
@@ -86,7 +87,8 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
   // ---- batched reads (no per-product N+1)
   const products = new Map((await prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, product_name: true, store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, current_stock: true, minimum_stock: true, product_code: true, sku: true } })).map((p) => [p.id, p]));
   const ambs = new Map((await prisma.ambProduct.findMany({ where: { id: { in: ambIds } } })).map((a) => [a.id, a]));
-  const snapRows = await prisma.inventorySnapshot.findMany({ where: { product_id: { in: productIds } }, orderBy: [{ product_id: 'asc' }, { date: 'desc' }], select: { product_id: true, date: true, closing_stock: true } });
+  const snapRows = await prisma.inventorySnapshot.findMany({ where: { product_id: { in: productIds }, OR: [{ source: null }, { NOT: { source: { startsWith: 'INVENTORY_API' } } }] }, // API rows are judged by inventoryApi (approval + freshness), not as a generic snapshot
+     orderBy: [{ product_id: 'asc' }, { date: 'desc' }], select: { product_id: true, date: true, closing_stock: true } });
   const latestSnap = new Map(); for (const r of snapRows) if (!latestSnap.has(r.product_id)) latestSnap.set(r.product_id, r);
   const snapshotsTotal = await prisma.inventorySnapshot.count();
   const since30 = new Date(now.getTime() - 30 * MS_D).toISOString().slice(0, 10);
@@ -127,7 +129,8 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
   for (const r of mc?.rows || []) { if (r.suggestion && r.state !== 'VERIFIED') suggestionByProduct.set(r.suggestion.ambProductId, (suggestionByProduct.get(r.suggestion.ambProductId) || 0) + 1); }
 
   lap('mappingCenter');
-  const globalInventoryFeed = snapshotsTotal > 0 || [...products.values()].some((p) => p.current_stock != null);
+  const invMapAudit = await inventoryStateMap(productIds);
+  const globalInventoryFeed = snapshotsTotal > 0 || [...products.values()].some((p) => p.current_stock != null) || [...invMapAudit.values()].some((v) => v.state !== 'UNKNOWN');
 
   // ---- per product
   const out = [];
@@ -153,7 +156,10 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
     // inventory
     const snap = latestSnap.get(p.id);
     const snapAge = snap ? (now.getTime() - new Date(`${snap.date}T00:00:00Z`).getTime()) / MS_D : null;
-    if (p.current_stock != null) deps.push(dep('STOCK', 'المخزون الحالي', ST.CONNECTED, RES.NONE, `${p.current_stock} (الكتالوج)`, { value: p.current_stock, source: 'CATALOG' }));
+    const invS = invMapAudit.get(p.id); const effS = effectiveStock({ manual: p.current_stock, api: invS });
+    if (invS?.primary && effS.state !== 'VERIFIED') deps.push(dep('STOCK', 'المخزون الحالي', ST.BLOCKED, RES.NEEDS_EXTERNAL, `Inventory API معتمد لكن الحالة ${effS.state} — المخزون غير معروف (مش صفر)`, { stale: true, source: 'INVENTORY_API' }));
+    else if (effS.source === 'INVENTORY_API') deps.push(dep('STOCK', 'المخزون الحالي', ST.CONNECTED, RES.NONE, `${effS.value} (Inventory API — آخر مزامنة ${invS.lastSyncAt})`, { value: effS.value, source: 'INVENTORY_API' }));
+    else if (p.current_stock != null) deps.push(dep('STOCK', 'المخزون الحالي', ST.CONNECTED, RES.NONE, `${p.current_stock} (يدوي/الكتالوج${invS && invS.state !== 'UNKNOWN' ? ` — API: ${invS.available} بانتظار موافقتك` : ''})`, { value: p.current_stock, source: 'CATALOG' }));
     else if (snap && snapAge <= 3) deps.push(dep('STOCK', 'المخزون الحالي', ST.CONNECTED, RES.NONE, `${snap.closing_stock} (Inventory Snapshot ${snap.date})`, { value: snap.closing_stock, source: 'INVENTORY_SNAPSHOT' }));
     else if (snap) deps.push(dep('STOCK', 'المخزون الحالي', ST.BLOCKED, RES.NEEDS_USER_VALUE, `آخر Snapshot قديم (${snap.date}) — حدّث الجرد`, { stale: true }));
     else deps.push(dep('STOCK', 'المخزون الحالي', ST.MISSING, globalInventoryFeed ? RES.NEEDS_USER_VALUE : RES.NEEDS_EXTERNAL, globalInventoryFeed ? 'NEEDS_USER_VALUE: Current Stock' : 'NEEDS_EXTERNAL_CONFIGURATION: مفيش مصدر جرد حي متصل (Daily Stock Tracking فاضي ومفيش مخزون في الكتالوج)'));

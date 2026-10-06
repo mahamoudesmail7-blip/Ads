@@ -10,6 +10,9 @@ import { getConnection } from '../services/metaAuth.js';
 import { getAmbSettings } from '../services/amb/settings.js';
 import * as store from '../services/amb/operatorStore.js';
 import { controlStatus, setAutoActions } from '../services/amb/operatorControl.js';
+import { inventoryOverview, compareManualVsApi, setInventoryLink, removeInventoryLink, setInventoryPrimary } from '../services/amb/inventoryApi.js';
+import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
+import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
 import { evaluateOperator, approveDecision, rejectDecision, snoozeDecision, prepareRollback } from '../services/amb/operatorEngine.js';
 import { listCampaignsFromSnapshots, clearOperatorFactsCache } from '../services/amb/operatorContext.js';
@@ -76,6 +79,14 @@ router.get('/config', asyncRoute(async (req, res) => {
     meta: { lifecycle: LIFECYCLE, lifecycleLabels: LIFECYCLE_LABEL_AR, modes: store.OPERATOR_MODES, ruleModes: RULE_MODES, actions: ACTIONS, actionLabels: ACTION_LABEL_AR, windows: WINDOW_KEYS, windowLabels: WINDOW_LABEL_AR, fields: FIELDS, opsFor: OPS_FOR, precedence: PRECEDENCE, tags: store.CAMPAIGN_TAGS, defaults: { limits: store.DEFAULT_LIMITS, cooldowns: store.DEFAULT_COOLDOWNS } },
   });
 }));
+// ---- Inventory API feed (webhook + reconciliation): status, explicit mappings, per-product primary-source approval (ADMIN) — stock only, never touches Meta ------
+router.get('/inventory', asyncRoute(async (req, res) => res.json({ ...(await inventoryOverview()), webhook: inventoryWebhookHealth })));
+router.get('/inventory/compare/:productId', asyncRoute(async (req, res) => { const c = await compareManualVsApi(req.params.productId); if (!c) return res.status(404).json({ error: 'NOT_FOUND' }); res.json(c); }));
+router.post('/inventory/links', ADMIN, asyncRoute(async (req, res) => res.json(await setInventoryLink({ kind: req.body?.kind, value: req.body?.value, productId: req.body?.productId, userId: req.user.id }))));
+router.delete('/inventory/links', ADMIN, asyncRoute(async (req, res) => res.json(await removeInventoryLink({ kind: req.body?.kind, value: req.body?.value, userId: req.user.id }))));
+router.put('/inventory/products/:productId/primary', ADMIN, asyncRoute(async (req, res) => { const r = await setInventoryPrimary({ productId: req.params.productId, on: req.body?.on === true, userId: req.user.id }); integrationCache = null; res.json({ ...r, compare: await compareManualVsApi(req.params.productId) }); }));
+router.post('/inventory/reconcile', ADMIN, asyncRoute(async (req, res) => res.json(await runInventoryReconcile())));
+
 // global control strip (MANUAL / SHADOW / APPROVAL / AUTOPILOT + Pause/Open/Scale/Budget permissions). Toggles are ADMIN-only and never execute anything by themselves.
 router.get('/control', asyncRoute(async (req, res) => res.json(await controlStatus())));
 router.put('/auto-actions', ADMIN, asyncRoute(async (req, res) => res.json(await setAutoActions({ patch: req.body, userId: req.user.id }))));
