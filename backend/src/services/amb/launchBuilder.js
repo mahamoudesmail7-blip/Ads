@@ -15,6 +15,7 @@
 // /clone/accounts and /clone/identities routes already call) through the
 // SAME metaAuth.js connection — no second Meta integration, no new OAuth
 // flow, no write endpoint of any kind.
+import { validateLaunchLanding, landingBlockMessage } from './launchLandingValidation.js';
 import { prisma } from '../../prisma.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone, searchAdGeoLocations } from '../metaGraphClient.js';
@@ -153,7 +154,7 @@ export function estimateLaunchBuildMs({ campaignCount, adSetsPerCampaign, adsPer
  * means the wizard's own math is internally consistent, not that Meta will
  * accept it).
  */
-export async function validateLaunchConfig(input) {
+export async function validateLaunchConfig(input, { landingValidator = validateLaunchLanding } = {}) {
   const cfg = input && typeof input === 'object' ? input : {};
   if (!cfg.adAccountId || typeof cfg.adAccountId !== 'string') fail('لازم تختار حساب إعلاني.');
 
@@ -165,7 +166,7 @@ export async function validateLaunchConfig(input) {
   // consequential" principle already used for schedule/timezone below.
   const productId = Number(cfg.productId);
   if (!Number.isInteger(productId) || productId <= 0) fail('لازم تختار منتج.');
-  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, active: true, is_historical: true, store_id: true } });
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, active: true, is_historical: true, store_id: true, easy_orders_uuid: true, product_name: true } });
   if (!product || !product.active || product.is_historical) fail('المنتج المختار غير صالح أو غير نشط.');
   if (cfg.storeId && product.store_id && product.store_id !== cfg.storeId) fail('المنتج المختار لا يخص هذا المتجر.');
   if (!ALLOWED_BUDGET_MODES.includes(cfg.budgetMode)) fail('نوع الميزانية لازم يكون CBO أو ABO.');
@@ -193,6 +194,11 @@ export async function validateLaunchConfig(input) {
     if (!c.websiteUrl || typeof c.websiteUrl !== 'string') fail(`رابط الموقع للكامبين "${c.name || i + 1}" مطلوب.`);
     try { const u = new URL(c.websiteUrl); if (!/^https?:$/.test(u.protocol)) throw new Error('bad'); } catch { fail(`رابط الموقع للكامبين "${c.name || i + 1}" غير صالح.`); }
   }
+
+  // MANDATORY pre-launch product/landing validation: every landing page must resolve (via the page's own embedded identity) to a verified store + product that
+  // equals the selected product. A mismatch OR an unresolved identity BLOCKS the launch — it is never downgraded to a warning. Evidence is saved with the job.
+  const landing = await landingValidator({ product, campaigns: campaigns.map((c) => ({ name: c.name, websiteUrl: c.websiteUrl })) });
+  if (!landing.ok) { const e = new Error(landingBlockMessage(landing.errors)); e.status = 400; e.code = 'LANDING_VALIDATION_BLOCK'; e.details = landing.errors; throw e; }
 
   const perCampaignPixel = cfg.perCampaignPixel === true;
   if (!perCampaignPixel && !cfg.pixelId) fail('لازم تختار Meta Pixel.');
@@ -293,6 +299,7 @@ export async function validateLaunchConfig(input) {
       videoPlan: cfg.videoPlan || null,
       bidding,
       targeting,
+      landingValidation: landing.evidence,
     },
   };
 }
@@ -332,13 +339,13 @@ function validateTargeting(t) {
  * exactly once — this is the ONE case where an "existing" row still gets
  * written to, and it never re-runs for a job that already has campaigns.
  */
-export async function createDraftJob({ jobId, userId, input }) {
+export async function createDraftJob({ jobId, userId, input, landingValidator }) {
   if (!jobId || typeof jobId !== 'string' || !/^[a-z0-9_-]{8,80}$/i.test(jobId)) fail('jobId غير صالح.');
 
   const existing = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId }, include: { campaigns: true } });
   if (existing && existing.campaigns.length > 0) return existing;
 
-  const v = await validateLaunchConfig(input);
+  const v = await validateLaunchConfig(input, landingValidator ? { landingValidator } : {});
   const data = {
     product_id: v.productId,
     ad_account_id: v.adAccountId,

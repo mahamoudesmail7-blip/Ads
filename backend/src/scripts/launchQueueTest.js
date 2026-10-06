@@ -11,6 +11,8 @@
 // 5-minute inter-campaign gate + job-level completion detection in the
 // scheduler tick — the two tick code paths that never need to touch Meta.
 //   node src/scripts/launchQueueTest.js
+// the mandatory pre-launch landing validation is covered by launchLandingValidationTest.js; these suites test other launch behaviour with fake URLs (never honoured when NODE_ENV=production)
+process.env.LAUNCH_LANDING_VALIDATION_TEST_BYPASS = '1';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

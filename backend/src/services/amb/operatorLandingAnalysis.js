@@ -16,45 +16,14 @@ import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import * as G from '../metaGraphClient.js';
 import { extractCreativeContent } from './mediaLibrary.js';
-import { loadStoreCatalogProducts } from './productPriceResolver.js';
-import { listStores } from '../easyOrdersStores.js';
 import { setMapping } from './mapping.js';
 import { createFromCatalogProduct } from './ambProducts.js';
 import { resolveCampaignEvidence } from './operatorMappingResolver.js';
 
 export const TIERS = { EXPLICIT: 1, LAUNCH: 2, LANDING_VERIFIED: 3, KEY_OR_SIBLING: 4 };
-const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-
-// =====================================================================================================================
-// pure: slug / page identity / proof
-// =====================================================================================================================
-export function slugFromLandingUrl(url) {
-  try { const p = new URL(url).pathname.split('/').filter(Boolean); const i = p.findIndex((x) => /^products?$/i.test(x)); return (decodeURIComponent((i >= 0 ? p[i + 1] : p[p.length - 1]) || '').toLowerCase()) || null; } catch { return null; }
-}
-/** Identity a storefront page embeds about itself. */
-export function extractPageIdentity(html) {
-  const s = String(html || '');
-  return {
-    title: (s.match(/<title>([^<]*)<\/title>/) || [])[1] || null,
-    storeIds: [...new Set([...s.matchAll(/store_id"?\s*:\s*"([0-9a-f-]{36})"/g)].map((m) => m[1]))],
-    uuids: [...new Set(s.match(UUID_RE) || [])],
-  };
-}
-/**
- * Proves which of OUR stores/products a landing page belongs to. `catalogues` = { storeId: { bySlug: Map(slug -> {id,name,slug}) } }.
- * PROVEN only when, in exactly one of our stores, the catalogue product listed under the URL's slug has its uuid embedded in the page itself.
- */
-export function provePage({ url, page, catalogues }) {
-  const slug = slugFromLandingUrl(url);
-  if (!page) return { proven: false, reason: 'PAGE_UNREACHABLE', slug };
-  if (!slug) return { proven: false, reason: 'NO_SLUG', slug };
-  const hits = [];
-  for (const [store, cat] of Object.entries(catalogues)) { const p = cat.bySlug.get(slug); if (p && page.uuids.includes(String(p.id))) hits.push({ store, eoProductId: String(p.id), name: p.name }); }
-  if (hits.length === 1) return { proven: true, store: hits[0].store, eoProductId: hits[0].eoProductId, name: hits[0].name, slug, eoStoreIds: page.storeIds };
-  if (hits.length > 1) return { proven: false, reason: 'PAGE_MATCHES_MORE_THAN_ONE_STORE', slug };
-  const anyOurs = Object.values(catalogues).some((c) => [...c.bySlug.values()].some((p) => page.uuids.includes(String(p.id))));
-  return { proven: false, reason: anyOurs ? 'SLUG_DOES_NOT_MATCH_PAGE_PRODUCT' : 'PAGE_BELONGS_TO_A_STORE_WE_DO_NOT_OWN', slug, eoStoreIds: page.storeIds };
-}
+// page identity / proof / fetching live in landingProof.js (shared with the Launch Wizard validation); re-exported here for existing callers
+export { slugFromLandingUrl, extractPageIdentity, provePage, fetchLandingPage } from './landingProof.js';
+import { provePage, fetchLandingPage, loadLandingCatalogues } from './landingProof.js';
 
 // =====================================================================================================================
 // pure: the evidence hierarchy
@@ -100,21 +69,6 @@ export const isPersistedConflict = (row) => !!row && row.match_source === 'LANDI
 // =====================================================================================================================
 // I/O: Meta links + storefront pages (cached, bounded)
 // =====================================================================================================================
-const pageCache = new Map(); // url -> {at, page}
-const PAGE_TTL = 60 * 60_000;
-function safeUrl(u) { try { const x = new URL(u); if (x.protocol !== 'https:') return null; if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(x.hostname) || /^\d+\.\d+\.\d+\.\d+$/.test(x.hostname)) return null; return x; } catch { return null; } }
-export async function fetchLandingPage(url, { fetchImpl = fetch } = {}) {
-  const u = safeUrl(url); if (!u) return null;
-  const key = u.origin + u.pathname; const hit = pageCache.get(key); if (hit && Date.now() - hit.at < PAGE_TTL) return hit.page;
-  for (let i = 0; i < 3; i++) {
-    try {
-      const r = await fetchImpl(key, { redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; OrderMonitor/1.0)' }, signal: AbortSignal.timeout(15000) });
-      if (r.status !== 200) { pageCache.set(key, { at: Date.now(), page: null }); return null; }
-      const html = (await r.text()).slice(0, 2_000_000); const page = extractPageIdentity(html); pageCache.set(key, { at: Date.now(), page }); return page;
-    } catch { await new Promise((x) => setTimeout(x, 1500)); }
-  }
-  return null;
-}
 function linksOfCreative(cr) {
   const out = new Set(); if (!cr) return out;
   try { extractCreativeContent(cr).links.forEach((l) => out.add(l)); } catch { /* */ }
@@ -143,17 +97,6 @@ async function collectCampaignLinksOnce(token, campaignId) {
   }
   return { ads: ads.length, links: [...links] };
 }
-async function loadCatalogues() {
-  const out = {}; const dbByUuid = {};
-  for (const s of listStores().map((x) => x.id)) {
-    const list = await loadStoreCatalogProducts(s); if (!list) throw Object.assign(new Error(`كتالوج Easy Orders للمتجر ${s} غير متاح الآن — أعد المحاولة.`), { status: 503 });
-    out[s] = { bySlug: new Map(list.map((p) => [String(p.slug || '').toLowerCase(), p])) };
-    const rows = await prisma.product.findMany({ where: { store_id: s, active: true, is_historical: false, easy_orders_uuid: { not: null } }, select: { id: true, product_name: true, easy_orders_uuid: true } });
-    dbByUuid[s] = new Map(rows.map((p) => [String(p.easy_orders_uuid), p]));
-  }
-  return { catalogues: out, dbByUuid };
-}
-
 // =====================================================================================================================
 // the analysis (dry-run by default)
 // =====================================================================================================================
@@ -172,14 +115,17 @@ export async function analyzeLandingEvidence({ adAccountId = null, apply = false
   const mc = await rd.mappingCenter({ adAccountId: acc });
   const maps = await prisma.ambProductCampaignMap.findMany({ where: { ad_account_id: acc }, include: { amb_product: { select: { id: true, product_id: true, product_name: true } } } });
   const mapBy = new Map(maps.map((m) => [m.campaign_id, m]));
-  const launched = await prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { not: null }, job: { ad_account_id: acc, product_id: { not: null } } }, select: { meta_campaign_id: true, job: { select: { product_id: true } } } });
+  const launched = await prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { not: null }, job: { ad_account_id: acc, product_id: { not: null } } }, select: { meta_campaign_id: true, website_url: true, job: { select: { product_id: true, config_json: true } } } });
   const launchBy = new Map(launched.map((l) => [l.meta_campaign_id, l.job.product_id]));
+  // launch jobs created under the mandatory pre-launch validation carry VERIFIED landing evidence (page identity -> store + product): launch product + verified landing agree
+  const launchEvidence = new Map();
+  for (const l of launched) { try { const ev = JSON.parse(l.job.config_json || '{}').landingValidation; const url = String(l.website_url || '').split('?')[0]; const hit = ev?.ok && !ev.bypassed ? (ev.results || []).find((x) => x.url === url && x.status === 'VERIFIED' && x.productId === l.job.product_id) : null; if (hit) launchEvidence.set(l.meta_campaign_id, { productId: hit.productId, store: hit.store, url, proven: true }); } catch { /* */ } }
   const ambs = await prisma.ambProduct.findMany({ select: { id: true, product_id: true } });
   const ambByProduct = new Map(ambs.filter((a) => a.product_id).map((a) => [a.product_id, a.id])); const productByAmb = new Map(ambs.map((a) => [a.id, a.product_id]));
   const clones = await prisma.ambCloneJob.findMany({ select: { source_campaign_id: true, destination_campaign_id: true } });
   const rel = new Map(); for (const c of clones) if (c.destination_campaign_id) { (rel.get(c.destination_campaign_id) || rel.set(c.destination_campaign_id, []).get(c.destination_campaign_id)).push(c.source_campaign_id); (rel.get(c.source_campaign_id) || rel.set(c.source_campaign_id, []).get(c.source_campaign_id)).push(c.destination_campaign_id); }
   const verifiedProductOf = (cid) => { const m = mapBy.get(cid); if (m && m.status === 'MAPPED' && m.match_source !== 'LANDING_URL') return m.amb_product?.product_id ?? null; return launchBy.get(cid) ?? null; };
-  const { catalogues, dbByUuid } = deps.catalogues || await loadCatalogues();
+  const { catalogues, dbByUuid } = deps.catalogues || await loadLandingCatalogues();
   const evidence = await resolveCampaignEvidence({ adAccountId: acc, campaigns: mc.rows.map((r) => ({ id: r.campaignId, name: r.campaignName })) });
 
   const scope = mc.rows.filter((r) => {
@@ -190,7 +136,8 @@ export async function analyzeLandingEvidence({ adAccountId = null, apply = false
   const results = []; const proofs = new Map();
   for (const r of scope) {
     const m = mapBy.get(r.campaignId);
-    let linkInfo; try { linkInfo = await (deps.collectLinks ? deps.collectLinks(r.campaignId) : collectCampaignLinks(token, r.campaignId)); } catch (e) { results.push({ campaignId: r.campaignId, name: r.campaignName, state: 'ERROR', reason: String(e.message).slice(0, 120) }); continue; }
+    const savedProof = launchEvidence.get(r.campaignId);
+    let linkInfo; try { linkInfo = savedProof ? { ads: 0, links: [] } : await (deps.collectLinks ? deps.collectLinks(r.campaignId) : collectCampaignLinks(token, r.campaignId)); } catch (e) { results.push({ campaignId: r.campaignId, name: r.campaignName, state: 'ERROR', reason: String(e.message).slice(0, 120) }); continue; }
     const landingProducts = new Set(); const unproven = []; const pageNotes = [];
     for (const url of linkInfo.links) {
       let pr = proofs.get(url);
@@ -202,7 +149,8 @@ export async function analyzeLandingEvidence({ adAccountId = null, apply = false
     }
     const lp = [...landingProducts].map((x) => JSON.parse(x)); const distinctLanding = [...new Set(lp.map((x) => x.id))];
     let landing = null;
-    if (distinctLanding.length === 1 && !unproven.length) landing = { productId: distinctLanding[0], proven: true, name: lp[0].name, store: lp[0].store, url: lp[0].url };
+    if (savedProof) landing = { productId: savedProof.productId, proven: true, store: savedProof.store, url: savedProof.url, name: null, reason: null };
+    else if (distinctLanding.length === 1 && !unproven.length) landing = { productId: distinctLanding[0], proven: true, name: lp[0].name, store: lp[0].store, url: lp[0].url };
     else if (distinctLanding.length === 1) landing = { productId: distinctLanding[0], proven: false, reason: 'MIXED_PROVEN_AND_UNPROVEN_LINKS(' + [...new Set(unproven)].join(',') + ')', name: lp[0].name, store: lp[0].store };
     else if (distinctLanding.length > 1) landing = { productId: null, proven: false, reason: 'LINKS_POINT_TO_DIFFERENT_PRODUCTS' };
     else if (linkInfo.links.length) landing = { productId: null, proven: false, reason: [...new Set(unproven)].join(',') || 'NO_PROOF' };

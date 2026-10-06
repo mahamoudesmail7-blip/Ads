@@ -3,6 +3,8 @@
 // bookkeeping — all against real throwaway DB rows (tagged, cleaned up
 // after), zero Meta calls anywhere in this phase.
 //   node src/scripts/ambLaunchJobTest.js
+// the mandatory pre-launch landing validation is covered by launchLandingValidationTest.js; these suites test other launch behaviour with fake URLs (never honoured when NODE_ENV=production)
+process.env.LAUNCH_LANDING_VALIDATION_TEST_BYPASS = '1';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

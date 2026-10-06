@@ -26,6 +26,7 @@ import { createCampaign, createAdSet, createAdCreative, createAd, getEntity, get
 import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus, LAUNCH_CONCURRENCY_LIMIT } from './launchBuilder.js';
 import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
 import { registerLaunchCreativeRef } from './mediaLibrary.js';
+import { assertLaunchLandingVerified } from './launchLandingValidation.js';
 
 function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
 
@@ -560,6 +561,7 @@ export async function publishSingleTestItem({ jobId, campaignIndex = 0, videoSlo
   if (!campaign) fail(`الكامبين رقم ${campaignIndex} غير موجود في هذا الطلب.`);
   if (!job.page_id) fail('لازم Facebook Page محدد قبل النشر.');
   if (!(campaign.pixel_id || job.pixel_id)) fail('لازم Meta Pixel محدد قبل النشر.');
+  await assertLaunchLandingVerified(job); // BLOCK before any Meta write: the landing page must resolve to the selected product
 
   const video = videoSlotKey
     ? await prisma.ambLaunchVideoAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: videoSlotKey } } })
@@ -599,6 +601,7 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
   if (campaign.status === 'COMPLETE') return { alreadyComplete: true, campaignIndex };
   if (!job.page_id) fail('لازم Facebook Page محدد قبل النشر.');
   if (!(campaign.pixel_id || job.pixel_id)) fail('لازم Meta Pixel محدد قبل النشر.');
+  await assertLaunchLandingVerified(job); // BLOCK before any Meta write: the landing page must resolve to the selected product
 
   // Unconditional — unlike ensureCampaign (which short-circuits instantly
   // whenever meta_campaign_id already exists, e.g. every resume of this
@@ -875,6 +878,7 @@ export async function startLaunchQueue({ jobId, userId }) {
   for (const c of job.campaigns) {
     if (!c.name?.trim() || !c.website_url?.trim()) fail(`الكامبين "${c.name || c.index}" ناقصه اسم أو رابط الموقع.`);
   }
+  await assertLaunchLandingVerified(job); // product/landing identity must be verified before the queue can start
   if (!job.videos.some((v) => v.status === 'UPLOADED') && !job.images.some((i) => i.status === 'UPLOADED')) fail('لازم فيديو أو صورة واحدة على الأقل مرفوعة وجاهزة (UPLOADED).');
   const cfg = JSON.parse(job.config_json || '{}');
   if (job.budget_mode === 'CBO') {

@@ -760,6 +760,18 @@ router.get('/launch/jobs/:jobId', asyncRoute(async (req, res) => {
   if (!job) return res.status(404).json({ error: 'طلب الرفع غير موجود.' });
   res.json(job);
 }));
+// Early pre-check for the wizard (same mandatory validation createDraftJob/publish enforce): resolves every landing URL to a verified store + product and compares it
+// with the selected product. Read-only — no job is created, nothing is sent to Meta.
+router.post('/launch/validate-landing', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { validateLaunchLanding } = await import('../services/amb/launchLandingValidation.js');
+  const b = req.body || {}; const productId = Number(b.productId);
+  if (!Number.isInteger(productId) || productId <= 0) return res.status(400).json({ error: 'لازم تختار منتج.' });
+  const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, store_id: true, easy_orders_uuid: true, product_name: true } });
+  if (!product) return res.status(404).json({ error: 'المنتج غير موجود.' });
+  const campaigns = (Array.isArray(b.campaigns) ? b.campaigns : []).slice(0, 10).map((c) => ({ name: String(c?.name || ''), websiteUrl: String(c?.websiteUrl || '') }));
+  const r = await validateLaunchLanding({ product, campaigns });
+  res.json({ ok: r.ok, blocked: !r.ok, errors: r.errors, evidence: r.evidence });
+}));
 router.post('/launch/jobs', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   const { jobId, ...input } = req.body || {};
