@@ -12,6 +12,7 @@
 import { PRECEDENCE_RANK, ACTION_LABEL_AR } from './operatorRules.js';
 import { evaluateMoneyGuardForScale } from './moneyGuard.js';
 import { specCodesFor } from './operatorUnblock.js';
+import { missingAutoToggles } from './operatorAutoActions.js';
 import { baseOperationalCost, breakEvenCpa } from './productEconomics.js';
 
 const MS_H = 3_600_000;
@@ -35,6 +36,7 @@ export const BLOCK_CODES = {
   CONDITIONS_CHANGED: { group: 'SAFETY', severity: 'BLOCK', message: 'الشروط اتغيرت من وقت التحضير — القرار لم يعد مطابقًا للقاعدة.' },
   ALREADY_IN_TARGET_STATE: { group: 'SAFETY', severity: 'BLOCK', message: 'الحملة بالفعل في الحالة المطلوبة.' },
   INSUFFICIENT_SAMPLE: { group: 'SAFETY', severity: 'BLOCK', message: 'العينة غير كافية للقرار (صرف/أوردرات أقل من الحد الأدنى).' },
+  AUTO_ACTION_DISABLED: { group: 'SAFETY', severity: 'DOWNGRADE', message: 'التنفيذ التلقائي لهذا الأكشن مقفول (Auto Pause/Open/Scale/Budget) — هيفضل للموافقة.' },
   ACTION_NOT_ALLOWED: { group: 'SAFETY', severity: 'DOWNGRADE', message: 'الأكشن ده مش مسموح في Autopilot (قائمة الأكشنز المسموحة) — هيفضل للموافقة.' },
   MAX_ACTION_SIZE: { group: 'SAFETY', severity: 'BLOCK', message: 'حجم تغيير الميزانية أكبر من الحد المسموح للأكشن.' },
   MAX_AUTO_AMOUNT: { group: 'SAFETY', severity: 'DOWNGRADE', message: 'قيمة التغيير أكبر من الحد المسموح لـ Autopilot — هيفضل للموافقة.' },
@@ -222,8 +224,8 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
     if (productFree) add('MAPPING_UNVERIFIED_WARN'); else add('MAPPING_UNRELIABLE');
   }
   // action allowlist + sizes (Autopilot only; approval keeps a human in the loop)
-  const allow = { OPEN: settings.ambAllowAutoOpen === true, PAUSE: settings.ambAllowAutoPause === true, SCALE_UP: settings.ambAllowAutoBudgetIncrease === true, SCALE_DOWN: settings.ambAllowAutoBudgetDecrease === true };
-  if (eff === 'AUTOPILOT' && consequential && !allow[a]) add('ACTION_NOT_ALLOWED');
+  const offToggles = eff === 'AUTOPILOT' && consequential ? missingAutoToggles(a, settings) : [];
+  if (offToggles.length) add('AUTO_ACTION_DISABLED', { detail: offToggles.join(' + ') });
   const pct = decision.params?.pct;
   if (['SCALE_UP', 'SCALE_DOWN'].includes(a) && pct != null) {
     const prodCap = Number(ctx.product?.maxScalePct) || null;

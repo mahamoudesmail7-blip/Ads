@@ -85,7 +85,7 @@ ok('empty text is not parsed', !R.parseArabicRule('').ok);
 // =====================================================================================================================
 console.log('\nA5. guards');
 const baseCfg = { mode: 'AUTOPILOT', emergency_stop: false, limits: JSON.parse(JSON.stringify(S.DEFAULT_LIMITS)), cooldowns: { ...S.DEFAULT_COOLDOWNS }, schedule: { mode: 'ALWAYS', ranges: [], tzOffsetHours: 3 } };
-const baseSet = { ambMinSpendBeforeDecision: 150, ambMinPurchasesBeforeScaling: 5, ambAllowAutoPause: true, ambAllowAutoOpen: true, ambAllowAutoBudgetIncrease: true, ambAllowAutoBudgetDecrease: true, ambMaxBudgetIncreasePct: 20, ambMaxAutoExecutionAmount: 500 };
+const baseSet = { ambMinSpendBeforeDecision: 150, ambMinPurchasesBeforeScaling: 5, ambAllowAutoPause: true, ambAllowAutoOpen: true, ambAllowAutoScale: true, ambAllowAutoBudgetIncrease: true, ambAllowAutoBudgetDecrease: true, ambMaxBudgetIncreasePct: 20, ambMaxAutoExecutionAmount: 500 };
 const mkCtx = (o = {}) => ({ storeId: 'trendy-storeee', campaign: { id: 'c1', status: 'ACTIVE', budget: 200, tag: null, testing: null }, metrics: { spend: 300, purchases: 0 }, product: { id: 1, mappingVerified: true }, dq: { gate: 'OK', overall: 'RECONCILED', statusTrust: { state: 'OK' } }, stock: { status: 'IN_STOCK', currentStock: 100, daysRemaining: 30 }, econ: { complete: true, profitState: 'PROFITABLE', hardStopCpa: 200 }, exceptions: [], recent: { lastByAction: {}, todayCount: 0 }, metaConnected: true, metaStale: false, advisor: null, incidents: [], ...o });
 const mkDec = (o = {}) => ({ action: 'PAUSE', params: {}, ruleMode: 'AUTOPILOT', confidence: 'HIGH', needs: {}, ruleMinSpend: 150, cooldownHours: 12, ...o });
 const run = (dec, ctx, cfg = baseCfg, set = baseSet, counters = {}) => G.evaluateGuards({ decision: dec, ctx, config: cfg, settings: set, counters, now: NOW });
@@ -107,7 +107,7 @@ ok('effectiveMode matrix', G.effectiveMode('AUTOPILOT', 'APPROVAL') === 'APPROVA
 g = run(mkDec({ confidence: 'MEDIUM' }), mkCtx());
 ok('Autopilot needs HIGH confidence (downgrade to approval)', codes(g).includes('CONFIDENCE_TOO_LOW_FOR_AUTOPILOT') && g.wouldBe === 'PREPARED' && !g.canAutoExecute);
 g = run(mkDec(), mkCtx(), baseCfg, { ...baseSet, ambAllowAutoPause: false });
-ok('action allowlist OFF => not autopilot', codes(g).includes('ACTION_NOT_ALLOWED') && !g.canAutoExecute && g.wouldBe === 'PREPARED');
+ok('action toggle OFF => not autopilot (AUTO_ACTION_DISABLED)', codes(g).includes('AUTO_ACTION_DISABLED') && !g.canAutoExecute && g.wouldBe === 'PREPARED');
 g = run(mkDec({ action: 'OPEN', needs: { profit: true, stock: true } }), mkCtx({ campaign: { id: 'c1', status: 'PAUSED', budget: 200 }, stock: { status: 'STOCK_UNKNOWN' } }));
 ok('unknown stock blocks OPEN (never assume inventory)', codes(g).includes('STOCK_UNKNOWN') && g.wouldBe === 'BLOCKED');
 g = run(mkDec({ action: 'OPEN', needs: { profit: true, stock: true } }), mkCtx({ campaign: { id: 'c1', status: 'PAUSED', budget: 200 }, econ: { complete: false, profitState: 'UNKNOWN' } }));
@@ -208,7 +208,7 @@ ok('decision_key changes in the next bucket / other campaign', k1 !== k3 && k1 !
 const sm = E.summarize([{ action: 'OPEN', wouldBe: 'BLOCKED', blocks: [{ severity: 'BLOCK', code: 'STOCK_UNKNOWN' }], primaryBlock: { group: 'INVENTORY', code: 'STOCK_UNKNOWN' } }, { action: 'PAUSE', wouldBe: 'SHADOW', blocks: [] }, { action: 'OPEN', wouldBe: 'BLOCKED', blocks: [{ severity: 'BLOCK', code: 'DATA_QUALITY_BLOCKED' }], primaryBlock: { group: 'DATA_QUALITY', code: 'DATA_QUALITY_BLOCKED' } }]);
 ok('summary counts', sm.total === 3 && sm.wouldPause === 1 && sm.wouldOpen === 0 && sm.blockedByDataQuality === 1 && sm.blockedBySafety === 1);
 ok('AMB settings: ambAllowAutoOpen exists and defaults OFF', AMB_DEFAULT_SETTINGS.ambAllowAutoOpen === false);
-ok('AMB settings: every autopilot allowlist flag defaults OFF', ['ambAllowAutoOpen', 'ambAllowAutoPause', 'ambAllowAutoBudgetIncrease', 'ambAllowAutoBudgetDecrease'].every((k) => AMB_DEFAULT_SETTINGS[k] === false));
+ok('AMB settings: every autopilot allowlist flag defaults OFF', ['ambAllowAutoOpen', 'ambAllowAutoPause', 'ambAllowAutoScale', 'ambAllowAutoBudgetIncrease', 'ambAllowAutoBudgetDecrease'].every((k) => AMB_DEFAULT_SETTINGS[k] === false));
 ok('default limits: allowAutoRollback is OFF', S.DEFAULT_LIMITS.allowAutoRollback === false);
 const routeSrc = readFileSync(join(__dirname, '../routes/operator.js'), 'utf8');
 const mutating = routeSrc.split('\n').filter((l) => /^router\.(post|put|delete)\(/.test(l));

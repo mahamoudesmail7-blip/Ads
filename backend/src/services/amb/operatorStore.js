@@ -126,7 +126,8 @@ export async function revokeAttestations({ userId = null } = {}) {
 
 async function recordEvent(data) { try { await prisma.ambOperatorEvent.create({ data }); } catch (err) { logger.error('[operatorStore] event write failed', { message: err.message }); } }
 
-export async function setOperatorMode({ mode, userId = null, confirmAutopilot = false }) {
+export async function setOperatorMode({ mode: requested, userId = null, confirmAutopilot = false }) {
+  const mode = requested === 'MANUAL' ? 'OFF' : requested; // MANUAL is the UI name of the stored mode OFF
   if (!OPERATOR_MODES.includes(mode)) { const e = new Error(`وضع غير مدعوم: ${mode}`); e.status = 400; throw e; }
   const cur = await getOperatorConfig();
   if (mode === 'AUTOPILOT' && !confirmAutopilot) { const e = new Error('تفعيل Autopilot محتاج تأكيد صريح (confirmAutopilot).'); e.status = 400; throw e; }
@@ -137,7 +138,11 @@ export async function setOperatorMode({ mode, userId = null, confirmAutopilot = 
   }
   await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode, updated_by_id: userId } });
   await audit({ actorId: userId, kind: 'OPERATOR_MODE', input: { from: cur.mode, to: mode } });
-  await recordEvent({ kind: 'MODE_CHANGE', actor: 'USER', actor_id: userId, note: `${cur.mode} -> ${mode}` });
+  // MANUAL (OFF) blocks every new AND queued write (executeDecision re-reads the mode at execution time). It rolls NOTHING back and touches no campaign/budget: decisions already
+  // PREPARED/APPROVED are simply held — reported here so the owner sees what was parked.
+  let held = null;
+  if (mode === 'OFF' && cur.mode !== 'OFF') held = await prisma.ambOperatorDecision.count({ where: { status: { in: ['PREPARED', 'APPROVED'] } } });
+  await recordEvent({ kind: 'MODE_CHANGE', actor: 'USER', actor_id: userId, note: `${cur.mode} -> ${mode}${held != null ? ` (held queued decisions: ${held}; no rollback, no campaign/budget change)` : ''}`, data_json: held != null ? JSON.stringify({ heldQueued: held, rollback: false }) : null });
   return getOperatorConfig();
 }
 
@@ -187,11 +192,44 @@ export async function setProductOverride({ productId, zeroOrder, userId = null }
   const pid = String(Number(productId));
   const cur = await getOperatorConfig();
   const all = { ...(cur.limits.productOverrides || {}) };
-  if (zeroOrder === null) delete all[pid];
+  if (zeroOrder === null) { const { zeroOrder: _z, ...rest } = all[pid] || {}; if (Object.keys(rest).length) all[pid] = rest; else delete all[pid]; } // clears ONLY the zero-order setting (owner price / provenance stay)
   else { const v = validateZeroOrderOverride(zeroOrder); if (v.errors.length) { const e = new Error(v.errors.join(' ')); e.status = 400; e.details = v.errors; throw e; } all[pid] = { ...(all[pid] || {}), zeroOrder: v.clean }; }
   await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify({ ...cur.limits, productOverrides: all }), updated_by_id: userId } });
   await audit({ actorId: userId, kind: 'OPERATOR_LIMITS', input: { productId: pid, zeroOrder } });
   return all[pid] || null;
+}
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Per-product facts the owner CONFIRMED / CONFIGURED, kept with who/when/source inside the same per-product override object (no extra table).
+//   ownerPrice : {value, by, at, source:'USER_CONFIRMED', note} — settles a selling-price disagreement with the Easy Orders catalogue for THIS product only
+//   provenance : {current_stock:{source,kind,asOf,by,at}, minimum_stock:{source,temporary,by,at}} — where a stored number came from
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+export const ownerPriceOf = (config, productId) => ((config?.limits?.productOverrides || {})[String(productId)] || {}).ownerPrice || null;
+export const provenanceOf = (config, productId) => ((config?.limits?.productOverrides || {})[String(productId)] || {}).provenance || {};
+async function patchProductOverride({ productId, patch, userId, auditInput }) {
+  if (!Number.isInteger(Number(productId))) { const e = new Error('productId غير صالح.'); e.status = 400; throw e; }
+  const pid = String(Number(productId));
+  const cur = await getOperatorConfig();
+  const all = { ...(cur.limits.productOverrides || {}) };
+  const next = { ...(all[pid] || {}), ...patch };
+  for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k];
+  if (Object.keys(next).length) all[pid] = next; else delete all[pid];
+  await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify({ ...cur.limits, productOverrides: all }), updated_by_id: userId } });
+  await audit({ actorId: userId, kind: 'OPERATOR_PRODUCT_OVERRIDE', input: { productId: pid, ...auditInput } });
+  return all[pid] || null;
+}
+/** Owner-confirmed selling price for ONE product (> 0). Recorded with user/time/source; Easy Orders is never touched. value=null clears it. */
+export async function setOwnerConfirmedPrice({ productId, value, userId = null, source = 'USER_CONFIRMED', note = null, now = new Date() }) {
+  if (value === null) return patchProductOverride({ productId, patch: { ownerPrice: undefined }, userId, auditInput: { ownerPrice: null } });
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) { const e = new Error('السعر المؤكد لازم يكون رقم أكبر من صفر.'); e.status = 400; throw e; }
+  const ownerPrice = { value: n, by: userId, at: now.toISOString(), source, note: note ? String(note).slice(0, 300) : null };
+  return patchProductOverride({ productId, patch: { ownerPrice }, userId, auditInput: { ownerPrice } });
+}
+/** Records where a stored number came from, e.g. {current_stock:{source:'USER_CONFIRMED', kind:'MANUAL_SNAPSHOT', asOf}, minimum_stock:{source:'USER_CONFIGURED', temporary:true}}. */
+export async function setProductProvenance({ productId, fields, userId = null, now = new Date() }) {
+  const prev = provenanceOf(await getOperatorConfig(), productId);
+  const next = { ...prev }; for (const [k, v] of Object.entries(fields || {})) next[k] = { ...v, by: userId, at: now.toISOString() };
+  return patchProductOverride({ productId, patch: { provenance: next }, userId, auditInput: { provenance: fields } });
 }
 export async function updateOperatorLimits({ limits, cooldowns, schedule, storeLimits, userId = null }) {
   const errors = validateLimits({ limits, cooldowns, schedule, storeLimits });

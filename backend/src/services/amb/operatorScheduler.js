@@ -30,7 +30,8 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
 
 export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
   const config = await getOperatorConfig();
-  if (config.mode === 'OFF') return { skipped: 'MODE_OFF' };
+  // MANUAL (OFF): no rule evaluation, no advisor tick, no rollback preparation — only record what the OWNER changes by hand (Operator's own event rows, never Meta)
+  if (config.mode === 'OFF') return { skipped: 'MODE_OFF', monitoringOnly: true, manualOverrides: await detectManualOverrides({ now }).catch((e) => ({ error: e.message })) };
   const rules = (await listRules()).filter((r) => r.enabled);
   const out = { mode: config.mode, emergencyStop: config.emergency_stop, rules: rules.length };
   // one strategy: make sure every advertised product has a Smart Advisor plan before rules are judged against it (bounded: 3 products per tick)

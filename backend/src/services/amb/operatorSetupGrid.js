@@ -15,7 +15,7 @@ import { readinessList, validateProfilePatch, saveProductProfile, computeReadine
 import { computeOperatorEconomics } from './operatorGuards.js';
 import { loadProductUniverse } from './operatorCoverage.js';
 import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
-import { getOperatorConfig, setProductOverride, validateZeroOrderOverride, ZERO_ORDER_MODES } from './operatorStore.js';
+import { getOperatorConfig, setProductOverride, validateZeroOrderOverride, ZERO_ORDER_MODES, ownerPriceOf, provenanceOf } from './operatorStore.js';
 import { evaluateOperator } from './operatorEngine.js';
 import { summarizeSimulation } from './operatorOps.js';
 
@@ -62,7 +62,7 @@ export async function buildSetupGrid() {
   const rows = u.products.map((r) => {
     const { product, amb, cfg } = r;
     const cur = currentValues({ product, amb, cfg });
-    const pr = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: u.eo[product.store_id]?.byKey || null });
+    const pr = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: u.eo[product.store_id]?.byKey || null, ownerConfirmed: ownerPriceOf(config, product.id) });
     const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg: cfg, priceResolution: pr });
     const zo = overrides[String(product.id)]?.zeroOrder || null;
     const campaigns = [...Array(r.verifiedCampaigns).fill({ verified: true }), ...Array(r.suggestedCampaigns).fill({ verified: false })];
@@ -71,13 +71,13 @@ export async function buildSetupGrid() {
       productId: product.id, ambProductId: amb?.id ?? null, operatorLinked: !!amb, name: product.product_name, store: product.store_id,
       advertising: r.advertising, catalogLink: r.catalogLink, orders30d: r.orders30d, pmcProfiles: r.pmcProfiles,
       price: {
-        value: pr.status === 'CONFLICT' ? null : cur.selling_price, source: pr.status === 'CONFLICT' ? null : srcOf(amb?.actual_selling_price, product.selling_price),
+        value: pr.status === 'CONFLICT' ? null : cur.selling_price, source: pr.status === 'CONFLICT' ? null : (pr.source === 'OWNER_CONFIRMED' ? 'OWNER_CONFIRMED' : srcOf(amb?.actual_selling_price, product.selling_price)), ownerConfirmed: pr.ownerConfirmed || null, overriddenStoreCatalogPrice: pr.overriddenStoreCatalogPrice ?? null,
         status: pr.status, conflict: pr.status === 'CONFLICT' ? pr.conflict : null, reason: pr.reason || null,
         suggestion: pr.status === 'FROM_STORE_CATALOG' ? { value: pr.value, source: 'STORE_CATALOG' } : null,
       },
       purchase_cost: cur.product_cost, shipping: cur.shipping_cost, packaging: cur.packaging_cost, target_cpa: cur.target_cpa, hard_stop_cpa: cur.hard_stop_cpa,
       zero_order: zo ? { mode: zo.mode, value: zo.mode === 'FIXED_SPEND' ? zo.fixedSpend ?? null : zo.multiple ?? null } : null,
-      current_stock: cur.current_stock, minimum_stock: cur.minimum_stock,
+      current_stock: cur.current_stock, minimum_stock: cur.minimum_stock, provenance: provenanceOf(config, product.id),
       mapping: { state: r.verifiedCampaigns ? 'VERIFIED' : r.suggestedCampaigns ? 'SUGGESTED' : 'UNMAPPED', verified: r.verifiedCampaigns, suggested: r.suggestedCampaigns },
       readiness: { state: rd.state, icon: rd.icon, missing: rd.missing.map((x) => ({ key: x.key, label: x.label, severity: x.severity })) },
     };
@@ -131,7 +131,7 @@ export async function validateGrid({ changes }) {
     for (const [pk, to] of Object.entries(v.clean)) if (to !== null && to !== cur[pk]) diff.push({ field: pk, from: cur[pk] ?? null, to });
     // a typed price resolves a CONFLICT — say what it is being compared with
     if (patch.selling_price != null) {
-      const pr = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null });
+      const pr = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null, ownerConfirmed: ownerPriceOf(config, product.id) });
       if (pr.sources.storeCatalog != null && Math.abs(pr.sources.storeCatalog - patch.selling_price) > 0.5) warnings.push(`السعر المُدخل (${patch.selling_price}) مختلف عن سعر كتالوج المتجر (${pr.sources.storeCatalog}).`);
       if (pr.status === 'CONFLICT') warnings.push('إدخالك هيحسم تعارض السعر — اتأكد من الرقم الصحيح.');
     }

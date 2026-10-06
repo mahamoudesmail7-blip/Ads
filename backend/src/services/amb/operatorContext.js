@@ -15,7 +15,7 @@ import { getStoreStatusTrust } from '../easyOrdersStatus.js';
 import { windowRange, WINDOW_KEYS } from './operatorRules.js';
 import { computeOperatorEconomics, resolveZeroOrderLimit } from './operatorGuards.js';
 import { loadStoreCatalogIndex, resolveSellingPrice } from './productPriceResolver.js';
-import { getOperatorConfig, listExceptions, exceptionsFor, loadCampaignTags } from './operatorStore.js';
+import { getOperatorConfig, listExceptions, exceptionsFor, loadCampaignTags, ownerPriceOf } from './operatorStore.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 const MS_H = 3_600_000;
@@ -53,7 +53,7 @@ async function loadProductIdentity({ ambProductId, cache }) {
   if (amb?.product_id) {
     facts.product = await prisma.product.findUnique({ where: { id: amb.product_id }, select: { id: true, product_name: true, store_id: true, selling_price: true, product_cost: true, shipping_cost: true, packaging_cost: true, other_cost: true, current_stock: true, minimum_stock: true } });
     facts.storeId = facts.product?.store_id || null; // null = fail closed (STORE_AMBIGUOUS)
-    if (facts.storeId) { const storeCatalog = await loadStoreCatalogIndex(facts.storeId); facts.priceResolution = resolveSellingPrice({ product: facts.product, ambProduct: amb, storeCatalog }); }
+    if (facts.storeId) { const storeCatalog = await loadStoreCatalogIndex(facts.storeId); facts.priceResolution = resolveSellingPrice({ product: facts.product, ambProduct: amb, storeCatalog, ownerConfirmed: ownerPriceOf(await getOperatorConfig(), amb.product_id) }); }
     if (facts.storeId) facts.opCfg = await prisma.ambOperatorProductConfig.findUnique({ where: { product_id_store_id: { product_id: amb.product_id, store_id: facts.storeId } } });
   }
   cache.set(ambProductId, facts);

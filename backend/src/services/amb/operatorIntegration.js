@@ -19,7 +19,7 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { readinessList, mappingCenter, persistDeterministicSuggestions } from './operatorReadiness.js';
-import { getOperatorConfig, listRules, autopilotGate, metaWritesLocked } from './operatorStore.js';
+import { getOperatorConfig, listRules, autopilotGate, metaWritesLocked, ownerPriceOf } from './operatorStore.js';
 import { resolveSellingPrice, loadStoreCatalogIndex, clearStoreCatalogCache } from './productPriceResolver.js';
 import { evaluateGuards, BLOCK_CODES } from './operatorGuards.js';
 import { validateRule } from './operatorRules.js';
@@ -42,7 +42,7 @@ const dep = (key, label, state, resolution, detail, extra = {}) => ({ key, label
 // =====================================================================================================================
 export function guardSelfCheck() {
   const cfg = { mode: 'AUTOPILOT', emergency_stop: false, writesLocked: false, limits: { maxActionsPerHour: 6, maxActionsPerDay: 30, minDaysCover: 7, maxChangesPerCampaignPerDay: 2, lossLimits: {}, account: {} }, cooldowns: {}, schedule: { mode: 'ALWAYS' }, storeLimits: {} };
-  const set = { ambMinSpendBeforeDecision: 150, ambMinPurchasesBeforeScaling: 5, ambAllowAutoPause: true, ambAllowAutoOpen: true, ambAllowAutoBudgetIncrease: true, ambAllowAutoBudgetDecrease: true, ambMaxBudgetIncreasePct: 20, ambMaxAutoExecutionAmount: 500 };
+  const set = { ambMinSpendBeforeDecision: 150, ambMinPurchasesBeforeScaling: 5, ambAllowAutoPause: true, ambAllowAutoOpen: true, ambAllowAutoScale: true, ambAllowAutoBudgetIncrease: true, ambAllowAutoBudgetDecrease: true, ambMaxBudgetIncreasePct: 20, ambMaxAutoExecutionAmount: 500 };
   const now = new Date();
   const ctx = (o = {}) => ({ storeId: 's', campaign: { id: 'c', status: 'ACTIVE', budget: 500, firstSeenAt: new Date(now.getTime() - 200 * 3_600_000).toISOString() }, metrics: { spend: 600, purchases: 10 }, product: { id: 1, mappingVerified: true }, dq: { gate: 'OK', overall: 'RECONCILED', statusTrust: { state: 'OK' } }, stock: { status: 'SAFE', currentStock: 100, daysRemaining: 30 }, econ: { complete: true, profitState: 'PROFITABLE', hardStopCpa: 200 }, exceptions: [], recent: { lastByAction: {}, pausedBySystemAt: now.toISOString() }, metaConnected: true, metaStale: false, incidents: [], advisor: { scalePlanPresent: true, stage: 'SCALING' }, ...o });
   const dec = (o = {}) => ({ action: 'PAUSE', params: {}, ruleMode: 'AUTOPILOT', confidence: 'HIGH', needs: {}, ruleMinSpend: 150, cooldownHours: 12, ...o });
@@ -133,7 +133,7 @@ export async function buildIntegrationAudit({ heavy = false, now = new Date() } 
   const out = [];
   for (const row of list) {
     const ambId = row.ambId ?? row.ambProductId; const amb = ambs.get(ambId); const p = products.get(row.productId);
-    const price = resolveSellingPrice({ product: p, ambProduct: amb, storeCatalog: catalogs[p.store_id] || null });
+    const price = resolveSellingPrice({ product: p, ambProduct: amb, storeCatalog: catalogs[p.store_id] || null, ownerConfirmed: ownerPriceOf(cfg, p.id) });
     const deps = [];
     // store -> product
     deps.push(dep('STORE', 'المتجر ← المنتج', p.store_id ? ST.CONNECTED : ST.MISSING, p.store_id ? RES.NONE : RES.NEEDS_REVIEW, p.store_id ? `المتجر: ${p.store_id}` : 'المنتج بلا متجر — fail-closed'));

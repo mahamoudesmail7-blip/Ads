@@ -459,7 +459,7 @@ export function composePlan(inp) {
       ? [{ n: 1, focus: 'Offer', applies: true }, { n: 2, focus: 'Landing Page / Price', applies: true }, { n: 3, focus: 'Creative / Hook', applies: true }]
       : [{ n: 1, focus: 'Creative / Hook', applies: true }, { n: 2, focus: 'Offer', applies: true }, { n: 3, focus: 'Landing Page / Price', applies: true }]
     ).map((a) => ({ ...a, status: attemptsDone >= a.n ? 'DONE' : attemptsDone + 1 === a.n ? 'NEXT' : 'LATER' })),
-    stopCondition: `لو بعد ${settings.ambAdvisorStopAfterFailedAttempts || 3} محاولات متقيَّمة بعينة كافية فشلت/ضرّت (حاليًا ${failedN})، وCPA لسه فوق ${fmt1(stopCpa)} ج (${settings.ambAdvisorStopCpaMultiplier || 1.5}× الهدف) → يُوصى بالإيقاف.`,
+    stopCondition: `لو بعد ${settings.ambAdvisorStopAfterFailedAttempts || 3} محاولات متقيَّمة بعينة كافية فشلت/ضرّت (حاليًا ${failedN})، وCPA لسه فوق ${fmt1(stopCpa)} ج (${Math.round((settings.ambAdvisorStopCpaMultiplier || 1.5) * 100) / 100}× الهدف) → يُوصى بالإيقاف.`,
     stopTriggered: failedN >= (settings.ambAdvisorStopAfterFailedAttempts || 3) && n(m.avgCpa) !== null && n(m.avgCpa) > stopCpa,
   } : null;
   const mg2 = evaluateMoneyGuardForScale({ profitState: profit?.state, stockGuard: stock, creativeFatigueState: fatigued ? 'FATIGUED' : null, settings });
@@ -557,12 +557,29 @@ export function diffPlans(prev, next) {
 // ---------------------------------------------------------------------------
 // I/O half — sequential calls into the existing canonical systems
 // ---------------------------------------------------------------------------
+/**
+ * Pure. Settings as the Advisor must see them FOR ONE PRODUCT: its own Target CPA replaces the global default, and when the owner also set a Hard Stop CPA the recovery plan's
+ * "stop" line is that Hard Stop (not Target x 1.5). A product with no explicit Target is untouched (same object back) — no other product's advice changes.
+ */
+export function effectiveAdvisorSettings({ settings, targetCpa = null, hardStopCpa = null }) {
+  const t = Number(targetCpa);
+  if (!(t > 0)) return settings;
+  const out = { ...settings, ambDefaultTargetCpa: t };
+  const h = Number(hardStopCpa);
+  if (h > 0 && h >= t) out.ambAdvisorStopCpaMultiplier = h / t;
+  return out;
+}
+
 export async function gatherAdvisorInputs({ productId, storeId, windowName = 'last7' }) {
   const pid = Number(productId);
   const scope = await verifyProductStoreScope({ productId: pid, storeId });
   if (!scope.ok) return { ok: false, code: scope.code, reason: scope.reason };
 
-  const settings = await getAmbSettings();
+  // The product's OWN Target CPA (AmbProduct.target_cpa, set from the Operator / Economics screens) wins over the global default — the Advisor used to ignore it and judge every product against ambDefaultTargetCpa.
+  const baseSettings = await getAmbSettings();
+  const own = await prisma.ambProduct.findUnique({ where: { product_id: pid }, select: { target_cpa: true } }).catch(() => null);
+  const opCfg = await prisma.ambOperatorProductConfig.findUnique({ where: { product_id_store_id: { product_id: pid, store_id: storeId } }, select: { target_cpa: true, hard_stop_cpa: true } }).catch(() => null);
+  const settings = effectiveAdvisorSettings({ settings: baseSettings, targetCpa: opCfg?.target_cpa ?? own?.target_cpa ?? null, hardStopCpa: opCfg?.hard_stop_cpa ?? null });
   const adAccountId = (await getConnection())?.selected_ad_account_id || null;
   const pkg = await buildProductDecisionPackage({ productId: pid, windowName, settings, adAccountId });
   const { matrix } = await buildTestMatrix({ productId: pid, pkg });

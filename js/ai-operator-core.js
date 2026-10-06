@@ -9,7 +9,7 @@ export const ago = (iso) => { if (!iso) return '—'; const m = Math.round((Date
 export const dt = (iso) => (iso ? new Date(iso).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' }) : '—');
 
 export const MODES = [
-  { key: 'OFF', label: 'OFF', hint: 'مفيش تقييم ولا تنفيذ.' },
+  { key: 'OFF', label: 'MANUAL', hint: 'يدوي — مفيش أكشنز جديدة ولا متأخرة على Meta ومفيش Rollback. المراقبة وتسجيل تعديلاتك اليدوية شغالين.' },
   { key: 'SHADOW', label: 'Shadow', hint: 'بيسجّل اللي كان هيعمله بس — مفيش تنفيذ على Meta.' },
   { key: 'APPROVAL', label: 'بموافقتي', hint: 'بيجهّز القرارات وانت بتوافق قبل أي تنفيذ.' },
   { key: 'AUTOPILOT', label: 'Autopilot', hint: 'بينفّذ لوحده فقط للقواعد المعلّمة Autopilot بعد كل حواجز الأمان وبوابة التفعيل.' },

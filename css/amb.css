@@ -862,3 +862,17 @@ body { background: var(--amb-bg); }
 .op-gzo { display: flex; flex-direction: column; gap: 4px; min-width: 130px; } .op-gzo select { padding: 4px; border-radius: 6px; border: 1px solid var(--amb-border, #d1d5db); font: inherit; }
 .op-gbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; position: sticky; top: 0; background: var(--amb-surface, #fff); padding: 6px 0; z-index: 2; }
 .amb-link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--amb-blue, #2563eb); font: inherit; text-align: right; }
+
+/* AI Operator — global control strip (mode + Autopilot permissions) */
+.op-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; border-radius: var(--amb-radius-sm); padding: 10px 14px; margin-bottom: 12px; border: 1px solid var(--amb-border); background: var(--amb-surface-2); }
+.op-strip.green { border-color: #bbf7d0; background: #f0fdf4; }
+.op-strip.amber { border-color: #fde68a; background: #fffbeb; }
+.op-strip.blue { border-color: #cfe1ff; background: var(--amb-blue-bg); }
+.op-strip.red { border-color: #fecaca; background: var(--amb-red-bg); }
+.op-strip-mode { font-size: 14px; font-weight: 900; letter-spacing: .3px; }
+.op-strip-perms { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.op-strip small { color: var(--amb-text-dim); font-size: 12px; }
+.op-chip { border: 1px solid var(--amb-border); background: #fff; color: var(--amb-text-dim); font-family: inherit; font-weight: 800; font-size: 12px; padding: 5px 11px; border-radius: 999px; cursor: pointer; }
+.op-chip.on { background: #dcfce7; border-color: #86efac; color: #166534; }
+.op-chip.off { background: #f3f4f6; color: #6b7280; }
+.op-chip:disabled { cursor: default; opacity: .85; }

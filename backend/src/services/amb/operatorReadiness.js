@@ -18,7 +18,7 @@ import { SETUP_ACTIONS } from './operatorUnblock.js';
 import { resolveCampaignEvidence, persistStrongSuggestions, campaignPrefix } from './operatorMappingResolver.js';
 import { listCampaignsFromSnapshots, buildCampaignProductIndex, loadProductFacts } from './operatorContext.js';
 import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
-import { listExceptions, addException, removeException, getOperatorConfig } from './operatorStore.js';
+import { listExceptions, addException, removeException, getOperatorConfig, ownerPriceOf } from './operatorStore.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -47,7 +47,7 @@ const valOf = (ambVal, prodVal) => (Number(ambVal) > 0 ? Number(ambVal) : Number
 /** The single automation profile for storeId + productId (spec 58). Every value says where it comes from. */
 export async function getProductProfile({ productId, heavy = false }) {
   const { product, amb, opCfg } = await loadProductBundle(productId);
-  const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: await loadStoreCatalogIndex(product.store_id) });
+  const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: await loadStoreCatalogIndex(product.store_id), ownerConfirmed: ownerPriceOf(await getOperatorConfig(), product.id) });
   const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
   const exceptions = (await listExceptions({})).filter((e) => (e.scope_type === 'PRODUCT' && e.scope_id === String(product.id)) || (e.scope_type === 'STORE' && e.scope_id === product.store_id));
   const idx = amb ? await campaignsForAmbProduct(amb.id) : [];
@@ -200,7 +200,7 @@ export async function readinessList({ heavy = false, heavyFor = null } = {}) {
   for (const amb of ambs) {
     const product = products.get(amb.product_id); if (!product) continue;
     const opCfg = cfgs.get(`${product.id}:${product.store_id}`) || null;
-    const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null });
+    const priceResolution = resolveSellingPrice({ product, ambProduct: amb, storeCatalog: catalogs[product.store_id] || null, ownerConfirmed: ownerPriceOf(cfgGlobal, product.id) });
     const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, priceResolution });
     let dq;
     if (heavy || heavyFor?.has(product.id)) { const f = await loadProductFacts({ ambProductId: amb.id, heavy: true }); dq = f.dq || { gate: null }; }

@@ -4670,6 +4670,7 @@ const SETTING_FIELDS = [
   ['ambCreativeFatigueFreqThreshold', 'حد التكرار لإجهاد الكرييتف', 'number'],
   ['ambAllowAutoOpen', 'أوتوبايلوت: اسمح بفتح الحملات تلقائيًا (AI Operator)', 'bool'],
   ['ambAllowAutoPause', 'أوتوبايلوت: اسمح بالإيقاف التلقائي', 'bool'],
+  ['ambAllowAutoScale', 'أوتوبايلوت: اسمح بالتوسع التلقائي (Auto Scale — التوسع يحتاج كمان زيادة الميزانية)', 'bool'],
   ['ambAllowAutoBudgetIncrease', 'أوتوبايلوت: اسمح بزيادة الميزانية', 'bool'],
   ['ambAllowAutoBudgetDecrease', 'أوتوبايلوت: اسمح بتقليل الميزانية', 'bool'],
   ['ambAllowDuplicationActions', 'أوتوبايلوت: اسمح بأكشنز التكرار', 'bool'],

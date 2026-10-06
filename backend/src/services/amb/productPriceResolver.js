@@ -5,6 +5,8 @@
 //   2. Product.selling_price (the catalogue master)                              -> CATALOG
 //   3. the store's live Easy Orders catalogue, matched by EXACT normalised name (the "(s24)"-style SKU suffix is ignored) inside the SAME store,
 //      only when exactly one product matches                                    -> STORE_CATALOG
+//   0. an OWNER-CONFIRMED price (operatorStore.setOwnerConfirmedPrice: who/when/source on record, scoped to ONE product) — it settles a disagreement with the
+//      store catalogue (Easy Orders is never edited) but ONLY while AmbProduct and the catalogue Product carry that same number; a stale confirmation is ignored.
 // A suggested price (cost x multiplier) is NOT a source. When two real sources disagree the result is CONFLICT (profit-dependent actions stay blocked until
 // a human decides) — the Operator never picks a winner silently.
 import { normalizeName } from '../../../../js/product-mapping.js';
@@ -22,7 +24,7 @@ export function indexStoreCatalog(products) {
 }
 
 /** Pure resolver. `storeCatalog` = Map from indexStoreCatalog (or null when the store catalogue is unavailable). */
-export function resolveSellingPrice({ product, ambProduct, storeCatalog }) {
+export function resolveSellingPrice({ product, ambProduct, storeCatalog, ownerConfirmed = null }) {
   const amb = pos(ambProduct?.actual_selling_price);
   const cat = pos(product?.selling_price);
   const matches = storeCatalog ? (storeCatalog.get(catalogKey(product?.product_name)) || []) : [];
@@ -31,6 +33,11 @@ export function resolveSellingPrice({ product, ambProduct, storeCatalog }) {
   const sources = { owner: amb, catalog: cat, storeCatalog: eo, storeCatalogMatches: matches.length };
   const eoRef = eoMatch ? { id: eoMatch.id, name: eoMatch.name, slug: eoMatch.slug || null } : null;
   const differs = (a, b) => a != null && b != null && Math.abs(a - b) > 0.5;
+  const oc = pos(ownerConfirmed?.value);
+  if (oc != null && amb != null && !differs(oc, amb) && (cat == null || !differs(oc, cat))) {
+    // the owner confirmed this number for THIS product: a different Easy Orders catalogue price is reported (never edited, never silently ignored)
+    return { value: oc, source: 'OWNER_CONFIRMED', status: 'VERIFIED', sources, eoRef, ownerConfirmed: { value: oc, by: ownerConfirmed.by ?? null, at: ownerConfirmed.at ?? null, source: ownerConfirmed.source || 'USER_CONFIRMED', note: ownerConfirmed.note || null }, overriddenStoreCatalogPrice: differs(oc, eo) ? eo : null };
+  }
   if (amb != null) {
     if (differs(amb, cat)) return { value: null, source: null, status: 'CONFLICT', conflict: { owner: amb, catalog: cat }, sources, eoRef, reason: 'سعر AMB يختلف عن سعر الكتالوج.' };
     if (differs(amb, eo)) return { value: null, source: null, status: 'CONFLICT', conflict: { owner: amb, storeCatalog: eo }, sources, eoRef, reason: 'سعر AMB يختلف عن سعر كتالوج المتجر في Easy Orders.' };

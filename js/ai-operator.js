@@ -62,6 +62,7 @@ function drawTop() {
     ${ov.mode === 'AUTOPILOT' && !stop ? '<div class="op-banner amber">🤖 <b>Autopilot شغال</b> — بينفّذ فقط القواعد المعلّمة Autopilot، بأكشنز مسموحة وبعد كل حواجز الأمان.</div>' : ''}
     ${ov.writesLocked ? '<div class="op-banner amber">🔒 <b>كتابة AI Operator على Meta مقفولة على مستوى النشر</b> — حتى لو اخترت "بموافقتي" أو Autopilot مفيش تنفيذ. بتتفتح بقرار نشر صريح منك بعد مراجعة Shadow.</div>' : ''}
     ${!ov.connected ? '<div class="op-banner amber">⚠️ مفيش اتصال Meta Ads — اربط الحساب من AI Intelligence.</div>' : ''}
+    ${controlStrip(ov.control)}
     <div class="op-controlbar">
       <div class="op-modes" role="group" aria-label="وضع التشغيل">
         ${MODES.map((m) => `<button class="op-mode ${m.key === ov.mode ? 'on' : ''} ${m.key === 'AUTOPILOT' ? 'auto' : ''}" data-mode="${m.key}" title="${E(m.hint)}" ${S.isAdmin ? '' : 'disabled'}>${E(m.label)}</button>`).join('')}
@@ -78,11 +79,25 @@ function drawTop() {
     </div>
     <div class="op-sub">القواعد: ${num(ov.rules.enabled)} مفعّلة من ${num(ov.rules.total)} (${num(ov.rules.autopilot)} Autopilot) · الاستثناءات: ${num(ov.exceptions)} · آخر تشغيل مجدول: ${E(ov.scheduler?.lastRun ? ago(ov.scheduler.lastRun.at) : 'لسه')}</div>`;
   $('opTop').querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => changeMode(b.dataset.mode); });
+  $('opTop').querySelectorAll('[data-auto]').forEach((b) => { b.onclick = () => toggleAuto(b.dataset.auto, b.dataset.on !== '1'); });
   $('opStop').onclick = emergencyStop;
   if ($('opResume')) $('opResume').onclick = resumeFromStop;
   if ($('opEval')) $('opEval').onclick = evaluateNow;
 }
 
+// Global control strip: the mode (MANUAL / SHADOW / APPROVAL / AUTOPILOT) + what Autopilot is allowed to do. A toggle is a PERMISSION only — nothing executes unless the mode is AUTOPILOT,
+// Emergency Stop is off and the deployment write-lock is open (the strip says so).
+function controlStrip(c) {
+  if (!c) return '';
+  const cls = c.emergencyStop ? 'red' : c.mode === 'AUTOPILOT' ? 'green' : c.mode === 'APPROVAL' ? 'amber' : c.mode === 'SHADOW' ? 'blue' : 'red';
+  const chips = c.toggles.map((t) => `<button class="op-chip ${t.on ? 'on' : 'off'}" data-auto="${E(t.key)}" data-on="${t.on ? 1 : 0}" title="${E(t.label_ar)} — ${t.on ? 'مسموح (لو الوضع Autopilot)' : 'مقفول'}" ${S.isAdmin ? '' : 'disabled'}>${E(t.short)} ${t.on ? '✓' : '✗'}</button>`).join('');
+  const note = c.emergencyStop ? 'إيقاف الطوارئ فوق كل شيء.' : c.mode !== 'AUTOPILOT' ? 'الصلاحيات دي مبتشتغلش غير في Autopilot.' : c.writesLocked ? 'كتابة Meta مقفولة على مستوى النشر.' : '';
+  return `<div class="op-strip ${cls}" id="opStrip"><b class="op-strip-mode">${c.icon} ${E(c.emergencyStop ? 'EMERGENCY STOP' : c.modeLabel)}${c.mode === 'OFF' ? ' MODE' : ''}</b><span class="op-strip-perms">${chips}</span><small>${E(note)}</small></div>`;
+}
+async function toggleAuto(key, on) {
+  if (on && !(await UI.confirmModal({ title: 'تفعيل صلاحية تلقائية', message: `السماح لـ Autopilot بـ «${key}»؟ ده بيدّي صلاحية بس — مفيش تنفيذ لو الوضع مش Autopilot أو كتابة Meta مقفولة.`, confirmLabel: 'تفعيل' }))) return;
+  try { await api.put('/api/operator/auto-actions', { [key]: on }); UI.toast('تم'); await refreshTop(); drawTop(); } catch (e) { UI.toast(e.message, 'error'); }
+}
 async function changeMode(mode) {
   if (mode === S.ov.mode) return;
   if (mode === 'AUTOPILOT') return showGate(); // Autopilot only through the activation gate (server enforces it too)

@@ -9,6 +9,7 @@ import { prisma } from '../prisma.js';
 import { getConnection } from '../services/metaAuth.js';
 import { getAmbSettings } from '../services/amb/settings.js';
 import * as store from '../services/amb/operatorStore.js';
+import { controlStatus, setAutoActions } from '../services/amb/operatorControl.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
 import { evaluateOperator, approveDecision, rejectDecision, snoozeDecision, prepareRollback } from '../services/amb/operatorEngine.js';
 import { listCampaignsFromSnapshots, clearOperatorFactsCache } from '../services/amb/operatorContext.js';
@@ -65,16 +66,19 @@ router.put('/products/:productId/zero-order', ADMIN, asyncRoute(async (req, res)
 router.get('/overview', asyncRoute(async (req, res) => {
   const acc = await adAccountId();
   const monitored = acc ? (await listCampaignsFromSnapshots({ adAccountId: acc })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status)).length : null;
-  res.json({ ...(await operatorOverview({ monitored })), writesLocked: store.metaWritesLocked(), scheduler: getOperatorSchedulerStatus(), connected: !!acc });
+  res.json({ ...(await operatorOverview({ monitored })), writesLocked: store.metaWritesLocked(), scheduler: getOperatorSchedulerStatus(), connected: !!acc, control: await controlStatus() });
 }));
 router.get('/config', asyncRoute(async (req, res) => {
   const [config, settings] = await Promise.all([store.getOperatorConfig(), getAmbSettings()]);
   res.json({
-    config, allowlist: { OPEN: !!settings.ambAllowAutoOpen, PAUSE: !!settings.ambAllowAutoPause, SCALE_UP: !!settings.ambAllowAutoBudgetIncrease, SCALE_DOWN: !!settings.ambAllowAutoBudgetDecrease },
+    config, allowlist: { OPEN: !!settings.ambAllowAutoOpen, PAUSE: !!settings.ambAllowAutoPause, SCALE_UP: !!settings.ambAllowAutoScale && !!settings.ambAllowAutoBudgetIncrease, SCALE_DOWN: !!settings.ambAllowAutoBudgetDecrease },
     gate: await store.autopilotGate(), attestKeys: store.ATTEST_KEYS,
     meta: { lifecycle: LIFECYCLE, lifecycleLabels: LIFECYCLE_LABEL_AR, modes: store.OPERATOR_MODES, ruleModes: RULE_MODES, actions: ACTIONS, actionLabels: ACTION_LABEL_AR, windows: WINDOW_KEYS, windowLabels: WINDOW_LABEL_AR, fields: FIELDS, opsFor: OPS_FOR, precedence: PRECEDENCE, tags: store.CAMPAIGN_TAGS, defaults: { limits: store.DEFAULT_LIMITS, cooldowns: store.DEFAULT_COOLDOWNS } },
   });
 }));
+// global control strip (MANUAL / SHADOW / APPROVAL / AUTOPILOT + Pause/Open/Scale/Budget permissions). Toggles are ADMIN-only and never execute anything by themselves.
+router.get('/control', asyncRoute(async (req, res) => res.json(await controlStatus())));
+router.put('/auto-actions', ADMIN, asyncRoute(async (req, res) => res.json(await setAutoActions({ patch: req.body, userId: req.user.id }))));
 router.put('/mode', ADMIN, asyncRoute(async (req, res) => res.json(await store.setOperatorMode({ mode: req.body?.mode, userId: req.user.id, confirmAutopilot: req.body?.confirmAutopilot === true }))));
 router.post('/emergency-stop', asyncRoute(async (req, res) => { const reason = req.body?.reason || null; const out = await store.setEmergencyStop({ on: true, reason, userId: req.user.id }); await notifyEmergencyStop({ on: true, reason }); res.json(out); }));
 router.delete('/emergency-stop', ADMIN, asyncRoute(async (req, res) => res.json(await store.setEmergencyStop({ on: false, userId: req.user.id }))));
