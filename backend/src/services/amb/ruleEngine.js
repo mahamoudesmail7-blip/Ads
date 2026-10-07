@@ -175,7 +175,10 @@ export async function validateAction(p) {
   if (p.entityId) {
     const dupSince = new Date(Date.now() - DUP_COOLDOWN_HOURS * 3600 * 1000);
     const dup = await prisma.ambAction.findFirst({
-      where: { entity_id: p.entityId, action_type: p.actionType, created_at: { gte: dupSince }, execution_status: { in: ['PENDING', 'REVALIDATING', 'EXECUTED'] } },
+      // `excludeActionId` = the action row the executor created for THIS very attempt (status REVALIDATING) BEFORE it asks for revalidation. Without it the check found that row and blocked every
+      // execution by itself (2026-10-07: no real Meta write could ever pass). With it, only actions created BEFORE this one count (id < current): a real earlier PENDING / REVALIDATING / EXECUTED
+      // action still blocks (same policy as before), and of several concurrent attempts only the first-created one can pass — every later one sees it and is blocked.
+      where: { entity_id: p.entityId, action_type: p.actionType, created_at: { gte: dupSince }, execution_status: { in: ['PENDING', 'REVALIDATING', 'EXECUTED'] }, ...(p.excludeActionId ? { id: { lt: Number(p.excludeActionId) } } : {}) },
       orderBy: { created_at: 'desc' },
       include: { recommendation: { select: { id: true, status: true, campaign_name: true, adset_name: true, current_budget: true, recommended_budget: true } } },
     });

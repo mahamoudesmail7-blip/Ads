@@ -249,6 +249,7 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
       liveEntity: { status: live.status },
       currentBudget: live.budgetMajor ?? rec.current_budget,
       recommendedBudget: rec.recommended_budget,
+      excludeActionId: action.id, // this attempt's own row must not count as a "duplicate" of itself
     });
 
     if (material || !revalidation.passed) {
