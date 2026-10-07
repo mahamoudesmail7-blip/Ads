@@ -13,6 +13,7 @@ import { controlStatus, setAutoActions } from '../services/amb/operatorControl.j
 import { inventoryOverview, compareManualVsApi, setInventoryLink, removeInventoryLink, setInventoryPrimary } from '../services/amb/inventoryApi.js';
 import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetActionHistory } from '../services/amb/budgetOptimizer.js';
+import { prepareBudgetDecision } from '../services/amb/budgetExecution.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
 import { evaluateOperator, approveDecision, rejectDecision, snoozeDecision, prepareRollback } from '../services/amb/operatorEngine.js';
@@ -92,6 +93,8 @@ router.post('/inventory/reconcile', ADMIN, asyncRoute(async (req, res) => res.js
 router.get('/budget-optimizer/policy', asyncRoute(async (req, res) => res.json({ policy: await getBudgetPolicy() })));
 router.put('/budget-optimizer/policy', ADMIN, asyncRoute(async (req, res) => res.json({ policy: await setBudgetPolicy({ patch: req.body, userId: req.user.id }) })));
 router.post('/budget-optimizer/preview', ADMIN, asyncRoute(async (req, res) => res.json(await evaluateBudgetOptimization({ persist: false, live: req.body?.live === true }))));
+// the owner-approved budget execution: prepare ONE decision (needs mode APPROVAL + live Meta), then approve it through the normal POST /decisions/:id/approve (ADMIN).
+router.post('/budget-optimizer/prepare', ADMIN, asyncRoute(async (req, res) => res.json(await prepareBudgetDecision({ campaignId: String(req.body?.campaignId || ''), userId: req.user.id }))));
 router.get('/budget-optimizer/history', asyncRoute(async (req, res) => res.json({ history: await budgetActionHistory({ campaignId: req.query.campaignId || null, limit: req.query.limit }) })));
 
 // global control strip (MANUAL / SHADOW / APPROVAL / AUTOPILOT + Pause/Open/Scale/Budget permissions). Toggles are ADMIN-only and never execute anything by themselves.

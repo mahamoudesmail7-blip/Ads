@@ -223,13 +223,13 @@ const PROTECTED_CODES = new Set(['MAPPING_NOT_VERIFIED', 'EXTERNAL_STORE', 'TEST
  * deps (tests): world, structure (Map), adsetWindows ({last3,last7} Map by adset id), lastChanges (Map), since (fn), recent, counters.
  * Returns {at, policy, counts, rows[], decisionsPersisted}. persist=false (default) writes nothing.
  */
-export async function evaluateBudgetOptimization({ now = new Date(), persist = false, live = false, only = null, deps = {} } = {}) {
+export async function evaluateBudgetOptimization({ now = new Date(), persist = false, live = false, only = null, ruleMode = 'SHADOW', deps = {} } = {}) {
   const policy = deps.policy || await getBudgetPolicy();
   const world = deps.world || await buildOperatorWorld({ windowKeys: ['last3', 'last7', 'last14'], now, only });
   const { config, settings } = world;
   const campaigns = world.campaigns.filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status));
   const active = campaigns.filter((c) => c.status === 'ACTIVE');
-  const out = { at: now.toISOString(), policy, mode: config.mode, emergencyStop: config.emergency_stop, campaigns: campaigns.length, activeCampaigns: active.length, pausedCampaigns: campaigns.length - active.length, structureSource: null, rows: [], counts: null };
+  const out = { at: now.toISOString(), adAccountId: world.adAccountId || null, policy, mode: config.mode, emergencyStop: config.emergency_stop, campaigns: campaigns.length, activeCampaigns: active.length, pausedCampaigns: campaigns.length - active.length, structureSource: null, rows: [], counts: null };
   if (!world.adAccountId || !active.length) { out.counts = countRows([], campaigns.length - active.length); return out; }
 
   // ---- budget structure: live from Meta when asked (+ drift vs the synced snapshots), else the synced Meta metadata
@@ -322,7 +322,8 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
       if (cl.action === 'PAUSE' && !cx.lastPurchaseLoaded) { cx.lastPurchaseLoaded = true; cx.lastPurchaseAt = deps.lastPurchaseAt ? await deps.lastPurchaseAt(c.id) : await computeLastPurchaseAt({ campaignId: c.id, now }).catch(() => null); }
       if (cl.action === 'SCALE_UP' && cx.velocity === null && !cx.velocityLoaded) { cx.velocityLoaded = true; cx.velocity = deps.velocity ? await deps.velocity(c.id) : await computeVelocity({ campaignId: c.id, now, cfg: config.limits.spendVelocity }).catch(() => null); }
       const g = evaluateGuards({
-        decision: { action: cl.action, params: cl.action === 'PAUSE' ? {} : { pct: cl.pct, fromBudget: from, toBudget: to, level: ent.level, entityId: ent.id }, ruleMode: 'SHADOW', confidence, needs: cl.needs || {}, usesCod: false, cooldownHours: cl.action === 'SCALE_UP' ? policy.scale.cooldownHours : policy.reduce.cooldownHours, ruleMinSpend: cl.action === 'PAUSE' ? (cl.zeroLimit ?? policy.zeroOrders.spend) : null, severeOverride: false },
+        decision: { action: cl.action, params: cl.action === 'PAUSE' ? {} : { pct: cl.pct, fromBudget: from, toBudget: to, level: ent.level, entityId: ent.id }, ruleMode, // 'SHADOW' (preview) | 'APPROVAL' (pre-flight of an owner-approved execution: the execution-time guards are evaluated too)
+         confidence, needs: cl.needs || {}, usesCod: false, cooldownHours: cl.action === 'SCALE_UP' ? policy.scale.cooldownHours : policy.reduce.cooldownHours, ruleMinSpend: cl.action === 'PAUSE' ? (cl.zeroLimit ?? policy.zeroOrders.spend) : null, severeOverride: false },
         ctx: { ...cx, metrics: { spend: cl.sample.spend, purchases: cl.sample.purchases, cpa: cl.sample.cpa }, campaign: { ...cx.campaign, budget: ent.budget }, ruleConflicts: [] },
         config: cfg, settings: gset, now,
         counters: { ...counters, campaignActionsToday: cx.recent.todayCount, loss: { campaign: lossBy.campaign.get(c.id) || 0, product: cx.product?.id != null ? lossBy.product.get(cx.product.id) || 0 : 0, account: lossBy.account } },
@@ -361,7 +362,7 @@ async function recordEvent(data) { try { await prisma.ambOperatorEvent.create({ 
 export function historyRecord(row, { at = new Date() } = {}) {
   return { beforeBudget: row.intended?.fromBudget ?? null, afterBudget: row.intended?.toBudget ?? null, level: row.entity?.level || null, entityId: row.entity?.id || null, entityName: row.entity?.name || null, cpa: row.evidence?.cpa ?? null, purchases: row.evidence?.purchases ?? null, spend: row.evidence?.spend ?? null, cpa7d: row.evidence?.cpa7d ?? null, rule: row.rule, zone: row.zone, evidenceWindow: row.evidence?.window || null, lastChange: row.evidence?.lastChange || null, timestamp: at.toISOString() };
 }
-export async function persistBudgetDecisions(rows, { adAccountId, mode, now = new Date() }) {
+export async function persistBudgetDecisions(rows, { adAccountId, mode, now = new Date(), expireStale = true }) {
   let created = 0, updated = 0; const seen = new Set();
   for (const r of rows) {
     const cooldown = r.intended.action === 'SCALE_UP' ? 24 : 48;
@@ -371,11 +372,12 @@ export async function persistBudgetDecisions(rows, { adAccountId, mode, now = ne
     const status = r.decision === 'BLOCKED' || r.decision === 'PROTECTED' ? 'BLOCKED' : (r.wouldBe === 'PREPARED' ? 'PREPARED' : 'SHADOW');
     const hist = historyRecord(r, { at: now });
     const data = { store_id: r.storeId || 'UNKNOWN', product_id: r.productId, ad_account_id: adAccountId, campaign_id: r.campaignId, campaign_name: r.campaign, action: r.intended.action, rule_id: null, rule_name: `${RULE_PREFIX}${r.rule}`, mode_at_decision: mode, confidence: r.confidence || 'LOW',
-      blocked_codes_json: JSON.stringify(r.guards), evidence_json: JSON.stringify({ history: hist, evidence: r.evidence }), why_json: JSON.stringify({ what: `${r.rule} — ${r.reason}`, why: r.reason }), params_json: JSON.stringify({ ...(r.intended.toBudget != null ? { pct: r.intended.pct, fromBudget: r.intended.fromBudget, toBudget: r.intended.toBudget } : {}), level: r.entity?.level, entityId: r.entity?.id, window: r.evidence?.window?.window || 'since-last-change' }) };
+      blocked_codes_json: JSON.stringify(r.guards), evidence_json: JSON.stringify({ history: hist, evidence: r.evidence, m3: r.m3 || null, m7: r.m7 || null }), why_json: JSON.stringify({ what: `${r.rule} — ${r.reason}`, why: r.reason }), params_json: JSON.stringify({ ...(r.intended.toBudget != null ? { pct: r.intended.pct, fromBudget: r.intended.fromBudget, toBudget: r.intended.toBudget } : {}), level: r.entity?.level, entityId: r.entity?.id, window: r.evidence?.window?.window || 'since-last-change' }) };
     const ex = await prisma.ambOperatorDecision.findUnique({ where: { decision_key: key } });
     if (!ex) { const row = await prisma.ambOperatorDecision.create({ data: { decision_key: key, status, before_json: JSON.stringify({ budget: r.intended.fromBudget, level: r.entity?.level }), ...data } }); await recordEvent({ decision_id: row.id, kind: 'TRANSITION', from_status: 'CANDIDATE', to_status: status, actor: 'SYSTEM', note: r.primaryBlock || null, campaign_id: r.campaignId }); created++; }
     else if (['SHADOW', 'BLOCKED', 'PREPARED', 'EXPIRED'].includes(ex.status)) { await prisma.ambOperatorDecision.update({ where: { id: ex.id }, data: { ...data, status } }); updated++; }
   }
+  if (!expireStale) return { created, updated, expired: 0 }; // single-decision preparation (owner-approved execution) must never touch other decisions
   // this optimizer's own stale open rows (evidence changed / campaign no longer qualifies) expire here — the engine's expiry skips them
   const open = await prisma.ambOperatorDecision.findMany({ where: { rule_name: { startsWith: RULE_PREFIX }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, select: { id: true, decision_key: true } });
   const stale = open.filter((o) => !seen.has(o.decision_key)).map((o) => o.id);
@@ -385,5 +387,5 @@ export async function persistBudgetDecisions(rows, { adAccountId, mode, now = ne
 /** Action history: before → after budget, level, CPA, purchases, spend, rule, evidence window, timestamp. */
 export async function budgetActionHistory({ campaignId = null, limit = 100 } = {}) {
   const rows = await prisma.ambOperatorDecision.findMany({ where: { rule_name: { startsWith: RULE_PREFIX }, ...(campaignId ? { campaign_id: campaignId } : {}) }, orderBy: { id: 'desc' }, take: Math.min(Number(limit) || 100, 500) });
-  return rows.map((d) => { const ev = j(d.evidence_json, {}) || {}; const h = ev.history || {}; return { id: d.id, status: d.status, mode: d.mode_at_decision, campaignId: d.campaign_id, campaign: d.campaign_name, action: d.action, ...h, executedAt: d.executed_at || null, createdAt: d.created_at, blocked: j(d.blocked_codes_json, []) }; });
+  return rows.map((d) => { const ev = j(d.evidence_json, {}) || {}; const h = ev.history || {}; const cdH = d.action === 'SCALE_UP' ? 24 : 48; const done = d.executed_at && ['EXECUTED', 'VERIFIED'].includes(d.status); const bj = j(d.before_json, {}) || {}, aj = j(d.after_json, {}) || {}; return { id: d.id, status: d.status, mode: d.mode_at_decision, campaignId: d.campaign_id, campaign: d.campaign_name, action: d.action, ...h, ...(done ? { beforeBudget: bj.budget ?? h.beforeBudget ?? null, afterBudget: aj.budget ?? h.afterBudget ?? null } : {}), executedAt: d.executed_at || null, verifiedAt: d.verified_at || null, approvedById: d.approved_by_id || null, verified: d.status === 'VERIFIED', cooldownHours: done ? cdH : null, cooldownUntil: done ? new Date(new Date(d.executed_at).getTime() + cdH * MS_H) : null, createdAt: d.created_at, blocked: j(d.blocked_codes_json, []) }; });
 }

@@ -11,6 +11,13 @@ const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { retur
 const MS_H = 3_600_000;
 export const STATUS_LABEL_AR = { SHADOW: 'Shadow (مش هيتنفذ)', BLOCKED: 'ممنوع', PREPARED: 'جاهز للموافقة', APPROVED: 'اتوافق عليه', EXECUTING: 'بيتنفذ', EXECUTED: 'اتبعت لـ Meta (لسه مش متأكد)', VERIFIED: 'تم التنفيذ (متأكد من Meta)', FAILED: 'فشل', ROLLED_BACK: 'اترجع', REJECTED: 'مرفوض', SNOOZED: 'مؤجل', EXPIRED: 'انتهى' };
 
+const BUDGET_COOLDOWN_H = { SCALE_UP: 24, SCALE_DOWN: 48, PAUSE: 48 };
+/** Cooldown that an executed Dynamic Budget decision started (24h after an increase, 48h after a decrease). null for anything else / not executed. */
+export function budgetCooldownOf(d, now = new Date()) {
+  if (!String(d.rule_name || '').startsWith('DYNAMIC_BUDGET:') || !d.executed_at || !['EXECUTED', 'VERIFIED'].includes(d.status)) return null;
+  const hours = BUDGET_COOLDOWN_H[d.action] ?? 48, from = new Date(d.executed_at), until = new Date(from.getTime() + hours * MS_H);
+  return { hours, from, until, active: now < until, remainingHours: Math.max(0, Math.round((until - now) / MS_H * 10) / 10) };
+}
 export function shapeDecision(d) {
   const ev = j(d.evidence_json, {}), why = j(d.why_json, {}), params = j(d.params_json, {});
   const blocks = j(d.blocked_codes_json, []);
@@ -31,6 +38,7 @@ export function shapeDecision(d) {
     blocks, primaryBlock: blocks.find((b) => b.severity === 'BLOCK') || null, warnings: blocks.filter((b) => b.severity === 'WARN'), why,
     before: j(d.before_json, null), after: j(d.after_json, null), rollback: j(d.rollback_json, null), verify: j(d.verify_json, null), outcome: j(d.outcome_json, null), shadow: j(d.shadow_json, null),
     links: { advisorRecId: d.advisor_rec_id, advisorPlanVersion: d.advisor_plan_version, ambRecommendationId: d.amb_recommendation_id, ambActionId: d.amb_action_id },
+    isBudgetDecision: String(d.rule_name || '').startsWith('DYNAMIC_BUDGET:'), cooldown: budgetCooldownOf(d),
     approvalSource: d.approval_source, approvedById: d.approved_by_id, approvedAt: d.approved_at, executedAt: d.executed_at, verifiedAt: d.verified_at, error: d.error, snoozedUntil: d.snoozed_until, createdAt: d.created_at, updatedAt: d.updated_at,
   };
 }

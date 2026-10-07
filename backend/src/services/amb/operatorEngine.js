@@ -306,6 +306,8 @@ export async function snoozeDecision({ decisionId, hours = 24 }) {
 export async function approveDecision({ decisionId, userId, deps = {} }) {
   const row = await prisma.ambOperatorDecision.findUnique({ where: { id: Number(decisionId) } });
   if (!row) { const e = new Error('القرار غير موجود.'); e.status = 404; throw e; }
+  // Dynamic Budget decisions (rule_name DYNAMIC_BUDGET:*) have no rule to re-match: they go through the dedicated, ADMIN-only budget bridge (its own claim, live revalidation, ONE Meta write, read-back).
+  if (String(row.rule_name || '').startsWith('DYNAMIC_BUDGET:')) { const { executeBudgetDecision } = await import('./budgetExecution.js'); return executeBudgetDecision({ decisionId: row.id, userId, deps: deps.budget || {} }); }
   if (row.status !== 'PREPARED') { const e = new Error(`القرار في حالة ${row.status} — مش قابل للموافقة.`); e.status = 409; throw e; }
   const claimed = await prisma.ambOperatorDecision.updateMany({ where: { id: row.id, status: 'PREPARED' }, data: { status: 'APPROVED', approval_source: 'USER', approved_by_id: userId || null, approved_at: new Date() } });
   if (claimed.count !== 1) { const e = new Error('القرار اتغيّر في نفس اللحظة — حدّث الصفحة.'); e.status = 409; throw e; }
@@ -325,6 +327,10 @@ export async function executeDecision({ decisionId, source = 'USER', userId = nu
   const row = await prisma.ambOperatorDecision.findUnique({ where: { id: Number(decisionId) } });
   if (!row) return { ok: false, executed: false, status: 'NOT_FOUND', message: 'القرار غير موجود.' };
   if (!['PREPARED', 'APPROVED'].includes(row.status)) return { ok: false, executed: false, status: row.status, message: `القرار في حالة ${row.status} — مش قابل للتنفيذ.` };
+  if (String(row.rule_name || '').startsWith('DYNAMIC_BUDGET:')) { // never from Autopilot / the scheduler, only a human through the budget bridge
+    if (source !== 'USER' || !userId) return { ok: false, executed: false, status: 'BLOCKED', message: 'قرارات الميزانية بتتنفذ بموافقة ADMIN صريحة فقط (مفيش Autopilot).' };
+    const { executeBudgetDecision } = await import('./budgetExecution.js'); return executeBudgetDecision({ decisionId: row.id, userId, deps: deps.budget || {} });
+  }
   const actor = source === 'AUTOPILOT' ? 'AUTOPILOT' : 'USER';
 
   // 1. revalidate with a fresh single-campaign world (the rule must still match and every guard must still pass)
