@@ -25,7 +25,7 @@ const ACTION_FROM_AMB = { PAUSE: 'PAUSE', RESUME: 'OPEN', INCREASE_BUDGET: 'SCAL
 export async function listCampaignsFromSnapshots({ adAccountId, days = 60 }) {
   const since = new Date(Date.now() - days * 86_400_000);
   const rows = await prisma.metaPerformanceSnapshot.findMany({
-    where: { level: 'campaign', ad_account_id: adAccountId, snapshot_at: { gte: since }, campaign_id: { not: null } },
+    where: { level: 'campaign', ad_account_id: adAccountId, snapshot_at: { gte: since }, campaign_id: { not: null }, campaign_status: { not: null } }, // a row from a failed metadata fetch (NULL status) is not the campaign's state
     distinct: ['campaign_id'], orderBy: [{ campaign_id: 'asc' }, { snapshot_at: 'desc' }],
     select: { campaign_id: true, campaign_name: true, campaign_status: true, campaign_budget: true, campaign_budget_type: true, snapshot_at: true },
   });

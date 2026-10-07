@@ -140,6 +140,14 @@ try {
   sm = await BO.metricsSince({ level: 'adset', id: `${T}as1`, since: new Date('2026-10-06T14:00:00Z'), now: NOW, adAccountId: `${T}acc` });
   ok('DB: metrics since 14:00 = (520−330)=190 spend, 2 orders — from the real snapshot table', sm.spend === 190 && sm.purchases === 2 && Math.round(sm.cpa) === 95, JSON.stringify(sm));
   ok('DB: no snapshots for an unknown entity => null', (await BO.metricsSince({ level: 'adset', id: `${T}none`, since: NOW, now: NOW })) === null);
+  // a failed-metadata sync cycle writes NULL status/budget rows: the structure loader must ignore them (production showed ad-set budgets flapping value -> null)
+  const mkMeta = (at, status, budget) => ({ sync_run_id: run.id, snapshot_at: new Date(at), ad_account_id: `${T}acc`, level: 'adset', date_start: '2026-10-06', date_stop: '2026-10-06', campaign_id: `${T}c9`, adset_id: `${T}as9`, adset_name: 'AS9', adset_status: status, adset_budget: budget, adset_budget_type: budget ? 'DAILY' : null, spend: 10, meta_purchases: 0 });
+  const mkCamp = (at, status, budget) => ({ sync_run_id: run.id, snapshot_at: new Date(at), ad_account_id: `${T}acc`, level: 'campaign', date_start: '2026-10-06', date_stop: '2026-10-06', campaign_id: `${T}c9`, campaign_status: status, campaign_budget: budget, campaign_budget_type: budget ? 'DAILY' : null, spend: 10, meta_purchases: 0 });
+  await retryDb(() => prisma.metaPerformanceSnapshot.createMany({ data: [mkMeta('2026-10-06T18:00:00Z', 'ACTIVE', 300), mkMeta('2026-10-06T19:30:00Z', null, null), mkCamp('2026-10-06T18:00:00Z', 'ACTIVE', null), mkCamp('2026-10-06T19:30:00Z', null, null)] }));
+  const stc = await BO.loadBudgetStructureFromSnapshots({ adAccountId: `${T}acc`, campaignIds: [`${T}c9`], now: NOW });
+  const dd = BO.discoverBudgetEntities(stc.get(`${T}c9`));
+  ok('a NEWER failed-sync row (null status/budget) is ignored: the ad-set budget is still discovered (ABO 300), not BUDGET_UNKNOWN', dd.level === 'adset' && dd.entities[0].budget === 300 && stc.get(`${T}c9`).campaign.status === 'ACTIVE', JSON.stringify(dd));
+
 
   // ===================================================================================================================
   console.log('\n6. orchestration through the REAL guard chain (injected world / contexts — no Meta, no writes)');
@@ -160,17 +168,17 @@ try {
   ok('CBO campaign: CPA 60 with 5 orders => WOULD_INCREASE 500 → 600 at the CAMPAIGN level, via the full guard chain', by('cbo').budgetLevel === 'campaign' && by('cbo').decision === 'WOULD_INCREASE' && by('cbo').intended.fromBudget === 500 && by('cbo').intended.toBudget === 600 && by('cbo').entity.level === 'campaign', JSON.stringify(by('cbo')));
   ok('ABO campaign: the decision targets the ACTIVE AD SET (200 → 160) using the AD-SET metrics (CPA 201 over 3 orders = HIGH_CPA reduce first)', by('abo').budgetLevel === 'adset' && by('abo').entity.id === `${T}as-abo` && by('abo').zone === 'HIGH_CPA' && by('abo').decision === 'WOULD_REDUCE' && by('abo').intended.fromBudget === 200 && by('abo').intended.toBudget === 160 && by('abo').intended.action === 'SCALE_DOWN', JSON.stringify(by('abo')));
   ok('ABO zero orders (260 spend, 0 orders) => WOULD_PAUSE (no budget change involved)', by('zero').decision === 'WOULD_PAUSE' && by('zero').intended.action === 'PAUSE' && by('zero').intended.toBudget === null, JSON.stringify(by('zero')));
-  ok('unknown budget level => BLOCKED (BUDGET_UNKNOWN), nothing guessed', by('unk').decision === 'BLOCKED' && by('unk').guards.includes('BUDGET_UNKNOWN'));
+  ok('unknown budget level => BLOCKED (BUDGET_UNKNOWN), nothing guessed', by('unk').decision === 'BLOCKED' && by('unk').guards.some((g) => g.startsWith('BUDGET_UNKNOWN')));
   ok('an exception (NO_AUTOMATION) turns the would-increase into PROTECTED with the guard shown', by('ext').decision === 'PROTECTED' && by('ext').guards.some((g) => g.startsWith('EXCEPTION_NO_AUTOMATION')) && by('ext').intended.action === 'SCALE_UP');
   ok('counts: 1 increase, 1 reduce, 1 pause, 1 protected, 1 blocked, 1 paused campaign not evaluated', res.counts.WOULD_INCREASE === 1 && res.counts.WOULD_REDUCE === 1 && res.counts.WOULD_PAUSE === 1 && res.counts.PROTECTED === 1 && res.counts.BLOCKED === 1 && res.counts.NO_ACTION_PAUSED === 1 && res.counts.HIGH_CPA_REDUCE === 1, JSON.stringify(res.counts));
   // guards stay
   const gv = async (o) => (await BO.evaluateBudgetOptimization({ now: NOW, deps: { ...base, ...o } })).rows.find((x) => x.campaignId === `${T}cbo`);
   let row = await gv({ ctxFor: async (c) => mkCtx(c.id, { stock: { status: 'STOCK_UNKNOWN' } }) });
-  ok('Stock unknown => the scale is BLOCKED (STOCK_UNKNOWN)', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('STOCK_UNKNOWN')));
+  ok('ACCOUNT-WIDE: stock unknown is NOT a hard block any more — the increase stays WOULD_INCREASE but can never run by itself (STOCK_UNKNOWN[D] + approval)', row.decision === 'WOULD_INCREASE' && row.requiresApproval === true && row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[D]')), JSON.stringify(row.guards));
   row = await gv({ ctxFor: async (c) => mkCtx(c.id, { econ: { complete: false, profitState: 'UNKNOWN' } }) });
-  ok('Economics incomplete => BLOCKED', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE')));
+  ok('ACCOUNT-WIDE: economics incomplete is a WARNING on a performance-only rule (ECONOMICS_INCOMPLETE[W]) — not invented, not blocking', row.decision === 'WOULD_INCREASE' && row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[W]')) && !row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[B]')), JSON.stringify(row.guards));
   row = await gv({ ctxFor: async (c) => mkCtx(c.id, { product: { id: 7, ambProductId: 7, name: 'x', mappingVerified: false, mappingSource: 'SUGGESTED' } }) });
-  ok('Mapping not VERIFIED => BLOCKED', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('MAPPING_UNRELIABLE')));
+  ok('Mapping not VERIFIED => PROTECTED (account-wide policy: never enters automation)', row.decision === 'PROTECTED' && row.guards[0].startsWith('MAPPING_NOT_VERIFIED[B]'), JSON.stringify(row.guards));
   row = await gv({ ctxFor: async (c) => mkCtx(c.id, { dq: { gate: 'DECISION_BLOCKED_DATA_QUALITY' } }) });
   ok('Data quality blocked => BLOCKED', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('DATA_QUALITY_BLOCKED')));
   row = await gv({ ctxFor: async (c) => mkCtx(c.id, { recent: { lastByAction: {}, todayCount: 0, manualOverrideAt: new Date(NOW.getTime() - 3_600_000) } }) });
@@ -187,6 +195,40 @@ try {
   ok('5h after a previous scale on the same campaign => PROTECTED by cooldown, no compounding', row.decision === 'PROTECTED' && row.zone === 'COOLDOWN' && row.intended === null);
   row = await gv({ lastChanges: new Map([[`${T}cbo`, { at: new Date(NOW.getTime() - 30 * 3_600_000), action: 'SCALE_UP', from: 400, to: 500, source: 'AMB_ACTION' }]]), since: async () => ({ spend: 280, purchases: 4, cpa: 70 }) });
   ok('30h later with NEW evidence (CPA 70, 4 orders): +20% again — 500 → 600 — decided from the since-change data', row.decision === 'WOULD_INCREASE' && row.evidence.window.kind === 'SINCE_LAST_CHANGE' && row.evidence.cpa === 70 && row.evidence.lastChange.from === 400 && row.intended.toBudget === 600, JSON.stringify(row));
+  // ---- account-wide onboarding semantics (2026-10-07)
+  console.log('\n6b. account-wide policy layer');
+  const AWP = BO.DEFAULT_POLICY.accountWide;
+  ok('policy defaults: verified mapping required, economics/stock unknown = WARN, product zero-order override on', AWP.requireVerifiedMapping === true && AWP.economicsMissing === 'WARN' && AWP.stockUnknown === 'WARN' && AWP.productZeroOrderOverride === true && BO.validatePolicy(BO.DEFAULT_POLICY).length === 0 && BO.validatePolicy(BO.mergePolicy({ accountWide: { stockUnknown: 'MAYBE' } })).length > 0);
+  for (const st of ['CONFLICT', 'SUGGESTED', 'UNMAPPED']) {
+    row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: st }]]) });
+    ok(`mapping state ${st} (even with a "verified" product flag) => PROTECTED, MAPPING_NOT_VERIFIED, nothing proposed as executable`, row.decision === 'PROTECTED' && row.guards[0] === `MAPPING_NOT_VERIFIED[B]:${st}` && row.mapping === st, JSON.stringify(row.guards));
+  }
+  row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'EXTERNAL_STORE' }]]) });
+  ok('EXTERNAL_STORE => PROTECTED with its own code (NO_AUTOMATION)', row.decision === 'PROTECTED' && row.guards[0].startsWith('EXTERNAL_STORE[B]'));
+  row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'SUGGESTED' }]]), world: { ...world, windows: { ...world.windows, last3: win({ [`${T}cbo`]: m(300, 3) }) } } });
+  ok('a KEEP-zone campaign that is not VERIFIED is PROTECTED too (it is outside the automation scope entirely)', row.decision === 'PROTECTED' && row.intended === null);
+  row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'VERIFIED' }]]) });
+  ok('VERIFIED (mapping center) => the normal decision', row.decision === 'WOULD_INCREASE' && row.mapping === 'VERIFIED');
+  row = await gv({ ctxFor: async (c) => mkCtx(c.id, { econ: { complete: false, profitState: 'UNKNOWN', priceStatus: 'CONFLICT', priceConflict: { a: 1, b: 2 } } }) });
+  ok('a PRICE CONFLICT is never guessed: the increase stays BLOCKED (PRICE_CONFLICT) even though missing economics alone only warns', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('PRICE_CONFLICT[B]')) && row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[W]')), JSON.stringify(row.guards));
+  row = await gv({ ctxFor: async (c) => mkCtx(c.id, { stock: { status: 'OUT_OF_STOCK', currentStock: 0, minimumStock: 10 } }) });
+  ok('a KNOWN bad stock (out of stock) still BLOCKS the increase', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('STOCK_OUT[B]')));
+  row = await gv({ ctxFor: async (c) => mkCtx(c.id, { econ: { complete: true, profitState: 'UNPROFITABLE', hardStopCpa: 200 } }) });
+  ok('KNOWN negative profit still BLOCKS the increase (PROFIT_NEGATIVE)', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('PROFIT_NEGATIVE[B]')));
+  const gz = async (o, aw = {}) => (await BO.evaluateBudgetOptimization({ now: NOW, deps: { ...base, ...o, adsetWindows: aw.adsetWindows || adsetWindows } })).rows.find((x) => x.campaignId === `${T}zero`);
+  row = await gz({ ctxFor: async (c) => mkCtx(c.id, { econ: { complete: false, profitState: 'UNKNOWN' }, stock: { status: 'STOCK_UNKNOWN' } }) });
+  ok('PAUSE (zero orders, 260 spend) with unknown economics AND unknown stock => WOULD_PAUSE with two WARNINGS, not blocked', row.decision === 'WOULD_PAUSE' && row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[W]')) && row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[W]')), JSON.stringify(row.guards));
+  const ovCtx = (o = {}) => async (c) => mkCtx(c.id, { productOverride: { zeroOrder: { mode: 'TARGET_CPA_MULTIPLE', multiple: 3 } }, econ: { complete: true, profitState: 'PROFITABLE', targetCpa: 150, hardStopCpa: 200 }, ...o });
+  row = await gz({ ctxFor: ovCtx() });
+  ok('Hair-Cap style override (3 x Target CPA 150 = 450): 260 spend with zero orders is NOT a pause for THAT product (account-wide 200 does not apply)', row.decision === 'KEEP' && row.zone === 'NO_ORDERS_YET' && row.zeroLimit === 450, JSON.stringify([row.decision, row.zone, row.zeroLimit]));
+  row = await gz({ ctxFor: ovCtx() }, { adsetWindows: { last3: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }), last7: adsetWindows.last7 } });
+  ok('...and at 460 spend (>= 450) the product limit pauses it', row.decision === 'WOULD_PAUSE' && row.zeroLimit === 450 && row.intended.action === 'PAUSE');
+  row = await gz({ ctxFor: ovCtx({ econ: { complete: false, profitState: 'UNKNOWN', targetCpa: null } }) }, { adsetWindows: { last3: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }), last7: adsetWindows.last7 } });
+  ok('an override that cannot be resolved (multiple of an UNKNOWN Target CPA) blocks the pause instead of falling back to 200', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('ZERO_ORDER_NOT_CONFIGURED')), JSON.stringify(row.guards));
+  row = await gz({ ctxFor: async (c) => mkCtx(c.id) });
+  ok('a product WITHOUT an override uses the account-wide 200 (260 spend, zero orders => pause)', row.decision === 'WOULD_PAUSE' && row.zeroLimit === 200, JSON.stringify([row.decision, row.zeroLimit]));
+  ok('rows carry the 3-day and 7-day metrics and the campaign age for the preview table', !!by('cbo').m3 && by('cbo').m3.cpa === 60 && by('cbo').m7.cpa === 75 && by('cbo').ageHours === 200, JSON.stringify([by('cbo').m3, by('cbo').m7, by('cbo').ageHours]));
+
   // gate for the scale sample: the policy's 2 (not the global 5) is used for THIS evaluation only
   const gset = await prisma.settings.findUnique({ where: { id: 'default' } });
   ok('the global sample setting (5) was not touched by the policy override', (JSON.parse(gset?.data || '{}').ambMinPurchasesBeforeScaling ?? 5) === 5);

@@ -13,6 +13,7 @@ import { getBudgetPolicy, evaluateBudgetOptimization } from './budgetOptimizer.j
 import { reconcileShadowOutcomes } from './operatorReports.js';
 import { emitOperatorNotifications } from './operatorOps.js';
 import { ensureAdvisorPlans } from './operatorIntegration.js';
+import { detectManualChanges } from './manualChangeDetector.js';
 
 const INTERVAL_MS = 10 * 60_000;
 const TICK_TIMEOUT_MS = 5 * 60_000;
@@ -32,7 +33,7 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
 export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
   const config = await getOperatorConfig();
   // MANUAL (OFF): no rule evaluation, no advisor tick, no rollback preparation — only record what the OWNER changes by hand (Operator's own event rows, never Meta)
-  if (config.mode === 'OFF') return { skipped: 'MODE_OFF', monitoringOnly: true, manualOverrides: await detectManualOverrides({ now }).catch((e) => ({ error: e.message })) };
+  if (config.mode === 'OFF') return { skipped: 'MODE_OFF', monitoringOnly: true, manualOverrides: await detectManualOverrides({ now }).catch((e) => ({ error: e.message })), manualChanges: await detectManualChanges({ now, throttleMin: 30 }).catch((e) => ({ error: e.message })) };
   const rules = (await listRules()).filter((r) => r.enabled);
   const out = { mode: config.mode, emergencyStop: config.emergency_stop, rules: rules.length };
   // one strategy: make sure every advertised product has a Smart Advisor plan before rules are judged against it (bounded: 3 products per tick)
@@ -41,10 +42,12 @@ export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
     const res = await evaluateOperator({ persist: true, now, deps, autoExecute: config.mode === 'AUTOPILOT' });
     out.evaluated = res.campaignsEvaluated; out.candidates = res.candidates.length; out.autoExecuted = res.autoExecuted || 0; out.summary = res.summary; out.expired = res.expired || 0;
   }
+  await detectManualChanges({ now, throttleMin: 30 }).catch(() => null); // before any optimizer decision, so the owner's latest edit is already a cooldown
   // Dynamic Budget Optimizer: OFF by default (policy.enabled=false). When the owner enables it, it records SHADOW/PREPARED decisions with their action history; it never writes to Meta from here.
   try { const pol = await getBudgetPolicy(); if (pol.enabled) { const r = await evaluateBudgetOptimization({ persist: true, now }); out.budgetOptimizer = { counts: r.counts, persisted: r.persisted }; } } catch (e) { out.budgetOptimizer = { error: e.message }; }
   // monitoring-side jobs always run (they only write the Operator's own rows / prepare rollbacks, never execute)
   out.manualOverrides = await detectManualOverrides({ now }).catch((e) => ({ error: e.message }));
+  out.manualChanges = await detectManualChanges({ now, throttleMin: 30 }).catch((e) => ({ error: e.message })); // the owner's own edits in Meta Ads Manager -> MANUAL_OVERRIDE + cooldown (bounded: at most every 30 min)
   out.shadow = await reconcileShadowOutcomes({ now }).catch((e) => ({ error: e.message }));
   out.postScale = await detectPostScaleDeterioration({ now }).catch((e) => ({ error: e.message }));
   out.notifications = await emitOperatorNotifications({ now, result: out }).catch((e) => ({ error: e.message }));

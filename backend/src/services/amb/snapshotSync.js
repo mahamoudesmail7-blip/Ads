@@ -132,6 +132,55 @@ function toSnapshotRow(row, level, meta, adAccountId) {
   };
 }
 
+// =====================================================================================================================
+// METADATA CARRY-FORWARD (2026-10-07). Root cause fixed here: when an entity-metadata call failed / came back truncated, the cycle used to write the
+// insight rows with status / budget = NULL ON TOP of the last good values (observed on production: ad-set budgets flapped value -> null -> value every
+// few syncs, which produced false BUDGET_UNKNOWN and could hide a real manual budget change). A failed fetch is NOT a fact about the entity:
+// for any id whose metadata is missing this cycle, the last known GOOD values (status present, <= 48h old) are carried forward. Nothing is invented:
+// an entity with no earlier good row still gets null, exactly as before.
+// =====================================================================================================================
+export const META_CARRY_MAX_AGE_HOURS = 48;
+/** Ids (per level) referenced by the insight rows whose metadata is absent from `meta`. Pure. */
+export function missingMetaIds(insightRows, meta) {
+  const miss = { campaign: new Set(), adset: new Set(), ad: new Set() };
+  for (const r of insightRows) {
+    if (r.campaign_id && !meta.campaign.has(r.campaign_id)) miss.campaign.add(r.campaign_id);
+    if (r.adset_id && !meta.adset.has(r.adset_id)) miss.adset.add(r.adset_id);
+    if (r.ad_id && !meta.ad.has(r.ad_id)) miss.ad.add(r.ad_id);
+  }
+  return miss;
+}
+/** Last known GOOD metadata (status present) per missing id, from the append-only snapshots. */
+export async function loadMetaFallback({ adAccountId, missing, now = new Date(), maxAgeHours = META_CARRY_MAX_AGE_HOURS }) {
+  const since = new Date(now.getTime() - maxAgeHours * 3_600_000); const base = { ad_account_id: adAccountId, snapshot_at: { gte: since } };
+  const out = { campaign: new Map(), adset: new Map(), ad: new Map() };
+  if (missing.campaign.size) for (const x of await prisma.metaPerformanceSnapshot.findMany({ where: { ...base, level: 'campaign', campaign_id: { in: [...missing.campaign] }, campaign_status: { not: null } }, distinct: ['campaign_id'], orderBy: [{ campaign_id: 'asc' }, { snapshot_at: 'desc' }], select: { campaign_id: true, campaign_status: true, campaign_objective: true, campaign_budget: true, campaign_budget_type: true } })) out.campaign.set(x.campaign_id, { status: x.campaign_status, objective: x.campaign_objective, campaignId: null, adsetId: null, creativeId: null, budget: x.campaign_budget ?? null, budgetType: x.campaign_budget_type || null });
+  if (missing.adset.size) for (const x of await prisma.metaPerformanceSnapshot.findMany({ where: { ...base, level: 'adset', adset_id: { in: [...missing.adset] }, adset_status: { not: null } }, distinct: ['adset_id'], orderBy: [{ adset_id: 'asc' }, { snapshot_at: 'desc' }], select: { adset_id: true, campaign_id: true, adset_status: true, adset_budget: true, adset_budget_type: true } })) out.adset.set(x.adset_id, { status: x.adset_status, objective: null, campaignId: x.campaign_id, adsetId: null, creativeId: null, budget: x.adset_budget ?? null, budgetType: x.adset_budget_type || null });
+  if (missing.ad.size) for (const x of await prisma.metaPerformanceSnapshot.findMany({ where: { ...base, level: 'ad', ad_id: { in: [...missing.ad] }, ad_status: { not: null } }, distinct: ['ad_id'], orderBy: [{ ad_id: 'asc' }, { snapshot_at: 'desc' }], select: { ad_id: true, adset_id: true, campaign_id: true, ad_status: true, creative_id: true } })) out.ad.set(x.ad_id, { status: x.ad_status, objective: null, campaignId: x.campaign_id, adsetId: x.adset_id, creativeId: x.creative_id || null, budget: null, budgetType: null });
+  return out;
+}
+/** Fills ONLY the missing ids of `meta` from `fallback` (never overrides what Meta returned this cycle). Returns how many per level were carried. Pure. */
+export function applyMetaFallback(meta, fallback) {
+  const n = { campaign: 0, adset: 0, ad: 0 };
+  for (const lvl of ['campaign', 'adset', 'ad']) for (const [id, v] of fallback[lvl]) if (!meta[lvl].has(id)) { meta[lvl].set(id, { ...v, carried: true }); n[lvl]++; }
+  return n;
+}
+/**
+ * insightsByLevel = {campaign:[], adset:[], ad:[]} (raw Meta rows). Builds the snapshot payloads; metadata missing for any referenced id is carried forward
+ * (see above) via `loadFallback` (injectable for tests). Returns {rows, carried:{campaign,adset,ad}, missingBefore:{...}}.
+ */
+export async function buildCycleRows({ insightsByLevel, meta, adAccountId, loadFallback = (missing) => loadMetaFallback({ adAccountId, missing }) }) {
+  const all = [];
+  for (const level of LEVELS) for (const r of insightsByLevel[level] || []) all.push({ level, r });
+  const miss = missingMetaIds(all.map((x) => x.r), meta);
+  const missingBefore = { campaign: miss.campaign.size, adset: miss.adset.size, ad: miss.ad.size };
+  let carried = { campaign: 0, adset: 0, ad: 0 };
+  if (missingBefore.campaign || missingBefore.adset || missingBefore.ad) {
+    try { carried = applyMetaFallback(meta, await loadFallback(miss)); } catch (e) { logger.warn('AMB sync: metadata carry-forward unavailable (rows keep null metadata for the missing ids)', { message: e.message }); }
+  }
+  return { rows: all.map((x) => toSnapshotRow(x.r, x.level, meta, adAccountId)), carried, missingBefore };
+}
+
 let running = false;
 
 /**
@@ -175,7 +224,7 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
       getEntitiesMeta(token, adAccountId, 'campaign').catch((e) => { logger.warn('AMB campaign meta failed', { message: e.message }); return []; }),
       getEntitiesMeta(token, adAccountId, 'adset').catch((e) => { logger.warn('AMB adset meta failed', { message: e.message }); return []; }),
       getEntitiesMeta(token, adAccountId, 'ad').catch((e) => { logger.warn('AMB ad meta failed', { message: e.message }); return []; }),
-    ]);
+    ]); // a failure here is handled below by buildCycleRows: the last known good metadata is carried forward instead of writing NULL status/budget
     const meta = {
       campaign: indexEntitiesMeta(campMetaList, 'campaign', currency),
       adset: indexEntitiesMeta(adsetMetaList, 'adset', currency),
@@ -183,11 +232,11 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
     };
 
     // Insights per level.
-    const snapshotRows = [];
-    for (const level of LEVELS) {
-      const rows = await getInsightsByLevel(token, adAccountId, level, dateFrom, dateTo);
-      for (const r of rows) snapshotRows.push(toSnapshotRow(r, level, meta, adAccountId));
-    }
+    const insightsByLevel = {};
+    for (const level of LEVELS) insightsByLevel[level] = await getInsightsByLevel(token, adAccountId, level, dateFrom, dateTo);
+    const built = await buildCycleRows({ insightsByLevel, meta, adAccountId });
+    const snapshotRows = built.rows;
+    if (built.carried.campaign || built.carried.adset || built.carried.ad) logger.warn('AMB sync: entity metadata was missing this cycle — last known good status/budget carried forward (no NULL written over a valid value)', { missing: built.missingBefore, carried: built.carried });
 
     if (snapshotRows.length > 0) {
       await prisma.metaPerformanceSnapshot.createMany({

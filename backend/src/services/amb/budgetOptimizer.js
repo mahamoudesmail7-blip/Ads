@@ -19,7 +19,7 @@ import { logger } from '../../logger.js';
 import { getOperatorConfig } from './operatorStore.js';
 import { windowRange } from './operatorRules.js';
 import { entityWindowMetrics } from './metricsEngine.js';
-import { evaluateGuards, decisionConfidence } from './operatorGuards.js';
+import { evaluateGuards, decisionConfidence, resolveZeroOrderLimit } from './operatorGuards.js';
 import { buildOperatorWorld, buildCampaignContext, ensureHeavy, loadRecentActions, loadCounters, computeLastPurchaseAt, computeVelocity } from './operatorContext.js';
 import { lossFor } from './operatorEngine.js';
 
@@ -41,6 +41,14 @@ export const DEFAULT_POLICY = {
   highCpa: { above: 200, minPurchases: 3, minSpend: 450, pct: 20 },
   newEvidence: { minSpend: 150 },
   maxReductionsBeforeReview: 3, // after this many consecutive reductions the entity is flagged for a human decision (never an automatic pause)
+  // ACCOUNT-WIDE onboarding (2026-10-07): ONE policy for every product + product-specific overrides only where a confirmed value exists. The rules above are PERFORMANCE-only (spend / purchases / CPA),
+  // so unknown economics and unknown stock are shown as WARNINGS instead of silently blocking them — but a KNOWN bad value (stock out / below minimum, negative profit, price conflict) still blocks.
+  accountWide: {
+    requireVerifiedMapping: true,   // CONFLICT / UNMAPPED / SUGGESTED / EXTERNAL_STORE campaigns stay PROTECTED and never enter the optimizer
+    economicsMissing: 'WARN',        // WARN | BLOCK — ECONOMICS_INCOMPLETE on a performance-only rule
+    stockUnknown: 'WARN',            // WARN | BLOCK — STOCK_UNKNOWN: a warning for pause / reduce / keep; an INCREASE with unknown stock additionally needs the owner's approval (never auto)
+    productZeroOrderOverride: true,  // a product's own confirmed zero-order stop (e.g. Hair Cap = 3 x Target CPA) replaces the account-wide 200 EGP for that product only
+  },
 };
 export function mergePolicy(saved) {
   const out = JSON.parse(JSON.stringify(DEFAULT_POLICY));
@@ -59,6 +67,7 @@ export function validatePolicy(p) {
   if (p.scale.maxCpa >= p.reduce.minCpa) errors.push('حد الـScale لازم يكون أقل من بداية منطقة الـReduce.');
   if (p.reduce.maxCpa > p.highCpa.above) errors.push('نهاية منطقة الـReduce لازم تكون ≤ بداية HIGH_CPA.');
   if (p.window && !['last3', 'last7'].includes(p.window)) errors.push('window لازم last3 أو last7.');
+  for (const k of ['economicsMissing', 'stockUnknown']) if (!['WARN', 'BLOCK'].includes(p.accountWide?.[k])) errors.push(`accountWide.${k} لازم WARN أو BLOCK.`);
   return errors;
 }
 export async function getBudgetPolicy() { return mergePolicy((await getOperatorConfig()).limits?.dynamicBudget); }
@@ -96,12 +105,16 @@ export function discoverBudgetEntities({ campaign, adsets = [] }) {
   return { level: 'UNKNOWN', entities: [], reason: activeAdsets.length ? 'ACTIVE_ADSETS_WITHOUT_BUDGET' : 'NO_ACTIVE_ADSET_WITH_BUDGET' };
 }
 
-/** Structure from the synced Meta snapshots (last 3 days). campaignIds optional filter. Returns Map(campaignId -> {campaign, adsets, source}). */
+/**
+ * Structure from the synced Meta snapshots (last 3 days). campaignIds optional filter. Returns Map(campaignId -> {campaign, adsets, source}).
+ * A sync cycle whose entity-metadata call failed writes rows with a NULL status/budget (observed on production: ad-set budgets flap value -> null -> value every few syncs).
+ * Such a row is an INCOMPLETE sync, not a fact: only rows that carry the entity status are used, so one failed cycle can no longer turn a known budget into BUDGET_UNKNOWN.
+ */
 export async function loadBudgetStructureFromSnapshots({ adAccountId, campaignIds = null, now = new Date() }) {
   const since = new Date(now.getTime() - 3 * 86_400_000);
   const where = { ad_account_id: adAccountId, snapshot_at: { gte: since }, ...(campaignIds ? { campaign_id: { in: campaignIds } } : { campaign_id: { not: null } }) };
-  const camp = await prisma.metaPerformanceSnapshot.findMany({ where: { ...where, level: 'campaign' }, distinct: ['campaign_id'], orderBy: [{ campaign_id: 'asc' }, { snapshot_at: 'desc' }], select: { campaign_id: true, campaign_status: true, campaign_budget: true, campaign_budget_type: true } });
-  const ads = await prisma.metaPerformanceSnapshot.findMany({ where: { ...where, level: 'adset', adset_id: { not: null } }, distinct: ['adset_id'], orderBy: [{ adset_id: 'asc' }, { snapshot_at: 'desc' }], select: { campaign_id: true, adset_id: true, adset_name: true, adset_status: true, adset_budget: true, adset_budget_type: true } });
+  const camp = await prisma.metaPerformanceSnapshot.findMany({ where: { ...where, level: 'campaign', campaign_status: { not: null } }, distinct: ['campaign_id'], orderBy: [{ campaign_id: 'asc' }, { snapshot_at: 'desc' }], select: { campaign_id: true, campaign_status: true, campaign_budget: true, campaign_budget_type: true } });
+  const ads = await prisma.metaPerformanceSnapshot.findMany({ where: { ...where, level: 'adset', adset_id: { not: null }, adset_status: { not: null } }, distinct: ['adset_id'], orderBy: [{ adset_id: 'asc' }, { snapshot_at: 'desc' }], select: { campaign_id: true, adset_id: true, adset_name: true, adset_status: true, adset_budget: true, adset_budget_type: true } });
   const out = new Map();
   for (const c of camp) out.set(c.campaign_id, { campaign: { id: c.campaign_id, status: c.campaign_status, budget: c.campaign_budget, budgetType: c.campaign_budget_type }, adsets: [], source: 'META_SYNC_SNAPSHOT' });
   for (const a of ads) { const e = out.get(a.campaign_id); if (e) e.adsets.push({ id: a.adset_id, name: a.adset_name, status: a.adset_status, budget: a.adset_budget, budgetType: a.adset_budget_type }); }
@@ -151,6 +164,10 @@ export async function loadLastBudgetChanges({ entityIds, campaignIds = [] }) {
   for (const a of acts) keep(a.entity_id, { at: a.executed_at, action: a.action_type === 'INCREASE_BUDGET' ? 'SCALE_UP' : 'SCALE_DOWN', from: j(a.old_value_json, {})?.budget ?? null, to: j(a.new_value_json, {})?.budget ?? null, source: 'AMB_ACTION' });
   const ds = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: { in: [...new Set([...campaignIds, ...entityIds])] }, action: { in: ['SCALE_UP', 'SCALE_DOWN'] }, status: { in: ['EXECUTED', 'VERIFIED'] }, executed_at: { not: null } }, select: { campaign_id: true, action: true, executed_at: true, params_json: true } });
   for (const d of ds) { const p = j(d.params_json, {}) || {}; keep(p.entityId || d.campaign_id, { at: d.executed_at, action: d.action, from: p.fromBudget ?? null, to: p.toBudget ?? null, source: 'OPERATOR_DECISION' }); }
+  // the OWNER's own budget edits in Meta (recorded by manualChangeDetector): they start the same cooldown (24h after an increase / 48h after a decrease) and the new-evidence-since-change rule
+  const ids = new Set([...entityIds, ...campaignIds]);
+  const mo = await prisma.ambOperatorEvent.findMany({ where: { kind: 'MANUAL_OVERRIDE', campaign_id: { in: [...new Set(campaignIds)] }, created_at: { gte: new Date(Date.now() - 14 * 86_400_000) } }, select: { campaign_id: true, data_json: true, created_at: true } });
+  for (const e of mo) { const d = j(e.data_json, {}) || {}; if (d.source !== 'META_DIFF' || d.field !== 'budget' || !ids.has(d.entityId)) continue; keep(d.entityId, { at: new Date(d.seenAt || e.created_at), action: Number(d.to) > Number(d.from) ? 'SCALE_UP' : 'SCALE_DOWN', from: d.from ?? null, to: d.to ?? null, source: 'MANUAL_META' }); }
   return out;
 }
 
@@ -158,8 +175,9 @@ export async function loadLastBudgetChanges({ entityIds, campaignIds = [] }) {
  * PURE classifier. `m` = the evidence metrics (window or since-last-change), `m7` = 7-day metrics, `lastChange` = {at, action} | null, `since` = metricsSince result.
  * Returns {zone, action, pct, rule, reasons[], needs}. action null = no budget/status change.
  */
-export function classifyBudget({ m, m7 = null, ageHours = null, lastChange = null, since = null, policy = DEFAULT_POLICY, now = new Date(), reductionStreak = 0 }) {
+export function classifyBudget({ m, m7 = null, ageHours = null, lastChange = null, since = null, policy = DEFAULT_POLICY, now = new Date(), reductionStreak = 0, zeroSpendLimit = null }) {
   const P = policy; const reasons = [];
+  const zs = zeroSpendLimit != null && zeroSpendLimit > 0 ? zeroSpendLimit : P.zeroOrders.spend; // a product's own confirmed zero-order stop (Hair Cap) replaces the account-wide number for that product only
   const evidence = lastChange ? { kind: 'SINCE_LAST_CHANGE', since: lastChange.at.toISOString(), hours: round0((now.getTime() - lastChange.at.getTime()) / MS_H) } : { kind: 'WINDOW', window: P.window };
   if (lastChange) {
     const cd = lastChange.action === 'SCALE_UP' ? P.scale.cooldownHours : P.reduce.cooldownHours;
@@ -173,8 +191,8 @@ export function classifyBudget({ m, m7 = null, ageHours = null, lastChange = nul
   if (spend == null) return { zone: 'NO_DATA', action: null, rule: 'DYN_KEEP', evidence, sample, reasons: ['مفيش بيانات أداء في نافذة التقييم'] };
   // ZERO ORDERS
   if (purchases === 0) {
-    if (spend >= P.zeroOrders.spend) return ageHours != null && ageHours < P.zeroOrders.minAgeHours ? { zone: 'ZERO_ORDERS_TOO_YOUNG', action: null, rule: 'DYN_ZERO_ORDERS', evidence, sample, reasons: [`صرف ${round0(spend)} بدون أوردرات لكن عمر الحملة ${ageHours}س < ${P.zeroOrders.minAgeHours}س`] } : { zone: 'ZERO_ORDERS', action: 'PAUSE', rule: 'DYN_ZERO_ORDERS', evidence, sample, reasons: [`صرف ${round0(spend)} ≥ ${P.zeroOrders.spend} بدون أوردرات`], needs: {} };
-    return { zone: 'NO_ORDERS_YET', action: null, rule: 'DYN_KEEP', evidence, sample, reasons: [`صرف ${round0(spend)} < ${P.zeroOrders.spend} ومفيش أوردرات لسه`] };
+    if (spend >= zs) return ageHours != null && ageHours < P.zeroOrders.minAgeHours ? { zone: 'ZERO_ORDERS_TOO_YOUNG', action: null, rule: 'DYN_ZERO_ORDERS', evidence, sample, reasons: [`صرف ${round0(spend)} بدون أوردرات لكن عمر الحملة ${ageHours}س < ${P.zeroOrders.minAgeHours}س`] } : { zone: 'ZERO_ORDERS', action: 'PAUSE', rule: 'DYN_ZERO_ORDERS', evidence, sample, reasons: [`صرف ${round0(spend)} ≥ ${zs}${zs !== P.zeroOrders.spend ? ' (حد المنتج)' : ''} بدون أوردرات`], needs: {}, zeroLimit: zs };
+    return { zone: 'NO_ORDERS_YET', action: null, rule: 'DYN_KEEP', evidence, sample, reasons: [`صرف ${round0(spend)} < ${zs}${zs !== P.zeroOrders.spend ? ' (حد المنتج)' : ''} ومفيش أوردرات لسه`] };
   }
   // with purchases: CPA zones
   if (cpa <= P.scale.maxCpa) {
@@ -199,7 +217,7 @@ export const proposedBudget = (action, from, pct) => (from == null ? null : acti
 // 4. ORCHESTRATION — the whole account (or a subset), read-only unless persist
 // =====================================================================================================================
 const FINAL = { PAUSE: 'WOULD_PAUSE', SCALE_UP: 'WOULD_INCREASE', SCALE_DOWN: 'WOULD_REDUCE' };
-const PROTECTED_CODES = new Set(['TESTING_PROTECTED', 'RECENT_PURCHASE_PROTECTION', 'ATTRIBUTION_GRACE', 'MANUAL_OVERRIDE_COOLDOWN', 'COOLDOWN_ACTIVE', 'RECENT_ACTION_PENDING_EVALUATION', 'EXCEPTION_NO_AUTOMATION', 'EXCEPTION_NO_AUTO_STOP', 'EXCEPTION_NO_AUTO_OPEN', 'EXCEPTION_NO_AUTO_SCALE', 'EXCEPTION_NO_BUDGET_CHANGE']);
+const PROTECTED_CODES = new Set(['MAPPING_NOT_VERIFIED', 'EXTERNAL_STORE', 'TESTING_PROTECTED', 'RECENT_PURCHASE_PROTECTION', 'ATTRIBUTION_GRACE', 'MANUAL_OVERRIDE_COOLDOWN', 'COOLDOWN_ACTIVE', 'RECENT_ACTION_PENDING_EVALUATION', 'EXCEPTION_NO_AUTOMATION', 'EXCEPTION_NO_AUTO_STOP', 'EXCEPTION_NO_AUTO_OPEN', 'EXCEPTION_NO_AUTO_SCALE', 'EXCEPTION_NO_BUDGET_CHANGE']);
 
 /**
  * deps (tests): world, structure (Map), adsetWindows ({last3,last7} Map by adset id), lastChanges (Map), since (fn), recent, counters.
@@ -252,10 +270,35 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   const cfg = { ...config, cooldowns: { ...config.cooldowns, SCALE_UP: policy.scale.cooldownHours, SCALE_DOWN: policy.reduce.cooldownHours } }; // the policy's own cooldowns, for THIS evaluation only
   const gset = { ...settings, ambMinPurchasesBeforeScaling: policy.scale.minPurchases }; // the policy's sample gate for scale, for THIS evaluation only (the global setting is untouched)
 
+  // ---- ACCOUNT-WIDE policy layer: mapping state per campaign (the SAME mapping center the UI shows), product zero-order override, performance-only warnings
+  const AW = policy.accountWide || {};
+  let mapStates = deps.mappingStates || null;
+  if (!mapStates && AW.requireVerifiedMapping) {
+    try { const { mappingCenter } = await import('./operatorReadiness.js'); const mc = await mappingCenter({ adAccountId: world.adAccountId, limit: 5000 }); mapStates = new Map(mc.rows.map((r) => [r.campaignId, { state: r.state, note: r.note || null }])); }
+    catch (e) { logger.warn('[budgetOptimizer] mapping states unavailable — falling back to the verified flag', { message: e.message }); }
+  }
+  const slim = (x) => (x ? { spend: round0(x.spend ?? 0), purchases: x.purchases ?? 0, cpa: x.cpa == null ? null : round0(x.cpa) } : null);
+  const soften = (bk, action) => {
+    if (bk.code === 'ECONOMICS_INCOMPLETE' && AW.economicsMissing === 'WARN') return { ...bk, severity: 'WARN' };
+    if (bk.code === 'STOCK_UNKNOWN' && AW.stockUnknown === 'WARN') return { ...bk, severity: action === 'SCALE_UP' ? 'DOWNGRADE' : 'WARN' }; // an increase with unknown stock never runs by itself
+    return bk;
+  };
+  const fmtGuard = (bk) => `${bk.code}[${bk.severity[0]}]${bk.detail ? ':' + String(bk.detail).slice(0, 40) : ''}`;
+
   for (const { campaign: c, discovery } of plan) {
     const cx = ctxs.get(c.id);
-    const base = { storeId: cx.storeId, campaignId: c.id, campaign: (c.name || '').trim(), status: c.status, productId: cx.product?.id ?? null, product: cx.product?.name || null, mapping: cx.product?.mappingVerified ? 'VERIFIED' : (cx.product?.mappingSource || 'UNMAPPED'), budgetLevel: discovery.level };
-    if (!discovery.entities.length) { rows_push(out, { ...base, entity: null, decision: 'BLOCKED', intended: null, guards: ['BUDGET_UNKNOWN'], reason: `مستوى الميزانية غير معروف (${discovery.reason}) — مفيش تخمين`, evidence: null }); continue; }
+    if (!deps.ctxFor) await ensureHeavy(cx); // product facts (economics / stock / data quality / advisor) — cached per product, read-only
+    const ms = mapStates?.get(c.id) || null;
+    const mapState = ms?.state || (cx.product?.mappingVerified ? 'VERIFIED' : (cx.product?.mappingSource || 'UNMAPPED'));
+    const mapVerified = ms ? ms.state === 'VERIFIED' : !!cx.product?.mappingVerified;
+    const mapBlock = AW.requireVerifiedMapping && !mapVerified ? { code: mapState === 'EXTERNAL_STORE' ? 'EXTERNAL_STORE' : 'MAPPING_NOT_VERIFIED', severity: 'BLOCK', detail: mapState } : null;
+    const base = { storeId: cx.storeId, campaignId: c.id, campaign: (c.name || '').trim(), status: c.status, productId: cx.product?.id ?? null, product: cx.product?.name || null, mapping: mapState, mappingNote: ms?.note || null, budgetLevel: discovery.level };
+    const warns = []; // performance-only rules: unknown economics / stock are WARNINGS (a known bad value still blocks inside the guard chain)
+    if (cx.product?.id != null && AW.economicsMissing === 'WARN' && !cx.econ?.complete) warns.push({ code: 'ECONOMICS_INCOMPLETE', severity: 'WARN' });
+    if (cx.product?.id != null && AW.stockUnknown === 'WARN' && (!cx.stock || cx.stock.status === 'STOCK_UNKNOWN')) warns.push({ code: 'STOCK_UNKNOWN', severity: 'WARN' });
+    let zeroLimit = null, zeroUnresolved = false; const zo = cx.productOverride?.zeroOrder;
+    if (AW.productZeroOrderOverride && zo?.mode) { const zr = cx.zeroOrder?.limit != null ? cx.zeroOrder : resolveZeroOrderLimit({ override: zo, targetCpa: cx.econ?.targetCpa }); if (zr.limit) zeroLimit = zr.limit; else zeroUnresolved = true; }
+    if (!discovery.entities.length) { rows_push(out, { ...base, entity: null, decision: mapBlock ? 'PROTECTED' : 'BLOCKED', intended: null, guards: [...(mapBlock ? [fmtGuard(mapBlock)] : []), 'BUDGET_UNKNOWN[B]', ...warns.map(fmtGuard)], reason: `مستوى الميزانية غير معروف (${discovery.reason}) — مفيش تخمين`, evidence: null, m3: slim(world.windows.last3?.get(c.id)), m7: slim(world.windows.last7?.get(c.id)) }); continue; }
     for (const ent of discovery.entities) {
       const m = ent.level === 'adset' ? adsetWin.last3?.get(ent.id) : world.windows.last3?.get(c.id);
       const m7 = ent.level === 'adset' ? adsetWin.last7?.get(ent.id) : world.windows.last7?.get(c.id);
@@ -263,31 +306,34 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
       const lc = lastChanges.get(ent.id) || (ent.level === 'campaign' ? lastChanges.get(c.id) : null) || null;
       const since = lc ? await (deps.since ? deps.since({ level: ent.level, id: ent.id, since: lc.at }) : metricsSince({ level: ent.level, id: ent.id, since: lc.at, now, adAccountId: world.adAccountId })) : null;
       const ageHours = c.firstSeenAt ? Math.floor((now.getTime() - new Date(c.firstSeenAt).getTime()) / MS_H) : null;
-      const cl = classifyBudget({ m: win, m7, ageHours, lastChange: lc, since, policy, now });
+      const cl = classifyBudget({ m: win, m7, ageHours, lastChange: lc, since, policy, now, zeroSpendLimit: zeroLimit });
       const evid = { window: cl.evidence, spend: cl.sample?.spend ?? null, purchases: cl.sample?.purchases ?? null, cpa: cl.sample?.cpa ?? null, cpa7d: cl.sample?.cpa7d ?? null, lastChange: lc ? { at: lc.at.toISOString(), action: lc.action, from: lc.from, to: lc.to, source: lc.source } : null };
-      const row = { ...base, entity: { level: ent.level, id: ent.id, name: ent.name, budget: ent.budget, budgetType: ent.budgetType }, zone: cl.zone, rule: cl.rule, evidence: evid, reason: cl.reasons.join(' · '), intended: null, guards: [], flagReview: !!cl.flagReview };
-      if (!cl.action) { row.decision = ['COOLDOWN', 'NO_NEW_EVIDENCE'].includes(cl.zone) ? 'PROTECTED' : 'KEEP'; rows_push(out, row); continue; }
+      const row = { ...base, entity: { level: ent.level, id: ent.id, name: ent.name, budget: ent.budget, budgetType: ent.budgetType }, zone: cl.zone, rule: cl.rule, evidence: evid, m3: slim(m), m7: slim(m7), ageHours, zeroLimit: cl.zeroLimit ?? zeroLimit, reason: cl.reasons.join(' · '), intended: null, guards: [], flagReview: !!cl.flagReview };
+      const extra = (have) => warns.filter((w) => !have.some((g) => g.code === w.code)).map(fmtGuard);
+      if (!cl.action) { row.decision = mapBlock ? 'PROTECTED' : (['COOLDOWN', 'NO_NEW_EVIDENCE'].includes(cl.zone) ? 'PROTECTED' : 'KEEP'); row.guards = [...(mapBlock ? [fmtGuard(mapBlock)] : []), ...extra([])]; rows_push(out, row); continue; }
       // a budget action: needs a known DAILY budget at the discovered level
       const from = ent.budget; const to = cl.action === 'PAUSE' ? null : proposedBudget(cl.action, from, cl.pct);
       row.intended = { action: cl.action, pct: cl.pct ?? null, fromBudget: cl.action === 'PAUSE' ? null : from, toBudget: to };
       const pre = [];
+      if (mapBlock) pre.push(mapBlock);
+      if (cl.action === 'PAUSE' && zeroUnresolved) pre.push({ code: 'ZERO_ORDER_NOT_CONFIGURED', severity: 'BLOCK', detail: 'PRODUCT_OVERRIDE_UNRESOLVED' });
       if (cl.action !== 'PAUSE' && discovery.unsupported) pre.push({ code: 'BUDGET_TYPE_UNSUPPORTED', severity: 'BLOCK' });
-      if (!deps.ctxFor) await ensureHeavy(cx);
       const confidence = decisionConfidence({ action: cl.action, metrics: { spend: cl.sample.spend, purchases: cl.sample.purchases }, settings: gset, mappingVerified: !!cx.product?.mappingVerified, dqOk: cx.dq?.gate !== 'DECISION_BLOCKED_DATA_QUALITY' && !!cx.dq?.gate, econKnown: !!cx.econ?.complete, stockKnown: !!cx.stock && cx.stock.status !== 'STOCK_UNKNOWN', needs: cl.needs || {} });
       if (cl.action === 'PAUSE' && !cx.lastPurchaseLoaded) { cx.lastPurchaseLoaded = true; cx.lastPurchaseAt = deps.lastPurchaseAt ? await deps.lastPurchaseAt(c.id) : await computeLastPurchaseAt({ campaignId: c.id, now }).catch(() => null); }
       if (cl.action === 'SCALE_UP' && cx.velocity === null && !cx.velocityLoaded) { cx.velocityLoaded = true; cx.velocity = deps.velocity ? await deps.velocity(c.id) : await computeVelocity({ campaignId: c.id, now, cfg: config.limits.spendVelocity }).catch(() => null); }
       const g = evaluateGuards({
-        decision: { action: cl.action, params: cl.action === 'PAUSE' ? {} : { pct: cl.pct, fromBudget: from, toBudget: to, level: ent.level, entityId: ent.id }, ruleMode: 'SHADOW', confidence, needs: cl.needs || {}, usesCod: false, cooldownHours: cl.action === 'SCALE_UP' ? policy.scale.cooldownHours : policy.reduce.cooldownHours, ruleMinSpend: cl.action === 'PAUSE' ? policy.zeroOrders.spend : null, severeOverride: false },
+        decision: { action: cl.action, params: cl.action === 'PAUSE' ? {} : { pct: cl.pct, fromBudget: from, toBudget: to, level: ent.level, entityId: ent.id }, ruleMode: 'SHADOW', confidence, needs: cl.needs || {}, usesCod: false, cooldownHours: cl.action === 'SCALE_UP' ? policy.scale.cooldownHours : policy.reduce.cooldownHours, ruleMinSpend: cl.action === 'PAUSE' ? (cl.zeroLimit ?? policy.zeroOrders.spend) : null, severeOverride: false },
         ctx: { ...cx, metrics: { spend: cl.sample.spend, purchases: cl.sample.purchases, cpa: cl.sample.cpa }, campaign: { ...cx.campaign, budget: ent.budget }, ruleConflicts: [] },
         config: cfg, settings: gset, now,
         counters: { ...counters, campaignActionsToday: cx.recent.todayCount, loss: { campaign: lossBy.campaign.get(c.id) || 0, product: cx.product?.id != null ? lossBy.product.get(cx.product.id) || 0 : 0, account: lossBy.account } },
       });
-      const blocks = [...pre, ...g.blocks.filter((b) => b.severity === 'BLOCK')];
-      const down = g.blocks.filter((b) => b.severity === 'DOWNGRADE');
-      row.guards = [...pre, ...g.blocks].map((b) => `${b.code}[${b.severity[0]}]${b.detail ? ':' + String(b.detail).slice(0, 40) : ''}`);
+      const gb = g.blocks.map((bk) => soften(bk, cl.action));
+      const blocks = [...pre, ...gb.filter((bk) => bk.severity === 'BLOCK')];
+      const down = gb.filter((bk) => bk.severity === 'DOWNGRADE');
+      row.guards = [...pre, ...gb].map(fmtGuard).concat(extra(gb));
       row.confidence = confidence; row.requiresApproval = down.length > 0; row.primaryBlock = blocks[0]?.code || null;
       row.decision = blocks.length ? (PROTECTED_CODES.has(blocks[0].code) ? 'PROTECTED' : 'BLOCKED') : FINAL[cl.action];
-      row.wouldBe = blocks.length ? 'BLOCKED' : g.wouldBe;
+      row.wouldBe = blocks.length ? 'BLOCKED' : (g.effectiveMode === 'SHADOW' || g.effectiveMode === 'OFF' ? 'SHADOW' : (g.effectiveMode === 'AUTOPILOT' && !down.length ? 'AUTO' : 'PREPARED'));
       rows_push(out, row);
     }
   }
