@@ -3382,3 +3382,70 @@ model AmbOperatorEvent {
   @@index([kind, created_at])
   @@map("amb_operator_events")
 }
+
+// Daily Campaign Operations Center: the OPEN (00:00) and PAUSE (13:00) plans, Africa/Cairo. A plan is VERSIONED (an edit after approval = a new version, the old one SUPERSEDED).
+model AmbDailyPlan {
+  id             Int       @id @default(autoincrement())
+  plan_key       String // `${type}|${plan_date}` (prefixed SIM| for plans made under the test clock)
+  type           String // OPEN | PAUSE
+  plan_date      String // YYYY-MM-DD in Africa/Cairo
+  timezone       String    @default("Africa/Cairo")
+  version        Int       @default(1)
+  status         String    @default("PREPARED") // PREPARED | APPROVED | RUNNING | COMPLETED | CANCELLED | SUPERSEDED | MISSED
+  simulated      Boolean   @default(false)
+  scheduled_at   DateTime // the due instant (UTC) of 00:00 / 13:00 Cairo
+  expires_at     DateTime // end of the Cairo day: after it the plan is MISSED (never executed late on its own)
+  prepared_at    DateTime  @default(now())
+  data_as_of     DateTime?
+  data_state     String    @default("FRESH") // FRESH | STALE
+  surfaced_at    DateTime? // the popup / alert was raised
+  dismissed_at   DateTime? // the owner closed / reviewed the popup (it is not shown again; the plan stays in the tab)
+  approved_by_id Int?
+  approved_at    DateTime?
+  approval_mode  String? // global mode when approved
+  execution_mode String? // SIMULATION | LIVE
+  started_at     DateTime?
+  finished_at    DateTime?
+  summary_json   String?
+  evidence_json  String?
+  lock_owner     String?
+  lock_until     DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @default(now()) @updatedAt
+  items          AmbDailyPlanItem[]
+
+  @@unique([plan_key, version])
+  @@index([plan_date, type])
+  @@index([status, scheduled_at])
+  @@map("amb_daily_plans")
+}
+
+model AmbDailyPlanItem {
+  id               Int          @id @default(autoincrement())
+  plan_id          Int
+  plan             AmbDailyPlan @relation(fields: [plan_id], references: [id], onDelete: Cascade)
+  campaign_id      String
+  campaign_name    String?
+  product_id       Int?
+  product_name     String?
+  store_id         String?
+  rank             Int          @default(0)
+  selected         Boolean      @default(false)
+  selectable       Boolean      @default(true)
+  eligibility      String       @default("ELIGIBLE") // ELIGIBLE | NEEDS_SPECIAL_APPROVAL | BLOCKED | PROTECTED
+  block_codes_json String?
+  risk             String?
+  risk_score       Int?
+  evidence_json    String?
+  reason           String?
+  status           String       @default("PENDING") // PENDING | REVALIDATING | SENT | VERIFIED | FAILED | SKIPPED | BLOCKED | SIMULATED | UNCERTAIN
+  status_reason    String?
+  status_at        DateTime?
+  amb_action_id    Int?
+  attempts         Int          @default(0)
+  created_at       DateTime     @default(now())
+
+  @@index([plan_id])
+  @@index([campaign_id])
+  @@map("amb_daily_plan_items")
+}

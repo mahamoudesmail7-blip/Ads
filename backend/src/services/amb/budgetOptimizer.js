@@ -157,6 +157,13 @@ export function sinceFromSnapshots(rows, since, now = new Date()) {
   return { spend: Math.round(spend * 100) / 100, purchases, cpa: purchases > 0 ? spend / purchases : null, hours: Math.max(0, (now.getTime() - since.getTime()) / MS_H) };
 }
 
+/** Campaigns the Daily Operations Center actually OPENED (read-back VERIFIED, real plans only) inside the monitoring window: Map(campaignId -> Date). Budget is never touched right after an open. */
+export async function loadRecentDailyOpens({ campaignIds, now = new Date(), hours = 24 }) {
+  if (!campaignIds?.length) return new Map();
+  const rows = await prisma.ambDailyPlanItem.findMany({ where: { campaign_id: { in: campaignIds }, status: 'VERIFIED', status_at: { gte: new Date(now.getTime() - hours * MS_H) }, plan: { type: 'OPEN', simulated: false } }, select: { campaign_id: true, status_at: true } });
+  const out = new Map(); for (const r of rows) { const cur = out.get(r.campaign_id); if (!cur || r.status_at > cur) out.set(r.campaign_id, r.status_at); } return out;
+}
+
 /** Last EXECUTED budget change per entity (Operator decisions + legacy AMB actions). Map(entityId -> {at, action, from, to, source}). */
 export async function loadLastBudgetChanges({ entityIds, campaignIds = [] }) {
   const out = new Map(); const keep = (id, r) => { const cur = out.get(id); if (!cur || r.at > cur.at) out.set(id, r); };
@@ -217,7 +224,7 @@ export const proposedBudget = (action, from, pct) => (from == null ? null : acti
 // 4. ORCHESTRATION — the whole account (or a subset), read-only unless persist
 // =====================================================================================================================
 const FINAL = { PAUSE: 'WOULD_PAUSE', SCALE_UP: 'WOULD_INCREASE', SCALE_DOWN: 'WOULD_REDUCE' };
-const PROTECTED_CODES = new Set(['MAPPING_NOT_VERIFIED', 'EXTERNAL_STORE', 'TESTING_PROTECTED', 'RECENT_PURCHASE_PROTECTION', 'ATTRIBUTION_GRACE', 'MANUAL_OVERRIDE_COOLDOWN', 'COOLDOWN_ACTIVE', 'RECENT_ACTION_PENDING_EVALUATION', 'EXCEPTION_NO_AUTOMATION', 'EXCEPTION_NO_AUTO_STOP', 'EXCEPTION_NO_AUTO_OPEN', 'EXCEPTION_NO_AUTO_SCALE', 'EXCEPTION_NO_BUDGET_CHANGE']);
+const PROTECTED_CODES = new Set(['MAPPING_NOT_VERIFIED', 'EXTERNAL_STORE', 'TESTING_PROTECTED', 'RECENT_PURCHASE_PROTECTION', 'ATTRIBUTION_GRACE', 'MANUAL_OVERRIDE_COOLDOWN', 'COOLDOWN_ACTIVE', 'RECENT_ACTION_PENDING_EVALUATION', 'EXCEPTION_NO_AUTOMATION', 'EXCEPTION_NO_AUTO_STOP', 'EXCEPTION_NO_AUTO_OPEN', 'EXCEPTION_NO_AUTO_SCALE', 'EXCEPTION_NO_BUDGET_CHANGE', 'POST_OPEN_MONITORING']);
 
 /**
  * deps (tests): world, structure (Map), adsetWindows ({last3,last7} Map by adset id), lastChanges (Map), since (fn), recent, counters.
@@ -258,6 +265,7 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
     plan.push({ campaign: c, discovery: d });
   }
   const entityIds = plan.flatMap((p) => p.discovery.entities.map((e) => e.id));
+  const recentOpens = deps.recentOpens || await loadRecentDailyOpens({ campaignIds: activeIds, now }).catch(() => new Map());
   const lastChanges = deps.lastChanges || await loadLastBudgetChanges({ entityIds, campaignIds: activeIds });
 
   // ---- guards context (same building blocks the Operator engine uses)
@@ -316,6 +324,7 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
       row.intended = { action: cl.action, pct: cl.pct ?? null, fromBudget: cl.action === 'PAUSE' ? null : from, toBudget: to };
       const pre = [];
       if (mapBlock) pre.push(mapBlock);
+      if (cl.action !== 'PAUSE' && recentOpens.get(c.id)) pre.push({ code: 'POST_OPEN_MONITORING', severity: 'BLOCK', detail: `اتفتحت من خطة الفتح ${new Date(recentOpens.get(c.id)).toISOString()} — فترة مراقبة قبل أي تعديل ميزانية` });
       if (cl.action === 'PAUSE' && zeroUnresolved) pre.push({ code: 'ZERO_ORDER_NOT_CONFIGURED', severity: 'BLOCK', detail: 'PRODUCT_OVERRIDE_UNRESOLVED' });
       if (cl.action !== 'PAUSE' && discovery.unsupported) pre.push({ code: 'BUDGET_TYPE_UNSUPPORTED', severity: 'BLOCK' });
       const confidence = decisionConfidence({ action: cl.action, metrics: { spend: cl.sample.spend, purchases: cl.sample.purchases }, settings: gset, mappingVerified: !!cx.product?.mappingVerified, dqOk: cx.dq?.gate !== 'DECISION_BLOCKED_DATA_QUALITY' && !!cx.dq?.gate, econKnown: !!cx.econ?.complete, stockKnown: !!cx.stock && cx.stock.status !== 'STOCK_UNKNOWN', needs: cl.needs || {} });

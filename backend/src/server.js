@@ -64,6 +64,7 @@ import { startAmbAudienceBreakdownScheduler } from './services/amb/audienceBreak
 import { startLiveCampaignAlertsScheduler } from './services/amb/liveCampaignAlerts.js';
 import { startAdvisorEvaluatorScheduler } from './services/amb/advisorEvaluator.js';
 import { startOperatorScheduler } from './services/amb/operatorScheduler.js';
+import { startDailyPlanScheduler } from './services/amb/dailyPlans.js';
 import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startProductExperimentScheduler } from './services/amb/productExperiment.js';
 import { startProductAutoAnalysisScheduler } from './services/amb/productAutoAnalysis.js';
@@ -166,6 +167,7 @@ startAmbAudienceBreakdownScheduler();
 startLiveCampaignAlertsScheduler();
 startAdvisorEvaluatorScheduler();
 startOperatorScheduler();
+startDailyPlanScheduler();
 startAmbOutcomeScheduler();
 startProductExperimentScheduler();
 startProductAutoAnalysisScheduler();

@@ -9,6 +9,8 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { renderOperator, stopOperatorPolling } from './ai-operator.js';
+import { startDailyPopupWatcher } from './ai-operator-daily.js';
+import { S as OP } from './ai-operator-core.js';
 
 const E = (s) => UI.escapeHtml(String(s ?? ''));
 const $ = (id) => document.getElementById(id);
@@ -143,6 +145,8 @@ async function init() {
   UI.mountAmbMobileNav('AI Media Buyer');
   mountAmbBottomNav();
   route();
+  // 📅 Daily Operations popup: the server prepares the 00:00 / 13:00 plans; this only polls and shows them (never executes anything)
+  startDailyPopupWatcher({ isAdmin: state.isAdmin, onOpenCenter: () => { OP.tab = 'daily'; if ((location.hash || '') === '#operator') { OP.hooks?.switchTab?.('daily'); } else location.hash = 'operator'; } });
 }
 
 // Mobile bottom tab bar (redesign v2 — the user's reference image uses a

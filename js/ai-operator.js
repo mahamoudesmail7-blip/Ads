@@ -5,10 +5,11 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { E, $, num, egp, ago, dt, S, MODES, ACTION_ICON, STATUS_CLS, CONF_AR, PROFIT_AR, openDrawer, closeDrawer, drawerHead, kpi, fld, condText, blockPanel, wireSetupButtons } from './ai-operator-core.js';
+import { drawDaily } from './ai-operator-daily.js';
 import { handleSetupAction, showProfile, showGate, showEvents, drawControl, drawReadiness, drawMapping, drawExcluded, drawHistory, drawPerformance } from './ai-operator-setup.js';
 
 const TABS = [
-  { key: 'control', label: '🧭 مركز التحكم' }, { key: 'today', label: '📋 قرارات اليوم' }, { key: 'open', label: '▶️ جاهزة للفتح' }, { key: 'pause', label: '⏸️ مقترحة للإيقاف' }, { key: 'scale', label: '📈 فرص التوسع' },
+  { key: 'control', label: '🧭 مركز التحكم' }, { key: 'daily', label: '📅 جدول التشغيل اليومي' }, { key: 'today', label: '📋 قرارات اليوم' }, { key: 'open', label: '▶️ جاهزة للفتح' }, { key: 'pause', label: '⏸️ مقترحة للإيقاف' }, { key: 'scale', label: '📈 فرص التوسع' },
   { key: 'excluded', label: '🚫 المستثناة' }, { key: 'rules', label: '⚙️ القواعد' }, { key: 'mapping', label: '🔗 ربط الحملات' }, { key: 'readiness', label: '🟢 جاهزية المنتجات' }, { key: 'history', label: '📜 سجل التنفيذ' }, { key: 'performance', label: '📊 أداء AI Operator' },
 ];
 const DECISION_TABS = ['today', 'open', 'pause', 'scale'];
@@ -127,6 +128,7 @@ async function drawBody() {
   try {
     if (DECISION_TABS.includes(S.tab)) await drawDecisions(body);
     else if (S.tab === 'control') await drawControl(body);
+    else if (S.tab === 'daily') await drawDaily(body);
     else if (S.tab === 'excluded') await drawExcluded(body);
     else if (S.tab === 'rules') await drawRules(body);
     else if (S.tab === 'mapping') await drawMapping(body);

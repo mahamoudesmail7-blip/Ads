@@ -876,3 +876,43 @@ body { background: var(--amb-bg); }
 .op-chip.on { background: #dcfce7; border-color: #86efac; color: #166534; }
 .op-chip.off { background: #f3f4f6; color: #6b7280; }
 .op-chip:disabled { cursor: default; opacity: .85; }
+
+/* ===== 📅 Daily Operations Center (جدول التشغيل اليومي) ===== */
+.dp-wrap { display: flex; flex-direction: column; gap: 14px; }
+.dp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.dp-head h2 { margin: 0 0 4px; font-size: 20px; }
+.dp-head-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.dp-ctl { display: flex; gap: 8px; flex-wrap: wrap; }
+.dp-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 1280px) { .dp-grid { grid-template-columns: 1fr 1fr; } }
+.dp-panel { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); box-shadow: var(--amb-shadow); padding: 16px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.dp-panel.sim { border-style: dashed; border-color: var(--amb-purple); }
+.dp-panel header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dp-panel header h3 { margin: 0; font-size: 16px; flex: 1 1 auto; }
+.dp-panel header small, .dp-meta { color: var(--amb-text-dim); font-size: 12px; }
+.dp-meta { display: flex; gap: 14px; flex-wrap: wrap; }
+.dp-meta .bad, .dp-note.bad, small.bad { color: var(--amb-red); }
+.dp-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dp-note { background: var(--amb-surface-2); border-radius: var(--amb-radius-sm); padding: 9px 13px; font-size: 12.5px; line-height: 1.7; }
+.dp-note.bad { background: var(--amb-red-bg); } .dp-note.ok { background: var(--amb-green-bg); }
+.dp-note small { display: block; color: var(--amb-text-dim); }
+.dp-table { font-size: 12px; min-width: 980px; }
+.dp-table th { white-space: nowrap; font-size: 11.5px; }
+.dp-table td small { display: block; color: var(--amb-text-faint); font-size: 10.5px; line-height: 1.5; }
+.dp-table td { vertical-align: top; }
+.dp-table .dp-name { min-width: 170px; } .dp-table .dp-why { min-width: 190px; max-width: 280px; white-space: normal; line-height: 1.6; }
+.dp-table .dp-rank { color: var(--amb-text-faint); }
+.dp-row.on { background: var(--amb-green-bg); } .dp-row.dim { opacity: .72; }
+.dp-chk { width: 17px; height: 17px; accent-color: var(--amb-green); cursor: pointer; } .dp-chk:disabled { cursor: not-allowed; }
+.dp-more { text-align: center; margin-top: 6px; }
+.dp-timeline { border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 8px 12px; }
+.dp-timeline summary { cursor: pointer; font-weight: 800; font-size: 13px; }
+.dp-tl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 0; border-top: 1px dashed var(--amb-border); font-size: 12px; }
+.dp-steps { display: flex; gap: 4px; } .dp-steps span { padding: 2px 8px; border-radius: 999px; background: var(--amb-surface-2); color: var(--amb-text-faint); font-size: 10.5px; } .dp-steps span.done { background: var(--amb-blue-bg); color: var(--amb-blue); font-weight: 800; }
+.dp-audit { list-style: none; padding: 0; margin: 0; } .dp-audit li { padding: 7px 0; border-bottom: 1px solid var(--amb-border); font-size: 12.5px; line-height: 1.7; } .dp-audit time { color: var(--amb-text-faint); font-size: 11px; margin-inline-end: 6px; }
+.dp-popup-ov { position: fixed; inset: 0; background: rgba(15,23,42,.55); z-index: 9000; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dp-popup { background: var(--amb-surface); border-radius: var(--amb-radius-lg); box-shadow: 0 24px 60px rgba(15,23,42,.35); width: min(1180px, 100%); max-height: 92vh; display: flex; flex-direction: column; gap: 10px; padding: 18px; overflow: hidden; }
+.dp-popup header { display: flex; justify-content: space-between; align-items: center; } .dp-popup header h2 { margin: 0; font-size: 18px; }
+.dp-popbody { overflow: auto; min-height: 120px; flex: 1 1 auto; }
+.dp-popup footer { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; padding-top: 6px; border-top: 1px solid var(--amb-border); }
+@media (max-width: 720px) { .dp-popup { padding: 12px; max-height: 96vh; } .dp-popup footer .amb-btn { flex: 1 1 100%; } }
