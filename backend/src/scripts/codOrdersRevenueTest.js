@@ -4,6 +4,7 @@
 // so productDashboard() can pass REAL revenue into netProfitBundle()
 // instead of always estimating it. Mocked prisma, zero real DB writes.
 //   node src/scripts/codOrdersRevenueTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -2,6 +2,7 @@
 // Part B = DB-backed on DISPOSABLE rows ("__optest_" prefix, cleaned up) with an INJECTED executor — no Meta call, no real campaign touched.
 // Part C = one read-only pass of the real engine over the real synced world (persist=false): must write nothing and never produce an executable decision in SHADOW.
 //   node src/scripts/operatorTest.js [--skip-world]
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';

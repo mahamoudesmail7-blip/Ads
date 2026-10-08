@@ -6,6 +6,7 @@
 // direct, unconfirmed Meta write (unlike the dashboard's own single-click
 // /scale/execute, which this deliberately does NOT reuse for chat).
 //   node src/scripts/scaleWinnerToolTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -1,6 +1,7 @@
 // 🤖 AI Operator — LANDING-PAGE EVIDENCE acceptance: evidence hierarchy, conflict detection, page-ownership proof.
 // Pure tests + an injected (offline) analysis dry-run on real data. NO Meta call, NO network. Fixtures use the "__optest_" prefix and are cleaned up.
 //   node src/scripts/operatorLandingEvidenceTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

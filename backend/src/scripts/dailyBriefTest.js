@@ -2,6 +2,7 @@
 // Slice 15 (Daily Media Buyer Brief) verification. Pure reads only — no
 // new write tool, nothing to clean up.
 //   node src/scripts/dailyBriefTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

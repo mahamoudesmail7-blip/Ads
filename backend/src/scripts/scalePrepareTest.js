@@ -8,6 +8,7 @@
 // (3) prepare_scale end-to-end reaches WAITING_FOR_APPROVAL or
 // WAITING_FOR_INPUT with a real AmbLaunchJob, never touches Meta.
 //   node src/scripts/scalePrepareTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

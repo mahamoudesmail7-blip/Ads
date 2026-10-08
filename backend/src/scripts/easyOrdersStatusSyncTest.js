@@ -1,6 +1,7 @@
 // Easy Orders STATUS SYNC regression (2026-10-02). Part A pure/injected (no network, no DB). Part B DB-backed on DISPOSABLE
 // stores/orders/products (cleaned up) with an injected fake Easy Orders — it never calls the real API and never touches a real order.
 //   node src/scripts/easyOrdersStatusSyncTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));

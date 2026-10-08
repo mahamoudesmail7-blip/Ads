@@ -4,6 +4,7 @@
 // real, already-existing AmbRecommendation/AmbAction rows correctly (never
 // a separate new history table) — real throwaway rows, tagged, cleaned up.
 //   node src/scripts/budgetBumpOrchestratorTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

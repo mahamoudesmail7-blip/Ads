@@ -6,6 +6,7 @@
 // account's ad sets need an explicit bid_strategy, and video creatives
 // need an explicit thumbnail. No network calls, no real DB, no Meta.
 //   node src/scripts/launchPublishTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

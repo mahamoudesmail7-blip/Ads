@@ -3,6 +3,7 @@
 // Every prisma call is an in-memory mock; zero real DB writes, zero real
 // network calls.
 //   node src/scripts/customersRouteTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

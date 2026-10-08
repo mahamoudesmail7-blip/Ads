@@ -4,6 +4,7 @@
 // name/phone/address field (PII must never reach this shape, since PMC's AI
 // prompts are built directly from these aggregates).
 //   node src/scripts/productMarketingBuyerInsightsTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -4,6 +4,7 @@
 //          outcomes — executor injected, NO Meta call, NO real alert left behind.
 // Part C = read-only over the real synced world (mapping center, readiness, what-will-happen).
 //   node src/scripts/operatorSetupTest.js [--skip-world]
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));

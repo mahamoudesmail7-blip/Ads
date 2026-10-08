@@ -5,6 +5,7 @@
 // retry) is verified live against production after deploy, per the
 // explicit instruction to verify the copy-intent sequence live.
 //   node src/scripts/copyIntentRouterTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

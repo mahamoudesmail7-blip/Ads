@@ -1,6 +1,7 @@
 // 🧪 Daily Operations Center (جدول التشغيل اليومي): Cairo schedule + plan lifecycle + safety gates + versioning + execution revalidation — NO Meta call anywhere (every Meta read/write is a stub).
 // Disposable fixtures only: plans dated 2031-05-xx, campaigns/users prefixed "__optest_". Nothing of the real account is touched.
 //   node src/scripts/dailyPlanTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

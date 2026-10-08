@@ -11,6 +11,7 @@
 // which falls back to a name-based lookup when product_id is null, WITHOUT
 // ever writing that resolution back onto the profile row.
 //   node src/scripts/productMarketingCodLinkTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -6,6 +6,7 @@
 // Audience tab, not part of this main snapshot compute), never silently
 // hidden either way.
 //   node src/scripts/dataCompletenessTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { assembleDataCompleteness } from '../services/amb/productMarketingAssemblers.js';
 
 let pass = 0, fail = 0;

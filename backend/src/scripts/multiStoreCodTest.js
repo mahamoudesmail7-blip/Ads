@@ -7,6 +7,7 @@
 // auth/validation layer BEFORE ever reaching a DB write, or (c) uses pure
 // in-memory fake data with zero prisma involvement at all.
 //   node src/scripts/multiStoreCodTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

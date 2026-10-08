@@ -4,6 +4,7 @@
 // production data, asserting the scheduler tick never crashes and never
 // spams a duplicate row when nothing material changed.
 //   node src/scripts/productAutoAnalysisTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

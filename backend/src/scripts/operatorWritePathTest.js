@@ -4,6 +4,7 @@
 //     (asserted: zero AmbRecommendation/AmbAction rows are created).
 //   * Section 9 = COD / Confirmation / Delivery audit: such rules must stay BLOCKED while Easy Orders status quality is not trusted.
 //   node src/scripts/operatorWritePathTest.js [--skip-world]
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

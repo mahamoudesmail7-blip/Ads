@@ -5,6 +5,7 @@
 // productMarketingMetaMappingTest.js / metaUnmappedAuditTest.js). Zero
 // real network calls, zero real DB writes.
 //   node src/scripts/pipelineHealthTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

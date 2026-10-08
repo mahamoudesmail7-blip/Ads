@@ -13,6 +13,13 @@
 //   node src/scripts/launchQueueTest.js
 // the mandatory pre-launch landing validation is covered by launchLandingValidationTest.js; these suites test other launch behaviour with fake URLs (never honoured when NODE_ENV=production)
 process.env.LAUNCH_LANDING_VALIDATION_TEST_BYPASS = '1';
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
+// The auth-probe test needs a Graph API that answers `GET /me`: a tiny loopback MOCK (never the real Graph API). Only `me` succeeds; everything else is a harmless Graph-style 100 error,
+// exactly like the fake ad account used by the writes in this suite. metaGraphClient honours it only for META_GRAPH_MOCK=1 + a loopback URL.
+import http from 'node:http';
+const graphMock = http.createServer((req, res) => { const id = new URL(req.url, 'http://x').pathname.split('/').filter(Boolean)[1]; res.writeHead(id === 'me' ? 200 : 400, { 'content-type': 'application/json' }); res.end(JSON.stringify(id === 'me' ? { id: 'mock_user', name: 'Mock Graph user' } : { error: { message: 'Unsupported request (mock)', type: 'GraphMethodException', code: 100 } })); });
+await new Promise((r) => graphMock.listen(0, '127.0.0.1', r));
+process.env.META_GRAPH_MOCK = '1'; process.env.META_GRAPH_MOCK_URL = `http://127.0.0.1:${graphMock.address().port}`;
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -3,6 +3,7 @@
 // validation, §26 product-lock rule). No Meta/AI/DB calls — pure functions
 // only, so this never costs a token and never touches production data.
 //   node src/scripts/productMarketingTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { computeOpportunityScore, computeDiagnosis, rankLocations, classifyClaim, matchCampaignsToProduct } from '../services/amb/productMarketingScoring.js';
 
 let pass = 0, fail = 0;

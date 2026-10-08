@@ -3,6 +3,7 @@
 // In-memory mocks for pmc_tests/pmc_test_results/pmc_learning; every OTHER
 // model's write methods are guarded to prove zero unintended writes.
 //   node src/scripts/productMarketingTestsTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

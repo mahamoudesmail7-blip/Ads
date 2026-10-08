@@ -5,6 +5,7 @@
 // so this file can never reach a real write, no matter what the code under
 // test does.
 //   node src/scripts/productMatchTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

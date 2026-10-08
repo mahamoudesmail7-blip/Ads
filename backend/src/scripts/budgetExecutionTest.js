@@ -1,5 +1,6 @@
 // 🧪 Budget-decision execution bridge — every gate fails closed; the Meta write is ALWAYS a stub here (no Meta call). Disposable "__optest_" fixtures, always cleaned up.
 //   node src/scripts/budgetExecutionTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

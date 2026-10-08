@@ -1,6 +1,7 @@
 // 📦 Inventory webhook + API feed acceptance. LOCAL, disposable fixtures ("__optest_" products / stores / snapshots) — NO production stock write, NO Meta call.
 // The only real product touched is #424 and ONLY through ?dryRun=1 (asserted: nothing changes).
 //   node src/scripts/inventoryWebhookTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import fs from 'node:fs';

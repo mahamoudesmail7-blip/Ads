@@ -8,6 +8,7 @@
 // accidental real-write path in the code under test fails the run loudly
 // instead of silently reaching production.
 //   node src/scripts/productCatalogSyncTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

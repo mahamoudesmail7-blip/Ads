@@ -1,6 +1,7 @@
 // 🛡️ Executor duplicate guard — the executor's OWN action row must not block itself, while every real duplicate (earlier PENDING / REVALIDATING / EXECUTED, same entity + action,
 // within 6h) still blocks, and of several concurrent attempts only ONE can pass. Pure DB fixtures (`__optest_`); NO Meta call anywhere (the executor is never invoked, only the rule engine).
 //   node src/scripts/executorDuplicateGuardTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

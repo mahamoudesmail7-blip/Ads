@@ -1,6 +1,7 @@
 // 🧪 The OFFICIAL approval path for budget decisions: real Express routes (POST /decisions/:id/approve, /budget-optimizer/prepare, history) with real JWT users; only the Meta write is a stub.
 // ADMIN-only, revalidation before the write, read-back after, VERIFIED + 48h cooldown visible, Autopilot impossible. No Meta call anywhere. Disposable "__optest_" fixtures.
 //   node src/scripts/budgetApprovalRouteTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

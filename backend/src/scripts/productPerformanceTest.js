@@ -7,6 +7,7 @@
 // leak another store's rows even when they share a product_id. Real
 // throwaway DB rows (tagged, cleaned up after), zero Meta calls.
 //   node src/scripts/productPerformanceTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

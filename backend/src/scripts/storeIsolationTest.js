@@ -3,6 +3,7 @@
 // the caller. Proves storeScope.js's fail-closed guard end-to-end against
 // REAL data (no fabricated rows needed for the main proof — this repo
 // already has real products tagged to two real stores).
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { prisma } from '../prisma.js';
 import { verifyProductStoreScope, STORE_CONTEXT_REQUIRED } from '../services/amb/storeScope.js';

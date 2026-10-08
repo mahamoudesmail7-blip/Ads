@@ -1,6 +1,7 @@
 // Phase 1 PMC scoring extensions — pure functions over plain objects, no
 // prisma, no mocks needed (nothing here touches a DB or an AI call).
 //   node src/scripts/productMarketingScoringPhase1Test.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

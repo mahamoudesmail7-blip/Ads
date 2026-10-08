@@ -6,6 +6,7 @@
 // slice this project deliberately stops short of for real Meta writes),
 // then restores the original price no matter what happens.
 //   node src/scripts/priceTestEngineTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -27,6 +27,7 @@
 // large multi-row-per-entity-per-day fixture to prove it still handles
 // real sync-job volume correctly regardless of where the dedup happens.
 //   node src/scripts/metricsEngineSnapshotVolumeTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

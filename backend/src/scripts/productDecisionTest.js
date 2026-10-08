@@ -7,6 +7,7 @@
 // verified against the real Product 126 in this session's own live
 // production checks.
 //   node src/scripts/productDecisionTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

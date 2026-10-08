@@ -1,6 +1,7 @@
 // 🧪 The FOUR operations (Open / Pause / Budget Increase +20% / Budget Reduce −20%) through the OFFICIAL paths and the REAL executor — against a local Meta MOCK (fake Graph API on loopback).
 //   Live read → decision → guards → ADMIN approval → ONE Meta write → independent read-back → audit → cooldown. NO real Meta call (the mock is the only network target; every id is an __optest_ fixture).
 //   node src/scripts/operationsMockTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import http from 'node:http';
 import { pathToFileURL, fileURLToPath } from 'node:url';

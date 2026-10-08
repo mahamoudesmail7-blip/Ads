@@ -6,6 +6,7 @@
 // Orders block) never blocks by itself but is still surfaced; a fully
 // healthy input reports VERIFIED.
 //   node src/scripts/dataQualityGateTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

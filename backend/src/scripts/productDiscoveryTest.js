@@ -3,6 +3,7 @@
 // is pure read/aggregation) and asserts real, previously-confirmed facts
 // about Product 126/90 rather than fabricated expectations.
 //   node src/scripts/productDiscoveryTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

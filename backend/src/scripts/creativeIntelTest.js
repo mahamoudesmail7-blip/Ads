@@ -11,6 +11,7 @@
 // productMarketingWinnerIntelTest.js) — it was verified live against real
 // production data (Product 126) instead.
 //   node src/scripts/creativeIntelTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

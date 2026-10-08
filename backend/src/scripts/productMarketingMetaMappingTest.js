@@ -11,6 +11,7 @@
 // productMarketingProfile, productMarketingSnapshot) throws if any write
 // method is called — proving zero Product/Easy Orders/Meta writes.
 //   node src/scripts/productMarketingMetaMappingTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

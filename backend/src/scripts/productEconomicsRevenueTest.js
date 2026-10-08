@@ -9,6 +9,7 @@
 // only when it truly isn't, and NEVER a silent -adSpend from a missing-
 // revenue bug.
 //   node src/scripts/productEconomicsRevenueTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { netProfitBundle } from '../services/amb/productEconomics.js';
 
 let pass = 0, fail = 0;

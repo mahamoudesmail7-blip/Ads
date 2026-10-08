@@ -1,6 +1,7 @@
 // Product Research (experimental deep search) fixes: a LIVE search is no longer reaped as FAILED, timeouts / API-access errors are named correctly,
 // search queries get a tight timeout, a permanent Google access error stops the loop, YouTube runs first. Disposable "__optest_" fixtures only.
 //   node src/scripts/researchPipelineFixesTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

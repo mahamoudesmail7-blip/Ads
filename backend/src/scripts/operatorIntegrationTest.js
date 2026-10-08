@@ -5,6 +5,7 @@
 //   NEEDS_EXTERNAL_CONFIGURATION), never mark a SUGGESTED mapping VERIFIED, keep COD automation BLOCKED while status trust is not OK,
 //   keep Meta writes locked, and never return a webhook secret value.
 //   node src/scripts/operatorIntegrationTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -2,6 +2,7 @@
 // confounders, hashing, decay). Part B = DB-backed on DISPOSABLE products/stores (cleaned up) with an injected
 // metrics provider — no Meta/Easy Orders call, no real task execution.
 //   node src/scripts/advisorTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import crypto from 'node:crypto';

@@ -3,6 +3,7 @@
 // writes (this function is read-only by design; write methods are guarded
 // anyway to catch any accidental regression).
 //   node src/scripts/customerQualityTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

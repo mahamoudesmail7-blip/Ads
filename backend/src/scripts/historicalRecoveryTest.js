@@ -4,6 +4,7 @@
 // every write is against an in-memory mock so the exact before/after state
 // can be asserted precisely.
 //   node src/scripts/historicalRecoveryTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

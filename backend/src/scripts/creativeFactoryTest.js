@@ -2,6 +2,7 @@
 // mode (no OPENAI key) so every path is deterministic and no external API is
 // called. Seeds throwaway cf_* rows and cleans them up.
 //   node src/scripts/creativeFactoryTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 
 // Force full provider-off mode BEFORE importing the services (they read env

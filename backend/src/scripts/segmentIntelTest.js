@@ -3,6 +3,7 @@
 // segment is never called weak just for having fewer raw orders than
 // another — under-exposed segments are always INSUFFICIENT_DATA.
 //   node src/scripts/segmentIntelTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

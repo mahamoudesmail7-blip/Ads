@@ -1,6 +1,7 @@
 // Easy Orders WEBHOOK auth + store-attribution regression (2026-10-02). Real HTTP against an in-process Express app with the
 // real router, FAKE secrets and injected ingest/status/owner dependencies — no DB, no Easy Orders call, no production data.
 //   node src/scripts/easyOrdersWebhookTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import http from 'node:http';

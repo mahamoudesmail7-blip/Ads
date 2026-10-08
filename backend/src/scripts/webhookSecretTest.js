@@ -12,6 +12,7 @@
 //     fetchOrderById() call so not even a real (harmless) network request
 //     reaches Easy Orders' API.
 //   node src/scripts/webhookSecretTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

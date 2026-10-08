@@ -6,6 +6,7 @@
 // scale-ready, and tracking identity/bump-candidate lookups never invent
 // data that doesn't exist.
 //   node src/scripts/productActionPlanTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -271,7 +272,7 @@ try {
   console.log('\n§11 Step 3 — real Smart-Tank (146) integration: Action Plan re-reads the real window, never hardcodes a prior report\'s values:');
   {
     const { getProductDossier } = await imp('../services/amb/productDossier.js');
-    const dossier = await getProductDossier({ productId: 146 });
+    const dossier = await getProductDossier({ productId: 146 }).catch((e) => (e.status === 404 ? { linked: false, missingInThisDatabase: true } : Promise.reject(e))); // the isolated test DB has no real Smart-Tank (146): this real-data pass is skipped there
     if (dossier.linked && dossier.package?.actionPlan) {
       const ap = dossier.package.actionPlan;
       ok('winningStack is the NEW {targeting, observation} shape for every real dimension', Object.values(ap.winningStack).every((f) => 'targeting' in f && 'observation' in f), JSON.stringify(Object.keys(ap.winningStack)));

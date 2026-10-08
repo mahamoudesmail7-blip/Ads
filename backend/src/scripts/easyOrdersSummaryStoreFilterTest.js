@@ -2,6 +2,7 @@
 // dashboard used to mix every configured store's orders together with no
 // way to isolate one — this adds an optional `store_id` query param.
 //   node src/scripts/easyOrdersSummaryStoreFilterTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

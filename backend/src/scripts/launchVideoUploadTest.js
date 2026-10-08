@@ -9,6 +9,7 @@
 // Samy account during Phase E development — see that session's report;
 // this file guards the offline-testable mechanics going forward.
 //   node src/scripts/launchVideoUploadTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

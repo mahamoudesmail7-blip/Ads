@@ -3,6 +3,7 @@
 // — exercised through the public getAllEasyOrdersProductsStatus()). Mocks
 // global.fetch entirely — no real network call, no real credential.
 //   node src/scripts/easyOrdersProductsPaginationTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 
 let pass = 0, fail = 0;

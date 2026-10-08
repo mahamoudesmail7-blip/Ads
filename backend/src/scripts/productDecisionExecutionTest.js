@@ -7,6 +7,7 @@
 // campaign id — PAUSE_CANDIDATE is only ever tested against a product with
 // NO resolvable campaigns, so even a "confirmed" call has nothing to pause.
 //   node src/scripts/productDecisionExecutionTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

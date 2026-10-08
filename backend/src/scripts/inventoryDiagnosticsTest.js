@@ -1,5 +1,6 @@
 // 📦 Inventory webhook TEMPORARY diagnostics: it must identify the sender's signing scheme / header names / payload shape WITHOUT ever recording a value.
 // Pure + in-process route (no DB writes, no Meta).   node src/scripts/inventoryDiagnosticsTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import { pathToFileURL, fileURLToPath } from 'node:url';

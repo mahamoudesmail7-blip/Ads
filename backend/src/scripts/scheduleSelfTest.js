@@ -3,6 +3,7 @@
 // happens, exercises create → approve → edit(re-approval) → cancel + the pure
 // timezone/format helpers + the tick gating, then deletes everything it made.
 //   node src/scripts/scheduleSelfTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { prisma } from '../prisma.js';
 import * as S from '../services/amb/campaignSchedule.js';

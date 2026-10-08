@@ -4,6 +4,7 @@
 // real network calls (fetch mocked) and zero real DB writes unless a test
 // explicitly opts into dryRun:false against the in-memory mock.
 //   node src/scripts/backfillEasyOrdersUuidTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -5,6 +5,7 @@
 //   node src/scripts/ambLaunchJobTest.js
 // the mandatory pre-launch landing validation is covered by launchLandingValidationTest.js; these suites test other launch behaviour with fake URLs (never honoured when NODE_ENV=production)
 process.env.LAUNCH_LANDING_VALIDATION_TEST_BYPASS = '1';
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

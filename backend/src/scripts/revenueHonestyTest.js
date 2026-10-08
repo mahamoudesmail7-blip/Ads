@@ -5,6 +5,7 @@
 // small pure function extracted specifically so this logic is testable
 // without mocking computeSnapshot's entire dependency chain.
 //   node src/scripts/revenueHonestyTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

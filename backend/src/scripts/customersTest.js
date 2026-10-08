@@ -5,6 +5,7 @@
 // write. Every write method on product/dailyOrder is guarded to throw,
 // proving this feature never touches unrelated tables.
 //   node src/scripts/customersTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

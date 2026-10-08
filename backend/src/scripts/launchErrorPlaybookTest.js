@@ -6,6 +6,7 @@
 // No network, no DB, no Meta — this is what "failure-injection testing"
 // looks like for a pure classifier: inject the exact real error shape.
 //   node src/scripts/launchErrorPlaybookTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

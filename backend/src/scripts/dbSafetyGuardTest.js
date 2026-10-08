@@ -2,6 +2,7 @@
 // functions only. FAKE URLs, FAKE argv arrays, and FAKE SQL strings only:
 // no real database connection, no real file, no real Prisma invocation.
 //   node src/scripts/dbSafetyGuardTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { assertSafeShadowUrl, classifyDangerousPrismaCommand, classifyDangerousSql, assertConfirmed, CONFIRM_VALUE } from './dbSafetyGuard.js';
 
 let pass = 0, fail = 0;

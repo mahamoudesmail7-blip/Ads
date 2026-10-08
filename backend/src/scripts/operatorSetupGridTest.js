@@ -1,6 +1,7 @@
 // 🤖 AI Operator — SETUP GRID acceptance (2026-10-04). Disposable "__optest_" fixtures only (products, AMB products); the global Operator config
 // (incl. limits_json.productOverrides) is restored byte-for-byte; every fixture/audit row is cleaned up. NO Meta call of any kind.
 //   node src/scripts/operatorSetupGridTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

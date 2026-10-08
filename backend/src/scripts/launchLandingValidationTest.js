@@ -1,6 +1,7 @@
 // Mandatory pre-launch Product / Landing validation (launchLandingValidation.js + launchBuilder + publish gate).
 // Fully offline: catalogues and pages are injected; the module has NO Meta import, so no Meta call is possible. Fixtures use "__optest_" and are cleaned up.
 //   node src/scripts/launchLandingValidationTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

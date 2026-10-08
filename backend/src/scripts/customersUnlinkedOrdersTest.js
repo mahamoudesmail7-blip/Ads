@@ -6,6 +6,7 @@
 // route itself is a thin wrapper with no exported pure function to unit
 // test in isolation — same convention as easyOrdersSummaryStoreFilterTest.js.
 //   node src/scripts/customersUnlinkedOrdersTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

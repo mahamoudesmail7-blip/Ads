@@ -4,6 +4,7 @@
 // directly (this script's own process only) to exercise every
 // configuration path, then restores it.
 //   node src/scripts/easyOrdersStoresTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 
 let pass = 0, fail = 0;

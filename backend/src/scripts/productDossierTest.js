@@ -4,6 +4,7 @@
 // first-analysis path, honest unlinked state), not the underlying analysis
 // logic itself (already covered by each phase's own test file).
 //   node src/scripts/productDossierTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

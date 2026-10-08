@@ -3,6 +3,7 @@
 // with real-DB round-trips for the cache + usage log (cleaned up after).
 // No real OpenAI call is made anywhere in this file.
 //   node src/scripts/aiGatewayTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { prisma } from '../prisma.js';

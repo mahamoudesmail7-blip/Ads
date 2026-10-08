@@ -1,5 +1,6 @@
 // ✋ Owner edits in Meta are recognised (MANUAL_OVERRIDE + cooldown) and a FAILED metadata fetch never writes NULL status/budget over a good value. Disposable "__optest_" fixtures only.
 //   node src/scripts/manualChangeAndSyncTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

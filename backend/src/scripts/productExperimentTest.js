@@ -7,6 +7,7 @@
 // structurally valid result, and NEVER touches a non-product-level action
 // (outcomeEval.js's exclusive territory).
 //   node src/scripts/productExperimentTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

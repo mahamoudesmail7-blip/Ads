@@ -1,6 +1,7 @@
 // 💰 Dynamic Budget Optimizer acceptance — policy zones, CBO/ABO discovery, new-evidence-since-change, cooldowns, guards, action history. SHADOW only:
 // no Meta call, no executor, disposable "__optest_" fixtures that are always cleaned up.
 //   node src/scripts/budgetOptimizerTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

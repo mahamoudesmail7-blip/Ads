@@ -1,5 +1,6 @@
 // 🧪 Production Readiness Dashboard + execution-failure alerts + Manual/Emergency guarantees. No Meta call anywhere.
 //   node src/scripts/productionReadinessTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

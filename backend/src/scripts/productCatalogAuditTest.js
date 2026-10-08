@@ -7,6 +7,7 @@
 // easyOrdersOrder/dailyOrder throws if called; product reads are mocked
 // in-memory).
 //   node src/scripts/productCatalogAuditTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

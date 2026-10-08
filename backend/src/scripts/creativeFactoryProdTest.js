@@ -8,6 +8,7 @@
 // Reference images are clear, category-distinct mock product shots drawn
 // locally (@napi-rs/canvas) so the identity-lock + DNA + judge have real
 // specific shapes/colours/controls to work against. Cleans up its products.
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';

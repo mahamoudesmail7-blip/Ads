@@ -1,5 +1,6 @@
 // Egyptian phone normalization — pure function tests, no DB/network at all.
 //   node src/scripts/phoneNormalizeTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { normalizeEgyptianPhone } from '../services/phoneNormalize.js';
 
 let pass = 0, fail = 0;

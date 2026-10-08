@@ -1,6 +1,7 @@
 // AI Media Buyer Operator — Product Growth & Profit Intelligence, Phase 3
 // Slice 9 (COD Quality Brain) verification. Pure reads only.
 //   node src/scripts/codQualityBrainTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -3,6 +3,7 @@
 // dimension/key prefix so cleanup can never touch real production learning
 // data for the real product (126) this test reads against.
 //   node src/scripts/productLearningTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

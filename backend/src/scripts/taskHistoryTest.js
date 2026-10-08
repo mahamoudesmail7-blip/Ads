@@ -4,6 +4,7 @@
 // (js/ai-media-buyer.js renderTasks) is verified live against production
 // after deploy, matching this project's established convention.
 //   node src/scripts/taskHistoryTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

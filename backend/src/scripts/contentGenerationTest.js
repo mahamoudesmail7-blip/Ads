@@ -8,6 +8,7 @@
 // to an honest {ok:false, error} rather than crashing or fabricating
 // output. The actual AI output quality is verified live in chat post-deploy.
 //   node src/scripts/contentGenerationTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

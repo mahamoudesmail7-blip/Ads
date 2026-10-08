@@ -4,6 +4,7 @@
 // PREPARING-tier task (never touches a real in-flight one) and cleaned up.
 // retry_task is exercised only on its safe, no-Meta-write branches.
 //   node src/scripts/operatorRecoveryTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

@@ -2,6 +2,7 @@
 // AmbCloneBatch/Job/ObjectMap rows to exercise the completeness verifier and
 // asserts the adAllowlist tree-filter keeps the right ancestors.
 //   node src/scripts/scaleWinnersTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { prisma } from '../prisma.js';
 import { waitAndVerifyScale } from '../services/amb/scaleWinners.js';

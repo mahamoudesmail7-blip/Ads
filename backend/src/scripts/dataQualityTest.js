@@ -5,6 +5,7 @@
 // prove the five distinct states (OK/UNKNOWN/UNAVAILABLE/STALE/
 // MAPPING_ERROR — never conflated) and the AI tool integration.
 //   node src/scripts/dataQualityTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

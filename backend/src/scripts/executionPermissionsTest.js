@@ -1,6 +1,7 @@
 // 🧪 «صلاحيات التنفيذ»: four independent OFF-by-default switches, ADMIN + explicit confirm + audit, gates wired into the daily plan and the budget bridge, and NO way around the Meta write-lock.
 // No Meta call anywhere. The real operator config row is restored at the end.
 //   node src/scripts/executionPermissionsTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';

@@ -6,6 +6,7 @@
 // exact real-world case plus the safety guarantee that unrecognized
 // strings are never incorrectly merged.
 //   node src/scripts/governorateNormalizeTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { normalizeGovernorateName } from '../services/amb/governorateNormalize.js';
 
 let pass = 0, fail = 0;

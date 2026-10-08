@@ -18,7 +18,9 @@
     "db:guarded-execute": "node src/scripts/guardedDbExecute.js",
     "db:safety-test": "node src/scripts/dbSafetyGuardTest.js",
     "backup:logical": "node src/scripts/logicalBackup.js",
-    "bootstrap-admin": "node src/scripts/bootstrapAdmin.js"
+    "bootstrap-admin": "node src/scripts/bootstrapAdmin.js",
+    "test:isolated": "node src/scripts/runIsolatedSuites.mjs",
+    "test:db:seed": "node src/scripts/testDb.mjs seed"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

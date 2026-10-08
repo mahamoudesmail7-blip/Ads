@@ -3,6 +3,7 @@
 // runs on whatever the AI returns, using fixed fixture JSON (incl.
 // malformed/missing confidence, missing status, banned-claim text).
 //   node src/scripts/productMarketingAiShapingTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

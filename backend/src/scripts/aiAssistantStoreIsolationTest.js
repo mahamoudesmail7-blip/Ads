@@ -13,6 +13,7 @@
 //   content generation (generate_angles/hooks/creative_brief/campaign_copy) ·
 //   Live Campaign State (get_live_campaign_state).
 //   node src/scripts/aiAssistantStoreIsolationTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

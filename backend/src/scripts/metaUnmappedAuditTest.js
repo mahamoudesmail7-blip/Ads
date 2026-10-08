@@ -6,6 +6,7 @@
 // (fetch mocked) and zero real DB writes (every write method on every
 // touched model throws).
 //   node src/scripts/metaUnmappedAuditTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

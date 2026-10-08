@@ -1,6 +1,7 @@
 // 🤖 AI Operator — GLOBAL CONTROL acceptance: Autopilot permission toggles, AUTO_ACTION_DISABLED guard, MANUAL/SHADOW/APPROVAL/AUTOPILOT transitions,
 // owner-confirmed price override. NO Meta call: the executor is an injected spy and the deployment write-lock is asserted closed.
 //   node src/scripts/operatorControlTest.js
+import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
