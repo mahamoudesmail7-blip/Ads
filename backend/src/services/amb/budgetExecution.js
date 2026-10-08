@@ -21,7 +21,8 @@ import { raiseAlert } from './alerts.js';
 import { permissionFor, PERMISSION_META } from './executionPermissions.js';
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
-export const EXECUTABLE_ACTIONS = new Set(['SCALE_DOWN']); // widened ONLY by an explicit owner decision
+export const EXECUTABLE_ACTIONS = new Set(['SCALE_DOWN', 'SCALE_UP']); // budget reduce −20% and increase +20%: each ALSO needs its own «صلاحيات التنفيذ» switch (OFF by default) + every gate below
+const EXPECTED_DECISION = { SCALE_DOWN: 'WOULD_REDUCE', SCALE_UP: 'WOULD_INCREASE' };
 const AMB_ACTION = { SCALE_DOWN: 'DECREASE_BUDGET', SCALE_UP: 'INCREASE_BUDGET', PAUSE: 'PAUSE' };
 const MAX_CPA_DRIFT = 0.30;
 const recordEvent = async (data) => { try { await prisma.ambOperatorEvent.create({ data }); } catch (e) { logger.warn('[budgetExecution] event write failed', { message: e.message }); } };
@@ -72,13 +73,15 @@ export async function prepareBudgetDecision({ campaignId, userId = null, now = n
   await requireAdmin(userId, deps);
   const config = deps.config || await getOperatorConfig();
   if (config.mode !== 'APPROVAL') return { ok: false, reason: 'MODE_NOT_APPROVAL', message: `الوضع ${config.mode} — التحضير للموافقة محتاج APPROVAL.` };
-  if (config.execPermissions && config.execPermissions.budgetDecrease !== true) return { ok: false, reason: 'PERMISSION_OFF', message: 'صلاحية «تقليل الميزانية» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).' };
+  if (config.execPermissions && config.execPermissions.budgetDecrease !== true && config.execPermissions.budgetIncrease !== true) return { ok: false, reason: 'PERMISSION_OFF', message: 'صلاحيتا «تقليل الميزانية» و«زيادة الميزانية» مقفولتين — فعّل المطلوبة من «صلاحيات التنفيذ» (ADMIN + تأكيد).' };
   const res = await (deps.evaluate || ((o) => evaluateBudgetOptimization(o)))({ now, persist: false, live: true, only: { campaignIds: [campaignId] }, ruleMode: 'APPROVAL' });
   if (res.structureSource !== 'META_LIVE') return { ok: false, reason: 'NO_LIVE_DATA', message: `بنية الميزانية ما اتقرتش لايف من Meta (${res.structureSource}) — مفيش تحضير على بيانات قديمة.` };
   const rows = res.rows.filter((r) => r.campaignId === campaignId && r.intended);
   if (rows.length !== 1) return { ok: false, reason: rows.length ? 'MULTIPLE_ENTITIES' : 'NO_ACTION', message: rows.length ? 'الحملة فيها أكتر من كيان (Ad Sets) بقرار — التنفيذ بيتم على كيان واحد بس.' : 'مفيش قرار ميزانية للحملة دي دلوقتي.', rows: res.rows };
   const row = rows[0];
-  if (!EXECUTABLE_ACTIONS.has(row.intended.action) || row.decision !== 'WOULD_REDUCE' || row.wouldBe !== 'PREPARED' || row.primaryBlock) return { ok: false, reason: 'NOT_ACTIONABLE', message: `القرار الحالي ${row.decision} (${row.intended.action}) — مش قابل للتنفيذ.`, row };
+  if (!EXECUTABLE_ACTIONS.has(row.intended.action) || row.decision !== EXPECTED_DECISION[row.intended.action] || row.wouldBe !== 'PREPARED' || row.primaryBlock) return { ok: false, reason: 'NOT_ACTIONABLE', message: `القرار الحالي ${row.decision} (${row.intended.action}) — مش قابل للتنفيذ.`, row };
+  const needPerm = permissionFor(row.intended.action);
+  if (needPerm && config.execPermissions && config.execPermissions[needPerm] !== true) return { ok: false, reason: 'PERMISSION_OFF', message: `صلاحية «${PERMISSION_META[needPerm].label}» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).`, row };
   const p = await (deps.persist || persistBudgetDecisions)([row], { adAccountId: res.adAccountId || row.adAccountId || deps.adAccountId, mode: 'APPROVAL', now, expireStale: false });
   const dec = await prisma.ambOperatorDecision.findFirst({ where: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, campaign_id: campaignId, status: 'PREPARED' }, orderBy: { id: 'desc' } });
   return dec ? { ok: true, decisionId: dec.id, row, persisted: p } : { ok: false, reason: 'NOT_PERSISTED', message: 'القرار ما اتحفظش كـPREPARED.', row, persisted: p };
@@ -97,7 +100,7 @@ export async function executeBudgetDecision({ decisionId, userId, now = new Date
   if (!row) return { ...out, status: 'NOT_FOUND', message: 'القرار غير موجود.' };
   if (!String(row.rule_name || '').startsWith('DYNAMIC_BUDGET:')) return { ...out, status: 'NOT_A_BUDGET_DECISION', message: 'ده مش قرار Dynamic Budget.' };
   if (row.status !== 'PREPARED') return { ...out, status: row.status, message: `القرار في حالة ${row.status} — مش قابل للتنفيذ (بيتنفذ مرة واحدة بس).` };
-  if (!EXECUTABLE_ACTIONS.has(row.action)) return { ...out, status: 'ACTION_NOT_ENABLED', message: `الأكشن ${row.action} مش مفعّل للتنفيذ في الاختبار ده (التخفيض فقط).` };
+  if (!EXECUTABLE_ACTIONS.has(row.action)) return { ...out, status: 'ACTION_NOT_ENABLED', message: `الأكشن ${row.action} مش مفعّل للتنفيذ من مسار الميزانية (التقليل والزيادة فقط).` };
   const params = j(row.params_json, {}) || {};
   const level = params.level, entityId = params.entityId;
   if (!['campaign', 'adset'].includes(level) || !entityId || !(params.toBudget > 0) || !(params.fromBudget > 0)) return { ...out, status: 'BAD_PARAMS', message: 'بيانات القرار ناقصة (مستوى/كيان/ميزانية).' };
@@ -114,7 +117,7 @@ export async function executeBudgetDecision({ decisionId, userId, now = new Date
   if (res.structureSource !== 'META_LIVE') reasons.push({ code: 'NO_LIVE_DATA', detail: String(res.structureSource) }); // the budget level / current budget must come from Meta RIGHT NOW, never from the synced copy
   if (!fresh) reasons.push({ code: 'ENTITY_NOT_FOUND', detail: entityId });
   else {
-    if (fresh.decision !== 'WOULD_REDUCE' || fresh.intended?.action !== row.action) reasons.push({ code: 'DECISION_CHANGED', detail: `${fresh.decision}/${fresh.intended?.action || '—'}` });
+    if (fresh.decision !== EXPECTED_DECISION[row.action] || fresh.intended?.action !== row.action) reasons.push({ code: 'DECISION_CHANGED', detail: `${fresh.decision}/${fresh.intended?.action || '—'}` });
     if (fresh.primaryBlock || (fresh.guards || []).some((g) => /\[B\]/.test(g))) reasons.push({ code: 'GUARD_BLOCK', detail: fresh.primaryBlock || fresh.guards.filter((g) => /\[B\]/.test(g)).join(' ') });
     if (fresh.requiresApproval === true) { /* approval IS what this is — a DOWNGRADE guard only forbids Autopilot */ }
     if (Math.abs((fresh.entity?.budget ?? -1) - params.fromBudget) > 0.5) reasons.push({ code: 'BUDGET_CHANGED', detail: `${params.fromBudget} → live ${fresh.entity?.budget}` });

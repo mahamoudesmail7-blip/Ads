@@ -47,8 +47,8 @@ try {
   }
   ok('no recommendation / action was created by the refused attempts', (await prisma.ambRecommendation.count({ where: { ad_account_id: `${T}acc` } })) === 0 && (await prisma.ambAction.count({ where: { ad_account_id: `${T}acc` } })) === 0);
   try { await BX.executeBudgetDecision({ decisionId: m.d.id, userId: null, deps: { config: cfg() } }); ok('a call without a human user id is refused', false); } catch (e) { ok('a call without a human user id is refused (no Autopilot path)', e.status === 400); }
-  const up = await mkDecision({ action: 'SCALE_UP' }); r = await run(up);
-  ok('an INCREASE is not enabled for execution (reductions only) — refused, still PREPARED', r.status === 'ACTION_NOT_ENABLED' && (await statusOf(up)) === 'PREPARED' && execCalls === 0);
+  const up = await mkDecision({ action: 'SCALE_UP' }); r = await run(up, { config: cfg({ execPermissions: { open: false, pause: false, budgetIncrease: false, budgetDecrease: true } }) });
+  ok('an INCREASE needs its OWN permission (budgetIncrease OFF, even with budgetDecrease ON) — refused, still PREPARED', r.blocked === 'PERMISSION_OFF' && (await statusOf(up)) === 'PREPARED' && execCalls === 0);
   const pz = await mkDecision({ action: 'PAUSE' }); r = await run(pz);
   ok('a PAUSE is not enabled for execution either', r.status === 'ACTION_NOT_ENABLED');
   const notBudget = await mkDecision({ rule_name: 'some user rule' }); r = await run(notBudget);
@@ -127,8 +127,10 @@ try {
   ok('prepare refuses to work from the synced copy when live Meta could not be read (NO_LIVE_DATA)', p.ok === false && p.reason === 'NO_LIVE_DATA');
   p = await BX.prepareBudgetDecision({ campaignId: pm.campaignId, userId: 1, deps: { config: cfg(), evaluate: async () => ({ adAccountId: `${T}acc`, structureSource: 'META_LIVE', rows: [{ ...row, decision: 'KEEP', intended: null }] }) } });
   ok('a campaign whose live decision is KEEP prepares nothing', p.ok === false && p.reason === 'NO_ACTION');
-  p = await BX.prepareBudgetDecision({ campaignId: pm.campaignId, userId: 1, deps: { config: cfg(), evaluate: async () => ({ adAccountId: `${T}acc`, structureSource: 'META_LIVE', rows: [{ ...row, decision: 'WOULD_INCREASE', intended: { action: 'SCALE_UP', toBudget: 360, fromBudget: 300 } }] }) } });
-  ok('a would-increase is not preparable for execution', p.ok === false && p.reason === 'NOT_ACTIONABLE');
+  p = await BX.prepareBudgetDecision({ campaignId: pm.campaignId, userId: 1, deps: { config: cfg({ execPermissions: { open: false, pause: false, budgetIncrease: false, budgetDecrease: true } }), evaluate: async () => ({ adAccountId: `${T}acc`, structureSource: 'META_LIVE', rows: [{ ...row, decision: 'WOULD_INCREASE', intended: { action: 'SCALE_UP', toBudget: 360, fromBudget: 300 } }] }) } });
+  ok('increase permission OFF (decrease ON) → PERMISSION_OFF', p.ok === false && p.reason === 'PERMISSION_OFF');
+  p = await BX.prepareBudgetDecision({ campaignId: pm.campaignId, userId: 1, deps: { config: cfg({ execPermissions: { open: false, pause: false, budgetIncrease: true, budgetDecrease: false } }), persist: async () => ({ created: 0 }), evaluate: async () => ({ adAccountId: `${T}acc`, structureSource: 'META_LIVE', rows: [{ ...row, decision: 'WOULD_INCREASE', wouldBe: 'PREPARED', primaryBlock: null, intended: { action: 'SCALE_UP', toBudget: 360, fromBudget: 300 } }] }) } });
+  ok('increase permission ON → the would-increase row passes the actionable gate (reaches persistence)', p.reason !== 'NOT_ACTIONABLE' && p.reason !== 'PERMISSION_OFF', JSON.stringify(p).slice(0, 200));
 
   console.log('\n7. safety');
   const cfg2 = await S.getOperatorConfig();

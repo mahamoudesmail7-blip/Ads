@@ -67,9 +67,9 @@ try {
   hook(m, cfg({ emergency_stop: true }));
   r = await call('POST', `/decisions/${m.d.id}/approve`, {}, admin.token);
   ok('Emergency Stop blocks it', r.json.blocked === 'EMERGENCY_STOP' && execCalls === 0);
-  const up = await mkDecision({ action: 'SCALE_UP' }); hook(up);
+  const up = await mkDecision({ action: 'SCALE_UP' }); hook(up, cfg({ execPermissions: { open: false, pause: false, budgetIncrease: false, budgetDecrease: true } }));
   r = await call('POST', `/decisions/${up.d.id}/approve`, {}, admin.token);
-  ok('an INCREASE budget decision is refused (reductions only until the owner widens it)', r.json.status === 'ACTION_NOT_ENABLED' && (await stat(up)) === 'PREPARED' && execCalls === 0);
+  ok('an INCREASE budget decision is refused until the budgetIncrease permission is ON', r.json.blocked === 'PERMISSION_OFF' && (await stat(up)) === 'PREPARED' && execCalls === 0);
   const ap = await EN.executeDecision({ decisionId: m.d.id, source: 'AUTOPILOT', userId: null, deps: {} });
   ok('executeDecision from AUTOPILOT / the scheduler is refused for budget decisions', ap.ok === false && ap.executed === false && execCalls === 0 && (await stat(m)) === 'PREPARED', JSON.stringify(ap));
 

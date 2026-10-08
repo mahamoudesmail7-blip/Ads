@@ -11,7 +11,9 @@ const ASSET_TTL_MS = 5 * 60 * 1000;
 
 /** Force-refresh every cached Meta asset list for this token (wired to the "تحديث" buttons + disconnect). */
 export function refreshMetaAssetCache(token) { invalidateForToken(token); }
-const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
+// Test-only Meta mock: honoured ONLY when META_GRAPH_MOCK=1 and META_GRAPH_MOCK_URL is a loopback address (http://127.0.0.1:PORT / localhost). Production never sets these, so the real Graph API is always used there.
+const MOCK_URL = process.env.META_GRAPH_MOCK === '1' && /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(process.env.META_GRAPH_MOCK_URL || '') ? process.env.META_GRAPH_MOCK_URL : null;
+const GRAPH_BASE = MOCK_URL ? `${MOCK_URL}/${GRAPH_VERSION}` : `https://graph.facebook.com/${GRAPH_VERSION}`;
 
 /**
  * Meta's error body is {error: {message, type, code, error_subcode,
