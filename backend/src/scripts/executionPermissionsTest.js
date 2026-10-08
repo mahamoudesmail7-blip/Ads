@@ -49,7 +49,7 @@ try {
   ok('audited twice: AiAuditLog + operator event with from→to', (await prisma.aiAuditLog.count({ where: { kind: 'OPERATOR_EXEC_PERMISSION', actor_id: admin.id } })) === 1 && (await prisma.ambOperatorEvent.count({ where: { kind: 'PERMISSION_CHANGE', actor_id: admin.id } })) === 1);
   ok('same value again is a no-op (no extra audit)', (await EP.setExecutionPermission({ key: 'open', on: true, confirm: true, userId: admin.id })).changed === false && (await prisma.aiAuditLog.count({ where: { kind: 'OPERATOR_EXEC_PERMISSION', actor_id: admin.id } })) === 1);
   await EP.setExecutionPermission({ key: 'budgetDecrease', on: true, confirm: true, userId: admin.id });
-  st = await EP.getExecutionPermissions({}); ok('switches are independent: open + budgetDecrease ON, the rest OFF, history lists both', st.permissions.open && st.permissions.budgetDecrease && !st.permissions.pause && !st.permissions.budgetIncrease && st.history.length === 2 && st.last.open?.on === true);
+  st = await EP.getExecutionPermissions({}); ok('switches are independent: open + budgetDecrease ON, the rest OFF, history lists both', st.permissions.open && st.permissions.budgetDecrease && !st.permissions.pause && !st.permissions.budgetIncrease && st.history.filter((h) => h.actorId === admin.id).length === 2 && st.last.open?.on === true);
 
   console.log('\n3. NO way around the Meta lock / mode / toggles');
   const after = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } });

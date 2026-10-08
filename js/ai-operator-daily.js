@@ -98,6 +98,7 @@ function wirePlan(root, plan, rerender) {
       else if (a === 'approve') await approve(plan, rerender);
       else if (a === 'cancel') await cancelPlan(plan, rerender);
       else if (a === 'audit') await showAudit(plan.id);
+      else if (a === 'preview') await showPreview(plan);
     };
   });
 }
@@ -117,6 +118,11 @@ async function cancelPlan(plan, rerender) {
   if (!(await UI.confirmModal({ title: 'إلغاء الخطة', message: 'الخطة هتتلغي ومش هيتنفذ منها حاجة. هتتجهز خطة جديدة تلقائيًا في الموعد التالي فقط.', confirmLabel: 'إلغاء الخطة', danger: true }))) return;
   try { await api.post(`${API}/${plan.id}/cancel`, { reason: 'إلغاء من المستخدم' }); UI.toast('اتلغت'); await reload(); rerender(); } catch (e) { UI.toast(e.message, 'error'); }
 }
+function pollPreparing(body) {
+  clearTimeout(D.pollPrep);
+  const tick = async () => { if (S.tab !== 'daily' || !document.body.contains(body)) return; await reload(); render(body); if ((D.ov.preparing || []).some((p) => !p.error)) D.pollPrep = setTimeout(tick, 6000); };
+  D.pollPrep = setTimeout(tick, 6000);
+}
 function pollRunning(rerender) {
   clearTimeout(D.pollRun);
   const tick = async () => { await reload(); rerender(); if ([...Object.values(D.ov.plans), ...(D.ov.oneOffPlans || [])].some((p) => p && ['APPROVED', 'RUNNING'].includes(p.status))) D.pollRun = setTimeout(tick, 3000); };
@@ -130,6 +136,15 @@ function readinessHtml(r) {
     <div class="table-wrap"><table class="data dp-rtable"><thead><tr><th>الوظيفة</th><th>الحالة</th><th>الدليل</th><th>بوابات مقفولة</th></tr></thead><tbody>${r.functions.map((f) => `<tr><td><b>${E(f.label)}</b>${f.needsApproval ? '<small>محتاج موافقتك لكل تنفيذ</small>' : ''}</td><td><span class="op-pill ${RD_CLS[f.status] || 'gray'}">${RD_AR[f.status] || f.status}</span></td><td class="dp-why">${E(f.note || '')}</td><td class="dp-why">${f.gates.length ? E(f.gates.join(' · ')) : '—'}</td></tr>`).join('')}</tbody></table></div></details>`;
 }
 async function reload() { D.ov = await api.get(`${API}/overview`); if (D.popupPlan) D.popupPlan = D.ov.plans[D.popupPlan.type] || D.popupPlan; return D.ov; }
+async function showPreview(plan) {
+  openDrawer(`${drawerHead('👁 معاينة التنفيذ — بدون تنفيذ')}<div class="amb-drawer-body"><div class="amb-loading">بيراجع الحملات المختارة على Meta الحي…</div></div>`);
+  try {
+    const r = await api.post(`${API}/${plan.id}/preview-execution`, {}); const T = TYPE_META[r.type];
+    const gate = r.gate.blocked ? `<div class="dp-note bad">⛔ الاعتماد دلوقتي هيتمنع: ${E(r.gate.blocked.message)}</div>` : r.gate.mode === 'LIVE' ? '<div class="dp-note bad">⚠️ الاعتماد هينفّذ فعليًا على Meta (الوضع APPROVAL + القفل مفتوح + الصلاحية ON).</div>' : '<div class="dp-note ok">✅ الاعتماد دلوقتي = محاكاة SHADOW (مفيش كتابة على Meta).</div>';
+    openDrawer(`${drawerHead('👁 معاينة التنفيذ — بدون تنفيذ')}<div class="amb-drawer-body"><div class="op-sub">${E(r.note)} · الوضع: ${E(r.config.mode)} · الكتابة: ${r.config.writesLocked ? '🔒 مقفولة' : '🔓 مفتوحة'} · مختارة: ${r.selected} · اتراجعت: ${r.previewed}</div>${gate}
+      <div class="table-wrap"><table class="data"><thead><tr><th>الحملة</th><th>الميزانية</th><th>الحالة الحية</th><th>هيحصل إيه</th><th>السبب</th></tr></thead><tbody>${r.items.map((i) => `<tr><td><b>${E(i.campaignName || i.campaignId)}</b><small>${E(i.campaignId)}</small></td><td>${egp(i.budget)}</td><td>${E(i.liveStatus || '—')}</td><td><span class="op-pill ${i.ok ? 'green' : 'red'}">${E(i.wouldBe)}</span></td><td class="dp-why">${E(i.reason || '—')}</td></tr>`).join('') || '<tr><td colspan="5" class="amb-empty">مفيش حملات مختارة.</td></tr>'}</tbody></table></div></div>`);
+  } catch (e) { openDrawer(`${drawerHead('👁 معاينة التنفيذ')}<div class="amb-drawer-body"><div class="dp-note bad">${E(e.message)}</div></div>`); }
+}
 async function showAudit(planId) {
   const r = await api.get(`${API}/${planId}`);
   openDrawer(`${drawerHead(`📜 سجل الخطة #${r.plan.id} (v${r.plan.version})`)}<div class="amb-drawer-body"><div class="op-sub">كل خطوة اتسجلت: تجهيز، تعديل اختيارات، اعتماد، وحالة كل حملة.</div>
@@ -157,12 +172,13 @@ function panelHtml(type, plan) {
   const editable = D.isAdmin && ['PREPARED'].includes(plan.status); const sel = plan.counts.selected;
   const stale = plan.dataState === 'STALE';
   return `<section class="dp-panel ${plan.simulated ? 'sim' : ''}" data-type="${type}" data-plan="${plan.id}">
-    <header><h3>${T.icon} ${T.title} — ${T.at}</h3><span class="op-pill ${PLAN_CLS[plan.status] || 'gray'}">${PLAN_AR[plan.status] || plan.status}</span><small>v${plan.version} · ${E(plan.date)} · ${hmCairo(plan.scheduledAt)} القاهرة</small>${plan.simulated ? '<span class="op-pill purple">وقت افتراضي (اختبار)</span>' : ''}</header>
+    <header><h3>${T.icon} ${plan.key.includes('|T-') ? `${T.title} — مستقلة` : `${T.title} — ${T.at}`}</h3>${plan.key.includes('|T-') ? '<span class="op-pill blue">🧪 خطة مستقلة</span>' : ''}<span class="op-pill ${PLAN_CLS[plan.status] || 'gray'}">${PLAN_AR[plan.status] || plan.status}</span><small>v${plan.version} · ${E(plan.date)} · ${hmCairo(plan.scheduledAt)} القاهرة</small>${plan.simulated ? '<span class="op-pill purple">وقت افتراضي (اختبار)</span>' : ''}</header>
     <div class="dp-meta"><span>بيانات Meta: <b class="${stale ? 'bad' : ''}">${stale ? 'STALE ⛔' : 'FRESH ✓'}</b> ${plan.dataAsOf ? ago(plan.dataAsOf) : ''}</span><span>مختارة: <b>${sel}</b> من ${plan.counts.selectable} قابلة للاختيار</span><span>محمية/ممنوعة: ${plan.counts.protected}</span>${plan.approvedAt ? `<span>اتعتمدت: ${timeAr(plan.approvedAt)} (${plan.executionMode === 'LIVE' ? 'فعلي' : 'محاكاة'})</span>` : ''}</div>
     ${stale ? '<div class="dp-note bad">⛔ بيانات Meta قديمة — مفيش اعتماد ولا تنفيذ لحد ما التحديث ينجح.</div>' : ''}
     <div class="dp-actions">${editable ? `<button class="amb-btn sm" data-act="eligible">✔ اختيار المؤهّل</button><button class="amb-btn sm" data-act="none">✖ إلغاء التحديد</button>` : ''}
-      ${D.isAdmin && plan.status === 'PREPARED' ? `<button class="amb-btn ${ctl.mode === 'APPROVAL' ? 'orange' : 'primary'}" data-act="approve" ${sel && !stale ? '' : 'disabled'}>${E(T.approve)}</button>` : ''}
-      ${D.isAdmin && ['PREPARED', 'APPROVED'].includes(plan.status) ? '<button class="amb-btn sm danger" data-act="cancel">إلغاء الخطة</button>' : ''}<button class="amb-btn sm ghost" data-act="audit">📜 السجل</button></div>
+      ${D.isAdmin && plan.status === 'PREPARED' ? `<button class="amb-btn ${ctl.mode === 'APPROVAL' ? 'orange' : 'primary'}" data-act="approve" ${sel && !stale ? '' : 'disabled'}>${plan.key.includes('|T-') ? 'اعتماد وتنفيذ' : E(T.approve)}</button>` : ''}
+      ${D.isAdmin && ['PREPARED', 'APPROVED'].includes(plan.status) ? '<button class="amb-btn sm danger" data-act="cancel">إلغاء الخطة</button>' : ''}${['PREPARED', 'APPROVED'].includes(plan.status) && D.isAdmin ? '<button class="amb-btn sm" data-act="preview">👁 معاينة التنفيذ</button>' : ''}<button class="amb-btn sm ghost" data-act="audit">📜 السجل</button></div>
+    ${!editable && plan.status !== 'PREPARED' ? `<div class="dp-note">🔒 الخطة ${PLAN_AR[plan.status] || plan.status} ومحفوظة — مربعات الاختيار معطّلة. لاختيار حملات تانية اضغط «➕ إنشاء خطة جديدة» فوق.</div>` : ''}
     ${summaryBox(plan)}${tableHtml(plan, { editable })}${timeline(plan)}</section>`;
 }
 
@@ -176,6 +192,7 @@ function ctlStrip() {
 export async function drawDaily(body) {
   D.isAdmin = S.isAdmin; body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   await reload(); render(body);
+  if ((D.ov.preparing || []).some((p) => !p.error)) pollPreparing(body);
   api.get('/api/operator/production-readiness').then((r) => { D.readiness = r; const el = $('dpReadiness'); if (el) el.innerHTML = readinessHtml(r); }).catch(() => {});
   if ([...Object.values(D.ov.plans), ...(D.ov.oneOffPlans || [])].some((p) => p && ['APPROVED', 'RUNNING'].includes(p.status))) pollRunning(() => { const b = $('opBody'); if (b && S.tab === 'daily') render(b); });
 }
@@ -183,10 +200,11 @@ function render(body) {
   const o = D.ov; const d = o.dashboard; const ext = o.externalSchedule;
   body.innerHTML = `<div class="dp-wrap">
     <div class="dp-head"><div><h2>📅 جدول التشغيل اليومي</h2><div class="op-sub">علّم ✓ ثم اعتمد. مفيش تنفيذ قبل زر الاعتماد · القاهرة الآن <b>${E(o.cairo.hhmm)}</b>${o.testClock ? ' <span class="op-pill purple">ساعة افتراضية</span>' : ''}</div></div>
-      <div class="dp-head-btns">${D.isAdmin ? `<button class="amb-btn sm" id="dpPreview">🔮 معاينة بكرة</button><button class="amb-btn sm ${o.control.halted ? 'primary' : 'danger'}" id="dpHalt">${o.control.halted ? '▶️ استئناف الطابور' : '⏹ إيقاف الطابور (Kill Switch)'}</button>` : ''}<button class="amb-btn sm" id="dpRefresh">🔄 تحديث</button></div></div>
+      <div class="dp-head-btns">${D.isAdmin ? `<button class="amb-btn sm orange" id="dpNewOpen">➕ إنشاء خطة فتح جديدة</button><button class="amb-btn sm orange" id="dpNewPause">➕ إنشاء خطة إيقاف جديدة</button><button class="amb-btn sm" id="dpPreview">🔮 معاينة بكرة</button><button class="amb-btn sm ${o.control.halted ? 'primary' : 'danger'}" id="dpHalt">${o.control.halted ? '▶️ استئناف الطابور' : '⏹ إيقاف الطابور (Kill Switch)'}</button>` : ''}<button class="amb-btn sm" id="dpRefresh">🔄 تحديث</button></div></div>
     <div id="dpReadiness">${readinessHtml(D.readiness)}</div>
     ${ext?.pending ? '<div class="dp-note">⏳ بيتفحص وجود روتين فتح/إيقاف خارجي (Meta rule) — حدّث الصفحة بعد دقيقة.</div>' : ''}
     ${ext?.detected ? `<div class="dp-note bad" title="${E(ext.note)}">⚠️ فيه روتين فتح/إيقاف يدوي ثابت (${ext.changes} تغيير على ${ext.campaigns} حملة آخر 7 أيام) — نسّقه مع الجدولين.</div>` : ''}
+    ${(o.preparing || []).map((p) => `<div class="dp-note ${p.error ? 'bad' : ''}">${p.error ? `⚠️ فشل تجهيز خطة ${TYPE_META[p.type].verb} المستقلة: ${E(p.error)}` : `⏳ بيجهّز خطة ${TYPE_META[p.type].verb} مستقلة من بيانات Meta الحالية (ممكن ياخد كام دقيقة) — الصفحة هتتحدّث لوحدها.`}</div>`).join('')}
     <div class="op2-kpis">
       <div class="op2-k blue"><b>${num(d.openProposed)}</b><span>مرشحة للفتح</span></div>
       <div class="op2-k amber"><b>${num(d.pauseProposed)}</b><span>مرشحة للإيقاف</span></div>
@@ -199,6 +217,10 @@ function render(body) {
   const rr = () => render(body);
   [...Object.values(o.plans), ...(o.oneOffPlans || [])].filter(Boolean).forEach((p) => { const sec = body.querySelector(`.dp-panel[data-plan="${p.id}"]`); if (sec) wirePlan(sec, p, rr); });
   $('dpRefresh').onclick = async () => { await reload(); rr(); };
+  for (const [id, type] of [['dpNewOpen', 'OPEN'], ['dpNewPause', 'PAUSE']]) if ($(id)) $(id).onclick = async () => {
+    if (!(await UI.confirmModal({ title: `➕ إنشاء خطة ${TYPE_META[type].verb} جديدة`, message: 'هتتجهز خطة مستقلة بكل الحملات المرشحة دلوقتي من بيانات Meta، ومفيش حاجة متحددة. خطة اليوم القديمة تفضل محفوظة زي ما هي. الاختيار والحفظ مش بينفّذوا حاجة — التنفيذ بس بزر «اعتماد وتنفيذ».', confirmLabel: 'إنشاء الخطة' }))) return;
+    try { await api.post(`${API}/new`, { type }); UI.toast('بدأ تجهيز الخطة'); await reload(); rr(); pollPreparing(body); } catch (e) { UI.toast(e.message, 'error'); }
+  };
   if ($('dpHalt')) $('dpHalt').onclick = async () => { try { await api.post(`${API}/halt`, { halted: !o.control.halted }); UI.toast('تم'); await reload(); rr(); } catch (e) { UI.toast(e.message, 'error'); } };
   if ($('dpPreview')) $('dpPreview').onclick = async () => { const r = await api.get(`${API}/preview-tomorrow`); openDrawer(`${drawerHead('🔮 معاينة بكرة — مش متخزنة')}<div class="amb-drawer-body"><div class="op-sub">كده الشكل لو الخطة اتجهزت دلوقتي. مفيش حاجة اتحفظت ولا اتنفذت.</div>${['OPEN', 'PAUSE'].map((t) => `<h4>${TYPE_META[t].icon} ${TYPE_META[t].title}: ${r[t].count} حملة (${r[t].selected} مختارة)</h4><ul class="dp-audit">${r[t].top.map((x) => `<li>#${x.rank} <b>${E(x.campaignName)}</b> ${x.selected ? '✓' : '✗'} <small>${E(x.reason || '')}</small></li>`).join('')}</ul>`).join('')}</div>`); };
 }

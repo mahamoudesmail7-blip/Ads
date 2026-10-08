@@ -87,25 +87,54 @@ export function shapePlan(p, items = []) {
 const latestVersion = (plan_key) => prisma.ambDailyPlan.findFirst({ where: { plan_key }, orderBy: { version: 'desc' }, include: { items: { orderBy: { rank: 'asc' } } } });
 
 /** Builds + stores the plan of `type` for Cairo day `date`. Idempotent: an existing plan of that day/type is returned untouched (unique plan_key+version). */
-export async function preparePlan({ type, date, now = new Date(), simulated = isTestClock(), deps = {}, userId = null, variant = null, only = null }) {
+export async function preparePlan({ type, date, now = new Date(), simulated = isTestClock(), deps = {}, userId = null, variant = null, only = null, unselected = false }) {
   if (!SLOTS[type]) { const e = new Error('نوع خطة غير معروف.'); e.status = 400; throw e; }
   const key = planKey(type, date, simulated, variant); const exists = await latestVersion(key); if (exists) return { plan: exists, created: false };
   const fresh = await ensureFreshData({ now, deps });
   const built = await (deps.build ? deps.build({ type, now }) : (type === 'OPEN' ? buildOpenCandidates({ now, deps: deps.candidates || {} }) : buildPauseCandidates({ now, deps: deps.candidates || {} })));
   if (only) { const keep = new Set(only.map(String)); built.items = built.items.filter((i) => keep.has(String(i.campaignId))).map((i, n) => ({ ...i, rank: n + 1, selected: !!i.selectable })); if (!built.items.length) { const e = new Error('الحملة المطلوبة مش ضمن مرشحي الخطة (محمية/ممنوعة/مش متوقفة).'); e.status = 400; throw e; } }
+  if (unselected) built.items = built.items.map((i) => ({ ...i, selected: false }));
   const cfg = await getOperatorConfig(); const dcfg = await getDailyPlanConfig();
   const stale = fresh.state === 'STALE';
   let plan;
   try {
     plan = await prisma.ambDailyPlan.create({ data: {
       plan_key: key, type, plan_date: date, timezone: CAIRO_TZ, version: 1, status: 'PREPARED', simulated, scheduled_at: dueAt(type, date), expires_at: expiresAt(date), prepared_at: now, data_as_of: fresh.asOf, data_state: fresh.state, surfaced_at: now >= dueAt(type, date) ? now : null,
-      evidence_json: JSON.stringify({ mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), policy: built.policy ? { zeroOrders: built.policy.zeroOrders, scale: built.policy.scale, reduce: built.policy.reduce, highCpa: built.policy.highCpa } : null, dataAsOf: fresh.asOf, refreshed: fresh.refreshed, staleReason: fresh.error, staleMinutes: dcfg.staleMinutes, pausedPool: built.pausedTotal ?? null, candidatesPool: built.candidatesPool ?? null, preparedBy: userId ? 'USER' : 'SCHEDULER', variant, only }),
+      evidence_json: JSON.stringify({ mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), policy: built.policy ? { zeroOrders: built.policy.zeroOrders, scale: built.policy.scale, reduce: built.policy.reduce, highCpa: built.policy.highCpa } : null, dataAsOf: fresh.asOf, refreshed: fresh.refreshed, staleReason: fresh.error, staleMinutes: dcfg.staleMinutes, pausedPool: built.pausedTotal ?? null, candidatesPool: built.candidatesPool ?? null, preparedBy: userId ? 'USER' : 'SCHEDULER', variant, only, unselected }),
       items: { create: built.items.map((it) => ({ campaign_id: it.campaignId, campaign_name: it.campaignName, product_id: it.productId, product_name: it.productName, store_id: it.storeId, rank: it.rank, selected: stale ? false : !!it.selected, selectable: stale ? false : !!it.selectable, eligibility: it.eligibility, block_codes_json: JSON.stringify([...(it.blockCodes || []), ...(stale ? ['STALE_DATA'] : [])]), risk: it.risk, risk_score: it.riskScore, evidence_json: JSON.stringify({ ...it.evidence, warnings: it.warnings }), reason: stale ? `STALE DATA — ${it.reason}` : it.reason })) },
     }, include: { items: { orderBy: { rank: 'asc' } } } });
   } catch (e) { if (e.code === 'P2002') return { plan: await latestVersion(key), created: false }; throw e; }
   await audit({ planId: plan.id, userId, note: `خطة ${TYPE_LABEL_AR[type]} اتجهزت (${plan.items.length} حملة، بيانات ${fresh.state})`, data: { action: 'PREPARED', type, date, version: 1, dataState: fresh.state, items: plan.items.length, selected: plan.items.filter((i) => i.selected).length } });
   if (plan.surfaced_at) await notify(plan, { title: `جدول ${type === 'OPEN' ? 'فتح' : 'إيقاف'} الحملات جاهز للمراجعة`, message: stale ? 'البيانات قديمة (STALE) — مفيش تنفيذ لحد ما Meta تتاح وتتحدّث.' : `${plan.items.filter((i) => i.selected).length} حملة مختارة من ${plan.items.length}. راجع الجدول واضغط اعتماد — مفيش أي تنفيذ قبل كده.`, suffix: 'ready' });
   return { plan, created: true };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// ➕ independent plans (the owner can create one any time; the day's standard plan — even COMPLETED — is never touched). Built in the BACKGROUND (a fresh Meta-backed build takes minutes).
+// ---------------------------------------------------------------------------------------------------------------------
+const preparingNow = new Map(); // type -> { since, variant, error }
+export const preparingPlans = () => [...preparingNow.entries()].map(([type, v]) => ({ type, since: v.since, variant: v.variant, error: v.error }));
+export function startOneOffPlan({ type, only = null, userId, now = new Date(), deps = {} }) {
+  if (!SLOTS[type]) { const e = new Error('نوع خطة غير معروف.'); e.status = 400; throw e; }
+  if (preparingNow.has(type) && !preparingNow.get(type).error) return { started: false, already: true, variant: preparingNow.get(type).variant };
+  const variant = `T-${Date.now().toString(36)}`; preparingNow.set(type, { since: new Date(), variant, error: null });
+  const done = preparePlan({ type, date: cairoDate(now), now, simulated: isTestClock(), deps, userId, variant, only: only && only.length ? only : null, unselected: !(only && only.length) })
+    .then((r) => { preparingNow.delete(type); return r; })
+    .catch((e) => { preparingNow.set(type, { since: new Date(), variant, error: e.message }); setTimeout(() => preparingNow.delete(type), 90_000).unref?.(); logger.warn('[dailyPlans] one-off plan failed', { type, message: e.message }); return null; });
+  return { started: true, variant, done };
+}
+/** What approving this plan WOULD do — read-only: the gate verdict + a live revalidation of every selected campaign. Writes nothing, executes nothing. */
+export async function previewExecution({ planId, now = new Date(), deps = {} }) {
+  const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
+  if (!plan) { const e = new Error('الخطة غير موجودة.'); e.status = 404; throw e; }
+  const config = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig();
+  const gate = executionGate({ config, dcfg, type: plan.type, simulatedPlan: plan.simulated });
+  const sel = plan.items.filter((i) => i.selected).slice(0, 25); const rows = [];
+  for (const it of sel) {
+    const v = await revalidateItem({ plan, item: it, config, dcfg, deps: { ...deps, preview: true }, now });
+    rows.push({ campaignId: it.campaign_id, campaignName: it.campaign_name, budget: j(it.evidence_json, {}).budget ?? null, ok: v.ok, wouldBe: v.ok ? (gate.blocked ? 'BLOCKED_BY_GATE' : gate.mode === 'LIVE' ? (plan.type === 'OPEN' ? 'RESUME → ACTIVE' : 'PAUSE → PAUSED') : 'SIMULATED') : v.status, reason: v.reason || null, liveStatus: v.live?.status || null });
+  }
+  return { planId: plan.id, type: plan.type, status: plan.status, simulated: plan.simulated, gate: gate.blocked ? { blocked: gate.blocked } : { mode: gate.mode }, config: { mode: config.mode, writesLocked: config.writesLocked, emergencyStop: config.emergency_stop, permissions: config.execPermissions || null }, selected: plan.items.filter((i) => i.selected).length, previewed: rows.length, wouldExecute: rows.filter((r) => r.ok).length, items: rows, note: 'معاينة فقط — مفيش أي تنفيذ. الاعتماد هو اللي بينفّذ.' };
 }
 
 /** Scheduler step 1: every plan whose slot has arrived on the current CAIRO day exists (and is surfaced); plans of finished days that nobody executed become MISSED. */
@@ -150,6 +179,7 @@ export async function getDailyOverview({ now = new Date(), simulated = isTestClo
       risk: cur.length ? (cur.some((p) => p.items.some((i) => i.selected && i.risk === 'HIGH')) ? 'HIGH' : cur.some((p) => p.items.some((i) => i.selected && i.risk === 'MEDIUM')) ? 'MEDIUM' : 'LOW') : null,
       nextDue: { type: next.type, label: TYPE_LABEL_AR[next.type], date: next.date, at: next.at }, lastPlan: last ? { id: last.id, type: last.type, date: last.plan_date, status: last.status, summary: j(last.summary_json, null) } : null,
     },
+    preparing: preparingPlans(),
     control: { mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), halted: dcfg.halted, allowOpen: dcfg.allowOpen, allowPause: dcfg.allowPause, scheduledExecution: dcfg.scheduledExecution.enabled, spacingSeconds: dcfg.spacingSeconds, staleMinutes: dcfg.staleMinutes },
     externalSchedule: external,
     notifications: { inApp: true, external: false, note: 'القناة المفعّلة الوحيدة: تنبيهات السيستم (🔔). مفيش قناة خارجية (Telegram/WhatsApp/Email) مفعّلة لسه.' },
@@ -311,8 +341,7 @@ async function revalidateItem({ plan, item, config, dcfg, deps, now }) {
   if (config.emergency_stop) return { ok: false, status: 'BLOCKED', reason: 'EMERGENCY_STOP' };
   if (plan.execution_mode === 'LIVE' && (config.mode !== 'APPROVAL' || config.writesLocked)) return { ok: false, status: 'SKIPPED', reason: `MODE_CHANGED_${config.mode === 'OFF' ? 'MANUAL' : config.mode}${config.writesLocked ? '_WRITES_LOCKED' : ''}` }; // switching to MANUAL (or locking writes) stops the rest of an approved queue immediately; nothing already sent is rolled back
   if (dcfg.halted) return { ok: false, status: 'SKIPPED', reason: 'QUEUE_HALTED' };
-  const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, select: { status: true } });
-  if (!fresh || fresh.status !== 'RUNNING') return { ok: false, status: 'SKIPPED', reason: `PLAN_${fresh?.status || 'GONE'}` };
+  if (!deps.preview) { const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, select: { status: true } }); if (!fresh || fresh.status !== 'RUNNING') return { ok: false, status: 'SKIPPED', reason: `PLAN_${fresh?.status || 'GONE'}` }; }
   const ev = j(item.evidence_json, {});
   if (ev.mapping && ev.mapping !== 'VERIFIED') return { ok: false, status: 'BLOCKED', reason: `MAPPING_${ev.mapping}` };
   const mapState = await (deps.mappingState ? deps.mappingState(item.campaign_id) : null); if (mapState && mapState !== 'VERIFIED') return { ok: false, status: 'BLOCKED', reason: `MAPPING_${mapState}` };

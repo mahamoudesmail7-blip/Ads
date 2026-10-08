@@ -273,6 +273,7 @@ try {
   try {
     ok('unauthenticated → 401', (await call('GET', '/daily-plan/overview')).status === 401);
     const pr = await mk({ type: 'OPEN', date: '2031-06-05', its: items(2) });
+    ok('MANAGER cannot create an independent plan or preview an execution (403)', (await call('POST', '/daily-plan/new', { type: 'OPEN' }, 'MANAGER')).status === 403 && (await call('POST', '/daily-plan/1/preview-execution', {}, 'MANAGER')).status === 403);
     ok('MANAGER can read a plan (GET /daily-plan/:id)', (await call('GET', `/daily-plan/${pr.id}`, undefined, 'MANAGER')).status === 200);
     ok('MANAGER cannot change selection (403)', (await call('PUT', `/daily-plan/${pr.id}/selection`, { selections: {} }, 'MANAGER')).status === 403);
     ok('MANAGER cannot approve (403)', (await call('POST', `/daily-plan/${pr.id}/approve`, {}, 'MANAGER')).status === 403);
@@ -282,6 +283,34 @@ try {
     ok('test-clock route requires ADMIN; the env flag is the real gate', (await call('PUT', '/daily-plan/test-clock', { at: null }, 'MANAGER')).status === 403 && (await call('PUT', '/daily-plan/test-clock', { at: null }, 'ADMIN')).status === 200);
     ok('dismissing the popup (a shared state change) is ADMIN-only; ADMIN can', (await call('POST', `/daily-plan/${pr.id}/dismiss`, {}, 'MANAGER')).status === 403 && (await call('POST', `/daily-plan/${pr.id}/dismiss`, {}, 'ADMIN')).status === 200);
   } finally { server.close(); }
+
+  console.log('\n14. Independent plans (any time) + preview — the day\'s standard plan is never touched');
+  const dI = '2031-08-05'; TM.setTestClock(TM.dueAt('PAUSE', dI)); const nowI = TM.clockNow();
+  const bld = async () => ({ items: items(3), policy: null });
+  const o1 = DP.startOneOffPlan({ type: 'OPEN', userId: 1, now: nowI, deps: { ...FRESH, build: bld } });
+  const o2 = DP.startOneOffPlan({ type: 'OPEN', userId: 1, now: nowI, deps: { ...FRESH, build: bld } });
+  ok('a second request while one is being built is refused (already) and the build is visible as "preparing"', o1.started === true && o2.already === true && DP.preparingPlans().some((x) => x.type === 'OPEN'));
+  const built1 = await o1.done; const pI = built1.plan;
+  ok('independent plan created: key contains the T- variant, PREPARED, nothing pre-ticked (the owner chooses)', pI.plan_key.includes('|T-') && pI.status === 'PREPARED' && pI.items.length === 3 && pI.items.every((i) => !i.selected) && DP.preparingPlans().length === 0);
+  const std = await prisma.ambDailyPlan.count({ where: { plan_key: `SIM|OPEN|${dI}` } });
+  ok('it does not create or touch the standard plan of that day', std === 0);
+  const a1 = await DP.updateSelection({ planId: pI.id, selections: { [pI.items[0].campaign_id]: true }, userId: 1 }); ok('tick ONE campaign → saved', a1.plan.counts.selected === 1 && a1.newVersion === false);
+  const a2 = await DP.updateSelection({ planId: pI.id, selections: { [pI.items[0].campaign_id]: false }, userId: 1 }); ok('untick → saved (0 selected)', a2.plan.counts.selected === 0);
+  await DP.updateSelection({ planId: pI.id, selections: { [pI.items[0].campaign_id]: true, [pI.items[1].campaign_id]: true }, userId: 1 }); ok('tick several → saved (2 selected)', (await get(pI.id)).items.filter((i) => i.selected).length === 2);
+  execCalls = 0; readCalls = 0;
+  const pv = await DP.previewExecution({ planId: pI.id, now: nowI, deps: { readEntity: readEntityOf('PAUSED'), exceptions: async () => [], lastPurchase: async () => null, mappingState: async () => null, config: async () => cfgOf(), dcfg: DC_OFF } });
+  ok('preview: gate = SIMULATION (SHADOW), both selected campaigns revalidated live, nothing executed, plan still PREPARED + items PENDING', pv.gate.mode === 'SIMULATION' && pv.previewed === 2 && pv.wouldExecute === 2 && readCalls === 2 && execCalls === 0 && (await get(pI.id)).status === 'PREPARED' && (await statuses(pI.id)).every((x) => x === 'PENDING'), JSON.stringify(pv.gate));
+  const pvLive = await DP.previewExecution({ planId: pI.id, now: nowI, deps: { readEntity: readEntityOf('ACTIVE'), exceptions: async () => [], lastPurchase: async () => null, mappingState: async () => null, config: async () => cfgOf(), dcfg: DC_OFF } });
+  ok('preview shows what would be skipped (already ACTIVE) without executing', pvLive.wouldExecute === 0 && pvLive.items.every((x) => x.reason === 'ALREADY_ACTIVE'));
+  const apI = await DP.approvePlan({ planId: pI.id, userId: 1, now: nowI, deps: { ...D0, dcfg: DC_OFF, config: async () => cfgOf(), readEntity: readEntityOf('PAUSED'), approveAndExecute: stubExec(), sleep: noSleep().fn } });
+  ok('approving executes only the SIMULATION and completes the independent plan', apI.ok && (await get(pI.id)).status === 'COMPLETED' && execCalls === 0);
+  let e409 = null; try { await DP.updateSelection({ planId: pI.id, selections: { [pI.items[2].campaign_id]: true }, userId: 1 }); } catch (e) { e409 = e; }
+  ok('a COMPLETED plan stays saved and cannot be edited (409)', e409?.status === 409 && (await get(pI.id)).items.filter((i) => i.selected).length === 2);
+  const o3 = DP.startOneOffPlan({ type: 'OPEN', userId: 1, now: nowI, deps: { ...FRESH, build: bld } }); const pI2 = (await o3.done).plan;
+  ok('a NEW independent plan can be created right after, with its own key and selections', pI2.id !== pI.id && pI2.plan_key !== pI.plan_key && pI2.status === 'PREPARED');
+  const ovI = await DP.getDailyOverview({ now: nowI, simulated: true });
+  ok('the overview lists the independent plans separately from the standard OPEN/PAUSE panels', ovI.oneOffPlans.length === 2 && ovI.oneOffPlans.every((x) => x.key.includes('|T-')) && ovI.plans.OPEN === null);
+  TM.setTestClock(null);
 
   console.log('\n13. Static guarantees');
   const src = fs.readFileSync(join(__dirname, '../services/amb/dailyPlans.js'), 'utf8');
