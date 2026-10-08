@@ -16,6 +16,7 @@ import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetAct
 import { prepareBudgetDecision } from '../services/amb/budgetExecution.js';
 import * as daily from '../services/amb/dailyPlans.js';
 import { buildProductionReadiness } from '../services/amb/productionReadiness.js';
+import { getExecutionPermissions, setExecutionPermission } from '../services/amb/executionPermissions.js';
 import { setTestClock, clockNow, isTestClock, testClockAllowed } from '../services/amb/dailyPlanTime.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
@@ -99,6 +100,9 @@ router.post('/budget-optimizer/preview', ADMIN, asyncRoute(async (req, res) => r
 // the owner-approved budget execution: prepare ONE decision (needs mode APPROVAL + live Meta), then approve it through the normal POST /decisions/:id/approve (ADMIN).
 router.post('/budget-optimizer/prepare', ADMIN, asyncRoute(async (req, res) => res.json(await prepareBudgetDecision({ campaignId: String(req.body?.campaignId || ''), userId: req.user.id }))));
 // ---- Daily Operations Center (جدول التشغيل اليومي): OPEN 00:00 / PAUSE 13:00 Africa/Cairo. Reads: ADMIN|MANAGER. Everything that selects, approves, cancels, excludes or configures: ADMIN. Opening a screen never executes anything.
+// صلاحيات التنفيذ: reading = ADMIN|MANAGER; changing one = ADMIN + explicit confirm + audit. This route can never touch OPERATOR_ALLOW_META_WRITES (a deployment variable), the mode or the Auto toggles.
+router.get('/execution-permissions', asyncRoute(async (req, res) => res.json(await getExecutionPermissions({}))));
+router.put('/execution-permissions/:key', ADMIN, asyncRoute(async (req, res) => res.json(await setExecutionPermission({ key: req.params.key, on: req.body?.on, confirm: req.body?.confirm === true, userId: req.user.id }))));
 router.get('/production-readiness', asyncRoute(async (req, res) => res.json(await buildProductionReadiness({}))));
 router.get('/daily-plan/overview', asyncRoute(async (req, res) => res.json(await daily.getDailyOverview({ now: clockNow() }))));
 router.get('/daily-plan/due', asyncRoute(async (req, res) => res.json({ now: clockNow(), testClock: isTestClock(), popups: await daily.getDuePopups({ now: clockNow() }) })));

@@ -23,7 +23,7 @@ try {
   ok('no real execution anywhere ⇒ Open/Pause/Increase/Reduce are UNVERIFIED (code existing is not proof)', ['CAMPAIGN_OPEN', 'CAMPAIGN_PAUSE', 'BUDGET_INCREASE', 'BUDGET_REDUCE'].every((k) => by(r, k).status === 'UNVERIFIED'));
   ok('Autopilot is BLOCKED', by(r, 'AUTOPILOT').status === 'BLOCKED' && by(r, 'AUTOPILOT').needsApproval);
   ok('summary counts add up', r.summary.READY + r.summary.BLOCKED + r.summary.UNVERIFIED === r.functions.length);
-  ok('gates list what is closed now (mode, write-lock, per-type permission)', by(r, 'CAMPAIGN_OPEN').gates.some((g) => /SHADOW/.test(g)) && by(r, 'CAMPAIGN_OPEN').gates.some((g) => /مقفولة على مستوى النشر/.test(g)) && by(r, 'CAMPAIGN_OPEN').gates.some((g) => /الفتح/.test(g)));
+  ok('gates list what is closed now (mode, write-lock, per-type permission)', by(r, 'CAMPAIGN_OPEN').gates.some((g) => /SHADOW/.test(g)) && by(r, 'CAMPAIGN_OPEN').gates.some((g) => /مقفولة على مستوى النشر/.test(g)) && by(r, 'CAMPAIGN_OPEN').gates.some((g) => /فتح الحملات/.test(g)));
   ok('Budget Increase shows the bridge gate (reductions only until the owner widens it)', by(r, 'BUDGET_INCREASE').gates.some((g) => /بالتقليل فقط/.test(g)));
   r = await PR.buildProductionReadiness({ deps: baseDeps({ executed: [{ id: 1, action_type: 'DECREASE_BUDGET', entity_name: 'x', executed_at: new Date(), verify_json: '{"verified":true}' }] }) });
   ok('a real executed + read-back-VERIFIED reduction ⇒ Budget Reduce READY, Meta Verification READY, others still UNVERIFIED', by(r, 'BUDGET_REDUCE').status === 'READY' && by(r, 'META_VERIFICATION').status === 'READY' && by(r, 'CAMPAIGN_OPEN').status === 'UNVERIFIED' && by(r, 'BUDGET_INCREASE').status === 'UNVERIFIED');
@@ -37,10 +37,16 @@ try {
 
   console.log('\n2. Dashboard on the REAL system (evidence from the database)');
   const real = await PR.buildProductionReadiness({});
-  const exec = await prisma.ambAction.findMany({ where: { execution_status: 'EXECUTED', action_type: { in: ['RESUME', 'PAUSE', 'INCREASE_BUDGET', 'DECREASE_BUDGET'] } }, select: { action_type: true, verify_json: true } });
+  const exec = await prisma.ambAction.findMany({ where: { execution_status: 'EXECUTED', action_type: { in: ['RESUME', 'PAUSE', 'INCREASE_BUDGET', 'DECREASE_BUDGET'] }, NOT: { OR: [{ entity_id: { startsWith: '__optest_' } }, { ad_account_id: { startsWith: '__optest_' } }] } }, select: { action_type: true, verify_json: true } });
   const proven = (t) => exec.some((a) => a.action_type === t && JSON.parse(a.verify_json || '{}').verified === true);
   ok('real statuses follow the real proof (Open/Pause/Increase/Reduce)', [['CAMPAIGN_OPEN', 'RESUME'], ['CAMPAIGN_PAUSE', 'PAUSE'], ['BUDGET_INCREASE', 'INCREASE_BUDGET'], ['BUDGET_REDUCE', 'DECREASE_BUDGET']].every(([k, t]) => by(real, k).status === (proven(t) ? 'READY' : 'UNVERIFIED')), JSON.stringify(real.functions.map((f) => [f.key, f.status])));
   ok('real control state is reported (mode, write-lock, toggles)', typeof real.control.mode === 'string' && typeof real.control.writesLocked === 'boolean' && Object.keys(real.control.autoToggles).length === 5);
+
+  // a stubbed executor writing an EXECUTED+verified fixture row must never count as proof of a real Meta execution
+  const fxRec = await prisma.ambRecommendation.create({ data: { batch_id: `${T}proof`, ad_account_id: `${T}acc`, level: 'campaign', entity_id: `${T}proof1`, entity_name: `${T}proof`, campaign_id: `${T}proof1`, decision: 'SCALE', action_type: 'PAUSE', executable: true, status: 'EXECUTED' } }); created.recs = [fxRec.id];
+  const fxAct = await prisma.ambAction.create({ data: { recommendation_id: fxRec.id, mode: 'APPROVAL', action_type: 'PAUSE', ad_account_id: `${T}acc`, level: 'campaign', entity_id: `${T}proof1`, entity_name: `${T}proof`, campaign_id: `${T}proof1`, approval_status: 'APPROVED', execution_status: 'EXECUTED', executed_at: new Date(), verify_json: '{"verified":true}' } }); created.acts = [fxAct.id];
+  const withFixture = await PR.buildProductionReadiness({});
+  ok('test fixtures (stubbed executors, __optest_) are NEVER counted as proof — Pause stays as the real evidence says', by(withFixture, 'CAMPAIGN_PAUSE').status === (proven('PAUSE') ? 'READY' : 'UNVERIFIED'));
 
   console.log('\n3. A FAILED / UNCERTAIN live execution raises a clear alert');
   const items = (n) => Array.from({ length: n }, (_, i) => ({ campaignId: `${T}ra${i + 1}`, campaignName: `${T}alert camp ${i + 1}`, productId: null, productName: 'fixture', storeId: 'trendy-storeee', rank: i + 1, selected: true, selectable: true, eligibility: 'ELIGIBLE', blockCodes: [], warnings: [], risk: 'LOW', riskScore: 5, reason: 'fixture', evidence: { mapping: 'VERIFIED', budget: 300, stock: { status: 'IN_STOCK' }, recommended: true } }));
@@ -80,6 +86,7 @@ try {
   fail++; console.log('  ✗ UNEXPECTED', e.stack || e.message);
 } finally {
   for (const id of created.plans) await prisma.ambOperatorEvent.deleteMany({ where: { data_json: { contains: `"planId":${id},` } } }).catch(() => {});
+  await prisma.ambAction.deleteMany({ where: { id: { in: created.acts || [] } } }).catch(() => {}); await prisma.ambRecommendation.deleteMany({ where: { id: { in: created.recs || [] } } }).catch(() => {});
   const ids = created.plans; const recs = await prisma.ambRecommendation.findMany({ where: { batch_id: { in: ids.map((i) => `daily-plan-${i}`) } }, select: { id: true } });
   await prisma.ambAction.deleteMany({ where: { recommendation_id: { in: recs.map((r) => r.id) } } }).catch(() => {});
   await prisma.ambRecommendation.deleteMany({ where: { id: { in: recs.map((r) => r.id) } } }).catch(() => {});

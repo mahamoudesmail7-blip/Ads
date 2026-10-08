@@ -34,12 +34,12 @@ const ITEM_FINAL = new Set(['VERIFIED', 'FAILED', 'SKIPPED', 'BLOCKED', 'SIMULAT
 // =====================================================================================================================
 // config (inside the operator config blob: limits_json.dailyPlan) — ADMIN only at the routes
 // =====================================================================================================================
-export async function getDailyPlanConfig() { const c = await getOperatorConfig(); return { ...DEFAULT_DAILY_CONFIG, ...(c.limits?.dailyPlan || {}), scheduledExecution: { ...DEFAULT_DAILY_CONFIG.scheduledExecution, ...(c.limits?.dailyPlan?.scheduledExecution || {}) } }; }
+export async function getDailyPlanConfig() { const c = await getOperatorConfig(); return { ...DEFAULT_DAILY_CONFIG, ...(c.limits?.dailyPlan || {}), allowOpen: c.execPermissions?.open === true, allowPause: c.execPermissions?.pause === true, scheduledExecution: { ...DEFAULT_DAILY_CONFIG.scheduledExecution, ...(c.limits?.dailyPlan?.scheduledExecution || {}) } }; } // allowOpen/allowPause are READ-ONLY mirrors of the «صلاحيات التنفيذ» switches
 export async function setDailyPlanConfig({ patch, userId = null }) {
   const row = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); const rawLimits = j(row?.limits_json, null); const prev = await getDailyPlanConfig();
-  const next = { ...prev, ...Object.fromEntries(Object.entries(patch || {}).filter(([k]) => ['allowOpen', 'allowPause', 'halted', 'spacingSeconds', 'staleMinutes'].includes(k))) };
+  const next = { ...prev, ...Object.fromEntries(Object.entries(patch || {}).filter(([k]) => ['halted', 'spacingSeconds', 'staleMinutes'].includes(k))) };
   if (patch?.scheduledExecution && typeof patch.scheduledExecution.enabled === 'boolean') next.scheduledExecution = { enabled: patch.scheduledExecution.enabled, by: userId, at: new Date().toISOString() };
-  for (const k of ['allowOpen', 'allowPause', 'halted']) if (typeof next[k] !== 'boolean') { const e = new Error(`${k} لازم true/false.`); e.status = 400; throw e; }
+  if (typeof next.halted !== 'boolean') { const e = new Error('halted لازم true/false.'); e.status = 400; throw e; }
   next.spacingSeconds = Math.max(3, Math.min(120, Number(next.spacingSeconds) || 3)); next.staleMinutes = Math.max(5, Math.min(180, Number(next.staleMinutes) || 30));
   await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify({ ...(rawLimits || {}), dailyPlan: next }), updated_by_id: userId } });
   await prisma.aiAuditLog.create({ data: { actor_id: userId || null, kind: 'DAILY_PLAN_CONFIG', action: 'EXECUTE', input_json: JSON.stringify({ patch, from: prev, to: next }).slice(0, 3000), success: true } }).catch(() => {});
@@ -254,7 +254,8 @@ export function executionGate({ config, dcfg, type, simulatedPlan }) {
   if (config.mode === 'SHADOW' || config.mode === 'OFF') return { mode: 'SIMULATION' };
   if (config.mode !== 'APPROVAL') return { blocked: { code: config.mode === 'AUTOPILOT' ? 'AUTOPILOT_NOT_ALLOWED_HERE' : 'MODE_NOT_APPROVAL', message: `الوضع ${config.mode} — التنفيذ الفعلي للجداول بيحتاج وضع APPROVAL.` } };
   if (config.writesLocked) return { blocked: { code: 'META_WRITES_LOCKED', message: 'كتابة Meta مقفولة على مستوى النشر (OPERATOR_ALLOW_META_WRITES).' } };
-  if (!(type === 'OPEN' ? dcfg.allowOpen : dcfg.allowPause)) return { blocked: { code: 'TYPE_NOT_ALLOWED', message: `صلاحية ${type === 'OPEN' ? 'فتح' : 'إيقاف'} الحملات بالتنفيذ المجدول لسه ما اتمنحتش من ADMIN.` } };
+  const permitted = config.execPermissions ? config.execPermissions[type === 'OPEN' ? 'open' : 'pause'] === true : (type === 'OPEN' ? dcfg.allowOpen : dcfg.allowPause); // production configs always carry execPermissions; the fallback only serves stubbed configs in tests
+  if (!permitted) return { blocked: { code: 'TYPE_NOT_ALLOWED', message: `صلاحية ${type === 'OPEN' ? 'فتح' : 'إيقاف'} الحملات مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).` } };
   return { mode: 'LIVE' };
 }
 async function requireAdmin(userId, deps = {}) {

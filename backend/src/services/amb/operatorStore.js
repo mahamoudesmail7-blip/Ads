@@ -59,6 +59,7 @@ export function shapeConfig(row) {
     id: row.id, mode: row.mode, emergency_stop: !!row.emergency_stop, emergency_reason: row.emergency_reason, emergency_at: row.emergency_at,
     limits: merge(DEFAULT_LIMITS, j(row.limits_json, {})), cooldowns: { ...DEFAULT_COOLDOWNS, ...(j(row.cooldowns_json, {}) || {}) },
     schedule: { ...DEFAULT_SCHEDULE, ...(j(row.schedule_json, {}) || {}) }, updated_at: row.updated_at,
+    execPermissions: Object.fromEntries(['open', 'pause', 'budgetIncrease', 'budgetDecrease'].map((k) => [k, j(row.limits_json, {})?.execPermissions?.[k] === true])), // صلاحيات التنفيذ — all OFF unless an ADMIN switched one on (audited)
     writesLocked: metaWritesLocked(), storeLimits: j(row.store_limits_json, {}) || {}, limitsConfigured: !!row.limits_json, autopilotAttest: j(row.autopilot_attest_json, {}) || {},
   };
 }

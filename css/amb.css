@@ -940,3 +940,16 @@ body { background: var(--amb-bg); }
 .dp-head h2 { font-size: 18px; }
 @media (max-width: 720px) { .op2-kpis { grid-template-columns: repeat(2, 1fr); } .op2-modes { justify-content: flex-start; } .op2-bar .op-stop { margin-inline-start: 0; } }
 @media (max-width: 720px) { .op2-menu-list { position: fixed; inset-inline: 12px; top: auto; bottom: 76px; max-height: 60vh; overflow-y: auto; z-index: 60; min-width: 0; } }
+
+/* ===== 🔐 صلاحيات التنفيذ ===== */
+.pm-wrap { display: flex; flex-direction: column; gap: 12px; }
+.pm-lock { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: center; border-radius: var(--amb-radius); padding: 12px 16px; border: 1px solid var(--amb-border); background: var(--amb-surface); }
+.pm-lock.locked { background: var(--amb-amber-bg); border-color: #f3d79b; } .pm-lock.open { background: var(--amb-red-bg); border-color: #f3b4b4; }
+.pm-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.pm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+@media (max-width: 720px) { .pm-grid { grid-template-columns: 1fr; } }
+.pm-card { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.pm-card.on { border-color: var(--amb-amber); background: var(--amb-amber-bg); }
+.pm-head { display: flex; justify-content: space-between; align-items: center; } .pm-head h3 { margin: 0; font-size: 15px; }
+.pm-warn { font-size: 12px; color: #b45309; } .pm-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; }
+.pm-hist summary { cursor: pointer; font-size: 12.5px; color: var(--amb-text-dim); font-weight: 700; }

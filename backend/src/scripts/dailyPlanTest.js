@@ -21,6 +21,8 @@ const BO = await imp('../services/amb/budgetOptimizer.js'); const S = await imp(
 const { default: operatorRoutes } = await imp('../routes/operator.js'); const { errorHandler } = await imp('../middleware/errorHandler.js');
 const T = '__optest_'; const created = { users: [] };
 const rawCfg0 = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } });
+const sanitizeLimits = (lj) => { const o = JSON.parse(lj || '{}'); if (o.dailyPlan) { o.dailyPlan.halted = false; } return lj == null ? lj : JSON.stringify(o); }; // another suite may have a transient halted=true when this one snapshots the real config — never restore that
+
 const c0 = { actions: await prisma.ambAction.count(), recs: await prisma.ambRecommendation.count(), decisions: await prisma.ambOperatorDecision.count() };
 const FRESH = { syncStatus: async () => ({ lastSuccessAt: new Date() }), refresh: async () => ({ ok: true }) };
 const STALE = { syncStatus: async () => ({ lastSuccessAt: new Date(Date.now() - 5 * 3_600_000) }), refresh: async () => ({ ok: false, error: 'META_DOWN' }) };
@@ -245,8 +247,8 @@ try {
   ok('"exclude for today" drops the campaign from open plans and creates a TTL exception', !byC[itP[1].campaignId].selected && (await prisma.ambOperatorException.count({ where: { scope_id: itP[1].campaignId, reason: 'DAILY_PLAN_EXCLUDED_TODAY', active: true, expires_at: { not: null } } })) === 1);
   await DP.excludeCampaign({ campaignId: itP[2].campaignId, scope: 'ALWAYS', userId: 1 }); ok('"exclude always" has no expiry', (await prisma.ambOperatorException.count({ where: { scope_id: itP[2].campaignId, reason: 'DAILY_PLAN_EXCLUDED_ALWAYS', expires_at: null } })) === 1);
   let badScope = null; try { await DP.excludeCampaign({ campaignId: 'x', scope: 'WEEK', userId: 1 }); } catch (e) { badScope = e; } ok('invalid exclusion scope is rejected', badScope?.status === 400);
-  const before = await DP.getDailyPlanConfig(); const after = await DP.setDailyPlanConfig({ patch: { halted: true, spacingSeconds: 1, allowOpen: true }, userId: null });
-  ok('config: spacing is floored at 3s; halted/allow flags saved; scheduled execution untouched', after.spacingSeconds === 3 && after.halted === true && after.allowOpen === true && after.scheduledExecution.enabled === before.scheduledExecution.enabled);
+  const before = await DP.getDailyPlanConfig(); const after = await DP.setDailyPlanConfig({ patch: { halted: true, spacingSeconds: 1, allowOpen: true }, userId: null }); // allowOpen is ignored now (permissions come from the audited switches)
+  ok('config: spacing is floored at 3s; halted/allow flags saved; scheduled execution untouched', after.spacingSeconds === 3 && after.halted === true && after.allowOpen === false && after.scheduledExecution.enabled === before.scheduledExecution.enabled);
   const rawNow = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); ok('saving the daily config does not change mode, emergency stop or other operator limits', rawNow.mode === rawCfg0.mode && rawNow.emergency_stop === rawCfg0.emergency_stop && (() => { const a = JSON.parse(rawCfg0.limits_json || '{}'), b = JSON.parse(rawNow.limits_json || '{}'); delete b.dailyPlan; delete a.dailyPlan; return JSON.stringify(a) === JSON.stringify(b); })());
 
   console.log('\n11. Scheduler tick under the virtual clock (simulated plans only)');
@@ -305,7 +307,7 @@ try {
   await prisma.ambAlert.deleteMany({ where: { dedupe_key: { startsWith: 'dailyplan:' }, AND: [{ dedupe_key: { contains: '2031-' } }] } }).catch(() => {});
   await prisma.aiAuditLog.deleteMany({ where: { kind: 'DAILY_PLAN_CONFIG', created_at: { gte: new Date(Date.now() - 3_600_000) }, actor_id: null } }).catch(() => {});
   // restore the operator config row exactly as it was (the config test saved dailyPlan settings)
-  if (rawCfg0) await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: rawCfg0.limits_json, updated_by_id: rawCfg0.updated_by_id } }).catch(() => {});
+  if (rawCfg0) await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: sanitizeLimits(rawCfg0.limits_json), updated_by_id: rawCfg0.updated_by_id } }).catch(() => {});
   await prisma.user.deleteMany({ where: { id: { in: created.users.map((u) => u.id) } } }).catch(() => {});
   console.log(`\nSAFETY: AmbActions ${c0.actions} -> ${await prisma.ambAction.count()} | recs ${c0.recs} -> ${await prisma.ambRecommendation.count()} | decisions ${c0.decisions} -> ${await prisma.ambOperatorDecision.count()} | Meta calls in this test = 0 (all reads/writes stubbed)`);
   console.log(`\n${fail === 0 ? '✅' : '❌'} dailyPlanTest: ${pass} passed, ${fail} failed`);

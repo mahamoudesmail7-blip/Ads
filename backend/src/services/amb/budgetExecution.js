@@ -18,6 +18,7 @@ import { getOperatorConfig } from './operatorStore.js';
 import { evaluateBudgetOptimization, persistBudgetDecisions } from './budgetOptimizer.js';
 import { raiseAlert } from './alerts.js';
 
+import { permissionFor, PERMISSION_META } from './executionPermissions.js';
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 export const EXECUTABLE_ACTIONS = new Set(['SCALE_DOWN']); // widened ONLY by an explicit owner decision
@@ -53,10 +54,12 @@ export async function defaultReadBack({ entityId, waitMs = 45_000, tries = 8 }) 
 }
 
 /** Config-level refusal reasons (nothing about the decision itself changed, so the decision stays PREPARED). */
-export function configBlock(config) {
+export function configBlock(config, action = null) {
   if (config.emergency_stop) return { code: 'EMERGENCY_STOP', message: 'إيقاف الطوارئ مفعّل.' };
   if (config.mode !== 'APPROVAL') return { code: config.mode === 'AUTOPILOT' ? 'AUTOPILOT_NOT_ALLOWED_HERE' : 'MODE_NOT_APPROVAL', message: `الوضع الحالي ${config.mode} — التنفيذ بموافقتك محتاج وضع APPROVAL.` };
   if (config.writesLocked) return { code: 'META_WRITES_LOCKED', message: 'كتابة AI Operator على Meta مقفولة على مستوى النشر (OPERATOR_ALLOW_META_WRITES).' };
+  const need = action ? permissionFor(action) : null;
+  if (need && config.execPermissions && config.execPermissions[need] !== true) return { code: 'PERMISSION_OFF', message: `صلاحية «${PERMISSION_META[need].label}» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).` };
   return null;
 }
 
@@ -69,6 +72,7 @@ export async function prepareBudgetDecision({ campaignId, userId = null, now = n
   await requireAdmin(userId, deps);
   const config = deps.config || await getOperatorConfig();
   if (config.mode !== 'APPROVAL') return { ok: false, reason: 'MODE_NOT_APPROVAL', message: `الوضع ${config.mode} — التحضير للموافقة محتاج APPROVAL.` };
+  if (config.execPermissions && config.execPermissions.budgetDecrease !== true) return { ok: false, reason: 'PERMISSION_OFF', message: 'صلاحية «تقليل الميزانية» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).' };
   const res = await (deps.evaluate || ((o) => evaluateBudgetOptimization(o)))({ now, persist: false, live: true, only: { campaignIds: [campaignId] }, ruleMode: 'APPROVAL' });
   if (res.structureSource !== 'META_LIVE') return { ok: false, reason: 'NO_LIVE_DATA', message: `بنية الميزانية ما اتقرتش لايف من Meta (${res.structureSource}) — مفيش تحضير على بيانات قديمة.` };
   const rows = res.rows.filter((r) => r.campaignId === campaignId && r.intended);
@@ -100,7 +104,7 @@ export async function executeBudgetDecision({ decisionId, userId, now = new Date
 
   // 1. configuration gate — a refusal here leaves the decision PREPARED (nothing about it changed)
   const config = deps.config || await getOperatorConfig();
-  const cb = configBlock(config);
+  const cb = configBlock(config, row.action);
   if (cb) { await transition(row.id, 'PREPARED', 'PREPARED', { actorId: userId, note: `BLOCKED_AT_GATE ${cb.code}`, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: cb.code, message: cb.message }; }
 
   // 2. fresh LIVE re-evaluation — the same decision or nothing
