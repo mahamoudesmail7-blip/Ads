@@ -17,6 +17,11 @@ import { prepareBudgetDecision } from '../services/amb/budgetExecution.js';
 import * as daily from '../services/amb/dailyPlans.js';
 import { buildProductionReadiness } from '../services/amb/productionReadiness.js';
 import { getExecutionPermissions, setExecutionPermission } from '../services/amb/executionPermissions.js';
+import { listMonitoredActions } from '../services/amb/postActionMonitoring.js';
+import { getBudgetCaps, setBudgetCaps } from '../services/amb/budgetCaps.js';
+import { runSmartAlerts } from '../services/amb/smartAlerts.js';
+import { listApprovals, bulkPreview, statusBar } from '../services/amb/approvalCenter.js';
+import { buildOperatorBrief } from '../services/amb/operatorBrief.js';
 import { setTestClock, clockNow, isTestClock, testClockAllowed } from '../services/amb/dailyPlanTime.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
@@ -103,6 +108,22 @@ router.post('/budget-optimizer/prepare', ADMIN, asyncRoute(async (req, res) => r
 // صلاحيات التنفيذ: reading = ADMIN|MANAGER; changing one = ADMIN + explicit confirm + audit. This route can never touch OPERATOR_ALLOW_META_WRITES (a deployment variable), the mode or the Auto toggles.
 router.get('/execution-permissions', asyncRoute(async (req, res) => res.json(await getExecutionPermissions({}))));
 router.put('/execution-permissions/:key', ADMIN, asyncRoute(async (req, res) => res.json(await setExecutionPermission({ key: req.params.key, on: req.body?.on, confirm: req.body?.confirm === true, userId: req.user.id }))));
+router.get('/budget-caps', asyncRoute(async (req, res) => res.json({ caps: await getBudgetCaps() })));
+router.put('/budget-caps', ADMIN, asyncRoute(async (req, res) => res.json({ caps: await setBudgetCaps({ caps: req.body?.caps, confirm: req.body?.confirm === true, userId: req.user.id }) })));
+router.post('/smart-alerts/run', ADMIN, asyncRoute(async (req, res) => res.json(await runSmartAlerts({}))));
+router.get('/approvals', asyncRoute(async (req, res) => res.json(await listApprovals({}))));
+router.post('/approvals/bulk-preview', ADMIN, asyncRoute(async (req, res) => res.json(await bulkPreview({ ids: req.body?.decisionIds }))));
+// bulk approval: only low-risk actions that passed every check; the owner must confirm the EXACT count and exposed budget the server computed; a snapshot is saved; each campaign is re-validated live at its own execution
+router.post('/approvals/bulk', ADMIN, asyncRoute(async (req, res) => {
+  const pv = await bulkPreview({ ids: req.body?.decisionIds });
+  if (!pv.ok) return res.status(409).json({ ok: false, message: 'الموافقة الجماعية مش متاحة', blockers: pv.blockers, preview: pv });
+  const c = req.body?.confirm || {};
+  if (Number(c.count) !== pv.count || Math.abs(Number(c.exposedBudget) - pv.exposedBudget) >= 1) return res.status(400).json({ ok: false, message: 'لازم تأكد عدد الحملات والميزانية المعرضة للصرف بالأرقام الصحيحة', preview: pv });
+  res.json(await bulkApprove({ decisionIds: pv.items.map((i) => i.id), confirmedIds: pv.items.map((i) => i.id), userId: req.user.id }));
+}));
+router.get('/status-bar', asyncRoute(async (req, res) => res.json(await statusBar({}))));
+router.get('/brief', asyncRoute(async (req, res) => res.json(await buildOperatorBrief({ force: req.query.fresh === '1' }))));
+router.get('/monitoring', asyncRoute(async (req, res) => res.json({ actions: await listMonitoredActions({ limit: req.query.limit, days: req.query.days }) })));
 router.get('/production-readiness', asyncRoute(async (req, res) => res.json(await buildProductionReadiness({}))));
 router.get('/daily-plan/overview', asyncRoute(async (req, res) => res.json(await daily.getDailyOverview({ now: clockNow() }))));
 router.get('/daily-plan/due', asyncRoute(async (req, res) => res.json({ now: clockNow(), testClock: isTestClock(), popups: await daily.getDuePopups({ now: clockNow() }) })));

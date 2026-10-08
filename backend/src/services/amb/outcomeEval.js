@@ -10,7 +10,7 @@ import { logger } from '../../logger.js';
 import { codCountsForProduct } from './codOrders.js';
 import { netProfitBundle } from './productEconomics.js';
 
-const CHECKPOINT_HOURS = { H6: 6, H12: 12, H24: 24 };
+const CHECKPOINT_HOURS = { H6: 6, H12: 12, H24: 24, H48: 48 };
 
 function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
 

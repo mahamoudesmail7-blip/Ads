@@ -221,6 +221,8 @@ console.log('\nA6. deployment-level Meta write lock');
 console.log('\nB. DB-backed on disposable rows (executor injected; no Meta; no real alerts left)');
 const T = '__optest_';
 const origCfg = await S.getOperatorConfig();
+const rawLimits0 = (await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } })).limits_json; // these suites execute through an INJECTED executor with the deployment lock simulated open: the per-action permissions («صلاحيات التنفيذ») must be ON for that simulation and are restored exactly at the end
+await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify({ ...JSON.parse(rawLimits0 || '{}'), execPermissions: { open: true, pause: true, budgetIncrease: true, budgetDecrease: true } }) } });
 const created = { decisions: [], products: [], amb: [] };
 const mkDecision = async (o = {}) => {
   const row = await prisma.ambOperatorDecision.create({ data: { decision_key: `${T}${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, store_id: `${T}store`, ad_account_id: `${T}acc`, campaign_id: `${T}c1`, campaign_name: `${T}campaign`, action: 'SCALE_DOWN', rule_name: `${T}rb`, mode_at_decision: 'APPROVAL', status: 'PREPARED', confidence: 'HIGH', params_json: JSON.stringify({ rollbackOf: 1, fromBudget: 230, toBudget: 200, pct: 13, window: 'today' }), evidence_json: JSON.stringify({ rollbackOf: 1 }), why_json: JSON.stringify({ why: 't' }), ...o } });
@@ -390,7 +392,7 @@ ${prod.id},12abc,300` });
   fail++; console.log('  ✗ DB part crashed —', err.stack || err.message);
 } finally {
   try {
-    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at, limits_json: origCfg.limitsConfigured ? JSON.stringify(origCfg.limits) : null, store_limits_json: Object.keys(origCfg.storeLimits || {}).length ? JSON.stringify(origCfg.storeLimits) : null, autopilot_attest_json: Object.keys(origCfg.autopilotAttest || {}).length ? JSON.stringify(origCfg.autopilotAttest) : null } }));
+    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at, limits_json: rawLimits0, store_limits_json: Object.keys(origCfg.storeLimits || {}).length ? JSON.stringify(origCfg.storeLimits) : null, autopilot_attest_json: Object.keys(origCfg.autopilotAttest || {}).length ? JSON.stringify(origCfg.autopilotAttest) : null } }));
     const decIds = (await prisma.ambOperatorDecision.findMany({ where: { OR: [{ store_id: `${T}store` }, { decision_key: { startsWith: T } }, { campaign_id: { startsWith: T } }] }, select: { id: true } })).map((x) => x.id);
     const batches = decIds.map((i) => `operator-${i}`);
     await prisma.ambAction.deleteMany({ where: { recommendation: { batch_id: { in: batches } } } }).catch(() => {});

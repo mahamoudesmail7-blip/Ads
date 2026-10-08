@@ -12,7 +12,8 @@ const PROOF_AR = { READY: 'اتجرّبت فعليًا ✓', UNVERIFIED: 'لسه
 
 export async function drawPerms(body) {
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
-  const [p, rd] = await Promise.all([api.get('/api/operator/execution-permissions'), api.get('/api/operator/production-readiness').catch(() => null)]);
+  const [p, rd, bc] = await Promise.all([api.get('/api/operator/execution-permissions'), api.get('/api/operator/production-readiness').catch(() => null), api.get('/api/operator/budget-caps').catch(() => ({ caps: {} }))]);
+  const caps = bc.caps || {};
   const proof = (k) => rd?.functions?.find((f) => f.key === PROOF_KEY[k]);
   const lock = p.lock; const canExecute = !lock.writesLocked && lock.mode === 'APPROVAL' && !lock.emergencyStop;
   body.innerHTML = `<div class="pm-wrap">
@@ -31,9 +32,16 @@ export async function drawPerms(body) {
         <div class="pm-foot"><small>${last ? `آخر تغيير: ${last.on ? 'ON' : 'OFF'} · ${E(dt(last.at))}` : 'ما اتغيّرش من قبل'}</small>
           <button class="amb-btn ${on ? '' : 'orange'}" data-perm="${k}" data-on="${on ? 0 : 1}" ${S.isAdmin ? '' : 'disabled'} title="${S.isAdmin ? '' : 'ADMIN فقط'}">${on ? 'إيقاف الصلاحية' : 'تفعيل الصلاحية'}</button></div></div>`;
     }).join('')}</div>
+    <div class="pm-caps"><h3>💰 حدود الميزانية اليومية (Caps)</h3><div class="op-sub">سقف لإجمالي الميزانية اليومية. بتحدّ <b>الزيادة</b> بس (التقليل مش بيخالف أي حد). فاضي = بدون حد. تغييرها ADMIN + تأكيد + Audit.</div>
+      <div class="pm-capfields">${[['campaign', 'الحملة'], ['product', 'المنتج'], ['account', 'الحساب كله']].map(([k, l]) => `<label>${l}<input type="number" min="1" step="50" id="cap_${k}" value="${caps[k] ?? ''}" placeholder="بدون حد" ${S.isAdmin ? '' : 'disabled'}></label>`).join('')}<button class="amb-btn orange" id="capSave" ${S.isAdmin ? '' : 'disabled'}>حفظ الحدود</button></div></div>
     <details class="pm-hist"><summary>🧾 سجل التغييرات (${p.history.length})</summary>
       <ul class="dp-audit">${p.history.map((h) => `<li><time>${E(dt(h.at))}</time> ${E(h.note || '')} <small>(مستخدم #${h.actorId ?? '—'})</small></li>`).join('') || '<li>لا يوجد.</li>'}</ul></details>
   </div>`;
+  const saveBtn = body.querySelector('#capSave'); if (saveBtn) saveBtn.onclick = async () => {
+    const next = Object.fromEntries(['campaign', 'product', 'account'].map((k) => [k, body.querySelector(`#cap_${k}`).value.trim() === '' ? null : Number(body.querySelector(`#cap_${k}`).value)]));
+    if (!(await UI.confirmModal({ title: '💰 حفظ حدود الميزانية', message: `الحملة: ${next.campaign ?? 'بدون حد'} · المنتج: ${next.product ?? 'بدون حد'} · الحساب: ${next.account ?? 'بدون حد'}. أي زيادة ميزانية هتتجاوز حد منهم هتتمنع (مع إعادة التحقق لحظة التنفيذ).`, confirmLabel: 'حفظ' }))) return;
+    try { await api.put('/api/operator/budget-caps', { caps: next, confirm: true }); UI.toast('اتحفظت الحدود'); await drawPerms(body); } catch (e) { UI.toast(e.message, 'error'); }
+  };
   body.querySelectorAll('[data-perm]').forEach((b) => {
     b.onclick = async () => {
       const key = b.dataset.perm; const turnOn = b.dataset.on === '1'; const m = p.meta[key];

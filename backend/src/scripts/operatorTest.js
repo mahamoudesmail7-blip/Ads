@@ -222,6 +222,8 @@ ok('Emergency Stop ACTIVATION is open to managers but DEACTIVATION is ADMIN-only
 console.log('\nB. DB-backed on disposable rows (injected executor, no Meta)');
 const T = '__optest_';
 const origCfg = await S.getOperatorConfig();
+const rawLimits0 = (await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } })).limits_json; // these suites execute through an INJECTED executor with the deployment lock simulated open: the per-action permissions («صلاحيات التنفيذ») must be ON for that simulation and are restored exactly at the end
+await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify({ ...JSON.parse(rawLimits0 || '{}'), execPermissions: { open: true, pause: true, budgetIncrease: true, budgetDecrease: true } }) } });
 const created = { decisions: [], rules: [], exceptions: [], recs: [] };
 const mkDecisionRow = async (o = {}) => {
   const key = `${T}${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -421,7 +423,7 @@ try {
 } finally {
   // cleanup + restore exactly the original global config
   try {
-    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at } }));
+    await retryDb(() => prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { mode: origCfg.mode, emergency_stop: origCfg.emergency_stop, emergency_reason: origCfg.emergency_reason, emergency_at: origCfg.emergency_at, limits_json: rawLimits0 } }));
     const decIds = (await prisma.ambOperatorDecision.findMany({ where: { OR: [{ store_id: `${T}store` }, { decision_key: { startsWith: T } }] }, select: { id: true } })).map((x) => x.id);
     await prisma.ambAction.deleteMany({ where: { recommendation: { batch_id: { in: decIds.map((i) => `operator-${i}`) } } } }).catch(() => {});
     await prisma.ambRecommendation.deleteMany({ where: { batch_id: { in: decIds.map((i) => `operator-${i}`) } } });

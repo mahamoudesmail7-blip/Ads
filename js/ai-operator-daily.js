@@ -4,6 +4,7 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { E, $, num, egp, ago, dt, S, openDrawer, closeDrawer, drawerHead } from './ai-operator-core.js';
+import { drawBrief } from './ai-operator-approvals.js';
 
 const API = '/api/operator/daily-plan';
 const TYPE_META = {
@@ -17,7 +18,7 @@ const PLAN_CLS = { PREPARED: 'amber', APPROVED: 'blue', RUNNING: 'blue', COMPLET
 const RISK_CLS = { HIGH: 'red', MEDIUM: 'amber', LOW: 'green' }; const RISK_AR = { HIGH: 'مرتفعة', MEDIUM: 'متوسطة', LOW: 'منخفضة' };
 const STOCK_AR = { IN_STOCK: 'متاح', LOW_STOCK: 'قليل', OUT_OF_STOCK: 'نافد ⛔', STOCK_UNKNOWN: 'غير معروف ⚠️' };
 const ELIG_AR = { ELIGIBLE: '', PROTECTED: 'محمية', BLOCKED: 'ممنوعة', NEEDS_SPECIAL_APPROVAL: 'موافقة خاصة' };
-const BLOCK_AR = { MAPPING_UNMAPPED: 'غير مربوطة بمنتج', MAPPING_CONFLICT: 'ربط متعارض', EXTERNAL_STORE: 'متجر خارجي', STOCK_OUT: 'المخزون صفر', STALE_DATA: 'بيانات قديمة', UNKNOWN_STOP_REASON: 'اتوقفت لسبب غير معروف — محتاجة موافقة خاصة', EXCEPTION_NO_AUTOMATION: 'مستثناة', EXCEPTION_NO_AUTO_OPEN: 'مستثناة من الفتح', EXCEPTION_NO_AUTO_STOP: 'مستثناة من الإيقاف', WINNER_PROTECTED: 'Winner محمي' };
+const BLOCK_AR = { TESTING_PROTECTED: 'حملة اختبار/جديدة — محمية', RECENT_PURCHASE_PROTECTION: 'أوردر حديث — محمية', ATTRIBUTION_GRACE: 'فترة سماح الإسناد', MANUAL_OVERRIDE_COOLDOWN: 'تعديل يدوي حديث — Cooldown', COOLDOWN_ACTIVE: 'Cooldown شغال',  MAPPING_UNMAPPED: 'غير مربوطة بمنتج', MAPPING_CONFLICT: 'ربط متعارض', EXTERNAL_STORE: 'متجر خارجي', STOCK_OUT: 'المخزون صفر', STALE_DATA: 'بيانات قديمة', UNKNOWN_STOP_REASON: 'اتوقفت لسبب غير معروف — محتاجة موافقة خاصة', EXCEPTION_NO_AUTOMATION: 'مستثناة', EXCEPTION_NO_AUTO_OPEN: 'مستثناة من الفتح', EXCEPTION_NO_AUTO_STOP: 'مستثناة من الإيقاف', WINNER_PROTECTED: 'Winner محمي' };
 
 const D = { ov: null, pollRun: null, hiddenRows: {}, showAll: {}, saving: new Map(), seenPopup: new Set(), popupBusy: false, popupTimer: null, isAdmin: false, onOpenCenter: null };
 const m = (x) => (x ? `${num(x.cpa)}` : '—');
@@ -38,7 +39,7 @@ function openRow(it, editable) {
     <td>${cpaPair(e.m7, e.m30)}</td><td>${num(e.m7?.purchases)}<small> / ${num(e.m30?.purchases)}</small></td><td>${num(e.m7?.spend)}<small> / ${num(e.m30?.spend)}</small></td>
     <td>${egp(e.budget)}<small>${e.budgetLevel || ''}</small></td><td>${e.lastActiveDate ? E(e.lastActiveDate) : '—'}${e.pausedBy ? `<small>${{ DAILY_SCHEDULE: 'روتين يومي', SYSTEM: 'السيستم', MANUAL: 'يدوي', UNKNOWN_OLD: 'سبب غير معروف' }[e.pausedBy] || ''}</small>` : ''}</td>
     <td class="dp-adv">${e.advisor ? `${E(e.advisor.stageLabel || '—')}<small>${E(e.advisor.problemLabel || '')}</small>` : '—'}</td>
-    <td>${E(STOCK_AR[e.stock?.status] || 'غير معروف ⚠️')}</td><td><span class="op-pill ${RISK_CLS[it.risk] || 'gray'}">${RISK_AR[it.risk] || '—'}</span></td>
+    <td>${E(STOCK_AR[e.stock?.status] || 'غير معروف ⚠️')}</td><td>${scorePill(e)}</td><td><span class="op-pill ${RISK_CLS[it.risk] || 'gray'}">${RISK_AR[it.risk] || '—'}</span></td>
     <td class="dp-why">${E(it.reason || '')}${blocks.length ? `<small class="bad">🚫 ${E(blocks.join(' · '))}</small>` : ''}${warn.length ? `<small>⚠️ ${E(warn.join(' · '))}</small>` : ''}</td>${statusCell(it)}</tr>`;
 }
 function pauseRow(it, editable) {
@@ -54,17 +55,18 @@ function pauseRow(it, editable) {
     <td class="dp-adv">${e.advisor ? `${E(e.advisor.problemLabel || e.advisor.stageLabel || '—')}` : '—'}</td>
     <td>${e.attributionGraceHours != null ? `${e.attributionGraceHours}س` : '—'}<small>${rp != null ? `آخر أوردر من ${rp} د` : 'مفيش أوردر حديث'}</small></td>
     <td>${lbc ? `${E(lbc.action === 'SCALE_UP' ? '↑' : '↓')} ${lbc.from ?? ''}→${lbc.to ?? ''}<small>${ago(lbc.at)}</small>` : '—'}</td>
-    <td><span class="op-pill ${RISK_CLS[it.risk] || 'gray'}">${it.riskScore ?? ''} ${RISK_AR[it.risk] || ''}</span></td>
+    <td>${scorePill(e)}</td><td><span class="op-pill ${RISK_CLS[it.risk] || 'gray'}">${it.riskScore ?? ''} ${RISK_AR[it.risk] || ''}</span></td>
     <td class="dp-why">${E(it.reason || '')}${blocks.length ? `<small class="bad">🚫 ${E(blocks.join(' · '))}</small>` : ''}</td>${statusCell(it)}</tr>`;
 }
+const scorePill = (e) => { const p = e?.priority; if (!p) return '<small>—</small>'; const cls = { STRONG: 'green', GOOD: 'blue', FAIR: 'amber', WEAK: 'red' }[p.band] || 'gray'; const tip = [...p.reasons, '', p.caveat].join(String.fromCharCode(10)); return `<span class="op-pill ${cls}" title="${E(tip)}">${p.score}</span><small>${E(p.bandLabel)}</small>`; };
 const statusCell = (it) => (it.status && it.status !== 'PENDING' ? `<td><span class="op-pill ${ITEM_PILL[it.status] || 'gray'}">${ITEM_AR[it.status] || it.status}</span>${it.statusReason ? `<small>${E(it.statusReason)}</small>` : ''}</td>` : '<td><small>—</small></td>');
 
 function tableHtml(plan, { editable, limit = 40, compact = false } = {}) {
   const T = plan.type; const items = plan.items; const showAll = !!D.showAll[plan.id] || items.length <= limit;
   const rows = showAll ? items : items.filter((i) => i.selectable || i.selected).slice(0, limit);
   const head = T === 'OPEN'
-    ? '<th></th><th>#</th><th>المنتج / الحملة</th><th>CPA 7د/30د</th><th>أوردرات 7د/30د</th><th>صرف 7د/30د</th><th>ميزانية</th><th>آخر نشاط</th><th>Smart Advisor</th><th>المخزون</th><th>المخاطرة</th><th>السبب</th><th>حالة التنفيذ</th>'
-    : '<th></th><th>#</th><th>المنتج / الحملة</th><th>CPA اليوم<small> 3د · 7د · 30د</small></th><th>صرف اليوم</th><th>أوردرات اليوم</th><th>ميزانية</th><th>CTR / CPC / CVR</th><th>تشخيص Advisor</th><th>Grace / آخر أوردر</th><th>آخر تعديل ميزانية</th><th>درجة الخطر</th><th>السبب</th><th>حالة التنفيذ</th>';
+    ? '<th></th><th>#</th><th>المنتج / الحملة</th><th>CPA 7د/30د</th><th>أوردرات 7د/30د</th><th>صرف 7د/30د</th><th>ميزانية</th><th>آخر نشاط</th><th>Smart Advisor</th><th>المخزون</th><th>Score</th><th>المخاطرة</th><th>السبب</th><th>حالة التنفيذ</th>'
+    : '<th></th><th>#</th><th>المنتج / الحملة</th><th>CPA اليوم<small> 3د · 7د · 30د</small></th><th>صرف اليوم</th><th>أوردرات اليوم</th><th>ميزانية</th><th>CTR / CPC / CVR</th><th>تشخيص Advisor</th><th>Grace / آخر أوردر</th><th>آخر تعديل ميزانية</th><th>Score</th><th>درجة الخطر</th><th>السبب</th><th>حالة التنفيذ</th>';
   const tr = T === 'OPEN' ? openRow : pauseRow;
   return `<div class="table-wrap op-table-wrap"><table class="data dp-table ${compact ? 'compact' : ''}" data-plan="${plan.id}"><thead><tr>${head}</tr></thead><tbody>${rows.map((i) => tr(i, editable)).join('') || `<tr><td colspan="14" class="amb-empty">${E(TYPE_META[T].empty)}</td></tr>`}</tbody></table></div>
     ${!showAll ? `<div class="dp-more"><button class="amb-btn sm" data-showall="${plan.id}">عرض كل الحملات (${items.length}) — بما فيها المحمية والممنوعة</button></div>` : ''}`;
@@ -133,7 +135,9 @@ function readinessHtml(r) {
   if (!r) return '<div class="dp-note">⏳ جارِ حساب جاهزية التشغيل الفعلي…</div>';
   return `<details class="dp-ready"><summary>🧭 جاهزية التشغيل الفعلي على Meta — <span class="op-pill green">READY ${r.summary.READY}</span> <span class="op-pill amber">UNVERIFIED ${r.summary.UNVERIFIED}</span> <span class="op-pill red">BLOCKED ${r.summary.BLOCKED}</span></summary>
     <div class="op-sub">الحالة من أدلة فعلية على Meta فقط (تنفيذ حقيقي + قراءة مستقلة) — مش من نجاح الاختبارات المحلية. «بوابات مقفولة» = اللي لسه مقفول دلوقتي.</div>
-    <div class="table-wrap"><table class="data dp-rtable"><thead><tr><th>الوظيفة</th><th>على Meta فعليًا</th><th>جاهزية الكود (Mock)</th><th>الدليل</th><th>بوابات مقفولة</th></tr></thead><tbody>${r.functions.map((f) => `<tr><td><b>${E(f.label)}</b>${f.needsApproval ? '<small>محتاج موافقتك لكل تنفيذ</small>' : ''}</td><td><span class="op-pill ${RD_CLS[f.status] || 'gray'}">${RD_AR[f.status] || f.status}</span></td><td>${f.mockTested ? '<span class="op-pill blue" title="اتجرّب بالـExecutor الحقيقي ضد Meta وهمي — مش دليل على Meta الحقيقية">✓ اتجرّب بالـMock</span>' : '<small>—</small>'}</td><td class="dp-why">${E(f.note || '')}</td><td class="dp-why">${f.gates.length ? E(f.gates.join(' · ')) : '—'}</td></tr>`).join('')}</tbody></table></div></details>`;
+    <div class="table-wrap"><table class="data dp-rtable"><thead><tr><th>الوظيفة</th><th>على Meta فعليًا</th><th>جاهزية الكود (Mock)</th><th>الدليل</th><th>بوابات مقفولة</th></tr></thead><tbody>${r.functions.map((f) => `<tr><td><b>${E(f.label)}</b>${f.needsApproval ? '<small>محتاج موافقتك لكل تنفيذ</small>' : ''}</td><td><span class="op-pill ${RD_CLS[f.status] || 'gray'}">${RD_AR[f.status] || f.status}</span></td><td>${f.mockTested ? '<span class="op-pill blue" title="اتجرّب بالـExecutor الحقيقي ضد Meta وهمي — مش دليل على Meta الحقيقية">✓ اتجرّب بالـMock</span>' : '<small>—</small>'}</td><td class="dp-why">${E(f.note || '')}</td><td class="dp-why">${f.gates.length ? E(f.gates.join(' · ')) : '—'}</td></tr>`).join('')}</tbody></table></div>
+    <h4 style="margin:12px 0 4px">وحدات AI Operator 2.0 — جاهزية الكود (مش دليل على Meta)</h4>
+    <div class="table-wrap"><table class="data dp-rtable"><thead><tr><th>الوحدة</th><th>الحالة</th><th>الاختبارات</th><th>ملاحظة</th></tr></thead><tbody>${(r.modules || []).map((m) => `<tr><td><b>${E(m.label)}</b></td><td><span class="op-pill ${{ BUILT_TESTED: 'green', EXISTING: 'blue', PARTIAL: 'amber' }[m.state] || 'gray'}">${{ BUILT_TESTED: 'مبني ومُختبَر', EXISTING: 'موجود من قبل', PARTIAL: 'جزئي' }[m.state] || E(m.state)}</span></td><td class="dp-why">${E(m.tests)}</td><td class="dp-why">${E(m.note)}</td></tr>`).join('')}</tbody></table></div></details>`;
 }
 async function reload() { D.ov = await api.get(`${API}/overview`); if (D.popupPlan) D.popupPlan = D.ov.plans[D.popupPlan.type] || D.popupPlan; return D.ov; }
 async function showPreview(plan) {
@@ -201,6 +205,7 @@ function render(body) {
   body.innerHTML = `<div class="dp-wrap">
     <div class="dp-head"><div><h2>📅 جدول التشغيل اليومي</h2><div class="op-sub">علّم ✓ ثم اعتمد. مفيش تنفيذ قبل زر الاعتماد · القاهرة الآن <b>${E(o.cairo.hhmm)}</b>${o.testClock ? ' <span class="op-pill purple">ساعة افتراضية</span>' : ''}</div></div>
       <div class="dp-head-btns">${D.isAdmin ? `<button class="amb-btn sm orange" id="dpNewOpen">➕ إنشاء خطة فتح جديدة</button><button class="amb-btn sm orange" id="dpNewPause">➕ إنشاء خطة إيقاف جديدة</button><button class="amb-btn sm" id="dpPreview">🔮 معاينة بكرة</button><button class="amb-btn sm ${o.control.halted ? 'primary' : 'danger'}" id="dpHalt">${o.control.halted ? '▶️ استئناف الطابور' : '⏹ إيقاف الطابور (Kill Switch)'}</button>` : ''}<button class="amb-btn sm" id="dpRefresh">🔄 تحديث</button></div></div>
+    <details class="dp-ready" id="dpBriefBox"><summary>📰 الملخص اليومي (AI Brief)</summary><div id="dpBriefBody" class="op-sub">افتح الملخص عشان يتجهز…</div></details>
     <div id="dpReadiness">${readinessHtml(D.readiness)}</div>
     ${ext?.pending ? '<div class="dp-note">⏳ بيتفحص وجود روتين فتح/إيقاف خارجي (Meta rule) — حدّث الصفحة بعد دقيقة.</div>' : ''}
     ${ext?.detected ? `<div class="dp-note bad" title="${E(ext.note)}">⚠️ فيه روتين فتح/إيقاف يدوي ثابت (${ext.changes} تغيير على ${ext.campaigns} حملة آخر 7 أيام) — نسّقه مع الجدولين.</div>` : ''}
@@ -217,6 +222,7 @@ function render(body) {
   const rr = () => render(body);
   [...Object.values(o.plans), ...(o.oneOffPlans || [])].filter(Boolean).forEach((p) => { const sec = body.querySelector(`.dp-panel[data-plan="${p.id}"]`); if (sec) wirePlan(sec, p, rr); });
   $('dpRefresh').onclick = async () => { await reload(); rr(); };
+  const bb = $('dpBriefBox'); if (bb) bb.ontoggle = () => { if (bb.open && !bb.dataset.loaded) { bb.dataset.loaded = '1'; drawBrief($('dpBriefBody')); } };
   for (const [id, type] of [['dpNewOpen', 'OPEN'], ['dpNewPause', 'PAUSE']]) if ($(id)) $(id).onclick = async () => {
     if (!(await UI.confirmModal({ title: `➕ إنشاء خطة ${TYPE_META[type].verb} جديدة`, message: 'هتتجهز خطة مستقلة بكل الحملات المرشحة دلوقتي من بيانات Meta، ومفيش حاجة متحددة. خطة اليوم القديمة تفضل محفوظة زي ما هي. الاختيار والحفظ مش بينفّذوا حاجة — التنفيذ بس بزر «اعتماد وتنفيذ».', confirmLabel: 'إنشاء الخطة' }))) return;
     try { await api.post(`${API}/new`, { type }); UI.toast('بدأ تجهيز الخطة'); await reload(); rr(); pollPreparing(body); } catch (e) { UI.toast(e.message, 'error'); }

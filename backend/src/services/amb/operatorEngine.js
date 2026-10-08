@@ -7,6 +7,7 @@
 // check, the real Meta write and verify-after-write all stay in ONE place. This module never calls Meta itself.
 // Idempotent by construction: decision_key = hash(rule|campaign|action|cooldown-bucket) is UNIQUE, execution claims a decision with a
 // conditional update, and the executor has its own duplicate window — retries can never pause/open/scale twice.
+import { permissionFor, PERMISSION_META } from './executionPermissions.js';
 import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
@@ -303,6 +304,7 @@ export async function snoozeDecision({ decisionId, hours = 24 }) {
   if (r.count === 1) await transition(Number(decisionId), null, 'SNOOZED', { actor: 'USER', note: `until ${until.toISOString()}` });
   return { ok: r.count === 1, until };
 }
+export const permissionGate = (config, action) => { const need = permissionFor(action); return need && config.execPermissions && config.execPermissions[need] !== true ? `صلاحية «${PERMISSION_META[need].label}» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).` : null; };
 export async function approveDecision({ decisionId, userId, deps = {} }) {
   const row = await prisma.ambOperatorDecision.findUnique({ where: { id: Number(decisionId) } });
   if (!row) { const e = new Error('القرار غير موجود.'); e.status = 404; throw e; }
@@ -355,18 +357,19 @@ export async function executeDecision({ decisionId, source = 'USER', userId = nu
     }
   }
   const config = await getOperatorConfig();
-  let blockedReason = null, expire = false;
+  let blockedReason = null, expire = false, permissionKeep = false;
   if (config.emergency_stop) blockedReason = BLOCK_CODES.EMERGENCY_STOP.message;
   else if (config.mode === 'OFF') blockedReason = BLOCK_CODES.MODE_OFF.message;
   else if (config.mode === 'SHADOW') blockedReason = BLOCK_CODES.MODE_SHADOW_NO_EXECUTION.message;
   else if (config.writesLocked) blockedReason = BLOCK_CODES.META_WRITES_LOCKED.message; // deployment-level lock: no Meta write from the Operator unless explicitly unlocked
+  else if (permissionGate(config, row.action)) { blockedReason = permissionGate(config, row.action); permissionKeep = true; } // «صلاحيات التنفيذ»: each action type has its own switch (OFF by default); the decision stays PREPARED
   else if (!cand) { blockedReason = BLOCK_CODES.CONDITIONS_CHANGED.message; expire = true; }
   else if (expireReasons.length) { blockedReason = `القرار اتبطل — الأدلة/الحالة اتغيّرت: ${expireReasons.map((r) => `${r.code}${r.detail ? ` (${r.detail})` : ''}`).join('، ')}`; expire = true; }
   else if (cand.blocks.some((b) => b.severity === 'BLOCK' && b.code !== 'RULE_CONFLICT')) blockedReason = cand.primaryBlock?.message || 'ممنوع بحاجز أمان.';
   else if (isRollback && source === 'AUTOPILOT' && !config.limits.allowAutoRollback) blockedReason = 'الرجوع التلقائي مش مفعّل — محتاج موافقتك.';
   else if (!isRollback && source === 'AUTOPILOT' && !cand.canAutoExecute) blockedReason = 'Autopilot مش مسموح لهذا القرار (ثقة/أكشن/حد) — يفضل للموافقة.';
   if (blockedReason) {
-    const keep = source === 'AUTOPILOT' && row.status === 'PREPARED' && !expire;
+    const keep = (source === 'AUTOPILOT' && row.status === 'PREPARED' && !expire) || (permissionKeep && row.status === 'PREPARED');
     const to = keep ? 'PREPARED' : (expire ? 'EXPIRED' : 'BLOCKED');
     await prisma.ambOperatorDecision.update({ where: { id: row.id }, data: { status: to, error: blockedReason, error_category: expire ? 'GUARD' : null, blocked_codes_json: JSON.stringify((cand?.blocks || []).map((b) => ({ code: b.code, specCodes: b.specCodes, group: b.group, severity: b.severity, message: b.message, detail: b.detail || null }))) } });
     if (to !== row.status) await transition(row.id, row.status, to, { actor, actorId: userId, note: blockedReason, data: expireReasons.length ? { expireReasons } : null, campaignId: row.campaign_id });

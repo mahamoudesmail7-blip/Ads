@@ -134,7 +134,10 @@ export async function bulkApprove({ decisionIds, confirmedIds, userId, deps = {}
   if (!BULK_APPROVABLE_ACTIONS.includes(action)) { const e = new Error('الموافقة الجماعية متاحة بس للأكشنز منخفضة المخاطر (إيقاف / تقليل ميزانية).'); e.status = 400; throw e; }
   if (rows.some((r) => (j(r.blocked_codes_json, []) || []).some((b) => b.severity === 'BLOCK'))) { const e = new Error('فيه قرار عليه موانع — مش ممكن يتوافق عليه جماعيًا.'); e.status = 400; throw e; }
   const results = [];
-  for (const r of rows) { // sequential: every item re-validates and claims on its own (idempotent, atomic)
+  { const { bulkPreview, saveBulkSnapshot } = await import('./approvalCenter.js'); const pv = await bulkPreview({ ids, deps: { rows, config: deps.config || undefined } }); await saveBulkSnapshot({ preview: pv, userId }); } // the snapshot this bulk approval is based on (who / when / exactly which decisions + budgets)
+  const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))); let first = true;
+  for (const r of rows) { // sequential, >= 3s apart: every item re-validates live and claims on its own (idempotent, atomic)
+    if (!first) await sleep(3000); first = false;
     try { const x = await approveDecision({ decisionId: r.id, userId, deps }); results.push({ id: r.id, campaign: r.campaign_name, executed: !!x.executed, status: x.status, message: x.message }); }
     catch (err) { results.push({ id: r.id, campaign: r.campaign_name, executed: false, status: 'ERROR', message: err.message }); }
   }

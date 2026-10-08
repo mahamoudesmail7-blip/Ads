@@ -16,6 +16,8 @@ import { STAGE_LABEL_AR, PROBLEM_LABEL_AR } from './advisorPlan.js';
 
 const MS_H = 3_600_000;
 const round0 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v)));
+import { priorityScore } from './priorityScore.js';
+const syncAgeMin = async (deps = {}) => { try { const st = await (deps.syncStatus ? deps.syncStatus() : (await import('./snapshotSync.js')).getSyncStatus()); return st?.lastSuccessAt ? Math.max(0, Math.round((Date.now() - new Date(st.lastSuccessAt).getTime()) / 60_000)) : null; } catch { return null; } };
 const slim = (m) => (m ? { spend: round0(m.spend ?? 0), purchases: m.purchases ?? 0, cpa: m.cpa == null ? null : round0(m.cpa), ctr: m.ctr == null ? null : Math.round(m.ctr * 100) / 100, cpc: m.cpc == null ? null : Math.round(m.cpc * 100) / 100, cvr: m.conversionRate == null ? (m.cvr == null ? null : Math.round(m.cvr * 100) / 100) : Math.round(m.conversionRate * 100) / 100 } : { spend: 0, purchases: 0, cpa: null, ctr: null, cpc: null, cvr: null });
 
 // =====================================================================================================================
@@ -130,6 +132,7 @@ export async function buildOpenCandidates({ now = new Date(), deps = {} } = {}) 
   const origin = deps.origin || await loadPausedOrigin({ campaignIds: ids, recentByCampaign: recent, now, deps });
   const lastActive = await loadLastActiveDates(ids, deps);
   const structure = deps.structure || await loadBudgetStructureFromSnapshots({ adAccountId: world.adAccountId, campaignIds: ids, now });
+  const dataAgeMin = await syncAgeMin(deps);
   const items = []; let heavy = 0;
   for (const c of pool) {
     const ms = mapStates.get(c.id) || { state: 'UNMAPPED' };
@@ -157,7 +160,7 @@ export async function buildOpenCandidates({ now = new Date(), deps = {} } = {}) 
     items.push({
       campaignId: c.id, campaignName: (c.name || '').trim(), productId: cx.product?.id ?? null, productName: cx.product?.name || null, storeId: cx.storeId || null,
       eligibility, selectable: !blocks.length, selected: !blocks.length && !needsSpecial && rec.ok, blockCodes: blocks, warnings, risk: risk.level, riskScore: risk.score, rankScore: score, reason,
-      evidence: { status: 'PAUSED', m3, m7, m30, budget: bud.budget, budgetLevel: bud.level, adsets: bud.adsets ?? null, lastActiveDate: lastActive.get(c.id) || null, daysSinceActive: daysBetween(lastActive.get(c.id), now), pausedBy: po.origin, pausedAt: po.at ? new Date(po.at).toISOString() : null, stability: cpaStability({ m7, m30 }), tier: sampleTier(m30.purchases), recommended: rec.ok, notRecommendedBecause: rec.why, stock: cx.stock ? { status: cx.stock.status, current: cx.stock.currentStock ?? null } : null, mapping: ms.state, advisor: advisorSummary(cx.advisor) },
+      evidence: { status: 'PAUSED', priority: priorityScore({ m3, m7, m30, ageHours: null, dataAgeMin, blocks, warnings }), m3, m7, m30, budget: bud.budget, budgetLevel: bud.level, adsets: bud.adsets ?? null, lastActiveDate: lastActive.get(c.id) || null, daysSinceActive: daysBetween(lastActive.get(c.id), now), pausedBy: po.origin, pausedAt: po.at ? new Date(po.at).toISOString() : null, stability: cpaStability({ m7, m30 }), tier: sampleTier(m30.purchases), recommended: rec.ok, notRecommendedBecause: rec.why, stock: cx.stock ? { status: cx.stock.status, current: cx.stock.currentStock ?? null } : null, mapping: ms.state, advisor: advisorSummary(cx.advisor) },
     });
   }
   items.sort((a, b) => (b.selectable - a.selectable) || b.rankScore - a.rankScore);
@@ -177,6 +180,7 @@ export async function buildPauseCandidates({ now = new Date(), deps = {} } = {})
   const recent = deps.recent || await loadRecentActions({ campaignIds: ids, now, pendingHours: world.config.limits.pendingEvaluationHours });
   const lastChanges = deps.lastChanges || await loadLastBudgetChanges({ entityIds: ids, campaignIds: ids });
   const structure = deps.structure || await loadBudgetStructureFromSnapshots({ adAccountId: world.adAccountId, campaignIds: ids, now });
+  const dataAgeMin = await syncAgeMin(deps);
   const items = [];
   for (const c of active) {
     const rows = opt.rows.filter((r) => r.campaignId === c.id);
@@ -205,7 +209,7 @@ export async function buildPauseCandidates({ now = new Date(), deps = {} } = {})
       campaignId: c.id, campaignName: (c.name || '').trim(), productId: row?.productId ?? null, productName: row?.product || null, storeId: row?.storeId || null,
       eligibility, selectable: eligibility !== 'BLOCKED' && !winner && !blocks.length, selected: wouldPause, blockCodes: blocks, warnings: (row?.guards || []).filter((g) => /\[W\]/.test(g)).map((g) => g.split('[')[0]), risk: rk.level, riskScore: rk.score, rankScore: rk.score,
       reason: winner ? '🏆 Winner محمي — أداء قوي وعينة موثوقة' : blocks.length ? `ممنوع/محمي: ${blocks.join(' · ')}` : reasonParts.join(' · ') || 'أداء ضمن الحدود — مفيش سبب سياسة للإيقاف (اختيار يدوي فقط)',
-      evidence: { status: 'ACTIVE', today, m3, m7, m30, partialToday: true, budget: row?.entity?.budget ?? bud.budget, budgetLevel: row?.entity ? (row.entity.level === 'campaign' ? 'CBO' : 'ABO') : bud.level, decision: pauseRow?.decision || row?.decision || null, zone: row?.zone || null, rule: pauseRow?.rule || row?.rule || null, optimizerGuards: row?.guards || [], zeroLimit, attributionGraceHours: graceHours, campaignAgeHours: ageH, recentPurchaseMinutesAgo: recentMin, lastBudgetChange: lc ? { at: new Date(lc.at).toISOString(), action: lc.action, from: lc.from ?? null, to: lc.to ?? null, source: lc.source || null } : null, winner, protectedBy, mapping: ms.state, advisor: null, policyPause: wouldPause },
+      evidence: { status: 'ACTIVE', priority: priorityScore({ m3, m7, m30, ageHours: ageH, dataAgeMin, blocks, warnings: (row?.guards || []).filter((g) => /[W]/.test(g)).map((g) => g.split('[')[0]) }), today, m3, m7, m30, partialToday: true, budget: row?.entity?.budget ?? bud.budget, budgetLevel: row?.entity ? (row.entity.level === 'campaign' ? 'CBO' : 'ABO') : bud.level, decision: pauseRow?.decision || row?.decision || null, zone: row?.zone || null, rule: pauseRow?.rule || row?.rule || null, optimizerGuards: row?.guards || [], zeroLimit, attributionGraceHours: graceHours, campaignAgeHours: ageH, recentPurchaseMinutesAgo: recentMin, lastBudgetChange: lc ? { at: new Date(lc.at).toISOString(), action: lc.action, from: lc.from ?? null, to: lc.to ?? null, source: lc.source || null } : null, winner, protectedBy, mapping: ms.state, advisor: null, policyPause: wouldPause },
     });
   }
   // advisor view per campaign (the optimizer rows do not carry it): one cheap persisted-plan lookup per product

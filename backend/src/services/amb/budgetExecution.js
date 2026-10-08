@@ -19,6 +19,7 @@ import { evaluateBudgetOptimization, persistBudgetDecisions } from './budgetOpti
 import { raiseAlert } from './alerts.js';
 
 import { permissionFor, PERMISSION_META } from './executionPermissions.js';
+import { checkBudgetCaps } from './budgetCaps.js';
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 export const EXECUTABLE_ACTIONS = new Set(['SCALE_DOWN', 'SCALE_UP']); // budget reduce −20% and increase +20%: each ALSO needs its own «صلاحيات التنفيذ» switch (OFF by default) + every gate below
@@ -82,6 +83,7 @@ export async function prepareBudgetDecision({ campaignId, userId = null, now = n
   if (!EXECUTABLE_ACTIONS.has(row.intended.action) || row.decision !== EXPECTED_DECISION[row.intended.action] || row.wouldBe !== 'PREPARED' || row.primaryBlock) return { ok: false, reason: 'NOT_ACTIONABLE', message: `القرار الحالي ${row.decision} (${row.intended.action}) — مش قابل للتنفيذ.`, row };
   const needPerm = permissionFor(row.intended.action);
   if (needPerm && config.execPermissions && config.execPermissions[needPerm] !== true) return { ok: false, reason: 'PERMISSION_OFF', message: `صلاحية «${PERMISSION_META[needPerm].label}» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).`, row };
+  if (row.intended.action === 'SCALE_UP') { const cap = await checkBudgetCaps({ action: 'SCALE_UP', delta: (row.intended.toBudget ?? 0) - (row.intended.fromBudget ?? 0), adAccountId: res.adAccountId || row.adAccountId, campaignId, productId: row.productId ?? null, now, deps: deps.capsDeps || {} }); if (!cap.ok) return { ok: false, reason: 'BUDGET_CAP', message: `الزيادة هتتجاوز حدّ الميزانية: ${cap.violations.map((v) => `${v.label} (${v.after} > ${v.cap})`).join('، ')}`, violations: cap.violations, row }; }
   const p = await (deps.persist || persistBudgetDecisions)([row], { adAccountId: res.adAccountId || row.adAccountId || deps.adAccountId, mode: 'APPROVAL', now, expireStale: false });
   const dec = await prisma.ambOperatorDecision.findFirst({ where: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, campaign_id: campaignId, status: 'PREPARED' }, orderBy: { id: 'desc' } });
   return dec ? { ok: true, decisionId: dec.id, row, persisted: p } : { ok: false, reason: 'NOT_PERSISTED', message: 'القرار ما اتحفظش كـPREPARED.', row, persisted: p };
@@ -109,6 +111,8 @@ export async function executeBudgetDecision({ decisionId, userId, now = new Date
   const config = deps.config || await getOperatorConfig();
   const cb = configBlock(config, row.action);
   if (cb) { await transition(row.id, 'PREPARED', 'PREPARED', { actorId: userId, note: `BLOCKED_AT_GATE ${cb.code}`, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: cb.code, message: cb.message }; }
+
+  if (row.action === 'SCALE_UP') { const cap = await checkBudgetCaps({ action: 'SCALE_UP', delta: (params.toBudget ?? 0) - (params.fromBudget ?? 0), adAccountId: row.ad_account_id, campaignId: row.campaign_id, productId: row.product_id ?? null, now, deps: deps.capsDeps || {} }); if (!cap.ok) { const msg = `الزيادة هتتجاوز حدّ الميزانية: ${cap.violations.map((v) => `${v.label} (${v.after} > ${v.cap})`).join('، ')}`; await transition(row.id, 'PREPARED', 'PREPARED', { actorId: userId, note: `BLOCKED_AT_GATE BUDGET_CAP`, data: { violations: cap.violations }, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: 'BUDGET_CAP', message: msg, violations: cap.violations }; } }
 
   // 2. fresh LIVE re-evaluation — the same decision or nothing
   const res = await (deps.evaluate || ((o) => evaluateBudgetOptimization(o)))({ now, persist: false, live: true, only: { campaignIds: [row.campaign_id] }, ruleMode: 'APPROVAL' });

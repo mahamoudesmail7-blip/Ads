@@ -953,3 +953,13 @@ body { background: var(--amb-bg); }
 .pm-head { display: flex; justify-content: space-between; align-items: center; } .pm-head h3 { margin: 0; font-size: 15px; }
 .pm-warn { font-size: 12px; color: #b45309; } .pm-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; }
 .pm-hist summary { cursor: pointer; font-size: 12.5px; color: var(--amb-text-dim); font-weight: 700; }
+.mon-card { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 12px 14px; margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.mon-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; } .mon-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--amb-text-dim); }
+.mon-cps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; } @media (max-width: 720px) { .mon-cps { grid-template-columns: repeat(2, 1fr); } }
+.mon-cp { border: 1px dashed var(--amb-border); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; } .mon-cp.on { border-style: solid; } .mon-cp small { color: var(--amb-text-faint); font-size: 10.5px; line-height: 1.5; }
+.pm-caps { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 14px 16px; } .pm-caps h3 { margin: 0 0 4px; font-size: 15px; }
+.pm-capfields { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-top: 8px; } .pm-capfields label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--amb-text-dim); } .pm-capfields input { width: 150px; padding: 8px 10px; border: 1px solid var(--amb-border); border-radius: 10px; font-family: inherit; }
+.op2-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; } .op2-chip { border: 0; cursor: pointer; font-family: inherit; }
+.ap-plan { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 0; border-top: 1px dashed var(--amb-border); font-size: 13px; } .ap-btns { white-space: nowrap; display: flex; gap: 6px; }
+.brief-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 8px 0; } @media (max-width: 900px) { .brief-grid { grid-template-columns: 1fr; } }
+.brief-card { background: var(--amb-surface-2); border-radius: var(--amb-radius-sm); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; } .brief-k { font-size: 12px; color: var(--amb-text-dim); font-weight: 700; } .brief-v { font-size: 18px; } .brief-v ul { font-size: 12px; } .brief-card small { font-size: 10.5px; color: var(--amb-text-faint); line-height: 1.5; }

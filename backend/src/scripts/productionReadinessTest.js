@@ -37,6 +37,7 @@ try {
   ok('halted queue ⇒ Daily Scheduler BLOCKED', by(r, 'DAILY_SCHEDULER').status === 'BLOCKED');
   ok('Emergency Stop appears as a gate everywhere', (await PR.buildProductionReadiness({ deps: baseDeps({ config: { mode: 'APPROVAL', emergency_stop: true, writesLocked: false, autopilotAttest: {} } }) })).functions.filter((f) => f.needsApproval).every((f) => f.status === 'AUTOPILOT' || f.gates.some((g) => /Emergency/.test(g)) || f.key === 'AUTOPILOT'));
 
+  ok('AI Operator 2.0 module inventory: 12 modules, each with a state (BUILT_TESTED / EXISTING / PARTIAL), its tests and a note — and the two partial ones are said honestly', r.modules.length === 12 && r.modules.every((m) => ['BUILT_TESTED', 'EXISTING', 'PARTIAL'].includes(m.state) && m.tests && m.note) && r.modules.filter((m) => m.state === 'PARTIAL').map((m) => m.key).sort().join() === 'CREATIVE_INTEL,PROFIT_INTEL');
   console.log('\n2. Dashboard on the REAL system (evidence from the database)');
   const real = await PR.buildProductionReadiness({});
   const exec = await prisma.ambAction.findMany({ where: { execution_status: 'EXECUTED', action_type: { in: ['RESUME', 'PAUSE', 'INCREASE_BUDGET', 'DECREASE_BUDGET'] }, NOT: { OR: [{ entity_id: { startsWith: '__optest_' } }, { ad_account_id: { startsWith: '__optest_' } }] } }, select: { action_type: true, verify_json: true } });
@@ -93,7 +94,7 @@ try {
   await prisma.ambAction.deleteMany({ where: { recommendation_id: { in: recs.map((r) => r.id) } } }).catch(() => {});
   await prisma.ambRecommendation.deleteMany({ where: { id: { in: recs.map((r) => r.id) } } }).catch(() => {});
   await prisma.ambDailyPlan.deleteMany({ where: { id: { in: ids } } }).catch(() => {});
-  await prisma.ambAlert.deleteMany({ where: { OR: [{ campaign_id: { startsWith: T } }, { dedupe_key: { contains: '2031-07' } }] } }).catch(() => {});
+  await prisma.ambAlert.deleteMany({ where: { OR: [{ campaign_id: { startsWith: T } }, { entity_id: { startsWith: T } }, { title: { contains: T } }, { dedupe_key: { contains: '2031-07' } }] } }).catch(() => {});
   console.log(`\n${fail === 0 ? '✅' : '❌'} productionReadinessTest: ${pass} passed, ${fail} failed`);
   await prisma.$disconnect(); process.exit(fail ? 1 : 0);
 }

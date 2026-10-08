@@ -7,13 +7,15 @@ import { api } from './api-client.js';
 import { E, $, num, egp, ago, dt, S, MODES, ACTION_ICON, STATUS_CLS, CONF_AR, PROFIT_AR, openDrawer, closeDrawer, drawerHead, kpi, fld, condText, blockPanel, wireSetupButtons } from './ai-operator-core.js';
 import { drawDaily } from './ai-operator-daily.js';
 import { drawPerms } from './ai-operator-perms.js';
+import { drawMonitoring } from './ai-operator-monitor.js';
+import { drawApprovals, drawStatusChips } from './ai-operator-approvals.js';
 import { handleSetupAction, showProfile, showGate, showEvents, drawControl, drawReadiness, drawMapping, drawExcluded, drawHistory, drawPerformance } from './ai-operator-setup.js';
 
 const TABS = [
-  { key: 'control', label: '🧭 مركز التحكم' }, { key: 'daily', label: '📅 جدول التشغيل اليومي' }, { key: 'perms', label: '🔐 صلاحيات التنفيذ' }, { key: 'today', label: '📋 قرارات اليوم' }, { key: 'open', label: '▶️ جاهزة للفتح' }, { key: 'pause', label: '⏸️ مقترحة للإيقاف' }, { key: 'scale', label: '📈 فرص التوسع' },
+  { key: 'control', label: '🧭 مركز التحكم' }, { key: 'daily', label: '📅 جدول التشغيل اليومي' }, { key: 'approvals', label: '✅ القرارات والموافقات' }, { key: 'perms', label: '🔐 صلاحيات التنفيذ' }, { key: 'today', label: '📋 قرارات اليوم' }, { key: 'open', label: '▶️ جاهزة للفتح' }, { key: 'pause', label: '⏸️ مقترحة للإيقاف' }, { key: 'scale', label: '📈 فرص التوسع' },
   { key: 'excluded', label: '🚫 المستثناة' }, { key: 'rules', label: '⚙️ القواعد' }, { key: 'mapping', label: '🔗 ربط الحملات' }, { key: 'readiness', label: '🟢 جاهزية المنتجات' }, { key: 'history', label: '📜 سجل التنفيذ' }, { key: 'performance', label: '📊 أداء AI Operator' },
 ];
-const PRIMARY_TABS = ['daily', 'today', 'perms', 'control', 'history']; // everything else lives under «المزيد» so the screen stays calm
+const PRIMARY_TABS = ['daily', 'approvals', 'perms', 'history', 'control']; // everything else lives under «المزيد» so the screen stays calm
 const DECISION_TABS = ['today', 'open', 'pause', 'scale'];
 
 export function stopOperatorPolling() { if (S.poll) { clearInterval(S.poll); S.poll = null; } }
@@ -76,6 +78,7 @@ function drawTop() {
       </div>
       <button class="op-stop" id="opStop" ${stop ? 'disabled' : ''}>🛑 إيقاف فوري</button>
     </div>
+    <div class="op2-chips" id="opChips"></div>
     <div class="op2-kpis">
       <div class="op2-k blue"><b>${num(k.monitored)}</b><span>تحت المراقبة</span></div>
       <div class="op2-k green"><b>${num(k.readyToOpen)}</b><span>جاهزة للفتح</span></div>
@@ -87,6 +90,7 @@ function drawTop() {
       ${controlStrip(ov.control)}
       <div class="op2-row">${S.isAdmin ? '<button class="amb-btn sm" id="opEval" title="تقييم القواعد المفعّلة دلوقتي وتسجيل القرارات (مفيش تنفيذ في Shadow/بموافقتي)">🔄 قيّم الآن</button>' : ''}<span class="op-sub">القواعد: ${num(ov.rules.enabled)}/${num(ov.rules.total)} مفعّلة · الاستثناءات: ${num(ov.exceptions)} · ممنوعة بحاجز أمان: ${num(k.blockedBySafety)} · مستبعدة/محمية: ${num(k.excluded)} · أكشنز اليوم: ${num(k.actionsToday)} · تقييمات اليوم: ${num(k.evaluationsToday)} · جودة بيانات تمنع: ${num(k.blockedByDataQuality)} · آخر تشغيل مجدول: ${E(ov.scheduler?.lastRun ? ago(ov.scheduler.lastRun.at) : 'لسه')}</span></div>
     </details>`;
+  if ($('opChips')) drawStatusChips($('opChips'));
   $('opTop').querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => changeMode(b.dataset.mode); });
   $('opTop').querySelectorAll('[data-auto]').forEach((b) => { b.onclick = () => toggleAuto(b.dataset.auto, b.dataset.on !== '1'); });
   $('opStop').onclick = emergencyStop;
@@ -138,11 +142,12 @@ async function drawBody() {
     else if (S.tab === 'control') await drawControl(body);
     else if (S.tab === 'daily') await drawDaily(body);
     else if (S.tab === 'perms') await drawPerms(body);
+    else if (S.tab === 'approvals') await drawApprovals(body);
     else if (S.tab === 'excluded') await drawExcluded(body);
     else if (S.tab === 'rules') await drawRules(body);
     else if (S.tab === 'mapping') await drawMapping(body);
     else if (S.tab === 'readiness') await drawReadiness(body);
-    else if (S.tab === 'history') await drawHistory(body);
+    else if (S.tab === 'history') { const box = document.createElement('div'); box.id = 'opMonitor'; body.innerHTML = ''; body.appendChild(box); const rest = document.createElement('div'); body.appendChild(rest); await Promise.all([drawMonitoring(box), drawHistory(rest)]); }
     else if (S.tab === 'performance') await drawPerformance(body);
   } catch (e) { body.innerHTML = `<div class="amb-panel amb-empty">⚠️ ${E(e.message || e)}</div>`; } finally { S.busy = false; }
 }

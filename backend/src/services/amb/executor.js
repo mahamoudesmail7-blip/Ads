@@ -351,6 +351,7 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
         { action_id: action.id, checkpoint: 'H6', due_at: new Date(now + 6 * 3600 * 1000) },
         { action_id: action.id, checkpoint: 'H12', due_at: new Date(now + 12 * 3600 * 1000) },
         { action_id: action.id, checkpoint: 'H24', due_at: new Date(now + 24 * 3600 * 1000) },
+        { action_id: action.id, checkpoint: 'H48', due_at: new Date(now + 48 * 3600 * 1000) },
       ],
       skipDuplicates: true,
     });

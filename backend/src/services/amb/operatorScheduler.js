@@ -44,7 +44,9 @@ export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
   }
   await detectManualChanges({ now, throttleMin: 30 }).catch(() => null); // before any optimizer decision, so the owner's latest edit is already a cooldown
   // Dynamic Budget Optimizer: OFF by default (policy.enabled=false). When the owner enables it, it records SHADOW/PREPARED decisions with their action history; it never writes to Meta from here.
-  try { const pol = await getBudgetPolicy(); if (pol.enabled) { const r = await evaluateBudgetOptimization({ persist: true, now }); out.budgetOptimizer = { counts: r.counts, persisted: r.persisted }; } } catch (e) { out.budgetOptimizer = { error: e.message }; }
+  let optRows = [], optPolicy = null;
+  try { const pol = await getBudgetPolicy(); optPolicy = pol; if (pol.enabled) { const r = await evaluateBudgetOptimization({ persist: true, now }); optRows = r.rows || []; out.budgetOptimizer = { counts: r.counts, persisted: r.persisted }; } } catch (e) { out.budgetOptimizer = { error: e.message }; }
+  out.smartAlerts = await (await import('./smartAlerts.js')).runSmartAlerts({ now, rows: optRows.map((r) => ({ ...r, adAccountId: r.adAccountId || null })), policy: optPolicy }).catch((e) => ({ error: e.message })); // 10 operational situations → AmbAlert (deduped); raises alerts only, executes nothing
   // monitoring-side jobs always run (they only write the Operator's own rows / prepare rollbacks, never execute)
   out.manualOverrides = await detectManualOverrides({ now }).catch((e) => ({ error: e.message }));
   out.manualChanges = await detectManualChanges({ now, throttleMin: 30 }).catch((e) => ({ error: e.message })); // the owner's own edits in Meta Ads Manager -> MANUAL_OVERRIDE + cooldown (bounded: at most every 30 min)

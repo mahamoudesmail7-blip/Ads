@@ -20,6 +20,22 @@ async function provenBy(actionType, deps) {
   return { executed: rows.length, verified: ok.length, last: ok[0] ? { actionId: ok[0].id, name: ok[0].entity_name, at: ok[0].executed_at } : null };
 }
 
+/** AI Operator 2.0 module inventory — what is BUILT + TESTED in code vs what only EXISTS from before vs what is only PARTIAL. This is code-level status, NOT proof on Meta (the four operations above carry that). */
+export const OPERATOR_MODULES = [
+  { key: 'DAILY_OPS', label: 'مركز التشغيل اليومي (12 ص / 1 ظ + خطط مستقلة + معاينة)', state: 'BUILT_TESTED', tests: 'dailyPlanTest 129', note: 'شغال على Production — بيجهّز ويعرض وينفّذ بعد اعتمادك فقط' },
+  { key: 'FOUR_OPS', label: 'مسارات التنفيذ الأربعة (فتح / إيقاف / زيادة / تقليل) بالـExecutor الرسمي', state: 'BUILT_TESTED', tests: 'operationsMockTest 43 (Meta Mock)', note: 'اتجرّبت بالمحاكاة. على Meta الفعلية اتثبت التقليل فقط' },
+  { key: 'PRIORITY_SCORE', label: 'Priority Score 0–100 بأسباب واضحة', state: 'BUILT_TESTED', tests: 'priorityScoreTest 23', note: 'للترتيب والشرح فقط — مبيسمحش بتنفيذ' },
+  { key: 'BUDGET_POLICY_CAPS', label: 'سياسة الميزانية الذكية + Caps (حملة/منتج/حساب)', state: 'BUILT_TESTED', tests: 'budgetOptimizerTest 100 + budgetCapsAndAlertsTest 34', note: 'السياسة شغالة SHADOW. الـCaps بتحدّ الزيادة وبتتفحص وقت التجهيز ووقت التنفيذ' },
+  { key: 'PROTECTION', label: 'حماية Winners / فترة الاختبار / الإيقاف اليدوي', state: 'EXISTING', tests: 'operatorTest + dailyPlanTest', note: 'حواجز TESTING_PROTECTED وWinner وموافقة خاصة للمتوقفة يدويًا واستثناءات' },
+  { key: 'CREATIVE_INTEL', label: 'Creative Intelligence (CTR/CPC/CPM/Frequency + Fatigue)', state: 'PARTIAL', tests: 'incidentCenterTest', note: 'كشف Creative Fatigue موجود في Incident Center. مفيش لوحة موحدة لـFrequency/CPM داخل الـOperator بعد' },
+  { key: 'PROFIT_INTEL', label: 'Product Profit Intelligence (Break-even CPA / Profit After Ads)', state: 'PARTIAL', tests: 'productEconomics (موجود)', note: 'الحساب موجود في Product Economics. الـOperator بيعرض تحذير الاقتصاديات الناقصة بس، ومفيش لوحة ربح بعد الإعلانات داخله' },
+  { key: 'POST_ACTION_MONITOR', label: 'مراقبة ما بعد التنفيذ (6/12/24/48 س + اقتراح رجوع)', state: 'BUILT_TESTED', tests: 'postActionMonitoringTest 22', note: 'الرجوع اقتراح فقط ومبيتنفذش تلقائيًا' },
+  { key: 'SMART_ALERTS', label: 'التنبيهات الذكية (10 حالات بدون تكرار)', state: 'BUILT_TESTED', tests: 'budgetCapsAndAlertsTest 34', note: 'بتشتغل كل دورة Operator وبتستخدم AmbAlert. تنبيهات داخل السيستم فقط (مفيش قناة خارجية)' },
+  { key: 'AI_BRIEF', label: 'الملخص اليومي (كل رقم بمصدره وفترته)', state: 'BUILT_TESTED', tests: 'approvalCenterTest 37', note: 'مشتريات Meta مش أوردرات مسلّمة. أول تحميل بياخد حوالي 20–35 ثانية (بعدها كاش 5 دقايق)' },
+  { key: 'APPROVAL_CENTER', label: 'مركز الموافقات + الموافقة الجماعية بSnapshot', state: 'BUILT_TESTED', tests: 'approvalCenterTest 37', note: 'الجماعي لإيقاف/تقليل فقط، بتأكيد العدد والميزانية المعرضة وفاصل 3 ثوان وإعادة تحقق لكل حملة' },
+  { key: 'UI_2', label: 'واجهة 2.0 (شريط حالة + أقسام + تفاصيل عند الطلب)', state: 'BUILT_TESTED', tests: 'تحقق يدوي على المتصفح', note: 'عربي RTL، التفاصيل المتقدمة مطوية' },
+];
+
 export async function buildProductionReadiness({ now = new Date(), deps = {} } = {}) {
   const cfg = deps.config || await getOperatorConfig(); const s = deps.settings || await getAmbSettings(); const dcfg = deps.dcfg || await getDailyPlanConfig();
   const policy = deps.policy || await getBudgetPolicy();
@@ -52,5 +68,5 @@ export async function buildProductionReadiness({ now = new Date(), deps = {} } =
   const MOCK = { CAMPAIGN_OPEN: 'RESUME', CAMPAIGN_PAUSE: 'PAUSE', BUDGET_INCREASE: 'INCREASE_BUDGET', BUDGET_REDUCE: 'DECREASE_BUDGET' };
   for (const f of fn) if (MOCK[f.key]) f.mockTested = { suite: 'operationsMockTest', action: MOCK[f.key], covers: ['Live Read', 'Guards', 'ADMIN Approval', 'ONE Meta write', 'Independent Read-back', 'Audit', 'Cooldown / Duplicate prevention', 'Failure modes (rate limit / not applied)'] }; // proven against a local Meta MOCK only
   const count = (st) => fn.filter((f) => f.status === st).length;
-  return { generatedAt: now, summary: { READY: count('READY'), BLOCKED: count('BLOCKED'), UNVERIFIED: count('UNVERIFIED') }, functions: fn, control: { execPermissions: P, mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: cfg.writesLocked, autoToggles: toggles, budgetPolicyEnabled: !!policy.enabled, dailyPlan: { allowOpen: dcfg.allowOpen, allowPause: dcfg.allowPause, scheduledExecution: dcfg.scheduledExecution.enabled, halted: dcfg.halted } } };
+  return { modules: OPERATOR_MODULES, generatedAt: now, summary: { READY: count('READY'), BLOCKED: count('BLOCKED'), UNVERIFIED: count('UNVERIFIED') }, functions: fn, control: { execPermissions: P, mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: cfg.writesLocked, autoToggles: toggles, budgetPolicyEnabled: !!policy.enabled, dailyPlan: { allowOpen: dcfg.allowOpen, allowPause: dcfg.allowPause, scheduledExecution: dcfg.scheduledExecution.enabled, halted: dcfg.halted } } };
 }
