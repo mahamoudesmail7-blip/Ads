@@ -939,3 +939,4 @@ body { background: var(--amb-bg); }
 .op2-menu-list .amb-fbtn { text-align: start; width: 100%; }
 .dp-head h2 { font-size: 18px; }
 @media (max-width: 720px) { .op2-kpis { grid-template-columns: repeat(2, 1fr); } .op2-modes { justify-content: flex-start; } .op2-bar .op-stop { margin-inline-start: 0; } }
+@media (max-width: 720px) { .op2-menu-list { position: fixed; inset-inline: 12px; top: auto; bottom: 76px; max-height: 60vh; overflow-y: auto; z-index: 60; min-width: 0; } }
