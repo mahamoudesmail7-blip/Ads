@@ -14,6 +14,8 @@ import { dirname, join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { validateTestUrl, MARKER_ID } from './_testGuardCore.js';
 
+export const TEST_OWNER_EMAIL = 'test-owner@example.invalid';
+export const TEST_OWNER_PASSWORD = 'Test-Owner-Only-2026!';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dotenv = (key) => { try { const m = readFileSync(join(__dirname, '../../.env'), 'utf8').match(new RegExp('^' + key + '="?([^"\\r\\n]*)"?\\s*$', 'm')); return m ? m[1] : ''; } catch { return ''; } };
 const testUrl = () => (process.env.TEST_DATABASE_URL || dotenv('TEST_DATABASE_URL')).trim();
@@ -50,10 +52,13 @@ export async function seedTestDatabase({ log = console.log } = {}) {
       await db.ambProduct.upsert({ where: { product_id: p.id }, update: {}, create: { product_id: p.id, product_name: p.product_name, product_cost: p.product_cost } });
     }
     log('seeded 3 fixture products (+ ambProduct rows)');
-    if (!(await db.user.findUnique({ where: { id: 1 } }))) {
-      await db.user.create({ data: { id: 1, email: 'test-owner@example.invalid', password_hash: 'x'.repeat(20), name: 'TEST OWNER (isolated database)', role: 'ADMIN', status: 'ACTIVE', permissions: '{}', is_owner: true } });
-      log('seeded user #1 (ADMIN, test account)');
-    }
+    // A TEST login for the localhost UI checks of the ISOLATED database only (a fixed, documented test credential — never valid on any real account/database).
+    const testPw = TEST_OWNER_PASSWORD;
+    const { default: bcrypt } = await import('bcryptjs');
+    const password_hash = await bcrypt.hash(testPw, 10);
+    const owner = { email: 'test-owner@example.invalid', password_hash, name: 'TEST OWNER (isolated database)', role: 'ADMIN', status: 'ACTIVE', permissions: '{}', is_owner: true };
+    await db.user.upsert({ where: { id: 1 }, update: { password_hash }, create: { id: 1, ...owner } });
+    log('seeded user #1 (ADMIN, test account)');
   } finally { await db.$disconnect(); }
 }
 
