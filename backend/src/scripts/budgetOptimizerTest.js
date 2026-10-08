@@ -265,13 +265,14 @@ try {
   const mkUser = async (role, tag) => { const u = await prisma.user.create({ data: { email: `${T}bo_${tag}_${Date.now()}@example.invalid`, password_hash: 'x'.repeat(20), name: `${T}${tag}`, role, status: 'ACTIVE', permissions: '{}' } }); created.users.push(u.id); return { user: u, token: jwt.sign({ id: u.id, role: u.role }, process.env.JWT_SECRET, { expiresIn: '1h' }) }; };
   const admin = await mkUser('ADMIN', 'admin'), mgr = await mkUser('MANAGER', 'mgr');
   let c = await call('GET', '/budget-optimizer/policy', undefined, mgr.token);
-  ok('MANAGER reads the policy; it is DISABLED on a fresh system', c.status === 200 && c.json.policy.enabled === false && c.json.policy.scale.maxCpa === 80);
+  const ownerEnabled = (await (await import(pathToFileURL(join(__dirname, '../services/amb/budgetOptimizer.js')).href)).getBudgetPolicy()).enabled; // the owner may have enabled the policy (SHADOW) on the real system — the route must simply report the stored state
+  ok('MANAGER reads the policy; DISABLED by default (code default) and the route reports the stored state', c.status === 200 && c.json.policy.enabled === ownerEnabled && c.json.policy.scale.maxCpa === 80 && (await import(pathToFileURL(join(__dirname, '../services/amb/budgetOptimizer.js')).href)).DEFAULT_POLICY.enabled === false);
   c = await call('PUT', '/budget-optimizer/policy', { scale: { pct: 15 } }, mgr.token);
   ok('MANAGER cannot change it (403)', c.status === 403);
   c = await call('PUT', '/budget-optimizer/policy', { scale: { maxCpa: 170 } }, admin.token);
   ok('an invalid policy (scale line above the reduce zone) => 400, nothing saved', c.status === 400 && (await BO.getBudgetPolicy()).scale.maxCpa === 80);
   c = await call('PUT', '/budget-optimizer/policy', { scale: { pct: 15 } }, admin.token);
-  ok('ADMIN edits a threshold (audited); other defaults stay; still disabled', c.status === 200 && c.json.policy.scale.pct === 15 && c.json.policy.scale.maxCpa === 80 && c.json.policy.enabled === false);
+  ok('ADMIN edits a threshold (audited); other defaults stay; the enabled flag is untouched', c.status === 200 && c.json.policy.scale.pct === 15 && c.json.policy.scale.maxCpa === 80 && c.json.policy.enabled === ownerEnabled);
   c = await call('GET', '/budget-optimizer/history?limit=5', undefined, mgr.token);
   ok('history route is readable', c.status === 200 && Array.isArray(c.json.history));
   server.close();

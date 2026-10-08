@@ -80,7 +80,7 @@ async function saveSelection(planId, selections, rerender, special = []) {
     replacePlan(r.plan); rerender();
   } catch (e) { UI.toast(e.message, 'error'); await reload(); rerender(); }
 }
-function replacePlan(p) { if (!D.ov) return; D.ov.plans[p.type] = p; if (D.popupPlan && D.popupPlan.type === p.type) D.popupPlan = p; }
+function replacePlan(p) { if (!D.ov) return; const oi = (D.ov.oneOffPlans || []).findIndex((x) => x.key === p.key); if (oi >= 0) { D.ov.oneOffPlans[oi] = p; return; } D.ov.plans[p.type] = p; if (D.popupPlan && D.popupPlan.type === p.type) D.popupPlan = p; }
 function wirePlan(root, plan, rerender) {
   root.querySelectorAll('.dp-chk').forEach((c) => { c.onchange = async () => {
     const it = plan.items.find((x) => x.campaignId === c.dataset.cid); let special = [];
@@ -119,8 +119,15 @@ async function cancelPlan(plan, rerender) {
 }
 function pollRunning(rerender) {
   clearTimeout(D.pollRun);
-  const tick = async () => { await reload(); rerender(); if (Object.values(D.ov.plans).some((p) => p && ['APPROVED', 'RUNNING'].includes(p.status))) D.pollRun = setTimeout(tick, 3000); };
+  const tick = async () => { await reload(); rerender(); if ([...Object.values(D.ov.plans), ...(D.ov.oneOffPlans || [])].some((p) => p && ['APPROVED', 'RUNNING'].includes(p.status))) D.pollRun = setTimeout(tick, 3000); };
   D.pollRun = setTimeout(tick, 2500);
+}
+const RD_CLS = { READY: 'green', BLOCKED: 'red', UNVERIFIED: 'amber' }; const RD_AR = { READY: 'READY', BLOCKED: 'BLOCKED', UNVERIFIED: 'UNVERIFIED' };
+function readinessHtml(r) {
+  if (!r) return '<div class="dp-note">⏳ جارِ حساب جاهزية التشغيل الفعلي…</div>';
+  return `<details class="dp-ready"><summary>🧭 جاهزية التشغيل الفعلي على Meta — <span class="op-pill green">READY ${r.summary.READY}</span> <span class="op-pill amber">UNVERIFIED ${r.summary.UNVERIFIED}</span> <span class="op-pill red">BLOCKED ${r.summary.BLOCKED}</span></summary>
+    <div class="op-sub">الحالة من أدلة فعلية على Meta فقط (تنفيذ حقيقي + قراءة مستقلة) — مش من نجاح الاختبارات المحلية. «بوابات مقفولة» = اللي لسه مقفول دلوقتي.</div>
+    <div class="table-wrap"><table class="data dp-rtable"><thead><tr><th>الوظيفة</th><th>الحالة</th><th>الدليل</th><th>بوابات مقفولة</th></tr></thead><tbody>${r.functions.map((f) => `<tr><td><b>${E(f.label)}</b>${f.needsApproval ? '<small>محتاج موافقتك لكل تنفيذ</small>' : ''}</td><td><span class="op-pill ${RD_CLS[f.status] || 'gray'}">${RD_AR[f.status] || f.status}</span></td><td class="dp-why">${E(f.note || '')}</td><td class="dp-why">${f.gates.length ? E(f.gates.join(' · ')) : '—'}</td></tr>`).join('')}</tbody></table></div></details>`;
 }
 async function reload() { D.ov = await api.get(`${API}/overview`); if (D.popupPlan) D.popupPlan = D.ov.plans[D.popupPlan.type] || D.popupPlan; return D.ov; }
 async function showAudit(planId) {
@@ -169,23 +176,28 @@ function ctlStrip() {
 export async function drawDaily(body) {
   D.isAdmin = S.isAdmin; body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   await reload(); render(body);
-  if (Object.values(D.ov.plans).some((p) => p && ['APPROVED', 'RUNNING'].includes(p.status))) pollRunning(() => { const b = $('opBody'); if (b && S.tab === 'daily') render(b); });
+  api.get('/api/operator/production-readiness').then((r) => { D.readiness = r; const el = $('dpReadiness'); if (el) el.innerHTML = readinessHtml(r); }).catch(() => {});
+  if ([...Object.values(D.ov.plans), ...(D.ov.oneOffPlans || [])].some((p) => p && ['APPROVED', 'RUNNING'].includes(p.status))) pollRunning(() => { const b = $('opBody'); if (b && S.tab === 'daily') render(b); });
 }
 function render(body) {
   const o = D.ov; const d = o.dashboard; const ext = o.externalSchedule;
   body.innerHTML = `<div class="dp-wrap">
-    <div class="dp-head"><div><h2>📅 جدول التشغيل اليومي</h2><div class="op-sub">خطتين يوميًا بتوقيت القاهرة: فتح 12:00 ص — إيقاف 1:00 ظ. الاختيار بالـCheckbox بس بيحدد؛ الاعتماد بزرار الاعتماد فقط. الوقت الحالي بالقاهرة: <b>${E(o.cairo.hhmm)}</b> (${E(o.date)})${o.testClock ? ' <span class="op-pill purple">ساعة افتراضية</span>' : ''}</div></div>
+    <div class="dp-head"><div><h2>📅 جدول التشغيل اليومي</h2><div class="op-sub">علّم ✓ ثم اعتمد. مفيش تنفيذ قبل زر الاعتماد · القاهرة الآن <b>${E(o.cairo.hhmm)}</b>${o.testClock ? ' <span class="op-pill purple">ساعة افتراضية</span>' : ''}</div></div>
       <div class="dp-head-btns">${D.isAdmin ? `<button class="amb-btn sm" id="dpPreview">🔮 معاينة بكرة</button><button class="amb-btn sm ${o.control.halted ? 'primary' : 'danger'}" id="dpHalt">${o.control.halted ? '▶️ استئناف الطابور' : '⏹ إيقاف الطابور (Kill Switch)'}</button>` : ''}<button class="amb-btn sm" id="dpRefresh">🔄 تحديث</button></div></div>
-    ${ctlStrip()}
+    <div id="dpReadiness">${readinessHtml(D.readiness)}</div>
     ${ext?.pending ? '<div class="dp-note">⏳ بيتفحص وجود روتين فتح/إيقاف خارجي (Meta rule) — حدّث الصفحة بعد دقيقة.</div>' : ''}
-    ${ext?.detected ? `<div class="dp-note bad">⚠️ <b>تعارض محتمل مع روتين خارجي:</b> ${E(ext.note)} (${ext.changes} تغيير على ${ext.campaigns} حملة آخر 7 أيام).</div>` : ''}
-    <div class="amb-kpis op-kpis">
-      ${kpiBox('مقترح فتحها', d.openProposed, 'blue')}${kpiBox('مقترح إيقافها', d.pauseProposed, 'amber')}${kpiBox('المختارة الآن', d.selected, 'green')}${kpiBox('محمية / ممنوعة', d.protectedCount, 'purple')}${kpiBox('ميزانيات الفتح المخططة', egp(d.plannedOpenBudget), 'blue', true)}${kpiBox('مخاطرة الخطة', { HIGH: 'مرتفعة', MEDIUM: 'متوسطة', LOW: 'منخفضة' }[d.risk] || '—', d.risk === 'HIGH' ? 'red' : d.risk === 'MEDIUM' ? 'amber' : 'green', true)}
-      ${kpiBox('التنفيذ القادم', `${d.nextDue.label.split(' — ')[0]} · ${hmCairo(d.nextDue.at)}`, 'gray', true, timeAr(d.nextDue.at))}${kpiBox('آخر خطة', d.lastPlan ? `${PLAN_AR[d.lastPlan.status] || d.lastPlan.status}` : '—', 'gray', true, d.lastPlan ? `${d.lastPlan.type === 'OPEN' ? 'فتح' : 'إيقاف'} ${d.lastPlan.date}` : '')}</div>
+    ${ext?.detected ? `<div class="dp-note bad" title="${E(ext.note)}">⚠️ فيه روتين فتح/إيقاف يدوي ثابت (${ext.changes} تغيير على ${ext.campaigns} حملة آخر 7 أيام) — نسّقه مع الجدولين.</div>` : ''}
+    <div class="op2-kpis">
+      <div class="op2-k blue"><b>${num(d.openProposed)}</b><span>مرشحة للفتح</span></div>
+      <div class="op2-k amber"><b>${num(d.pauseProposed)}</b><span>مرشحة للإيقاف</span></div>
+      <div class="op2-k green"><b>${num(d.selected)}</b><span>المختارة ✓</span></div>
+      <div class="op2-k gray"><b>${E(hmCairo(d.nextDue.at))}</b><span>${E(d.nextDue.label.split(' — ')[0])} القادم</span></div>
+    </div>
     <div class="dp-grid">${panelHtml('OPEN', o.plans.OPEN)}${panelHtml('PAUSE', o.plans.PAUSE)}</div>
-    <div class="dp-foot op-sub">🔔 ${E(o.notifications.note)} · لا يوجد تنفيذ تلقائي بدون اعتماد: الجدول بيتجهز ويظهر كـPopup، والتنفيذ مش بيبدأ إلا بضغطة اعتماد ADMIN. أي تعديل بعد الاعتماد بيعمل نسخة جديدة والقديمة بتتلغي.</div></div>`;
+    ${(o.oneOffPlans || []).length ? `<div class="dp-note">🧪 خطط اختبار بحملة واحدة (طلبتها بنفسك) — نفس بوابات الأمان والاعتماد، ومش بتأثر على خطة اليوم.</div><div class="dp-grid">${o.oneOffPlans.map((p) => panelHtml(p.type, p)).join('')}</div>` : ''}
+    <div class="dp-foot op-sub">الخطة بتتجهز وتظهر كـPopup، والتنفيذ مش بيبدأ إلا بضغطة اعتماد منك. أي تعديل بعد الاعتماد = نسخة جديدة.</div></div>`;
   const rr = () => render(body);
-  Object.values(o.plans).filter(Boolean).forEach((p) => { const sec = body.querySelector(`.dp-panel[data-plan="${p.id}"]`); if (sec) wirePlan(sec, p, rr); });
+  [...Object.values(o.plans), ...(o.oneOffPlans || [])].filter(Boolean).forEach((p) => { const sec = body.querySelector(`.dp-panel[data-plan="${p.id}"]`); if (sec) wirePlan(sec, p, rr); });
   $('dpRefresh').onclick = async () => { await reload(); rr(); };
   if ($('dpHalt')) $('dpHalt').onclick = async () => { try { await api.post(`${API}/halt`, { halted: !o.control.halted }); UI.toast('تم'); await reload(); rr(); } catch (e) { UI.toast(e.message, 'error'); } };
   if ($('dpPreview')) $('dpPreview').onclick = async () => { const r = await api.get(`${API}/preview-tomorrow`); openDrawer(`${drawerHead('🔮 معاينة بكرة — مش متخزنة')}<div class="amb-drawer-body"><div class="op-sub">كده الشكل لو الخطة اتجهزت دلوقتي. مفيش حاجة اتحفظت ولا اتنفذت.</div>${['OPEN', 'PAUSE'].map((t) => `<h4>${TYPE_META[t].icon} ${TYPE_META[t].title}: ${r[t].count} حملة (${r[t].selected} مختارة)</h4><ul class="dp-audit">${r[t].top.map((x) => `<li>#${x.rank} <b>${E(x.campaignName)}</b> ${x.selected ? '✓' : '✗'} <small>${E(x.reason || '')}</small></li>`).join('')}</ul>`).join('')}</div>`); };

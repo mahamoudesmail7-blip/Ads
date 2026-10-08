@@ -65,6 +65,7 @@ try {
   ok('sample tiers A/B/C/D', DC.sampleTier(25) === 'A' && DC.sampleTier(10) === 'B' && DC.sampleTier(4) === 'C' && DC.sampleTier(1) === 'D');
   const one = DC.openRecommended({ m7: { purchases: 1, cpa: 40 }, m30: { purchases: 1, cpa: 40 } }); ok('1 order @ CPA 40 is NOT recommended', one.ok === false);
   ok('20 orders @ CPA 75 is recommended', DC.openRecommended({ m7: { purchases: 6, cpa: 80 }, m30: { purchases: 20, cpa: 75 } }).ok === true);
+  ok('a good 30-day CPA does not hide a bad recent week (806 CPA on 1 order / 0 orders on real spend) → not recommended', DC.openRecommended({ m7: { purchases: 1, cpa: 806, spend: 806 }, m30: { purchases: 51, cpa: 145 } }).ok === false && DC.openRecommended({ m7: { purchases: 0, cpa: null, spend: 400 }, m30: { purchases: 30, cpa: 100 } }).ok === false && DC.openRecommended({ m7: { purchases: 6, cpa: 80, spend: 480 }, m30: { purchases: 20, cpa: 75 } }).ok === true);
   ok('volatile CPA (7d vs 30d far apart) is not recommended', DC.openRecommended({ m7: { purchases: 4, cpa: 200 }, m30: { purchases: 20, cpa: 80 } }).ok === false);
   ok('CPA ≥ 150 is not recommended', DC.openRecommended({ m7: { purchases: 6, cpa: 160 }, m30: { purchases: 20, cpa: 155 } }).ok === false);
   ok('a deep sample at a good CPA outranks a thin sample at a great CPA', DC.openScore({ m7: { purchases: 6, cpa: 80 }, m30: { purchases: 25, cpa: 78 } }) > DC.openScore({ m7: { purchases: 1, cpa: 30 }, m30: { purchases: 2, cpa: 30 } }));

@@ -21,7 +21,7 @@ export const PROFIT_AR = { PROFITABLE: 'مربح', MARGIN_THIN: 'هامش ضعي
 export const READY_CLS = { READY: 'green', PARTIAL: 'amber', BLOCKED: 'red' };
 
 /** shared mutable UI state + callbacks the main module registers (avoids a circular import) */
-export const S = { tab: 'control', ov: null, cfg: null, isAdmin: false, panel: null, busy: false, evaluating: false, poll: null, mapFocus: null, hooks: {} };
+export const S = { tab: 'daily', ov: null, cfg: null, isAdmin: false, panel: null, busy: false, evaluating: false, poll: null, mapFocus: null, hooks: {} };
 
 export function openDrawer(html) { $('ambDrawerPanel').innerHTML = html; $('ambDrawerOverlay').classList.add('open'); const c = $('opDrawerClose'); if (c) c.onclick = closeDrawer; }
 export function closeDrawer() { $('ambDrawerOverlay').classList.remove('open'); }

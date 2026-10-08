@@ -15,6 +15,7 @@ import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetActionHistory } from '../services/amb/budgetOptimizer.js';
 import { prepareBudgetDecision } from '../services/amb/budgetExecution.js';
 import * as daily from '../services/amb/dailyPlans.js';
+import { buildProductionReadiness } from '../services/amb/productionReadiness.js';
 import { setTestClock, clockNow, isTestClock, testClockAllowed } from '../services/amb/dailyPlanTime.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
@@ -98,13 +99,14 @@ router.post('/budget-optimizer/preview', ADMIN, asyncRoute(async (req, res) => r
 // the owner-approved budget execution: prepare ONE decision (needs mode APPROVAL + live Meta), then approve it through the normal POST /decisions/:id/approve (ADMIN).
 router.post('/budget-optimizer/prepare', ADMIN, asyncRoute(async (req, res) => res.json(await prepareBudgetDecision({ campaignId: String(req.body?.campaignId || ''), userId: req.user.id }))));
 // ---- Daily Operations Center (جدول التشغيل اليومي): OPEN 00:00 / PAUSE 13:00 Africa/Cairo. Reads: ADMIN|MANAGER. Everything that selects, approves, cancels, excludes or configures: ADMIN. Opening a screen never executes anything.
+router.get('/production-readiness', asyncRoute(async (req, res) => res.json(await buildProductionReadiness({}))));
 router.get('/daily-plan/overview', asyncRoute(async (req, res) => res.json(await daily.getDailyOverview({ now: clockNow() }))));
 router.get('/daily-plan/due', asyncRoute(async (req, res) => res.json({ now: clockNow(), testClock: isTestClock(), popups: await daily.getDuePopups({ now: clockNow() }) })));
 router.get('/daily-plan/preview-tomorrow', asyncRoute(async (req, res) => res.json(await daily.previewTomorrow({ now: clockNow() }))));
 router.get('/daily-plan/config', asyncRoute(async (req, res) => res.json(await daily.getDailyPlanConfig())));
 router.put('/daily-plan/config', ADMIN, asyncRoute(async (req, res) => res.json(await daily.setDailyPlanConfig({ patch: req.body, userId: req.user.id }))));
 router.get('/daily-plan/:id', asyncRoute(async (req, res) => { const plan = await daily.getPlanById(req.params.id); if (!plan) return res.status(404).json({ error: 'الخطة غير موجودة.' }); res.json({ plan, audit: await daily.planAudit(plan.id) }); }));
-router.post('/daily-plan/prepare', ADMIN, asyncRoute(async (req, res) => { const { type, date } = req.body || {}; const now = clockNow(); const out = await daily.preparePlan({ type, date: date || (await import('../services/amb/dailyPlanTime.js')).cairoDate(now), now, simulated: isTestClock(), userId: req.user.id }); res.json({ created: out.created, plan: await daily.getPlanById(out.plan.id) }); }));
+router.post('/daily-plan/prepare', ADMIN, asyncRoute(async (req, res) => { const { type, date } = req.body || {}; const now = clockNow(); const out = await daily.preparePlan({ type, date: date || (await import('../services/amb/dailyPlanTime.js')).cairoDate(now), now, simulated: isTestClock(), userId: req.user.id, variant: req.body?.variant || null, only: Array.isArray(req.body?.only) ? req.body.only : null }); res.json({ created: out.created, plan: await daily.getPlanById(out.plan.id) }); }));
 router.put('/daily-plan/:id/selection', ADMIN, asyncRoute(async (req, res) => res.json(await daily.updateSelection({ planId: req.params.id, selections: req.body?.selections, special: req.body?.special || [], userId: req.user.id, now: clockNow() }))));
 router.post('/daily-plan/:id/approve', ADMIN, asyncRoute(async (req, res) => res.json(await daily.approvePlan({ planId: req.params.id, userId: req.user.id, now: clockNow() }))));
 router.post('/daily-plan/:id/cancel', ADMIN, asyncRoute(async (req, res) => res.json(await daily.cancelPlan({ planId: req.params.id, userId: req.user.id, reason: req.body?.reason || null, now: clockNow() }))));

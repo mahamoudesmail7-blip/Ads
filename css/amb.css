@@ -916,3 +916,26 @@ body { background: var(--amb-bg); }
 .dp-popbody { overflow: auto; min-height: 120px; flex: 1 1 auto; }
 .dp-popup footer { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; padding-top: 6px; border-top: 1px solid var(--amb-border); }
 @media (max-width: 720px) { .dp-popup { padding: 12px; max-height: 96vh; } .dp-popup footer .amb-btn { flex: 1 1 100%; } }
+.dp-ready { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 10px 14px; }
+.dp-ready summary { cursor: pointer; font-weight: 800; font-size: 14px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dp-rtable td small { display: block; color: var(--amb-text-faint); font-size: 10.5px; } .dp-rtable { font-size: 12px; }
+
+/* ===== AI Operator — calm layout: one status row, 4 numbers, 4 main tabs + «المزيد» ===== */
+.op2-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius); padding: 10px 14px; margin-bottom: 10px; }
+.op2-status { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.op2-modes { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; justify-content: center; }
+.op2-modes .op-mode { padding: 6px 14px; font-size: 12.5px; }
+.op2-bar .op-stop { margin-inline-start: auto; padding: 7px 16px; font-size: 12.5px; }
+.op2-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; }
+.op2-k { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; }
+.op2-k b { font-size: 22px; line-height: 1.2; } .op2-k span { font-size: 12px; color: var(--amb-text-dim); }
+.op2-k.blue b { color: var(--amb-blue); } .op2-k.green b { color: var(--amb-green); } .op2-k.amber b { color: var(--amb-amber); } .op2-k.purple b { color: var(--amb-purple); } .op2-k.gray b { color: var(--amb-text); }
+.op2-details { margin-bottom: 8px; } .op2-details summary { cursor: pointer; font-size: 12.5px; color: var(--amb-text-dim); font-weight: 700; padding: 4px 2px; list-style: none; }
+.op2-details[open] { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 8px 14px 12px; }
+.op2-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.op2-tabs { position: relative; gap: 6px; margin: 4px 0 14px; }
+.op2-menu { position: relative; } .op2-menu summary { list-style: none; cursor: pointer; } .op2-menu summary::-webkit-details-marker { display: none; }
+.op2-menu-list { position: absolute; inset-inline-start: 0; top: calc(100% + 6px); z-index: 30; min-width: 210px; background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); box-shadow: var(--amb-shadow-hover); padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.op2-menu-list .amb-fbtn { text-align: start; width: 100%; }
+.dp-head h2 { font-size: 18px; }
+@media (max-width: 720px) { .op2-kpis { grid-template-columns: repeat(2, 1fr); } .op2-modes { justify-content: flex-start; } .op2-bar .op-stop { margin-inline-start: 0; } }

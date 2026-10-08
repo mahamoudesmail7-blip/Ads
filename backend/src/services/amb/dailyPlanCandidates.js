@@ -44,6 +44,8 @@ export function openRecommended({ m7, m30 }) {
   const tier = sampleTier(m30?.purchases ?? 0), cpa = cpaReference({ m7, m30 });
   if (tier === 'D' || cpa == null) return { ok: false, why: 'عينة غير كافية (أقل من 3 أوردرات في 30 يوم) — مفيش حملة بتتسمّى رابحة من أوردر واحد' };
   if (cpa >= 150) return { ok: false, why: `CPA المرجعي ${round0(cpa)} ≥ 150 — فوق منطقة الاستمرار` };
+  // a good 30-day number never hides a bad RECENT week: real spend in 7 days with no orders, or a 7-day CPA over the line
+  if ((m7?.spend ?? 0) >= 200 && ((m7?.purchases ?? 0) === 0 || (m7.cpa != null && m7.cpa > 200))) return { ok: false, why: `الأداء الحديث ضعيف: ${m7.purchases ?? 0} أوردر على ${round0(m7.spend)} صرف في 7 أيام${m7.cpa != null ? ` (CPA ${round0(m7.cpa)})` : ''} — رغم CPA 30 يوم ${round0(cpa)}` };
   if (cpaStability({ m7, m30 }) === 'VOLATILE') return { ok: false, why: 'CPA غير مستقر بين 7 و30 يوم' };
   if (tier === 'C' && (m7?.purchases ?? 0) === 0) return { ok: false, why: 'عينة صغيرة ومفيش أوردرات حديثة' };
   return { ok: true, why: null };

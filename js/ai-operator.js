@@ -12,6 +12,7 @@ const TABS = [
   { key: 'control', label: '🧭 مركز التحكم' }, { key: 'daily', label: '📅 جدول التشغيل اليومي' }, { key: 'today', label: '📋 قرارات اليوم' }, { key: 'open', label: '▶️ جاهزة للفتح' }, { key: 'pause', label: '⏸️ مقترحة للإيقاف' }, { key: 'scale', label: '📈 فرص التوسع' },
   { key: 'excluded', label: '🚫 المستثناة' }, { key: 'rules', label: '⚙️ القواعد' }, { key: 'mapping', label: '🔗 ربط الحملات' }, { key: 'readiness', label: '🟢 جاهزية المنتجات' }, { key: 'history', label: '📜 سجل التنفيذ' }, { key: 'performance', label: '📊 أداء AI Operator' },
 ];
+const PRIMARY_TABS = ['daily', 'today', 'control', 'history']; // everything else lives under «المزيد» so the screen stays calm
 const DECISION_TABS = ['today', 'open', 'pause', 'scale'];
 
 export function stopOperatorPolling() { if (S.poll) { clearInterval(S.poll); S.poll = null; } }
@@ -39,12 +40,15 @@ S.hooks = { refreshTop, drawTop: () => drawTop(), reloadBody: () => drawBody(), 
 function switchTab(tab, { campaignId = null } = {}) {
   closeDrawer(); S.tab = tab; S.mapFocus = campaignId;
   S.panel.querySelectorAll('[data-opt]').forEach((x) => x.classList.toggle('active', x.dataset.opt === tab));
+  const moreSum = S.panel.querySelector('#opMore summary'); if (moreSum) { const inMore = !PRIMARY_TABS.includes(tab); moreSum.classList.toggle('active', inMore); moreSum.textContent = inMore ? (TABS.find((t) => t.key === tab)?.label || '⋯ المزيد') : '⋯ المزيد'; S.panel.querySelector('#opMore')?.removeAttribute('open'); }
   window.scrollTo({ top: 0, behavior: 'smooth' });
   return drawBody();
 }
 
 function draw() {
-  S.panel.innerHTML = `<div id="opTop"></div><div class="op-tabs" id="opTabs">${TABS.map((t) => `<button class="amb-fbtn ${t.key === S.tab ? 'active' : ''}" data-opt="${t.key}">${E(t.label)}</button>`).join('')}</div><div id="opBody"></div>`;
+  const tabBtn = (t) => `<button class="amb-fbtn ${t.key === S.tab ? 'active' : ''}" data-opt="${t.key}">${E(t.label)}</button>`;
+  const more = TABS.filter((t) => !PRIMARY_TABS.includes(t.key)); const moreOn = more.find((t) => t.key === S.tab);
+  S.panel.innerHTML = `<div id="opTop"></div><div class="op-tabs op2-tabs" id="opTabs">${PRIMARY_TABS.map((k) => tabBtn(TABS.find((t) => t.key === k))).join('')}<details class="op2-menu" id="opMore"><summary class="amb-fbtn ${moreOn ? 'active' : ''}">${moreOn ? E(moreOn.label) : '⋯ المزيد'}</summary><div class="op2-menu-list">${more.map(tabBtn).join('')}</div></details></div><div id="opBody"></div>`;
   S.panel.querySelectorAll('[data-opt]').forEach((b) => { b.onclick = () => switchTab(b.dataset.opt); });
   drawTop();
   drawBody();
@@ -57,28 +61,31 @@ function drawTop() {
   const { ov } = S;
   const k = ov.kpis, stop = ov.emergencyStop;
   const mode = MODES.find((m) => m.key === ov.mode);
+  const modeCls = stop ? 'red' : ov.mode === 'AUTOPILOT' ? 'green' : ov.mode === 'APPROVAL' ? 'amber' : ov.mode === 'SHADOW' ? 'blue' : 'gray';
   $('opTop').innerHTML = `
-    ${stop ? `<div class="op-banner red">🛑 <b>إيقاف الطوارئ مفعّل</b> — ${E(ov.emergencyReason || '')} (${ago(ov.emergencyAt)}). مفيش أي فتح/إيقاف/تغيير ميزانية على Meta. المراقبة والتحليل شغالين. ${S.isAdmin ? '<button class="amb-btn" id="opResume">إلغاء الإيقاف</button>' : ''}</div>` : ''}
-    ${ov.mode === 'SHADOW' ? '<div class="op-banner blue">👻 <b>وضع Shadow</b> — بيسجّل اللي كان هيعمله ولماذا، ومفيش أي تنفيذ على Meta. راجع تقرير Shadow وجاهزية المنتجات قبل ما تنقل لـ"بموافقتي".</div>' : ''}
-    ${ov.mode === 'AUTOPILOT' && !stop ? '<div class="op-banner amber">🤖 <b>Autopilot شغال</b> — بينفّذ فقط القواعد المعلّمة Autopilot، بأكشنز مسموحة وبعد كل حواجز الأمان.</div>' : ''}
-    ${ov.writesLocked ? '<div class="op-banner amber">🔒 <b>كتابة AI Operator على Meta مقفولة على مستوى النشر</b> — حتى لو اخترت "بموافقتي" أو Autopilot مفيش تنفيذ. بتتفتح بقرار نشر صريح منك بعد مراجعة Shadow.</div>' : ''}
+    ${stop ? `<div class="op-banner red">🛑 <b>إيقاف الطوارئ مفعّل</b> ${ov.emergencyReason ? '— ' + E(ov.emergencyReason) : ''} · مفيش أي فتح/إيقاف/تغيير ميزانية. ${S.isAdmin ? '<button class="amb-btn sm" id="opResume">إلغاء الإيقاف</button>' : ''}</div>` : ''}
     ${!ov.connected ? '<div class="op-banner amber">⚠️ مفيش اتصال Meta Ads — اربط الحساب من AI Intelligence.</div>' : ''}
-    ${controlStrip(ov.control)}
-    <div class="op-controlbar">
-      <div class="op-modes" role="group" aria-label="وضع التشغيل">
+    <div class="op2-bar">
+      <div class="op2-status">
+        <span class="op-pill ${modeCls}" title="${E(mode?.hint || '')}">${stop ? '🛑 إيقاف طوارئ' : E(mode?.label || ov.mode)}</span>
+        <span class="op-pill ${ov.writesLocked ? 'amber' : 'green'}" title="${ov.writesLocked ? 'كتابة AI Operator على Meta مقفولة على مستوى النشر — مفيش تنفيذ فعلي لحد ما تفتحها بقرارك.' : 'كتابة Meta مفتوحة — أي تنفيذ بيحتاج اعتمادك'}">${ov.writesLocked ? '🔒 الكتابة مقفولة' : '🔓 الكتابة مفتوحة'}</span>
+      </div>
+      <div class="op-modes op2-modes" role="group" aria-label="وضع التشغيل">
         ${MODES.map((m) => `<button class="op-mode ${m.key === ov.mode ? 'on' : ''} ${m.key === 'AUTOPILOT' ? 'auto' : ''}" data-mode="${m.key}" title="${E(m.hint)}" ${S.isAdmin ? '' : 'disabled'}>${E(m.label)}</button>`).join('')}
-        <div class="op-mode-hint">${E(mode?.hint || '')}</div>
       </div>
-      <div class="op-actions">
-        ${S.isAdmin ? '<button class="amb-btn" id="opEval" title="تقييم القواعد المفعّلة دلوقتي وتسجيل القرارات (مفيش تنفيذ في Shadow/بموافقتي)">🔄 قيّم الآن</button>' : ''}
-        <button class="op-stop" id="opStop" ${stop ? 'disabled' : ''}>🛑 إيقاف فوري</button>
-      </div>
+      <button class="op-stop" id="opStop" ${stop ? 'disabled' : ''}>🛑 إيقاف فوري</button>
     </div>
-    <div class="amb-kpis op-kpis">
-      ${kpi('حملات تحت المراقبة', k.monitored, 'blue')}${kpi('جاهزة للفتح', k.readyToOpen, 'green')}${kpi('مقترح إيقافها', k.proposedPause, 'amber')}${kpi('فرص توسع', k.scaleOpportunities, 'purple')}
-      ${kpi('مستبعدة/محمية', k.excluded, 'gray')}${kpi('ممنوعة بحاجز أمان', k.blockedBySafety, 'red', `منها جودة بيانات: ${num(k.blockedByDataQuality)}`)}${kpi('أكشنز اليوم', k.actionsToday, 'green', `تقييمات: ${num(k.evaluationsToday)}`)}
+    <div class="op2-kpis">
+      <div class="op2-k blue"><b>${num(k.monitored)}</b><span>تحت المراقبة</span></div>
+      <div class="op2-k green"><b>${num(k.readyToOpen)}</b><span>جاهزة للفتح</span></div>
+      <div class="op2-k amber"><b>${num(k.proposedPause)}</b><span>مقترح إيقافها</span></div>
+      <div class="op2-k purple"><b>${num(k.scaleOpportunities)}</b><span>فرص توسع</span></div>
     </div>
-    <div class="op-sub">القواعد: ${num(ov.rules.enabled)} مفعّلة من ${num(ov.rules.total)} (${num(ov.rules.autopilot)} Autopilot) · الاستثناءات: ${num(ov.exceptions)} · آخر تشغيل مجدول: ${E(ov.scheduler?.lastRun ? ago(ov.scheduler.lastRun.at) : 'لسه')}</div>`;
+    <details class="op2-details"><summary>⚙️ إعدادات وتفاصيل</summary>
+      <div class="op-sub">${E(mode?.hint || '')}</div>
+      ${controlStrip(ov.control)}
+      <div class="op2-row">${S.isAdmin ? '<button class="amb-btn sm" id="opEval" title="تقييم القواعد المفعّلة دلوقتي وتسجيل القرارات (مفيش تنفيذ في Shadow/بموافقتي)">🔄 قيّم الآن</button>' : ''}<span class="op-sub">القواعد: ${num(ov.rules.enabled)}/${num(ov.rules.total)} مفعّلة · الاستثناءات: ${num(ov.exceptions)} · ممنوعة بحاجز أمان: ${num(k.blockedBySafety)} · مستبعدة/محمية: ${num(k.excluded)} · أكشنز اليوم: ${num(k.actionsToday)} · تقييمات اليوم: ${num(k.evaluationsToday)} · جودة بيانات تمنع: ${num(k.blockedByDataQuality)} · آخر تشغيل مجدول: ${E(ov.scheduler?.lastRun ? ago(ov.scheduler.lastRun.at) : 'لسه')}</span></div>
+    </details>`;
   $('opTop').querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => changeMode(b.dataset.mode); });
   $('opTop').querySelectorAll('[data-auto]').forEach((b) => { b.onclick = () => toggleAuto(b.dataset.auto, b.dataset.on !== '1'); });
   $('opStop').onclick = emergencyStop;

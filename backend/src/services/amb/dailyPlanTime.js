@@ -31,7 +31,7 @@ export function dueTypes(now = new Date()) {
   const date = cairoDate(now);
   return Object.keys(SLOTS).filter((t) => now.getTime() >= dueAt(t, date).getTime()).map((type) => ({ type, date, at: dueAt(type, date) }));
 }
-export const planKey = (type, date, simulated = false) => `${simulated ? 'SIM|' : ''}${type}|${date}`;
+export const planKey = (type, date, simulated = false, variant = null) => `${simulated ? 'SIM|' : ''}${type}|${date}${variant ? `|${variant}` : ''}`; // `variant` = an owner-ordered ONE-OFF plan (e.g. a single-campaign test): never touched by the scheduler
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // TEST CLOCK — lets the owner (and the tests) SEE the 00:00 / 13:00 plans appear without waiting. It is honoured ONLY when DAILY_PLAN_ALLOW_TEST_CLOCK=1 (never set in production), and everything made under

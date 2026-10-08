@@ -87,18 +87,19 @@ export function shapePlan(p, items = []) {
 const latestVersion = (plan_key) => prisma.ambDailyPlan.findFirst({ where: { plan_key }, orderBy: { version: 'desc' }, include: { items: { orderBy: { rank: 'asc' } } } });
 
 /** Builds + stores the plan of `type` for Cairo day `date`. Idempotent: an existing plan of that day/type is returned untouched (unique plan_key+version). */
-export async function preparePlan({ type, date, now = new Date(), simulated = isTestClock(), deps = {}, userId = null }) {
+export async function preparePlan({ type, date, now = new Date(), simulated = isTestClock(), deps = {}, userId = null, variant = null, only = null }) {
   if (!SLOTS[type]) { const e = new Error('نوع خطة غير معروف.'); e.status = 400; throw e; }
-  const key = planKey(type, date, simulated); const exists = await latestVersion(key); if (exists) return { plan: exists, created: false };
+  const key = planKey(type, date, simulated, variant); const exists = await latestVersion(key); if (exists) return { plan: exists, created: false };
   const fresh = await ensureFreshData({ now, deps });
   const built = await (deps.build ? deps.build({ type, now }) : (type === 'OPEN' ? buildOpenCandidates({ now, deps: deps.candidates || {} }) : buildPauseCandidates({ now, deps: deps.candidates || {} })));
+  if (only) { const keep = new Set(only.map(String)); built.items = built.items.filter((i) => keep.has(String(i.campaignId))).map((i, n) => ({ ...i, rank: n + 1, selected: !!i.selectable })); if (!built.items.length) { const e = new Error('الحملة المطلوبة مش ضمن مرشحي الخطة (محمية/ممنوعة/مش متوقفة).'); e.status = 400; throw e; } }
   const cfg = await getOperatorConfig(); const dcfg = await getDailyPlanConfig();
   const stale = fresh.state === 'STALE';
   let plan;
   try {
     plan = await prisma.ambDailyPlan.create({ data: {
       plan_key: key, type, plan_date: date, timezone: CAIRO_TZ, version: 1, status: 'PREPARED', simulated, scheduled_at: dueAt(type, date), expires_at: expiresAt(date), prepared_at: now, data_as_of: fresh.asOf, data_state: fresh.state, surfaced_at: now >= dueAt(type, date) ? now : null,
-      evidence_json: JSON.stringify({ mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), policy: built.policy ? { zeroOrders: built.policy.zeroOrders, scale: built.policy.scale, reduce: built.policy.reduce, highCpa: built.policy.highCpa } : null, dataAsOf: fresh.asOf, refreshed: fresh.refreshed, staleReason: fresh.error, staleMinutes: dcfg.staleMinutes, pausedPool: built.pausedTotal ?? null, candidatesPool: built.candidatesPool ?? null, preparedBy: userId ? 'USER' : 'SCHEDULER' }),
+      evidence_json: JSON.stringify({ mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), policy: built.policy ? { zeroOrders: built.policy.zeroOrders, scale: built.policy.scale, reduce: built.policy.reduce, highCpa: built.policy.highCpa } : null, dataAsOf: fresh.asOf, refreshed: fresh.refreshed, staleReason: fresh.error, staleMinutes: dcfg.staleMinutes, pausedPool: built.pausedTotal ?? null, candidatesPool: built.candidatesPool ?? null, preparedBy: userId ? 'USER' : 'SCHEDULER', variant, only }),
       items: { create: built.items.map((it) => ({ campaign_id: it.campaignId, campaign_name: it.campaignName, product_id: it.productId, product_name: it.productName, store_id: it.storeId, rank: it.rank, selected: stale ? false : !!it.selected, selectable: stale ? false : !!it.selectable, eligibility: it.eligibility, block_codes_json: JSON.stringify([...(it.blockCodes || []), ...(stale ? ['STALE_DATA'] : [])]), risk: it.risk, risk_score: it.riskScore, evidence_json: JSON.stringify({ ...it.evidence, warnings: it.warnings }), reason: stale ? `STALE DATA — ${it.reason}` : it.reason })) },
     }, include: { items: { orderBy: { rank: 'asc' } } } });
   } catch (e) { if (e.code === 'P2002') return { plan: await latestVersion(key), created: false }; throw e; }
@@ -139,8 +140,10 @@ export async function getDailyOverview({ now = new Date(), simulated = isTestClo
   const sumBudget = (p) => p.items.filter((i) => i.selected).reduce((t, i) => t + (Number(i.evidence?.budget) || 0), 0);
   const last = await prisma.ambDailyPlan.findFirst({ where: { simulated, status: { in: ['COMPLETED', 'MISSED', 'CANCELLED'] } }, orderBy: { id: 'desc' } });
   const external = await detectExternalSchedule({});
+  const oneOff = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, plan_key: { contains: '|T-' } }, orderBy: { id: 'desc' }, include: { items: { orderBy: { rank: 'asc' } } } });
+  const latestByKey = new Map(); for (const p of oneOff) if (!latestByKey.has(p.plan_key) || latestByKey.get(p.plan_key).version < p.version) latestByKey.set(p.plan_key, p);
   return {
-    now, cairo: cairoParts(now), date, testClock: isTestClock(), plans,
+    now, cairo: cairoParts(now), date, testClock: isTestClock(), plans, oneOffPlans: [...latestByKey.values()].filter((p) => !['SUPERSEDED'].includes(p.status)).map((p) => shapePlan(p, p.items)),
     dashboard: {
       openProposed: plans.OPEN?.items.length ?? 0, pauseProposed: plans.PAUSE?.items.length ?? 0, selected: cur.reduce((t, p) => t + p.counts.selected, 0), protectedCount: cur.reduce((t, p) => t + p.counts.protected, 0),
       plannedOpenBudget: plans.OPEN ? Math.round(sumBudget(plans.OPEN)) : 0, plannedPauseBudget: plans.PAUSE ? Math.round(sumBudget(plans.PAUSE)) : 0,
@@ -305,6 +308,7 @@ async function defaultReadEntity(campaignId) {
 /** Revalidation of ONE item against live Meta + the current state. Returns {ok, status?, reason?, live?}. */
 async function revalidateItem({ plan, item, config, dcfg, deps, now }) {
   if (config.emergency_stop) return { ok: false, status: 'BLOCKED', reason: 'EMERGENCY_STOP' };
+  if (plan.execution_mode === 'LIVE' && (config.mode !== 'APPROVAL' || config.writesLocked)) return { ok: false, status: 'SKIPPED', reason: `MODE_CHANGED_${config.mode === 'OFF' ? 'MANUAL' : config.mode}${config.writesLocked ? '_WRITES_LOCKED' : ''}` }; // switching to MANUAL (or locking writes) stops the rest of an approved queue immediately; nothing already sent is rolled back
   if (dcfg.halted) return { ok: false, status: 'SKIPPED', reason: 'QUEUE_HALTED' };
   const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, select: { status: true } });
   if (!fresh || fresh.status !== 'RUNNING') return { ok: false, status: 'SKIPPED', reason: `PLAN_${fresh?.status || 'GONE'}` };
@@ -346,6 +350,7 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
     await setItem(item, 'SENT', 'الطلب اتبعت لـMeta (مستني القراءة بعده)', {}, plan.id, userId); sent++;
     const r = await liveExecuteItem({ plan, item, userId, deps });
     await setItem(item, r.status, r.reason, r.extra || {}, plan.id, userId);
+    if (['FAILED', 'UNCERTAIN'].includes(r.status) && !plan.simulated && process.env.DAILY_PLAN_DISABLE_ALERTS !== '1') await raiseAlert({ severity: r.status === 'FAILED' ? 'CRITICAL' : 'WARNING', category: 'EXECUTION', title: `${r.status === 'FAILED' ? 'فشل' : 'غير مؤكد'}: ${plan.type === 'OPEN' ? 'فتح' : 'إيقاف'} ${item.campaign_name || item.campaign_id}`, message: `${r.reason || ''} — راجع الحملة في Meta يدويًا. مفيش إعادة إرسال تلقائي.`.slice(0, 480), campaignId: item.campaign_id, entityId: item.campaign_id, entityName: item.campaign_name, dedupeKey: `dailyplan-item:${plan.plan_key}:v${plan.version}:${item.campaign_id}:${r.status}` }).catch(() => {});
     if (r.rateLimited) { rateLimited++; await sleep(Math.min(120_000, 15_000 * 2 ** rateLimited)); if (rateLimited >= dcfg.rateLimitStopAfter) abort = 'RATE_LIMIT_STOP'; }
   }
   const finalItems = await prisma.ambDailyPlanItem.findMany({ where: { plan_id: plan.id, selected: true } });
@@ -395,6 +400,7 @@ export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
   } finally { ticking = false; }
 }
 let timer = null;
+export const dailyPlanSchedulerStarted = () => !!timer;
 export function startDailyPlanScheduler() {
   if (timer) return;
   timer = setInterval(() => { runDailyPlanTick({ now: new Date() }).catch((e) => logger.error('[dailyPlans] tick failed', { message: e.message })); }, 60_000);
