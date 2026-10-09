@@ -16,15 +16,19 @@ const SORTS = { purchases: 'الأوردرات (الأعلى أولًا)', cpa: 
 const RISK = { HIGH: ['red', 'مرتفعة'], MEDIUM: ['amber', 'متوسطة'], LOW: ['green', 'منخفضة'] };
 const MODE_AR = { OFF: 'MANUAL', SHADOW: 'SHADOW', APPROVAL: 'APPROVAL', AUTOPILOT: 'AUTOMATIC' };
 
-const P = { pm: null, pmErr: null, sel: null, type: 'OPEN', ctx: null, root: null, ov: null, loading: false, f: null, timer: null, prepTimer: null };
+const mainW = () => (document.querySelector('.opx-main') || document.documentElement).clientWidth || window.innerWidth;
+const PAGE = 40; // rows rendered at a time — a plan can hold hundreds of campaigns; rendering all of them (twice) made every filter take seconds
+const NARROW_PX = 820; // same breakpoint as the CSS container query: below it the phone layout (cards) is used
+const P = { shown: PAGE, pm: null, pmErr: null, sel: null, type: 'OPEN', ctx: null, root: null, ov: null, loading: false, f: null, timer: null, prepTimer: null };
 
 export async function mountPlanWorkspace(root, type, ctx) {
   P.type = type; P.ctx = ctx; P.root = root; P.ov = null; P.sel = null;
   P.f = JSON.parse(store.get(`opx.f.${type}`, 'null')) || { q: '', store: '', status: '', sort: 'purchases', period: '7', cat: '', from: '', to: '' };
-  P.pm = null; P.pmErr = null;
+  P.pm = null; P.pmErr = null; P.shown = PAGE;
   clearInterval(P.timer); clearTimeout(P.prepTimer);
   root.innerHTML = `<div id="opxPlanBody">${skeletonCards(5)}<div class="opx-card" style="margin-top:14px">${skeletonRows(7)}</div></div>`;
   await load();
+  clearTimeout(P.rzTimer); if (!P.rz) { P.rz = true; window.addEventListener('resize', () => { clearTimeout(P.rzTimer); P.rzTimer = setTimeout(() => { if (P.ov && P.root && document.body.contains(P.root) && (mainW() <= NARROW_PX) !== P.narrow) draw(); }, 250); }); }
   P.timer = setInterval(() => { if (!document.body.contains(root)) return clearInterval(P.timer); tickCountdown(); }, 1000);
 }
 export function unmountPlanWorkspace() { clearInterval(P.timer); clearTimeout(P.prepTimer); }
@@ -81,6 +85,8 @@ const recentWorse = (e) => e?.m7?.cpa != null && e?.m30?.cpa != null && (e.m7.pu
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 function draw() {
   const m = META[P.type], p = plan(), c = P.ov.control || {}; const items = visibleItems(); const sel = (p?.items || []).filter((i) => i.selected);
+  const narrow = mainW() <= NARROW_PX; P.narrow = narrow;
+  const pageItems = items.slice(0, P.shown); const moreBtn = items.length > P.shown ? `<div style="padding:12px;text-align:center"><button class="opx-btn" data-act="more">عرض المزيد (${num(items.length - P.shown)} حملة متبقية)</button></div>` : '';
   const editable = p && p.status === 'PREPARED' && P.ctx.isAdmin; const lastBudget = sel.reduce((t, i) => t + (Number(i.evidence?.budget) || 0), 0);
   const orders = sel.reduce((t, i) => t + (Number(met(i, 'purchases')) || 0), 0); const cpas = sel.map((i) => ({ c: Number(met(i, 'cpa')), w: Number(met(i, 'purchases')) || 0 })).filter((x) => x.c > 0 && x.w > 0);
   const avgCpa = cpas.length ? cpas.reduce((t, x) => t + x.c * x.w, 0) / cpas.reduce((t, x) => t + x.w, 0) : null;
@@ -119,11 +125,12 @@ function draw() {
           <select class="opx-select" id="opxSort">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${P.f.sort === k ? 'selected' : ''}>ترتيب: ${v}</option>`).join('')}</select>
         </div>
         <div class="opx-card opx-tablecard opx-fade">
-          <div class="opx-tablehead"><h3>الحملات المرشحة لل${m.verb} (${num(p?.items?.length ?? 0)} حملة${items.length !== (p?.items?.length ?? 0) ? ` — المعروض ${num(items.length)}` : ''})</h3>
+          <div class="opx-tablehead"><h3>الحملات المرشحة لل${m.verb} (${num(p?.items?.length ?? 0)} حملة${items.length !== (p?.items?.length ?? 0) ? ` — بعد الفلتر ${num(items.length)}` : ''}${items.length > P.shown ? ` — المعروض ${num(P.shown)}` : ''})</h3>
             <button class="opx-btn sm" data-act="eligible" ${editable ? '' : 'disabled'}>${ICONS.check} تحديد المؤهل</button><button class="opx-btn sm" data-act="none" ${editable ? '' : 'disabled'}>${ICONS.x} إلغاء التحديد</button>
             <button class="opx-btn sm" data-act="new" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.plus} إنشاء خطة جديدة</button></div>
-          <div class="opx-scroll opx-desk">${p ? table(items, editable) : `<div class="opx-empty">${E(m.empty)}</div>`}</div>
-          <div class="opx-cards">${p && items.length ? items.map((i) => itemCard(i, editable)).join('') : `<div class="opx-empty">${E(m.empty)}</div>`}</div>
+          ${narrow
+            ? `<div class="opx-cards" style="display:flex">${p && items.length ? pageItems.map((i) => itemCard(i, editable)).join('') : `<div class="opx-empty">${E(m.empty)}</div>`}${moreBtn}</div>`
+            : `<div class="opx-scroll opx-desk">${p ? table(pageItems, editable) : `<div class="opx-empty">${E(m.empty)}</div>`}${moreBtn}</div>`}
           <div class="opx-foot"><div class="grow"><b>تم تحديد ${num(sel.length)} حملة</b> <span class="opx-note">· إجمالي الميزانية المقترحة: <b style="color:var(--opx-text)">${egp(lastBudget)}</b></span></div>
             <button class="opx-btn" data-act="preview" ${p && sel.length ? '' : 'disabled'}>${ICONS.eye} معاينة التنفيذ</button>
             <button class="opx-btn primary" data-act="approve" ${editable && sel.length ? '' : 'disabled'}>${ICONS[m.icon]} اعتماد المحدد (${num(sel.length)})</button></div>
@@ -213,9 +220,9 @@ async function saveSelection(selections, special = []) {
 }
 function wire(p, editable) {
   const root = $('opxPlanBody');
-  const rerender = (fn) => { fn(); saveF(); draw(); };
-  $('opxQ').oninput = (e) => { P.f.q = e.target.value; saveF(); const pos = e.target.selectionStart; draw(); const q = $('opxQ'); q.focus(); q.setSelectionRange(pos, pos); };
-  root.querySelectorAll('[data-plan]').forEach((b) => { b.onclick = () => { P.sel = b.dataset.plan; draw(); }; });
+  const rerender = (fn) => { fn(); saveF(); P.shown = PAGE; draw(); };
+  $('opxQ').oninput = (e) => { P.f.q = e.target.value; saveF(); const pos = e.target.selectionStart; clearTimeout(P.qTimer); P.qTimer = setTimeout(() => { P.shown = PAGE; draw(); const q = $('opxQ'); if (q) { q.focus(); q.setSelectionRange(pos, pos); } }, 220); };
+  root.querySelectorAll('[data-plan]').forEach((b) => { b.onclick = () => { P.sel = b.dataset.plan; P.shown = PAGE; draw(); }; });
   root.querySelectorAll('[data-period]').forEach((b) => { b.onclick = async () => { P.f.period = b.dataset.period; if (P.f.period === 'custom' && !P.f.to) { P.f.to = todayStr(); const d = new Date(); d.setUTCDate(d.getUTCDate() - 13); P.f.from = d.toISOString().slice(0, 10); } saveF(); await ensurePeriodMetrics(); draw(); }; });
   if ($('opxApplyRange')) $('opxApplyRange').onclick = async () => {
     const f = $('opxFrom').value, t = $('opxTo').value; const bad = (m) => { P.pmErr = m; P.pm = { key: null, map: {} }; draw(); };
@@ -236,6 +243,7 @@ function wire(p, editable) {
     const a = b.dataset.act;
     if (a === 'eligible') { const sel = {}; p.items.forEach((i) => { if (i.selectable && i.eligibility === 'ELIGIBLE') sel[i.campaignId] = P.type === 'OPEN' ? !!i.evidence?.recommended : !!i.evidence?.policyPause; }); await saveSelection(sel); }
     else if (a === 'none') { const sel = {}; p.items.forEach((i) => { if (i.selected) sel[i.campaignId] = false; }); await saveSelection(sel); }
+    else if (a === 'more') { P.shown += PAGE; draw(); }
     else if (a === 'preview') await preview(p); else if (a === 'approve') await approve(p);
     else if (a === 'new') { try { await api.post(`${API}/new`, { type: P.type }); toast('بدأ تجهيز خطة جديدة'); await load(); } catch (e) { toast(e.message, 'error'); } }
   }; });
