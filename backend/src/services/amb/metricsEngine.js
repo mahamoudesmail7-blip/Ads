@@ -29,8 +29,10 @@ function direction(now, then) {
   if (chg < -DIR_THRESHOLD) return 'DOWN';
   return 'FLAT';
 }
-export function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+const CAIRO_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo', year: 'numeric', month: '2-digit', day: '2-digit' });
+/** «Today» for every window (Today / 7D / 30D) is the Africa/Cairo calendar day — never the UTC date (they differ between 00:00 and 03:00 Cairo time). */
+export function todayISO(now = new Date()) {
+  return CAIRO_DAY.format(now);
 }
 export function addDaysISO(dateStr, days) {
   const d = new Date(`${dateStr}T00:00:00.000Z`);

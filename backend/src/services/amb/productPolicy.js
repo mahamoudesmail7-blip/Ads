@@ -114,7 +114,8 @@ export async function activatePolicy({ productId, storeId, confirm, confirmAutom
   await writeAll(raw, all, userId);
   const backup = await syncProductConfig({ productId, storeId, policy: all[k].active, userId }); all[k].mirrorBackup = cur.active ? (cur.mirrorBackup || backup) : backup; await writeAll(raw, all, userId);
   await audit(userId, 'OPERATOR_PRODUCT_POLICY_ACTIVATE', { key: k, mode: all[k].active.mode, automatic: anyAuto }); await event(userId, 'PRODUCT_POLICY_ACTIVATED', `تفعيل سياسة المنتج ${k}${anyAuto ? ' (AUTOMATIC)' : ''}`, { key: k, mode: all[k].active.mode });
-  return getProductPolicy({ productId, storeId });
+  const reconcile = deps.noReconcile ? null : await import('./integration.js').then((m) => m.onProductPolicyChanged({ productId, storeId, kind: 'ACTIVATED', userId, deps: deps.integration || {} })).catch(() => null); // pending plans / decisions of this product are re-evaluated — nothing executes
+  return { ...(await getProductPolicy({ productId, storeId })), reconcile };
 }
 export async function deactivatePolicy({ productId, storeId, confirm, userId, deps = {} }) {
   await requireAdmin(userId, deps); if (confirm !== true) throw fail(400, 'محتاج تأكيد صريح (confirm).', 'CONFIRM_REQUIRED');
@@ -122,7 +123,8 @@ export async function deactivatePolicy({ productId, storeId, confirm, userId, de
   all[k] = { ...cur, draft: cur.draft || cur.active, active: null, version: (cur.version || 0) + 1 }; await writeAll(raw, all, userId);
   await syncProductConfig({ productId, storeId, policy: null, userId, backup: cur.mirrorBackup || null });
   await audit(userId, 'OPERATOR_PRODUCT_POLICY_DEACTIVATE', { key: k }); await event(userId, 'PRODUCT_POLICY_DEACTIVATED', `إيقاف سياسة المنتج ${k} (رجعت للإعدادات العامة)`, { key: k });
-  return getProductPolicy({ productId, storeId });
+  const reconcile = deps.noReconcile ? null : await import('./integration.js').then((m) => m.onProductPolicyChanged({ productId, storeId, kind: 'DEACTIVATED', userId, deps: deps.integration || {} })).catch(() => null);
+  return { ...(await getProductPolicy({ productId, storeId })), reconcile };
 }
 /** Mirrors the three guard-enforced fields into AmbOperatorProductConfig. On activation the previous values are remembered (returned as `backup`) and restored on deactivation. */
 async function syncProductConfig({ productId, storeId, policy, userId, backup = null }) {

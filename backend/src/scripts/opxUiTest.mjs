@@ -32,7 +32,7 @@ try {
   await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.theme': 'light', 'opx.collapsed': '0' } });
   ok('the opx shell is mounted (not the legacy single page)', await waitFor(`!!document.getElementById('opxRoot')`));
   const labels = await js(`[...document.querySelectorAll('#opxNav .lbl')].map(x=>x.textContent)`);
-  ok('the 8 independent workspaces, in order (التسعير الذكي sits right after قواعد المنتجات)', JSON.stringify(labels) === JSON.stringify(['فتح الحملات', 'إيقاف الحملات', 'إدارة الميزانيات', 'قواعد المنتجات', 'التسعير الذكي', 'الموافقات', 'سجل التنفيذ', 'التنبيهات']), JSON.stringify(labels));
+  ok('the 9 independent workspaces, in order (التسعير الذكي sits right after قواعد المنتجات)', JSON.stringify(labels) === JSON.stringify(['فتح الحملات', 'إيقاف الحملات', 'إدارة الميزانيات', 'قواعد المنتجات', 'التسعير الذكي', 'الموافقات', 'سجل التنفيذ', 'التنبيهات', 'مركز الربط']), JSON.stringify(labels));
   ok('the advanced group keeps the old tools reachable (permissions / control center / all legacy tools)', (await js(`document.querySelectorAll('#opxNavAdv .opx-item').length`)) === 3);
   await js(`document.querySelector('[data-ws="pause"]').click()`); await sleep(2500);
   await goto('/ai-media-buyer.html#operator');
@@ -260,6 +260,74 @@ try {
   ok('phone: one stacked column, no horizontal page scroll', pm.cols === 1 && pm.sw <= pm.iw + 2, JSON.stringify(pm));
   await goto('/ai-media-buyer.html#operator', { width: 1536, height: 864, ls: { 'opx.ws': 'pricing' } }); await waitFor(`!!document.getElementById('prRoot')`); await sleep(1500);
   ok('desktop: three columns (inputs | result | analysis) with the inputs on the RIGHT (RTL)', await js(`(()=>{const c=getComputedStyle(document.getElementById('prRoot')).gridTemplateColumns.split(' ').length; const a=document.getElementById('prIn').getBoundingClientRect().left, b=document.getElementById('prOut').getBoundingClientRect().left; return c === 3 && a > b})()`));
+
+  console.log('\n13. «الفتح حسب تكلفة الأوردر CPA»: policy panel, saved + versioned, prepare = select only, manual un-ticks kept, popup at open time, restart');
+  {
+  spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs')], { stdio: 'ignore' });
+  await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.f.OPEN': JSON.stringify({ q: '', store: '', sort: 'purchases', period: '7', view: 'candidates', cat: '', from: '', to: '' }) } }); ok('the section sits ABOVE the table and carries the Beta tag', await waitFor(`!!document.getElementById('opxCpa') && document.querySelectorAll('.opx-table tbody tr').length === 6`) && await js(`(()=>{const c=document.getElementById('opxCpa').getBoundingClientRect(), t=document.querySelector('.opx-tablecard').getBoundingClientRect(); return c.bottom <= t.top + 2 && /الفتح حسب تكلفة الأوردر CPA/.test(document.getElementById('opxCpa').innerText) && /Beta/.test(document.getElementById('opxCpa').innerText)})()`));
+  ok('the switch is its OWN control, separate from the Meta write lock (different element, lock state untouched)', await js(`(()=>{const sw=document.getElementById('cpaOn'); return !!sw && !sw.closest('.opx-state') && /قفل النشر مقفول/.test(document.querySelector('.opx-state').innerText)})()`));
+  ok('nothing is assumed: no range saved → switch off, Save / Prepare / Preview disabled, tiles empty', await js(`document.getElementById('cpaOn').getAttribute('aria-checked') === 'false' && document.getElementById('cpaSave').disabled && document.getElementById('cpaPrepare').disabled && document.getElementById('cpaPreview').disabled && document.getElementById('cpaMin').value === '' && !!document.querySelector('.opx-cpa-tile b') && /—/.test(document.querySelector('.opx-cpa-tiles').innerText)`));
+  const actions0 = await js(`fetch('/api/operator/execution-history?limit=50').then(r=>r.json()).then(o=>(o.rows||o.items||[]).length)`);
+  const setC = (id, v) => js(`(()=>{const i=document.getElementById('${id}'); i.value='${v}'; i.dispatchEvent(new Event('input'))})()`);
+  await setC('cpaMin', '50'); await setC('cpaMax', '150'); await js(`document.querySelector('[data-cpaw="7"]').click()`); await sleep(400); await setC('cpaMin', '50'); await setC('cpaMax', '150');
+  ok('editing enables «حفظ السياسة كنسخة جديدة» and disables Prepare until it is saved', await js(`!document.getElementById('cpaSave').disabled && document.getElementById('cpaPrepare').disabled`));
+  await js(`document.getElementById('cpaSave').click()`); await waitFor(`/v1/.test(document.getElementById('opxCpa').innerText)`, 8000); await sleep(600);
+  let pol = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
+  ok('saved as version 1, persisted on the server (not a temporary filter), NOT enabled', pol.policy.version === 1 && pol.policy.minCpa === 50 && pol.policy.maxCpa === 150 && pol.policy.window === '7' && pol.policy.enabled === false, JSON.stringify(pol.policy));
+  ok('the tiles show matched / eligible / excluded from the live preview, equal to the server counts', await js(`[...document.querySelectorAll('.opx-cpa-tile b')].map(b=>Number(b.textContent.replace(/[^0-9]/g,''))).join()`) === [pol.preview.counts.matched, pol.preview.counts.eligible, pol.preview.counts.excluded].join(), JSON.stringify(pol.preview.counts));
+  ok('the current-policy sentence is shown with the saved numbers', await js(`/بين 50 إلى 150 جنيه خلال آخر 7 أيام/.test(document.querySelector('.opx-cpa-now').innerText) && /الحد الأدنى للأوردرات: 5/.test(document.querySelector('.opx-cpa-now').innerText)`));
+  await js(`document.getElementById('cpaPreview').click()`); await waitFor(`!!document.querySelector('.opx-drawer.open table tbody tr')`);
+  const pvt = await js(`(()=>{const t=document.querySelector('.opx-drawer.open').innerText; return { text: t, rows: document.querySelectorAll('.opx-drawer.open table tbody tr').length }})()`);
+  ok('the preview lists every campaign with its verdict and the REASON (guard / weak sample / out of range / unknown CPA); it changes nothing', pvt.rows >= 6 && /معاينة فقط/.test(pvt.text) && /(مؤهلة)/.test(pvt.text) && /(ممنوعة بحارس أمان|عدد الأوردرات أقل|خارج النطاق|CPA أعلى|CPA أقل|CPA غير معروف)/.test(pvt.text), pvt.text.slice(0, 200));
+  await js(`document.getElementById('opxDrawerX').click()`); await sleep(300);
+  const sel0 = await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json()).then(o=>o.plans.OPEN.items.filter(i=>i.selected).map(i=>i.campaignId).sort().join())`);
+  await js(`document.getElementById('cpaPrepare').click()`); await waitFor(`/اتجهزت: [0-9]+ مؤهلة/.test(document.body.innerText)`, 20000); await sleep(1200);
+  const ovP = await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json())`); const planP = ovP.plans.OPEN; const eligIds = pol.preview.rows.filter((r) => r.verdict === 'ELIGIBLE').map((r) => r.campaignId).sort().join();
+  ok('«تجهيز الحملات المطابقة» ticked exactly the ELIGIBLE campaigns in the open table, and left the plan PREPARED (nothing executed)', planP.items.filter((i) => i.selected).map((i) => i.campaignId).sort().join() === eligIds && planP.status === 'PREPARED' && eligIds.length > 0, JSON.stringify([eligIds, sel0]));
+  { const expr = `(()=>{const rows=[...document.querySelectorAll('.opx-table tbody tr')]; const checked=rows.filter(r=>r.querySelector('.opx-check')?.checked).length; return checked === ${eligIds.split(',').filter(Boolean).length} && rows.some(r=>/مطابقة CPA/.test(r.innerText))})()`; ok('the ticked rows show on screen and each carries its CPA-policy tag', await waitFor(expr, 15000)); }
+  ok('a guard-blocked campaign is never ticked by the policy (fx_open_5 stays blocked and unticked)', !planP.items.find((i) => i.campaignId === 'fx_open_5').selected && planP.items.find((i) => i.campaignId === 'fx_open_5').eligibility === 'BLOCKED');
+  const one = eligIds.split(',')[0]; await js(`document.querySelector('tr[data-cid="${one}"] .opx-check').click()`); await sleep(1500);
+  await js(`document.getElementById('cpaPrepare').click()`); await waitFor(`/اتجهزت: [0-9]+ مؤهلة/.test(document.body.innerText)`, 20000); await sleep(1200);
+  const ovU = await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json())`);
+  ok('the campaign I un-ticked stays un-ticked after «تجهيز» (and is tagged as my decision)', !ovU.plans.OPEN.items.find((i) => i.campaignId === one).selected && await js(`/استبعاد يدوي/.test(document.querySelector('tr[data-cid="${one}"]').innerText)`));
+  await setC('cpaMin', '20'); await setC('cpaMax', '200'); await js(`document.getElementById('cpaSave').click()`); await waitFor(`/v2/.test(document.getElementById('opxCpa').innerText)`, 8000); await sleep(800);
+  const pol2 = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
+  ok('tomorrow 50–150 → 20–200 is a NEW version (v2) and v1 is kept in the history', pol2.policy.version === 2 && pol2.policy.minCpa === 20 && pol2.policy.history[0].version === 1 && pol2.policy.history[0].minCpa === 50);
+  ok('the waiting plan is flagged "prepared under an older version" — nothing was executed or re-ticked by saving', pol2.plan.stale === true && await js(`/نسخة سياسة أقدم/.test(document.getElementById('opxCpa').innerText)`));
+  await js(`document.getElementById('cpaOn').click()`); await waitFor(`!!document.querySelector('.confirm-modal-overlay')`);
+  ok('enabling asks for confirmation and says it opens nothing', await js(`/لا يفتح أي حملة/.test(document.querySelector('.confirm-modal-overlay').innerText)`));
+  await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`); await sleep(1500);
+  const pol3 = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
+  ok('enabled and approved at v2; the Meta write lock, mode and permissions are exactly as before (no campaign touched)', pol3.policy.enabled === true && pol3.policy.approved.version === 2 && await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json()).then(o=>o.control.writesLocked === true && o.control.mode === 'SHADOW' && !o.control.allowOpen)`));
+  await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('cpaMin')`); await sleep(800);
+  ok('after a reload (server state survives) the panel shows the saved v2 range and the switch ON', await js(`document.getElementById('cpaMin').value === '20' && document.getElementById('cpaMax').value === '200' && document.getElementById('cpaOn').getAttribute('aria-checked') === 'true'`));
+  await js(`document.querySelector('[data-cpaw="custom"]').click()`); await sleep(400);
+  ok('Custom shows from / to date fields', await js(`!!document.getElementById('cpaFrom') && !!document.getElementById('cpaTo')`));
+  await setC('cpaMin', '300'); await setC('cpaMax', '100'); await js(`document.querySelector('[data-cpaw="30"]').click()`); await sleep(300); await setC('cpaMin', '300'); await setC('cpaMax', '100'); await js(`document.getElementById('cpaSave').click()`); await sleep(1200);
+  ok('min above max is refused with a clear message and nothing is saved', await js(`/أقل من أو يساوي/.test(document.getElementById('cpaErr').innerText)`) && (await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`)).policy.version === 2);
+  // the popup at the open time carries the policy summary (plan prepared under the policy, not dismissed)
+  spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs'), '--popup'], { stdio: 'ignore' });
+  await js(`fetch('/api/operator/daily-plan/open-cpa',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({minCpa:20,maxCpa:200,window:'7'})}).then(r=>r.status)`);
+  await js(`fetch('/api/operator/daily-plan/open-cpa/prepare',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)`);
+  await goto('/ai-media-buyer.html#operator', { width: 1440, height: 900, ls: { 'opx.ws': 'budget' } }); const popCpa = await waitFor(`/سياسة الفتح حسب CPA v[0-9]+: 20–200/.test(document.querySelector('.dp-popup')?.innerText || '')`, 70000);
+  ok('the 12 AM popup shows the saved policy version, the range and the eligible / excluded counts — and says nothing runs before approval', popCpa && await js(`/سياسة الفتح حسب CPA v[0-9]+: 20–200/.test(document.querySelector('.dp-popup').innerText) && /مؤهلة [0-9]+ · مستبعدة [0-9]+/.test(document.querySelector('.dp-popup').innerText) && /مفيش تنفيذ قبل الاعتماد/.test(document.querySelector('.dp-popup').innerText)`));
+  await js(`document.querySelector('.dp-popup header button')?.click()`); await sleep(500);
+  ok('the whole flow opened / paused / changed NOTHING on Meta (no new executed action)', (await js(`fetch('/api/operator/execution-history?limit=50').then(r=>r.json()).then(o=>(o.rows||o.items||[]).length)`)) === actions0);
+  }
+
+  console.log('\n14. «مركز الربط»: the link map, live health, and the unified versioned policy of a product (read-only)');
+  {
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'integration' } }); ok('the integration workspace opens from the sidebar', await waitFor(`!!document.getElementById('intMap') && document.querySelectorAll('.opx-node').length >= 12`));
+    ok('the map shows the 10 features (pricing, rules, open, pause, up, down, scheduler, approvals, history, alerts) in 3 columns with what each owns', await js(`(()=>{const t=document.getElementById('intMap').innerText; return ['التسعير الذكي','قواعد المنتجات','فتح الحملات','إيقاف الحملات','زيادة الميزانية','تقليل الميزانية','الجدولة اليومية','مركز الموافقات','سجل التنفيذ','التنبيهات الذكية'].every(x=>t.includes(x)) && document.querySelectorAll('.opx-int-col').length === 3 && /المصدر الوحيد/.test(t)})()`));
+    ok('the links table explains what flows between features (e.g. pricing → rules: preview then confirm → draft only)', await js(`(()=>{const rows=[...document.querySelectorAll('#intMap table tbody tr')]; return rows.length >= 20 && rows.some(r=>/التسعير الذكي/.test(r.cells[0].innerText) && /قواعد المنتجات/.test(r.cells[2].innerText) && /مسودة فقط/.test(r.cells[3].innerText)) && rows.some(r=>/سجل التنفيذ/.test(r.cells[0].innerText) && /التنبيهات/.test(r.cells[2].innerText))})()`));
+    const health = await js(`fetch('/api/operator/integration/health').then(r=>r.json())`);
+    ok('the live health shows every link (identity, freshness, Cairo, policies, open-by-CPA, pending plans, conflicts, failures, safety) and matches the server', await js(`['identity','freshness','cairo','policies','openCpa','pendingPlans','conflicts','failures','safety'].every(k=>!!document.querySelector('[data-check="'+k+'"]'))`) && health.checks.length === (await js(`document.querySelectorAll('[data-check]').length`)), JSON.stringify(health.checks.map((c) => [c.key, c.severity])));
+    ok('the status dots on the map come from those checks', await js(`!!document.querySelector('[data-node="scheduler"] .opx-dot') && !!document.querySelector('[data-node="identity"] .opx-dot')`));
+    ok('the unified policy of a product is shown with its version state, effective values, the precedence and the Cairo windows', await waitFor(`/الأولوية/.test(document.getElementById('intResolved')?.innerText || '')`) && await js(`(()=>{const t=document.getElementById('intResolved').innerText; return /Hard Stop CPA/.test(t) && /Cooldown/.test(t) && /EMERGENCY_STOP/.test(t) && /بتوقيت القاهرة/.test(t) && /(سياسة المنتج مفعّلة|مفيش سياسة منتج مفعّلة)/.test(t)})()`));
+    const rs = await js(`(()=>{const s=document.getElementById('intSel'); return s ? [...s.options].map(o=>o.value) : []})()`); ok('every product with campaigns can be inspected', rs.length >= 3);
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'integration' } }); await waitFor(`!!document.getElementById('intMap')`); await sleep(1200);
+    ok('phone: the map and checks stack in one column with no horizontal scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && getComputedStyle(document.querySelector('.opx-int-cols')).gridTemplateColumns.split(' ').length === 1`));
+  }
   spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs')], { stdio: 'ignore' });
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));

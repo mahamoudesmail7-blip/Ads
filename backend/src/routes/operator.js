@@ -17,6 +17,8 @@ import { campaignWindowMetrics, parseWindow, productImages } from '../services/a
 import { listExecutionHistory } from '../services/amb/executionHistory.js';
 import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
 import * as SP from '../services/amb/smartPricing.js';
+import * as OC from '../services/amb/openCpaPolicy.js';
+import * as INT from '../services/amb/integration.js';
 import * as AMBP from '../services/amb/ambProducts.js';
 import { getProductPerformance } from '../services/amb/productPerformance.js';
 import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetActionHistory } from '../services/amb/budgetOptimizer.js';
@@ -180,6 +182,15 @@ router.get('/status-bar', asyncRoute(async (req, res) => res.json(await statusBa
 router.get('/brief', asyncRoute(async (req, res) => res.json(await buildOperatorBrief({ force: req.query.fresh === '1' }))));
 router.get('/monitoring', asyncRoute(async (req, res) => res.json({ actions: await listMonitoredActions({ limit: req.query.limit, days: req.query.days }) })));
 router.get('/production-readiness', asyncRoute(async (req, res) => res.json(await buildProductionReadiness({}))));
+// ---- «الفتح حسب CPA»: a saved, versioned opening policy. Saving ≠ enabling; neither opens a campaign. Preparing only SELECTS (approval + live revalidation are unchanged).
+router.get('/daily-plan/open-cpa', asyncRoute(async (req, res) => res.json(await daily.getOpenCpaOverview({ now: clockNow() }))));
+router.put('/daily-plan/open-cpa', ADMIN, asyncRoute(async (req, res) => { const r = await OC.saveOpenCpaPolicy({ patch: req.body || {}, userId: req.user.id, now: clockNow() }); const reconcile = r.changed ? await daily.reconcileOpenCpaPlans({ userId: req.user.id, now: clockNow() }) : null; res.json({ ...r, reconcile }); }));
+router.post('/daily-plan/open-cpa/enable', ADMIN, asyncRoute(async (req, res) => res.json(await OC.setOpenCpaEnabled({ enabled: req.body?.enabled, confirm: req.body?.confirm, userId: req.user.id, now: clockNow() }))));
+router.post('/daily-plan/open-cpa/prepare', ADMIN, asyncRoute(async (req, res) => res.json(await daily.prepareOpenCpaMatches({ planId: req.body?.planId, userId: req.user.id, reselect: Array.isArray(req.body?.reselect) ? req.body.reselect : [], confirmSpecial: req.body?.confirmSpecial === true, now: clockNow() }))));
+// ---- Integration Layer: one versioned policy view per product / campaign, the link map and a live health check (read-only)
+router.get('/integration/map', asyncRoute(async (req, res) => res.json(INT.INTEGRATION_MAP)));
+router.get('/integration/health', asyncRoute(async (req, res) => res.json(await INT.integrationHealth({ now: clockNow(), simulated: isTestClock() }))));
+router.get('/integration/resolve', asyncRoute(async (req, res) => res.json(await INT.resolvePolicy({ campaignId: req.query.campaignId ? String(req.query.campaignId) : null, productId: req.query.productId ? Number(req.query.productId) : null, storeId: req.query.storeId ? String(req.query.storeId) : null, now: clockNow() }))));
 router.get('/daily-plan/overview', asyncRoute(async (req, res) => res.json(await daily.getDailyOverview({ now: clockNow() }))));
 router.get('/daily-plan/due', asyncRoute(async (req, res) => res.json({ now: clockNow(), testClock: isTestClock(), popups: await daily.getDuePopups({ now: clockNow() }) })));
 router.get('/daily-plan/preview-tomorrow', asyncRoute(async (req, res) => res.json(await daily.previewTomorrow({ now: clockNow() }))));

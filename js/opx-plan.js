@@ -24,7 +24,7 @@ const NARROW_PX = 820; // same breakpoint as the CSS container query: below it t
 const ASIDE_PX = 1480; // from here the scheduler panel sits beside the table (own column); below it the panel opens in a drawer
 const XL_PX = 1260; // table width from which the Today-spend column fits inside the TODAY group; below it the spend lives in the campaign drawer
 const layoutOf = () => { const w = mainW(); const tableW = w - (w >= ASIDE_PX ? 316 : 0); return w <= NARROW_PX ? 'cards' : tableW >= XL_PX ? 'xl' : 'lg'; };
-const P = { shown: PAGE, pm: null, pmErr: null, sel: null, type: 'OPEN', ctx: null, root: null, ov: null, board: null, bmap: new Map(), loading: false, f: null, timer: null, prepTimer: null };
+const P = { cpa: null, cpaForm: null, cpaDirty: false, shown: PAGE, pm: null, pmErr: null, sel: null, type: 'OPEN', ctx: null, root: null, ov: null, board: null, bmap: new Map(), loading: false, f: null, timer: null, prepTimer: null };
 
 export async function mountPlanWorkspace(root, type, ctx) {
   P.type = type; P.ctx = ctx; P.root = root; P.ov = null; P.sel = null; P.board = null; P.bmap = new Map();
@@ -42,12 +42,81 @@ export function unmountPlanWorkspace() { clearInterval(P.timer); clearTimeout(P.
 async function load({ quiet = false } = {}) {
   try { P.ov = await api.get(`${API}/overview`); } catch (e) { P.root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; return; }
   try { P.board = await api.get('/api/operator/campaign-board'); P.bmap = new Map((P.board.rows || []).map((r) => [r.campaignId, r])); } catch { P.board = null; P.bmap = new Map(); } // the table still works from the plan's own evidence
+  await loadCpa();
   await ensurePeriodMetrics();
   if (!quiet || document.body.contains(P.root)) draw();
   const preparing = (P.ov.preparing || []).some((p) => !p.error);
   clearTimeout(P.prepTimer); if (preparing) P.prepTimer = setTimeout(() => load({ quiet: true }), 5000);
   const running = P.ov.plans?.[P.type] && ['APPROVED', 'RUNNING'].includes(P.ov.plans[P.type].status);
   if (running) P.prepTimer = setTimeout(() => load({ quiet: true }), 3000);
+}
+// ---- «الفتح حسب تكلفة الأوردر CPA»: a SAVED, versioned opening policy (limits, window, minimum sample). Saving never enables it; enabling never opens a campaign; preparing only SELECTS.
+const WIN_CHIPS = [['today', 'Today'], ['7', '7 Days'], ['30', '30 Days'], ['90', '90 Days'], ['custom', 'Custom']];
+const WIN_AR = { today: 'اليوم', 7: 'آخر 7 أيام', 30: 'آخر 30 يوم', 90: 'آخر 90 يوم', custom: 'فترة مخصصة' };
+async function loadCpa() {
+  if (P.type !== 'OPEN') { P.cpa = null; return; }
+  try { P.cpa = await api.get(`${API}/open-cpa`); } catch { P.cpa = null; }
+  const pol = P.cpa?.policy; if (pol && (!P.cpaForm || !P.cpaDirty)) { P.cpaForm = { minCpa: pol.minCpa ?? '', maxCpa: pol.maxCpa ?? '', window: pol.window, from: pol.from || '', to: pol.to || '', minPurchases: pol.minPurchases, maxDataAgeMin: pol.maxDataAgeMin }; P.cpaDirty = false; }
+}
+const cpaDirtyNow = () => { const pol = P.cpa?.policy, f = P.cpaForm; if (!pol || !f) return false; return ['minCpa', 'maxCpa', 'minPurchases', 'maxDataAgeMin'].some((k) => String(f[k] ?? '') !== String(pol[k] ?? '')) || f.window !== pol.window || (f.window === 'custom' && (f.from !== (pol.from || '') || f.to !== (pol.to || ''))); };
+function cpaPanel(p, editable) {
+  const d = P.cpa; if (!d || !P.cpaForm) return ''; const pol = d.policy, f = P.cpaForm, pv = d.preview?.counts, admin = P.ctx.isAdmin; const dirty = cpaDirtyNow();
+  const complete = pol.minCpa != null && pol.maxCpa != null; const approvedHere = pol.enabled && pol.approved?.version === pol.version; const planStale = d.plan?.stale;
+  const tile = (cls, n, label, icon) => `<div class="opx-cpa-tile ${cls}"><div><b>${n == null ? '—' : num(n)}</b><span>${label}</span></div><i>${icon}</i></div>`;
+  const polText = complete ? `فتح الحملات التي CPA بين <b>${num(pol.minCpa)}</b> إلى <b>${num(pol.maxCpa)}</b> جنيه خلال <b>${WIN_AR[pol.window]}</b>${pol.window === 'custom' ? ` (${E(pol.from)} → ${E(pol.to)})` : ''}<br>الحد الأدنى للأوردرات: <b>${num(pol.minPurchases)}</b> · أقصى عمر للبيانات: <b>${num(pol.maxDataAgeMin)}</b> دقيقة` : 'مفيش نطاق محفوظ — حدّد أقل وأعلى CPA واحفظ. السيستم مش بيفترض أي نطاق.';
+  return `<section class="opx-card opx-cpa opx-fade" id="opxCpa">
+    <div class="opx-cpa-head"><div class="opx-head-icon violet" style="width:48px;height:48px">${ICONS.target}</div><div class="grow"><h2>الفتح حسب تكلفة الأوردر CPA ${pill('Beta', 'violet')} ${pill('نسخة v' + pol.version, 'gray')}</h2><p>حدد نطاق CPA واختار الفترة — السيستم بيجهز الحملات المطابقة بعد اجتياز الأهلية وحواجز الأمان</p></div>
+      <div class="opx-cpa-tiles">${tile('green', pv?.matched, 'مطابقة للنطاق', '◎')}${tile('blue', pv?.eligible, 'مؤهلة للفتح', '✓')}${tile('amber', pv?.excluded, 'مستبعدة', '⊖')}</div></div>
+    <div class="opx-cpa-toggle"><button class="opx-switch-btn ${pol.enabled ? 'on' : ''}" id="cpaOn" role="switch" aria-checked="${pol.enabled}" ${admin ? '' : 'disabled'} title="${admin ? '' : 'ADMIN فقط'}"><span></span></button><div><b>${pol.enabled ? 'قاعدة الفتح حسب CPA مفعّلة' : 'تفعيل قاعدة الفتح حسب CPA'}</b><small>منفصلة تمامًا عن قفل كتابة Meta — ${pol.enabled ? (approvedHere ? `معتمدة للنسخة v${pol.version}` : `النسخة المعتمدة v${pol.approved?.version ?? '—'} (الحالية v${pol.version}) `) : 'مقفولة: الجدول بيتجهز بالمنطق العادي'}</small></div>${pol.enabled && !approvedHere && admin ? '<button class="opx-btn sm" id="cpaApprove">اعتماد النسخة الحالية</button>' : ''}</div>
+    <div class="opx-cpa-form">
+      <label class="opx-field"><span>أقل CPA (جنيه)</span><input class="opx-input" id="cpaMin" inputmode="decimal" value="${E(f.minCpa)}" ${admin ? '' : 'disabled'}></label>
+      <label class="opx-field"><span>أعلى CPA (جنيه)</span><input class="opx-input" id="cpaMax" inputmode="decimal" value="${E(f.maxCpa)}" ${admin ? '' : 'disabled'}></label>
+      <div class="opx-field"><span>فترة القياس</span><div class="opx-chips" role="group" aria-label="فترة القياس">${WIN_CHIPS.map(([k, t]) => `<button class="opx-chip ${f.window === k ? 'on' : ''}" data-cpaw="${k}" ${admin ? '' : 'disabled'}>${t}</button>`).join('')}</div></div>
+      <label class="opx-field"><span>الحد الأدنى للأوردرات</span><input class="opx-input" id="cpaMinP" inputmode="numeric" value="${E(f.minPurchases)}" ${admin ? '' : 'disabled'}></label>
+      <label class="opx-field"><span>أقصى عمر للبيانات (دقيقة)</span><input class="opx-input" id="cpaAge" inputmode="numeric" value="${E(f.maxDataAgeMin)}" ${admin ? '' : 'disabled'}></label>
+      ${f.window === 'custom' ? `<label class="opx-field"><span>من</span><input class="opx-input" type="date" id="cpaFrom" value="${E(f.from)}" ${admin ? '' : 'disabled'}></label><label class="opx-field"><span>إلى</span><input class="opx-input" type="date" id="cpaTo" value="${E(f.to)}" ${admin ? '' : 'disabled'}></label>` : ''}</div>
+    <div id="cpaErr"></div>
+    <div class="opx-cpa-now"><div><b>السياسة المحفوظة الحالية</b><p>${polText}</p></div><div class="opx-cpa-btns">
+      <button class="opx-btn" id="cpaPreview" ${complete ? '' : 'disabled'}>${ICONS.eye} معاينة النتائج</button>
+      <button class="opx-btn primary" id="cpaPrepare" ${admin && complete && p && ['PREPARED', 'APPROVED'].includes(p.status) && !dirty ? '' : 'disabled'} title="${dirty ? 'احفظ التعديلات الأول' : ''}">${ICONS.target} تجهيز الحملات المطابقة</button>
+      <button class="opx-btn ${dirty ? 'accent' : ''}" id="cpaSave" ${admin && dirty ? '' : 'disabled'}>${ICONS.history} حفظ السياسة كنسخة جديدة</button><button class="opx-btn ghost sm" id="cpaHist">سجل النسخ</button></div></div>
+    ${planStale ? `<div class="opx-notice amber"><div class="grow"><b>الخطة اتجهزت بنسخة سياسة أقدم (v${d.plan.policyVersion ?? 'بدون'})</b><small>اضغط «تجهيز الحملات المطابقة» لإعادة التقييم — اختياراتك اليدوية (اللي استبعدتها) بتفضل زي ما هي.</small></div></div>` : ''}
+    <div class="opx-notice red opx-cpa-warn"><div class="grow"><b>مهم: تجهيز الحملات لا يعني تنفيذها.</b><small>سيتم تطبيق القواعد والحماية والتأكد من الأهلية. التنفيذ يتم حسب الوضع (SHADOW محاكاة / APPROVAL بعد اعتمادك / AUTOMATIC حسب الصلاحيات) — ولا يتم فتح أي حملة فعليًا بمجرد تغيير الزر أو حدود CPA.</small></div></div></section>`;
+}
+function wireCpa(p) {
+  const d = P.cpa; if (!d || !$('opxCpa')) return; const root = $('opxCpa'); const f = P.cpaForm; const upd = () => { P.cpaDirty = cpaDirtyNow(); const sv = $('cpaSave'); if (sv) sv.disabled = !(P.ctx.isAdmin && P.cpaDirty); const pr = $('cpaPrepare'); if (pr) pr.disabled = P.cpaDirty || pr.disabled && !P.cpaDirty ? true : false; };
+  const bind = (id, k) => { const el = $(id); if (el) el.oninput = () => { f[k] = el.value; P.cpaDirty = cpaDirtyNow(); const sv = $('cpaSave'); if (sv) sv.disabled = !(P.ctx.isAdmin && P.cpaDirty); const pr = $('cpaPrepare'); if (pr && P.cpaDirty) pr.disabled = true; }; };
+  bind('cpaMin', 'minCpa'); bind('cpaMax', 'maxCpa'); bind('cpaMinP', 'minPurchases'); bind('cpaAge', 'maxDataAgeMin'); bind('cpaFrom', 'from'); bind('cpaTo', 'to');
+  root.querySelectorAll('[data-cpaw]').forEach((b) => { b.onclick = () => { f.window = b.dataset.cpaw; if (f.window === 'custom' && !f.to) { f.to = todayStr(); const dd = new Date(`${todayStr()}T00:00:00Z`); dd.setUTCDate(dd.getUTCDate() - 13); f.from = dd.toISOString().slice(0, 10); } P.cpaDirty = cpaDirtyNow(); draw(); }; });
+  const err = (m) => { $('cpaErr').innerHTML = m ? `<div class="opx-note bad">⚠️ ${E(m)}</div>` : ''; };
+  if ($('cpaSave')) $('cpaSave').onclick = async () => {
+    try { const r = await api.put(`${API}/open-cpa`, { minCpa: f.minCpa, maxCpa: f.maxCpa, window: f.window, from: f.from, to: f.to, minPurchases: f.minPurchases, maxDataAgeMin: f.maxDataAgeMin }); P.cpaDirty = false; P.cpaForm = null;
+      toast(r.changed ? `اتحفظت نسخة جديدة v${r.policy.version}${r.reconcile?.superseded?.length ? ' — الخطة المعتمدة اتلغت ومحتاجة اعتماد جديد' : ''}. مفيش حملة اتفتحت.` : 'مفيش تغيير يتحفظ', r.reconcile?.superseded?.length ? 'warning' : undefined); await load(); }
+    catch (e) { err((e.details || [e.message]).join(' ')); }
+  };
+  if ($('cpaOn')) $('cpaOn').onclick = async () => {
+    const pol = d.policy; const to = !pol.enabled;
+    if (!(await confirmModal({ title: to ? 'تفعيل الفتح حسب CPA' : 'إيقاف الفتح حسب CPA', message: to ? `هتتفعّل سياسة CPA ${pol.minCpa ?? '—'}–${pol.maxCpa ?? '—'} (v${pol.version}). التفعيل لا يفتح أي حملة؛ بيخلّي الجدول يتجهز حسب السياسة، والتنفيذ بيفضل حسب الوضع والاعتماد والصلاحيات.` : 'الجدول هيرجع يتجهز بالمنطق العادي. السياسة والحدود تفضل محفوظة.', confirmLabel: to ? 'تفعيل' : 'إيقاف' }))) return;
+    try { await api.post(`${API}/open-cpa/enable`, { enabled: to, confirm: true }); toast(to ? 'اتفعّلت — مفيش حملة اتفتحت' : 'اتقفلت'); await load(); } catch (e) { err((e.details || [e.message]).join(' ')); }
+  };
+  if ($('cpaApprove')) $('cpaApprove').onclick = async () => { try { await api.post(`${API}/open-cpa/enable`, { enabled: true, confirm: true }); toast('اتعتمدت النسخة الحالية'); await load(); } catch (e) { err(e.message); } };
+  if ($('cpaPreview')) $('cpaPreview').onclick = () => cpaPreviewDrawer();
+  if ($('cpaHist')) $('cpaHist').onclick = () => openDrawer({ title: 'سجل نسخ سياسة الفتح حسب CPA', body: (d.policy.history || []).length ? `<table class="opx-table"><thead><tr><th>النسخة</th><th class="num">أقل</th><th class="num">أعلى</th><th>الفترة</th><th>اتبدلت</th></tr></thead><tbody>${d.policy.history.map((h) => `<tr><td>v${h.version}${h.enabled ? ' ' + pill('كانت مفعّلة', 'green') : ''}</td><td class="num">${h.minCpa ?? '—'}</td><td class="num">${h.maxCpa ?? '—'}</td><td>${E(WIN_AR[h.window] || h.window)}${h.window === 'custom' ? ' ' + E(h.from) + ' → ' + E(h.to) : ''}</td><td>${E(cairoDateTime(h.replacedAt))}</td></tr>`).join('')}</tbody></table>` : '<div class="opx-empty">النسخة الأولى — مفيش سجل بعد.</div>' });
+  if ($('cpaPrepare')) $('cpaPrepare').onclick = async () => {
+    if (p?.status === 'APPROVED' && !(await confirmModal({ title: 'تجهيز على خطة معتمدة', message: 'الخطة معتمدة. التجهيز هيلغي النسخة المعتمدة وينشئ نسخة جديدة محتاجة اعتماد جديد. مفيش تنفيذ.', confirmLabel: 'متابعة' }))) return;
+    try { const r = await api.post(`${API}/open-cpa/prepare`, {}); if (!r.ok) { toast(r.message || 'مش متاح', 'error'); return; } toast(`اتجهزت: ${num(r.counts.eligible)} مؤهلة · ${num(r.counts.excluded)} مستبعدة من ${num(r.counts.matched)} مطابقة${r.newVersion ? ' — نسخة جديدة محتاجة اعتماد' : ''}. مفيش حملة اتنفذت.`); await load(); }
+    catch (e) { toast(e.message, 'error'); }
+  };
+}
+const CPA_V = { ELIGIBLE: ['green', 'مؤهلة'], EXCLUDED: ['amber', 'مستبعدة'], OUT_OF_RANGE: ['gray', 'خارج النطاق'], UNKNOWN_CPA: ['gray', 'CPA غير معروف'] };
+function cpaPreviewDrawer() {
+  const d = P.cpa; const pv = d?.preview; if (!pv) { openDrawer({ title: 'معاينة نتائج سياسة CPA', body: '<div class="opx-empty">مفيش خطة فتح لليوم لمعاينتها.</div>' }); return; }
+  let flt = 'ALL'; const show = () => { const rows = pv.rows.filter((r) => flt === 'ALL' || r.verdict === flt).sort((a, b) => (a.verdict === 'ELIGIBLE' ? 0 : 1) - (b.verdict === 'ELIGIBLE' ? 0 : 1) || (b.purchases ?? 0) - (a.purchases ?? 0));
+    const panel = openDrawer({ title: `معاينة نتائج سياسة CPA v${d.policy.version}`, body: `<div class="opx-notice blue"><div class="grow"><b>معاينة فقط — مفيش اختيار اتغيّر ولا حاجة اتنفذت</b><small>${num(pv.counts.matched)} مطابقة · ${num(pv.counts.eligible)} مؤهلة · ${num(pv.counts.excluded)} مستبعدة · عمر بيانات Meta ${num(pv.dataAgeMin)} دقيقة</small></div></div>
+      <div class="opx-chips" style="margin:10px 0">${[['ALL', 'الكل'], ['ELIGIBLE', 'مؤهلة'], ['EXCLUDED', 'مستبعدة'], ['OUT_OF_RANGE', 'خارج النطاق'], ['UNKNOWN_CPA', 'CPA غير معروف']].map(([k, t]) => `<button class="opx-chip ${flt === k ? 'on' : ''}" data-f="${k}">${t}</button>`).join('')}</div>
+      <div class="opx-scroll" style="max-height:60vh"><table class="opx-table"><thead><tr><th>الحملة</th><th>الحكم</th><th class="num">CPA</th><th class="num">أوردرات</th><th>السبب</th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${E(r.productName || '—')}</b><small>${E(r.campaignName || r.campaignId)}</small></td><td>${pill(CPA_V[r.verdict][1], CPA_V[r.verdict][0])}</td><td class="num">${r.cpa == null ? 'غير متاح' : num(r.cpa)}</td><td class="num">${r.purchases == null ? '—' : num(r.purchases)}</td><td class="opx-why">${r.verdict === 'ELIGIBLE' ? 'اجتازت كل الشروط' : E((r.reasons || []).join(' · ')) + ((r.guardCodes || []).length ? '<small>' + E(r.guardCodes.map((c) => BLOCK_AR[c] || c).join(' · ')) + '</small>' : '')}</td></tr>`).join('') || '<tr><td colspan="5" class="opx-empty">مفيش</td></tr>'}</tbody></table></div>` });
+    panel.querySelectorAll('[data-f]').forEach((b) => { b.onclick = () => { flt = b.dataset.f; show(); }; }); };
+  show();
 }
 const plansOfType = () => [P.ov?.plans?.[P.type], ...((P.ov?.oneOffPlans || []).filter((p) => p.type === P.type))].filter(Boolean);
 const plan = () => { const all = plansOfType(); return all.find((p) => p.key === P.sel) || P.ov?.plans?.[P.type] || all[0] || null; };
@@ -154,6 +223,7 @@ function draw() {
       <div class="opx-count" id="opxCountdown">${countdownHtml(nextAt)}</div></div>` : `<div class="opx-notice amber"><div class="grow"><b>مفيش خطة ${m.verb} لليوم بعد</b><small>الخطة بتتجهز على السيرفر في الموعد (${m.slot} بتوقيت القاهرة)، أو ابدأ خطة الآن.</small></div></div>`}
     <div class="opx-work opx-work-plan">
       <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+        ${P.type === 'OPEN' ? cpaPanel(p, editable) : ''}
         ${plansOfType().length > 1 ? `<div class="opx-card opx-filters" id="opxPlans">${plansOfType().map((x) => `<button class="opx-chip ${x.key === (p?.key) ? 'on' : ''}" data-plan="${E(x.key)}">${E(planLabel(x))} · ${num(x.counts?.total)} حملة</button>`).join('')}</div>` : ''}
         <div class="opx-card opx-filters">
           <div class="opx-chips opx-views" role="group" aria-label="عرض الحملات">${VIEWS.map(([k, t]) => `<button class="opx-chip ${P.f.view === k ? 'on' : ''}" data-view="${k}">${t} <span class="opx-chip-n">${num(counts[k])}</span></button>`).join('')}</div>
@@ -207,7 +277,9 @@ const statusPill = (r) => (r.status === 'ACTIVE' ? pill('نشطة', 'green') : r
 function tagLine(r) {
   const i = r.item; const out = [];
   if (i) { const tone = i.eligibility === 'ELIGIBLE' ? 'green' : i.eligibility === 'BLOCKED' ? 'red' : i.eligibility === 'PROTECTED' ? 'blue' : 'amber'; out.push(pill(i.eligibility === 'ELIGIBLE' ? 'مؤهلة' : (ELIG_AR[i.eligibility] || i.eligibility), tone)); if (i.status && i.status !== 'PENDING') out.push(pill(E(ITEM_AR[i.status] || i.status), ITEM_PILL[i.status] || 'gray')); }
-  else { out.push(pill('غير مرشحة', 'gray')); if (r.protectedF) out.push(pill('محمية', 'blue')); if (r.blockedF) out.push(pill('استثناء', 'red')); }
+  const cp = i?.evidence?.cpaPolicy; if (cp && P.cpa?.policy?.enabled !== undefined && cp.verdict) out.push(cp.verdict === 'ELIGIBLE' ? pill('✓ مطابقة CPA', 'green', `CPA ${cp.cpa} · ${cp.purchases} أوردر`) : cp.verdict === 'EXCLUDED' ? pill('⊖ ' + (cp.reasons?.[0] || 'مستبعدة'), 'amber', (cp.reasons || []).join(' · ')) : pill(cp.verdict === 'OUT_OF_RANGE' ? 'خارج نطاق CPA' : 'CPA غير معروف', 'gray', (cp.reasons || []).join(' · ')));
+  if (i?.evidence?.userDeselected) out.push(pill('استبعاد يدوي', 'gray', 'استبعدتها بنفسك — لا تُختار تلقائيًا'));
+  if (!i) { out.push(pill('غير مرشحة', 'gray')); if (r.protectedF) out.push(pill('محمية', 'blue')); if (r.blockedF) out.push(pill('استثناء', 'red')); }
   return `<div class="opx-tags">${out.join('')}</div>`;
 }
 function nameCell(r) {
@@ -303,6 +375,7 @@ function wire(p, editable) {
   }; });
   root.querySelectorAll('[data-row]').forEach((b) => { b.onclick = () => rowDrawer(allRows().find((x) => x.id === b.dataset.row)); });
   wirePanel(root.querySelector('aside.opx-panel'), p);
+  wireCpa(p);
 }
 async function approve(p) {
   const m = META[P.type]; const sel = p.items.filter((i) => i.selected); const c = P.ov.control || {}; const live = c.mode === 'APPROVAL' && !c.writesLocked && c[m.permKey];
@@ -330,6 +403,7 @@ function rowDrawer(r) {
     <div class="opx-scroll" style="margin:12px 0"><table class="opx-table"><thead><tr><th>الفترة</th><th class="num">أوردرات</th><th class="num">الصرف</th><th class="num">CPA</th></tr></thead><tbody>${win('اليوم (القاهرة)', t)}${win('آخر 7 أيام', d7)}${win('آخر 30 يوم', d30)}${P.f.period === '90' || P.f.period === 'custom' ? win(periodTitle(), pv(r)) : ''}</tbody></table></div>
     <div>${kv('ألوان CPA (جيد / متوسط / تحذير)', E(zones))}${e.priority ? kv('Priority Score', `${e.priority.score} (${E(e.priority.band)})`) : ''}${i ? kv('سبب الترشيح', E(i.reason || '—')) : ''}${recentWorse(e) ? kv('تنبيه', 'الأداء الحديث أسوأ من التاريخي') : ''}</div>
     ${e.priority?.reasons?.length ? `<div><b>ليه السكور ده؟</b><ul class="opx-note">${e.priority.reasons.map((x) => `<li>${E(x)}</li>`).join('')}</ul></div>` : ''}
+    ${e.cpaPolicy ? `<div>${kv('سياسة الفتح حسب CPA', E(`v${e.cpaPolicy.version} · ${WIN_AR[e.cpaPolicy.window] || e.cpaPolicy.window}`))}${kv('الحكم', E(CPA_V[e.cpaPolicy.verdict]?.[1] || e.cpaPolicy.verdict))}${kv('CPA / أوردرات / صرف', E(`${e.cpaPolicy.cpa == null ? 'غير متاح' : e.cpaPolicy.cpa} / ${e.cpaPolicy.purchases ?? '—'} / ${e.cpaPolicy.spend ?? '—'}`))}${(e.cpaPolicy.reasons || []).length ? kv('الأسباب', E(e.cpaPolicy.reasons.join(' · '))) : ''}</div>` : ''}
     ${blocks.length ? `<div class="opx-notice red"><div class="grow"><b>حواجز أمان</b><small>${E(blocks.join(' · '))}</small></div></div>` : ''}
     ${!i && r.b?.exceptions?.length ? `<div class="opx-notice red"><div class="grow"><b>استثناءات مفعّلة</b><small>${E(r.b.exceptions.join(' · '))}</small></div></div>` : ''}`,
   foot: i && P.ctx.isAdmin ? `<button class="opx-btn" id="opxExDay">استبعاد لليوم</button><button class="opx-btn danger" id="opxExAlways">استبعاد دائم</button><button class="opx-btn" id="opxProtect">حماية كـWinner</button>` : '' });

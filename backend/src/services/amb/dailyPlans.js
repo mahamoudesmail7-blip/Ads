@@ -18,6 +18,7 @@ import { getOperatorConfig, addException, metaWritesLocked } from './operatorSto
 import { getSyncStatus, runSnapshotSync } from './snapshotSync.js';
 import { raiseAlert } from './alerts.js';
 import { buildOpenCandidates, buildPauseCandidates } from './dailyPlanCandidates.js';
+import { getOpenCpaPolicy, validateOpenCpa, evaluateCampaign, summarizeEvaluations, loadWindowMetrics, windowRangeFor, REASON_AR } from './openCpaPolicy.js';
 import { SLOTS, TYPE_LABEL_AR, CAIRO_TZ, cairoDate, cairoParts, dueTypes, dueAt, dueAtTime, slotVariant, expiresAt, nextDue, planKey, clockNow, isTestClock } from './dailyPlanTime.js';
 
 const MS_M = 60_000, MS_H = 3_600_000;
@@ -100,7 +101,7 @@ export async function preparePlan({ type, date, now = new Date(), simulated = is
   try {
     plan = await prisma.ambDailyPlan.create({ data: {
       plan_key: key, type, plan_date: date, timezone: CAIRO_TZ, version: 1, status: 'PREPARED', simulated, scheduled_at: slotTime ? dueAtTime(date, slotTime) : dueAt(type, date), expires_at: expiresAt(date), prepared_at: now, data_as_of: fresh.asOf, data_state: fresh.state, surfaced_at: now >= (slotTime ? dueAtTime(date, slotTime) : dueAt(type, date)) ? now : null,
-      evidence_json: JSON.stringify({ mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), policy: built.policy ? { zeroOrders: built.policy.zeroOrders, scale: built.policy.scale, reduce: built.policy.reduce, highCpa: built.policy.highCpa } : null, dataAsOf: fresh.asOf, refreshed: fresh.refreshed, staleReason: fresh.error, staleMinutes: dcfg.staleMinutes, pausedPool: built.pausedTotal ?? null, candidatesPool: built.candidatesPool ?? null, preparedBy: userId ? 'USER' : 'SCHEDULER', variant, only, unselected }),
+      evidence_json: JSON.stringify({ mode: cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: metaWritesLocked(), policy: built.policy ? { zeroOrders: built.policy.zeroOrders, scale: built.policy.scale, reduce: built.policy.reduce, highCpa: built.policy.highCpa } : null, dataAsOf: fresh.asOf, refreshed: fresh.refreshed, staleReason: fresh.error, staleMinutes: dcfg.staleMinutes, pausedPool: built.pausedTotal ?? null, candidatesPool: built.candidatesPool ?? null, openCpa: built.openCpa || null, preparedBy: userId ? 'USER' : 'SCHEDULER', variant, only, unselected }),
       items: { create: built.items.map((it) => ({ campaign_id: it.campaignId, campaign_name: it.campaignName, product_id: it.productId, product_name: it.productName, store_id: it.storeId, rank: it.rank, selected: stale ? false : !!it.selected, selectable: stale ? false : !!it.selectable, eligibility: it.eligibility, block_codes_json: JSON.stringify([...(it.blockCodes || []), ...(stale ? ['STALE_DATA'] : [])]), risk: it.risk, risk_score: it.riskScore, evidence_json: JSON.stringify({ ...it.evidence, warnings: it.warnings }), reason: stale ? `STALE DATA — ${it.reason}` : it.reason })) },
     }, include: { items: { orderBy: { rank: 'asc' } } } });
   } catch (e) { if (e.code === 'P2002') return { plan: await latestVersion(key), created: false }; throw e; }
@@ -228,6 +229,8 @@ export async function detectExternalSchedule({ wait = false, maxAgeMs = 15 * MS_
 // =====================================================================================================================
 // owner actions: selection (versioned), exclusions, protection, cancel
 // =====================================================================================================================
+/** unticking a campaign is the owner's decision: it is marked, and the CPA policy never re-ticks it on its own */
+const withDeselectMark = (ev, selected, userId, now) => { const e = { ...(ev || {}) }; if (selected) delete e.userDeselected; else e.userDeselected = { at: now.toISOString(), by: userId ?? null }; return e; };
 export async function updateSelection({ planId, selections, special = [], userId, now = new Date() }) {
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   if (!plan) { const e = new Error('الخطة غير موجودة.'); e.status = 404; throw e; }
@@ -235,10 +238,10 @@ export async function updateSelection({ planId, selections, special = [], userId
   if (latest.id !== plan.id) { const e = new Error('دي نسخة قديمة من الخطة — اشتغل على آخر نسخة.'); e.status = 409; throw e; }
   if (['RUNNING', 'COMPLETED', 'CANCELLED', 'SUPERSEDED', 'MISSED'].includes(plan.status)) { const e = new Error(`الخطة ${plan.status} — مش قابلة للتعديل.`); e.status = 409; throw e; }
   const changes = []; const byId = new Map(plan.items.map((i) => [i.campaign_id, i]));
-  for (const [cid, want] of Object.entries(selections || {})) { const it = byId.get(cid); if (!it) continue; const v = !!want; if (v && !it.selectable) { const e = new Error(`الحملة ${it.campaign_name || cid} ممنوعة/محمية — مينفعش تتختار.`); e.status = 400; throw e; } if (v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' && !(special || []).includes(cid)) { const e = new Error(`الحملة ${it.campaign_name || cid} اتوقفت لسبب غير معروف/يدويًا — محتاجة موافقة خاصة صريحة قبل اختيارها.`); e.status = 400; e.code = 'SPECIAL_APPROVAL_REQUIRED'; throw e; } if (it.selected !== v) changes.push({ campaignId: cid, name: it.campaign_name, from: it.selected, to: v, ...(v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' ? { specialApproval: true } : {}) }); }
+  for (const [cid, want] of Object.entries(selections || {})) { const it = byId.get(cid); if (!it) continue; const v = !!want; if (v && !it.selectable) { const e = new Error(`الحملة ${it.campaign_name || cid} ممنوعة/محمية — مينفعش تتختار.`); e.status = 400; throw e; } if (v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' && !(special || []).includes(cid)) { const e = new Error(`الحملة ${it.campaign_name || cid} اتوقفت لسبب غير معروف/يدويًا — محتاجة موافقة خاصة صريحة قبل اختيارها.`); e.status = 400; e.code = 'SPECIAL_APPROVAL_REQUIRED'; throw e; } if (it.selected !== v) changes.push({ campaignId: cid, name: it.campaign_name, from: it.selected, to: v, ev: j(it.evidence_json, {}), ...(v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' ? { specialApproval: true } : {}) }); }
   if (!changes.length) return { plan: shapePlan(plan, plan.items), changed: 0, newVersion: false };
   if (plan.status === 'PREPARED') {
-    for (const c of changes) await prisma.ambDailyPlanItem.updateMany({ where: { plan_id: plan.id, campaign_id: c.campaignId }, data: { selected: c.to } });
+    for (const c of changes) await prisma.ambDailyPlanItem.updateMany({ where: { plan_id: plan.id, campaign_id: c.campaignId }, data: { selected: c.to, evidence_json: JSON.stringify(withDeselectMark(c.ev, c.to, userId, now)) } });
     await audit({ planId: plan.id, userId, note: `تعديل اختيارات (${changes.length})`, data: { action: 'SELECTION', version: plan.version, changes } });
     const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, include: { items: { orderBy: { rank: 'asc' } } } });
     return { plan: shapePlan(fresh, fresh.items), changed: changes.length, newVersion: false };
@@ -248,7 +251,7 @@ export async function updateSelection({ planId, selections, special = [], userId
     const sup = await tx.ambDailyPlan.updateMany({ where: { id: plan.id, status: 'APPROVED' }, data: { status: 'SUPERSEDED', finished_at: now } }); if (sup.count !== 1) { const e = new Error('الخطة اتغيّرت في نفس اللحظة.'); e.status = 409; throw e; }
     const want = new Map(changes.map((c) => [c.campaignId, c.to]));
     return tx.ambDailyPlan.create({ data: { plan_key: plan.plan_key, type: plan.type, plan_date: plan.plan_date, timezone: plan.timezone, version: plan.version + 1, status: 'PREPARED', simulated: plan.simulated, scheduled_at: plan.scheduled_at, expires_at: plan.expires_at, prepared_at: now, data_as_of: plan.data_as_of, data_state: plan.data_state, surfaced_at: plan.surfaced_at, evidence_json: plan.evidence_json,
-      items: { create: plan.items.map((i) => ({ campaign_id: i.campaign_id, campaign_name: i.campaign_name, product_id: i.product_id, product_name: i.product_name, store_id: i.store_id, rank: i.rank, selected: want.has(i.campaign_id) ? want.get(i.campaign_id) : i.selected, selectable: i.selectable, eligibility: i.eligibility, block_codes_json: i.block_codes_json, risk: i.risk, risk_score: i.risk_score, evidence_json: i.evidence_json, reason: i.reason })) } }, include: { items: { orderBy: { rank: 'asc' } } } });
+      items: { create: plan.items.map((i) => ({ campaign_id: i.campaign_id, campaign_name: i.campaign_name, product_id: i.product_id, product_name: i.product_name, store_id: i.store_id, rank: i.rank, selected: want.has(i.campaign_id) ? want.get(i.campaign_id) : i.selected, selectable: i.selectable, eligibility: i.eligibility, block_codes_json: i.block_codes_json, risk: i.risk, risk_score: i.risk_score, evidence_json: want.has(i.campaign_id) ? JSON.stringify(withDeselectMark(j(i.evidence_json, {}), want.get(i.campaign_id), userId, now)) : i.evidence_json, reason: i.reason })) } }, include: { items: { orderBy: { rank: 'asc' } } } });
   });
   await audit({ planId: next.id, userId, note: `نسخة جديدة v${next.version} بعد تعديل خطة معتمدة — لازم تتعتمد من جديد، والنسخة القديمة اتلغت`, data: { action: 'NEW_VERSION', from: plan.version, to: next.version, supersededPlanId: plan.id, changes } });
   return { plan: shapePlan(next, next.items), changed: changes.length, newVersion: true };
@@ -341,7 +344,7 @@ async function defaultReadEntity(campaignId) {
 /** Revalidation of ONE item against live Meta + the current state. Returns {ok, status?, reason?, live?}. */
 async function revalidateItem({ plan, item, config, dcfg, deps, now }) {
   if (config.emergency_stop) return { ok: false, status: 'BLOCKED', reason: 'EMERGENCY_STOP' };
-  if (plan.execution_mode === 'LIVE' && (config.mode !== 'APPROVAL' || config.writesLocked)) return { ok: false, status: 'SKIPPED', reason: `MODE_CHANGED_${config.mode === 'OFF' ? 'MANUAL' : config.mode}${config.writesLocked ? '_WRITES_LOCKED' : ''}` }; // switching to MANUAL (or locking writes) stops the rest of an approved queue immediately; nothing already sent is rolled back
+  if (plan.execution_mode === 'LIVE' && (config.mode !== (plan.approval_mode === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL') || config.writesLocked)) return { ok: false, status: 'SKIPPED', reason: `MODE_CHANGED_${config.mode === 'OFF' ? 'MANUAL' : config.mode}${config.writesLocked ? '_WRITES_LOCKED' : ''}` }; // switching to MANUAL (or locking writes) stops the rest of an approved queue immediately; nothing already sent is rolled back
   if (dcfg.halted) return { ok: false, status: 'SKIPPED', reason: 'QUEUE_HALTED' };
   if (!deps.preview) { const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, select: { status: true } }); if (!fresh || fresh.status !== 'RUNNING') return { ok: false, status: 'SKIPPED', reason: `PLAN_${fresh?.status || 'GONE'}` }; }
   const ev = j(item.evidence_json, {});
@@ -355,6 +358,7 @@ async function revalidateItem({ plan, item, config, dcfg, deps, now }) {
   if (plan.type === 'PAUSE') { const lp = await (deps.lastPurchase ? deps.lastPurchase(item.campaign_id) : (await import('./operatorContext.js')).computeLastPurchaseAt({ campaignId: item.campaign_id, now }).catch(() => null)); const rp = Number(config.limits?.recentPurchaseProtectionHours ?? 3); if (lp && now.getTime() - new Date(lp).getTime() < rp * MS_H) return { ok: false, status: 'SKIPPED', reason: `RECENT_PURCHASE (${Math.round((now.getTime() - new Date(lp).getTime()) / MS_M)} دقيقة)` }; }
   const other = await prisma.ambDailyPlanItem.findFirst({ where: { campaign_id: item.campaign_id, selected: true, plan: { plan_date: plan.plan_date, simulated: plan.simulated, type: plan.type === 'OPEN' ? 'PAUSE' : 'OPEN', status: { in: ['APPROVED', 'RUNNING'] } } }, select: { id: true } });
   if (other) return { ok: false, status: 'BLOCKED', reason: 'CONFLICT_OPEN_AND_PAUSE' };
+  { const cf = await (deps.checkConflicts ? deps.checkConflicts({ campaignId: item.campaign_id, want: plan.type === 'OPEN' ? 'OPEN' : 'PAUSE', planId: plan.id }) : (await import('./integration.js')).checkConflicts({ campaignId: item.campaign_id, want: plan.type === 'OPEN' ? 'OPEN' : 'PAUSE', planId: plan.id, now, simulated: plan.simulated })).catch(() => []); if (cf.length) return { ok: false, status: 'BLOCKED', reason: cf[0].code }; } // the integration layer: never race a budget change or the opposite operation on the same campaign
   let live; try { live = await (deps.readEntity || defaultReadEntity)(item.campaign_id); } catch (e) { return { ok: false, status: 'SKIPPED', reason: e.isMetaRateLimit ? 'META_RATE_LIMITED' : `META_UNAVAILABLE: ${String(e.message).slice(0, 120)}`, retryable: !!e.isMetaRateLimit }; }
   if (!live || live.id !== item.campaign_id) return { ok: false, status: 'BLOCKED', reason: 'CAMPAIGN_ID_MISMATCH' };
   if (plan.type === 'OPEN' && live.status === 'ACTIVE') return { ok: false, status: 'SKIPPED', reason: 'ALREADY_ACTIVE' };
@@ -375,7 +379,8 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
     const config = await (deps.config ? deps.config() : getOperatorConfig());
     await setItem(item, 'REVALIDATING', null, { attempts: { increment: 1 } }, plan.id, userId);
     const v = await revalidateItem({ plan, item, config, dcfg: deps.dcfg || await getDailyPlanConfig(), deps, now: deps.now ? deps.now() : new Date() });
-    if (!v.ok) { await setItem(item, v.status, v.reason, {}, plan.id, userId); if (v.reason === 'META_RATE_LIMITED') { rateLimited++; await sleep(Math.min(120_000, 15_000 * 2 ** rateLimited)); if (rateLimited >= dcfg.rateLimitStopAfter) abort = 'RATE_LIMIT_STOP'; } continue; }
+    if (!v.ok) { await setItem(item, v.status, v.reason, {}, plan.id, userId); if (/^META_(UNAVAILABLE|RATE_LIMITED)/.test(v.reason || '') && !plan.simulated && process.env.DAILY_PLAN_DISABLE_ALERTS !== '1') await raiseAlert({ severity: 'WARNING', category: 'EXECUTION', title: `Meta غير متاح: ${plan.type === 'OPEN' ? 'فتح' : 'إيقاف'} ${item.campaign_name || item.campaign_id} ما اتنفذش`, message: `${v.reason} — الحملة لم تتغير. مفيش إعادة إرسال تلقائي.`.slice(0, 480), campaignId: item.campaign_id, entityId: item.campaign_id, entityName: item.campaign_name, dedupeKey: `dailyplan-item:${plan.plan_key}:v${plan.version}:${item.campaign_id}:META` }).catch(() => {});
+      if (v.reason === 'META_RATE_LIMITED') { rateLimited++; await sleep(Math.min(120_000, 15_000 * 2 ** rateLimited)); if (rateLimited >= dcfg.rateLimitStopAfter) abort = 'RATE_LIMIT_STOP'; } continue; }
     if (!live) { await setItem(item, 'SIMULATED', `SHADOW: كان هيتبعت ${plan.type === 'OPEN' ? 'RESUME (status=ACTIVE)' : 'PAUSE (status=PAUSED)'} — مفيش كتابة على Meta (الحالة الحية ${v.live.status})`, {}, plan.id, userId); continue; }
     // ---- LIVE: spacing + ONE write through the existing executor + read-back
     if (sent > 0) await sleep(spacing);
@@ -399,8 +404,9 @@ async function liveExecuteItem({ plan, item, userId, deps }) {
   const ev = j(item.evidence_json, {}); const conn = await getConnection();
   const rec = await prisma.ambRecommendation.create({ data: { batch_id: `daily-plan-${plan.id}`, ad_account_id: conn?.selected_ad_account_id || 'UNKNOWN', amb_product_id: null, product_name: item.product_name, level: 'campaign', entity_id: item.campaign_id, entity_name: item.campaign_name, campaign_id: item.campaign_id, campaign_name: item.campaign_name, decision: action === 'RESUME' ? 'SCALE' : 'PAUSE_LOSER', action_type: action, executable: true,
     current_metrics_json: JSON.stringify({ spend: ev.m7?.spend ?? null, cpa: ev.m7?.cpa ?? null, purchases: ev.m7?.purchases ?? null }), reason: `Daily Plan #${plan.id} v${plan.version} (${plan.type}) — ${item.reason || ''}`.slice(0, 900), reason_facts_json: item.evidence_json, confidence: 'MEDIUM', risk_level: item.risk || 'MEDIUM', data_sufficiency: 'MODERATE', priority: 'P2', time_window_label: 'آخر 7 أيام', source: 'OPERATOR', status: 'PENDING' } });
+  { const ref = await (deps.policyRef ? deps.policyRef({ productId: item.product_id, storeId: item.store_id, campaignId: item.campaign_id }) : (await import('./integration.js')).policyRefFor({ productId: item.product_id, storeId: item.store_id, campaignId: item.campaign_id })).catch(() => null); if (ref) await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { reason_facts_json: JSON.stringify({ ...ev, policyRef: { ...ref, planId: plan.id, planVersion: plan.version } }) } }).catch(() => {}); }
   const exec = deps.approveAndExecute || (await import('./executor.js')).approveAndExecute; let result = null, err = null;
-  try { result = await exec({ recId: rec.id, userId, mode: 'APPROVAL' }); } catch (e) { err = e; }
+  try { result = await exec({ recId: rec.id, userId, mode: plan.approval_mode === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL' }); } catch (e) { err = e; }
   const act = await prisma.ambAction.findFirst({ where: { recommendation_id: rec.id }, orderBy: { id: 'desc' } }); const verify = j(act?.verify_json, null);
   const extra = { amb_action_id: act?.id ?? null };
   if (!err && result?.ok) return verify?.verified ? { status: 'VERIFIED', reason: `اتأكد من قراءة Meta: ${prev} → ${target}`, extra } : { status: 'UNCERTAIN', reason: 'الطلب اتبعت لكن القراءة الفورية ما أكدتش — مش هنعيد الإرسال أعمى', extra };
@@ -440,6 +446,121 @@ export async function ensureProductSlotPlans({ now = new Date(), simulated = isT
   return made;
 }
 
+
+// =====================================================================================================================
+// «الفتح حسب تكلفة الأوردر CPA» — applies the saved, versioned policy to the OPEN plan. Nothing here executes: preparing only SELECTS; approval + live revalidation stay as they are.
+// =====================================================================================================================
+const todaysOpenPlans = async ({ now, simulated }) => { const date = cairoDate(now); const rows = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, type: 'OPEN' }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } }); const seen = new Set(); return rows.filter((p) => { if (seen.has(p.plan_key)) return false; seen.add(p.plan_key); return true; }); };
+const dataAgeMinutes = (asOf) => (asOf ? Math.max(0, Math.round((Date.now() - new Date(asOf).getTime()) / MS_M)) : 1e9);
+async function evaluatePlan({ plan, policy, now, deps, dataAgeMin, reselect = [] }) {
+  const metrics = await loadWindowMetrics({ policy, now, deps: { metrics: deps.openCpaMetrics } });
+  const rows = plan.items.map((it) => { const evd = j(it.evidence_json, {}); const item = { eligibility: it.eligibility, selectable: it.selectable, blockCodes: j(it.block_codes_json, []), evidence: evd }; const m = metrics.get(it.campaign_id); return { it, evd, eval: evaluateCampaign({ policy, item, metrics: m ? { spend: m.spend, purchases: m.purchases } : null, dataAgeMin, reselect: reselect.includes(it.campaign_id) }) }; });
+  return { rows, counts: summarizeEvaluations(rows) };
+}
+const rowView = (r) => ({ campaignId: r.it.campaign_id, campaignName: r.it.campaign_name, productName: r.it.product_name, eligibility: r.it.eligibility, selected: r.it.selected, verdict: r.eval.verdict, matched: r.eval.matched, cpa: r.eval.cpa, spend: r.eval.spend, purchases: r.eval.purchases, codes: r.eval.codes, reasons: r.eval.reasons, guardCodes: r.eval.guardCodes, userDeselected: !!r.evd.userDeselected });
+/** The panel above the OPEN table: the saved policy, and a LIVE preview of how today's OPEN plan looks under it (persists nothing). */
+export async function getOpenCpaOverview({ now = new Date(), simulated = isTestClock(), deps = {} } = {}) {
+  const policy = await getOpenCpaPolicy(); const date = cairoDate(now); const plans = await todaysOpenPlans({ now, simulated }); const plan = plans.find((p) => p.plan_key === planKey('OPEN', date, simulated)) || plans[0] || null;
+  const complete = policy.minCpa != null && policy.maxCpa != null && validateOpenCpa(policy, { today: date, requireRange: true }).length === 0;
+  const out = { policy: { ...policy, history: policy.history.slice(-10).reverse() }, window: complete ? windowRangeFor(policy, date) : null, plan: plan ? { id: plan.id, key: plan.plan_key, version: plan.version, status: plan.status, policyVersion: j(plan.evidence_json, {}).openCpa?.version ?? null, stale: (j(plan.evidence_json, {}).openCpa?.version ?? null) !== policy.version } : null, preview: null };
+  if (complete && plan) { const sync = await (deps.syncStatus ? deps.syncStatus() : getSyncStatus()).catch(() => null); const age = dataAgeMinutes(sync?.lastSuccessAt || plan.data_as_of); const ev = await evaluatePlan({ plan, policy, now, deps, dataAgeMin: age }); out.preview = { dataAgeMin: age, counts: ev.counts, rows: ev.rows.map(rowView) }; }
+  return out;
+}
+async function cloneAsNewVersion({ plan, now, itemUpdates, planEvidence, tx }) {
+  return tx.ambDailyPlan.create({ data: { plan_key: plan.plan_key, type: plan.type, plan_date: plan.plan_date, timezone: plan.timezone, version: plan.version + 1, status: 'PREPARED', simulated: plan.simulated, scheduled_at: plan.scheduled_at, expires_at: plan.expires_at, prepared_at: now, data_as_of: plan.data_as_of, data_state: plan.data_state, surfaced_at: plan.surfaced_at, evidence_json: planEvidence,
+    items: { create: plan.items.map((i) => { const u = itemUpdates.get(i.campaign_id); return { campaign_id: i.campaign_id, campaign_name: i.campaign_name, product_id: i.product_id, product_name: i.product_name, store_id: i.store_id, rank: i.rank, selected: u ? u.selected : i.selected, selectable: i.selectable, eligibility: i.eligibility, block_codes_json: i.block_codes_json, risk: i.risk, risk_score: i.risk_score, evidence_json: u ? u.evidence_json : i.evidence_json, reason: i.reason }; }) } }, include: { items: { orderBy: { rank: 'asc' } } } });
+}
+/** Re-evaluates ONE plan under the saved policy and stores the result: PREPARED → updated in place; APPROVED (not started) → the approved version is SUPERSEDED and a NEW PREPARED version needs a fresh approval. */
+async function applyPolicyToPlan({ plan, policy, userId, now, deps, reselect = [], dataAgeMin, note }) {
+  const ev = await evaluatePlan({ plan, policy, now, deps, dataAgeMin, reselect }); const updates = new Map(); let changed = 0;
+  for (const r of ev.rows) {
+    const want = !!r.it.selectable && r.eval.eligible; const e = { ...r.evd }; if (reselect.includes(r.it.campaign_id)) delete e.userDeselected;
+    e.cpaPolicy = { version: policy.version, window: policy.window, verdict: r.eval.verdict, matched: r.eval.matched, cpa: r.eval.cpa, spend: r.eval.spend, purchases: r.eval.purchases, codes: r.eval.codes, reasons: r.eval.reasons };
+    if (want !== r.it.selected) changed++; updates.set(r.it.campaign_id, { selected: want, evidence_json: JSON.stringify(e) });
+  }
+  const planEv = { ...j(plan.evidence_json, {}), openCpa: { version: policy.version, approvedVersion: policy.approved?.version ?? null, minCpa: policy.minCpa, maxCpa: policy.maxCpa, window: policy.window, from: policy.from, to: policy.to, minPurchases: policy.minPurchases, maxDataAgeMin: policy.maxDataAgeMin, counts: ev.counts, preparedAt: now.toISOString() } };
+  let out;
+  if (plan.status === 'PREPARED') {
+    await prisma.$transaction([...[...updates].map(([cid, u]) => prisma.ambDailyPlanItem.updateMany({ where: { plan_id: plan.id, campaign_id: cid }, data: { selected: u.selected, evidence_json: u.evidence_json } })), prisma.ambDailyPlan.update({ where: { id: plan.id }, data: { evidence_json: JSON.stringify(planEv) } })]);
+    const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, include: { items: { orderBy: { rank: 'asc' } } } }); out = { plan: fresh, newVersion: false };
+  } else {
+    const next = await prisma.$transaction(async (tx) => { const sup = await tx.ambDailyPlan.updateMany({ where: { id: plan.id, status: 'APPROVED' }, data: { status: 'SUPERSEDED', finished_at: now } }); if (sup.count !== 1) throw Object.assign(new Error('الخطة اتغيّرت في نفس اللحظة.'), { status: 409 }); return cloneAsNewVersion({ plan, now, itemUpdates: updates, planEvidence: JSON.stringify(planEv), tx }); });
+    out = { plan: next, newVersion: true, supersededPlanId: plan.id };
+  }
+  await audit({ planId: out.plan.id, userId, note: note || `تجهيز حسب CPA (سياسة v${policy.version}): ${ev.counts.eligible} مؤهلة · ${ev.counts.excluded} مستبعدة من ${ev.counts.matched} مطابقة${out.newVersion ? ` — نسخة جديدة v${out.plan.version} تحتاج اعتمادًا جديدًا` : ''}`, data: { action: 'OPEN_CPA_PREPARED', policyVersion: policy.version, counts: ev.counts, changed, newVersion: out.newVersion, supersededPlanId: out.supersededPlanId ?? null } });
+  return { ...out, counts: ev.counts, changed, rows: ev.rows.map(rowView) };
+}
+/** «تجهيز الحملات المطابقة» — ADMIN. Uses the LATEST Meta data (refreshes when stale; stale → refuses). Skips campaigns the owner unticked unless explicitly re-selected with a special approval. */
+export async function prepareOpenCpaMatches({ planId = null, userId, reselect = [], confirmSpecial = false, now = new Date(), simulated = isTestClock(), deps = {} }) {
+  await requireAdmin(userId, deps); const policy = await getOpenCpaPolicy(); const errors = validateOpenCpa(policy, { today: cairoDate(now), requireRange: true });
+  if (errors.length) { const e = new Error(errors.join(' ')); e.status = 400; e.code = 'INVALID_POLICY'; throw e; }
+  if ((reselect || []).length && confirmSpecial !== true) { const e = new Error('إعادة اختيار حملة استبعدتها يدويًا محتاجة موافقة خاصة صريحة.'); e.status = 400; e.code = 'SPECIAL_APPROVAL_REQUIRED'; throw e; }
+  let plan = null; if (planId) plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } }); else plan = (await todaysOpenPlans({ now, simulated })).find((p) => p.plan_key === planKey('OPEN', cairoDate(now), simulated)) || null;
+  if (!plan || plan.type !== 'OPEN') { const e = new Error('مفيش خطة فتح لليوم — اتجهز الأول.'); e.status = 404; throw e; }
+  const latest = await prisma.ambDailyPlan.findFirst({ where: { plan_key: plan.plan_key }, orderBy: { version: 'desc' } }); if (latest.id !== plan.id) { const e = new Error('دي نسخة قديمة — اشتغل على آخر نسخة.'); e.status = 409; throw e; }
+  if (!['PREPARED', 'APPROVED'].includes(plan.status)) { const e = new Error(`الخطة ${plan.status} — مش قابلة للتعديل.`); e.status = 409; throw e; }
+  const fresh = await ensureFreshData({ now, deps }); if (fresh.state === 'STALE') return { ok: false, status: 'STALE_DATA', message: 'بيانات Meta قديمة — مفيش تجهيز على بيانات غير موثوقة. حدّث وجرّب تاني.', staleReason: fresh.error };
+  await prisma.ambDailyPlan.update({ where: { id: plan.id }, data: { data_as_of: fresh.asOf, data_state: fresh.state } }); plan.data_as_of = fresh.asOf; plan.data_state = fresh.state;
+  const r = await applyPolicyToPlan({ plan, policy, userId, now, deps, reselect: reselect || [], dataAgeMin: dataAgeMinutes(fresh.asOf) });
+  return { ok: true, plan: shapePlan(r.plan, r.plan.items), counts: r.counts, changed: r.changed, newVersion: r.newVersion, policyVersion: policy.version, rows: r.rows };
+}
+/** After the policy changed: plans that were APPROVED under the old numbers (not started) are superseded and re-evaluated into a NEW PREPARED version that needs a fresh approval. PREPARED plans are only flagged stale
+ *  (the panel shows it); RUNNING / finished plans are never touched. Nothing executes. */
+export async function reconcileOpenCpaPlans({ userId = null, now = new Date(), simulated = isTestClock(), deps = {} } = {}) {
+  const policy = await getOpenCpaPolicy(); const out = { superseded: [], flagged: [] };
+  for (const p of await todaysOpenPlans({ now, simulated })) {
+    const used = j(p.evidence_json, {}).openCpa; if (!used || used.version === policy.version) continue;
+    if (p.status === 'PREPARED') { out.flagged.push(p.id); continue; }
+    if (p.status !== 'APPROVED') continue;
+    const complete = policy.minCpa != null && policy.maxCpa != null && validateOpenCpa(policy, { today: cairoDate(now), requireRange: true }).length === 0;
+    if (!complete) { const planEv = { ...j(p.evidence_json, {}), openCpa: { ...used, version: policy.version, staleAfterPolicyChange: true } }; const next = await prisma.$transaction(async (tx) => { const sup = await tx.ambDailyPlan.updateMany({ where: { id: p.id, status: 'APPROVED' }, data: { status: 'SUPERSEDED', finished_at: now } }); if (sup.count !== 1) return null; return cloneAsNewVersion({ plan: p, now, itemUpdates: new Map(), planEvidence: JSON.stringify(planEv), tx }); }); if (next) { out.superseded.push({ from: p.id, to: next.id }); await audit({ planId: next.id, userId, note: 'السياسة اتغيّرت — النسخة المعتمدة اتلغت ونسخة جديدة محتاجة اعتماد', data: { action: 'OPEN_CPA_POLICY_CHANGED', policyVersion: policy.version } }); } continue; }
+    const sync = await (deps.syncStatus ? deps.syncStatus() : getSyncStatus()).catch(() => null);
+    const r = await applyPolicyToPlan({ plan: p, policy, userId, now, deps, dataAgeMin: dataAgeMinutes(sync?.lastSuccessAt || p.data_as_of), note: `السياسة اتغيّرت (v${policy.version}) — النسخة المعتمدة اتلغت واتعمل تقييم جديد؛ محتاجة اعتماد جديد (مفيش تنفيذ)` });
+    out.superseded.push({ from: p.id, to: r.plan.id });
+  }
+  return out;
+}
+/** AUTOMATIC mode only — DORMANT: every gate below must be open (mode AUTOMATIC, writes unlocked, permission «فتح» ON, scheduled execution ON, no Emergency Stop / halt, the AUTOPILOT readiness gate green,
+ *  the policy ENABLED + APPROVED at its CURRENT version, a plan prepared under that version from FRESH data, the due time reached). It then un-ticks everything that is not ELIGIBLE by the policy and runs the SAME
+ *  queue as an approved plan (live revalidation → one write → read-back per campaign). SHADOW / APPROVAL / MANUAL never come through here. */
+export async function runOpenCpaAutomatic({ now = new Date(), deps = {} } = {}) {
+  const cfg = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig(); const pol = await getOpenCpaPolicy(); const why = [];
+  if (cfg.mode !== 'AUTOPILOT') why.push('MODE_NOT_AUTOMATIC'); if (cfg.emergency_stop) why.push('EMERGENCY_STOP'); if (cfg.writesLocked ?? metaWritesLocked()) why.push('META_WRITES_LOCKED'); if (cfg.execPermissions?.open !== true) why.push('OPEN_PERMISSION_OFF');
+  if (!dcfg.scheduledExecution?.enabled) why.push('SCHEDULED_EXECUTION_OFF'); if (dcfg.halted) why.push('QUEUE_HALTED'); if (!pol.enabled || !pol.approved || pol.approved.version !== pol.version) why.push('POLICY_NOT_APPROVED_AT_CURRENT_VERSION');
+  if (why.length) return { ran: false, why };
+  const gate = await (deps.autopilotGate ? deps.autopilotGate() : (await import('./operatorStore.js')).autopilotGate()); if (!gate.ok) return { ran: false, why: ['AUTOPILOT_GATE_NOT_READY'] };
+  const out = { ran: true, plans: [] };
+  for (const p of await todaysOpenPlans({ now, simulated: false })) {
+    if (p.status !== 'PREPARED' || p.scheduled_at > now || p.expires_at <= now) continue; const used = j(p.evidence_json, {}).openCpa; if (!used || used.version !== pol.version) { out.plans.push({ planId: p.id, skipped: 'PLAN_NOT_PREPARED_UNDER_CURRENT_POLICY' }); continue; }
+    const fresh = await ensureFreshData({ now, deps }); if (fresh.state === 'STALE') { out.plans.push({ planId: p.id, skipped: 'STALE_DATA' }); continue; }
+    const ok = p.items.filter((i) => i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && j(i.evidence_json, {}).cpaPolicy?.verdict === 'ELIGIBLE' && !j(i.evidence_json, {}).userDeselected);
+    const drop = p.items.filter((i) => i.selected && !ok.includes(i)); for (const i of drop) await prisma.ambDailyPlanItem.update({ where: { id: i.id }, data: { selected: false } });
+    if (!ok.length) { out.plans.push({ planId: p.id, skipped: 'NOTHING_ELIGIBLE', dropped: drop.length }); continue; }
+    const claim = await prisma.ambDailyPlan.updateMany({ where: { id: p.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: pol.approved.by, approved_at: now, approval_mode: 'AUTOPILOT', execution_mode: 'LIVE', data_as_of: fresh.asOf, data_state: fresh.state, dismissed_at: p.dismissed_at || now } }); if (claim.count !== 1) continue;
+    await audit({ planId: p.id, userId: pol.approved.by, actor: 'SYSTEM', note: `AUTOMATIC: تنفيذ ${ok.length} حملة مؤهلة حسب سياسة CPA المعتمدة v${pol.version}`, data: { action: 'AUTOMATIC_APPROVED', policyVersion: pol.version, campaigns: ok.map((i) => i.campaign_id), dropped: drop.map((i) => i.campaign_id) } });
+    out.plans.push({ planId: p.id, executed: await runPlanExecution({ planId: p.id, userId: pol.approved.by, now, deps }) });
+  }
+  return out;
+}
+
+/** A product policy was activated / deactivated: today's pending plans containing that product's campaigns are reconciled. PREPARED → the items are flagged (nothing re-ticked); APPROVED (not started) with selected items of
+ *  that product → the approved version is SUPERSEDED and a NEW PREPARED version needs a fresh approval, those items un-ticked + flagged. RUNNING / finished plans are never touched. Nothing executes. */
+export async function reconcilePlansForProduct({ productId, storeId = null, kind = 'CHANGED', policyVersion = null, userId = null, now = new Date(), simulated = isTestClock() }) {
+  const out = { flagged: [], superseded: [] }; const date = cairoDate(now); const mark = { at: now.toISOString(), kind, productPolicyVersion: policyVersion };
+  const rows = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, status: { in: ['PREPARED', 'APPROVED'] } }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } });
+  const seen = new Set();
+  for (const p of rows) {
+    if (seen.has(p.plan_key)) continue; seen.add(p.plan_key);
+    const mine = p.items.filter((i) => i.product_id != null && Number(i.product_id) === Number(productId) && (!storeId || !i.store_id || i.store_id === storeId)); if (!mine.length) continue;
+    if (p.status === 'PREPARED') { for (const i of mine) await prisma.ambDailyPlanItem.update({ where: { id: i.id }, data: { evidence_json: JSON.stringify({ ...j(i.evidence_json, {}), policyChanged: mark }) } }); out.flagged.push(p.id); continue; }
+    if (!mine.some((i) => i.selected)) continue;
+    const upd = new Map(mine.map((i) => [i.campaign_id, { selected: false, evidence_json: JSON.stringify({ ...j(i.evidence_json, {}), policyChanged: mark }) }]));
+    const next = await prisma.$transaction(async (tx) => { const sup = await tx.ambDailyPlan.updateMany({ where: { id: p.id, status: 'APPROVED' }, data: { status: 'SUPERSEDED', finished_at: now } }); if (sup.count !== 1) return null; return cloneAsNewVersion({ plan: p, now, itemUpdates: upd, planEvidence: p.evidence_json, tx }); });
+    if (next) { out.superseded.push({ from: p.id, to: next.id }); await audit({ planId: next.id, userId, note: `سياسة المنتج اتغيّرت (${kind}) — النسخة المعتمدة اتلغت ونسخة جديدة (v${next.version}) محتاجة اعتماد؛ حملات المنتج اتشالت من الاختيار (مفيش تنفيذ)`, data: { action: 'POLICY_CHANGED', productId, kind, supersededPlanId: p.id } }); }
+  }
+  return out;
+}
+
 let ticking = false;
 export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
   if (ticking) return { skipped: 'ALREADY_TICKING' }; ticking = true;
@@ -447,6 +568,7 @@ export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
     const sim = isTestClock(); const out = await ensureDuePlans({ now, simulated: sim, deps });
     out.productSlots = await ensureProductSlotPlans({ now, simulated: sim, deps }).catch((e) => { logger.warn('[dailyPlans] product slot plans failed', { message: e.message }); return []; });
     const dcfg = await getDailyPlanConfig();
+    if (!sim) out.openCpaAutomatic = await runOpenCpaAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] open-cpa automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
     if (dcfg.scheduledExecution.enabled && !sim) { // unattended execution of plans approved ahead of time — only when explicitly enabled
       const due = await prisma.ambDailyPlan.findMany({ where: { simulated: false, status: 'APPROVED', scheduled_at: { lte: now }, expires_at: { gt: now } } });
       out.executed = []; for (const p of due) { out.executed.push(await runPlanExecution({ planId: p.id, userId: p.approved_by_id, now, deps })); }

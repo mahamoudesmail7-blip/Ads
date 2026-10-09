@@ -62,6 +62,6 @@ for (const [type, name, cid, st, o, n, reval, verify, err, hAgo] of hist) {
 // product images: 9001 a real (local test) image, 9002 none (initial fallback), 424 a BROKEN url (the image fails to load → initial fallback)
 for (const [pid, url] of [[9001, '/__test_img_9001.svg'], [9002, null], [424, '/__missing_424.png']]) await prisma.ambProduct.updateMany({ where: { product_id: pid }, data: { image_url: url } });
 // start every UI run from the same state: no stored product policies
-const cfgRow = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); if (cfgRow?.limits_json) { const l = JSON.parse(cfgRow.limits_json); delete l.productPolicies; delete l.pricing; await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(l) } }); }
+const cfgRow = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); if (cfgRow?.limits_json) { const l = JSON.parse(cfgRow.limits_json); delete l.productPolicies; delete l.pricing; delete l.openCpa; await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(l) } }); }
 console.log('UI fixtures created for', date, '(test database only)');
 await prisma.$disconnect();

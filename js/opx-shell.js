@@ -12,6 +12,7 @@ const WS = [
   { key: 'approvals', label: 'الموافقات', icon: 'approve', kind: 'module', file: './opx-approvals.js', fn: 'mountApprovalsWorkspace', badge: 'pendingApprovals' },
   { key: 'history', label: 'سجل التنفيذ', icon: 'history', kind: 'module', file: './opx-history.js', fn: 'mountHistoryWorkspace' },
   { key: 'alerts', label: 'التنبيهات', icon: 'bell', kind: 'alerts', badge: 'importantAlerts' },
+  { key: 'integration', label: 'مركز الربط', icon: 'compass', kind: 'module', file: './opx-integration.js', fn: 'mountIntegrationWorkspace' },
 ];
 const ADV = [
   { key: 'perms', label: 'صلاحيات التنفيذ', icon: 'key', kind: 'legacy', tab: 'perms' },

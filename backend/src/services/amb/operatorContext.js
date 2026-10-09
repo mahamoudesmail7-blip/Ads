@@ -14,6 +14,7 @@ import { stockGuardForProduct } from './stockGuard.js';
 import { computeProductDataQuality } from './dataQuality.js';
 import { getStoreStatusTrust } from '../easyOrdersStatus.js';
 import { windowRange, WINDOW_KEYS } from './operatorRules.js';
+import { cairoDate } from './dailyPlanTime.js';
 import { computeOperatorEconomics, resolveZeroOrderLimit } from './operatorGuards.js';
 import { loadStoreCatalogIndex, resolveSellingPrice } from './productPriceResolver.js';
 import { getOperatorConfig, listExceptions, exceptionsFor, loadCampaignTags, ownerPriceOf } from './operatorStore.js';
@@ -121,7 +122,7 @@ export async function buildOperatorWorld({ windowKeys = ['today'], now = new Dat
   if (only?.campaignIds?.length) campaigns = campaigns.filter((c) => only.campaignIds.includes(c.id));
   const wanted = [...new Set([...windowKeys.filter((k) => WINDOW_KEYS.includes(k)), 'today'])];
   const windows = {};
-  for (const k of wanted) { const r = windowRange(k, now.toISOString().slice(0, 10)); windows[k] = await entityWindowMetrics({ level: 'campaign', from: r.from, to: r.to, adAccountId }); }
+  for (const k of wanted) { const r = windowRange(k, cairoDate(now)); windows[k] = await entityWindowMetrics({ level: 'campaign', from: r.from, to: r.to, adAccountId }); }
   const prodIndex = await buildCampaignProductIndex({ adAccountId });
   const tags = await loadCampaignTags(adAccountId);
   const exceptions = await listExceptions({ now });

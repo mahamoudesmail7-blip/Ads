@@ -19,6 +19,7 @@ const round0 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.ro
 import { priorityScore } from './priorityScore.js';
 import { loadActivePolicies, policyKey, mergeEffective, dayAllowed, weekdayOfCairoDate } from './productPolicy.js';
 import { SLOTS, cairoDate } from './dailyPlanTime.js';
+import { getOpenCpaPolicy, applyPolicyToItems, loadWindowMetrics } from './openCpaPolicy.js';
 
 /** Per-product policy gate for a daily plan: the product's days of the week + its own opening/closing time (a product with its own time lives in its own slot plan). Pure. */
 export function policyScheduleBlock({ policy, type, slotTime, date, campaignId = null }) {
@@ -182,9 +183,13 @@ export async function buildOpenCandidates({ now = new Date(), slotTime = SLOTS.O
       evidence: { status: 'PAUSED', priority: priorityScore({ m3, m7, m30, ageHours: null, dataAgeMin, blocks, warnings }), m3, m7, m30, budget: bud.budget, budgetLevel: bud.level, adsets: bud.adsets ?? null, lastActiveDate: lastActive.get(c.id) || null, daysSinceActive: daysBetween(lastActive.get(c.id), now), pausedBy: po.origin, pausedAt: po.at ? new Date(po.at).toISOString() : null, stability: cpaStability({ m7, m30 }), tier: sampleTier(m30.purchases), recommended: rec.ok, notRecommendedBecause: rec.why, stock: cx.stock ? { status: cx.stock.status, current: cx.stock.currentStock ?? null } : null, mapping: ms.state, advisor: advisorSummary(cx.advisor) },
     });
   }
+  // the saved «الفتح حسب CPA» policy (only when ON and complete): it decides the default selection from the policy window of the SAME fresh snapshots; every guard above stays above it
+  let openCpa = null;
+  { const pol = deps.openCpaPolicy !== undefined ? deps.openCpaPolicy : await getOpenCpaPolicy().catch(() => null);
+    if (pol?.enabled && pol.minCpa != null && pol.maxCpa != null) { const metrics = await loadWindowMetrics({ policy: pol, now, adAccountId: world.adAccountId, deps: { metrics: deps.openCpaMetrics } }); const r = applyPolicyToItems({ items, policy: pol, metrics, dataAgeMin }); openCpa = { version: pol.version, approvedVersion: pol.approved?.version ?? null, minCpa: pol.minCpa, maxCpa: pol.maxCpa, window: pol.window, from: pol.from, to: pol.to, minPurchases: pol.minPurchases, maxDataAgeMin: pol.maxDataAgeMin, counts: r.counts }; } }
   items.sort((a, b) => (b.selectable - a.selectable) || b.rankScore - a.rankScore);
   items.forEach((it, i) => { it.rank = i + 1; });
-  return { items, world, candidatesPool: pool.length, pausedTotal: paused.length };
+  return { items, world, candidatesPool: pool.length, pausedTotal: paused.length, openCpa };
 }
 
 // =====================================================================================================================

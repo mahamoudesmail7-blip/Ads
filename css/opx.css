@@ -339,3 +339,35 @@ body:has(.opx) { overflow-x: hidden; } .opx { max-width: 100%; }
 /* the legacy `.amb-app input[type="text"]` rule (white, light-only) must not win inside the pricing screen — dark mode */
 .opx .opx-price input.opx-input, .opx .opx-price select.opx-select { background: var(--opx-card); color: var(--opx-text); }
 .opx .opx-price .opx-unit input.opx-input { background: transparent; color: var(--opx-text); }
+
+/* ===== «الفتح حسب CPA» panel ===== */
+.opx-cpa { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.opx-cpa-head { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; } .opx-cpa-head h2 { margin: 0; font-size: 19px; font-weight: 800; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; } .opx-cpa-head p { margin: 4px 0 0; color: var(--opx-muted); font-size: 12.5px; }
+.opx-cpa-tiles { display: flex; gap: 10px; flex-wrap: wrap; margin-inline-start: auto; } .opx-cpa-tile { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 14px; min-width: 120px; justify-content: space-between; border: 1px solid transparent; }
+.opx-cpa-tile b { display: block; font-size: 26px; line-height: 1.1; font-variant-numeric: tabular-nums; } .opx-cpa-tile span { font-size: 12px; font-weight: 700; } .opx-cpa-tile i { font-style: normal; font-size: 22px; opacity: .8; }
+.opx-cpa-tile.green { background: var(--opx-success-soft); color: var(--opx-success); border-color: rgba(34,160,107,.25); } .opx-cpa-tile.blue { background: var(--opx-info-soft); color: var(--opx-info); border-color: rgba(59,130,246,.25); } .opx-cpa-tile.amber { background: var(--opx-warning-soft); color: #b77905; border-color: rgba(245,158,11,.3); }
+.opx-cpa-toggle { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .opx-cpa-toggle b { display: block; font-size: 14px; } .opx-cpa-toggle small { color: var(--opx-muted); font-size: 12px; }
+.opx-switch-btn { position: relative; width: 52px; height: 30px; border-radius: 999px; border: 0; background: var(--opx-border); cursor: pointer; flex: none; transition: background .2s; } .opx-switch-btn span { position: absolute; top: 3px; inset-inline-start: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); transition: inset-inline-start .2s; }
+.opx-switch-btn.on { background: var(--opx-success); } .opx-switch-btn.on span { inset-inline-start: 25px; } .opx-switch-btn:disabled { opacity: .55; cursor: not-allowed; }
+.opx-cpa-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; } .opx-cpa-form .opx-input { width: 100%; }
+.opx-cpa-now { display: flex; gap: 14px; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 12px 14px; background: var(--opx-info-soft); border-radius: 14px; } .opx-cpa-now p { margin: 4px 0 0; font-size: 13px; line-height: 1.7; } .opx-cpa-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.opx-btn.accent { background: var(--opx-success); color: #fff; border-color: var(--opx-success); }
+.opx-cpa-warn { margin: 0; }
+@media (max-width: 900px) { .opx-cpa-tiles { margin-inline-start: 0; width: 100%; } .opx-cpa-tile { flex: 1 1 28%; min-width: 0; padding: 8px 10px; } .opx-cpa-tile b { font-size: 21px; } .opx-cpa-btns .opx-btn { flex: 1 1 100%; justify-content: center; } }
+.opx .opx-cpa input.opx-input { background: var(--opx-card); color: var(--opx-text); }
+
+/* ===== مركز الربط ===== */
+.opx-int-map { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; margin-top: 14px; } .opx-int-map h3 { margin: 0; font-size: 16px; font-weight: 800; }
+.opx-int-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; } @container opxm (min-width: 900px) { .opx-int-cols { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.opx-int-col { display: flex; flex-direction: column; gap: 10px; } .opx-int-col h4 { margin: 0 0 2px; font-size: 13px; color: var(--opx-muted); font-weight: 800; }
+.opx-node { border: 1px solid var(--opx-border); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--opx-card); border-inline-start: 4px solid var(--opx-border); }
+.opx-node.green { border-inline-start-color: var(--opx-success); } .opx-node.violet { border-inline-start-color: var(--opx-primary); } .opx-node.blue { border-inline-start-color: var(--opx-info); } .opx-node.red { border-inline-start-color: var(--opx-danger); } .opx-node.amber { border-inline-start-color: var(--opx-warning); }
+.opx-node-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; } .opx-node small { color: var(--opx-muted); font-size: 11.5px; line-height: 1.5; } .opx-node .opx-pill { align-self: flex-start; padding: 2px 8px; font-size: 11px; }
+.opx-dot { font-style: normal; font-size: 12px; font-weight: 800; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; cursor: help; } .opx-dot.green { background: var(--opx-success-soft); color: var(--opx-success); } .opx-dot.amber { background: var(--opx-warning-soft); color: #b77905; } .opx-dot.red { background: var(--opx-danger-soft); color: var(--opx-danger); }
+.opx-int-edges summary { cursor: pointer; font-weight: 700; font-size: 13px; padding: 6px 0; }
+.opx-int-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; margin-top: 14px; } @container opxm (min-width: 1000px) { .opx-int-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.opx-check-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--opx-border); } .opx-check-row:last-child { border: 0; } .opx-check-row > i { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-style: normal; font-size: 12px; font-weight: 800; }
+.opx-check-row.green > i { background: var(--opx-success-soft); color: var(--opx-success); } .opx-check-row.amber > i { background: var(--opx-warning-soft); color: #b77905; } .opx-check-row.red > i { background: var(--opx-danger-soft); color: var(--opx-danger); } .opx-check-row b { display: block; font-size: 13px; } .opx-check-row small { color: var(--opx-muted); font-size: 12px; }
+.opx-int-ver { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.opx .opx-int-grid select.opx-select { background: var(--opx-card); color: var(--opx-text); width: 100%; }
+.opx-cpa-form .opx-field:has([data-cpaw]) { grid-column: 1 / -1; } .opx-cpa-form .opx-chips { flex-wrap: wrap; overflow: visible; }
