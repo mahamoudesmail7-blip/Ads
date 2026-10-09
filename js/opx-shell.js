@@ -8,6 +8,7 @@ const WS = [
   { key: 'pause', label: 'إيقاف الحملات', icon: 'pause', kind: 'plan', type: 'PAUSE' },
   { key: 'budget', label: 'إدارة الميزانيات', icon: 'budget', kind: 'budget' },
   { key: 'rules', label: 'قواعد المنتجات', icon: 'rules', kind: 'rules' },
+  { key: 'pricing', label: 'التسعير الذكي', icon: 'coins', kind: 'module', file: './opx-pricing.js', fn: 'mountPricingWorkspace' },
   { key: 'approvals', label: 'الموافقات', icon: 'approve', kind: 'module', file: './opx-approvals.js', fn: 'mountApprovalsWorkspace', badge: 'pendingApprovals' },
   { key: 'history', label: 'سجل التنفيذ', icon: 'history', kind: 'module', file: './opx-history.js', fn: 'mountHistoryWorkspace' },
   { key: 'alerts', label: 'التنبيهات', icon: 'bell', kind: 'alerts', badge: 'importantAlerts' },

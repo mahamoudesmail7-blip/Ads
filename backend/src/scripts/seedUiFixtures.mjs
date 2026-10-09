@@ -35,6 +35,21 @@ for (const [pid, cid, name, status, p7, s7] of defs) {
   const ap = await prodRow(pid); await prisma.ambProductCampaignMap.create({ data: { amb_product_id: ap.id, ad_account_id: 'act_9990000000001', campaign_id: cid, campaign_name: name, status: 'MAPPED' } });
   for (let d = 0; d < 30; d++) { const day = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10); const k = d < 7 ? 1 : 0.6; await prisma.metaPerformanceSnapshot.create({ data: { sync_run_id: run.id, ad_account_id: 'act_9990000000001', level: 'campaign', date_start: day, date_stop: day, campaign_id: cid, campaign_name: name, campaign_status: status, spend: Math.round((s7 / 7) * k), meta_purchases: Math.round((p7 / 7) * k) } }); }
 }
+// board fixtures (Cairo-day snapshots): EVERY plan campaign + non-candidate extras (active / paused / protected / zero-order) + one STALE campaign that the board must exclude
+const cairoOf = (n) => T.cairoDate(new Date(Date.now() - n * 86400000));
+const boardDefs = [ // [id, name, status, budget, productId, todaySpend, todayPurchases, p7, s7, p30, s30, tag]
+  ['fx_open_5', 'Smart-EarCleaner _ scale - 2', 'PAUSED', 240, 9001, 0, 0, 9, 1080, 31, 3410, null],
+  ['fx_pause_3', 'Bed-Wetting _ scale -1', 'ACTIVE', 600, 9001, 420, 3, 26, 3744, 40, 5760, null], ['fx_pause_4', 'Selicon _ scale - 2', 'ACTIVE', 500, 424, 560, 6, 15, 1590, 77, 6468, 'PROTECTED'],
+  ['fx_extra_1', 'Radio _ scale 1', 'ACTIVE', 200, 9001, 310, 0, 17, 3026, 72, 10728, null], ['fx_extra_2', 'Quran-Speaker _ scale 4', 'ACTIVE', 250, 9002, 90, 1, 0, 700, 3, 640, null], ['fx_extra_3', 'Camera - Test 1', 'PAUSED', 200, 424, 0, 0, 0, 0, 0, 0, null],
+];
+for (const [cid, name, status, budget, pid, ts, tp, p7, s7, p30, s30, tag] of boardDefs) {
+  const ap = await prodRow(pid); await prisma.ambProductCampaignMap.create({ data: { amb_product_id: ap.id, ad_account_id: 'act_9990000000001', campaign_id: cid, campaign_name: name, status: 'MAPPED' } });
+  for (let d = 0; d < 30; d++) { const k = d < 7 ? 1 : 0.6; const today = d === 0; await prisma.metaPerformanceSnapshot.create({ data: { sync_run_id: run.id, ad_account_id: 'act_9990000000001', level: 'campaign', date_start: cairoOf(d), date_stop: cairoOf(d), campaign_id: cid, campaign_name: name, campaign_status: status, campaign_budget: budget, campaign_budget_type: 'DAILY', spend: today ? ts : Math.round((s7 / 7) * k), meta_purchases: today ? tp : Math.round((p7 / 7) * k) } }); }
+  if (tag) await prisma.ambOperatorCampaignTag.upsert({ where: { ad_account_id_campaign_id: { ad_account_id: 'act_9990000000001', campaign_id: cid } }, update: { tag }, create: { ad_account_id: 'act_9990000000001', campaign_id: cid, tag, product_id: pid } });
+}
+// the existing mapped fixtures also get a budget + a Cairo-day 'today' row so the board shows them fully
+await prisma.metaPerformanceSnapshot.updateMany({ where: { ad_account_id: 'act_9990000000001', level: 'campaign', campaign_id: { in: defs.map((d) => d[1]) }, campaign_budget: null }, data: { campaign_budget: 300, campaign_budget_type: 'DAILY' } });
+await prisma.metaPerformanceSnapshot.create({ data: { sync_run_id: run.id, ad_account_id: 'act_9990000000001', level: 'campaign', date_start: cairoOf(40), date_stop: cairoOf(40), campaign_id: 'fx_stale_1', campaign_name: 'Old-Stale _ scale', campaign_status: 'ACTIVE', campaign_budget: 200, campaign_budget_type: 'DAILY', spend: 0, meta_purchases: 0, snapshot_at: new Date(Date.now() - 40 * 86400000) } });
 // the plan items carry the product ids (thumbnails + product rules)
 for (const [pid, cid] of [[9001, 'fx_open_1'], [9001, 'fx_open_6'], [9002, 'fx_open_2'], [424, 'fx_pause_1'], [424, 'fx_pause_2'], [9002, 'fx_open_3'], [424, 'fx_open_4']]) await prisma.ambDailyPlanItem.updateMany({ where: { campaign_id: cid, plan: { plan_date: date } }, data: { product_id: pid } });
 // execution history fixtures (4 actions: verified / uncertain / failed / blocked)
@@ -47,6 +62,6 @@ for (const [type, name, cid, st, o, n, reval, verify, err, hAgo] of hist) {
 // product images: 9001 a real (local test) image, 9002 none (initial fallback), 424 a BROKEN url (the image fails to load → initial fallback)
 for (const [pid, url] of [[9001, '/__test_img_9001.svg'], [9002, null], [424, '/__missing_424.png']]) await prisma.ambProduct.updateMany({ where: { product_id: pid }, data: { image_url: url } });
 // start every UI run from the same state: no stored product policies
-const cfgRow = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); if (cfgRow?.limits_json) { const l = JSON.parse(cfgRow.limits_json); delete l.productPolicies; await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(l) } }); }
+const cfgRow = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); if (cfgRow?.limits_json) { const l = JSON.parse(cfgRow.limits_json); delete l.productPolicies; delete l.pricing; await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(l) } }); }
 console.log('UI fixtures created for', date, '(test database only)');
 await prisma.$disconnect();

@@ -15,6 +15,10 @@ import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import * as PP from '../services/amb/productPolicy.js';
 import { campaignWindowMetrics, parseWindow, productImages } from '../services/amb/periodMetrics.js';
 import { listExecutionHistory } from '../services/amb/executionHistory.js';
+import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
+import * as SP from '../services/amb/smartPricing.js';
+import * as AMBP from '../services/amb/ambProducts.js';
+import { getProductPerformance } from '../services/amb/productPerformance.js';
 import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetActionHistory } from '../services/amb/budgetOptimizer.js';
 import { prepareBudgetDecision } from '../services/amb/budgetExecution.js';
 import * as daily from '../services/amb/dailyPlans.js';
@@ -25,7 +29,7 @@ import { getBudgetCaps, setBudgetCaps } from '../services/amb/budgetCaps.js';
 import { runSmartAlerts } from '../services/amb/smartAlerts.js';
 import { listApprovals, bulkPreview, statusBar } from '../services/amb/approvalCenter.js';
 import { buildOperatorBrief } from '../services/amb/operatorBrief.js';
-import { setTestClock, clockNow, isTestClock, testClockAllowed } from '../services/amb/dailyPlanTime.js';
+import { setTestClock, clockNow, isTestClock, testClockAllowed, cairoDate } from '../services/amb/dailyPlanTime.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
 import { evaluateOperator, approveDecision, rejectDecision, snoozeDecision, prepareRollback } from '../services/amb/operatorEngine.js';
@@ -116,6 +120,42 @@ router.put('/budget-caps', ADMIN, asyncRoute(async (req, res) => res.json({ caps
 router.post('/smart-alerts/run', ADMIN, asyncRoute(async (req, res) => res.json(await runSmartAlerts({}))));
 // 🧩 Product Rules — per-product operating policy (draft → ADMIN activation). Saving never changes behaviour.
 router.get('/product-rules', asyncRoute(async (req, res) => res.json({ products: await PP.listProductRules({}) })));
+// ---- التسعير الذكي (Smart Pricing): suggestions + analysis only. Nothing here changes a store / Easy Orders price, activates a rule, or touches Meta. Writes are ADMIN + explicit confirm.
+const pricingPerfCache = new Map(); // `${productId}` -> { at, windows }  (3 performance reads are not repeated on every keystroke)
+async function pricingWindows(productId) {
+  const hit = pricingPerfCache.get(String(productId)); if (hit && Date.now() - hit.at < 60_000) return hit.windows;
+  const today = cairoDate(clockNow()); const back = (n) => { const d = new Date(`${today}T00:00:00Z`); d.setUTCDate(d.getUTCDate() - n); return d.toISOString().slice(0, 10); };
+  const defs = [['last3', back(2)], ['last7', back(6)], ['last30', back(29)]]; const windows = [];
+  for (const [key, from] of defs) {
+    try { const p = await getProductPerformance({ productId, from, to: today }); windows.push({ key, spend: p.meta?.spend ?? 0, purchases: p.meta?.purchases ?? 0, metaState: p.meta?.dataState || null, cod: { dataState: p.easyOrders?.dataState, sample: p.easyOrders?.sample ?? 0, delivered: p.easyOrders?.delivered ?? null, deliveryRate: p.easyOrders?.deliveryRate ?? null } }); }
+    catch { windows.push({ key, spend: 0, purchases: 0, metaState: 'UNAVAILABLE', cod: { dataState: 'NO_DATA', sample: 0, delivered: null, deliveryRate: null } }); }
+  }
+  pricingPerfCache.set(String(productId), { at: Date.now(), windows }); return windows;
+}
+router.get('/pricing/products', asyncRoute(async (req, res) => {
+  const rules = await PP.listProductRules({}); const ids = rules.map((r) => r.productId);
+  const aps = await prisma.ambProduct.findMany({ where: { product_id: { in: ids } }, select: { product_id: true, product_cost: true, shipping_cost: true, other_cost: true, target_cpa: true, actual_selling_price: true, suggested_selling_price: true } }); const by = new Map(aps.map((a) => [a.product_id, a]));
+  res.json({ products: rules.map((r) => { const a = by.get(r.productId); const missing = []; if (!(a?.product_cost > 0)) missing.push('تكلفة الجملة'); if (a?.shipping_cost == null || a.shipping_cost === 0) missing.push('الشحن'); if (!(a?.target_cpa > 0)) missing.push('CPA المتوقع'); return { key: r.key, productId: r.productId, storeId: r.storeId, name: r.name, campaigns: r.campaignCount, purchases7: r.purchases7, cpa7: r.cpa7, currentPrice: a ? (a.actual_selling_price || a.suggested_selling_price || null) : null, economicsComplete: missing.length === 0, missing }; }) });
+}));
+router.get('/pricing/:productId', asyncRoute(async (req, res) => {
+  const productId = Number(req.params.productId); const storeId = String(req.query.storeId || 'default'); if (!Number.isInteger(productId)) return res.status(400).json({ message: 'productId غير صالح.' });
+  const prod = await prisma.product.findUnique({ where: { id: productId }, select: { id: true, product_name: true, store_id: true } }); if (!prod) return res.status(404).json({ message: 'المنتج غير موجود.' });
+  const amb = await prisma.ambProduct.findUnique({ where: { product_id: productId } });
+  const state = await SP.getPricingState({ productId, storeId: storeId || prod.store_id });
+  res.json({ product: { id: prod.id, name: prod.product_name, storeId: prod.store_id }, economics: amb ? { productCost: amb.product_cost, shippingCost: amb.shipping_cost, packagingCost: amb.packaging_cost, otherCost: amb.other_cost, targetCpa: amb.target_cpa, maxCpa: amb.max_cpa, currentPrice: amb.actual_selling_price || amb.suggested_selling_price || null } : null, state, suggestedDefaults: SP.SUGGESTED_DEFAULTS });
+}));
+router.post('/pricing/compute', asyncRoute(async (req, res) => res.json(SP.computePricing(req.body?.inputs || {}))));
+router.post('/pricing/:productId/analyze', asyncRoute(async (req, res) => {
+  const productId = Number(req.params.productId); const computed = SP.computePricing(req.body?.inputs || {});
+  const windows = computed.status === 'OK' ? await pricingWindows(productId) : [];
+  const comparison = computed.status === 'OK' ? SP.compareWithActual({ expectedCpa: computed.inputs.expectedCpa, landed: computed.steps.landed, price: computed.steps.suggested, windows }) : [];
+  res.json({ computed, comparison, recommendations: SP.buildRecommendations({ computed, comparison, currentPrice: computed.inputs?.currentPrice ?? null }), dataNote: 'Meta purchases ≠ أوردرات مسلّمة. CPA المسلّم يظهر فقط مع بيانات COD كافية وموثوقة.' });
+}));
+router.put('/pricing/:productId/draft', ADMIN, asyncRoute(async (req, res) => res.json(await SP.savePricingDraft({ productId: Number(req.params.productId), storeId: String(req.body?.storeId || 'default'), inputs: req.body?.inputs || {}, userId: req.user.id }))));
+router.post('/pricing/:productId/approve', ADMIN, asyncRoute(async (req, res) => res.json(await SP.approvePrice({ productId: Number(req.params.productId), storeId: String(req.body?.storeId || 'default'), inputs: req.body?.inputs || {}, price: req.body?.price, confirm: req.body?.confirm, userId: req.user.id }))));
+router.post('/pricing/:productId/rules-preview', ADMIN, asyncRoute(async (req, res) => res.json(await SP.previewApplyToRules({ productId: Number(req.params.productId), storeId: String(req.body?.storeId || 'default'), inputs: req.body?.inputs || {}, PP }))));
+router.post('/pricing/:productId/rules-apply', ADMIN, asyncRoute(async (req, res) => res.json(await SP.applyToRules({ productId: Number(req.params.productId), storeId: String(req.body?.storeId || 'default'), inputs: req.body?.inputs || {}, fields: req.body?.fields, confirm: req.body?.confirm, userId: req.user.id, PP, ambProducts: AMBP }))));
+
 router.get('/product-rules/:productId', asyncRoute(async (req, res) => res.json(await PP.getProductPolicy({ productId: Number(req.params.productId), storeId: req.query.store || 'default' }))));
 router.put('/product-rules/:productId/draft', ADMIN, asyncRoute(async (req, res) => res.json(await PP.saveDraft({ productId: Number(req.params.productId), storeId: req.body?.storeId || 'default', policy: req.body?.policy, userId: req.user.id }))));
 router.post('/product-rules/:productId/activate', ADMIN, asyncRoute(async (req, res) => res.json(await PP.activatePolicy({ productId: Number(req.params.productId), storeId: req.body?.storeId || 'default', confirm: req.body?.confirm === true, confirmAutomatic: req.body?.confirmAutomatic === true, userId: req.user.id }))));
@@ -123,7 +163,8 @@ router.post('/product-rules/:productId/deactivate', ADMIN, asyncRoute(async (req
 router.post('/product-rules/copy', ADMIN, asyncRoute(async (req, res) => res.json(await PP.copyPolicy({ from: req.body?.from, to: req.body?.to || [], userId: req.user.id }))));
 router.post('/product-rules/:productId/preview', ADMIN, asyncRoute(async (req, res) => { const list = await PP.listProductRules({}); const p = list.find((x) => x.productId === Number(req.params.productId) && x.storeId === (req.body?.storeId || 'default')) || list.find((x) => x.productId === Number(req.params.productId)); res.json(PP.previewPolicy({ policy: req.body?.policy, campaigns: p?.campaigns || [], globalPolicy: await getBudgetPolicy() })); }));
 router.get('/execution-history', asyncRoute(async (req, res) => res.json(await listExecutionHistory({ limit: req.query.limit, type: req.query.type || null, final: req.query.final || null }))));
-router.get('/campaign-metrics', asyncRoute(async (req, res) => { const w = parseWindow({ from: req.query.from, to: req.query.to, days: req.query.days }); const ids = String(req.query.ids || '').split(',').filter(Boolean); res.json({ window: w, metrics: await campaignWindowMetrics({ campaignIds: ids, from: w.from, to: w.to }) }); }));
+router.get('/campaign-metrics', asyncRoute(async (req, res) => { const w = parseWindow({ from: req.query.from, to: req.query.to, days: req.query.days, today: cairoDate(clockNow()) }); const ids = String(req.query.ids || '').split(',').filter(Boolean); res.json({ window: w, metrics: await campaignWindowMetrics({ campaignIds: ids, from: w.from, to: w.to }) }); }));
+router.get('/campaign-board', asyncRoute(async (req, res) => res.json(await buildCampaignBoard({ now: clockNow() }))));
 router.get('/product-images', asyncRoute(async (req, res) => res.json({ images: await productImages(String(req.query.ids || '').split(',')) })));
 router.get('/approvals', asyncRoute(async (req, res) => res.json(await listApprovals({}))));
 router.post('/approvals/bulk-preview', ADMIN, asyncRoute(async (req, res) => res.json(await bulkPreview({ ids: req.body?.decisionIds }))));
