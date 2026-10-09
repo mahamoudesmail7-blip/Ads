@@ -63,7 +63,10 @@ export async function seedTestDatabase({ log = console.log } = {}) {
 }
 
 /** Test-database ONLY: puts the shared mutable operator state back to factory defaults between suites (a suite that crashed mid-way must not poison the next one). */
-export async function resetTestDatabaseState() {
+/** Neon drops idle connections (P1017/P1001/P1002): the helpers retry a few times instead of killing a long regression run. */
+export async function withRetry(fn, tries = 4) { let last; for (let i = 0; i < tries; i++) { try { return await fn(); } catch (e) { last = e; if (!/P1017|P1001|P1002|P2024|closed the connection|Can't reach|Timed out|ECONN|EPIPE|PrismaClient(Initialization|Unknown|KnownRequest)Error/i.test(String(e.code || '') + String(e.name || '') + String(e.message))) throw e; await new Promise((r) => setTimeout(r, 1500 * (i + 1))); } } throw last; }
+export async function resetTestDatabaseState() { return withRetry(resetOnce); }
+async function resetOnce() {
   const url = assertSafeTestUrl();
   const db = new PrismaClient({ datasources: { db: { url } }, log: [] });
   try {

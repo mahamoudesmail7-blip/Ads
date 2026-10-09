@@ -3,6 +3,7 @@
 // systems (snapshots, AmbProduct economics, Stock Guard, Data Quality + Easy Orders status trust, persisted Smart Advisor plan,
 // recent actions). It never calls Meta or Easy Orders and never writes. Sequential awaits only (small shared Prisma pool).
 import { prisma } from '../../prisma.js';
+import { effectiveManualOverrideHours } from './productPolicy.js';
 import { logger } from '../../logger.js';
 import { getConnection } from '../metaAuth.js';
 import { getAmbSettings } from './settings.js';
@@ -188,7 +189,7 @@ export async function buildCampaignContext({ world, campaign, recentByCampaign, 
     campaign: { ...campaign, tag: tagRow?.tag || null, testing: tagRow?.testing || null },
     product: facts?.ambProduct ? { id: productId, ambProductId: facts.ambProduct.id, name: facts.ambProduct.product_name, productKey: facts.opCfg?.product_key || null, automationMode: facts.opCfg?.automation_mode || null, maxScalePct: facts.opCfg?.max_scale_pct ?? null, testingAllowance: facts.opCfg?.testing_spend_allowance ?? null, testingMinSample: facts.opCfg?.testing_min_sample ?? null, mappingVerified: !!idx?.verified, mappingSource: idx?.via || 'NONE' } : { mappingVerified: false, mappingSource: idx?.via || 'NONE' },
     metrics: todayM || {}, econ: { complete: false, profitState: 'UNKNOWN' }, stock: null, dq: null, advisor: null, exceptions: excs, recent, incidents: [], velocity: null, ruleConflicts: [],
-    productOverride: productId != null ? ((config.limits?.productOverrides || {})[String(productId)] || null) : null, zeroOrder: null, lastPurchaseAt: null,
+    policyManualOverrideHours: effectiveManualOverrideHours(config.limits, storeId, productId, campaign.id), productOverride: productId != null ? ((config.limits?.productOverrides || {})[String(productId)] || null) : null, zeroOrder: null, lastPurchaseAt: null,
     config, _facts: facts, _world: world, heavyLoaded: false,
   };
 }

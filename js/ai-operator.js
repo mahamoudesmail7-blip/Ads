@@ -9,6 +9,7 @@ import { drawDaily } from './ai-operator-daily.js';
 import { drawPerms } from './ai-operator-perms.js';
 import { drawMonitoring } from './ai-operator-monitor.js';
 import { drawApprovals, drawStatusChips } from './ai-operator-approvals.js';
+import { renderShell, stopShell } from './opx-shell.js';
 import { handleSetupAction, showProfile, showGate, showEvents, drawControl, drawReadiness, drawMapping, drawExcluded, drawHistory, drawPerformance } from './ai-operator-setup.js';
 
 const TABS = [
@@ -18,9 +19,24 @@ const TABS = [
 const PRIMARY_TABS = ['daily', 'approvals', 'perms', 'history', 'control']; // everything else lives under «المزيد» so the screen stays calm
 const DECISION_TABS = ['today', 'open', 'pause', 'scale'];
 
-export function stopOperatorPolling() { if (S.poll) { clearInterval(S.poll); S.poll = null; } }
+export function stopOperatorPolling() { if (S.poll) { clearInterval(S.poll); S.poll = null; } stopShell(); }
 
+/** the new workspace UI (default). `?legacy=1` or localStorage opx.legacy=1 keeps the previous single-page UI reachable. */
 export async function renderOperator(panel, { isAdmin = false } = {}) {
+  let legacyMode = false; try { legacyMode = localStorage.getItem('opx.legacy') === '1' || /[?&]legacy=1/.test(location.search + location.hash); } catch { /* ignore */ }
+  if (!legacyMode) {
+    S.isAdmin = isAdmin; stopOperatorPolling();
+    return renderShell(panel, { isAdmin, legacy: { setOv: (ov) => { S.ov = ov; }, showGate: () => showGate(), mountBody: (c, tab) => mountLegacyBody(c, tab, isAdmin), mountFull: (c) => renderLegacy(c, { isAdmin }) } });
+  }
+  return renderLegacy(panel, { isAdmin });
+}
+
+async function mountLegacyBody(container, tab, isAdmin) {
+  S.panel = container; S.isAdmin = isAdmin; S.tab = tab; container.innerHTML = '<div id="opTop" hidden></div><div id="opBody"></div>';
+  await refreshTop(); await drawBody();
+}
+
+async function renderLegacy(panel, { isAdmin = false } = {}) {
   S.panel = panel; S.isAdmin = isAdmin;
   panel.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   await refreshTop();

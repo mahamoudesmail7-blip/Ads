@@ -146,7 +146,7 @@ async function init() {
   mountAmbBottomNav();
   route();
   // 📅 Daily Operations popup: the server prepares the 00:00 / 13:00 plans; this only polls and shows them (never executes anything)
-  startDailyPopupWatcher({ isAdmin: state.isAdmin, onOpenCenter: () => { OP.tab = 'daily'; if ((location.hash || '') === '#operator') { OP.hooks?.switchTab?.('daily'); } else location.hash = 'operator'; } });
+  startDailyPopupWatcher({ isAdmin: state.isAdmin, onOpenCenter: (type) => { const ws = type === 'PAUSE' ? 'pause' : 'open'; try { localStorage.setItem('opx.ws', ws); } catch { /* ignore */ } OP.tab = 'daily'; if ((location.hash || '') === '#operator') { if (document.getElementById('opxRoot')) window.dispatchEvent(new CustomEvent('opx:open', { detail: ws })); else OP.hooks?.switchTab?.('daily'); } else location.hash = 'operator'; } });
 }
 
 // Mobile bottom tab bar (redesign v2 — the user's reference image uses a

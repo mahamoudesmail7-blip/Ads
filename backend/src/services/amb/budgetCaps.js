@@ -38,8 +38,9 @@ export async function currentBudgetTotals({ adAccountId, campaignId, productId =
 }
 
 /** Would raising a daily budget by `delta` break a cap? Reductions (delta <= 0) always pass. Returns {ok, violations[], caps, totals}. */
-export async function checkBudgetCaps({ action, delta, adAccountId, campaignId, productId = null, now = new Date(), deps = {} }) {
-  const caps = deps.caps || await getBudgetCaps();
+export async function checkBudgetCaps({ action, delta, adAccountId, campaignId, productId = null, productCapOverride = null, now = new Date(), deps = {} }) {
+  const caps = { ...(deps.caps || await getBudgetCaps()) };
+  if (productCapOverride != null && Number(productCapOverride) > 0) caps.product = Math.round(Number(productCapOverride)); // a product policy's own daily cap replaces the global product cap for THAT product
   if (!(delta > 0) || !['SCALE_UP', 'INCREASE_BUDGET'].includes(action)) return { ok: true, violations: [], caps, totals: null };
   if (CAP_KEYS.every((k) => caps[k] == null)) return { ok: true, violations: [], caps, totals: null };
   const totals = deps.totals || await currentBudgetTotals({ adAccountId, campaignId, productId, now, deps });

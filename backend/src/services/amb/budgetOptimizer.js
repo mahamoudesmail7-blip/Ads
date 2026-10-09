@@ -22,6 +22,7 @@ import { entityWindowMetrics } from './metricsEngine.js';
 import { evaluateGuards, decisionConfidence, resolveZeroOrderLimit } from './operatorGuards.js';
 import { buildOperatorWorld, buildCampaignContext, ensureHeavy, loadRecentActions, loadCounters, computeLastPurchaseAt, computeVelocity } from './operatorContext.js';
 import { lossFor } from './operatorEngine.js';
+import { loadActivePolicies, applyToBudgetPolicy, policyKey, dayAllowed, weekdayOfCairoDate } from './productPolicy.js';
 
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -273,6 +274,9 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   const counters = deps.counters || await loadCounters({ now, campaigns: world.campaigns });
   const ctxs = new Map();
   for (const c of active) ctxs.set(c.id, deps.ctxFor ? await deps.ctxFor(c) : await buildCampaignContext({ world, campaign: c, recentByCampaign: recent }));
+  // total CURRENT daily budget per product (all its ACTIVE campaigns) — a product's Daily Spend Cap is enforced against it on every increase
+  const productBudget = new Map();
+  for (const { campaign: c0, discovery: d0 } of plan) { const cx0 = ctxs.get(c0.id); if (cx0?.product?.id == null) continue; const k0 = policyKey(cx0.storeId, cx0.product.id); productBudget.set(k0, (productBudget.get(k0) || 0) + d0.entities.reduce((t, e) => t + (Number(e.budget) || 0), 0)); }
   const lossBy = { campaign: new Map(), product: new Map(), account: 0 };
   for (const [id, cx] of ctxs) { const l = lossFor(cx.metrics, cx.econ); lossBy.campaign.set(id, l); if (cx.product?.id != null) lossBy.product.set(cx.product.id, (lossBy.product.get(cx.product.id) || 0) + l); lossBy.account += l; }
   const cfg = { ...config, cooldowns: { ...config.cooldowns, SCALE_UP: policy.scale.cooldownHours, SCALE_DOWN: policy.reduce.cooldownHours } }; // the policy's own cooldowns, for THIS evaluation only
@@ -280,6 +284,8 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
 
   // ---- ACCOUNT-WIDE policy layer: mapping state per campaign (the SAME mapping center the UI shows), product zero-order override, performance-only warnings
   const AW = policy.accountWide || {};
+  const productPolicies = deps.productPolicies || await loadActivePolicies().catch(() => new Map()); // per-product ACTIVE policies (drafts never apply)
+  const cairoToday = deps.cairoToday || new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(now);
   let mapStates = deps.mappingStates || null;
   if (!mapStates && AW.requireVerifiedMapping) {
     try { const { mappingCenter } = await import('./operatorReadiness.js'); const mc = await mappingCenter({ adAccountId: world.adAccountId, limit: 5000 }); mapStates = new Map(mc.rows.map((r) => [r.campaignId, { state: r.state, note: r.note || null }])); }
@@ -296,6 +302,9 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   for (const { campaign: c, discovery } of plan) {
     const cx = ctxs.get(c.id);
     if (!deps.ctxFor) await ensureHeavy(cx); // product facts (economics / stock / data quality / advisor) — cached per product, read-only
+    const pol = cx.product?.id != null ? productPolicies.get(policyKey(cx.storeId, cx.product.id)) || null : null;
+    const eff = pol ? applyToBudgetPolicy(policy, pol, c.id) : null; const rowPolicy = eff?.policy || policy; const rowAW = eff?.stockPolicy ? { ...AW, stockUnknown: eff.stockPolicy } : AW;
+    const dayOff = pol && !dayAllowed(pol, weekdayOfCairoDate(cairoToday), c.id);
     const ms = mapStates?.get(c.id) || null;
     const mapState = ms?.state || (cx.product?.mappingVerified ? 'VERIFIED' : (cx.product?.mappingSource || 'UNMAPPED'));
     const mapVerified = ms ? ms.state === 'VERIFIED' : !!cx.product?.mappingVerified;
@@ -303,9 +312,9 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
     const base = { storeId: cx.storeId, campaignId: c.id, campaign: (c.name || '').trim(), status: c.status, productId: cx.product?.id ?? null, product: cx.product?.name || null, mapping: mapState, mappingNote: ms?.note || null, budgetLevel: discovery.level };
     const warns = []; // performance-only rules: unknown economics / stock are WARNINGS (a known bad value still blocks inside the guard chain)
     if (cx.product?.id != null && AW.economicsMissing === 'WARN' && !cx.econ?.complete) warns.push({ code: 'ECONOMICS_INCOMPLETE', severity: 'WARN' });
-    if (cx.product?.id != null && AW.stockUnknown === 'WARN' && (!cx.stock || cx.stock.status === 'STOCK_UNKNOWN')) warns.push({ code: 'STOCK_UNKNOWN', severity: 'WARN' });
-    let zeroLimit = null, zeroUnresolved = false; const zo = cx.productOverride?.zeroOrder;
-    if (AW.productZeroOrderOverride && zo?.mode) { const zr = cx.zeroOrder?.limit != null ? cx.zeroOrder : resolveZeroOrderLimit({ override: zo, targetCpa: cx.econ?.targetCpa }); if (zr.limit) zeroLimit = zr.limit; else zeroUnresolved = true; }
+    if (cx.product?.id != null && rowAW.stockUnknown === 'WARN' && (!cx.stock || cx.stock.status === 'STOCK_UNKNOWN')) warns.push({ code: 'STOCK_UNKNOWN', severity: 'WARN' });
+    let zeroLimit = eff?.zeroSpend ?? null, zeroUnresolved = false; const zo = cx.productOverride?.zeroOrder;
+    if (eff?.zeroSpend == null && AW.productZeroOrderOverride && zo?.mode) { const zr = cx.zeroOrder?.limit != null ? cx.zeroOrder : resolveZeroOrderLimit({ override: zo, targetCpa: cx.econ?.targetCpa }); if (zr.limit) zeroLimit = zr.limit; else zeroUnresolved = true; }
     if (!discovery.entities.length) { rows_push(out, { ...base, entity: null, decision: mapBlock ? 'PROTECTED' : 'BLOCKED', intended: null, guards: [...(mapBlock ? [fmtGuard(mapBlock)] : []), 'BUDGET_UNKNOWN[B]', ...warns.map(fmtGuard)], reason: `مستوى الميزانية غير معروف (${discovery.reason}) — مفيش تخمين`, evidence: null, m3: slim(world.windows.last3?.get(c.id)), m7: slim(world.windows.last7?.get(c.id)) }); continue; }
     for (const ent of discovery.entities) {
       const m = ent.level === 'adset' ? adsetWin.last3?.get(ent.id) : world.windows.last3?.get(c.id);
@@ -314,16 +323,22 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
       const lc = lastChanges.get(ent.id) || (ent.level === 'campaign' ? lastChanges.get(c.id) : null) || null;
       const since = lc ? await (deps.since ? deps.since({ level: ent.level, id: ent.id, since: lc.at }) : metricsSince({ level: ent.level, id: ent.id, since: lc.at, now, adAccountId: world.adAccountId })) : null;
       const ageHours = c.firstSeenAt ? Math.floor((now.getTime() - new Date(c.firstSeenAt).getTime()) / MS_H) : null;
-      const cl = classifyBudget({ m: win, m7, ageHours, lastChange: lc, since, policy, now, zeroSpendLimit: zeroLimit });
+      const winRow = rowPolicy.window === 'last7' ? m7 : m;
+      const cl = classifyBudget({ m: winRow, m7, ageHours, lastChange: lc, since, policy: rowPolicy, now, zeroSpendLimit: zeroLimit });
       const evid = { window: cl.evidence, spend: cl.sample?.spend ?? null, purchases: cl.sample?.purchases ?? null, cpa: cl.sample?.cpa ?? null, cpa7d: cl.sample?.cpa7d ?? null, lastChange: lc ? { at: lc.at.toISOString(), action: lc.action, from: lc.from, to: lc.to, source: lc.source } : null };
       const row = { ...base, entity: { level: ent.level, id: ent.id, name: ent.name, budget: ent.budget, budgetType: ent.budgetType }, zone: cl.zone, rule: cl.rule, evidence: evid, m3: slim(m), m7: slim(m7), ageHours, zeroLimit: cl.zeroLimit ?? zeroLimit, reason: cl.reasons.join(' · '), intended: null, guards: [], flagReview: !!cl.flagReview };
       const extra = (have) => warns.filter((w) => !have.some((g) => g.code === w.code)).map(fmtGuard);
       if (!cl.action) { row.decision = mapBlock ? 'PROTECTED' : (['COOLDOWN', 'NO_NEW_EVIDENCE'].includes(cl.zone) ? 'PROTECTED' : 'KEEP'); row.guards = [...(mapBlock ? [fmtGuard(mapBlock)] : []), ...extra([])]; rows_push(out, row); continue; }
       // a budget action: needs a known DAILY budget at the discovered level
-      const from = ent.budget; const to = cl.action === 'PAUSE' ? null : proposedBudget(cl.action, from, cl.pct);
+      const from = ent.budget; let to = cl.action === 'PAUSE' ? null : proposedBudget(cl.action, from, cl.pct);
+      const boundBlocks = [];
+      if (eff?.dailyCap != null && cl.action === 'SCALE_UP' && to != null && from != null) { const tot = productBudget.get(policyKey(cx.storeId, cx.product.id)) || 0; if (tot + (to - from) > eff.dailyCap) boundBlocks.push({ code: 'PRODUCT_DAILY_CAP', severity: 'BLOCK', detail: `إجمالي ميزانية المنتج ${tot} + ${to - from} > الحد اليومي ${eff.dailyCap}` }); }
+      if (eff && to != null && from != null) { const { minBudget, maxBudget } = eff.bounds; if (cl.action === 'SCALE_UP' && maxBudget != null) { if (from >= maxBudget) boundBlocks.push({ code: 'PRODUCT_MAX_BUDGET', severity: 'BLOCK', detail: `الميزانية ${from} وصلت أقصى حد للمنتج ${maxBudget}` }); else to = Math.min(to, maxBudget); } if (cl.action === 'SCALE_DOWN' && minBudget != null) { if (from <= minBudget) boundBlocks.push({ code: 'PRODUCT_MIN_BUDGET', severity: 'BLOCK', detail: `الميزانية ${from} عند أقل حد للمنتج ${minBudget}` }); else to = Math.max(to, minBudget); } }
       row.intended = { action: cl.action, pct: cl.pct ?? null, fromBudget: cl.action === 'PAUSE' ? null : from, toBudget: to };
       const pre = [];
       if (mapBlock) pre.push(mapBlock);
+      if (dayOff && cl.action !== 'PAUSE') pre.push({ code: 'PRODUCT_POLICY_DAY_OFF', severity: 'BLOCK', detail: 'اليوم خارج أيام تشغيل سياسة المنتج' });
+      pre.push(...boundBlocks);
       if (cl.action !== 'PAUSE' && recentOpens.get(c.id)) pre.push({ code: 'POST_OPEN_MONITORING', severity: 'BLOCK', detail: `اتفتحت من خطة الفتح ${new Date(recentOpens.get(c.id)).toISOString()} — فترة مراقبة قبل أي تعديل ميزانية` });
       if (cl.action === 'PAUSE' && zeroUnresolved) pre.push({ code: 'ZERO_ORDER_NOT_CONFIGURED', severity: 'BLOCK', detail: 'PRODUCT_OVERRIDE_UNRESOLVED' });
       if (cl.action !== 'PAUSE' && discovery.unsupported) pre.push({ code: 'BUDGET_TYPE_UNSUPPORTED', severity: 'BLOCK' });

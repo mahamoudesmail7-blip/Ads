@@ -12,6 +12,9 @@ import * as store from '../services/amb/operatorStore.js';
 import { controlStatus, setAutoActions } from '../services/amb/operatorControl.js';
 import { inventoryOverview, compareManualVsApi, setInventoryLink, removeInventoryLink, setInventoryPrimary } from '../services/amb/inventoryApi.js';
 import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
+import * as PP from '../services/amb/productPolicy.js';
+import { campaignWindowMetrics, parseWindow, productImages } from '../services/amb/periodMetrics.js';
+import { listExecutionHistory } from '../services/amb/executionHistory.js';
 import { getBudgetPolicy, setBudgetPolicy, evaluateBudgetOptimization, budgetActionHistory } from '../services/amb/budgetOptimizer.js';
 import { prepareBudgetDecision } from '../services/amb/budgetExecution.js';
 import * as daily from '../services/amb/dailyPlans.js';
@@ -111,6 +114,17 @@ router.put('/execution-permissions/:key', ADMIN, asyncRoute(async (req, res) => 
 router.get('/budget-caps', asyncRoute(async (req, res) => res.json({ caps: await getBudgetCaps() })));
 router.put('/budget-caps', ADMIN, asyncRoute(async (req, res) => res.json({ caps: await setBudgetCaps({ caps: req.body?.caps, confirm: req.body?.confirm === true, userId: req.user.id }) })));
 router.post('/smart-alerts/run', ADMIN, asyncRoute(async (req, res) => res.json(await runSmartAlerts({}))));
+// 🧩 Product Rules — per-product operating policy (draft → ADMIN activation). Saving never changes behaviour.
+router.get('/product-rules', asyncRoute(async (req, res) => res.json({ products: await PP.listProductRules({}) })));
+router.get('/product-rules/:productId', asyncRoute(async (req, res) => res.json(await PP.getProductPolicy({ productId: Number(req.params.productId), storeId: req.query.store || 'default' }))));
+router.put('/product-rules/:productId/draft', ADMIN, asyncRoute(async (req, res) => res.json(await PP.saveDraft({ productId: Number(req.params.productId), storeId: req.body?.storeId || 'default', policy: req.body?.policy, userId: req.user.id }))));
+router.post('/product-rules/:productId/activate', ADMIN, asyncRoute(async (req, res) => res.json(await PP.activatePolicy({ productId: Number(req.params.productId), storeId: req.body?.storeId || 'default', confirm: req.body?.confirm === true, confirmAutomatic: req.body?.confirmAutomatic === true, userId: req.user.id }))));
+router.post('/product-rules/:productId/deactivate', ADMIN, asyncRoute(async (req, res) => res.json(await PP.deactivatePolicy({ productId: Number(req.params.productId), storeId: req.body?.storeId || 'default', confirm: req.body?.confirm === true, userId: req.user.id }))));
+router.post('/product-rules/copy', ADMIN, asyncRoute(async (req, res) => res.json(await PP.copyPolicy({ from: req.body?.from, to: req.body?.to || [], userId: req.user.id }))));
+router.post('/product-rules/:productId/preview', ADMIN, asyncRoute(async (req, res) => { const list = await PP.listProductRules({}); const p = list.find((x) => x.productId === Number(req.params.productId) && x.storeId === (req.body?.storeId || 'default')) || list.find((x) => x.productId === Number(req.params.productId)); res.json(PP.previewPolicy({ policy: req.body?.policy, campaigns: p?.campaigns || [], globalPolicy: await getBudgetPolicy() })); }));
+router.get('/execution-history', asyncRoute(async (req, res) => res.json(await listExecutionHistory({ limit: req.query.limit, type: req.query.type || null, final: req.query.final || null }))));
+router.get('/campaign-metrics', asyncRoute(async (req, res) => { const w = parseWindow({ from: req.query.from, to: req.query.to, days: req.query.days }); const ids = String(req.query.ids || '').split(',').filter(Boolean); res.json({ window: w, metrics: await campaignWindowMetrics({ campaignIds: ids, from: w.from, to: w.to }) }); }));
+router.get('/product-images', asyncRoute(async (req, res) => res.json({ images: await productImages(String(req.query.ids || '').split(',')) })));
 router.get('/approvals', asyncRoute(async (req, res) => res.json(await listApprovals({}))));
 router.post('/approvals/bulk-preview', ADMIN, asyncRoute(async (req, res) => res.json(await bulkPreview({ ids: req.body?.decisionIds }))));
 // bulk approval: only low-risk actions that passed every check; the owner must confirm the EXACT count and exposed budget the server computed; a snapshot is saved; each campaign is re-validated live at its own execution

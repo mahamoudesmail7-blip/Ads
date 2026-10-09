@@ -11,14 +11,14 @@ const TYPE_META = {
   OPEN: { icon: '▶️', title: 'خطة فتح الحملات', at: '12:00 صباحًا', approve: 'اعتماد ونشر خطة فتح 12 صباحًا', popupApprove: 'اعتماد وتنفيذ فتح الحملات المحددة', verb: 'فتح', empty: 'مفيش حملات متوقفة مرشحة للفتح.' },
   PAUSE: { icon: '⏸️', title: 'خطة إيقاف الحملات', at: '1:00 ظهرًا', approve: 'اعتماد خطة إيقاف 1 ظهرًا', popupApprove: 'اعتماد وتنفيذ إيقاف الحملات المحددة', verb: 'إيقاف', empty: 'مفيش حملات نشطة محتاجة إيقاف.' },
 };
-const ITEM_PILL = { PENDING: 'gray', REVALIDATING: 'blue', SENT: 'amber', VERIFIED: 'green', FAILED: 'red', SKIPPED: 'gray', BLOCKED: 'red', SIMULATED: 'blue', UNCERTAIN: 'amber' };
-const ITEM_AR = { PENDING: 'في الانتظار', REVALIDATING: 'جارِ التحقق', SENT: 'اتبعت لـMeta', VERIFIED: 'اتأكد من Meta', FAILED: 'فشل', SKIPPED: 'اتخطّت', BLOCKED: 'ممنوعة', SIMULATED: 'محاكاة (SHADOW)', UNCERTAIN: 'غير مؤكد' };
+export const ITEM_PILL = { PENDING: 'gray', REVALIDATING: 'blue', SENT: 'amber', VERIFIED: 'green', FAILED: 'red', SKIPPED: 'gray', BLOCKED: 'red', SIMULATED: 'blue', UNCERTAIN: 'amber' };
+export const ITEM_AR = { PENDING: 'في الانتظار', REVALIDATING: 'جارِ التحقق', SENT: 'اتبعت لـMeta', VERIFIED: 'اتأكد من Meta', FAILED: 'فشل', SKIPPED: 'اتخطّت', BLOCKED: 'ممنوعة', SIMULATED: 'محاكاة (SHADOW)', UNCERTAIN: 'غير مؤكد' };
 const PLAN_AR = { PREPARED: 'جاهزة للمراجعة', APPROVED: 'معتمدة', RUNNING: 'قيد التنفيذ', COMPLETED: 'انتهت', CANCELLED: 'ملغية', SUPERSEDED: 'نسخة قديمة', MISSED: 'فاتت' };
 const PLAN_CLS = { PREPARED: 'amber', APPROVED: 'blue', RUNNING: 'blue', COMPLETED: 'green', CANCELLED: 'gray', SUPERSEDED: 'gray', MISSED: 'red' };
 const RISK_CLS = { HIGH: 'red', MEDIUM: 'amber', LOW: 'green' }; const RISK_AR = { HIGH: 'مرتفعة', MEDIUM: 'متوسطة', LOW: 'منخفضة' };
 const STOCK_AR = { IN_STOCK: 'متاح', LOW_STOCK: 'قليل', OUT_OF_STOCK: 'نافد ⛔', STOCK_UNKNOWN: 'غير معروف ⚠️' };
-const ELIG_AR = { ELIGIBLE: '', PROTECTED: 'محمية', BLOCKED: 'ممنوعة', NEEDS_SPECIAL_APPROVAL: 'موافقة خاصة' };
-const BLOCK_AR = { TESTING_PROTECTED: 'حملة اختبار/جديدة — محمية', RECENT_PURCHASE_PROTECTION: 'أوردر حديث — محمية', ATTRIBUTION_GRACE: 'فترة سماح الإسناد', MANUAL_OVERRIDE_COOLDOWN: 'تعديل يدوي حديث — Cooldown', COOLDOWN_ACTIVE: 'Cooldown شغال',  MAPPING_UNMAPPED: 'غير مربوطة بمنتج', MAPPING_CONFLICT: 'ربط متعارض', EXTERNAL_STORE: 'متجر خارجي', STOCK_OUT: 'المخزون صفر', STALE_DATA: 'بيانات قديمة', UNKNOWN_STOP_REASON: 'اتوقفت لسبب غير معروف — محتاجة موافقة خاصة', EXCEPTION_NO_AUTOMATION: 'مستثناة', EXCEPTION_NO_AUTO_OPEN: 'مستثناة من الفتح', EXCEPTION_NO_AUTO_STOP: 'مستثناة من الإيقاف', WINNER_PROTECTED: 'Winner محمي' };
+export const ELIG_AR = { ELIGIBLE: '', PROTECTED: 'محمية', BLOCKED: 'ممنوعة', NEEDS_SPECIAL_APPROVAL: 'موافقة خاصة' };
+export const BLOCK_AR = { PRODUCT_POLICY_DAY_OFF: 'خارج أيام تشغيل سياسة المنتج', PRODUCT_POLICY_OTHER_TIME: 'له موعد خاص (خطة منفصلة)', PRODUCT_MAX_BUDGET: 'وصلت أقصى ميزانية للمنتج', PRODUCT_DAILY_CAP: 'هتتجاوز الحد اليومي لميزانية المنتج', PRODUCT_MIN_BUDGET: 'عند أقل ميزانية للمنتج', TESTING_PROTECTED: 'حملة اختبار/جديدة — محمية', RECENT_PURCHASE_PROTECTION: 'أوردر حديث — محمية', ATTRIBUTION_GRACE: 'فترة سماح الإسناد', MANUAL_OVERRIDE_COOLDOWN: 'تعديل يدوي حديث — Cooldown', COOLDOWN_ACTIVE: 'Cooldown شغال',  MAPPING_UNMAPPED: 'غير مربوطة بمنتج', MAPPING_CONFLICT: 'ربط متعارض', EXTERNAL_STORE: 'متجر خارجي', STOCK_OUT: 'المخزون صفر', STALE_DATA: 'بيانات قديمة', UNKNOWN_STOP_REASON: 'اتوقفت لسبب غير معروف — محتاجة موافقة خاصة', EXCEPTION_NO_AUTOMATION: 'مستثناة', EXCEPTION_NO_AUTO_OPEN: 'مستثناة من الفتح', EXCEPTION_NO_AUTO_STOP: 'مستثناة من الإيقاف', WINNER_PROTECTED: 'Winner محمي' };
 
 const D = { ov: null, pollRun: null, hiddenRows: {}, showAll: {}, saving: new Map(), seenPopup: new Set(), popupBusy: false, popupTimer: null, isAdmin: false, onOpenCenter: null };
 const m = (x) => (x ? `${num(x.cpa)}` : '—');
@@ -61,6 +61,10 @@ function pauseRow(it, editable) {
 const scorePill = (e) => { const p = e?.priority; if (!p) return '<small>—</small>'; const cls = { STRONG: 'green', GOOD: 'blue', FAIR: 'amber', WEAK: 'red' }[p.band] || 'gray'; const tip = [...p.reasons, '', p.caveat].join(String.fromCharCode(10)); return `<span class="op-pill ${cls}" title="${E(tip)}">${p.score}</span><small>${E(p.bandLabel)}</small>`; };
 const statusCell = (it) => (it.status && it.status !== 'PENDING' ? `<td><span class="op-pill ${ITEM_PILL[it.status] || 'gray'}">${ITEM_AR[it.status] || it.status}</span>${it.statusReason ? `<small>${E(it.statusReason)}</small>` : ''}</td>` : '<td><small>—</small></td>');
 
+function cardsHtml(plan, editable, items) {
+  const T = plan.type;
+  return `<div class="dp-cards">${items.map((it) => { const e = it.evidence || {}; const dis = !editable || !it.selectable ? 'disabled' : ''; return `<article class="dp-card ${it.selected ? 'on' : ''}" data-cid="${E(it.campaignId)}"><input type="checkbox" class="dp-chk" data-cid="${E(it.campaignId)}" ${it.selected ? 'checked' : ''} ${dis} aria-label="اختيار"><b>${E(it.productName || it.campaignName || it.campaignId)}</b><small>${E(it.campaignName || '')}</small><div class="row"><span>أوردرات ${num(e.m7?.purchases)}</span><span>CPA ${e.m7?.cpa == null ? '—' : num(e.m7.cpa)}</span><span>${egp(e.budget)}</span>${it.eligibility !== 'ELIGIBLE' ? `<span class="op-pill ${it.eligibility === 'BLOCKED' ? 'red' : 'amber'}">${ELIG_AR[it.eligibility] || it.eligibility}</span>` : ''}</div></article>`; }).join('') || `<div class="amb-empty">${E(TYPE_META[T].empty)}</div>`}</div>`;
+}
 function tableHtml(plan, { editable, limit = 40, compact = false } = {}) {
   const T = plan.type; const items = plan.items; const showAll = !!D.showAll[plan.id] || items.length <= limit;
   const rows = showAll ? items : items.filter((i) => i.selectable || i.selected).slice(0, limit);
@@ -68,7 +72,7 @@ function tableHtml(plan, { editable, limit = 40, compact = false } = {}) {
     ? '<th></th><th>#</th><th>المنتج / الحملة</th><th>CPA 7د/30د</th><th>أوردرات 7د/30د</th><th>صرف 7د/30د</th><th>ميزانية</th><th>آخر نشاط</th><th>Smart Advisor</th><th>المخزون</th><th>Score</th><th>المخاطرة</th><th>السبب</th><th>حالة التنفيذ</th>'
     : '<th></th><th>#</th><th>المنتج / الحملة</th><th>CPA اليوم<small> 3د · 7د · 30د</small></th><th>صرف اليوم</th><th>أوردرات اليوم</th><th>ميزانية</th><th>CTR / CPC / CVR</th><th>تشخيص Advisor</th><th>Grace / آخر أوردر</th><th>آخر تعديل ميزانية</th><th>Score</th><th>درجة الخطر</th><th>السبب</th><th>حالة التنفيذ</th>';
   const tr = T === 'OPEN' ? openRow : pauseRow;
-  return `<div class="table-wrap op-table-wrap"><table class="data dp-table ${compact ? 'compact' : ''}" data-plan="${plan.id}"><thead><tr>${head}</tr></thead><tbody>${rows.map((i) => tr(i, editable)).join('') || `<tr><td colspan="14" class="amb-empty">${E(TYPE_META[T].empty)}</td></tr>`}</tbody></table></div>
+  return `${compact ? cardsHtml(plan, editable, rows) : ''}<div class="table-wrap op-table-wrap"><table class="data dp-table ${compact ? 'compact' : ''}" data-plan="${plan.id}"><thead><tr>${head}</tr></thead><tbody>${rows.map((i) => tr(i, editable)).join('') || `<tr><td colspan="14" class="amb-empty">${E(TYPE_META[T].empty)}</td></tr>`}</tbody></table></div>
     ${!showAll ? `<div class="dp-more"><button class="amb-btn sm" data-showall="${plan.id}">عرض كل الحملات (${items.length}) — بما فيها المحمية والممنوعة</button></div>` : ''}`;
 }
 
@@ -90,7 +94,7 @@ function wirePlan(root, plan, rerender) {
       const okSpecial = await UI.confirmModal({ title: '⚠️ موافقة خاصة', message: `الحملة «${it.campaignName || it.campaignId}» اتوقفت ${it.evidence?.pausedBy === 'MANUAL' ? 'يدويًا' : 'لسبب غير معروف'}${it.evidence?.pausedAt ? ' (' + timeAr(it.evidence.pausedAt) + ')' : ''}. فتحها هنا هيكون بقرارك الصريح. متأكد؟`, confirmLabel: 'موافقة خاصة على الفتح' });
       if (!okSpecial) { c.checked = false; return; } special = [it.campaignId];
     }
-    c.closest('tr').classList.toggle('on', c.checked); saveSelection(plan.id, { [c.dataset.cid]: c.checked }, rerender, special); }; });
+    c.closest('tr, .dp-card')?.classList.toggle('on', c.checked); saveSelection(plan.id, { [c.dataset.cid]: c.checked }, rerender, special); }; });
   root.querySelectorAll('[data-showall]').forEach((b) => { b.onclick = () => { D.showAll[plan.id] = true; rerender(); }; });
   root.querySelectorAll('[data-act]').forEach((b) => {
     b.onclick = async () => {
@@ -256,7 +260,7 @@ function renderPopup() {
   const rr = () => renderPopup();
   wirePlan(el, plan, rr);
   $('dpPopClose').onclick = $('dpPopLater').onclick = async () => { await dismiss(plan.id); closePopup(); };
-  $('dpPopCenter').onclick = async () => { await dismiss(plan.id); closePopup(); D.onOpenCenter?.(); };
+  $('dpPopCenter').onclick = async () => { await dismiss(plan.id); closePopup(); D.onOpenCenter?.(plan.type); };
 }
 async function checkDue() {
   if (D.popupBusy || $('dpPopup')) return;

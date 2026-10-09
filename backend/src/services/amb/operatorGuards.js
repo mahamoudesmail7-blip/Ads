@@ -255,7 +255,7 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
     }
   }
   // human override (spec 86): never immediately undo a manual change
-  const moH = Number(lim.manualOverrideCooldownHours ?? 24);
+  const moH = Math.max(Number(lim.manualOverrideCooldownHours ?? 24), Number(ctx.policyManualOverrideHours) || 0); // a product policy can only EXTEND the owner's manual-change protection, never shorten the global one
   if (consequential && ctx.recent?.manualOverrideAt && now.getTime() - new Date(ctx.recent.manualOverrideAt).getTime() < moH * MS_H) add('MANUAL_OVERRIDE_COOLDOWN', { detail: `${moH}h` });
   // attribution delay / campaign maturity (spec 70/71): do not pause on immature conversion data
   if (a === 'PAUSE' && !decision.severeOverride) {

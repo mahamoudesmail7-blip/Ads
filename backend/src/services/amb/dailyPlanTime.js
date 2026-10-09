@@ -18,6 +18,9 @@ export const cairoDate = (now = new Date()) => cairoParts(now).date;
 export function addDays(dateStr, n) { const d = new Date(`${dateStr}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 /** The UTC instant at which `type`'s plan of Cairo day `date` is due. */
 export const dueAt = (type, date) => localDateTimeToUtc(date, SLOTS[type], CAIRO_TZ);
+/** a product's OWN time (HH:MM Cairo) of Cairo day `date` */
+export const dueAtTime = (date, hhmm) => localDateTimeToUtc(date, hhmm, CAIRO_TZ);
+export const slotVariant = (hhmm) => `P-${String(hhmm).replace(':', '')}`;
 /** The plan stays actionable until the END of its Cairo day (= 00:00 Cairo of the next day). After that it is MISSED — never executed late on its own. */
 export const expiresAt = (date) => localDateTimeToUtc(addDays(date, 1), '00:00', CAIRO_TZ);
 /** Next due instant of `type` strictly after `now`. */

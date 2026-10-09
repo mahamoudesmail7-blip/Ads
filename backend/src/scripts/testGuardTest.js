@@ -53,7 +53,7 @@ const run = (code, env) => spawnSync(process.execPath, ['--input-type=module', '
 
 console.log('\n3. Every DB suite imports the guard first');
 {
-  const files = (await import('node:fs')).readdirSync(__dirname).filter((f) => /Test\.(js|mjs)$/.test(f) && !['testGuardTest.js', 'migrateDeployCoreTest.js'].includes(f));
+  const files = (await import('node:fs')).readdirSync(__dirname).filter((f) => /Test\.(js|mjs)$/.test(f) && !['testGuardTest.js', 'migrateDeployCoreTest.js', 'opxUiTest.mjs'].includes(f));
   const unguarded = files.filter((f) => { const first = readFileSync(join(__dirname, f), 'utf8').split(/\r?\n/).find((l) => /^import[\s{*]/.test(l)) || ''; return !/_testGuard\.js/.test(first); });
   ok(`all ${files.length} suites have the guard as their first import`, unguarded.length === 0, unguarded.join(', '));
 }

@@ -17,6 +17,16 @@ import { STAGE_LABEL_AR, PROBLEM_LABEL_AR } from './advisorPlan.js';
 const MS_H = 3_600_000;
 const round0 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v)));
 import { priorityScore } from './priorityScore.js';
+import { loadActivePolicies, policyKey, mergeEffective, dayAllowed, weekdayOfCairoDate } from './productPolicy.js';
+import { SLOTS, cairoDate } from './dailyPlanTime.js';
+
+/** Per-product policy gate for a daily plan: the product's days of the week + its own opening/closing time (a product with its own time lives in its own slot plan). Pure. */
+export function policyScheduleBlock({ policy, type, slotTime, date, campaignId = null }) {
+  if (!policy) return null;
+  if (!dayAllowed(policy, weekdayOfCairoDate(date), campaignId)) return 'PRODUCT_POLICY_DAY_OFF';
+  const eff = mergeEffective(policy, campaignId).schedule; const own = type === 'OPEN' ? eff.openTime : eff.closeTime;
+  return own && own !== slotTime ? 'PRODUCT_POLICY_OTHER_TIME' : null;
+}
 const syncAgeMin = async (deps = {}) => { try { const st = await (deps.syncStatus ? deps.syncStatus() : (await import('./snapshotSync.js')).getSyncStatus()); return st?.lastSuccessAt ? Math.max(0, Math.round((Date.now() - new Date(st.lastSuccessAt).getTime()) / 60_000)) : null; } catch { return null; } };
 const slim = (m) => (m ? { spend: round0(m.spend ?? 0), purchases: m.purchases ?? 0, cpa: m.cpa == null ? null : round0(m.cpa), ctr: m.ctr == null ? null : Math.round(m.ctr * 100) / 100, cpc: m.cpc == null ? null : Math.round(m.cpc * 100) / 100, cvr: m.conversionRate == null ? (m.cvr == null ? null : Math.round(m.cvr * 100) / 100) : Math.round(m.conversionRate * 100) / 100 } : { spend: 0, purchases: 0, cpa: null, ctr: null, cpc: null, cvr: null });
 
@@ -120,8 +130,9 @@ async function prepareWorld({ now, deps }) {
 // =====================================================================================================================
 // OPEN candidates (00:00)
 // =====================================================================================================================
-export async function buildOpenCandidates({ now = new Date(), deps = {} } = {}) {
+export async function buildOpenCandidates({ now = new Date(), slotTime = SLOTS.OPEN, deps = {} } = {}) {
   const { world, mapStates } = await prepareWorld({ now, deps });
+  const productPolicies = deps.productPolicies || await loadActivePolicies().catch(() => new Map()); const today = cairoDate(now);
   if (!world.adAccountId) return { items: [], world, note: 'مفيش اتصال Meta' };
   const paused = world.campaigns.filter((c) => c.status === 'PAUSED');
   const w7 = world.windows.last7, w30 = world.windows.last30;
@@ -134,6 +145,12 @@ export async function buildOpenCandidates({ now = new Date(), deps = {} } = {}) 
   const structure = deps.structure || await loadBudgetStructureFromSnapshots({ adAccountId: world.adAccountId, campaignIds: ids, now });
   const dataAgeMin = await syncAgeMin(deps);
   const items = []; let heavy = 0;
+  // Σ current daily budget of each product's ACTIVE campaigns — computed only when some product policy defines a Daily Spend Cap
+  const activeBudgetByAmb = new Map();
+  if ([...productPolicies.values()].some((p) => mergeEffective(p).budget.dailySpendCap != null || Object.keys(p.campaigns || {}).length)) {
+    const act = world.campaigns.filter((x) => x.status === 'ACTIVE'); const st = deps.activeStructure || await loadBudgetStructureFromSnapshots({ adAccountId: world.adAccountId, campaignIds: act.map((x) => x.id), now });
+    for (const ac of act) { const idx = world.prodIndex?.get(ac.id); if (!idx) continue; activeBudgetByAmb.set(idx.ambProductId, (activeBudgetByAmb.get(idx.ambProductId) || 0) + (Number(plannedBudget(st.get(ac.id)).budget) || 0)); }
+  }
   for (const c of pool) {
     const ms = mapStates.get(c.id) || { state: 'UNMAPPED' };
     const m7 = slim(w7?.get(c.id)), m30 = slim(w30?.get(c.id)), m3 = slim(world.windows.last3?.get(c.id));
@@ -141,7 +158,9 @@ export async function buildOpenCandidates({ now = new Date(), deps = {} } = {}) 
     const blocks = [], warnings = [];
     if (ms.state !== 'VERIFIED') blocks.push(ms.state === 'EXTERNAL_STORE' ? 'EXTERNAL_STORE' : `MAPPING_${ms.state}`);
     const exc = exceptionFor(cx, ['NO_AUTOMATION', 'NO_AUTO_OPEN']); if (exc) blocks.push('EXCEPTION_NO_AUTO_OPEN');
-    if (cx.recent?.manualOverrideAt && now.getTime() - new Date(cx.recent.manualOverrideAt).getTime() < (world.config.limits.manualOverrideCooldownHours ?? 24) * MS_H) blocks.push('MANUAL_OVERRIDE_COOLDOWN');
+    { const sb = policyScheduleBlock({ policy: cx.product?.id != null ? productPolicies.get(policyKey(cx.storeId, cx.product.id)) : null, type: 'OPEN', slotTime, date: today, campaignId: c.id }); if (sb) blocks.push(sb); }
+    { const polForCap = cx.product?.id != null ? productPolicies.get(policyKey(cx.storeId, cx.product.id)) : null; const cap = polForCap ? mergeEffective(polForCap, c.id).budget.dailySpendCap : null; if (cap != null) { const have = activeBudgetByAmb.get(cx.product.ambProductId) || 0; const add = Number(plannedBudget(structure.get(c.id)).budget) || 0; if (have + add > cap) blocks.push('PRODUCT_DAILY_CAP'); } } // opening must not push the product above its Daily Spend Cap
+    if (cx.recent?.manualOverrideAt && now.getTime() - new Date(cx.recent.manualOverrideAt).getTime() < (cx.policyManualOverrideHours || world.config.limits.manualOverrideCooldownHours || 24) * MS_H) blocks.push('MANUAL_OVERRIDE_COOLDOWN');
     if (!blocks.length && !deps.ctxFor && heavy < 45) { await ensureHeavy(cx); heavy++; }
     if (!blocks.length) {
       if (cx.stock?.status === 'OUT_OF_STOCK') blocks.push('STOCK_OUT');
@@ -171,8 +190,9 @@ export async function buildOpenCandidates({ now = new Date(), deps = {} } = {}) 
 // =====================================================================================================================
 // PAUSE candidates (13:00)
 // =====================================================================================================================
-export async function buildPauseCandidates({ now = new Date(), deps = {} } = {}) {
+export async function buildPauseCandidates({ now = new Date(), slotTime = SLOTS.PAUSE, deps = {} } = {}) {
   const { world, mapStates } = await prepareWorld({ now, deps });
+  const productPolicies = deps.productPolicies || await loadActivePolicies().catch(() => new Map()); const todayDate = cairoDate(now);
   if (!world.adAccountId) return { items: [], world, note: 'مفيش اتصال Meta' };
   const active = world.campaigns.filter((c) => c.status === 'ACTIVE'); const ids = active.map((c) => c.id);
   const opt = deps.optimizer || await evaluateBudgetOptimization({ now, persist: false, live: false, deps: { world, mappingStates: mapStates } });
@@ -192,6 +212,7 @@ export async function buildPauseCandidates({ now = new Date(), deps = {} } = {})
     const blocks = []; const guards = (pauseRow?.guards || []).filter((g) => /\[B\]/.test(g)).map((g) => g.split('[')[0]);
     if (ms.state !== 'VERIFIED') blocks.push(ms.state === 'EXTERNAL_STORE' ? 'EXTERNAL_STORE' : `MAPPING_${ms.state}`);
     for (const g of guards) if (!blocks.includes(g)) blocks.push(g);
+    { const sb = policyScheduleBlock({ policy: row?.productId != null ? productPolicies.get(policyKey(row.storeId, row.productId)) : null, type: 'PAUSE', slotTime, date: todayDate, campaignId: c.id }); if (sb && !blocks.includes(sb)) blocks.push(sb); }
     const excs = exceptionsFor({ exceptions: world.exceptions || [], storeId: row?.storeId || null, productId: row?.productId ?? null, campaignId: c.id, tag: null }); if (excs.some((e) => (e.types || []).some((t) => ['NO_AUTOMATION', 'NO_AUTO_STOP'].includes(t))) && !blocks.includes('EXCEPTION_NO_AUTO_STOP')) blocks.push('EXCEPTION_NO_AUTO_STOP');
     const winner = isWinner({ m7, m30 });
     const lc = rows.map((r) => r.evidence?.lastChange).filter(Boolean).sort((a, b) => new Date(b.at) - new Date(a.at))[0] || lastChanges.get(c.id) || null;

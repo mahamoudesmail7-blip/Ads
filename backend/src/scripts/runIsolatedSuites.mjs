@@ -4,16 +4,16 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { assertSafeTestUrl, describeTestDatabase, resetTestDatabaseState } from './testDb.mjs';
+import { assertSafeTestUrl, describeTestDatabase, resetTestDatabaseState, withRetry } from './testDb.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const SUITES = ['migrateDeployCoreTest', 'testGuardTest', 'operatorTest', 'operatorSetupTest', 'operatorSetupGridTest', 'operatorIntegrationTest', 'operatorControlTest', 'advisorTest', 'stockIntelligenceTest', 'productActionPlanTest', 'operatorLandingEvidenceTest', 'launchLandingValidationTest', 'ambLaunchJobTest', 'launchQueueTest', 'inventoryWebhookTest', 'inventoryDiagnosticsTest', 'researchPipelineFixesTest', 'operatorWritePathTest', 'budgetOptimizerTest', 'manualChangeAndSyncTest', 'budgetExecutionTest', 'budgetApprovalRouteTest', 'executorDuplicateGuardTest', 'ruleEngineTest', 'dailyPlanTest', 'productionReadinessTest', 'executionPermissionsTest', 'operationsMockTest', 'priorityScoreTest', 'postActionMonitoringTest', 'budgetCapsAndAlertsTest', 'approvalCenterTest'];
+const SUITES = ['migrateDeployCoreTest', 'testGuardTest', 'operatorTest', 'operatorSetupTest', 'operatorSetupGridTest', 'operatorIntegrationTest', 'operatorControlTest', 'advisorTest', 'stockIntelligenceTest', 'productActionPlanTest', 'operatorLandingEvidenceTest', 'launchLandingValidationTest', 'ambLaunchJobTest', 'launchQueueTest', 'inventoryWebhookTest', 'inventoryDiagnosticsTest', 'researchPipelineFixesTest', 'operatorWritePathTest', 'budgetOptimizerTest', 'manualChangeAndSyncTest', 'budgetExecutionTest', 'budgetApprovalRouteTest', 'executorDuplicateGuardTest', 'ruleEngineTest', 'dailyPlanTest', 'productionReadinessTest', 'executionPermissionsTest', 'operationsMockTest', 'priorityScoreTest', 'postActionMonitoringTest', 'budgetCapsAndAlertsTest', 'approvalCenterTest', 'productPolicyTest', 'executionHistoryTest', 'productGuardsTest', 'productSchedulingTest'];
 // suites with a read-only "real synced world" part skip it here: the isolated database has no synced Meta world (that part stays a manual check)
 const skipsWorld = (f) => readFileSync(f, 'utf8').includes('skip-world');
 const wanted = process.argv.slice(2).length ? process.argv.slice(2) : SUITES;
 
 assertSafeTestUrl(); // refuses early (before anything runs) if TEST_DATABASE_URL is missing / production-like
-const before = await describeTestDatabase();
+const before = await withRetry(describeTestDatabase);
 if (!before.marker) { console.error('✗ the target database has no test marker — run: node src/scripts/testDb.mjs seed'); process.exit(3); }
 const rows = [];
 for (const name of wanted) {
@@ -29,7 +29,7 @@ for (const name of wanted) {
   console.log(`${r.status === 0 ? '✓' : '✗'} ${name}: ${sum ? `${sum[1]} passed, ${sum[2]} failed` : `exit ${r.status}`} (${rows.at(-1).secs}s)`);
   for (const l of failedLines) console.log('     ', l.slice(0, 220));
 }
-const after = await describeTestDatabase();
+const after = await withRetry(describeTestDatabase);
 console.log('\nTEST database rows before:', JSON.stringify(before.counts), '\nTEST database rows after: ', JSON.stringify(after.counts));
 const bad = rows.filter((x) => x.status !== 'ok');
 console.log(`\n${bad.length ? '❌' : '✅'} ${rows.length - bad.length}/${rows.length} suites green${bad.length ? ' — failing: ' + bad.map((x) => x.name).join(', ') : ''}`);
