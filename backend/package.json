@@ -20,6 +20,10 @@
     "backup:logical": "node src/scripts/logicalBackup.js",
     "bootstrap-admin": "node src/scripts/bootstrapAdmin.js",
     "test:isolated": "node src/scripts/runIsolatedSuites.mjs",
+    "test:fast": "node src/scripts/runTests.mjs",
+    "test:full": "node src/scripts/runTests.mjs --mode=full",
+    "test:ui": "node src/scripts/runTests.mjs --only-ui --ui",
+    "test:profile": "node src/scripts/profileTests.mjs",
     "test:db:seed": "node src/scripts/testDb.mjs seed"
   },
   "dependencies": {

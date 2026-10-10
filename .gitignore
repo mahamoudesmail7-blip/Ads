@@ -24,3 +24,9 @@ backups/
 
 # local agent / IDE tooling (not app code)
 .claude/
+
+# local PostgreSQL for the isolated test suites (data directory + run artefacts are never committed)
+backend/tools/localpg/node_modules/
+backend/tools/localpg/*.pid
+backend/.test-timings.json
+backend/test-report.json

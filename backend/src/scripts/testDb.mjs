@@ -12,18 +12,19 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
-import { validateTestUrl, MARKER_ID } from './_testGuardCore.js';
+import { validateTestUrl, validateLocalTestUrl, MARKER_ID } from './_testGuardCore.js';
 
 export const TEST_OWNER_EMAIL = 'test-owner@example.invalid';
 export const TEST_OWNER_PASSWORD = 'Test-Owner-Only-2026!';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dotenv = (key) => { try { const m = readFileSync(join(__dirname, '../../.env'), 'utf8').match(new RegExp('^' + key + '="?([^"\\r\\n]*)"?\\s*$', 'm')); return m ? m[1] : ''; } catch { return ''; } };
-const testUrl = () => (process.env.TEST_DATABASE_URL || dotenv('TEST_DATABASE_URL')).trim();
+const isLocal = () => process.env.TEST_DB_TARGET === 'local'; // set only by the test runner: the throw-away local PostgreSQL (loopback + optest_* name)
+const testUrl = () => (isLocal() ? (process.env.LOCAL_TEST_DATABASE_URL || '') : (process.env.TEST_DATABASE_URL || dotenv('TEST_DATABASE_URL'))).trim();
 const prodUrls = () => [process.env.DATABASE_URL, process.env.DIRECT_DATABASE_URL, dotenv('DATABASE_URL'), dotenv('DIRECT_DATABASE_URL')];
 
 /** Throws unless TEST_DATABASE_URL is a usable, clearly-separate test database. Returns the URL. */
 export function assertSafeTestUrl(url = testUrl(), production = prodUrls()) {
-  const problem = validateTestUrl(url, production);
+  const problem = isLocal() ? validateLocalTestUrl(url) : validateTestUrl(url, production);
   if (problem) throw new Error(problem);
   return url;
 }

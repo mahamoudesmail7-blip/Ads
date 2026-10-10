@@ -21,6 +21,17 @@ ok('an endpoint equal to any configured production URL is refused', /same endpoi
 ok('a different direct Neon branch endpoint is accepted', validateTestUrl(OTHER, [PROD_POOL, PROD_DIRECT]) === null);
 ok('messages never contain the URL', ![validateTestUrl(PROD_DIRECT, []), validateTestUrl(OTHER, [OTHER])].some((m) => /u:p@|ep-other|ep-solitary/.test(m)));
 
+console.log('\n1b. The LOCAL test PostgreSQL target (fast mode): loopback + optest_* only');
+{
+  const { validateLocalTestUrl } = await import(pathToFileURL(join(__dirname, '_testGuardCore.js')).href);
+  const L = (host, db, proto = 'postgresql') => `${proto}://optest:optest@${host}/${db}`;
+  ok('a loopback host with an optest_* database is accepted', validateLocalTestUrl(L('127.0.0.1:54329', 'optest_base')) === null && validateLocalTestUrl(L('localhost:54329', 'optest_s1_123')) === null);
+  ok('unset / garbage / wrong protocol are refused', ['', 'nope', L('127.0.0.1', 'optest_x', 'mysql')].every((u) => validateLocalTestUrl(u) !== null));
+  ok('a Neon / production / remote host is refused, whatever the database name', [PROD_DIRECT.replace('/neondb', '/optest_x'), PROD_POOL.replace('/neondb', '/optest_x'), OTHER.replace('/neondb', '/optest_x'), L('10.0.0.5:5432', 'optest_x'), L('0.0.0.0:5432', 'optest_x'), L('example.com', 'optest_x')].every((u) => /loopback/.test(validateLocalTestUrl(u) || '')));
+  ok('a loopback database that is not named optest_* is refused (postgres / neondb / empty / look-alikes)', ['postgres', 'neondb', '', 'optest', 'my_optest_x', 'OPTEST_x', 'optest_x;drop'].every((d) => validateLocalTestUrl(L('127.0.0.1:54329', d)) !== null));
+  ok('messages never contain the URL', !/optest:optest|ep-solitary|10\.0\.0\.5/.test(validateLocalTestUrl(L('10.0.0.5:5432', 'optest_x')) + validateLocalTestUrl(PROD_DIRECT)));
+}
+
 console.log('\n2. The guard module, run as a fresh process');
 const guard = join(__dirname, '_testGuard.js');
 const run = (code, env) => spawnSync(process.execPath, ['--input-type=module', '-e', `import ${JSON.stringify(pathToFileURL(guard).href)}; ${code}`], { encoding: 'utf8', env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ...env } });
@@ -49,6 +60,20 @@ const run = (code, env) => spawnSync(process.execPath, ['--input-type=module', '
   const val = (k) => (text.match(new RegExp('^' + k + '="?([^"\\r\\n]*)"?\\s*$', 'm')) || [])[1] || '';
   ok('backend/.env: TEST_DATABASE_URL is set and its endpoint differs from DATABASE_URL', !!val('TEST_DATABASE_URL') && hostEndpoint(val('TEST_DATABASE_URL')) !== hostEndpoint(val('DATABASE_URL')));
   ok('the marker id is the documented one', MARKER_ID === '__TEST_DATABASE_MARKER__');
+}
+
+console.log('\n2b. The guard in LOCAL mode (TEST_DB_TARGET=local), run as a fresh process');
+{
+  const r1 = run('console.log("SUITE RAN")', { TEST_DB_TARGET: 'local', LOCAL_TEST_DATABASE_URL: PROD_DIRECT.replace('/neondb', '/optest_x') });
+  ok('local mode pointed at the production Neon endpoint → exit 3, NO suite code runs', r1.status === 3 && !/SUITE RAN/.test(r1.stdout) && /loopback/.test(r1.stderr), r1.stderr);
+  const r2 = run('console.log("SUITE RAN")', { TEST_DB_TARGET: 'local', LOCAL_TEST_DATABASE_URL: 'postgresql://optest:optest@127.0.0.1:54329/postgres' });
+  ok('local mode with a loopback database that is not optest_* (the server\'s own "postgres" db) → refused, no suite code', r2.status === 3 && !/SUITE RAN/.test(r2.stdout) && /optest_/.test(r2.stderr), r2.stderr);
+  const r3 = run('console.log("SUITE RAN")', { TEST_DB_TARGET: 'local' });
+  ok('local mode with no LOCAL_TEST_DATABASE_URL → refused (it does NOT fall back to Neon or to DATABASE_URL)', r3.status === 3 && !/SUITE RAN/.test(r3.stdout), r3.stderr);
+  const r4 = run('console.log("SUITE RAN")', { TEST_DB_TARGET: 'local', LOCAL_TEST_DATABASE_URL: 'postgresql://optest:optest@127.0.0.1:1/optest_nothing_here' });
+  ok('local mode with an optest_* database that does not exist / has no marker → refused (identity cannot be verified)', r4.status === 3 && !/SUITE RAN/.test(r4.stdout) && /could not verify|marker/.test(r4.stderr), r4.stderr);
+  const r5 = run('console.log("SUITE RAN")', { TEST_DB_TARGET: 'local', LOCAL_TEST_DATABASE_URL: 'postgresql://optest:optest@127.0.0.1:1/optest_x', TEST_DATABASE_URL: PROD_DIRECT, DATABASE_URL: PROD_DIRECT });
+  ok('production URLs in the environment are never used or reached in local mode (still refused by the local checks only)', r5.status === 3 && !/SUITE RAN/.test(r5.stdout) && !/ep-solitary/.test(r5.stderr + r5.stdout));
 }
 
 console.log('\n3. Every DB suite imports the guard first');

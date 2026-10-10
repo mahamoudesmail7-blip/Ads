@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-import { MARKER_ID, validateTestUrl } from './_testGuardCore.js';
+import { MARKER_ID, validateTestUrl, validateLocalTestUrl } from './_testGuardCore.js';
 export { MARKER_ID };
 
 const stop = (why) => { console.error(`\n🛑 TEST GUARD: ${why}\n   The suites run ONLY against the isolated test database (TEST_DATABASE_URL). Nothing was executed.\n`); process.exit(3); };
@@ -27,9 +27,11 @@ function dotenvValue(key) {
   } catch { return ''; }
 }
 
-const testUrl = (process.env.TEST_DATABASE_URL || dotenvValue('TEST_DATABASE_URL')).trim();
+// TEST_DB_TARGET=local (set ONLY by the test runner) selects the throw-away local PostgreSQL (LOCAL_TEST_DATABASE_URL: loopback + optest_* name); anything else = the Neon test branch, exactly as before.
+const LOCAL = process.env.TEST_DB_TARGET === 'local';
+const testUrl = LOCAL ? (process.env.LOCAL_TEST_DATABASE_URL || '').trim() : (process.env.TEST_DATABASE_URL || dotenvValue('TEST_DATABASE_URL')).trim();
 const productionUrls = [process.env.DATABASE_URL, process.env.DIRECT_DATABASE_URL, dotenvValue('DATABASE_URL'), dotenvValue('DIRECT_DATABASE_URL')];
-const problem = validateTestUrl(testUrl, productionUrls);
+const problem = LOCAL ? validateLocalTestUrl(testUrl) : validateTestUrl(testUrl, productionUrls);
 if (problem) stop(problem);
 
 // From here on every PrismaClient in this process (and its children) is bound to the test database.

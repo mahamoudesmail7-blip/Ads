@@ -1,0 +1,8 @@
+{
+  "name": "localpg-test-tool",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local PostgreSQL for the isolated test suites ONLY (never installed with the app: it lives in its own folder, outside backend/package.json).",
+  "type": "module",
+  "dependencies": { "embedded-postgres": "17.5.0-beta.15" }
+}
