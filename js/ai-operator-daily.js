@@ -108,9 +108,11 @@ function wirePlan(root, plan, rerender) {
     };
   });
 }
+const blockedWhy = (c, perm) => [c.emergencyStop && 'Emergency Stop مفعّل', c.writesLocked && 'كتابة Meta مقفولة على مستوى النشر', !perm && 'صلاحية التنفيذ لهذا النوع مقفولة', c.halted && 'الطابور موقوف'].filter(Boolean);
 async function approve(plan, rerender) {
   const sel = plan.items.filter((i) => i.selected); const T = TYPE_META[plan.type]; const ctl = D.ov?.control || {};
   const live = ctl.mode === 'APPROVAL' && !ctl.writesLocked && (plan.type === 'OPEN' ? ctl.allowOpen : ctl.allowPause);
+  if (ctl.mode === 'APPROVAL' && !live) { UI.toast(`الاعتماد مش هيتنفذ دلوقتي: ${blockedWhy(ctl, plan.type === 'OPEN' ? ctl.allowOpen : ctl.allowPause).join(' · ') || 'الشروط مش مكتملة'} — الخطة فضلت جاهزة ومفيش حاجة اتغيرت.`, 'error'); return; } // APPROVAL mode: an approval that cannot execute is explained at once (no misleading «simulation» dialog)
   const ex = plan.exposure || { count: sel.length, exposedBudget: 0 }; const msg = `${ex.count} حملة · إجمالي ميزانية يومية ${ex.exposedBudget} جنيه — هتتعمل لها ${T.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل 3 ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل حملة هتتراجع مقابل حالتها الحية على Meta وتتسجّل "كان هيتنفذ" — مفيش أي كتابة على Meta.'}`;
   if (!(await UI.confirmModal({ title: `${T.icon} ${T.approve}`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة SHADOW)', danger: live }))) return;
   try {

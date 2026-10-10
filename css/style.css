@@ -521,7 +521,7 @@ table.data td.num { font-variant-numeric: tabular-nums; }
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.35);
-  z-index: 200;
+  z-index: 10000; /* above the automatic daily popup (9000) and every drawer: a confirmation opened FROM a popup must be visible and clickable */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -843,7 +843,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   padding: 12px 18px;
   box-shadow: var(--shadow);
   font-size: 13.5px;
-  z-index: 999;
+  z-index: 10050; /* above the confirm modal (10000) and the daily popup (9000): a refusal message must never be hidden behind the dialog that caused it */
 }
 .toast.success { border-color: #1f5f42; color: var(--green); }
 .toast.error { border-color: #6b2020; color: var(--red); }

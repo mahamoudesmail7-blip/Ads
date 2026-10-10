@@ -93,6 +93,7 @@ function wire() {
     } catch (e) { openDrawer({ title: 'معاينة التنفيذ', body: `<div class="opx-notice red"><div class="grow"><b>${E(e.message)}</b></div></div>` }); } }; });
   root.querySelectorAll('[data-planapprove]').forEach((b) => { b.onclick = async () => {
     const p = r.plans.find((x) => x.planId === Number(b.dataset.planapprove)); const ex = p.exposure || { count: p.selected, exposedBudget: p.exposedBudget };
+    if (r.gate.mode === 'APPROVAL' && !p.execution?.executableNow) { toast(`الاعتماد مش هيتنفذ دلوقتي: ${(p.execution?.reasons || []).join(' · ') || 'الشروط مش مكتملة'} — الخطة فضلت جاهزة ومفيش حاجة اتغيرت.`, 'error'); return; }
     if (!(await confirmModal({ title: `اعتماد خطة ${p.type === 'OPEN' ? 'الفتح' : 'الإيقاف'} #${p.planId}`, message: `${ex.count} حملة · إجمالي ميزانية يومية ${egp(ex.exposedBudget)}.\n${p.execution?.executableNow ? 'هتتنفّذ فعليًا على Meta واحدة واحدة بعد فحص حي لكل حملة وقراءة مستقلة بعدها.' : 'مش هتنفّذ على Meta دلوقتي: ' + (p.execution?.reasons || []).join(' · ')}`, confirmLabel: p.execution?.executableNow ? 'اعتماد وتنفيذ' : 'اعتماد', danger: !!p.execution?.executableNow }))) return;
     try { const x = await api.post(`/api/operator/daily-plan/${p.planId}/approve`, { confirm: { count: ex.count, exposedBudget: ex.exposedBudget } }); toast(x.ok ? (x.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت (محاكاة)') : (x.message || 'الاعتماد اتمنع'), x.ok ? 'success' : 'error'); } catch (e) { toast(e.message, 'error'); }
     await load(); await A.ctx.refresh(); }; });

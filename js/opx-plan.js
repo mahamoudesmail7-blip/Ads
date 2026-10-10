@@ -379,6 +379,7 @@ function wire(p, editable) {
 }
 async function approve(p) {
   const m = META[P.type]; const sel = p.items.filter((i) => i.selected); const c = P.ov.control || {}; const live = c.mode === 'APPROVAL' && !c.writesLocked && c[m.permKey];
+  if (c.mode === 'APPROVAL' && !live) { const why = [c.emergencyStop && 'Emergency Stop مفعّل', c.writesLocked && 'كتابة Meta مقفولة على مستوى النشر', !c[m.permKey] && 'صلاحية التنفيذ لهذا النوع مقفولة', c.halted && 'الطابور موقوف'].filter(Boolean); toast(`الاعتماد مش هيتنفذ دلوقتي: ${why.join(' · ') || 'الشروط مش مكتملة'} — الخطة فضلت جاهزة ومفيش حاجة اتغيرت.`, 'error'); return; }
   const ex = p.exposure || { count: sel.length, exposedBudget: 0 }; const msg = `${ex.count} حملة · إجمالي ميزانية يومية ${egp(ex.exposedBudget)} — هتتعمل لها ${m.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل ' + (c.spacingSeconds ?? 3) + ' ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل خطوة بتتسجل لكن مفيش أي كتابة على Meta.'}`;
   if (!(await confirmModal({ title: `اعتماد خطة ${m.verb} الحملات`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة)', danger: !!live }))) return;
   try { const r = await api.post(`${API}/${p.id}/approve`, { confirm: { count: ex.count, exposedBudget: ex.exposedBudget } }); if (!r.ok) { toast(r.message || 'الاعتماد اتمنع', 'error'); return; } toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW (مفيش كتابة على Meta)'); await load(); } catch (e) { toast(e.message, 'error'); }
