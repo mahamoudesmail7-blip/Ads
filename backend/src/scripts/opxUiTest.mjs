@@ -22,7 +22,7 @@ let id = 0; const pending = new Map(); const consoleErrors = [];
 ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } else if (d.method === 'Runtime.exceptionThrown') consoleErrors.push(d.params.exceptionDetails?.exception?.description || d.params.exceptionDetails?.text); else if (d.method === 'Runtime.consoleAPICalled' && d.params.type === 'error') consoleErrors.push((d.params.args || []).map((a) => a.value || a.description).join(' ')); };
 const send = (method, params = {}) => new Promise((res, rej) => { const i = ++id; pending.set(i, (d) => (d.error ? rej(new Error(d.error.message)) : res(d.result))); ws.send(JSON.stringify({ id: i, method, params })); });
 const js = async (expression) => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'js error'); return r.result.value; };
-const goto = async (path, { width = 1440, height = 900, mobile = false, ls = {} } = {}) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }); await send('Page.navigate', { url: `${BASE}/login.html` }); await sleep(500); await js(`${Object.entries(ls).map(([k, v]) => `localStorage.setItem('${k}','${v}');`).join('')} true`); await send('Page.navigate', { url: `${BASE}${path}` }); await sleep(6500); };
+const goto = async (path, { width = 1440, height = 900, mobile = false, ls = {} } = {}) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }); await send('Page.navigate', { url: `${BASE}/login.html` }); await waitFor(`document.readyState === 'complete'`, 20000); await js(`${Object.entries(ls).map(([k, v]) => `localStorage.setItem('${k}','${v}');`).join('')} true`); await send('Page.navigate', { url: `${BASE}${path}` }); await sleep(path.includes('#operator') ? 300 : 6500); if (path.includes('#operator')) await waitFor(`!!document.getElementById('opxRoot') && !!document.querySelector('.opx-head h1') && !document.querySelector('.opx-skel')`, 45000); /* every workspace finished its data call before any assertion runs (the API answers in 1-8 s, it varies) */ };
 const waitFor = async (expr, ms = Number(process.env.OPX_WAIT_MS) || 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await js(expr)) return true; } catch { /* page reloading */ } await sleep(300); } return false; };
 await send('Page.enable'); await send('Runtime.enable');
 try {
@@ -37,7 +37,7 @@ try {
   const labels = await js(`[...document.querySelectorAll('#opxNav .lbl')].map(x=>x.textContent)`);
   ok('the 9 independent workspaces, in order (التسعير الذكي sits right after قواعد المنتجات)', JSON.stringify(labels) === JSON.stringify(['فتح الحملات', 'إيقاف الحملات', 'إدارة الميزانيات', 'قواعد المنتجات', 'التسعير الذكي', 'الموافقات', 'سجل التنفيذ', 'التنبيهات', 'مركز الربط']), JSON.stringify(labels));
   ok('the advanced group keeps the old tools reachable (permissions / control center / all legacy tools)', (await js(`document.querySelectorAll('#opxNavAdv .opx-item').length`)) === 3);
-  await js(`document.querySelector('[data-ws="pause"]').click()`); await sleep(2500);
+  await js(`document.querySelector('[data-ws="pause"]').click()`); await waitFor(`document.querySelector('.opx-item.on')?.dataset.ws === 'pause' && !document.querySelector('.opx-skel')`, 40000); await sleep(500); // the choice is saved when the workspace actually opens (after the one still loading finishes) — wait for that before reloading
   await goto('/ai-media-buyer.html#operator');
   ok('the last workspace is remembered across a reload', await waitFor(`document.querySelector('.opx-item.on')?.dataset.ws === 'pause'`), await js(`document.querySelector('.opx-item.on')?.dataset.ws`));
 
@@ -128,7 +128,7 @@ try {
     }
   }
   for (const wsKey of ['pause', 'budget', 'approvals', 'history']) {
-    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': wsKey } }); await waitFor(`!!document.querySelector('.opx-head h1')`); await sleep(1500);
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': wsKey } }); await waitFor(`!!document.querySelector('.opx-head h1') && !document.querySelector('.opx-skel')`); await sleep(1500); // wait for the workspace CONTENT (its data call finished), not just the header
     ok(`390px · ${wsKey}: renders without horizontal scroll`, await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && !!document.querySelector('.opx-head h1')`), await js(`document.documentElement.scrollWidth`));
   }
 
@@ -152,7 +152,7 @@ try {
   ok('rules list is cards on a phone with the Operating-Mode / status chips', await js(`document.querySelectorAll('.opx-c2[data-open]').length === 3`));
   await js(`document.querySelector('.opx-c2[data-open] button[data-open]').click()`); await waitFor(`!!document.getElementById('pl_cap')`);
   ok('the product drawer on a phone has Operating Mode, schedule, CPA limits, budgets, Daily Spend Cap and the manual-override protection', await js(`['pl_mode','pl_open','pl_close','pl_hard','pl_inc','pl_cap','pl_moh','pl_zspend'].every(i=>!!document.getElementById(i))`));
-  await js(`(()=>{document.getElementById('pl_cap').value='1000'; document.getElementById('pl_moh').value='72'; document.getElementById('pl_save').click()})()`); await sleep(2200);
+  await js(`(()=>{document.getElementById('pl_cap').value='1000'; document.getElementById('pl_moh').value='72'; document.getElementById('pl_save').click()})()`); await waitFor(`fetch('/api/operator/product-rules/9001?store=default').then(r=>r.json()).then(x=>x.status === 'DRAFT' && x.draft?.budget?.dailySpendCap === 1000)`, 45000); // the save call takes several seconds on a remote database: poll the server instead of a fixed pause
   const sv = await js(`fetch('/api/operator/product-rules/9001?store=default').then(r=>r.json())`);
   ok('Daily Spend Cap 1000 and manual-override protection 72h are saved as a DRAFT (not active)', sv.status === 'DRAFT' && sv.draft.budget.dailySpendCap === 1000 && sv.draft.manualOverrideHours === 72 && !sv.active, JSON.stringify(sv.draft?.budget));
   await js(`document.getElementById('pl_cap').value='5'; document.getElementById('pl_inc').value='20'; document.getElementById('pl_maxb').value='900'; document.getElementById('pl_save').click()`); await sleep(1500);
@@ -206,13 +206,13 @@ try {
   await js(`document.querySelector('tr[data-cid="fx_open_1"] [data-row]').click()`); await sleep(500);
   ok('the drawer carries the long details: reason, Priority Score, spend per window, CPA policy; the row keeps no long text', await js(`(()=>{const t=document.querySelector('.opx-drawer.open')?.innerText||''; return /سبب الترشيح/.test(t) && /Priority Score/.test(t) && /اليوم \\(القاهرة\\)/.test(t) && /الصرف/.test(t) && !document.querySelector('tr[data-cid="fx_open_1"] .opx-why')})()`));
   await js(`document.getElementById('opxDrawerX').click()`); await sleep(300);
-  await goto('/ai-media-buyer.html#operator', { width: 1280, height: 800, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.querySelector('.opx-tablehead')`); await sleep(800);
+  await goto('/ai-media-buyer.html#operator', { width: 1280, height: 800, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.querySelector('.opx-tablehead') && !!document.querySelector('.opx-work-plan > aside') && !!document.querySelector('.opx-set-btn')`, 30000); await sleep(800);
   const side = await js(`({ aside: getComputedStyle(document.querySelector('.opx-work-plan > aside')).display, btn: getComputedStyle(document.querySelector('.opx-set-btn')).display })`);
   ok('on a narrower desktop the scheduler panel leaves the table area and opens in a drawer', side.aside === 'none' && side.btn !== 'none', JSON.stringify(side));
   await js(`document.querySelector('[data-act="settings"]').click()`); await sleep(500);
   ok('the settings drawer shows the scheduler fields', await js(`/الموعد القادم/.test(document.querySelector('.opx-drawer.open')?.innerText || '')`));
   await js(`document.getElementById('opxDrawerX').click()`); await sleep(300);
-  await goto('/ai-media-buyer.html#operator', { width: 1920, height: 1080, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.querySelector('.opx-tablehead')`); await sleep(800);
+  await goto('/ai-media-buyer.html#operator', { width: 1920, height: 1080, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.querySelector('.opx-tablehead') && !!document.querySelector('.opx-work-plan > aside') && !!document.querySelector('.opx-set-btn')`, 30000); await sleep(800);
   ok('at 1920 the panel sits in its own column beside the table', await js(`getComputedStyle(document.querySelector('.opx-work-plan > aside')).display !== 'none' && getComputedStyle(document.querySelector('.opx-set-btn')).display === 'none'`));
   await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'open', 'opx.f.OPEN': JSON.stringify({ q: '', store: '', sort: 'purchases', period: '7', view: 'all', cat: '', from: '', to: '' }) } }); await waitFor(`document.querySelectorAll('.opx-c2').length === 13`);
   const mob = await js(`(()=>{const c=document.querySelector('.opx-c2'); return { cards: document.querySelectorAll('.opx-c2').length, table: !!document.querySelector('.opx-board'), t: c.innerText, hasChk: !!c.querySelector('.opx-check'), sw: document.documentElement.scrollWidth, iw: innerWidth }})()`);
@@ -277,6 +277,8 @@ try {
   await js(`document.getElementById('cpaSave').click()`); await waitFor(`/v1/.test(document.getElementById('opxCpa').innerText)`, 8000); await sleep(600);
   let pol = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
   ok('saved as version 1, persisted on the server (not a temporary filter), NOT enabled', pol.policy.version === 1 && pol.policy.minCpa === 50 && pol.policy.maxCpa === 150 && pol.policy.window === '7' && pol.policy.enabled === false, JSON.stringify(pol.policy));
+  await waitFor(`document.querySelectorAll('.opx-cpa-tile b').length === 3 && [...document.querySelectorAll('.opx-cpa-tile b')].every(b => /^[0-9]+$/.test(b.textContent.trim())) && !!document.querySelector('.opx-cpa-now')`, 30000); // the live preview is computed asynchronously after the save
+  pol = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
   ok('the tiles show matched / eligible / excluded from the live preview, equal to the server counts', await js(`[...document.querySelectorAll('.opx-cpa-tile b')].map(b=>Number(b.textContent.replace(/[^0-9]/g,''))).join()`) === [pol.preview.counts.matched, pol.preview.counts.eligible, pol.preview.counts.excluded].join(), JSON.stringify(pol.preview.counts));
   ok('the current-policy sentence is shown with the saved numbers', await js(`/بين 50 إلى 150 جنيه خلال آخر 7 أيام/.test(document.querySelector('.opx-cpa-now').innerText) && /الحد الأدنى للأوردرات: 5/.test(document.querySelector('.opx-cpa-now').innerText)`));
   await js(`document.getElementById('cpaPreview').click()`); await waitFor(`!!document.querySelector('.opx-drawer.open table tbody tr')`);
