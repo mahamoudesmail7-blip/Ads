@@ -29,6 +29,7 @@ import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { setEntityStatus, getEntityLive, setAdSetSchedule } from '../metaGraphClient.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
+import { assertMetaWritesAllowed, checkGlobalMetaWrite } from './writeGate.js';
 
 const DEFAULT_TZ = 'Africa/Cairo';
 const SOON_MS = 15 * 60 * 1000; // "تبدأ قريباً" / "تنتهي قريباً" window
@@ -193,6 +194,7 @@ export async function approveSchedule({ id, userId }) {
 
   const settings = await getAmbSettings();
   if (settings.ambExecutionMode === 'ADVISORY') throw badReq('النظام في وضع "استشاري فقط" — غيّر الوضع من الإعدادات قبل جدولة تنفيذ فعلي.', 403);
+  if (row.start_at.getTime() <= Date.now() || settings.ambCloneNativeSchedule === true) await assertMetaWritesAllowed({ source: 'schedule:approve', userId, detail: { scheduleId: row.id } }); // approval itself is only a DB state — it is refused only when it would write to Meta right now (immediate start / native pre-stage) while Emergency Stop / the write-lock is on
 
   await prisma.ambCampaignSchedule.update({
     where: { id: row.id },
@@ -376,6 +378,7 @@ export async function runNowSchedule({ id, userId }) {
   if (row.status === 'RUNNING') throw badReq('الحملة شغالة بالفعل.', 409);
   const settings = await getAmbSettings();
   if (settings.ambExecutionMode === 'ADVISORY') throw badReq('النظام في وضع "استشاري فقط".', 403);
+  await assertMetaWritesAllowed({ source: 'schedule:manual', userId, detail: { scheduleId: row.id } }); // a manual start / pause is a Meta write: refused while Emergency Stop / the write-lock is on
   // Manual run = implicit approval + immediate start. A past/near end_at is dropped.
   const keepEnd = row.end_at && row.end_at.getTime() > Date.now() + 60_000 ? row.end_at : null;
   await prisma.ambCampaignSchedule.update({
@@ -398,6 +401,7 @@ export async function pauseNowSchedule({ id, userId }) {
   if (!['RUNNING', 'NEEDS_INTERVENTION', 'SCHEDULED'].includes(row.status)) throw badReq(`لا يمكن الإيقاف من حالة ${row.status}.`, 409);
   const settings = await getAmbSettings();
   if (settings.ambExecutionMode === 'ADVISORY') throw badReq('النظام في وضع "استشاري فقط".', 403);
+  await assertMetaWritesAllowed({ source: 'schedule:manual', userId, detail: { scheduleId: row.id } }); // a manual start / pause is a Meta write: refused while Emergency Stop / the write-lock is on
   await audit(row.batch_id, row.clone_job_id, 'SCHEDULE_MANUAL_PAUSE', { actorId: userId, detail: 'طلب إيقاف الآن — سيُنفَّذ فورًا بعد إعادة التحقق من حالة Meta.' });
   await execute(row.id, 'END', userId, { manual: true });
   return getSchedule(row.id);
@@ -434,6 +438,7 @@ async function execute(scheduleId, phase, actorId = null, { manual = false } = {
     }
     const settings = await getAmbSettings();
     if (settings.ambExecutionMode === 'ADVISORY') { logger.info('AMB schedule skipped (ADVISORY)', { scheduleId }); return; }
+    { const g = await checkGlobalMetaWrite({ source: `schedule:${phase}`, userId: actorId, detail: { scheduleId, phase } }); if (!g.ok) { await intervene(row, `${g.message} — ${phase === 'START' ? 'التشغيل' : 'الإيقاف'} المجدول ما اتنفذش. راجع الجدولة ونفّذها يدويًا لما الحماية تتفك.`, actorId); return; } } // central write guard (Emergency Stop + deployment write-lock): nothing is sent, the owner is alerted once
 
     const job = row.clone_job;
     const batch = job?.batch;

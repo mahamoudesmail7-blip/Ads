@@ -13,6 +13,7 @@
 // object. The Meta access token never leaves this backend — the browser
 // only ever talks to our own /launch/jobs/:jobId/videos/:slotKey route.
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
+import { assertMetaWritesAllowed } from './writeGate.js';
 
 const GRAPH_VERSION = 'v21.0'; // matches metaGraphClient.js's GRAPH_VERSION — same connection, same API version, never a second integration
 const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
@@ -63,6 +64,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function metaGraphForm(path, fields) {
+  await assertMetaWritesAllowed({ source: 'launchVideoUpload:form', detail: { path: String(path).replace(/\d{6,}/g, '<id>') } }); // central write guard (Emergency Stop + deployment lock): this file posts to Meta directly, not through graphPost
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(fields)) form.set(k, String(v));
   const res = await fetchWithTimeout(`${GRAPH_BASE}${path}`, { method: 'POST', body: form }, METADATA_TIMEOUT_MS);
@@ -77,6 +79,7 @@ async function metaGraphForm(path, fields) {
 }
 
 async function metaTransferChunk(adAccountId, token, { uploadSessionId, startOffset, chunk }) {
+  await assertMetaWritesAllowed({ source: 'launchVideoUpload:chunk', detail: { offset: startOffset } }); // central write guard, re-checked for every chunk so an Emergency Stop interrupts a running upload
   const form = new FormData();
   form.append('upload_phase', 'transfer');
   form.append('upload_session_id', uploadSessionId);

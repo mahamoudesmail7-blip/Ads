@@ -48,3 +48,53 @@ export async function checkMetaWrite({ actionType, mode = 'APPROVAL', entityId =
   }
   return r;
 }
+
+// =====================================================================================================================
+// THE GLOBAL LAYER — the rules that apply to EVERY write to Meta, whichever feature started it (Operator, Clone, Launch, campaign schedules, uploads…):
+//   Emergency Stop OFF  ·  the deployment lock (OPERATOR_ALLOW_META_WRITES) open.      (mode / per-operation permissions stay the Operator's own business — see evaluateWriteGate above)
+// It is enforced at the two places that can actually reach the Graph API (metaGraphClient.graphPost and the chunked video upload), so no feature can forget it, and ALSO checked early at each feature's entry
+// point so a refused run is a clean, explained refusal (nothing half-created) instead of a failure in the middle.
+// =====================================================================================================================
+/** Pure: Emergency Stop + deployment lock only. */
+export function evaluateGlobalWriteGuard({ config }) {
+  const reasons = [];
+  if (!config) reasons.push({ code: 'NO_CONFIG', message: 'إعدادات الـOperator غير متاحة — كتابة Meta مرفوضة (fail-closed).' });
+  else {
+    if (config.emergency_stop) reasons.push({ code: 'EMERGENCY_STOP', message: 'إيقاف الطوارئ مفعّل — مفيش أي كتابة على Meta.' });
+    if (config.writesLocked !== false) reasons.push({ code: 'META_WRITES_LOCKED', message: 'كتابة Meta مقفولة على مستوى النشر (OPERATOR_ALLOW_META_WRITES).' });
+  }
+  return reasons.length ? { ok: false, code: reasons[0].code, message: reasons[0].message, reasons } : { ok: true };
+}
+
+/** Thrown by the global layer. `status` 423 (Locked) so the routes answer with a clear refusal; `permanent` so no retry loop treats it as a transient Meta error. */
+export class MetaWriteBlockedError extends Error {
+  constructor(r, source) { super(`${r.message}${source ? ` [${source}]` : ''}`); this.name = 'MetaWriteBlockedError'; this.code = 'META_WRITE_BLOCKED'; this.reasonCode = r.code; this.reasons = (r.reasons || []).map((x) => x.code); this.status = 423; this.permanent = true; this.source = source || null; }
+}
+const lastAudit = new Map(); const AUDIT_DEDUPE_MS = 10 * 60_000; // a ticking scheduler must not flood the audit log with the same refusal
+/**
+ * The global check: reads the CURRENT operator config (deps.config = test injection) and returns {ok} / {ok:false, ...}. Audits a refusal (WRITE_GATE_BLOCK) at most once per source+reason per 10 minutes
+ * (the first one always; `suppressed` counts the rest) unless deps.audit === false.
+ */
+export async function checkGlobalMetaWrite({ source = null, detail = null, userId = null, deps = {} } = {}) {
+  let config = null;
+  try { config = deps.config ? await (typeof deps.config === 'function' ? deps.config() : deps.config) : await getOperatorConfig(); } catch (e) { logger.error('[writeGate] cannot read operator config', { message: e.message }); }
+  const r = evaluateGlobalWriteGuard({ config });
+  if (r.ok) return r;
+  if (deps.audit !== false) {
+    const key = `${source || '-'}|${r.code}`; const now = Date.now(); const prev = lastAudit.get(key);
+    if (!prev || now - prev.at > AUDIT_DEDUPE_MS || deps.auditEvery === true) {
+      lastAudit.set(key, { at: now, n: 0 });
+      try { await prisma.ambOperatorEvent.create({ data: { kind: 'WRITE_GATE_BLOCK', actor: 'SYSTEM', actor_id: userId ? Number(userId) : null, note: `منع كتابة Meta (طبقة عامة): ${source || 'unknown'} — ${r.code}`.slice(0, 480), data_json: JSON.stringify({ layer: 'GLOBAL', source, detail, codes: r.reasons.map((x) => x.code), suppressed: prev?.n || 0 }).slice(0, 3000) } }); }
+      catch (e) { logger.warn('[writeGate] audit event failed', { message: e.message }); }
+    } else prev.n++;
+  }
+  return r;
+}
+/** Throws MetaWriteBlockedError when the global layer refuses. */
+export async function assertMetaWritesAllowed(opts = {}) {
+  const r = await checkGlobalMetaWrite(opts);
+  if (!r.ok) throw new MetaWriteBlockedError(r, opts.source);
+  return r;
+}
+/** test hook: forget the audit de-duplication memory */
+export const __resetGlobalAuditMemory = () => lastAudit.clear();

@@ -27,6 +27,7 @@ import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus,
 import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
 import { registerLaunchCreativeRef } from './mediaLibrary.js';
 import { assertLaunchLandingVerified } from './launchLandingValidation.js';
+import { assertMetaWritesAllowed, checkGlobalMetaWrite } from './writeGate.js';
 
 function fail(msg) { const e = new Error(msg); e.status = 400; throw e; }
 
@@ -562,6 +563,7 @@ export async function publishSingleTestItem({ jobId, campaignIndex = 0, videoSlo
   if (!job.page_id) fail('لازم Facebook Page محدد قبل النشر.');
   if (!(campaign.pixel_id || job.pixel_id)) fail('لازم Meta Pixel محدد قبل النشر.');
   await assertLaunchLandingVerified(job); // BLOCK before any Meta write: the landing page must resolve to the selected product
+  await assertMetaWritesAllowed({ source: 'launch:publishTest', detail: { jobId } }); // central write guard (Emergency Stop + deployment write-lock): refused cleanly before anything is created
 
   const video = videoSlotKey
     ? await prisma.ambLaunchVideoAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: videoSlotKey } } })
@@ -897,6 +899,7 @@ export async function startLaunchQueue({ jobId, userId }) {
     fail('الموعد المطلوب فات بالفعل — Meta مش هيلتزم بميعاد في الماضي وهيبدأ فورًا بدل منه. عدّل الموعد لوقت في المستقبل، أو اختار "تشغيل الآن".');
   }
 
+  await assertMetaWritesAllowed({ source: 'launch:startQueue', userId, detail: { jobId } }); // the LAST gate before the job flips to PUBLISHING (every validation error above is still reported first, unchanged): refused while Emergency Stop / the write-lock is on
   if (job.status === 'DRAFT') { await setJobStatus(jobId, 'VALIDATING'); await setJobStatus(jobId, 'READY'); }
   else if (job.status === 'VALIDATING') { await setJobStatus(jobId, 'READY'); }
   await setJobStatus(jobId, 'PUBLISHING');
@@ -917,6 +920,10 @@ const processingCampaigns = new Set();
 /** The durable heartbeat step — see launchScheduler.js for how this is wired into the existing 60s AMB tick. Every real Meta write for the bulk queue ultimately happens from inside this function's call to publishCampaignFull(). */
 export async function runDueLaunchQueueTick() {
   const jobs = await prisma.ambLaunchJob.findMany({ where: { status: 'PUBLISHING' }, include: { campaigns: { orderBy: { index: 'asc' } } } });
+  if (jobs.length) { // central write guard: while Emergency Stop / the write-lock is on nothing is published; the job is parked as PARTIAL (restartable by the owner) so it can NEVER resume by itself the moment writes are unlocked for something else
+    const g = await checkGlobalMetaWrite({ source: 'launch:tick', detail: { jobs: jobs.length } });
+    if (!g.ok) { for (const job of jobs) { await prisma.ambLaunchJob.update({ where: { job_id: job.job_id }, data: { status: 'PARTIAL', error: g.message } }).catch(() => {}); await prisma.ambLaunchAudit.create({ data: { job_id: job.job_id, event: 'WRITE_GUARD_BLOCKED', detail: `${g.message} — النشر اتوقف ومش هيكمل لوحده؛ ابدأه من جديد بعد ما الحماية تتفك.` } }).catch(() => {}); } return { skipped: g.code, parked: jobs.length }; }
+  }
   for (const job of jobs) {
     try {
       const active = job.campaigns.find((c) => !['COMPLETE', 'CANCELLED'].includes(c.status));

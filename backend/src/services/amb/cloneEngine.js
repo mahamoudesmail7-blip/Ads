@@ -30,6 +30,7 @@ import {
 } from '../metaGraphClient.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
+import { assertMetaWritesAllowed, checkGlobalMetaWrite } from './writeGate.js';
 import { preflightCampaignForDestination } from './clonePreflight.js';
 import { libraryDestHints, registerClonedCreativeRef } from './mediaLibrary.js';
 import { normalizeCreative } from './cloneAnalysis.js';
@@ -539,6 +540,7 @@ export async function approveBatch({ batchId, userId }) {
   if (settings.ambExecutionMode === 'ADVISORY') {
     const e = new Error('النظام في وضع "استشاري فقط" — غيّر الوضع من الإعدادات قبل الاستنساخ.'); e.status = 403; throw e;
   }
+  await assertMetaWritesAllowed({ source: 'clone:approveBatch', userId, detail: { batchId } }); // Emergency Stop / deployment write-lock: refuse BEFORE the batch changes state (clean refusal, nothing half-created)
   await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'APPROVED', approved_by_id: userId || null, approved_at: new Date() } });
   await audit(batchId, null, 'APPROVAL', { detail: 'تمت الموافقة على الاستنساخ والجدولة.', actorId: userId });
   kickRun(batchId);
@@ -554,6 +556,7 @@ export async function resumeBatch({ batchId, userId }) {
   // resumable — the object map + AmbCloneJob status make it idempotent, so a
   // retry re-attempts only PENDING/FAILED objects and never re-creates a
   // CREATED one.
+  await assertMetaWritesAllowed({ source: 'clone:resumeBatch', userId, detail: { batchId } }); // same guard for a manual retry
   await audit(batchId, null, 'RETRY', { detail: 'إعادة تشغيل العناصر الفاشلة/الناقصة.', actorId: userId });
   kickRun(batchId);
   return getBatch(batchId);
@@ -638,6 +641,7 @@ function kickRun(batchId) {
 async function runBatch(batchId) {
   const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, include: { jobs: true } });
   if (!batch || batch.status === 'CANCELLED') return;
+  { const g = await checkGlobalMetaWrite({ source: 'clone:runBatch', detail: { batchId } }); if (!g.ok) { logger.warn('AMB clone run refused by the central write guard', { batchId, code: g.code }); await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { error: g.message } }).catch(() => {}); return; } } // nothing is created while Emergency Stop / the write-lock is on; the batch keeps its state and can be resumed later
   const connection = await getConnection();
   if (!connection || connection.status !== 'CONNECTED') {
     await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { status: 'FAILED', error: 'مفيش اتصال Meta Ads.' } });
@@ -1477,6 +1481,18 @@ export async function activateDueJobs() {
     include: { batch: true },
   });
   if (!due.length) return { activated: 0 };
+  { const g = await checkGlobalMetaWrite({ source: 'clone:activateDueJobs', detail: { due: due.length } });
+    if (!g.ok) { // central write guard: a due activation is NOT run; it is marked ACTIVATION_FAILED (+ alert) so it can never fire LATE by itself the moment writes are unlocked for something else
+      let held = 0;
+      for (const job of due) {
+        const optedIn = (j(job.batch?.identity_map_json, {}) || {}).autoActivate === true || globalAuto; if (!optedIn || await jobHasActiveSchedule(job.id)) continue;
+        await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'ACTIVATION_FAILED', error: `${g.message} — التفعيل المجدول ما اتنفذش.`.slice(0, 800) } });
+        await audit(job.batch_id, job.id, 'ACTIVATION_BLOCKED', { detail: `${g.message} — التفعيل المجدول ما اتنفذش ومش هيتنفذ لوحده لاحقًا.` });
+        await raiseAlert({ severity: 'WARNING', category: 'EXECUTION', title: `تفعيل مجدول اتمنع: ${job.source_campaign_name || job.source_campaign_id}`, message: g.message, dedupeKey: `clone-activate-blocked:${job.id}` }).catch(() => {});
+        await recomputeBatchStatus(job.batch_id); held++;
+      }
+      return { activated: 0, skipped: g.code, blocked: held };
+    } }
 
   let token;
   try { token = await getDecryptedToken(); } catch { return { activated: 0, skipped: 'NO_TOKEN' }; }

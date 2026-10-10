@@ -575,6 +575,10 @@ export async function getCreativeDetails(token, creativeId) {
 
 /** Raw POST to the Graph API (form-encoded, as Meta expects for writes). Returns Meta's parsed JSON response; throws a diagnostic-rich error on failure. */
 export async function graphPost(path, body, token) {
+  // THE central write guard (Emergency Stop + the deployment write-lock). graphPost is the ONLY function in this file that reaches the Graph API with a write, so every caller — the Operator executor,
+  // Clone, Launch, campaign schedules, uploads — is covered no matter what it forgot to check. Lazy import: writeGate pulls in the operator store (no import cycle at load time). A refusal throws
+  // MetaWriteBlockedError (status 423, permanent) and is audited (WRITE_GATE_BLOCK, de-duplicated).
+  await (await import('./amb/writeGate.js')).assertMetaWritesAllowed({ source: 'graphPost', detail: { path: String(path).replace(/\d{6,}/g, '<id>'), fields: Object.keys(body || {}) } });
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(body || {})) {
     if (v === undefined || v === null) continue;

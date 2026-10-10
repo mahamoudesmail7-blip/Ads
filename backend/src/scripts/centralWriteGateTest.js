@@ -9,6 +9,7 @@
 //   node src/scripts/centralWriteGateTest.js
 import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
+process.env.OPERATOR_ALLOW_META_WRITES = 'true'; // this suite talks to a local Meta MOCK only; the central write guard (graphPost) must see the deployment lock open for its legitimate writes
 import http from 'node:http';
 import fs from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
