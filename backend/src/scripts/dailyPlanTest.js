@@ -17,7 +17,7 @@ const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  âœ
 const retryDb = async (fn) => { for (let i = 0; i < 10; i++) { try { return await fn(); } catch { await new Promise((r) => setTimeout(r, 4000)); } } return fn(); };
 if (!process.env.JWT_SECRET) { console.log('JWT_SECRET missing'); process.exit(2); }
 const { prisma } = await imp('../prisma.js');
-const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = await imp('../services/amb/dailyPlans.js'); const DC = await imp('../services/amb/dailyPlanCandidates.js');
+const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = (await import('./_confirmWrap.js')).withAutoConfirm(await imp('../services/amb/dailyPlans.js')); const DC = await imp('../services/amb/dailyPlanCandidates.js');
 const BO = await imp('../services/amb/budgetOptimizer.js'); const S = await imp('../services/amb/operatorStore.js');
 const { default: operatorRoutes } = await imp('../routes/operator.js'); const { errorHandler } = await imp('../middleware/errorHandler.js');
 const T = '__optest_'; const created = { users: [] };

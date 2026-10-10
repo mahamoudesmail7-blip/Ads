@@ -11,7 +11,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 400) : ''}`); } };
 const { prisma } = await imp('../prisma.js');
-const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = await imp('../services/amb/dailyPlans.js'); const OC = await imp('../services/amb/openCpaPolicy.js');
+const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = (await import('./_confirmWrap.js')).withAutoConfirm(await imp('../services/amb/dailyPlans.js')); const OC = await imp('../services/amb/openCpaPolicy.js');
 const T = '__optest_'; const ADMIN_ID = (await prisma.user.findFirst({ where: { role: 'ADMIN', status: 'ACTIVE' } }))?.id ?? 1;
 const ADMIN = { id: ADMIN_ID, role: 'ADMIN', status: 'ACTIVE' }; const MANAGER = { id: 9999, role: 'MANAGER', status: 'ACTIVE' };
 const cfg0 = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); const limits0 = cfg0.limits_json;

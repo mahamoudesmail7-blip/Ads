@@ -22,6 +22,7 @@ import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { setEntityStatus } from '../metaGraphClient.js';
+import { checkMetaWrite } from './writeGate.js';
 import { resolveProductCampaigns } from './productPerformance.js';
 import { buildWinningStack, resolveTrackingIdentity, buildObservationStack } from './productActionPlan.js';
 import { segmentIntelForProduct } from './segmentIntel.js';
@@ -259,6 +260,9 @@ export async function executeApprovedDecision({
       return { ok: false, requiresConfirmation: true, plan, message: 'هذا الإجراء هيوقف حملات حقيقية شغالة على Meta فعليًا — لازم تأكيد صريح إضافي (confirmRealExecution) قبل أي تنفيذ.' };
     }
     if (!plan.targets.length) fail('مفيش حملات Meta حقيقية مرتبطة — لا يوجد إجراء ممكن.', 400);
+    // the central write gate (Emergency Stop · mode APPROVAL · deployment write-lock · the «إيقاف الحملات» permission) — this route used to reach Meta without any of them
+    const gate = await checkMetaWrite({ actionType: 'PAUSE', mode: 'APPROVAL', source: 'PRODUCT_DECISION', userId, entityId: plan.targets[0]?.campaignId || null });
+    if (!gate.ok) return { ok: false, blocked: true, code: gate.code, message: gate.message, plan };
     const token = await getDecryptedToken();
     const results = [];
     for (const t of plan.targets) {

@@ -46,7 +46,7 @@ await new Promise((rs) => server.listen(0, '127.0.0.1', rs));
 process.env.META_GRAPH_MOCK = '1'; process.env.META_GRAPH_MOCK_URL = `http://127.0.0.1:${server.address().port}`; // BEFORE the Meta client is imported
 process.env.DAILY_PLAN_DISABLE_ALERTS = '1';
 const { prisma } = await imp('../prisma.js');
-const MC = await imp('../services/metaGraphClient.js'); const DP = await imp('../services/amb/dailyPlans.js'); const BX = await imp('../services/amb/budgetExecution.js'); const BO = await imp('../services/amb/budgetOptimizer.js'); const TM = await imp('../services/amb/dailyPlanTime.js'); const S = await imp('../services/amb/operatorStore.js');
+const MC = await imp('../services/metaGraphClient.js'); const DP = (await import('./_confirmWrap.js')).withAutoConfirm(await imp('../services/amb/dailyPlans.js')); const BX = await imp('../services/amb/budgetExecution.js'); const BO = await imp('../services/amb/budgetOptimizer.js'); const TM = await imp('../services/amb/dailyPlanTime.js'); const S = await imp('../services/amb/operatorStore.js');
 const T = '__optest_'; const created = { plans: [], recs: [], decisions: [] };
 const retryDb = async (fn) => { for (let i = 0; i < 6; i++) { try { return await fn(); } catch { await new Promise((r) => setTimeout(r, 3000)); } } return fn(); };
 const OFF = { open: false, pause: false, budgetIncrease: false, budgetDecrease: false };
@@ -55,7 +55,7 @@ const ADMIN = { id: 1, role: 'ADMIN', status: 'ACTIVE' }; const noSleep = async 
 const FRESH = { syncStatus: async () => ({ lastSuccessAt: new Date() }), refresh: async () => ({ ok: true }) };
 const planDeps = (c, extra = {}) => ({ ...FRESH, user: ADMIN, runInline: true, exceptions: async () => [], lastPurchase: async () => null, mappingState: async () => null, dcfg: { ...DP.DEFAULT_DAILY_CONFIG }, config: async () => c, sleep: noSleep, ...extra });
 let dseq = 0;
-const item = (cid, o = {}) => ({ campaignId: cid, campaignName: `${T}mock ${cid}`, productId: null, productName: 'fixture', storeId: 'trendy-storeee', rank: 1, selected: true, selectable: true, eligibility: 'ELIGIBLE', blockCodes: [], warnings: [], risk: 'LOW', riskScore: 5, reason: 'fixture', evidence: { mapping: 'VERIFIED', budget: 300, stock: { status: 'IN_STOCK' }, m7: { spend: 700, purchases: 8, cpa: 88 }, m30: { spend: 2000, purchases: 25, cpa: 80 } }, ...o });
+const item = (cid, o = {}) => ({ campaignId: cid, campaignName: `${T}mock ${cid}`, productId: null, productName: 'fixture', storeId: 'trendy-storeee', rank: 1, selected: true, selectable: true, eligibility: 'ELIGIBLE', blockCodes: [], warnings: [], risk: 'LOW', riskScore: 5, reason: 'fixture', evidence: { mapping: 'VERIFIED', budget: world.entities.get(cid)?.daily_budget ? Number(world.entities.get(cid).daily_budget) / 100 : 300, stock: { status: 'IN_STOCK' }, m7: { spend: 700, purchases: 8, cpa: 88 }, m30: { spend: 2000, purchases: 25, cpa: 80 } }, ...o });
 const mkPlan = async (type, date, ids, simulated = false) => { const p = (await DP.preparePlan({ type, date, now: new Date(), simulated, deps: { ...FRESH, build: async () => ({ items: ids.map((id, n) => item(id, { rank: n + 1 })), policy: null }) } })).plan; created.plans.push(p.id); return p; };
 const approve = (p, c, extra = {}) => DP.approvePlan({ planId: p.id, userId: 1, now: new Date(TM.dueAt(p.type, p.plan_date).getTime() + 60_000), deps: planDeps(c, extra) });
 const itemOf = (pid, cid) => prisma.ambDailyPlanItem.findFirst({ where: { plan_id: pid, campaign_id: cid } });

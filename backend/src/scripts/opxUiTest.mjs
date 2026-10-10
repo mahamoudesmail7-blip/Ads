@@ -7,7 +7,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
+import { setTimeout as sleepRaw } from 'node:timers/promises';
+const SLOW = Number(process.env.OPX_SLOW) || 1; // >1 on a slow database link: every fixed pause is multiplied (the waitFor() waits are separate: OPX_WAIT_MS)
+const sleep = (ms) => sleepRaw(ms * SLOW);
 const BROWSER = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'].find(existsSync);
 if (!BROWSER) { console.log('no Chromium browser found — skipped'); process.exit(0); }
 const BASE = process.env.OPX_BASE || 'http://localhost:4000'; let pass = 0, fail = 0;
@@ -21,7 +23,7 @@ ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.
 const send = (method, params = {}) => new Promise((res, rej) => { const i = ++id; pending.set(i, (d) => (d.error ? rej(new Error(d.error.message)) : res(d.result))); ws.send(JSON.stringify({ id: i, method, params })); });
 const js = async (expression) => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'js error'); return r.result.value; };
 const goto = async (path, { width = 1440, height = 900, mobile = false, ls = {} } = {}) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }); await send('Page.navigate', { url: `${BASE}/login.html` }); await sleep(500); await js(`${Object.entries(ls).map(([k, v]) => `localStorage.setItem('${k}','${v}');`).join('')} true`); await send('Page.navigate', { url: `${BASE}${path}` }); await sleep(6500); };
-const waitFor = async (expr, ms = 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await js(expr)) return true; } catch { /* page reloading */ } await sleep(300); } return false; };
+const waitFor = async (expr, ms = Number(process.env.OPX_WAIT_MS) || 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await js(expr)) return true; } catch { /* page reloading */ } await sleep(300); } return false; };
 await send('Page.enable'); await send('Runtime.enable');
 try {
   await send('Page.navigate', { url: `${BASE}/login.html` }); await sleep(1200);
@@ -31,6 +33,7 @@ try {
   console.log('\n1. Shell: sidebar, workspaces, remembered workspace');
   await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.theme': 'light', 'opx.collapsed': '0' } });
   ok('the opx shell is mounted (not the legacy single page)', await waitFor(`!!document.getElementById('opxRoot')`));
+  await waitFor(`document.querySelectorAll('#opxNav .lbl').length >= 9`);
   const labels = await js(`[...document.querySelectorAll('#opxNav .lbl')].map(x=>x.textContent)`);
   ok('the 9 independent workspaces, in order (التسعير الذكي sits right after قواعد المنتجات)', JSON.stringify(labels) === JSON.stringify(['فتح الحملات', 'إيقاف الحملات', 'إدارة الميزانيات', 'قواعد المنتجات', 'التسعير الذكي', 'الموافقات', 'سجل التنفيذ', 'التنبيهات', 'مركز الربط']), JSON.stringify(labels));
   ok('the advanced group keeps the old tools reachable (permissions / control center / all legacy tools)', (await js(`document.querySelectorAll('#opxNavAdv .opx-item').length`)) === 3);
@@ -328,6 +331,30 @@ try {
     await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'integration' } }); await waitFor(`!!document.getElementById('intMap')`); await sleep(1200);
     ok('phone: the map and checks stack in one column with no horizontal scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && getComputedStyle(document.querySelector('.opx-int-cols')).gridTemplateColumns.split(' ').length === 1`));
   }
+
+  console.log('\n16. Approvals — plans with their campaigns, CPA / orders, preview · approve · reject; the confirmation is sent');
+  for (const [label, w, h, mobile] of [['desktop', 1440, 900, false], ['phone', 390, 844, true]]) {
+    await goto('/ai-media-buyer.html#operator', { width: w, height: h, mobile, ls: { 'opx.ws': 'approvals' } });
+    ok(label + ': the approvals workspace shows the pending plan block(s)', await waitFor(`document.querySelectorAll('.opx-planblock').length >= 1`));
+    ok(label + ': every plan lists its campaigns with budget / CPA / orders columns', await js(`[...document.querySelectorAll('.opx-planblock')].every(b => { const t = b.querySelector('table')?.innerText || ''; return /الميزانية/.test(t) && /CPA/.test(t) && /أوردرات/.test(t) && b.querySelectorAll('tbody tr').length >= 1; })`));
+    ok(label + ': each plan has معاينة / اعتماد / رفض buttons', await js(`[...document.querySelectorAll('.opx-planblock')].every(b => b.querySelector('[data-planprev]') && b.querySelector('[data-planapprove]') && b.querySelector('[data-planreject]'))`));
+    ok(label + ': the plan header states the campaign count and the total daily budget', await js(`/حملة/.test(document.querySelector('.opx-planblock .opx-tablehead').innerText) && /ج/.test(document.querySelector('.opx-planblock .opx-tablehead').innerText)`));
+    ok(label + ': no horizontal page scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
+  }
+  await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'approvals' } }); await waitFor(`document.querySelectorAll('.opx-planblock').length >= 1`);
+  const planNums = await js(`(()=>{const e = document.querySelector('.opx-planblock'); const approve = e.querySelector('[data-planapprove]'); return { id: Number(approve.dataset.planapprove), head: e.querySelector('.opx-tablehead .opx-note').innerText, rows: e.querySelectorAll('tbody tr').length }; })()`);
+  await js(`window.__calls = []; const of = window.fetch; window.fetch = (u, o) => { if (/daily-plan\\/\\d+\\/approve/.test(String(u))) { window.__calls.push({ u: String(u), b: o && o.body }); return Promise.resolve(new Response(JSON.stringify({ ok: false, message: 'stub — nothing approved' }), { status: 200, headers: { 'content-type': 'application/json' } })); } return of(u, o); }; true`);
+  await js(`document.querySelector('[data-planapprove]').click()`); ok('approve opens a confirmation that states the count and the budget', await waitFor(`!!document.querySelector('.confirm-modal-overlay') && /حملة/.test(document.querySelector('.confirm-modal-overlay').innerText) && /ميزانية يومية/.test(document.querySelector('.confirm-modal-overlay').innerText)`));
+  await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`); await sleep(800);
+  const sent = await js(`window.__calls.map(c => c.b)`);
+  const body = sent[0] ? JSON.parse(sent[0]) : null;
+  ok('confirming sends the SAME numbers the screen showed ({confirm:{count, exposedBudget}}) to the official route', !!body?.confirm && Number.isFinite(body.confirm.count) && Number.isFinite(body.confirm.exposedBudget) && body.confirm.count === planNums.rows, JSON.stringify(sent));
+  const server = await js(`fetch('/api/operator/approvals').then(r => r.json())`);
+  const sp = server.plans.find((p) => p.planId === planNums.id);
+  ok('…and they equal the server numbers for that plan (count / exposed budget)', sp && body && sp.exposure.count === body.confirm.count && sp.exposure.exposedBudget === body.confirm.exposedBudget, JSON.stringify({ body, exposure: sp?.exposure }));
+  await js(`document.querySelector('[data-planreject]').click()`); ok('reject asks for confirmation first (cancel leaves the plan untouched)', await waitFor(`!!document.querySelector('.confirm-modal-overlay')`));
+  await js(`document.querySelector('.confirm-modal-overlay [data-action="cancel"]').click()`); await sleep(400);
+  ok('the plan is still PREPARED after cancelling the rejection', (await js(`fetch('/api/operator/approvals').then(r => r.json())`)).plans.some((p) => p.planId === planNums.id));
   spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs')], { stdio: 'ignore' });
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));

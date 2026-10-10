@@ -15,6 +15,7 @@ import { validateAction } from './ruleEngine.js';
 import { currencyFactor } from './snapshotSync.js';
 import { raiseAlert } from './alerts.js';
 import { serializeRec } from './recommendationEngine.js';
+import { checkMetaWrite } from './writeGate.js';
 
 const MATERIAL_CPA_DRIFT = 0.30; // ±30% relative CPA move since the recommendation ⇒ re-analyse
 const MATERIAL_SPEND_MULT = 2.0; // spend more than doubled since the recommendation ⇒ re-analyse
@@ -162,15 +163,22 @@ export async function previewExecution({ recId }) {
 
 /**
  * Approve + execute one recommendation.
- * @param {{recId:number, userId:number, mode?:'APPROVAL'|'AUTOPILOT'}} p
+ * @param {{recId:number, userId:number, mode?:'APPROVAL'|'AUTOPILOT', deps?:{config?:any}}} p
+ *
+ * THE CENTRAL WRITE GATE sits at the top: whoever calls this (the Operator's plans / decisions / budget bridge, the legacy recommendations route, the assistant tasks) is re-checked
+ * against Emergency Stop + global mode + the deployment write-lock + the operation's own permission BEFORE anything is marked approved or sent. A refusal is returned as
+ * {ok:false, blocked:true, code, message} — the recommendation stays PENDING and no action row is created. `deps.config` is test injection only.
  */
-export async function approveAndExecute({ recId, userId, mode = 'APPROVAL' }) {
+export async function approveAndExecute({ recId, userId, mode = 'APPROVAL', deps = {} }) {
   const rec = await prisma.ambRecommendation.findUnique({ where: { id: Number(recId) } });
   if (!rec) { const e = new Error('التوصية مش موجودة.'); e.status = 404; throw e; }
   if (!['PENDING', 'APPROVED'].includes(rec.status)) { const e = new Error(`التوصية في حالة ${rec.status} — مش قابلة للتنفيذ.`); e.status = 409; throw e; }
   if (!rec.executable || !['PAUSE', 'RESUME', 'INCREASE_BUDGET', 'DECREASE_BUDGET'].includes(rec.action_type)) {
     const e = new Error('التوصية دي أكشن مسودة — لازم تتحول لخطة وتتنفّذ يدويًا، مش من هنا.'); e.status = 400; throw e;
   }
+
+  const gate = await checkMetaWrite({ actionType: rec.action_type, mode, entityId: rec.entity_id, entityName: rec.entity_name, source: rec.source || 'EXECUTOR', userId, deps });
+  if (!gate.ok) return { ok: false, blocked: true, aborted: true, code: gate.code, message: gate.message, reasons: gate.reasons.map((r) => r.code) };
 
   const settings = await getAmbSettings();
   if (settings.ambExecutionMode === 'ADVISORY') {

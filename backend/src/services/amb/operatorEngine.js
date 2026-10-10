@@ -396,7 +396,7 @@ export async function executeDecision({ decisionId, source = 'USER', userId = nu
   // 4. the guarded write (live revalidation + Meta write + verify-after-write all inside the existing executor)
   const exec = deps.approveAndExecute || (await import('./executor.js')).approveAndExecute;
   let result = null, err = null;
-  try { result = await exec({ recId: rec.id, userId: userId || null, mode: source === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL' }); }
+  try { result = await exec({ recId: rec.id, userId: userId || null, mode: source === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL', deps: { config } }); }
   catch (e) { err = e; }
   const action = await prisma.ambAction.findFirst({ where: { recommendation_id: rec.id }, orderBy: { id: 'desc' } });
   const oldV = j(action?.old_value_json, null), newV = j(action?.new_value_json, null), verify = j(action?.verify_json, null);

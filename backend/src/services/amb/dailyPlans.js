@@ -23,7 +23,7 @@ import { SLOTS, TYPE_LABEL_AR, CAIRO_TZ, cairoDate, cairoParts, dueTypes, dueAt,
 
 const MS_M = 60_000, MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
-const INSTANCE = `${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
+export const INSTANCE = `${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
 export const DEFAULT_DAILY_CONFIG = {
   allowOpen: false, allowPause: false,       // LIVE permission per action type — an ADMIN grants them explicitly, separately, after reviewing
   scheduledExecution: { enabled: false },    // unattended execution at the due time — OFF; the approve click is the approval
@@ -76,12 +76,14 @@ export async function ensureFreshData({ now = new Date(), deps = {}, force = fal
 // preparing plans
 // =====================================================================================================================
 const shapeItemRow = (it) => ({ id: it.id, campaignId: it.campaign_id, campaignName: it.campaign_name, productId: it.product_id, productName: it.product_name, storeId: it.store_id, rank: it.rank, selected: it.selected, selectable: it.selectable, eligibility: it.eligibility, blockCodes: j(it.block_codes_json, []), risk: it.risk, riskScore: it.risk_score, reason: it.reason, evidence: j(it.evidence_json, {}), status: it.status, statusReason: it.status_reason, statusAt: it.status_at, ambActionId: it.amb_action_id, attempts: it.attempts });
+/** the two numbers the owner confirms before approving a plan: how many campaigns are selected and the total daily budget they expose (from the evidence captured when the plan was prepared) */
+export function planExposure(items = []) { const sel = items.filter((i) => i.selected); return { count: sel.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)) }; }
 export function shapePlan(p, items = []) {
   const sel = items.filter((i) => i.selected);
   return {
     id: p.id, key: p.plan_key, type: p.type, typeLabel: TYPE_LABEL_AR[p.type], date: p.plan_date, timezone: p.timezone, version: p.version, status: p.status, simulated: p.simulated, scheduledAt: p.scheduled_at, expiresAt: p.expires_at, preparedAt: p.prepared_at,
     dataAsOf: p.data_as_of, dataState: p.data_state, surfacedAt: p.surfaced_at, dismissedAt: p.dismissed_at, approvedById: p.approved_by_id, approvedAt: p.approved_at, approvalMode: p.approval_mode, executionMode: p.execution_mode, startedAt: p.started_at, finishedAt: p.finished_at,
-    summary: j(p.summary_json, null), evidence: j(p.evidence_json, null), items: items.map(shapeItemRow),
+    summary: j(p.summary_json, null), evidence: j(p.evidence_json, null), exposure: planExposure(items), items: items.map(shapeItemRow),
     counts: { total: items.length, selected: sel.length, protected: items.filter((i) => ['PROTECTED', 'BLOCKED'].includes(i.eligibility)).length, selectable: items.filter((i) => i.selectable).length },
   };
 }
@@ -298,7 +300,7 @@ async function requireAdmin(userId, deps = {}) {
   if (!u || u.role !== 'ADMIN' || u.status !== 'ACTIVE') { const e = new Error('اعتماد وتنفيذ جدول التشغيل محتاج موافقة ADMIN صريحة.'); e.status = 403; throw e; }
   return u;
 }
-export async function approvePlan({ planId, userId, now = new Date(), deps = {} }) {
+export async function approvePlan({ planId, userId, now = new Date(), deps = {}, confirm = null }) {
   if (!userId) { const e = new Error('لازم مستخدم معتمد.'); e.status = 400; throw e; }
   await requireAdmin(userId, deps);
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
@@ -315,12 +317,18 @@ export async function approvePlan({ planId, userId, now = new Date(), deps = {} 
     // the data moved while the plan was waiting: the ranking can shift, so the owner must review again (selections stay, nothing executes)
   }
   if (!selected.length) return { ok: false, status: 'EMPTY', message: 'مفيش حملة مختارة.' };
+  // a REAL plan is only approved against the exact numbers the owner saw: campaign count + total exposed daily budget (simulated/SHADOW plans have nothing to protect)
+  const exposure = planExposure(plan.items);
+  if (!plan.simulated) {
+    if (!confirm || confirm.count == null || confirm.exposedBudget == null) return { ok: false, status: 'CONFIRM_REQUIRED', message: 'اعتماد الخطة محتاج تأكيد عدد الحملات والميزانية المعرّضة.', actual: exposure };
+    if (Number(confirm.count) !== exposure.count || Math.abs(Number(confirm.exposedBudget) - exposure.exposedBudget) > 0.5) return { ok: false, status: 'CONFIRM_MISMATCH', message: `الاختيار اتغيّر: دلوقتي ${exposure.count} حملة / ${exposure.exposedBudget} جنيه — مش اللي أكدته (${confirm.count} / ${confirm.exposedBudget}). راجع الخطة واعتمد تاني.`, actual: exposure, confirmed: { count: Number(confirm.count), exposedBudget: Number(confirm.exposedBudget) } };
+  }
   const config = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig();
   const gate = executionGate({ config, dcfg, type: plan.type, simulatedPlan: plan.simulated });
   const early = now.getTime() < plan.scheduled_at.getTime();
   if (early && !dcfg.scheduledExecution.enabled) return { ok: false, status: 'NOT_DUE_YET', message: 'لسه ما جاش موعد الجدول. الاعتماد المبكر محتاج تفعيل "التنفيذ المجدول" صراحة (مقفول).' };
   if (gate.blocked) { await audit({ planId: plan.id, userId, note: `الاعتماد اتمنع: ${gate.blocked.code}`, data: { action: 'APPROVE_BLOCKED', code: gate.blocked.code } }); return { ok: false, status: 'BLOCKED', blocked: gate.blocked.code, message: gate.blocked.message }; }
-  const claim = await prisma.ambDailyPlan.updateMany({ where: { id: plan.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: userId, approved_at: now, approval_mode: config.mode, execution_mode: gate.mode, dismissed_at: plan.dismissed_at || now } });
+  const claim = await prisma.ambDailyPlan.updateMany({ where: { id: plan.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: userId, approved_at: now, approval_mode: config.mode, execution_mode: gate.mode, dismissed_at: plan.dismissed_at || now, evidence_json: JSON.stringify({ ...j(plan.evidence_json, {}), approval: { count: exposure.count, exposedBudget: exposure.exposedBudget, by: userId, at: now.toISOString(), confirmed: !!confirm } }) } });
   if (claim.count !== 1) return { ok: false, status: 'RACE', message: 'الخطة اتغيّرت في نفس اللحظة.' };
   await audit({ planId: plan.id, userId, note: `الخطة اتعتمدت (${selected.length} حملة) — تنفيذ ${gate.mode === 'LIVE' ? 'فعلي' : 'تجريبي (SHADOW، مفيش كتابة على Meta)'}`, data: { action: 'APPROVED', version: plan.version, mode: config.mode, executionMode: gate.mode, selected: selected.map((i) => i.campaign_id) } });
   await notify(plan, { title: `اتعتمد جدول ${plan.type === 'OPEN' ? 'الفتح' : 'الإيقاف'} (${selected.length} حملة)`, message: gate.mode === 'LIVE' ? 'التنفيذ هيبدأ واحدة واحدة.' : 'SHADOW: تنفيذ تجريبي بدون أي كتابة على Meta.', suffix: 'approved' });
@@ -361,6 +369,7 @@ async function revalidateItem({ plan, item, config, dcfg, deps, now }) {
   { const cf = await (deps.checkConflicts ? deps.checkConflicts({ campaignId: item.campaign_id, want: plan.type === 'OPEN' ? 'OPEN' : 'PAUSE', planId: plan.id }) : (await import('./integration.js')).checkConflicts({ campaignId: item.campaign_id, want: plan.type === 'OPEN' ? 'OPEN' : 'PAUSE', planId: plan.id, now, simulated: plan.simulated })).catch(() => []); if (cf.length) return { ok: false, status: 'BLOCKED', reason: cf[0].code }; } // the integration layer: never race a budget change or the opposite operation on the same campaign
   let live; try { live = await (deps.readEntity || defaultReadEntity)(item.campaign_id); } catch (e) { return { ok: false, status: 'SKIPPED', reason: e.isMetaRateLimit ? 'META_RATE_LIMITED' : `META_UNAVAILABLE: ${String(e.message).slice(0, 120)}`, retryable: !!e.isMetaRateLimit }; }
   if (!live || live.id !== item.campaign_id) return { ok: false, status: 'BLOCKED', reason: 'CAMPAIGN_ID_MISMATCH' };
+  { const pb = Number(ev.budget); if (plan.type === 'OPEN' && Number.isFinite(pb) && pb > 0 && live.budget != null && Math.abs(live.budget - pb) > 1) return { ok: false, status: 'BLOCKED', reason: `BUDGET_CHANGED (الخطة اتعتمدت على ${pb} جنيه والحملة على Meta دلوقتي ${live.budget}) — راجع واعتمد تاني` }; } // the owner approved THIS budget: never open a campaign whose budget moved since
   if (plan.type === 'OPEN' && live.status === 'ACTIVE') return { ok: false, status: 'SKIPPED', reason: 'ALREADY_ACTIVE' };
   if (plan.type === 'OPEN' && live.status !== 'PAUSED') return { ok: false, status: 'SKIPPED', reason: `LIVE_STATUS_${live.status}` };
   if (plan.type === 'PAUSE' && live.status !== 'ACTIVE') return { ok: false, status: 'SKIPPED', reason: live.status === 'PAUSED' ? 'ALREADY_PAUSED' : `LIVE_STATUS_${live.status}` };
@@ -372,7 +381,7 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
   if (claim.count !== 1) return { skipped: 'NOT_CLAIMED' };
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   const items = plan.items.filter((i) => i.selected); const live = plan.execution_mode === 'LIVE'; const dcfg = deps.dcfg || await getDailyPlanConfig();
-  const spacing = Math.max(3, Number(dcfg.spacingSeconds) || 3) * 1000; let rateLimited = 0, sent = 0, abort = null;
+  const spacing = Math.max(3, Number(dcfg.spacingSeconds) || 3) * 1000; let rateLimited = 0, sent = 0, abort = null, exposed = 0;
   for (const item of items) {
     if (ITEM_FINAL.has(item.status)) continue;
     if (abort) { await setItem(item, 'SKIPPED', abort, {}, plan.id, userId); continue; }
@@ -382,6 +391,10 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
     if (!v.ok) { await setItem(item, v.status, v.reason, {}, plan.id, userId); if (/^META_(UNAVAILABLE|RATE_LIMITED)/.test(v.reason || '') && !plan.simulated && process.env.DAILY_PLAN_DISABLE_ALERTS !== '1') await raiseAlert({ severity: 'WARNING', category: 'EXECUTION', title: `Meta غير متاح: ${plan.type === 'OPEN' ? 'فتح' : 'إيقاف'} ${item.campaign_name || item.campaign_id} ما اتنفذش`, message: `${v.reason} — الحملة لم تتغير. مفيش إعادة إرسال تلقائي.`.slice(0, 480), campaignId: item.campaign_id, entityId: item.campaign_id, entityName: item.campaign_name, dedupeKey: `dailyplan-item:${plan.plan_key}:v${plan.version}:${item.campaign_id}:META` }).catch(() => {});
       if (v.reason === 'META_RATE_LIMITED') { rateLimited++; await sleep(Math.min(120_000, 15_000 * 2 ** rateLimited)); if (rateLimited >= dcfg.rateLimitStopAfter) abort = 'RATE_LIMIT_STOP'; } continue; }
     if (!live) { await setItem(item, 'SIMULATED', `SHADOW: كان هيتبعت ${plan.type === 'OPEN' ? 'RESUME (status=ACTIVE)' : 'PAUSE (status=PAUSED)'} — مفيش كتابة على Meta (الحالة الحية ${v.live.status})`, {}, plan.id, userId); continue; }
+    // ---- exposure cap: the total daily budget the owner confirmed at approval is a hard ceiling for the whole OPEN queue
+    { const cap = Number(j(plan.evidence_json, {}).approval?.exposedBudget); const b = Number(v.live?.budget ?? j(item.evidence_json, {}).budget) || 0;
+      if (plan.type === 'OPEN' && Number.isFinite(cap) && cap > 0 && exposed + b > cap + 1) { await setItem(item, 'SKIPPED', `EXPOSURE_CAP (المعتمد ${cap} جنيه، المفتوح ${Math.round(exposed)} + ${b})`, {}, plan.id, userId); continue; }
+      exposed += b; }
     // ---- LIVE: spacing + ONE write through the existing executor + read-back
     if (sent > 0) await sleep(spacing);
     await setItem(item, 'SENT', 'الطلب اتبعت لـMeta (مستني القراءة بعده)', {}, plan.id, userId); sent++;
@@ -406,7 +419,7 @@ async function liveExecuteItem({ plan, item, userId, deps }) {
     current_metrics_json: JSON.stringify({ spend: ev.m7?.spend ?? null, cpa: ev.m7?.cpa ?? null, purchases: ev.m7?.purchases ?? null }), reason: `Daily Plan #${plan.id} v${plan.version} (${plan.type}) — ${item.reason || ''}`.slice(0, 900), reason_facts_json: item.evidence_json, confidence: 'MEDIUM', risk_level: item.risk || 'MEDIUM', data_sufficiency: 'MODERATE', priority: 'P2', time_window_label: 'آخر 7 أيام', source: 'OPERATOR', status: 'PENDING' } });
   { const ref = await (deps.policyRef ? deps.policyRef({ productId: item.product_id, storeId: item.store_id, campaignId: item.campaign_id }) : (await import('./integration.js')).policyRefFor({ productId: item.product_id, storeId: item.store_id, campaignId: item.campaign_id })).catch(() => null); if (ref) await prisma.ambRecommendation.update({ where: { id: rec.id }, data: { reason_facts_json: JSON.stringify({ ...ev, policyRef: { ...ref, planId: plan.id, planVersion: plan.version } }) } }).catch(() => {}); }
   const exec = deps.approveAndExecute || (await import('./executor.js')).approveAndExecute; let result = null, err = null;
-  try { result = await exec({ recId: rec.id, userId, mode: plan.approval_mode === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL' }); } catch (e) { err = e; }
+  try { result = await exec({ recId: rec.id, userId, mode: plan.approval_mode === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL', deps: { config: deps.config } }); } catch (e) { err = e; }
   const act = await prisma.ambAction.findFirst({ where: { recommendation_id: rec.id }, orderBy: { id: 'desc' } }); const verify = j(act?.verify_json, null);
   const extra = { amb_action_id: act?.id ?? null };
   if (!err && result?.ok) return verify?.verified ? { status: 'VERIFIED', reason: `اتأكد من قراءة Meta: ${prev} → ${target}`, extra } : { status: 'UNCERTAIN', reason: 'الطلب اتبعت لكن القراءة الفورية ما أكدتش — مش هنعيد الإرسال أعمى', extra };
@@ -568,7 +581,8 @@ export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
     const sim = isTestClock(); const out = await ensureDuePlans({ now, simulated: sim, deps });
     out.productSlots = await ensureProductSlotPlans({ now, simulated: sim, deps }).catch((e) => { logger.warn('[dailyPlans] product slot plans failed', { message: e.message }); return []; });
     const dcfg = await getDailyPlanConfig();
-    if (!sim) out.openCpaAutomatic = await runOpenCpaAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] open-cpa automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
+    if (!sim) out.recovery = await import('./executionRecovery.js').then((m) => m.recoverInterrupted({ now, deps })).catch((e) => ({ error: e.message })); // settle work a restart interrupted: read-back only, never a re-send
+    if (!sim) out.openCpaAutomatic =await runOpenCpaAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] open-cpa automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
     if (dcfg.scheduledExecution.enabled && !sim) { // unattended execution of plans approved ahead of time — only when explicitly enabled
       const due = await prisma.ambDailyPlan.findMany({ where: { simulated: false, status: 'APPROVED', scheduled_at: { lte: now }, expires_at: { gt: now } } });
       out.executed = []; for (const p of due) { out.executed.push(await runPlanExecution({ planId: p.id, userId: p.approved_by_id, now, deps })); }
@@ -581,5 +595,12 @@ export const dailyPlanSchedulerStarted = () => !!timer;
 export function startDailyPlanScheduler() {
   if (timer) return;
   timer = setInterval(() => { runDailyPlanTick({ now: new Date() }).catch((e) => logger.error('[dailyPlans] tick failed', { message: e.message })); }, 60_000);
+  setTimeout(() => { import('./executionRecovery.js').then((m) => m.recoverInterrupted({ now: new Date(), onStartup: true })).catch((e) => logger.error('[dailyPlans] startup recovery failed', { message: e.message })); }, 20_000).unref?.(); // once per boot: settle what the previous process left in flight
   timer.unref?.(); logger.info('Daily Operations scheduler started (60s tick, Africa/Cairo: OPEN 00:00 / PAUSE 13:00 — prepares + surfaces plans, never executes by itself)');
+}
+
+/** the numbers an approval must confirm RIGHT NOW for a plan (what the owner's screen should show) */
+export async function currentConfirmation(planId) {
+  const items = await prisma.ambDailyPlanItem.findMany({ where: { plan_id: Number(planId) }, select: { selected: true, evidence_json: true } });
+  return planExposure(items);
 }

@@ -111,10 +111,10 @@ function wirePlan(root, plan, rerender) {
 async function approve(plan, rerender) {
   const sel = plan.items.filter((i) => i.selected); const T = TYPE_META[plan.type]; const ctl = D.ov?.control || {};
   const live = ctl.mode === 'APPROVAL' && !ctl.writesLocked && (plan.type === 'OPEN' ? ctl.allowOpen : ctl.allowPause);
-  const msg = `${sel.length} حملة هتتعمل لها ${T.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل 3 ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل حملة هتتراجع مقابل حالتها الحية على Meta وتتسجّل "كان هيتنفذ" — مفيش أي كتابة على Meta.'}`;
+  const ex = plan.exposure || { count: sel.length, exposedBudget: 0 }; const msg = `${ex.count} حملة · إجمالي ميزانية يومية ${ex.exposedBudget} جنيه — هتتعمل لها ${T.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل 3 ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل حملة هتتراجع مقابل حالتها الحية على Meta وتتسجّل "كان هيتنفذ" — مفيش أي كتابة على Meta.'}`;
   if (!(await UI.confirmModal({ title: `${T.icon} ${T.approve}`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة SHADOW)', danger: live }))) return;
   try {
-    const r = await api.post(`${API}/${plan.id}/approve`, {});
+    const r = await api.post(`${API}/${plan.id}/approve`, { confirm: { count: ex.count, exposedBudget: ex.exposedBudget } });
     if (!r.ok) { UI.toast(r.message || 'الاعتماد اتمنع', 'error'); return; }
     UI.toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW بدأت (مفيش كتابة على Meta)');
     await reload(); rerender(); pollRunning(rerender);

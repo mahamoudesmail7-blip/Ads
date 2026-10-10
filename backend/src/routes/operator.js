@@ -29,7 +29,7 @@ import { getExecutionPermissions, setExecutionPermission } from '../services/amb
 import { listMonitoredActions } from '../services/amb/postActionMonitoring.js';
 import { getBudgetCaps, setBudgetCaps } from '../services/amb/budgetCaps.js';
 import { runSmartAlerts } from '../services/amb/smartAlerts.js';
-import { listApprovals, bulkPreview, statusBar } from '../services/amb/approvalCenter.js';
+import { listApprovals, bulkPreview, statusBar, previewDecision } from '../services/amb/approvalCenter.js';
 import { buildOperatorBrief } from '../services/amb/operatorBrief.js';
 import { setTestClock, clockNow, isTestClock, testClockAllowed, cairoDate } from '../services/amb/dailyPlanTime.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
@@ -201,7 +201,7 @@ router.post('/daily-plan/new', ADMIN, asyncRoute(async (req, res) => { const r =
 router.post('/daily-plan/:id/preview-execution', ADMIN, asyncRoute(async (req, res) => res.json(await daily.previewExecution({ planId: req.params.id, now: clockNow() }))));
 router.post('/daily-plan/prepare', ADMIN, asyncRoute(async (req, res) => { const { type, date } = req.body || {}; const now = clockNow(); const out = await daily.preparePlan({ type, date: date || (await import('../services/amb/dailyPlanTime.js')).cairoDate(now), now, simulated: isTestClock(), userId: req.user.id, variant: req.body?.variant || null, only: Array.isArray(req.body?.only) ? req.body.only : null }); res.json({ created: out.created, plan: await daily.getPlanById(out.plan.id) }); }));
 router.put('/daily-plan/:id/selection', ADMIN, asyncRoute(async (req, res) => res.json(await daily.updateSelection({ planId: req.params.id, selections: req.body?.selections, special: req.body?.special || [], userId: req.user.id, now: clockNow() }))));
-router.post('/daily-plan/:id/approve', ADMIN, asyncRoute(async (req, res) => res.json(await daily.approvePlan({ planId: req.params.id, userId: req.user.id, now: clockNow() }))));
+router.post('/daily-plan/:id/approve', ADMIN, asyncRoute(async (req, res) => res.json(await daily.approvePlan({ planId: req.params.id, userId: req.user.id, now: clockNow(), confirm: req.body?.confirm || null }))));
 router.post('/daily-plan/:id/cancel', ADMIN, asyncRoute(async (req, res) => res.json(await daily.cancelPlan({ planId: req.params.id, userId: req.user.id, reason: req.body?.reason || null, now: clockNow() }))));
 router.post('/daily-plan/:id/dismiss', ADMIN, asyncRoute(async (req, res) => res.json(await daily.dismissPopup({ planId: req.params.id, userId: req.user.id }))));
 router.post('/daily-plan/exclude', ADMIN, asyncRoute(async (req, res) => res.json(await daily.excludeCampaign({ campaignId: String(req.body?.campaignId || ''), scope: req.body?.scope || 'DAY', label: req.body?.label || null, userId: req.user.id, now: clockNow() }))));
@@ -230,6 +230,7 @@ router.get('/decisions/:id', asyncRoute(async (req, res) => {
   res.json({ decision: shapeDecision(row) });
 }));
 router.post('/decisions/:id/approve', ADMIN, asyncRoute(async (req, res) => res.json(await approveDecision({ decisionId: req.params.id, userId: req.user.id }))));
+router.post('/decisions/:id/preview', ADMIN, asyncRoute(async (req, res) => res.json(await previewDecision({ decisionId: req.params.id }))));
 router.post('/decisions/:id/reject', ADMIN, asyncRoute(async (req, res) => res.json(await rejectDecision({ decisionId: req.params.id, userId: req.user.id, reason: req.body?.reason || null }))));
 router.post('/decisions/:id/snooze', ADMIN, asyncRoute(async (req, res) => res.json(await snoozeDecision({ decisionId: req.params.id, hours: req.body?.hours }))));
 router.post('/decisions/:id/rollback', ADMIN, asyncRoute(async (req, res) => res.json({ rollback: shapeDecision(await prepareRollback({ decisionId: req.params.id, reason: req.body?.reason || 'MANUAL' })) })));

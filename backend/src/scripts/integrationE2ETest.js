@@ -12,7 +12,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 500) : ''}`); } };
 const { prisma } = await imp('../prisma.js');
-const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = await imp('../services/amb/dailyPlans.js'); const OC = await imp('../services/amb/openCpaPolicy.js'); const SP = await imp('../services/amb/smartPricing.js');
+const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = (await import('./_confirmWrap.js')).withAutoConfirm(await imp('../services/amb/dailyPlans.js')); const OC = await imp('../services/amb/openCpaPolicy.js'); const SP = await imp('../services/amb/smartPricing.js');
 const PP = await imp('../services/amb/productPolicy.js'); const AMBP = await imp('../services/amb/ambProducts.js'); const INT = await imp('../services/amb/integration.js'); const EH = await imp('../services/amb/executionHistory.js'); const ME = await imp('../services/amb/metricsEngine.js');
 const BE = await imp('../services/amb/budgetExecution.js'); const CB = await imp('../services/amb/campaignBoard.js');
 const T = '__optest_'; const STORE = 'e2e-store'; const ADMIN_ID = (await prisma.user.findFirst({ where: { role: 'ADMIN', status: 'ACTIVE' } }))?.id ?? 1; const ADMIN = { id: ADMIN_ID, role: 'ADMIN', status: 'ACTIVE' };

@@ -10,7 +10,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 400) : ''}`); } };
 const { prisma } = await imp('../prisma.js');
-const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = await imp('../services/amb/dailyPlans.js'); const PP = await imp('../services/amb/productPolicy.js');
+const TM = await imp('../services/amb/dailyPlanTime.js'); const DP = (await import('./_confirmWrap.js')).withAutoConfirm(await imp('../services/amb/dailyPlans.js')); const PP = await imp('../services/amb/productPolicy.js');
 const T = '__optest_'; const DATE = '2031-06-10'; const rawBefore = (await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }))?.limits_json ?? null;
 const at = (hhmm) => TM.dueAtTime(DATE, hhmm); const plus = (d, min) => new Date(d.getTime() + min * 60_000);
 const KA = PP.policyKey('trendy-storeee', 9001), KB = PP.policyKey('trendy-storeee', 9002);

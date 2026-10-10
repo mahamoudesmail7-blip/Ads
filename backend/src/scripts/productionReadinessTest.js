@@ -12,7 +12,7 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 400) : ''}`); } };
 const { prisma } = await imp('../prisma.js');
-const PR = await imp('../services/amb/productionReadiness.js'); const DP = await imp('../services/amb/dailyPlans.js'); const BO = await imp('../services/amb/budgetOptimizer.js'); const S = await imp('../services/amb/operatorStore.js'); const TM = await imp('../services/amb/dailyPlanTime.js');
+const PR = await imp('../services/amb/productionReadiness.js'); const DP = (await import('./_confirmWrap.js')).withAutoConfirm(await imp('../services/amb/dailyPlans.js')); const BO = await imp('../services/amb/budgetOptimizer.js'); const S = await imp('../services/amb/operatorStore.js'); const TM = await imp('../services/amb/dailyPlanTime.js');
 const T = '__optest_';
 const baseDeps = (o = {}) => ({ config: { mode: 'SHADOW', emergency_stop: false, writesLocked: true, autopilotAttest: {} }, settings: { ambAllowAutoOpen: false, ambAllowAutoPause: false, ambAllowAutoScale: false, ambAllowAutoBudgetIncrease: false, ambAllowAutoBudgetDecrease: false }, dcfg: { ...DP.DEFAULT_DAILY_CONFIG }, policy: { enabled: false }, executed: [], todayPlans: [], schedulerStarted: false, approvedDecision: 0, advisorPlans: 0, inventoryProducts: 0, ...o });
 const by = (r, k) => r.functions.find((f) => f.key === k);

@@ -159,7 +159,7 @@ export async function executeBudgetDecision({ decisionId, userId, now = new Date
   // 5. the guarded write (live revalidation + ONE Meta write + read-back verification live in the existing executor)
   const exec = deps.approveAndExecute || (await import('./executor.js')).approveAndExecute;
   let result = null, err = null;
-  try { result = await exec({ recId: rec.id, userId, mode: 'APPROVAL' }); } catch (e) { err = e; }
+  try { result = await exec({ recId: rec.id, userId, mode: 'APPROVAL', deps: { config } }); } catch (e) { err = e; }
   const action = await prisma.ambAction.findFirst({ where: { recommendation_id: rec.id }, orderBy: { id: 'desc' } });
   let oldV = j(action?.old_value_json, null), newV = j(action?.new_value_json, null), verify = j(action?.verify_json, null);
   out.ambActionId = action?.id ?? null; out.recommendationId = rec.id;

@@ -7,6 +7,7 @@ import { prisma } from '../../prisma.js';
 import { getOperatorConfig } from './operatorStore.js';
 import { listDecisions } from './operatorReports.js';
 import { permissionFor, PERMISSION_META } from './executionPermissions.js';
+import { evaluateWriteGate } from './writeGate.js';
 
 export const BULK_ACTIONS = ['PAUSE', 'SCALE_DOWN'];
 export const BULK_MAX = 10;
@@ -35,14 +36,15 @@ export function approvalRow(d, config) {
   const exposed = d.params?.toBudget ?? d.params?.budget ?? d.params?.fromBudget ?? d.metrics?.budget ?? null;
   return { kind: 'DECISION', id: d.id, status: d.status, campaignId: d.campaignId, campaign: d.campaignName, product: d.productName, action: d.action, actionLabel: d.actionLabel, before, after,
     reason: d.why?.why || d.why?.what || d.ruleName || '', risk: riskOf(d), confidence: d.confidence, hardBlocks: hard, warnings: (d.warnings || []).map((w) => w.code),
-    exposedBudget: exposed, execution: gateOf(config, d.action), bulkEligible: BULK_ACTIONS.includes(d.action) && d.status === 'PREPARED' && hard.length === 0, isBudgetDecision: !!d.isBudgetDecision, cooldown: d.cooldown || null, updatedAt: d.updatedAt };
+    exposedBudget: exposed, cpa: d.metrics?.cpa ?? null, orders: d.metrics?.purchases ?? d.metrics?.orders ?? null, spend: d.metrics?.spend ?? null, window: d.window || d.params?.window || null, stock: d.stock?.status || null, execution: gateOf(config, d.action), bulkEligible: BULK_ACTIONS.includes(d.action) && d.status === 'PREPARED' && hard.length === 0, isBudgetDecision: !!d.isBudgetDecision, cooldown: d.cooldown || null, updatedAt: d.updatedAt };
 }
 
 export async function listApprovals({ now = new Date(), deps = {} } = {}) {
   const config = deps.config || await getOperatorConfig();
   const decisions = (deps.decisions || await listDecisions({ bucket: 'approval', limit: 150, now })).filter((d) => ['PREPARED', 'SNOOZED'].includes(d.status)).map((d) => approvalRow(d, config));
-  const plansRaw = deps.plans || await prisma.ambDailyPlan.findMany({ where: { status: 'PREPARED', simulated: false }, include: { items: { select: { selected: true, evidence_json: true } } }, orderBy: { id: 'desc' }, take: 10 });
-  const plans = plansRaw.map((p) => { const sel = p.items.filter((i) => i.selected); return { kind: 'PLAN', planId: p.id, key: p.plan_key, type: p.type, date: p.plan_date, independent: p.plan_key.includes('|T-'), selected: sel.length, total: p.items.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)), execution: gateOf(config, p.type === 'OPEN' ? 'OPEN' : 'PAUSE'), dataState: p.data_state }; });
+  const plansRaw = deps.plans || await prisma.ambDailyPlan.findMany({ where: { status: 'PREPARED', simulated: false }, include: { items: { select: { selected: true, evidence_json: true, campaign_id: true, campaign_name: true, product_name: true, risk: true, eligibility: true } } }, orderBy: { id: 'desc' }, take: 10 });
+  const plans = plansRaw.map((p) => { const sel = p.items.filter((i) => i.selected); return { kind: 'PLAN', planId: p.id, key: p.plan_key, type: p.type, date: p.plan_date, independent: p.plan_key.includes('|T-'), selected: sel.length, total: p.items.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)), exposure: { count: sel.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)) }, version: p.version, execution: gateOf(config, p.type === 'OPEN' ? 'OPEN' : 'PAUSE'), dataState: p.data_state,
+      items: sel.map((i) => { const e = j(i.evidence_json, {}); return { campaignId: i.campaign_id, campaign: i.campaign_name, product: i.product_name, before: p.type === 'OPEN' ? 'PAUSED' : 'ACTIVE', after: p.type === 'OPEN' ? 'ACTIVE' : 'PAUSED', budget: e.budget ?? null, cpa: e.cpaPolicy?.cpa ?? e.m7?.cpa ?? null, orders: e.cpaPolicy?.purchases ?? e.m7?.purchases ?? null, risk: i.risk || null, stock: e.stock?.status || null, mapping: e.mapping || null }; }) }; });
   const decExposed = decisions.reduce((t, d) => t + (Number(d.exposedBudget) || 0), 0);
   return { decisions, plans, gate: { mode: config.mode, writesLocked: config.writesLocked, emergencyStop: config.emergency_stop, permissions: config.execPermissions || null }, totals: { pendingDecisions: decisions.length, pendingPlans: plans.length, bulkEligible: decisions.filter((d) => d.bulkEligible).length, exposedBudgetDecisions: Math.round(decExposed) } };
 }
@@ -95,4 +97,33 @@ export async function statusBar({ now = new Date(), deps = {} } = {}) {
   let activeCampaigns = deps.activeCampaigns ?? null;
   if (activeCampaigns == null) { try { activeCampaigns = await activeCampaignCount((await (await import('../metaAuth.js')).getConnection())?.selected_ad_account_id, { now }); } catch { /* unknown */ } }
   return { activeCampaigns, pendingApprovals: pendingDecisions + pendingPlans, scheduledPlans, importantAlerts, date: today };
+}
+
+const AMB_ACTION = { SCALE_UP: 'INCREASE_BUDGET', SCALE_DOWN: 'DECREASE_BUDGET', PAUSE: 'PAUSE', OPEN: 'RESUME' };
+/**
+ * 👁️ PREVIEW of ONE pending decision — READ ONLY. Answers, before the owner approves: would the write be allowed right now (central gate), what does Meta hold RIGHT NOW versus what the decision expects,
+ * does anything conflict (opposite operation / plan queue / budget caps), and what exact request WOULD be sent. Never calls a Meta write endpoint and never changes a row.
+ * deps (tests): config, readEntity({entityId}) -> {status,budget}, checkConflicts, checkCaps.
+ */
+export async function previewDecision({ decisionId, now = new Date(), deps = {} }) {
+  const row = await prisma.ambOperatorDecision.findUnique({ where: { id: Number(decisionId) } });
+  if (!row) { const e = new Error('القرار غير موجود.'); e.status = 404; throw e; }
+  const config = deps.config || await getOperatorConfig(); const params = j(row.params_json, {}) || {}; const ambAction = AMB_ACTION[row.action] || null;
+  const out = { decisionId: row.id, status: row.status, campaignId: row.campaign_id, campaign: row.campaign_name, action: row.action, writes: false, gate: null, live: null, expected: null, drift: [], conflicts: [], caps: null, plannedRequest: null, verdict: 'NOT_PREVIEWABLE', notes: [] };
+  if (!ambAction) { out.notes.push('الأكشن ده مش عملية كتابة على Meta (تحضير/اختبار) — مفيش معاينة تنفيذ.'); return out; }
+  const g = evaluateWriteGate({ config, actionType: ambAction, mode: 'APPROVAL' }); out.gate = { executableNow: g.ok, reasons: g.ok ? [] : g.reasons.map((r) => ({ code: r.code, message: r.message })) };
+  const entityId = params.entityId || row.campaign_id; const isBudget = ['SCALE_UP', 'SCALE_DOWN'].includes(row.action);
+  out.expected = isBudget ? { budget: params.fromBudget ?? null, to: params.toBudget ?? null } : { status: row.action === 'OPEN' ? 'PAUSED' : 'ACTIVE', to: row.action === 'OPEN' ? 'ACTIVE' : 'PAUSED' };
+  try {
+    const live = deps.readEntity ? await deps.readEntity({ entityId }) : await (async () => { const [{ getEntity }, { getDecryptedToken }] = await Promise.all([import('../metaGraphClient.js'), import('../metaAuth.js')]); const e = await getEntity(await getDecryptedToken(), entityId, 'status,effective_status,daily_budget,lifetime_budget'); const d = Number(e.daily_budget); return { status: e.effective_status || e.status || null, budget: Number.isFinite(d) ? d / 100 : null }; })();
+    out.live = { status: live?.status ?? null, budget: live?.budget ?? null, readAt: new Date().toISOString() };
+    if (isBudget && live?.budget != null && params.fromBudget != null && Math.abs(live.budget - params.fromBudget) > 0.5) out.drift.push({ code: 'BUDGET_CHANGED', detail: `القرار اتبنى على ${params.fromBudget} وMeta دلوقتي ${live.budget}` });
+    if (!isBudget && live?.status && out.expected.status && live.status !== out.expected.status) out.drift.push({ code: 'STATUS_CHANGED', detail: `المتوقع ${out.expected.status} وMeta دلوقتي ${live.status}` });
+    out.plannedRequest = isBudget ? { endpoint: `POST /${entityId}`, body: { daily_budget: Math.round((params.toBudget ?? 0) * 100) }, humanReadable: `${live?.budget ?? params.fromBudget} → ${params.toBudget}` } : { endpoint: `POST /${entityId}`, body: { status: out.expected.to }, humanReadable: `${live?.status || out.expected.status} → ${out.expected.to}` };
+  } catch (e) { out.notes.push(`تعذّرت قراءة Meta: ${String(e.message).slice(0, 120)}`); out.live = null; }
+  try { out.conflicts = await (deps.checkConflicts ? deps.checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id }) : (await import('./integration.js')).checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id, now })); } catch { out.conflicts = []; }
+  if (row.action === 'SCALE_UP') { try { const { checkBudgetCaps } = await import('./budgetCaps.js'); const cap = await (deps.checkCaps || checkBudgetCaps)({ action: 'SCALE_UP', delta: (params.toBudget ?? 0) - (params.fromBudget ?? 0), adAccountId: row.ad_account_id, campaignId: row.campaign_id, productId: row.product_id ?? null, now }); out.caps = { ok: cap.ok, violations: cap.violations || [] }; } catch { out.caps = null; } }
+  const blocked = !g.ok || out.drift.length || out.conflicts.length || (out.caps && !out.caps.ok) || row.status !== 'PREPARED';
+  out.verdict = !out.live ? 'LIVE_UNREADABLE' : blocked ? (g.ok ? 'WOULD_BLOCK' : 'GATE_CLOSED') : 'READY';
+  return out;
 }
