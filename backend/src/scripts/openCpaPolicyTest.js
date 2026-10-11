@@ -67,12 +67,16 @@ try {
   console.log('\n2. The policy is SAVED + VERSIONED (not a temporary filter); saving ≠ enabling');
   {
     const p0 = await OC.getOpenCpaPolicy(); ok('nothing is assumed: no range, disabled, version 0', p0.minCpa === null && p0.maxCpa === null && p0.enabled === false && p0.version === 0);
+    const dV = nextDate(); const pV = await mkPlan({ date: dV }); const nowV = new Date(TM.dueAt('OPEN', dV).getTime() + 60_000); const ovV0 = await DP.getOpenCpaOverview({ now: nowV, simulated: true, deps: { ...FRESH } });
+    ok('no policy ever saved (v0): the plan is NOT flagged as prepared under an older version (no false warning)', ovV0.policy.version === 0 && ovV0.plan?.id === pV.id && ovV0.plan.policyVersion === null && ovV0.plan.stale === false, JSON.stringify(ovV0.plan));
     let e1 = null; try { await save({ minCpa: 150, maxCpa: 50 }); } catch (e) { e1 = e; } ok('min > max is refused (400) and nothing is saved', e1?.status === 400 && (await OC.getOpenCpaPolicy()).version === 0);
     let e2 = null; try { await save({ minCpa: -5, maxCpa: 100 }); } catch (e) { e2 = e; } ok('negative / text limits are refused', e2?.status === 400);
     let e3 = null; try { await save({ minCpa: 10, maxCpa: 100, window: 'custom', from: '2031-01-10', to: '2031-01-01' }); } catch (e) { e3 = e; } ok('an inverted custom range is refused', e3?.status === 400);
     let e4 = null; try { await save({ minCpa: 10, maxCpa: 100, window: 'custom', from: '2020-01-01', to: '2031-01-01' }); } catch (e) { e4 = e; } ok('a custom range in the future / over 366 days is refused', e4?.status === 400);
     let e5 = null; try { await OC.saveOpenCpaPolicy({ patch: { minCpa: 50, maxCpa: 150 }, userId: 9999, deps: { user: MANAGER } }); } catch (e) { e5 = e; } ok('only an ADMIN can save the policy (403)', e5?.status === 403);
-    const s1 = await save({ minCpa: 50, maxCpa: 150, window: '7' }); ok('saved as version 1 — persisted in the operator config, NOT enabled', s1.policy.version === 1 && s1.policy.enabled === false && s1.policy.approved === null);
+    const s1 = await save({ minCpa: 50, maxCpa: 150, window: '7' }); const ovV1 = await DP.getOpenCpaOverview({ now: nowV, simulated: true, deps: { ...FRESH, openCpaMetrics: new Map() } });
+    ok('once a policy is saved (v1), a plan prepared before it IS flagged (it needs «تجهيز»)', ovV1.plan.stale === true && ovV1.plan.policyVersion === null && ovV1.policy.version === 1, JSON.stringify(ovV1.plan));
+    ok('saved as version 1 — persisted in the operator config, NOT enabled', s1.policy.version === 1 && s1.policy.enabled === false && s1.policy.approved === null);
     const again = await save({ minCpa: 50, maxCpa: 150, window: '7' }); ok('saving the same values creates no new version', again.changed === false && (await OC.getOpenCpaPolicy()).version === 1);
     let e6 = null; try { await OC.setOpenCpaEnabled({ enabled: true, userId: ADMIN_ID, deps: { user: ADMIN } }); } catch (e) { e6 = e; } ok('enabling needs an explicit confirm', e6?.code === 'CONFIRM_REQUIRED');
     let e7 = null; try { await OC.setOpenCpaEnabled({ enabled: true, confirm: true, userId: 9999, deps: { user: MANAGER } }); } catch (e) { e7 = e; } ok('only an ADMIN can enable (403)', e7?.status === 403);

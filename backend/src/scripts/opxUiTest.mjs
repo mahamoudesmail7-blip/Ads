@@ -334,6 +334,25 @@ try {
     ok('phone: the map and checks stack in one column with no horizontal scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && getComputedStyle(document.querySelector('.opx-int-cols')).gridTemplateColumns.split(' ').length === 1`));
   }
 
+  console.log('\n15. Daily-use prep: no false «older policy» warning at v0; product setup list (drafts only) wired to pricing and rules');
+  {
+    spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs')], { stdio: 'ignore' });
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('opxCpa')`); await sleep(800);
+    const ov0 = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
+    ok('no policy was ever saved (v0): the plan is NOT flagged, and no «older policy version» banner is shown', ov0.policy.version === 0 && ov0.plan?.stale === false && await js(`!/نسخة سياسة أقدم/.test(document.getElementById('opxCpa').innerText)`), JSON.stringify(ov0.plan));
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'rules' } }); ok('the rules screen opens with the setup card for the top products', await waitFor(`!!document.getElementById('rlSetup') && document.querySelectorAll('.opx-setup-row').length >= 3`));
+    ok('the card says everything entered is a DRAFT: no policy activated, no price changed, nothing on Meta', await js(`/مسودة/.test(document.getElementById('rlSetup').innerText) && /مفيش سياسة بتتفعّل/.test(document.getElementById('rlSetup').innerText) && /مفيش حاجة بتتنفذ على Meta/.test(document.getElementById('rlSetup').innerText)`));
+    ok('each product shows its 7-day orders / CPA, what economics are still missing, and the policy state', await js(`[...document.querySelectorAll('.opx-setup-row')].every(r => /أوردر/.test(r.innerText) && /(اقتصاديات مكتملة|ناقص|غير متاح)/.test(r.innerText) && /(بدون سياسة|مسودة|مفعّلة)/.test(r.innerText))`));
+    const rk = await js(`document.querySelector('.opx-setup-row').dataset.setup`); await js(`document.querySelector('.opx-setup-row [data-setup-price]').click()`); await waitFor(`!!document.getElementById('prSel')`); await sleep(800);
+    ok('«التسعير» jumps to the Smart Pricing screen with THAT product selected', (await js(`document.getElementById('prSel').value`)) === rk, rk);
+    await js(`document.getElementById('prToRules').click()`); ok('and the pricing screen links back to the product rules', await waitFor(`!!document.getElementById('rlSetup')`));
+    await js(`document.querySelector('.opx-setup-row [data-setup-open]').click()`); ok('«قواعد المنتج» opens the policy drawer (draft form)', await waitFor(`!!document.querySelector('.opx-drawer.open') && /(مسودة|Draft|حفظ)/.test(document.querySelector('.opx-drawer.open').innerText)`));
+    await js(`document.getElementById('opxDrawerX').click()`); await sleep(300);
+    const rl = await js(`fetch('/api/operator/product-rules').then(r=>r.json())`); ok('nothing was activated or saved by browsing the setup card (no ACTIVE policy)', !rl.products.some((p) => String(p.status).startsWith('ACTIVE')));
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'rules' } }); await waitFor(`!!document.getElementById('rlSetup')`); await sleep(800);
+    ok('phone: the setup card is one column, buttons fit, no horizontal scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && getComputedStyle(document.querySelector('.opx-setup-row')).gridTemplateColumns.split(' ').length === 1`));
+  }
+
   console.log('\n16. Approvals — plans with their campaigns, CPA / orders, preview · approve · reject; the confirmation is sent');
   for (const [label, w, h, mobile] of [['desktop', 1440, 900, false], ['phone', 390, 844, true]]) {
     await goto('/ai-media-buyer.html#operator', { width: w, height: h, mobile, ls: { 'opx.ws': 'approvals' } });

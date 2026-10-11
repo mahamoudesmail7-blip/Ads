@@ -1,15 +1,16 @@
 // opx-rules.js — «قواعد المنتجات»: one policy per product (and per-campaign overrides) in a side drawer. Save = DRAFT (changes nothing); Activate = ADMIN confirm (AUTOMATIC asks again).
 // Presentation over /api/operator/product-rules/*. Only fields the engine really consumes are shown (mode, days, own open/close time, CPA zones, zero-order stop, budget % / bounds, stock policy).
 import { api } from './api-client.js';
-import { E, $, num, egp, ICONS, kpiCard, pill, cpaCell, skeletonRows, openDrawer, closeDrawer, toast, confirmModal, thumb, hydrateThumbs } from './opx-ui.js';
+import { E, $, num, egp, ICONS, kpiCard, pill, cpaCell, skeletonRows, openDrawer, closeDrawer, toast, confirmModal, thumb, hydrateThumbs, store } from './opx-ui.js';
 
-const R = { ctx: null, root: null, list: [], f: { q: '', status: '', sort: 'orders' }, cur: null, polState: null };
+const R = { econ: new Map(), ctx: null, root: null, list: [], f: { q: '', status: '', sort: 'orders' }, cur: null, polState: null };
 const DAYS = [['0', 'الأحد'], ['1', 'الاثنين'], ['2', 'الثلاثاء'], ['3', 'الأربعاء'], ['4', 'الخميس'], ['5', 'الجمعة'], ['6', 'السبت']];
 const ST = { NONE: ['gray', 'بدون سياسة'], DRAFT: ['amber', 'مسودة'], ACTIVE: ['green', 'مفعّلة'], ACTIVE_WITH_DRAFT: ['blue', 'مفعّلة + مسودة'] };
 const MODE_AR = { MANUAL: 'MANUAL', APPROVAL: 'APPROVAL', AUTOMATIC: 'AUTOMATIC' };
 
 export async function mountRulesWorkspace(root, ctx) {
   R.ctx = ctx; R.root = root; root.innerHTML = `<div class="opx-card">${skeletonRows(6)}</div>`;
+  try { R.econ = new Map(((await api.get('/api/operator/pricing/products').catch(() => ({ products: [] }))).products || []).map((p) => [p.key, p])); } catch { R.econ = new Map(); } // economics completeness comes from the pricing list (read-only)
   try { R.list = (await api.get('/api/operator/product-rules')).products; } catch (e) { root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; return; }
   draw();
 }
@@ -22,6 +23,7 @@ function draw() {
   R.root.innerHTML = `
     <div class="opx-card opx-head opx-fade"><div class="opx-head-icon violet">${ICONS.rules}</div><div class="grow"><h1>قواعد المنتجات</h1><p>سياسة مستقلة لكل منتج: المواعيد والأيام وحدود CPA والصرف بدون أوردرات ونسب الميزانية — الحفظ لا يعني التفعيل</p></div>${R.ctx.modeSegment()}<button class="opx-btn danger" data-opxstop ${R.ctx.ov().emergencyStop ? 'disabled' : ''}>${ICONS.stop} إيقاف فوري</button></div>
     <div class="opx-kpis">${kpiCard({ label: 'منتجات مربوطة بحملات', value: num(all.length), icon: 'megaphone', tone: 'violet' })}${kpiCard({ label: 'سياسات مفعّلة', value: num(act), icon: 'check', tone: 'green' })}${kpiCard({ label: 'مسودات غير مفعّلة', value: num(dr), icon: 'clock', tone: 'amber' })}${kpiCard({ label: 'بدون سياسة (الإعدادات العامة)', value: num(all.length - act - dr), icon: 'shield', tone: 'blue' })}</div>
+    ${setupCard()}
     <div class="opx-card opx-filters"><input class="opx-input opx-search" id="rlQ" placeholder="ابحث باسم المنتج أو الرقم أو المتجر…" value="${E(R.f.q)}">
       <select class="opx-select" id="rlStatus"><option value="">كل الحالات</option><option value="ACTIVE" ${R.f.status === 'ACTIVE' ? 'selected' : ''}>مفعّلة</option><option value="DRAFT" ${R.f.status === 'DRAFT' ? 'selected' : ''}>مسودة</option><option value="NONE" ${R.f.status === 'NONE' ? 'selected' : ''}>بدون سياسة</option></select>
       <select class="opx-select" id="rlSort"><option value="orders">ترتيب: الأوردرات</option><option value="cpa" ${R.f.sort === 'cpa' ? 'selected' : ''}>ترتيب: CPA</option><option value="campaigns" ${R.f.sort === 'campaigns' ? 'selected' : ''}>ترتيب: عدد الحملات</option></select></div>
@@ -31,6 +33,17 @@ function draw() {
   $('rlStatus').onchange = (e) => { R.f.status = e.target.value; draw(); }; $('rlSort').onchange = (e) => { R.f.sort = e.target.value; draw(); };
   R.root.querySelectorAll('[data-open]').forEach((b) => { b.onclick = (ev) => { ev.stopPropagation(); openPolicy(R.list.find((p) => p.key === b.dataset.open)); }; });
   R.root.querySelectorAll('[data-opxstop]').forEach((b) => { b.onclick = R.ctx.emergencyStop; });
+  R.root.querySelectorAll('[data-setup-price]').forEach((b) => { b.onclick = () => { store.set('opx.pricing.key', b.dataset.setupPrice); window.dispatchEvent(new CustomEvent('opx:open', { detail: 'pricing' })); }; });
+  R.root.querySelectorAll('[data-setup-open]').forEach((b) => { b.onclick = () => openPolicy(R.list.find((p) => p.key === b.dataset.setupOpen)); });
+}
+/** «تجهيز المنتجات»: the top products by 7-day orders with what is still missing (cost / shipping / expected CPA) and the policy state. Everything entered from here is a DRAFT — nothing is activated, no price changes. */
+function setupCard() {
+  const top = [...R.list].sort((a, b) => b.purchases7 - a.purchases7).slice(0, 10); if (!top.length) return '';
+  const row = (p) => { const e = R.econ.get(p.key); const st = ST[p.status]; const miss = e ? e.missing : null;
+    const econ = !e ? '<span class="opx-note">غير متاح</span>' : e.economicsComplete ? pill('اقتصاديات مكتملة', 'green') : `${pill('ناقص', 'amber')} <small class="opx-note">${E(miss.join('، '))}</small>`;
+    return `<div class="opx-setup-row" data-setup="${E(p.key)}"><div class="opx-setup-name">${thumb(p.productId, p.name)}<div><b>${E(p.name)}</b><small>${num(p.purchases7)} أوردر · CPA 7د ${p.cpa7 == null ? 'غير متاح' : num(p.cpa7)} · ${num(p.activeCampaigns)} حملة نشطة</small></div></div>
+      <div class="opx-setup-st">${econ}${pill(E(st[1]), st[0])}</div><div class="opx-setup-btns"><button class="opx-btn sm" data-setup-price="${E(p.key)}">${ICONS.coins} التسعير</button><button class="opx-btn sm" data-setup-open="${E(p.key)}">${ICONS.rules} قواعد المنتج</button></div></div>`; };
+  return `<section class="opx-card opx-setup opx-fade" id="rlSetup"><h3>${ICONS.check} تجهيز أول 10 منتجات (حسب أوردرات آخر 7 أيام)</h3><p class="opx-note">أدخل التكاليف في «التسعير» والحدود في «قواعد المنتج». <b>كل اللي بتحفظه هنا مسودة</b> — مفيش سياسة بتتفعّل، ومفيش سعر بيتغيّر، ومفيش حاجة بتتنفذ على Meta.</p>${top.map(row).join('')}</section>`;
 }
 function table() {
   const l = rows(); if (!l.length) return '<div class="opx-empty">مفيش منتجات مربوطة بحملات. اربط الحملات بالمنتجات من «كل الأدوات القديمة ← ربط الحملات» أو من إطلاق الحملات.</div>';

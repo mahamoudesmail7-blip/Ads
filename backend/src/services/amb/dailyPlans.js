@@ -497,7 +497,8 @@ const rowView = (r) => ({ campaignId: r.it.campaign_id, campaignName: r.it.campa
 export async function getOpenCpaOverview({ now = new Date(), simulated = isTestClock(), deps = {} } = {}) {
   const policy = await getOpenCpaPolicy(); const date = cairoDate(now); const plans = await todaysOpenPlans({ now, simulated }); const plan = plans.find((p) => p.plan_key === planKey('OPEN', date, simulated)) || plans[0] || null;
   const complete = policy.minCpa != null && policy.maxCpa != null && validateOpenCpa(policy, { today: date, requireRange: true }).length === 0;
-  const out = { policy: { ...policy, history: policy.history.slice(-10).reverse() }, window: complete ? windowRangeFor(policy, date) : null, plan: plan ? { id: plan.id, key: plan.plan_key, version: plan.version, status: plan.status, policyVersion: j(plan.evidence_json, {}).openCpa?.version ?? null, stale: (j(plan.evidence_json, {}).openCpa?.version ?? null) !== policy.version } : null, preview: null };
+  // stale = prepared before the SAVED policy version; v0 means no policy was ever saved, so there is nothing to be older than (never warn)
+  const out = { policy: { ...policy, history: policy.history.slice(-10).reverse() }, window: complete ? windowRangeFor(policy, date) : null, plan: plan ? { id: plan.id, key: plan.plan_key, version: plan.version, status: plan.status, policyVersion: j(plan.evidence_json, {}).openCpa?.version ?? null, stale: policy.version > 0 && (j(plan.evidence_json, {}).openCpa?.version ?? null) !== policy.version } : null, preview: null };
   if (complete && plan) { const sync = await (deps.syncStatus ? deps.syncStatus() : getSyncStatus()).catch(() => null); const age = dataAgeMinutes(sync?.lastSuccessAt || plan.data_as_of); const ev = await evaluatePlan({ plan, policy, now, deps, dataAgeMin: age }); out.preview = { dataAgeMin: age, counts: ev.counts, rows: ev.rows.map(rowView) }; }
   return out;
 }

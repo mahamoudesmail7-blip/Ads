@@ -56,6 +56,7 @@ function drawInputs() {
     <h3 class="opx-sec">اختر المنتج</h3>
     <div class="opx-pick"><div class="opx-pick-t">${thumb(p.productId, p.name)}<div><b>${E(p.name)}</b><small>#${p.productId} · ${num(p.campaigns)} حملة</small></div></div>
       <select class="opx-select" id="prSel" aria-label="المنتج">${S.products.map((x) => `<option value="${E(x.key)}" ${x.key === p.key ? 'selected' : ''}>${E(x.name)} — #${x.productId}${x.economicsComplete ? '' : ' (ناقص)'}</option>`).join('')}</select></div>
+    <button class="opx-btn sm ghost" id="prToRules">${ICONS.rules} قواعد المنتج (مسودة فقط)</button>
     ${incomplete ? `<div class="opx-notice amber opx-wiz"><div class="grow"><b>اقتصاديات المنتج ناقصة — معالج التسعير</b><small>ناقص: ${E(p.missing.join('، '))}. اكتب القيم الحقيقية بنفسك — السيستم مش بيفترض أي تكلفة.</small></div></div>` : ''}
     <h3 class="opx-sec"><i>1</i> تكلفة المنتج والمصاريف</h3><div class="opx-fields">${FIELDS.filter((x) => x[3] === 1).map(field).join('')}</div>
     <h3 class="opx-sec"><i>2</i> إعدادات الإعلان</h3><div class="opx-fields">${FIELDS.filter((x) => x[3] === 2).map(field).join('')}</div>
@@ -66,6 +67,7 @@ function drawInputs() {
     ${S.detail.state?.draft ? `<small class="opx-note">آخر مسودة: ${E(new Date(S.detail.state.draft.savedAt).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }))}</small>` : ''}`;
   hydrateThumbs($('prIn'));
   $('prSel').onchange = (e) => pick(e.target.value);
+  $('prToRules').onclick = () => window.dispatchEvent(new CustomEvent('opx:open', { detail: 'rules' }));
   $('prIn').querySelectorAll('input[data-k]').forEach((i) => { i.oninput = () => { S.inputs[i.dataset.k] = i.value; S.usedDefaults[i.dataset.k] = false; clearTimeout(S.timer); S.timer = setTimeout(analyze, 300); }; });
   $('prCalc').onclick = async () => { await analyze(); $('prMid').scrollIntoView?.({ behavior: 'smooth', block: 'start' }); };
   $('prDraft').onclick = saveDraft;
