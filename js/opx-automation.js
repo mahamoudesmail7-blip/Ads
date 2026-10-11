@@ -2,6 +2,7 @@
 // Presentation only: AUTOMATIC is per product, refused for anything incomplete (the server says exactly what is missing), and every execution still passes the central gate.
 import { api } from './api-client.js';
 import { E, num, egp, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, openDrawer, closeDrawer, toast, confirmModal, $ } from './opx-ui.js';
+import { openActivationSheet } from './opx-activation.js';
 
 const A = { root: null, ctx: null, st: null, pp: null, rd: null, cand: null, form: null, dirty: false };
 const DAYS = [[6, 'سبت'], [0, 'أحد'], [1, 'اتنين'], [2, 'تلات'], [3, 'أربع'], [4, 'خميس'], [5, 'جمعة']];
@@ -50,7 +51,7 @@ function pausePanel(pol, approvedHere, admin) {
 }
 function readyTable() {
   const rows = A.rd.products; if (!rows.length) return '<div class="opx-empty">مفيش منتجات.</div>';
-  return `<table class="opx-table"><thead><tr><th>المنتج</th><th>الحالة</th><th>الناقص</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${E(r.name || r.productId)}</b></td><td>${pill(r.ready ? 'جاهز لـAUTOMATIC' : r.state === 'PARTIAL' ? 'جزئي' : 'ناقص', r.ready ? 'green' : r.state === 'PARTIAL' ? 'amber' : 'red')}</td><td>${r.missing.length ? r.missing.map((m) => `<small class="opx-why" style="display:block">${E(m.label)}${m.detail ? ` — ${E(m.detail)}` : ''}</small>`).join('') : '—'}</td><td><button class="opx-btn sm" data-sum="${r.productId}" data-st="${E(r.storeId)}">ملخص التفعيل</button></td></tr>`).join('')}</tbody></table>`;
+  return `<table class="opx-table"><thead><tr><th>المنتج</th><th>الحالة</th><th>الناقص</th><th></th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${E(r.name || r.productId)}</b></td><td>${pill(r.ready ? 'جاهز لـAUTOMATIC' : r.state === 'PARTIAL' ? 'جزئي' : 'ناقص', r.ready ? 'green' : r.state === 'PARTIAL' ? 'amber' : 'red')}</td><td>${r.missing.length ? r.missing.map((m) => `<small class="opx-why" style="display:block">${E(m.label)}${m.detail ? ` — ${E(m.detail)}` : ''}</small>`).join('') : '—'}</td><td><button class="opx-btn sm" data-sum="${r.productId}" data-st="${E(r.storeId)}">ملخص التفعيل</button> <button class="opx-btn sm" data-sheet="${r.productId}" data-st="${E(r.storeId)}">نموذج القرارات</button></td></tr>`).join('')}</tbody></table>`;
 }
 function candTable() {
   if (A.cand.error) return `<div class="opx-note bad">⚠️ ${E(A.cand.error)}</div>`;
@@ -72,6 +73,7 @@ function wire() {
   if ($('auTick')) $('auTick').onclick = async () => { if (!(await confirmModal({ title: 'تشغيل دورة الأتمتة الآن', message: 'نفس الدورة اللي بتشتغل كل 10 دقايق، وبنفس بوابات الأمان. لو كل البوابات مقفولة مفيش أي تنفيذ هيحصل.', confirmLabel: 'شغّل' }))) return;
     try { const r = await api.post('/api/operator/automation/tick', { confirm: true }); toast(r.skipped ? `اتخطّت: ${r.skipped}` : r.stale ? 'بيانات Meta قديمة — مفيش تنفيذ' : `تقييم ${r.evaluated} · نُفّذ ${(r.executed || []).length}${(r.gate || []).length ? ' · بوابات مقفولة: ' + r.gate.join('،') : ''}`, (r.executed || []).length ? undefined : 'warning'); await load(); } catch (e) { toast(e.message, 'error'); } };
   A.root.querySelectorAll('[data-sum]').forEach((b) => { b.onclick = () => summary(b.dataset.sum, b.dataset.st); });
+  A.root.querySelectorAll('[data-sheet]').forEach((b) => { b.onclick = () => openActivationSheet(b.dataset.sheet, b.dataset.st, A.ctx); });
 }
 async function summary(productId, storeId) {
   openDrawer({ title: 'ملخص التفعيل', body: skeletonRows(4) });

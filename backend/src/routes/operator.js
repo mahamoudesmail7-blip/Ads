@@ -13,6 +13,7 @@ import { controlStatus, setAutoActions } from '../services/amb/operatorControl.j
 import { inventoryOverview, compareManualVsApi, setInventoryLink, removeInventoryLink, setInventoryPrimary } from '../services/amb/inventoryApi.js';
 import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import * as PP from '../services/amb/productPolicy.js';
+import * as ASHEET from '../services/amb/activationSheet.js';
 import { campaignWindowMetrics, parseWindow, productImages } from '../services/amb/periodMetrics.js';
 import { listExecutionHistory, todaySummary } from '../services/amb/executionHistory.js';
 import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
@@ -393,6 +394,7 @@ router.post('/automation/tick', ADMIN, asyncRoute(async (req, res) => { if (req.
 router.get('/automation/readiness', asyncRoute(async (req, res) => { const m = await AREADY.automationReadinessMap(); res.json({ products: [...m.values()], required: AREADY.REQUIRED_KEYS }); }));
 router.get('/automation/readiness/:productId', asyncRoute(async (req, res) => res.json(await AREADY.productAutomationReadiness({ productId: Number(req.params.productId), storeId: req.query.storeId || null }))));
 router.get('/automation/activation-summary/:productId', asyncRoute(async (req, res) => res.json(await AREADY.activationSummary({ productId: Number(req.params.productId), storeId: req.query.storeId || null }))));
+router.get('/automation/activation-sheet/:productId', ADMIN, asyncRoute(async (req, res) => res.json(await ASHEET.activationSheet({ productId: Number(req.params.productId), storeId: req.query.storeId || null })))); // read-only: confirmed values, CPA mapping PROPOSAL, campaign performance, live open candidates, missing decisions
 router.get('/manual/targets', asyncRoute(async (req, res) => { const acc = await adAccountId(); if (!acc) return res.json({ campaigns: [] }); const q = String(req.query.q || '').trim().toLowerCase(); const idx = await (await import('../services/amb/operatorContext.js')).buildCampaignProductIndex({ adAccountId: acc });
   const list = (await listCampaignsFromSnapshots({ adAccountId: acc })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status) && (!q || `${c.name || ''} ${c.id}`.toLowerCase().includes(q))).sort((a, b) => (a.status === b.status ? 0 : a.status === 'ACTIVE' ? -1 : 1)).slice(0, 200);
   const { loadBudgetStructureFromSnapshots, discoverBudgetEntities } = await import('../services/amb/budgetOptimizer.js'); const st = await loadBudgetStructureFromSnapshots({ adAccountId: acc, campaignIds: list.map((c) => c.id) }).catch(() => new Map()); // the synced copy only labels the list (CBO / ABO); the live read happens at preview
