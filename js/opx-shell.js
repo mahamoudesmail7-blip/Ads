@@ -7,6 +7,8 @@ const WS = [
   { key: 'open', label: 'فتح الحملات', icon: 'play', kind: 'plan', type: 'OPEN' },
   { key: 'pause', label: 'إيقاف الحملات', icon: 'pause', kind: 'plan', type: 'PAUSE' },
   { key: 'budget', label: 'إدارة الميزانيات', icon: 'budget', kind: 'budget' },
+  { key: 'automation', label: 'الأتمتة (AUTOMATIC)', icon: 'shield', kind: 'module', file: './opx-automation.js', fn: 'mountAutomationWorkspace' },
+  { key: 'manual', label: 'التشغيل اليدوي', icon: 'key', kind: 'module', file: './opx-manual.js', fn: 'mountManualWorkspace' },
   { key: 'rules', label: 'قواعد المنتجات', icon: 'rules', kind: 'rules' },
   { key: 'pricing', label: 'التسعير الذكي', icon: 'coins', kind: 'module', file: './opx-pricing.js', fn: 'mountPricingWorkspace' },
   { key: 'approvals', label: 'الموافقات', icon: 'approve', kind: 'module', file: './opx-approvals.js', fn: 'mountApprovalsWorkspace', badge: 'pendingApprovals' },

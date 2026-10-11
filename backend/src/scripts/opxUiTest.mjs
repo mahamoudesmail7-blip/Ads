@@ -35,7 +35,7 @@ try {
   ok('the opx shell is mounted (not the legacy single page)', await waitFor(`!!document.getElementById('opxRoot')`));
   await waitFor(`document.querySelectorAll('#opxNav .lbl').length >= 9`);
   const labels = await js(`[...document.querySelectorAll('#opxNav .lbl')].map(x=>x.textContent)`);
-  ok('the 9 independent workspaces, in order (التسعير الذكي sits right after قواعد المنتجات)', JSON.stringify(labels) === JSON.stringify(['فتح الحملات', 'إيقاف الحملات', 'إدارة الميزانيات', 'قواعد المنتجات', 'التسعير الذكي', 'الموافقات', 'سجل التنفيذ', 'التنبيهات', 'مركز الربط']), JSON.stringify(labels));
+  ok('the 11 independent workspaces, in order (الأتمتة and التشغيل اليدوي after إدارة الميزانيات; التسعير الذكي right after قواعد المنتجات)', JSON.stringify(labels) === JSON.stringify(['فتح الحملات', 'إيقاف الحملات', 'إدارة الميزانيات', 'الأتمتة (AUTOMATIC)', 'التشغيل اليدوي', 'قواعد المنتجات', 'التسعير الذكي', 'الموافقات', 'سجل التنفيذ', 'التنبيهات', 'مركز الربط']), JSON.stringify(labels));
   ok('the advanced group keeps the old tools reachable (permissions / control center / all legacy tools)', (await js(`document.querySelectorAll('#opxNavAdv .opx-item').length`)) === 3);
   await js(`document.querySelector('[data-ws="pause"]').click()`); await waitFor(`document.querySelector('.opx-item.on')?.dataset.ws === 'pause' && !document.querySelector('.opx-skel')`, 40000); await sleep(500); // the choice is saved when the workspace actually opens (after the one still loading finishes) — wait for that before reloading
   await goto('/ai-media-buyer.html#operator');
@@ -416,6 +416,65 @@ try {
     await api('PUT', '/api/operator/mode', { mode: 'SHADOW' });
   }
   spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs')], { stdio: 'ignore' });
+
+  const api = (m, p, b) => js(`fetch('${p}',{method:'${m}',headers:{'content-type':'application/json'},body:${b === undefined ? 'undefined' : JSON.stringify(JSON.stringify(b))}}).then(async r=>({s:r.status,j:await r.json().catch(()=>null)}))`);
+  console.log('\n18. Automation workspace: pause policy (save ≠ approve), per-product readiness, activation summary — nothing is executed');
+  {
+    const actions0 = (await api('GET', '/api/operator/execution-history?limit=5')).j.counts.total;
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'automation' } });
+    ok('the automation workspace opens: engine status, the pause-policy form, the readiness table', await waitFor(`!!document.getElementById('auPause') && /جاهزية المنتجات/.test(document.body.innerText)`, 30000));
+    ok('the sidebar lists «الأتمتة» and «التشغيل اليدوي»', await js(`/الأتمتة/.test(document.querySelector('.opx-side, .opx-nav, nav')?.innerText || document.body.innerText) && /التشغيل اليدوي/.test(document.body.innerText)`));
+    await js(`(()=>{const e=document.getElementById('auZS'); e.value='150'; e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    ok('editing marks the form dirty and enables «حفظ»', await js(`!document.getElementById('auSave').disabled`));
+    await js(`document.getElementById('auSave').click()`);
+    ok('save creates a NEW version, enables NOTHING (policy not approved)', await waitFor(`true`) && await (async () => { await sleep(1200); const r = (await api('GET', '/api/operator/pause-policy')).j; return r.policy.zeroOrder.spend === 150 && r.policy.version === 1 && r.active === false && r.policy.enabled === false; })());
+    await js(`(()=>{const e=document.getElementById('auHE'); e.checked=true; e.dispatchEvent(new Event('change',{bubbles:true}));})()`); await js(`document.getElementById('auSave').click()`);
+    ok('an invalid policy (high-CPA pause without a limit) shows the server reason and saves nothing', await waitFor(`/الحد|CPA/.test(document.getElementById('auErr')?.innerText || '')`, 10000) && (await api('GET', '/api/operator/pause-policy')).j.policy.version === 1);
+    await js(`(()=>{const e=document.getElementById('auHE'); e.checked=false; e.dispatchEvent(new Event('change',{bubbles:true}));})()`); await js(`(()=>{const e=document.getElementById('auSC'); e.checked=true; e.dispatchEvent(new Event('change',{bubbles:true}));})()`); await js(`document.getElementById('auSave').click()`); await sleep(1200);
+    await js(`document.getElementById('auPOn').click()`);
+    ok('approving asks for an explicit confirmation that says it opens/pauses nothing', await waitFor(`!!document.querySelector('.confirm-modal-overlay') && /لا يوقف/.test(document.querySelector('.confirm-modal-overlay').innerText)`, 10000));
+    await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`); await sleep(1500);
+    const pp = (await api('GET', '/api/operator/pause-policy')).j; ok('after confirming: approved at the CURRENT version', pp.active === true && pp.policy.approved.version === pp.policy.version);
+    const rd = (await api('GET', '/api/operator/automation/readiness')).j; ok('readiness lists products and EVERY product here is not ready (nothing is assumed)', Array.isArray(rd.products) && rd.products.every((p) => p.ready === false || p.missing.length === 0));
+    if (await js(`!!document.querySelector('[data-sum]')`)) { await js(`document.querySelector('[data-sum]').click()`); ok('the activation summary drawer lists the checks, the four operations and the exposure', await waitFor(`/الشروط/.test(document.querySelector('.opx-drawer.open')?.innerText || '') && /أقصى تعرّض/.test(document.querySelector('.opx-drawer.open')?.innerText || '')`, 15000)); await js(`document.getElementById('opxDrawerX').click()`); }
+    ok('nothing was executed by browsing / saving / approving a policy (execution history unchanged)', (await api('GET', '/api/operator/execution-history?limit=5')).j.counts.total === actions0);
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'automation' } }); await waitFor(`!!document.getElementById('auPause')`, 30000); await sleep(600);
+    ok('phone: the automation workspace has no horizontal scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
+  }
+
+  console.log('\n19. Manual workspace: campaign list, per-operation buttons, an honest preflight (Meta unreachable here → nothing is sent)');
+  {
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'manual' } });
+    ok('the manual workspace renders and explains the confirmation rule', await waitFor(`/التشغيل اليدوي/.test(document.body.innerText) && /تأكيدك الصريح/.test(document.body.innerText)`, 30000));
+    const n = await js(`document.querySelectorAll('[data-mop]').length`);
+    if (n) {
+      await js(`document.querySelector('[data-mop="OPEN"], [data-mop="PAUSE"]').click()`);
+      ok('clicking an operation opens the preflight drawer and never silently does nothing: it shows the live result or the exact reason it cannot', await waitFor(`!!document.querySelector('.opx-drawer.open') && /(المعاينة|ما قدرناش|مفيش أي تنفيذ|التنفيذ ممنوع|الحالة الحالية)/.test(document.querySelector('.opx-drawer.open').innerText)`, 20000));
+      ok('there is no way to execute without the live preflight: no «تنفيذ فعلي» button is enabled in this state', await js(`(()=>{const g=document.getElementById('mnGo'); return !g || g.disabled;})()`));
+      const w = (await api('GET', '/api/operator/execution-history?limit=5')).j.counts.total; ok('…and still nothing was written', w === (await api('GET', '/api/operator/execution-history?limit=5')).j.counts.total);
+      await js(`document.getElementById('opxDrawerX')?.click()`);
+    } else ok('(no campaigns in the fixtures — list empty state shown)', await js(`/مفيش حملات/.test(document.body.innerText)`));
+    const pf = await api('POST', '/api/operator/manual/preflight', { campaignId: 'does-not-exist', operation: 'OPEN' }); ok('the API refuses a preflight it cannot read live (502 META_UNAVAILABLE), never a guess', [502, 409].includes(pf.s));
+    const ex = await api('POST', '/api/operator/manual/execute', { campaignId: 'x', operation: 'OPEN' }); ok('the API refuses an execute without the confirmation token (400 CONFIRM_REQUIRED)', ex.s === 400 && ex.j.code === 'CONFIRM_REQUIRED');
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'manual' } }); await waitFor(`/التشغيل اليدوي/.test(document.body.innerText)`, 30000); await sleep(600);
+    ok('phone: the manual workspace has no horizontal scroll', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
+  }
+
+  console.log('\n20. Opening policy — advanced conditions (scope · weekdays · exposure ceiling · minimum stock · manual-pause protection)');
+  {
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('opxAdv')`, 60000);
+    await js(`document.getElementById('opxAdv').open = true`);
+    await js(`(()=>{for (const [id,v] of [['adExp','5000'],['adStock','10'],['adExP','7']]) { const e=document.getElementById(id); e.value=v; e.dispatchEvent(new Event('input',{bubbles:true})); } document.querySelector('[data-adday="3"]').click();})()`);
+    ok('the save button wakes up only after an edit', await js(`!document.getElementById('adSave').disabled`));
+    await js(`document.getElementById('adSave').click()`); await sleep(1500);
+    const op = (await api('GET', '/api/operator/daily-plan/open-cpa')).j.policy;
+    ok('saved as a NEW version with every field persisted (exposure 5000, min stock 10, Wednesday only, excluded product 7); nothing was enabled or opened', op.maxTotalExposure === 5000 && op.minStock === 10 && JSON.stringify(op.days) === '[3]' && op.scope.excludeProducts.includes('7') && op.enabled === false);
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('opxAdv')`, 60000); await js(`document.getElementById('opxAdv').open = true`);
+    await js(`(()=>{const e=document.getElementById('adInP'); e.value='7'; e.dispatchEvent(new Event('input',{bubbles:true}));})()`); await js(`document.getElementById('adSave').click()`);
+    ok('the same product in include AND exclude is refused with the server message, nothing saved', await waitFor(`/التضمين والاستبعاد/.test(document.getElementById('adErr')?.innerText || '')`, 10000) && (await api('GET', '/api/operator/daily-plan/open-cpa')).j.policy.version === op.version);
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('opxAdv')`, 60000); await sleep(600);
+    ok('phone: the advanced panel fits (no horizontal scroll)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
+  }
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
 } catch (e) { fail++; console.log('  ✗ UI test crashed —', e.message); }

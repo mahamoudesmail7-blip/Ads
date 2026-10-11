@@ -3,6 +3,7 @@
 // (EVERY campaign with fresh data: Today / 7D / 30D, Cairo day). Ticking a checkbox only SELECTS (saved at once); only «اعتماد المحدد» approves, and in SHADOW it is a simulation.
 // Non-candidate campaigns are shown for reading only (no checkbox). Nothing here talks to Meta.
 import { api } from './api-client.js';
+import { advPanel, wireAdv, advFrom, advDirty } from './opx-open-adv.js';
 import { E, $, num, egp, cairoTime, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, skeletonCards, openDrawer, closeDrawer, toast, confirmModal, store, thumb, hydrateThumbs } from './opx-ui.js';
 import { BLOCK_AR, ELIG_AR, ITEM_AR, ITEM_PILL } from './ai-operator-daily.js';
 
@@ -56,6 +57,7 @@ const WIN_AR = { today: 'اليوم', 7: 'آخر 7 أيام', 30: 'آخر 30 ي�
 async function loadCpa() {
   if (P.type !== 'OPEN') { P.cpa = null; return; }
   try { P.cpa = await api.get(`${API}/open-cpa`); } catch { P.cpa = null; }
+  { const pol0 = P.cpa?.policy; if (pol0 && (!P.advForm || !advDirty(pol0, P.advForm))) P.advForm = advFrom(pol0); }
   const pol = P.cpa?.policy; if (pol && (!P.cpaForm || !P.cpaDirty)) { P.cpaForm = { minCpa: pol.minCpa ?? '', maxCpa: pol.maxCpa ?? '', window: pol.window, from: pol.from || '', to: pol.to || '', minPurchases: pol.minPurchases, maxDataAgeMin: pol.maxDataAgeMin }; P.cpaDirty = false; }
 }
 const cpaDirtyNow = () => { const pol = P.cpa?.policy, f = P.cpaForm; if (!pol || !f) return false; return ['minCpa', 'maxCpa', 'minPurchases', 'maxDataAgeMin'].some((k) => String(f[k] ?? '') !== String(pol[k] ?? '')) || f.window !== pol.window || (f.window === 'custom' && (f.from !== (pol.from || '') || f.to !== (pol.to || ''))); };
@@ -223,7 +225,7 @@ function draw() {
       <div class="opx-count" id="opxCountdown">${countdownHtml(nextAt)}</div></div>` : `<div class="opx-notice amber"><div class="grow"><b>مفيش خطة ${m.verb} لليوم بعد</b><small>الخطة بتتجهز على السيرفر في الموعد (${m.slot} بتوقيت القاهرة)، أو ابدأ خطة الآن.</small></div></div>`}
     <div class="opx-work opx-work-plan">
       <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
-        ${P.type === 'OPEN' ? cpaPanel(p, editable) : ''}
+        ${P.type === 'OPEN' ? cpaPanel(p, editable) + (P.cpa && P.advForm ? advPanel(P.cpa.policy, P.advForm, P.ctx.isAdmin) : '') : ''}
         ${plansOfType().length > 1 ? `<div class="opx-card opx-filters" id="opxPlans">${plansOfType().map((x) => `<button class="opx-chip ${x.key === (p?.key) ? 'on' : ''}" data-plan="${E(x.key)}">${E(planLabel(x))} · ${num(x.counts?.total)} حملة</button>`).join('')}</div>` : ''}
         <div class="opx-card opx-filters">
           <div class="opx-chips opx-views" role="group" aria-label="عرض الحملات">${VIEWS.map(([k, t]) => `<button class="opx-chip ${P.f.view === k ? 'on' : ''}" data-view="${k}">${t} <span class="opx-chip-n">${num(counts[k])}</span></button>`).join('')}</div>
@@ -376,6 +378,7 @@ function wire(p, editable) {
   root.querySelectorAll('[data-row]').forEach((b) => { b.onclick = () => rowDrawer(allRows().find((x) => x.id === b.dataset.row)); });
   wirePanel(root.querySelector('aside.opx-panel'), p);
   wireCpa(p);
+  if (P.type === 'OPEN' && P.cpa && P.advForm) wireAdv(P.advForm, () => P.cpa.policy, async () => { P.advForm = null; await load(); });
 }
 async function approve(p) {
   const m = META[P.type]; const sel = p.items.filter((i) => i.selected); const c = P.ov.control || {}; const live = c.mode === 'APPROVAL' && !c.writesLocked && c[m.permKey];
