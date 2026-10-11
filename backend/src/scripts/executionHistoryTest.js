@@ -30,6 +30,12 @@ ok('listExecutionHistory returns rows + counts that add up', Array.isArray(l.row
 ok('the type filter is honoured', (await H.listExecutionHistory({ type: 'PAUSE' })).rows.every((x) => x.type === 'PAUSE'));
 ok('the final-state filter is honoured', (await H.listExecutionHistory({ final: 'VERIFIED' })).rows.every((x) => x.final === 'VERIFIED'));
 await prisma.$disconnect();
+console.log('\nAutomation decisions that never reached Meta are still in the history');
+{ const d = await prisma.ambOperatorDecision.create({ data: { decision_key: `__optest_hist_${Date.now()}`, status: 'EXPIRED', store_id: 'x', ad_account_id: 'x', campaign_id: '__optest_hist_c', campaign_name: 'hist fixture', action: 'PAUSE', rule_name: 'AUTO:ZERO_ORDER', mode_at_decision: 'AUTOPILOT', confidence: 'HIGH', error: 'القرار اتبطل — DECISION_CHANGED', params_json: JSON.stringify({ kind: 'ZERO_ORDER', level: 'campaign' }), why_json: JSON.stringify({ why: 'صرف 260 بدون أوردرات' }), evidence_json: JSON.stringify({ history: { kind: 'ZERO_ORDER' } }) } });
+  try { const l2 = await H.listExecutionHistory({ limit: 300 }); const r2 = l2.rows.find((x) => x.decisionId === d.id);
+    ok('an EXPIRED automatic decision appears (negative id, origin AUTOMATIC, final BLOCKED, with the decision reason and why it did not happen)', !!r2 && r2.id === -d.id && r2.origin === 'AUTOMATIC' && r2.final === 'BLOCKED' && /DECISION_CHANGED/.test(r2.error) && /260/.test(r2.decisionReason) && r2.kind === 'ZERO_ORDER' && r2.stages.find((s) => s.key === 'SENT').done === false);
+    ok('it respects the type filter and the final filter', (await H.listExecutionHistory({ type: 'PAUSE', limit: 300 })).rows.some((x) => x.decisionId === d.id) && !(await H.listExecutionHistory({ type: 'RESUME', limit: 300 })).rows.some((x) => x.decisionId === d.id) && (await H.listExecutionHistory({ final: 'BLOCKED', limit: 300 })).rows.some((x) => x.decisionId === d.id)); }
+  finally { await prisma.ambOperatorDecision.delete({ where: { id: d.id } }); } }
 console.log('\nToday summary (Africa/Cairo day)');
 ok('Cairo day start in winter (UTC+2) is 22:00Z of the previous day', H.cairoDayStart(new Date('2026-01-15T10:00:00Z')).toISOString() === '2026-01-14T22:00:00.000Z', H.cairoDayStart(new Date('2026-01-15T10:00:00Z')).toISOString());
 ok('Cairo day start in summer (UTC+3) is 21:00Z of the previous day', H.cairoDayStart(new Date('2026-07-15T10:00:00Z')).toISOString() === '2026-07-14T21:00:00.000Z', H.cairoDayStart(new Date('2026-07-15T10:00:00Z')).toISOString());

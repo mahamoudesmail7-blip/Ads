@@ -252,7 +252,7 @@ try {
   const dec = await prisma.ambOperatorDecision.findFirst({ where: { campaign_id: `${T}abo` } });
   ok('nothing is ever executed from the optimizer (status never EXECUTING/EXECUTED, no executed_at)', !['EXECUTING', 'EXECUTED', 'VERIFIED'].includes(dec.status) && dec.executed_at === null);
   const engineSrc = fs.readFileSync(join(__dirname, '../services/amb/operatorEngine.js'), 'utf8');
-  ok("the engine's own stale-expiry leaves DYNAMIC_BUDGET rows alone", /NOT: \{ rule_name: \{ startsWith: 'DYNAMIC_BUDGET:' \} \}/.test(engineSrc));
+  ok("the engine's own stale-expiry leaves DYNAMIC_BUDGET rows (and the automation engine's AUTO: rows) alone", /NOT: \[\{ rule_name: \{ startsWith: 'DYNAMIC_BUDGET:' \} \}, \{ rule_name: \{ startsWith: 'AUTO:' \} \}\]/.test(engineSrc));
   const srcTxt = fs.readFileSync(join(__dirname, '../services/amb/budgetOptimizer.js'), 'utf8');
   const importLines = srcTxt.split(/\r?\n/).filter((l) => /^\s*import\b/.test(l) || /await import\(/.test(l)).join(' | ');
   ok('the optimizer imports no executor and never calls setEntityBudget / graphPost (Meta writes impossible from here)', !/executor|launchPublish/.test(importLines) && !/setEntityBudget|graphPost|setEntityStatus/.test(srcTxt));

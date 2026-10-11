@@ -36,10 +36,22 @@ export function shapeActionRow(a) {
     metaResponse: resp ? JSON.stringify(resp).slice(0, 400) : null, verify: verify ? { verified: verify.verified === true, observed: verify.observed ?? verify.status ?? null } : null,
   };
 }
+const DEC_TYPE = { PAUSE: 'PAUSE', SCALE_UP: 'INCREASE_BUDGET', SCALE_DOWN: 'DECREASE_BUDGET', OPEN: 'RESUME' };
+/** an automation decision that was refused or expired BEFORE anything was sent: the owner must still see what the system decided and why it did not happen (negative id = a decision row, never an action) */
+export function shapeDecisionRow(d) {
+  const ev = j(d.evidence_json, {}) || {}; const p = j(d.params_json, {}) || {}; const why = j(d.why_json, {}) || {}; const type = DEC_TYPE[d.action] || d.action;
+  const before = p.fromBudget ?? null, after = p.toBudget ?? null; const kind = ev.history?.kind || p.kind || null;
+  return { id: -d.id, decisionId: d.id, at: d.updated_at || d.created_at, requestedAt: d.created_at, campaignId: d.campaign_id, campaignName: d.campaign_name, level: p.level || 'campaign', type, typeLabel: OP_LABEL[type] || type, mode: d.mode_at_decision, approval: d.approval_source === 'AUTOPILOT' ? 'AUTO' : null, by: 'النظام (AUTOMATIC)', before, after, budgetChange: before != null || after != null,
+    origin: 'AUTOMATIC', originLabel: 'تلقائي', kind, trigger: kind, decisionReason: why.why || null, final: 'BLOCKED', finalLabel: FINAL_LABEL.BLOCKED,
+    stages: [{ key: 'REQUESTED', done: true, at: d.created_at }, { key: 'VALIDATED', done: true, ok: false, at: null, note: d.error }, { key: 'APPROVED', done: false, at: null, note: null }, { key: 'SENT', done: false, at: null }, { key: 'READ_BACK', done: false, ok: null, at: null }, { key: 'BLOCKED', done: true, at: d.updated_at || null }],
+    error: d.error || 'اتمنع قبل الإرسال', reason: why.why || null, policyRef: ev.auto ? { pausePolicyVersion: ev.auto.pausePolicyVersion ?? null } : null, cpaPolicy: null, metaResponse: null, verify: null };
+}
 export async function listExecutionHistory({ limit = 100, type = null, final = null } = {}) {
   const take = Math.max(1, Math.min(300, Number(limit) || 100));
   const rows = await prisma.ambAction.findMany({ where: type ? { action_type: type } : {}, orderBy: { id: 'desc' }, take, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true } } } });
-  const shaped = rows.map(shapeActionRow).filter((r) => !final || r.final === final);
+  let shaped = rows.map(shapeActionRow);
+  const expired = await prisma.ambOperatorDecision.findMany({ where: { rule_name: { startsWith: 'AUTO:' }, status: 'EXPIRED', ...(type ? { action: { in: Object.entries(DEC_TYPE).filter(([, v]) => v === type).map(([k]) => k) } } : {}) }, orderBy: { id: 'desc' }, take }).catch(() => []);
+  shaped = [...shaped, ...expired.map(shapeDecisionRow)].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, take).filter((r) => !final || r.final === final);
   const counts = { total: shaped.length }; for (const r of shaped) counts[r.final] = (counts[r.final] || 0) + 1;
   return { rows: shaped, counts };
 }
