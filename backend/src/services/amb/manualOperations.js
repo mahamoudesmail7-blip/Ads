@@ -14,7 +14,7 @@ const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { retur
 export const MANUAL_OPS = { OPEN: { amb: 'RESUME', action: 'OPEN', label: 'فتح الحملة' }, PAUSE: { amb: 'PAUSE', action: 'PAUSE', label: 'إيقاف الحملة' }, INCREASE: { amb: 'INCREASE_BUDGET', action: 'SCALE_UP', label: 'زيادة الميزانية' }, REDUCE: { amb: 'DECREASE_BUDGET', action: 'SCALE_DOWN', label: 'تقليل الميزانية' } };
 const TOKEN_TTL_MS = 10 * 60_000;
 const fail = (status, message, code, extra = {}) => { const e = new Error(message); e.status = status; e.code = code; Object.assign(e, extra); return e; };
-const secret = () => process.env.JWT_SECRET || process.env.SESSION_SECRET || 'manual-ops-dev-secret';
+const secret = () => { const s = process.env.JWT_SECRET || process.env.SESSION_SECRET; if (s) return s; if (process.env.NODE_ENV === 'production') throw fail(500, 'مفيش سر توقيع للتأكيد اليدوي (JWT_SECRET) — التنفيذ اليدوي متوقف.', 'NO_SIGNING_SECRET'); return 'manual-ops-dev-secret'; }; // fail closed in production
 const sign = (p) => crypto.createHmac('sha256', secret()).update(JSON.stringify(p)).digest('hex').slice(0, 32);
 async function requireAdmin(userId, deps) { const u = deps.user || await prisma.user.findUnique({ where: { id: Number(userId) }, select: { id: true, role: true, status: true } }); if (!u || u.role !== 'ADMIN' || u.status !== 'ACTIVE') throw fail(403, 'التشغيل اليدوي على Meta محتاج ADMIN.', 'ADMIN_REQUIRED'); return u; }
 
