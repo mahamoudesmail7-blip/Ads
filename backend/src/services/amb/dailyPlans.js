@@ -18,7 +18,8 @@ import { getOperatorConfig, addException, metaWritesLocked } from './operatorSto
 import { getSyncStatus, runSnapshotSync } from './snapshotSync.js';
 import { raiseAlert } from './alerts.js';
 import { buildOpenCandidates, buildPauseCandidates } from './dailyPlanCandidates.js';
-import { getOpenCpaPolicy, validateOpenCpa, evaluateCampaign, summarizeEvaluations, loadWindowMetrics, windowRangeFor, REASON_AR } from './openCpaPolicy.js';
+import { getOpenCpaPolicy, validateOpenCpa, evaluateCampaign, summarizeEvaluations, loadWindowMetrics, windowRangeFor, REASON_AR, applyCapToEvals, runtimeBlock } from './openCpaPolicy.js';
+import { activeExposure } from './automationScope.js';
 import { SLOTS, TYPE_LABEL_AR, CAIRO_TZ, cairoDate, cairoParts, dueTypes, dueAt, dueAtTime, slotVariant, expiresAt, nextDue, planKey, clockNow, isTestClock } from './dailyPlanTime.js';
 
 const MS_M = 60_000, MS_H = 3_600_000;
@@ -378,6 +379,7 @@ async function revalidateItem({ plan, item, config, dcfg, deps, now }) {
   if (dcfg.halted) return { ok: false, status: 'SKIPPED', reason: 'QUEUE_HALTED' };
   if (!deps.preview) { const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, select: { status: true } }); if (!fresh || fresh.status !== 'RUNNING') return { ok: false, status: 'SKIPPED', reason: `PLAN_${fresh?.status || 'GONE'}` }; }
   const ev = j(item.evidence_json, {});
+  if (plan.type === 'OPEN' && !plan.simulated) { const snap = j(plan.evidence_json, {}).openCpa; const rb = runtimeBlock(snap, { campaignId: item.campaign_id, productId: item.product_id, storeId: item.store_id, evidence: ev }, { weekday: new Date(`${cairoDate(now)}T12:00:00Z`).getUTCDay(), now }); if (rb) return { ok: false, status: 'BLOCKED', reason: `POLICY_${rb}` }; } // the approved policy is re-checked at the moment of the write (scope / weekday / stock / manual-pause protection)
   if (ev.mapping && ev.mapping !== 'VERIFIED') return { ok: false, status: 'BLOCKED', reason: `MAPPING_${ev.mapping}` };
   const mapState = await (deps.mappingState ? deps.mappingState(item.campaign_id) : null); if (mapState && mapState !== 'VERIFIED') return { ok: false, status: 'BLOCKED', reason: `MAPPING_${mapState}` };
   const manual = await prisma.ambOperatorEvent.count({ where: { kind: 'MANUAL_OVERRIDE', campaign_id: item.campaign_id, created_at: { gt: plan.prepared_at } } });
@@ -404,6 +406,8 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   const items = plan.items.filter((i) => i.selected); const live = plan.execution_mode === 'LIVE'; const dcfg = deps.dcfg || await getDailyPlanConfig();
   const spacing = Math.max(3, Number(dcfg.spacingSeconds) || 3) * 1000; let rateLimited = 0, sent = 0, abort = null, exposed = 0;
+  const policyCap = plan.type === 'OPEN' && live ? Number(j(plan.evidence_json, {}).openCpa?.maxTotalExposure) : NaN; let policyBase = 0;
+  if (Number.isFinite(policyCap) && policyCap > 0) { try { policyBase = deps.activeExposureTotal ?? (await activeExposure({ adAccountId: deps.adAccountId || (await getConnection())?.selected_ad_account_id, now, deps: { structure: deps.activeStructure } })).total; } catch { policyBase = Infinity; } } // unknown running exposure => nothing is opened (fail closed)
   for (const item of items) {
     if (ITEM_FINAL.has(item.status)) continue;
     if (abort) { await setItem(item, 'SKIPPED', abort, {}, plan.id, userId); continue; }
@@ -416,6 +420,7 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
     // ---- exposure cap: the total daily budget the owner confirmed at approval is a hard ceiling for the whole OPEN queue
     { const cap = Number(j(plan.evidence_json, {}).approval?.exposedBudget); const b = Number(v.live?.budget ?? j(item.evidence_json, {}).budget) || 0;
       if (plan.type === 'OPEN' && Number.isFinite(cap) && cap > 0 && exposed + b > cap + 1) { await setItem(item, 'SKIPPED', `EXPOSURE_CAP (المعتمد ${cap} جنيه، المفتوح ${Math.round(exposed)} + ${b})`, {}, plan.id, userId); continue; }
+      if (Number.isFinite(policyCap) && policyCap > 0 && policyBase + exposed + b > policyCap + 1) { await setItem(item, 'SKIPPED', `POLICY_EXPOSURE_CAP (سقف السياسة ${policyCap} جنيه، شغال دلوقتي ${Number.isFinite(policyBase) ? Math.round(policyBase) : 'غير معروف'} + اللي اتفتح ${Math.round(exposed)} + ${b})`, {}, plan.id, userId); continue; }
       exposed += b; }
     // ---- LIVE: spacing + ONE write through the existing executor + read-back
     if (sent > 0) await sleep(spacing);
@@ -489,8 +494,11 @@ const todaysOpenPlans = async ({ now, simulated }) => { const date = cairoDate(n
 const dataAgeMinutes = (asOf) => (asOf ? Math.max(0, Math.round((Date.now() - new Date(asOf).getTime()) / MS_M)) : 1e9);
 async function evaluatePlan({ plan, policy, now, deps, dataAgeMin, reselect = [] }) {
   const metrics = await loadWindowMetrics({ policy, now, deps: { metrics: deps.openCpaMetrics } });
-  const rows = plan.items.map((it) => { const evd = j(it.evidence_json, {}); const item = { eligibility: it.eligibility, selectable: it.selectable, blockCodes: j(it.block_codes_json, []), evidence: evd }; const m = metrics.get(it.campaign_id); return { it, evd, eval: evaluateCampaign({ policy, item, metrics: m ? { spend: m.spend, purchases: m.purchases } : null, dataAgeMin, reselect: reselect.includes(it.campaign_id) }) }; });
-  return { rows, counts: summarizeEvaluations(rows) };
+  const weekday = new Date(`${cairoDate(now)}T12:00:00Z`).getUTCDay();
+  const rows = plan.items.map((it) => { const evd = j(it.evidence_json, {}); const item = { campaignId: it.campaign_id, productId: it.product_id, storeId: it.store_id, eligibility: it.eligibility, selectable: it.selectable, blockCodes: j(it.block_codes_json, []), evidence: evd }; const m = metrics.get(it.campaign_id); return { it, evd, eval: evaluateCampaign({ policy, item, metrics: m ? { spend: m.spend, purchases: m.purchases } : null, dataAgeMin, reselect: reselect.includes(it.campaign_id), weekday, now }) }; });
+  let baseExposure = 0;
+  if (policy.maxTotalExposure != null) { baseExposure = deps.activeExposureTotal ?? (await activeExposure({ adAccountId: deps.adAccountId || (await getConnection())?.selected_ad_account_id, now, deps: { structure: deps.activeStructure } }).catch(() => ({ total: Infinity }))).total; applyCapToEvals([...rows].sort((a, b) => a.it.rank - b.it.rank), { policy, baseExposure, budgetOf: (r) => r.evd.budget, keyOf: (r) => r.it.campaign_id }); }
+  return { rows, counts: summarizeEvaluations(rows), baseExposure };
 }
 const rowView = (r) => ({ campaignId: r.it.campaign_id, campaignName: r.it.campaign_name, productName: r.it.product_name, eligibility: r.it.eligibility, selected: r.it.selected, verdict: r.eval.verdict, matched: r.eval.matched, cpa: r.eval.cpa, spend: r.eval.spend, purchases: r.eval.purchases, codes: r.eval.codes, reasons: r.eval.reasons, guardCodes: r.eval.guardCodes, userDeselected: !!r.evd.userDeselected });
 /** The panel above the OPEN table: the saved policy, and a LIVE preview of how today's OPEN plan looks under it (persists nothing). */
@@ -514,7 +522,7 @@ async function applyPolicyToPlan({ plan, policy, userId, now, deps, reselect = [
     e.cpaPolicy = { version: policy.version, window: policy.window, verdict: r.eval.verdict, matched: r.eval.matched, cpa: r.eval.cpa, spend: r.eval.spend, purchases: r.eval.purchases, codes: r.eval.codes, reasons: r.eval.reasons };
     if (want !== r.it.selected) changed++; updates.set(r.it.campaign_id, { selected: want, evidence_json: JSON.stringify(e) });
   }
-  const planEv = { ...j(plan.evidence_json, {}), openCpa: { version: policy.version, approvedVersion: policy.approved?.version ?? null, minCpa: policy.minCpa, maxCpa: policy.maxCpa, window: policy.window, from: policy.from, to: policy.to, minPurchases: policy.minPurchases, maxDataAgeMin: policy.maxDataAgeMin, counts: ev.counts, preparedAt: now.toISOString() } };
+  const planEv = { ...j(plan.evidence_json, {}), openCpa: { version: policy.version, approvedVersion: policy.approved?.version ?? null, minCpa: policy.minCpa, maxCpa: policy.maxCpa, window: policy.window, from: policy.from, to: policy.to, minPurchases: policy.minPurchases, maxDataAgeMin: policy.maxDataAgeMin, scope: policy.scope, days: policy.days, maxTotalExposure: policy.maxTotalExposure, minStock: policy.minStock, protectManualPause: policy.protectManualPause, baseExposure: policy.maxTotalExposure != null ? ev.baseExposure : null, counts: ev.counts, preparedAt: now.toISOString() } };
   let out;
   if (plan.status === 'PREPARED') {
     await prisma.$transaction([...[...updates].map(([cid, u]) => prisma.ambDailyPlanItem.updateMany({ where: { plan_id: plan.id, campaign_id: cid }, data: { selected: u.selected, evidence_json: u.evidence_json } })), prisma.ambDailyPlan.update({ where: { id: plan.id }, data: { evidence_json: JSON.stringify(planEv) } })]);
