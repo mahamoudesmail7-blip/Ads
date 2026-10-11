@@ -29,7 +29,7 @@ export function shapeActionRow(a) {
   const origin = a.approval_status === 'AUTO' ? 'AUTOMATIC' : a.recommendation?.source === 'MANUAL' ? 'MANUAL' : 'APPROVED'; const kind = facts.history?.kind || facts.trigger || null;
   return {
     origin, originLabel: { AUTOMATIC: 'تلقائي', MANUAL: 'يدوي', APPROVED: 'بموافقة' }[origin], kind, trigger: kind, decisionReason: a.ai_reason || null,
-    id: a.id, at: a.executed_at || a.created_at, requestedAt: a.created_at, campaignId: a.campaign_id || a.entity_id, campaignName: a.entity_name || null, level: a.level, type: a.action_type, typeLabel: OP_LABEL[a.action_type] || a.action_type,
+    id: a.id, at: a.executed_at || a.created_at, requestedAt: a.created_at, campaignId: a.campaign_id || a.entity_id, campaignName: (a.level === 'adset' ? (a.recommendation?.campaign_name || a.entity_name) : a.entity_name) || null, entityId: a.entity_id, entityName: a.entity_name || null, entityLevel: a.level, level: a.level, type: a.action_type, typeLabel: OP_LABEL[a.action_type] || a.action_type,
     mode: a.mode, approval: a.approval_status, by: a.executed_by?.name || (a.approval_status === 'AUTO' ? 'النظام (Autopilot)' : null), before, after, budgetChange: oldV.budget != null || newV.budget != null,
     final, finalLabel: FINAL_LABEL[final], stages, error: a.meta_error || (final === 'BLOCKED' ? (reval?.reason || 'اتمنع قبل الإرسال') : null), reason: a.ai_reason || null,
     policyRef: facts.policyRef || (facts.cpaPolicy ? { openCpa: { version: facts.cpaPolicy.version } } : null), cpaPolicy: facts.cpaPolicy ? { verdict: facts.cpaPolicy.verdict, cpa: facts.cpaPolicy.cpa, window: facts.cpaPolicy.window } : null,
@@ -48,7 +48,7 @@ export function shapeDecisionRow(d) {
 }
 export async function listExecutionHistory({ limit = 100, type = null, final = null } = {}) {
   const take = Math.max(1, Math.min(300, Number(limit) || 100));
-  const rows = await prisma.ambAction.findMany({ where: type ? { action_type: type } : {}, orderBy: { id: 'desc' }, take, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true } } } });
+  const rows = await prisma.ambAction.findMany({ where: type ? { action_type: type } : {}, orderBy: { id: 'desc' }, take, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true, campaign_name: true } } } });
   let shaped = rows.map(shapeActionRow);
   const expired = await prisma.ambOperatorDecision.findMany({ where: { rule_name: { startsWith: 'AUTO:' }, status: 'EXPIRED', ...(type ? { action: { in: Object.entries(DEC_TYPE).filter(([, v]) => v === type).map(([k]) => k) } } : {}) }, orderBy: { id: 'desc' }, take }).catch(() => []);
   shaped = [...shaped, ...expired.map(shapeDecisionRow)].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, take).filter((r) => !final || r.final === final);
@@ -68,7 +68,7 @@ export function cairoDayStart(now = new Date()) {
  */
 export async function todaySummary({ now = new Date(), deps = {} } = {}) {
   const since = cairoDayStart(now);
-  const rows = await prisma.ambAction.findMany({ where: { OR: [{ executed_at: { gte: since } }, { executed_at: null, created_at: { gte: since } }] }, orderBy: { id: 'desc' }, take: 500, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true } } } });
+  const rows = await prisma.ambAction.findMany({ where: { OR: [{ executed_at: { gte: since } }, { executed_at: null, created_at: { gte: since } }] }, orderBy: { id: 'desc' }, take: 500, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true, campaign_name: true } } } });
   const sh = rows.map(shapeActionRow); const by = { RESUME: 'opened', PAUSE: 'paused', INCREASE_BUDGET: 'increased', DECREASE_BUDGET: 'reduced' };
   const out = { opened: { sent: 0, verified: 0 }, paused: { sent: 0, verified: 0 }, increased: { sent: 0, verified: 0 }, reduced: { sent: 0, verified: 0 } };
   let exposureAdded = 0, budgetReleased = 0, failed = 0, blocked = 0, uncertain = 0; const byOrigin = { AUTOMATIC: { opened: 0, paused: 0, increased: 0, reduced: 0 }, MANUAL: { opened: 0, paused: 0, increased: 0, reduced: 0 }, APPROVED: { opened: 0, paused: 0, increased: 0, reduced: 0 } };

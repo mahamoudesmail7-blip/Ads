@@ -313,6 +313,7 @@ export async function getScaleCenterTotals({ storeId, windowName, from, to }) {
 export async function previewBumpForAdSet({ adSetId, pct }) {
   const bumpPct = Number(pct);
   if (!Number.isFinite(bumpPct) || bumpPct <= 0) { const e = new Error('نسبة الزيادة غير صالحة.'); e.status = 400; throw e; }
+  { const maxPct = Number((await getAmbSettings()).ambMaxBudgetIncreasePct ?? 20); if (bumpPct > maxPct + 0.5) { const e = new Error(`نسبة الزيادة ${bumpPct}% أكبر من الحد المسموح للأكشن الواحد (${maxPct}%) — الـExecutor هيرفضها. اختار ${maxPct}% أو أقل.`); e.status = 400; e.code = 'CHANGE_PCT_TOO_LARGE'; throw e; } } // same bound the executor enforces: say it at preview, not after approval
   const connection = await getConnection();
   const adAccountId = connection?.selected_ad_account_id;
   if (!adAccountId) { const e = new Error('مفيش حساب إعلاني متصل.'); e.status = 400; throw e; }

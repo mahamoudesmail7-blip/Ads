@@ -258,6 +258,7 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL', deps
       currentBudget: live.budgetMajor ?? rec.current_budget,
       recommendedBudget: rec.recommended_budget,
       excludeActionId: action.id, // this attempt's own row must not count as a "duplicate" of itself
+      allowPausedBudget: mode === 'HUMAN' && rec.source === 'MANUAL' && (() => { try { const a = JSON.parse(rec.reason_facts_json || '{}').ack || []; return a.includes('ADSET_PAUSED') || a.includes('CAMPAIGN_NOT_ACTIVE'); } catch { return false; } })(),
       humanDecision: mode === 'HUMAN' && rec.source === 'MANUAL', // the owner decided this operation himself: the AI "enough data to decide" rule does not apply (every safety rule still does)
     });
 

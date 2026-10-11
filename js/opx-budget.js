@@ -2,8 +2,11 @@
 // Presentation over the existing budget policy / caps / auto-actions / permissions / decisions endpoints. Saving a threshold never executes anything; execution still needs the mode,
 // the per-type execution permission, the deployment write lock, the guards, ADMIN approval and a live Meta read — all on the server.
 import { api } from './api-client.js';
+import { mountBudgetPanel } from './opx-manual.js';
 import { E, $, num, egp, ICONS, kpiCard, pill, skeletonRows, skeletonCards, toast, confirmModal, ago, thumb, hydrateThumbs } from './opx-ui.js';
 
+// ABO: a budget decision is about ONE ad set — say which (name + id)
+const adsetTag = (d) => (d.params?.level === 'adset' ? ` <small class="opx-note">Ad Set: ${E(d.evidence?.history?.entityName || d.params.entityId)} (${E(d.params.entityId)})</small>` : '');
 const B = { ctx: null, root: null, policy: null, caps: null, decisions: [], ov: null, cfg: null };
 const DIR = {
   up: { key: 'scale', toggle: 'up', perm: 'budgetIncrease', tone: 'green', icon: 'budget', title: 'زيادة الميزانية', sub: 'ترفع الميزانية بنسبة محددة عند أداء قوي وعينة كافية — وبدون زيادة ثانية من نفس الأوردرات', action: 'SCALE_UP', verb: 'زيادة' },
@@ -61,20 +64,22 @@ function draw() {
     <div class="opx-card opx-panel opx-fade" style="flex-direction:row;align-items:center;flex-wrap:wrap;gap:14px"><b>محرك الميزانيات</b><span class="opx-switch ${p.enabled ? 'on' : ''}" data-engine ${B.ctx.isAdmin ? '' : ''} role="switch" aria-checked="${p.enabled}" style="cursor:${B.ctx.isAdmin ? 'pointer' : 'default'}"></span>
       <span class="opx-note">${p.enabled ? 'الـScheduler بيقيّم الحملات ويجهّز القرارات (التنفيذ حسب الوضع والصلاحيات).' : 'متوقف: الـScheduler مش بيجهّز قرارات ميزانية.'}</span></div>
     <div class="opx-work-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;align-items:start">${section(DIR.up)}${section(DIR.down)}</div>
+    <div id="bdManual"></div>
     <div class="opx-card opx-tablecard opx-fade"><div class="opx-tablehead"><h3>القرارات الحالية للميزانيات (${num(B.decisions.length)})</h3><span class="opx-note">الاعتماد والرفض من «الموافقات»</span></div>
       <div class="opx-scroll opx-desk">${decisionsTable(B.decisions)}</div><div class="opx-cards">${decisionCards(B.decisions)}</div></div>
     <div class="opx-card opx-panel opx-fade"><h3>${ICONS.shield} الحمايات (لا تتجاوزها أي قاعدة)</h3><p class="opx-note">Cooldown بعد كل تعديل · أقل/أقصى ميزانية وحدود الحساب والمنتج · Emergency Stop · قفل النشر · صلاحيات التنفيذ · منع التكرار (Idempotency) · قراءة حية من Meta قبل وبعد · لا زيادة ثانية من نفس الأوردرات (حد أدنى صرف جديد: ${num(p.newEvidence?.minSpend)} ج.م).</p></div>`;
   wire(); hydrateThumbs(B.root);
+  if ($('bdManual')) mountBudgetPanel($('bdManual'), B.ctx).catch((e) => { $('bdManual').innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; });
 }
 function decisionCards(list) {
   if (!list.length) return '<div class="opx-empty">مفيش قرارات ميزانية حاليًا.</div>';
   const ST = { PREPARED: ['amber', 'جاهز للموافقة'], SHADOW: ['blue', 'محاكاة'], BLOCKED: ['red', 'ممنوع'], VERIFIED: ['green', 'اتأكد'], FAILED: ['red', 'فشل'], REJECTED: ['gray', 'مرفوض'] };
-  return list.map((d) => { const bc = d.canonical?.budgetChange; const st = ST[d.status] || ['gray', d.statusLabel || d.status]; return `<article class="opx-c2"><div class="opx-c2-top" style="padding-left:0">${thumb(d.productId, d.productName || d.campaignName)}<div class="opx-c2-name"><b>${E(d.productName || '—')}</b><small>${E(d.campaignName || d.campaignId)}</small></div>${pill(E(st[1]), st[0])}</div><div class="opx-c2-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div><span>العملية</span><b>${E(d.actionLabel || d.action)}</b></div><div><span>قبل ← بعد</span><b>${bc ? `${egp(bc.from)} ← ${egp(bc.to)}` : '—'}</b></div></div></article>`; }).join('');
+  return list.map((d) => { const bc = d.canonical?.budgetChange; const st = ST[d.status] || ['gray', d.statusLabel || d.status]; return `<article class="opx-c2"><div class="opx-c2-top" style="padding-left:0">${thumb(d.productId, d.productName || d.campaignName)}<div class="opx-c2-name"><b>${E(d.productName || '—')}</b><small>${E(d.campaignName || d.campaignId)}${adsetTag(d)}</small></div>${pill(E(st[1]), st[0])}</div><div class="opx-c2-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div><span>العملية</span><b>${E(d.actionLabel || d.action)}</b></div><div><span>قبل ← بعد</span><b>${bc ? `${egp(bc.from)} ← ${egp(bc.to)}` : '—'}</b></div></div></article>`; }).join('');
 }
 function decisionsTable(list) {
   if (!list.length) return '<div class="opx-empty">مفيش قرارات ميزانية حاليًا. فعّل المحرك واضغط «قيّم الآن» من مركز التحكم، أو انتظر دورة الـScheduler.</div>';
   const ST = { PREPARED: ['amber', 'جاهز للموافقة'], SHADOW: ['blue', 'محاكاة'], BLOCKED: ['red', 'ممنوع'], VERIFIED: ['green', 'اتأكد'], FAILED: ['red', 'فشل'], REJECTED: ['gray', 'مرفوض'] };
-  return `<table class="opx-table"><thead><tr><th>الحملة</th><th>العملية</th><th class="num">قبل → بعد</th><th>السبب</th><th>الحالة</th></tr></thead><tbody>${list.map((d) => { const bc = d.canonical?.budgetChange; const st = ST[d.status] || ['gray', d.statusLabel || d.status]; return `<tr><td><div class="opx-prod"><div class="opx-thumb">${E(String(d.productName || d.campaignName || '?').slice(0, 1).toUpperCase())}</div><div><b>${E(d.productName || '—')}</b><small>${E(d.campaignName || d.campaignId)}</small></div></div></td><td>${pill(E(d.actionLabel || d.action), d.action === 'SCALE_UP' ? 'green' : 'red')}</td><td class="num">${bc ? `${egp(bc.from)} → <b>${egp(bc.to)}</b>` : '—'}</td><td class="opx-why">${E(d.reason || d.why || d.summary || '')}</td><td>${pill(E(st[1]), st[0])}</td></tr>`; }).join('')}</tbody></table>`;
+  return `<table class="opx-table"><thead><tr><th>الحملة</th><th>العملية</th><th class="num">قبل → بعد</th><th>السبب</th><th>الحالة</th></tr></thead><tbody>${list.map((d) => { const bc = d.canonical?.budgetChange; const st = ST[d.status] || ['gray', d.statusLabel || d.status]; return `<tr><td><div class="opx-prod"><div class="opx-thumb">${E(String(d.productName || d.campaignName || '?').slice(0, 1).toUpperCase())}</div><div><b>${E(d.productName || '—')}</b><small>${E(d.campaignName || d.campaignId)}${adsetTag(d)}</small></div></div></td><td>${pill(E(d.actionLabel || d.action), d.action === 'SCALE_UP' ? 'green' : 'red')}</td><td class="num">${bc ? `${egp(bc.from)} → <b>${egp(bc.to)}</b>` : '—'}</td><td class="opx-why">${E(d.reason || d.why || d.summary || '')}</td><td>${pill(E(st[1]), st[0])}</td></tr>`; }).join('')}</tbody></table>`;
 }
 function wire() {
   const root = B.root; const stop = root.querySelectorAll('[data-opxstop]'); stop.forEach((b) => { b.onclick = B.ctx.emergencyStop; });

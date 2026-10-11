@@ -24,6 +24,8 @@ export function bumpSettingsFrom(settings) {
     maxDailyBudget: 'ambBumpMaxDailyBudget',
   };
   for (const [k, settingsKey] of Object.entries(map)) if (settings[settingsKey] != null) out[k] = settings[settingsKey];
+  // a bump the executor would REFUSE is worthless: the per-action budget bound (ambMaxBudgetIncreasePct, default 20%) caps what this engine may propose (it used to propose +25% and every one aborted at execution)
+  const cap = Number(settings.ambMaxBudgetIncreasePct ?? 20); if (out.bumpPct != null && cap > 0 && Number(out.bumpPct) > cap) out.bumpPct = cap;
   return out;
 }
 

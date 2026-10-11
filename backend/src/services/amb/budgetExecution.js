@@ -70,7 +70,7 @@ export function configBlock(config, action = null) {
  * Re-evaluates ONE campaign on live data in APPROVAL context and persists exactly the actionable row as a PREPARED decision (never touches other decisions).
  * Returns {ok, decisionId, row} or {ok:false, reason, row}. deps.evaluate / deps.config are injectable for tests.
  */
-export async function prepareBudgetDecision({ campaignId, userId = null, now = new Date(), deps: depsIn = {} }) {
+export async function prepareBudgetDecision({ campaignId, entityId = null, userId = null, now = new Date(), deps: depsIn = {} }) {
   const deps = effDeps(depsIn);
   await requireAdmin(userId, deps);
   const config = deps.config || await getOperatorConfig();
@@ -78,8 +78,9 @@ export async function prepareBudgetDecision({ campaignId, userId = null, now = n
   if (config.execPermissions && config.execPermissions.budgetDecrease !== true && config.execPermissions.budgetIncrease !== true) return { ok: false, reason: 'PERMISSION_OFF', message: 'صلاحيتا «تقليل الميزانية» و«زيادة الميزانية» مقفولتين — فعّل المطلوبة من «صلاحيات التنفيذ» (ADMIN + تأكيد).' };
   const res = await (deps.evaluate || ((o) => evaluateBudgetOptimization(o)))({ now, persist: false, live: true, only: { campaignIds: [campaignId] }, ruleMode: 'APPROVAL' });
   if (res.structureSource !== 'META_LIVE') return { ok: false, reason: 'NO_LIVE_DATA', message: `بنية الميزانية ما اتقرتش لايف من Meta (${res.structureSource}) — مفيش تحضير على بيانات قديمة.` };
-  const rows = res.rows.filter((r) => r.campaignId === campaignId && r.intended);
-  if (rows.length !== 1) return { ok: false, reason: rows.length ? 'MULTIPLE_ENTITIES' : 'NO_ACTION', message: rows.length ? 'الحملة فيها أكتر من كيان (Ad Sets) بقرار — التنفيذ بيتم على كيان واحد بس.' : 'مفيش قرار ميزانية للحملة دي دلوقتي.', rows: res.rows };
+  let rows = res.rows.filter((r) => r.campaignId === campaignId && r.intended);
+  if (entityId) { rows = rows.filter((r) => r.entity?.id === entityId); if (!rows.length) return { ok: false, reason: 'ENTITY_NOT_ACTIONABLE', message: 'الـAd Set المطلوب مفيش له قرار ميزانية دلوقتي (أو مش تابع للحملة).', rows: res.rows.filter((r) => r.campaignId === campaignId).map((r) => ({ entity: r.entity, decision: r.decision, reason: r.reason })) }; } // ABO: the owner picked ONE ad set; the others are never touched
+  if (rows.length !== 1) return { ok: false, reason: rows.length ? 'MULTIPLE_ENTITIES' : 'NO_ACTION', message: rows.length ? 'الحملة فيها أكتر من Ad Set بقرار — اختار Ad Set واحد (entityId) والتنفيذ بيتم عليه بس.' : 'مفيش قرار ميزانية للحملة دي دلوقتي.', rows: res.rows };
   const row = rows[0];
   if (!EXECUTABLE_ACTIONS.has(row.intended.action) || row.decision !== EXPECTED_DECISION[row.intended.action] || row.wouldBe !== 'PREPARED' || row.primaryBlock) return { ok: false, reason: 'NOT_ACTIONABLE', message: `القرار الحالي ${row.decision} (${row.intended.action}) — مش قابل للتنفيذ.`, row };
   const needPerm = permissionFor(row.intended.action);
@@ -115,6 +116,9 @@ export async function executeBudgetDecision({ decisionId, userId, now = new Date
 
   { const cf = await (deps.checkConflicts ? deps.checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id }) : (await import('./integration.js')).checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id, now })).catch(() => []); if (cf.length) { await transition(row.id, 'PREPARED', 'PREPARED', { actorId: userId, note: `BLOCKED_AT_GATE ${cf[0].code}`, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: cf[0].code, message: `تعارض: ${cf[0].detail || cf[0].code}` }; } } // the integration layer: no racing opposite operations
   if (row.action === 'SCALE_UP') { const cap = await checkBudgetCaps({ action: 'SCALE_UP', delta: (params.toBudget ?? 0) - (params.fromBudget ?? 0), adAccountId: row.ad_account_id, campaignId: row.campaign_id, productId: row.product_id ?? null, productCapOverride: dailyCapFromLimits(config.limits, row.store_id, row.product_id, row.campaign_id), now, deps: deps.capsDeps || {} }); if (!cap.ok) { const msg = `الزيادة هتتجاوز حدّ الميزانية: ${cap.violations.map((v) => `${v.label} (${v.after} > ${v.cap})`).join('، ')}`; await transition(row.id, 'PREPARED', 'PREPARED', { actorId: userId, note: `BLOCKED_AT_GATE BUDGET_CAP`, data: { violations: cap.violations }, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: 'BUDGET_CAP', message: msg, violations: cap.violations }; } }
+
+  { const { preWriteBounds } = await import('./budgetChange.js'); const bb = await preWriteBounds({ operation: row.action === 'SCALE_UP' ? 'INCREASE' : 'REDUCE', from: params.fromBudget, to: params.toBudget, entityId, campaignId: row.campaign_id, config, now, deps: deps.boundsDeps || {} });
+    if (!bb.ok) { await transition(row.id, 'PREPARED', 'PREPARED', { actorId: userId, note: `BLOCKED_AT_GATE ${bb.blockers[0].code}`, data: { blockers: bb.blockers }, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: bb.blockers[0].code, message: bb.blockers[0].message, blockers: bb.blockers }; } } // the executor's own bounds, said BEFORE the claim (same rules as the manual preview)
 
   // 2. fresh LIVE re-evaluation — the same decision or nothing
   const res = await (deps.evaluate || ((o) => evaluateBudgetOptimization(o)))({ now, persist: false, live: true, only: { campaignIds: [row.campaign_id] }, ruleMode: 'APPROVAL' });

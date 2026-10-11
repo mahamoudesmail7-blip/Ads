@@ -112,8 +112,9 @@ export async function validateAction(p) {
   if (p.liveEntity?.status) {
     const st = p.liveEntity.status;
     if (['PAUSE', 'INCREASE_BUDGET', 'DECREASE_BUDGET'].includes(p.actionType)) {
-      statusOk = st === 'ACTIVE';
-      statusDetail = statusOk ? `العنصر ACTIVE — يقبل ${p.actionType}.` : `العنصر حالته ${st} — ${p.actionType} مش منطقي دلوقتي.`;
+      // a budget change on a PAUSED ad set / an ad set of a paused campaign is allowed ONLY for an owner-confirmed manual operation that acknowledged it (allowPausedBudget); never for PAUSE, never for automation / approval paths
+      statusOk = st === 'ACTIVE' || (p.allowPausedBudget === true && p.actionType !== 'PAUSE' && ['PAUSED', 'CAMPAIGN_PAUSED', 'ADSET_PAUSED'].includes(st));
+      statusDetail = statusOk ? `العنصر ${st} — يقبل ${p.actionType}${st === 'ACTIVE' ? '' : ' (تأكيد يدوي صريح لتعديل ميزانية عنصر موقوف)'}.` : `العنصر حالته ${st} — ${p.actionType} مش منطقي دلوقتي.`;
     } else if (p.actionType === 'RESUME') {
       statusOk = st === 'PAUSED';
       statusDetail = statusOk ? 'العنصر PAUSED — يقبل RESUME.' : `العنصر حالته ${st} — RESUME مش منطقي.`;

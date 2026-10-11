@@ -877,6 +877,11 @@ export async function getCampaignNode(token, campaignId) {
   }, token);
 }
 
+/** Live ad sets of one campaign with exactly what a budget decision needs (read only). */
+export async function getCampaignAdSetsLive(token, campaignId) {
+  return graphList(`/${campaignId}/adsets`, { fields: 'id,name,status,effective_status,campaign_id,daily_budget,lifetime_budget' }, token);
+}
+
 /** Ad sets of one campaign, full config. */
 export async function getAdSetNodes(token, campaignId) {
   return graphList(`/${campaignId}/adsets`, {

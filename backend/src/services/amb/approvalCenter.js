@@ -34,7 +34,8 @@ export const riskOf = (d) => (d.blocks || []).some((b) => b.severity === 'BLOCK'
 export function approvalRow(d, config) {
   const { before, after } = beforeAfter(d); const hard = (d.blocks || []).filter((b) => b.severity === 'BLOCK').map((b) => b.code);
   const exposed = d.params?.toBudget ?? d.params?.budget ?? d.params?.fromBudget ?? d.metrics?.budget ?? null;
-  return { kind: 'DECISION', id: d.id, status: d.status, campaignId: d.campaignId, campaign: d.campaignName, product: d.productName, action: d.action, actionLabel: d.actionLabel, before, after,
+  const entityLevel = d.params?.level || null, entityId = d.params?.entityId || null; // ABO: the decision is about ONE ad set — the screen must say which
+  return { kind: 'DECISION', id: d.id, status: d.status, campaignId: d.campaignId, campaign: d.campaignName, entityLevel, entityId, entityName: entityLevel === 'adset' ? (d.evidence?.history?.entityName || null) : null, product: d.productName, action: d.action, actionLabel: d.actionLabel, before, after,
     reason: d.why?.why || d.why?.what || d.ruleName || '', risk: riskOf(d), confidence: d.confidence, hardBlocks: hard, warnings: (d.warnings || []).map((w) => w.code),
     exposedBudget: exposed, cpa: d.metrics?.cpa ?? null, orders: d.metrics?.purchases ?? d.metrics?.orders ?? null, spend: d.metrics?.spend ?? null, window: d.window || d.params?.window || null, stock: d.stock?.status || null, execution: gateOf(config, d.action), bulkEligible: BULK_ACTIONS.includes(d.action) && d.status === 'PREPARED' && hard.length === 0, isBudgetDecision: !!d.isBudgetDecision, cooldown: d.cooldown || null, updatedAt: d.updatedAt };
 }
@@ -113,6 +114,7 @@ export async function previewDecision({ decisionId, now = new Date(), deps = {} 
   if (!ambAction) { out.notes.push('الأكشن ده مش عملية كتابة على Meta (تحضير/اختبار) — مفيش معاينة تنفيذ.'); return out; }
   const g = evaluateWriteGate({ config, actionType: ambAction, mode: 'APPROVAL' }); out.gate = { executableNow: g.ok, reasons: g.ok ? [] : g.reasons.map((r) => ({ code: r.code, message: r.message })) };
   const entityId = params.entityId || row.campaign_id; const isBudget = ['SCALE_UP', 'SCALE_DOWN'].includes(row.action);
+  out.entity = { id: entityId, level: params.level || 'campaign', name: j(row.evidence_json, {})?.history?.entityName || null, campaignId: row.campaign_id, campaignName: row.campaign_name }; // ABO: the decision is about ONE ad set — the preview says which
   out.expected = isBudget ? { budget: params.fromBudget ?? null, to: params.toBudget ?? null } : { status: row.action === 'OPEN' ? 'PAUSED' : 'ACTIVE', to: row.action === 'OPEN' ? 'ACTIVE' : 'PAUSED' };
   try {
     const live = deps.readEntity ? await deps.readEntity({ entityId }) : await (async () => { const [{ getEntity }, { getDecryptedToken }] = await Promise.all([import('../metaGraphClient.js'), import('../metaAuth.js')]); const e = await getEntity(await getDecryptedToken(), entityId, 'status,effective_status,daily_budget,lifetime_budget'); const d = Number(e.daily_budget); return { status: e.effective_status || e.status || null, budget: Number.isFinite(d) ? d / 100 : null }; })();
