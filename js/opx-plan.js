@@ -77,9 +77,9 @@ function cpaPanel(p, editable) {
       ${f.window === 'custom' ? `<label class="opx-field"><span>من</span><input class="opx-input" type="date" id="cpaFrom" value="${E(f.from)}" ${admin ? '' : 'disabled'}></label><label class="opx-field"><span>إلى</span><input class="opx-input" type="date" id="cpaTo" value="${E(f.to)}" ${admin ? '' : 'disabled'}></label>` : ''}</div>
     <div id="cpaErr"></div>
     <div class="opx-cpa-now"><div><b>السياسة المحفوظة الحالية</b><p>${polText}</p></div><div class="opx-cpa-btns">
-      <button class="opx-btn" id="cpaPreview" ${complete ? '' : 'disabled'}>${ICONS.eye} معاينة النتائج</button>
+      <button class="opx-btn" id="cpaPreview" ${complete ? '' : 'disabled'} title="${complete ? '' : 'كمّل حدود الـ CPA الأول'}">${ICONS.eye} معاينة النتائج</button>
       <button class="opx-btn primary" id="cpaPrepare" ${admin && complete && p && ['PREPARED', 'APPROVED'].includes(p.status) && !dirty ? '' : 'disabled'} title="${dirty ? 'احفظ التعديلات الأول' : ''}">${ICONS.target} تجهيز الحملات المطابقة</button>
-      <button class="opx-btn ${dirty ? 'accent' : ''}" id="cpaSave" ${admin && dirty ? '' : 'disabled'}>${ICONS.history} حفظ السياسة كنسخة جديدة</button><button class="opx-btn ghost sm" id="cpaHist">سجل النسخ</button></div></div>
+      <button class="opx-btn ${dirty ? 'accent' : ''}" id="cpaSave" ${admin && dirty ? '' : 'disabled'} title="${!admin ? 'للأدمن فقط' : dirty ? '' : 'مفيش تعديلات لحفظها'}">${ICONS.history} حفظ السياسة كنسخة جديدة</button><button class="opx-btn ghost sm" id="cpaHist">سجل النسخ</button></div></div>
     ${planStale ? `<div class="opx-notice amber"><div class="grow"><b>الخطة اتجهزت بنسخة سياسة أقدم (v${d.plan.policyVersion ?? 'بدون'})</b><small>اضغط «تجهيز الحملات المطابقة» لإعادة التقييم — اختياراتك اليدوية (اللي استبعدتها) بتفضل زي ما هي.</small></div></div>` : ''}
     <div class="opx-notice red opx-cpa-warn"><div class="grow"><b>مهم: تجهيز الحملات لا يعني تنفيذها.</b><small>سيتم تطبيق القواعد والحماية والتأكد من الأهلية. التنفيذ يتم حسب الوضع (SHADOW محاكاة / APPROVAL بعد اعتمادك / AUTOMATIC حسب الصلاحيات) — ولا يتم فتح أي حملة فعليًا بمجرد تغيير الزر أو حدود CPA.</small></div></div></section>`;
 }

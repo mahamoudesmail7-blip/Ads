@@ -41,3 +41,34 @@ export async function listExecutionHistory({ limit = 100, type = null, final = n
   const counts = { total: shaped.length }; for (const r of shaped) counts[r.final] = (counts[r.final] || 0) + 1;
   return { rows: shaped, counts };
 }
+
+/** instant of 00:00 Africa/Cairo of the day that contains `now` (handles DST: the offset is measured, not assumed) */
+export function cairoDayStart(now = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(now).map((x) => [x.type, x.value]));
+  const wallAsUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute), Number(p.second)); const offset = wallAsUtc - Math.floor(now.getTime() / 1000) * 1000;
+  return new Date(Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day)) - offset);
+}
+/**
+ * 📊 Today's operating summary (Africa/Cairo day) — read only, derived from amb_actions + the approval queue + the operator config. Counts what was actually SENT (EXECUTED) separately from what Meta CONFIRMED (read-back verified);
+ * nothing is counted as done because it was merely requested. Exposure = budget the system ADDED today through increases (an open's own budget is not recorded on the action row, so it is not guessed); reductions are reported as released budget.
+ */
+export async function todaySummary({ now = new Date(), deps = {} } = {}) {
+  const since = cairoDayStart(now);
+  const rows = await prisma.ambAction.findMany({ where: { OR: [{ executed_at: { gte: since } }, { executed_at: null, created_at: { gte: since } }] }, orderBy: { id: 'desc' }, take: 500, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true } } } });
+  const sh = rows.map(shapeActionRow); const by = { RESUME: 'opened', PAUSE: 'paused', INCREASE_BUDGET: 'increased', DECREASE_BUDGET: 'reduced' };
+  const out = { opened: { sent: 0, verified: 0 }, paused: { sent: 0, verified: 0 }, increased: { sent: 0, verified: 0 }, reduced: { sent: 0, verified: 0 } };
+  let exposureAdded = 0, budgetReleased = 0, failed = 0, blocked = 0, uncertain = 0;
+  for (const r of sh) {
+    if (r.final === 'FAILED') failed++; else if (r.final === 'BLOCKED') blocked++; else if (r.final === 'UNCERTAIN') uncertain++;
+    const k = by[r.type]; if (!k || !['VERIFIED', 'UNCERTAIN'].includes(r.final)) continue;
+    out[k].sent++; if (r.final === 'VERIFIED') out[k].verified++;
+    const b = Number(r.after), a = Number(r.before);
+    if (r.type === 'INCREASE_BUDGET' && Number.isFinite(b) && Number.isFinite(a)) exposureAdded += Math.max(0, b - a);
+    else if (r.type === 'DECREASE_BUDGET' && Number.isFinite(b) && Number.isFinite(a)) budgetReleased += Math.max(0, a - b);
+  }
+  const AB = await import('./approvalCenter.js'); const bar = await AB.statusBar({ now, deps }).catch(() => ({ pendingApprovals: null, importantAlerts: null }));
+  const cfg = deps.config || await (await import('./operatorStore.js')).getOperatorConfig();
+  const health = { mode: cfg.mode, emergencyStop: !!cfg.emergency_stop, writesLocked: !!cfg.writesLocked, permissions: cfg.execPermissions, openAlerts: bar.importantAlerts ?? null };
+  health.status = cfg.emergency_stop ? 'EMERGENCY_STOP' : cfg.writesLocked ? 'WRITES_LOCKED' : cfg.mode === 'APPROVAL' ? 'APPROVAL_READY' : cfg.mode === 'AUTOPILOT' ? 'AUTOMATIC' : 'OBSERVING';
+  return { since, ...out, exposureAdded, budgetReleased, failed, blocked, uncertain, pendingApprovals: bar.pendingApprovals ?? null, health };
+}

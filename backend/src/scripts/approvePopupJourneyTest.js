@@ -115,6 +115,12 @@ try {
   const v2 = await mkPlan([[A, 88, 'ELIGIBLE']], { date: nextDate() }); const v2key = v2.plan_key; const nv = await prisma.ambDailyPlan.create({ data: { plan_key: v2key, type: 'OPEN', plan_date: v2.plan_date, timezone: v2.timezone, version: 2, status: 'PREPARED', simulated: false, scheduled_at: v2.scheduled_at, expires_at: v2.expires_at, prepared_at: new Date() } }); created.plans.push(nv.id);
   const oldV = await approve(v2, cfg({ open: true }), {}, await conf(v2)).catch((e) => e); ok('approving an OLD plan version → 409 «دي نسخة قديمة»', oldV.status === 409 && /نسخة قديمة/.test(oldV.message));
 
+  console.log('\n4b. A plan that expires unexecuted is never run late — and it raises ONE alert saying what was NOT done');
+  fresh(); const mp = await mkPlan([[A, 88, 'ELIGIBLE'], [B, 120, 'ELIGIBLE']]); await prisma.ambDailyPlan.update({ where: { id: mp.id }, data: { expires_at: new Date(Date.now() - 60_000) } }); const wm = allWrites().length; delete process.env.DAILY_PLAN_DISABLE_ALERTS;
+  const tick1 = await DP.ensureDuePlans({ now: new Date(), simulated: false, deps: { ...FRESH, build: async () => ({ items: [], policy: null }) } }); await DP.ensureDuePlans({ now: new Date(), simulated: false, deps: { ...FRESH, build: async () => ({ items: [], policy: null }) } }); process.env.DAILY_PLAN_DISABLE_ALERTS = '1';
+  const missedAlert = await prisma.ambAlert.findMany({ where: { dedupe_key: `dailyplan-missed:${mp.plan_key}:v1` } });
+  ok('the expired plan became MISSED (no late execution, ZERO Meta writes)', (await planOf(mp.id)).status === 'MISSED' && tick1.missed.includes(mp.id) && allWrites().length === wm);
+  ok('exactly ONE WARNING alert states how many selected campaigns were NOT executed (a second tick does not duplicate it)', missedAlert.length === 1 && missedAlert[0].severity === 'WARNING' && /2 حملة/.test(missedAlert[0].message) && /مفيش تنفيذ متأخر/.test(missedAlert[0].message), JSON.stringify(missedAlert.map((a) => [a.severity, a.message.slice(0, 60)])));
   console.log('\n5. The screen can explain every status the server returns');
   const dpSrc = fs.readFileSync(join(__dirname, '../services/amb/dailyPlans.js'), 'utf8'); const ap = dpSrc.slice(dpSrc.indexOf('export async function approvePlan'), dpSrc.indexOf('const sleepDefault'));
   const serverStatuses = [...new Set([...ap.matchAll(/status: '([A-Z_]+)'/g)].map((m) => m[1]))].filter((s) => !['RUNNING', 'APPROVED', 'PREPARED', 'MISSED_', 'SUPERSEDED'].includes(s));
@@ -126,7 +132,7 @@ try {
 finally {
   try { for (const id of created.plans) await prisma.ambOperatorEvent.deleteMany({ where: { data_json: { contains: `"planId":${id},` } } }).catch(() => {}); if (created.plans.length) await prisma.ambDailyPlan.deleteMany({ where: { id: { in: created.plans } } });
     const rs = await prisma.ambRecommendation.findMany({ where: { entity_id: { startsWith: T } }, select: { id: true } }); const ids = rs.map((r) => r.id); if (ids.length) { await prisma.ambActionResult.deleteMany({ where: { action: { recommendation_id: { in: ids } } } }); await prisma.ambAction.deleteMany({ where: { recommendation_id: { in: ids } } }); await prisma.ambRecommendation.deleteMany({ where: { id: { in: ids } } }); }
-    await prisma.ambOperatorEvent.deleteMany({ where: { campaign_id: { startsWith: T } } }); } catch (e) { console.log('cleanup note:', e.message); }
+    await prisma.ambOperatorEvent.deleteMany({ where: { campaign_id: { startsWith: T } } }); await prisma.ambAlert.deleteMany({ where: { dedupe_key: { startsWith: 'dailyplan-missed:OPEN|2031' } } }); } catch (e) { console.log('cleanup note:', e.message); }
   await prisma.$disconnect(); server.close();
 }
 console.log(`\n${pass} passed, ${fail} failed`);

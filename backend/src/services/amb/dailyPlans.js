@@ -144,6 +144,12 @@ export async function previewExecution({ planId, now = new Date(), deps = {} }) 
 }
 
 /** Scheduler step 1: every plan whose slot has arrived on the current CAIRO day exists (and is surfaced); plans of finished days that nobody executed become MISSED. */
+/** a REAL plan that expired unapproved (or approved but never run) must not disappear silently: one deduplicated alert says what was NOT done (nothing is ever executed late) */
+async function alertMissedPlan(p) {
+  if (p.simulated || process.env.DAILY_PLAN_DISABLE_ALERTS === '1') return null;
+  const selected = await prisma.ambDailyPlanItem.count({ where: { plan_id: p.id, selected: true } });
+  return raiseAlert({ severity: selected ? 'WARNING' : 'INFO', category: 'OPERATOR', title: `خطة ${p.type === 'OPEN' ? 'الفتح' : 'الإيقاف'} ${p.plan_date} فاتت من غير تنفيذ`, message: selected ? `${selected} حملة كانت مختارة ولم تُنفَّذ (الخطة ${p.status === 'APPROVED' ? 'اتعتمدت بس ما اشتغلتش' : 'ما اتعتمدتش'} قبل نهاية اليوم). مفيش تنفيذ متأخر تلقائي — جهّز واعتمد خطة اليوم الجديد.` : 'اليوم خلص والخطة ما اتعتمدتش (مفيش حملات مختارة).', dedupeKey: `dailyplan-missed:${p.plan_key}:v${p.version}` });
+}
 export async function ensureDuePlans({ now = new Date(), simulated = isTestClock(), deps = {} } = {}) {
   const out = { prepared: [], missed: [] };
   for (const d of dueTypes(now)) {
@@ -152,7 +158,7 @@ export async function ensureDuePlans({ now = new Date(), simulated = isTestClock
     else if (!ex.surfaced_at) { await prisma.ambDailyPlan.update({ where: { id: ex.id }, data: { surfaced_at: now } }); out.prepared.push({ type: d.type, date: d.date, planId: ex.id, surfacedOnly: true }); }
   }
   const stale = await prisma.ambDailyPlan.findMany({ where: { simulated, status: { in: ['PREPARED', 'APPROVED'] }, expires_at: { lte: now } } });
-  for (const p of stale) { const r = await prisma.ambDailyPlan.updateMany({ where: { id: p.id, status: { in: ['PREPARED', 'APPROVED'] } }, data: { status: 'MISSED', finished_at: now, summary_json: JSON.stringify({ missed: true, reason: 'اليوم خلص قبل الاعتماد — مفيش تنفيذ متأخر تلقائي' }) } }); if (r.count) { out.missed.push(p.id); await audit({ planId: p.id, note: 'الخطة فاتت (MISSED) — مفيش تنفيذ متأخر تلقائي', data: { action: 'MISSED' } }); await notify(p, { severity: 'WARNING', title: `جدول ${p.type === 'OPEN' ? 'الفتح' : 'الإيقاف'} فات من غير اعتماد`, message: 'ما اتنفذش أي حاجة. هيتجهز جدول جديد في موعده.', suffix: 'missed' }); } }
+  for (const p of stale) { const r = await prisma.ambDailyPlan.updateMany({ where: { id: p.id, status: { in: ['PREPARED', 'APPROVED'] } }, data: { status: 'MISSED', finished_at: now, summary_json: JSON.stringify({ missed: true, reason: 'اليوم خلص قبل الاعتماد — مفيش تنفيذ متأخر تلقائي' }) } }); if (r.count) { out.missed.push(p.id); await alertMissedPlan(p).catch(() => {}); await audit({ planId: p.id, note: 'الخطة فاتت (MISSED) — مفيش تنفيذ متأخر تلقائي', data: { action: 'MISSED' } }); await notify(p, { severity: 'WARNING', title: `جدول ${p.type === 'OPEN' ? 'الفتح' : 'الإيقاف'} فات من غير اعتماد`, message: 'ما اتنفذش أي حاجة. هيتجهز جدول جديد في موعده.', suffix: 'missed' }); } }
   return out;
 }
 

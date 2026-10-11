@@ -30,4 +30,14 @@ ok('listExecutionHistory returns rows + counts that add up', Array.isArray(l.row
 ok('the type filter is honoured', (await H.listExecutionHistory({ type: 'PAUSE' })).rows.every((x) => x.type === 'PAUSE'));
 ok('the final-state filter is honoured', (await H.listExecutionHistory({ final: 'VERIFIED' })).rows.every((x) => x.final === 'VERIFIED'));
 await prisma.$disconnect();
+console.log('\nToday summary (Africa/Cairo day)');
+ok('Cairo day start in winter (UTC+2) is 22:00Z of the previous day', H.cairoDayStart(new Date('2026-01-15T10:00:00Z')).toISOString() === '2026-01-14T22:00:00.000Z', H.cairoDayStart(new Date('2026-01-15T10:00:00Z')).toISOString());
+ok('Cairo day start in summer (UTC+3) is 21:00Z of the previous day', H.cairoDayStart(new Date('2026-07-15T10:00:00Z')).toISOString() === '2026-07-14T21:00:00.000Z', H.cairoDayStart(new Date('2026-07-15T10:00:00Z')).toISOString());
+ok('00:30 Cairo still belongs to the new Cairo day (22:30Z in winter)', H.cairoDayStart(new Date('2026-01-14T22:30:00Z')).toISOString() === '2026-01-14T22:00:00.000Z');
+const sm = await H.todaySummary({ now: new Date(), deps: { config: { mode: 'APPROVAL', emergency_stop: false, writesLocked: true, execPermissions: { open: false, pause: false, budgetIncrease: false, budgetDecrease: false } } } });
+ok('summary has the four operation counters (sent vs Meta-verified), failed/blocked/uncertain and exposure', ['opened', 'paused', 'increased', 'reduced'].every((k) => typeof sm[k].sent === 'number' && sm[k].verified <= sm[k].sent) && ['failed', 'blocked', 'uncertain', 'exposureAdded', 'budgetReleased'].every((k) => typeof sm[k] === 'number'));
+ok('a locked-writes config is reported as WRITES_LOCKED (never as ready)', sm.health.status === 'WRITES_LOCKED' && sm.health.mode === 'APPROVAL');
+const sm2 = await H.todaySummary({ now: new Date(), deps: { config: { mode: 'APPROVAL', emergency_stop: true, writesLocked: false, execPermissions: {} } } });
+ok('Emergency Stop wins over every other health state', sm2.health.status === 'EMERGENCY_STOP');
+
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

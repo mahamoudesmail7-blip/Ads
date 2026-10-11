@@ -14,7 +14,7 @@ import { inventoryOverview, compareManualVsApi, setInventoryLink, removeInventor
 import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import * as PP from '../services/amb/productPolicy.js';
 import { campaignWindowMetrics, parseWindow, productImages } from '../services/amb/periodMetrics.js';
-import { listExecutionHistory } from '../services/amb/executionHistory.js';
+import { listExecutionHistory, todaySummary } from '../services/amb/executionHistory.js';
 import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
 import * as SP from '../services/amb/smartPricing.js';
 import * as OC from '../services/amb/openCpaPolicy.js';
@@ -164,6 +164,7 @@ router.post('/product-rules/:productId/activate', ADMIN, asyncRoute(async (req, 
 router.post('/product-rules/:productId/deactivate', ADMIN, asyncRoute(async (req, res) => res.json(await PP.deactivatePolicy({ productId: Number(req.params.productId), storeId: req.body?.storeId || 'default', confirm: req.body?.confirm === true, userId: req.user.id }))));
 router.post('/product-rules/copy', ADMIN, asyncRoute(async (req, res) => res.json(await PP.copyPolicy({ from: req.body?.from, to: req.body?.to || [], userId: req.user.id }))));
 router.post('/product-rules/:productId/preview', ADMIN, asyncRoute(async (req, res) => { const list = await PP.listProductRules({}); const p = list.find((x) => x.productId === Number(req.params.productId) && x.storeId === (req.body?.storeId || 'default')) || list.find((x) => x.productId === Number(req.params.productId)); res.json(PP.previewPolicy({ policy: req.body?.policy, campaigns: p?.campaigns || [], globalPolicy: await getBudgetPolicy() })); }));
+router.get('/execution-history/summary', asyncRoute(async (req, res) => res.json(await todaySummary({ now: clockNow() }))));
 router.get('/execution-history', asyncRoute(async (req, res) => res.json(await listExecutionHistory({ limit: req.query.limit, type: req.query.type || null, final: req.query.final || null }))));
 router.get('/campaign-metrics', asyncRoute(async (req, res) => { const w = parseWindow({ from: req.query.from, to: req.query.to, days: req.query.days, today: cairoDate(clockNow()) }); const ids = String(req.query.ids || '').split(',').filter(Boolean); res.json({ window: w, metrics: await campaignWindowMetrics({ campaignIds: ids, from: w.from, to: w.to }) }); }));
 router.get('/campaign-board', asyncRoute(async (req, res) => res.json(await buildCampaignBoard({ now: clockNow() }))));

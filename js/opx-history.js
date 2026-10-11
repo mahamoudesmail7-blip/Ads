@@ -3,22 +3,26 @@
 import { api } from './api-client.js';
 import { E, num, egp, cairoDateTime, ICONS, kpiCard, pill, skeletonRows, openDrawer, $ } from './opx-ui.js';
 
-const H = { ctx: null, root: null, r: null, mon: null, f: { type: '', final: '', q: '' } };
+const H = { ctx: null, root: null, r: null, mon: null, sum: null, f: { type: '', final: '', q: '' } };
 const FINAL = { VERIFIED: ['green', 'Verified'], FAILED: ['red', 'Failed'], BLOCKED: ['red', 'Blocked'], UNCERTAIN: ['amber', 'Uncertain'], REQUESTED: ['gray', 'Requested'], VALIDATED: ['blue', 'Validated'] };
 const STAGE_AR = { REQUESTED: 'Requested', VALIDATED: 'Validated', APPROVED: 'Approved', SENT: 'Sent', READ_BACK: 'Read-back', VERIFIED: 'Verified', FAILED: 'Failed', BLOCKED: 'Blocked', UNCERTAIN: 'Uncertain', PENDING: 'Pending' };
 const VERDICT = { IMPROVED: ['green', 'تحسّن'], WORSE: ['red', 'أسوأ'], NO_CHANGE: ['gray', 'بدون تغيير'], INSUFFICIENT: ['amber', 'بيانات غير كافية'], PENDING: ['blue', 'قيد المراقبة'] };
 
 export async function mountHistoryWorkspace(root, ctx) {
   H.ctx = ctx; H.root = root; root.innerHTML = `<div class="opx-card">${skeletonRows(6)}</div>`;
-  try { [H.r, H.mon] = await Promise.all([api.get('/api/operator/execution-history', { limit: 200 }), api.get('/api/operator/monitoring').catch(() => ({ actions: [] }))]); } catch (e) { root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; return; }
+  try { [H.r, H.mon, H.sum] = await Promise.all([api.get('/api/operator/execution-history', { limit: 200 }), api.get('/api/operator/monitoring').catch(() => ({ actions: [] })), api.get('/api/operator/execution-history/summary').catch(() => null)]); } catch (e) { root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; return; }
   draw();
 }
 const rows = () => { const q = H.f.q.trim().toLowerCase(); return H.r.rows.filter((r) => (!H.f.type || r.type === H.f.type) && (!H.f.final || r.final === H.f.final) && (!q || `${r.campaignName || ''} ${r.campaignId}`.toLowerCase().includes(q))); };
 const stages = (r) => `<div style="display:flex;gap:4px;flex-wrap:wrap">${r.stages.map((s) => { const bad = s.ok === false || ['FAILED', 'BLOCKED'].includes(s.key); const tone = !s.done ? 'gray' : bad ? 'red' : s.key === 'UNCERTAIN' ? 'amber' : s.key === 'VERIFIED' ? 'green' : 'blue'; return `<span class="opx-pill ${tone}" style="opacity:${s.done ? 1 : .45};font-size:11px;padding:2px 8px" title="${E(s.note || '')}">${s.done ? '●' : '○'} ${STAGE_AR[s.key] || s.key}</span>`; }).join('')}</div>`;
+const HEALTH = { EMERGENCY_STOP: ['red', 'Emergency Stop شغّال — كل الكتابة موقوفة'], WRITES_LOCKED: ['amber', 'قفل Meta Writes مقفول — مفيش تنفيذ فعلي'], APPROVAL_READY: ['green', 'APPROVAL — جاهز بموافقتك'], AUTOMATIC: ['violet', 'AUTOMATIC شغّال'], OBSERVING: ['gray', 'مراقبة / محاكاة فقط'] };
+const todayPanel = () => { const t = H.sum; if (!t) return '<div class="opx-card opx-note">⚠️ تعذّر تحميل ملخص النهارده</div>'; const k = (label, o, tone, icon) => kpiCard({ label, value: `${num(o.sent)}`, sub: o.sent ? `${num(o.verified)} متأكد من Meta` : '', icon, tone }); const h = HEALTH[t.health.status] || ['gray', t.health.status];
+  return `<div class="opx-card opx-tablecard opx-fade"><div class="opx-tablehead"><h3>${ICONS.history} ملخص النهارده (بتوقيت القاهرة)</h3>${pill(h[1], h[0])}</div><div class="opx-kpis">${k('اتفتح', t.opened, 'green', 'check')}${k('اتوقف', t.paused, 'red', 'stop')}${k('ميزانية اتزودت', t.increased, 'violet', 'target')}${k('ميزانية اتقللت', t.reduced, 'amber', 'shield')}${kpiCard({ label: 'ميزانية مضافة النهارده', value: egp(t.exposureAdded), icon: 'target', tone: 'violet' })}${kpiCard({ label: 'موافقات منتظرة', value: num(t.pendingApprovals ?? 0), icon: 'clock', tone: 'amber' })}${kpiCard({ label: 'فشل / ممنوع / غير مؤكد', value: `${num(t.failed)} / ${num(t.blocked)} / ${num(t.uncertain)}`, icon: 'stop', tone: t.failed ? 'red' : 'gray' })}</div></div>`; };
 function draw() {
   const c = H.r.counts; const l = rows();
   H.root.innerHTML = `
     <div class="opx-card opx-head opx-fade"><div class="opx-head-icon blue">${ICONS.history}</div><div class="grow"><h1>سجل التنفيذ</h1><p>كل عملية: طُلبت ← اتحقق منها ← اتوافق عليها ← أُرسلت ← قُرئت من Meta ← تأكدت. النجاح لا يُحسب إلا بعد قراءة Meta</p></div>${H.ctx.modeSegment()}<button class="opx-btn danger" data-opxstop ${H.ctx.ov().emergencyStop ? 'disabled' : ''}>${ICONS.stop} إيقاف فوري</button></div>
+    ${todayPanel()}
     <div class="opx-kpis">${kpiCard({ label: 'إجمالي العمليات', value: num(c.total), icon: 'history', tone: 'violet' })}${kpiCard({ label: 'Verified (اتأكدت من Meta)', value: num(c.VERIFIED || 0), icon: 'check', tone: 'green' })}${kpiCard({ label: 'Uncertain (غير مؤكدة)', value: num(c.UNCERTAIN || 0), icon: 'clock', tone: 'amber' })}${kpiCard({ label: 'Failed', value: num(c.FAILED || 0), icon: 'stop', tone: 'red' })}${kpiCard({ label: 'Blocked قبل الإرسال', value: num(c.BLOCKED || 0), icon: 'shield', tone: 'red' })}</div>
     <div class="opx-card opx-filters"><input class="opx-input opx-search" id="hQ" placeholder="ابحث باسم الحملة أو الرقم…" value="${E(H.f.q)}">
       <select class="opx-select" id="hType"><option value="">كل العمليات</option>${[['RESUME', 'فتح'], ['PAUSE', 'إيقاف'], ['INCREASE_BUDGET', 'زيادة ميزانية'], ['DECREASE_BUDGET', 'تقليل ميزانية']].map(([k, t]) => `<option value="${k}" ${H.f.type === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
