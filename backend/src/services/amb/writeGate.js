@@ -24,8 +24,10 @@ export function evaluateWriteGate({ config, actionType, mode = 'APPROVAL' }) {
   if (!config) push('NO_CONFIG', 'إعدادات الـOperator غير متاحة — مرفوض (fail-closed).');
   else {
     if (config.emergency_stop) push('EMERGENCY_STOP', 'إيقاف الطوارئ مفعّل — مفيش أي كتابة على Meta.');
-    const want = mode === 'AUTOPILOT' ? 'AUTOPILOT' : 'APPROVAL';
-    if (config.mode !== want) push(want === 'APPROVAL' ? 'MODE_NOT_APPROVAL' : 'MODE_NOT_AUTOMATIC', `الوضع الحالي ${config.mode === 'OFF' ? 'MANUAL' : config.mode} — التنفيذ ${want === 'APPROVAL' ? 'بموافقتك' : 'التلقائي'} محتاج وضع ${want === 'APPROVAL' ? 'APPROVAL' : 'AUTOMATIC'}.`);
+    // 'HUMAN' = an owner who just confirmed THIS operation (manual operation, or approving a prepared automation decision): valid in MANUAL, APPROVAL and AUTOMATIC — never in SHADOW (simulation only)
+    const want = mode === 'AUTOPILOT' ? 'AUTOPILOT' : mode === 'HUMAN' ? 'HUMAN' : 'APPROVAL';
+    if (want === 'HUMAN') { if (!['OFF', 'APPROVAL', 'AUTOPILOT'].includes(config.mode)) push('MODE_SHADOW_NO_WRITE', `الوضع الحالي ${config.mode} — مفيش كتابة على Meta (محاكاة فقط). غيّر الوضع إلى MANUAL أو APPROVAL.`); }
+    else if (config.mode !== want) push(want === 'APPROVAL' ? 'MODE_NOT_APPROVAL' : 'MODE_NOT_AUTOMATIC', `الوضع الحالي ${config.mode === 'OFF' ? 'MANUAL' : config.mode} — التنفيذ ${want === 'APPROVAL' ? 'بموافقتك' : 'التلقائي'} محتاج وضع ${want === 'APPROVAL' ? 'APPROVAL' : 'AUTOMATIC'}.`);
     if (config.writesLocked !== false) push('META_WRITES_LOCKED', 'كتابة Meta مقفولة على مستوى النشر (OPERATOR_ALLOW_META_WRITES).'); // anything but an explicit false is "locked"
     if (need && !(config.execPermissions && config.execPermissions[need] === true)) push('PERMISSION_OFF', `صلاحية «${PERMISSION_META[need]?.label || need}» مقفولة — فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).`);
   }

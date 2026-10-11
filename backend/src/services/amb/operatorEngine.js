@@ -281,7 +281,7 @@ async function persistCandidate(c, { adAccountId, mode, now }) {
 }
 /** Pre-execution decisions that stopped being produced are EXPIRED (context changed) — never silently left as "actionable". */
 async function expireStale({ seen, now }) {
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] }, NOT: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' } } }, select: { id: true, decision_key: true } }); // the Dynamic Budget Optimizer expires its own rows
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] }, NOT: [{ rule_name: { startsWith: 'DYNAMIC_BUDGET:' } }, { rule_name: { startsWith: 'AUTO:' } }] }, select: { id: true, decision_key: true } }); // the Dynamic Budget Optimizer expires its own rows
   const stale = rows.filter((r) => !seen.has(r.decision_key)).map((r) => r.id);
   if (!stale.length) return 0;
   const r = await prisma.ambOperatorDecision.updateMany({ where: { id: { in: stale }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, data: { status: 'EXPIRED', error: 'NO_LONGER_APPLICABLE' } });
@@ -310,6 +310,8 @@ export async function approveDecision({ decisionId, userId, deps = {} }) {
   if (!row) { const e = new Error('القرار غير موجود.'); e.status = 404; throw e; }
   // Dynamic Budget decisions (rule_name DYNAMIC_BUDGET:*) have no rule to re-match: they go through the dedicated, ADMIN-only budget bridge (its own claim, live revalidation, ONE Meta write, read-back).
   if (String(row.rule_name || '').startsWith('DYNAMIC_BUDGET:')) { const { executeBudgetDecision } = await import('./budgetExecution.js'); return executeBudgetDecision({ decisionId: row.id, userId, deps: deps.budget || {} }); }
+  // automation decisions (AUTO:*) prepared for the owner: the owner's approval is a HUMAN confirmation, executed by the automation executor (its own live re-evaluation, claim, central gate, read-back)
+  if (String(row.rule_name || '').startsWith('AUTO:')) { const { executeAutoDecision } = await import('./automationEngine.js'); return executeAutoDecision({ decisionId: row.id, source: 'USER', userId, deps: deps.auto || {} }); }
   if (row.status !== 'PREPARED') { const e = new Error(`القرار في حالة ${row.status} — مش قابل للموافقة.`); e.status = 409; throw e; }
   const claimed = await prisma.ambOperatorDecision.updateMany({ where: { id: row.id, status: 'PREPARED' }, data: { status: 'APPROVED', approval_source: 'USER', approved_by_id: userId || null, approved_at: new Date() } });
   if (claimed.count !== 1) { const e = new Error('القرار اتغيّر في نفس اللحظة — حدّث الصفحة.'); e.status = 409; throw e; }
@@ -329,6 +331,7 @@ export async function executeDecision({ decisionId, source = 'USER', userId = nu
   const row = await prisma.ambOperatorDecision.findUnique({ where: { id: Number(decisionId) } });
   if (!row) return { ok: false, executed: false, status: 'NOT_FOUND', message: 'القرار غير موجود.' };
   if (!['PREPARED', 'APPROVED'].includes(row.status)) return { ok: false, executed: false, status: row.status, message: `القرار في حالة ${row.status} — مش قابل للتنفيذ.` };
+  if (String(row.rule_name || '').startsWith('AUTO:')) { const { executeAutoDecision } = await import('./automationEngine.js'); return executeAutoDecision({ decisionId: row.id, source: source === 'AUTOPILOT' ? 'AUTOPILOT' : 'USER', userId, deps: deps.auto || {} }); }
   if (String(row.rule_name || '').startsWith('DYNAMIC_BUDGET:')) { // never from Autopilot / the scheduler, only a human through the budget bridge
     if (source !== 'USER' || !userId) return { ok: false, executed: false, status: 'BLOCKED', message: 'قرارات الميزانية بتتنفذ بموافقة ADMIN صريحة فقط (مفيش Autopilot).' };
     const { executeBudgetDecision } = await import('./budgetExecution.js'); return executeBudgetDecision({ decisionId: row.id, userId, deps: deps.budget || {} });

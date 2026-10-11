@@ -84,7 +84,7 @@ export async function checkConflicts({ campaignId, want, planId = null, excludeD
   if (want === 'OPEN' && live.some((i) => i.plan.type === 'PAUSE')) out.push({ code: 'CONFLICT_OPEN_AND_PAUSE', detail: 'خطة إيقاف معتمدة فيها نفس الحملة' });
   if (want === 'PAUSE' && live.some((i) => i.plan.type === 'OPEN')) out.push({ code: 'CONFLICT_OPEN_AND_PAUSE', detail: 'خطة فتح معتمدة فيها نفس الحملة' });
   if (budgetWant && live.length) out.push({ code: 'CONFLICT_PLAN_QUEUE_BUDGET', detail: `خطة ${live[0].plan.type === 'OPEN' ? 'فتح' : 'إيقاف'} #${live[0].plan.id} (${live[0].plan.status})` });
-  const decisions = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: campaignId, rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, status: { in: ['APPROVED', 'EXECUTING'] }, ...(excludeDecisionId ? { id: { not: Number(excludeDecisionId) } } : {}) }, select: { id: true, action: true, status: true } });
+  const decisions = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: campaignId, OR: [{ rule_name: { startsWith: 'DYNAMIC_BUDGET:' } }, { rule_name: { startsWith: 'AUTO:' } }], status: { in: ['APPROVED', 'EXECUTING'] }, ...(excludeDecisionId ? { id: { not: Number(excludeDecisionId) } } : {}) }, select: { id: true, action: true, status: true } });
   if (budgetWant) {
     if (decisions.some((d) => d.status === 'EXECUTING')) out.push({ code: 'CONFLICT_BUDGET_IN_FLIGHT', detail: `قرار #${decisions.find((d) => d.status === 'EXECUTING').id}` });
     const opposite = want === 'SCALE_UP' ? 'SCALE_DOWN' : 'SCALE_UP'; if (decisions.some((d) => d.action === opposite)) out.push({ code: 'CONFLICT_BUDGET_UP_DOWN', detail: `${opposite} معتمد/شغّال على نفس الحملة` });

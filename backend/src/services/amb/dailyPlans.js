@@ -19,7 +19,8 @@ import { getSyncStatus, runSnapshotSync } from './snapshotSync.js';
 import { raiseAlert } from './alerts.js';
 import { buildOpenCandidates, buildPauseCandidates } from './dailyPlanCandidates.js';
 import { getOpenCpaPolicy, validateOpenCpa, evaluateCampaign, summarizeEvaluations, loadWindowMetrics, windowRangeFor, REASON_AR, applyCapToEvals, runtimeBlock } from './openCpaPolicy.js';
-import { activeExposure } from './automationScope.js';
+import { activeExposure, scopeVerdict, weekdayAllowed } from './automationScope.js';
+import { getPausePolicy, pausePolicyActive } from './pausePolicy.js';
 import { SLOTS, TYPE_LABEL_AR, CAIRO_TZ, cairoDate, cairoParts, dueTypes, dueAt, dueAtTime, slotVariant, expiresAt, nextDue, planKey, clockNow, isTestClock } from './dailyPlanTime.js';
 
 const MS_M = 60_000, MS_H = 3_600_000;
@@ -577,11 +578,12 @@ export async function runOpenCpaAutomatic({ now = new Date(), deps = {} } = {}) 
   for (const p of await todaysOpenPlans({ now, simulated: false })) {
     if (p.status !== 'PREPARED' || p.scheduled_at > now || p.expires_at <= now) continue; const used = j(p.evidence_json, {}).openCpa; if (!used || used.version !== pol.version) { out.plans.push({ planId: p.id, skipped: 'PLAN_NOT_PREPARED_UNDER_CURRENT_POLICY' }); continue; }
     const fresh = await ensureFreshData({ now, deps }); if (fresh.state === 'STALE') { out.plans.push({ planId: p.id, skipped: 'STALE_DATA' }); continue; }
-    const ok = p.items.filter((i) => i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && j(i.evidence_json, {}).cpaPolicy?.verdict === 'ELIGIBLE' && !j(i.evidence_json, {}).userDeselected);
-    const drop = p.items.filter((i) => i.selected && !ok.includes(i)); for (const i of drop) await prisma.ambDailyPlanItem.update({ where: { id: i.id }, data: { selected: false } });
+    const gate = await automaticProductGate(deps); const notAuto = []; // AUTOMATIC is per product: only campaigns of a product whose ACTIVE policy is AUTOMATIC and READY run unattended; the rest stay for the owner's approval
+    const ok = p.items.filter((i) => { if (!(i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && j(i.evidence_json, {}).cpaPolicy?.verdict === 'ELIGIBLE' && !j(i.evidence_json, {}).userDeselected)) return false; const g = gate(i); if (!g.ok) { notAuto.push({ campaignId: i.campaign_id, reason: g.reason, detail: g.detail || null }); return false; } return true; });
+    const drop = p.items.filter((i) => i.selected && !ok.includes(i)); for (const i of drop) await prisma.ambDailyPlanItem.update({ where: { id: i.id }, data: { selected: false, status_reason: (notAuto.find((n) => n.campaignId === i.campaign_id)?.reason || 'NOT_ELIGIBLE_FOR_AUTOMATIC').slice(0, 200) } });
     if (!ok.length) { out.plans.push({ planId: p.id, skipped: 'NOTHING_ELIGIBLE', dropped: drop.length }); continue; }
     const claim = await prisma.ambDailyPlan.updateMany({ where: { id: p.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: pol.approved.by, approved_at: now, approval_mode: 'AUTOPILOT', execution_mode: 'LIVE', data_as_of: fresh.asOf, data_state: fresh.state, dismissed_at: p.dismissed_at || now } }); if (claim.count !== 1) continue;
-    await audit({ planId: p.id, userId: pol.approved.by, actor: 'SYSTEM', note: `AUTOMATIC: تنفيذ ${ok.length} حملة مؤهلة حسب سياسة CPA المعتمدة v${pol.version}`, data: { action: 'AUTOMATIC_APPROVED', policyVersion: pol.version, campaigns: ok.map((i) => i.campaign_id), dropped: drop.map((i) => i.campaign_id) } });
+    await audit({ planId: p.id, userId: pol.approved.by, actor: 'SYSTEM', note: `AUTOMATIC: تنفيذ ${ok.length} حملة مؤهلة حسب سياسة CPA المعتمدة v${pol.version}`, data: { action: 'AUTOMATIC_APPROVED', policyVersion: pol.version, campaigns: ok.map((i) => i.campaign_id), dropped: drop.map((i) => i.campaign_id), notAutomatic: notAuto } });
     out.plans.push({ planId: p.id, executed: await runPlanExecution({ planId: p.id, userId: pol.approved.by, now, deps }) });
   }
   return out;
@@ -605,6 +607,45 @@ export async function reconcilePlansForProduct({ productId, storeId = null, kind
   return out;
 }
 
+/** Per-product gate for UNATTENDED execution: the campaign's product must have an ACTIVE policy in mode AUTOMATIC and be READY (economics, stock, mapping, spend + CPA limits, approved pause policy). deps.automaticGate overrides (tests). */
+export async function automaticProductGate(deps = {}) {
+  if (deps.automaticGate) return deps.automaticGate;
+  const { loadActivePolicies, policyKey, mergeEffective } = await import('./productPolicy.js'); const { automationReadinessMap } = await import('./automationReadiness.js');
+  const policies = await loadActivePolicies(); const ready = await automationReadinessMap({ deps: { policies } });
+  return (it) => {
+    if (it.product_id == null) return { ok: false, reason: 'NO_PRODUCT' }; const k = policyKey(it.store_id, it.product_id); const pol = policies.get(k); if (!pol) return { ok: false, reason: 'NO_ACTIVE_PRODUCT_POLICY' };
+    if ((mergeEffective(pol, it.campaign_id).mode || pol.mode) !== 'AUTOMATIC') return { ok: false, reason: 'PRODUCT_NOT_AUTOMATIC' };
+    const rd = ready.get(k); if (!rd?.ready) return { ok: false, reason: 'NEEDS_CONFIGURATION', detail: (rd?.missing || []).map((m) => m.label).join(' · ') };
+    return { ok: true };
+  };
+}
+/** AUTOMATIC SCHEDULED CLOSING — the daily PAUSE plan executed without a click. Every gate of the open path applies (mode AUTOMATIC, writes unlocked, «إيقاف» permission, scheduled execution ON, no Emergency Stop / halt, autopilot gate,
+ *  fresh data) PLUS: the pause policy ENABLED + APPROVED at its CURRENT version with scheduledClose ON, the policy scope + weekday, and the per-product AUTOMATIC/READY gate. Only items the policy itself pre-selected
+ *  (policyPause: a zero-order stop that passed every guard) run; winners and protected campaigns never do. Same queue as an approved plan afterwards (live revalidation → one write → read-back). */
+export async function runPauseAutomatic({ now = new Date(), deps = {} } = {}) {
+  const cfg = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig(); const pol = deps.pausePolicy || await getPausePolicy(); const why = [];
+  if (cfg.mode !== 'AUTOPILOT') why.push('MODE_NOT_AUTOMATIC'); if (cfg.emergency_stop) why.push('EMERGENCY_STOP'); if (cfg.writesLocked ?? metaWritesLocked()) why.push('META_WRITES_LOCKED'); if (cfg.execPermissions?.pause !== true) why.push('PAUSE_PERMISSION_OFF');
+  if (!dcfg.scheduledExecution?.enabled) why.push('SCHEDULED_EXECUTION_OFF'); if (dcfg.halted) why.push('QUEUE_HALTED'); if (!pausePolicyActive(pol)) why.push('PAUSE_POLICY_NOT_APPROVED_AT_CURRENT_VERSION'); else if (!pol.scheduledClose?.enabled) why.push('SCHEDULED_CLOSE_OFF');
+  if (why.length) return { ran: false, why };
+  const gate0 = await (deps.autopilotGate ? deps.autopilotGate() : (await import('./operatorStore.js')).autopilotGate()); if (!gate0.ok) return { ran: false, why: ['AUTOPILOT_GATE_NOT_READY'] };
+  const date = cairoDate(now); const weekday = new Date(`${date}T12:00:00Z`).getUTCDay(); const gate = await automaticProductGate(deps); const out = { ran: true, plans: [] };
+  const plans = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated: false, type: 'PAUSE', status: 'PREPARED', scheduled_at: { lte: now }, expires_at: { gt: now } }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } });
+  const seen = new Set();
+  for (const p of plans) {
+    if (seen.has(p.plan_key)) continue; seen.add(p.plan_key);
+    const fresh = await ensureFreshData({ now, deps }); if (fresh.state === 'STALE') { out.plans.push({ planId: p.id, skipped: 'STALE_DATA' }); continue; }
+    if (!weekdayAllowed(pol.days, weekday)) { out.plans.push({ planId: p.id, skipped: 'DAY_NOT_ALLOWED' }); continue; }
+    const notAuto = [];
+    const ok = p.items.filter((i) => { const ev = j(i.evidence_json, {}); if (!(i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && ev.policyPause && !ev.userDeselected && !ev.winner)) return false; const sv = scopeVerdict(pol.scope, { productId: i.product_id, storeId: i.store_id, campaignId: i.campaign_id }); if (sv) { notAuto.push({ campaignId: i.campaign_id, reason: sv }); return false; } const g = gate(i); if (!g.ok) { notAuto.push({ campaignId: i.campaign_id, reason: g.reason, detail: g.detail || null }); return false; } return true; });
+    const drop = p.items.filter((i) => i.selected && !ok.includes(i)); for (const i of drop) await prisma.ambDailyPlanItem.update({ where: { id: i.id }, data: { selected: false, status_reason: (notAuto.find((n) => n.campaignId === i.campaign_id)?.reason || 'NOT_ELIGIBLE_FOR_AUTOMATIC').slice(0, 200) } });
+    if (!ok.length) { out.plans.push({ planId: p.id, skipped: 'NOTHING_ELIGIBLE', dropped: drop.length }); continue; }
+    const claim = await prisma.ambDailyPlan.updateMany({ where: { id: p.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: pol.approved.by, approved_at: now, approval_mode: 'AUTOPILOT', execution_mode: 'LIVE', data_as_of: fresh.asOf, data_state: fresh.state, dismissed_at: p.dismissed_at || now } }); if (claim.count !== 1) continue;
+    await audit({ planId: p.id, userId: pol.approved.by, actor: 'SYSTEM', note: `AUTOMATIC: إيقاف ${ok.length} حملة حسب سياسة الإيقاف المعتمدة v${pol.version} (الإغلاق المجدول)`, data: { action: 'AUTOMATIC_APPROVED', policyVersion: pol.version, campaigns: ok.map((i) => i.campaign_id), dropped: drop.map((i) => i.campaign_id), notAutomatic: notAuto } });
+    out.plans.push({ planId: p.id, executed: await runPlanExecution({ planId: p.id, userId: pol.approved.by, now, deps }) });
+  }
+  return out;
+}
+
 let ticking = false;
 export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
   if (ticking) return { skipped: 'ALREADY_TICKING' }; ticking = true;
@@ -614,6 +655,7 @@ export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
     const dcfg = await getDailyPlanConfig();
     if (!sim) out.recovery = await import('./executionRecovery.js').then((m) => m.recoverInterrupted({ now, deps })).catch((e) => ({ error: e.message })); // settle work a restart interrupted: read-back only, never a re-send
     if (!sim) out.openCpaAutomatic =await runOpenCpaAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] open-cpa automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
+    if (!sim) out.pauseAutomatic = await runPauseAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] pause automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
     if (dcfg.scheduledExecution.enabled && !sim) { // unattended execution of plans approved ahead of time — only when explicitly enabled
       const due = await prisma.ambDailyPlan.findMany({ where: { simulated: false, status: 'APPROVED', scheduled_at: { lte: now }, expires_at: { gt: now } } });
       out.executed = []; for (const p of due) { out.executed.push(await runPlanExecution({ planId: p.id, userId: p.approved_by_id, now, deps })); }

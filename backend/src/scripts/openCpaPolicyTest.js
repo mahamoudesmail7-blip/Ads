@@ -167,7 +167,7 @@ try {
   const p8 = await mkPlan({ date: d8, simulated: false, now: now8, openCpa: { version: pol8.version } });
   await DP.prepareOpenCpaMatches({ planId: p8.id, userId: ADMIN_ID, now: now8, simulated: false, deps: { ...dep3, user: ADMIN } });
   const ALL = { config: async () => cfgOf({ mode: 'AUTOPILOT', writesLocked: false, execPermissions: { open: true, pause: false, budgetIncrease: false, budgetDecrease: false } }), dcfg: DC_ON, autopilotGate: async () => ({ ok: true }) };
-  const run = (over = {}, extra = {}) => DP.runOpenCpaAutomatic({ now: now8, deps: { ...D0, ...ALL, ...over, ...extra, readEntity: readPaused, approveAndExecute: stubExec } });
+  const run = (over = {}, extra = {}) => DP.runOpenCpaAutomatic({ now: now8, deps: { automaticGate: () => ({ ok: true }), ...D0, ...ALL, ...over, ...extra, readEntity: readPaused, approveAndExecute: stubExec } });
   const gates = [
     ['MODE_NOT_AUTOMATIC', { config: async () => cfgOf({ mode: 'APPROVAL', writesLocked: false, execPermissions: { open: true } }) }], ['MODE_NOT_AUTOMATIC (SHADOW)', { config: async () => cfgOf({ mode: 'SHADOW', writesLocked: false, execPermissions: { open: true } }) }],
     ['EMERGENCY_STOP', { config: async () => cfgOf({ mode: 'AUTOPILOT', writesLocked: false, emergency_stop: true, execPermissions: { open: true } }) }], ['META_WRITES_LOCKED', { config: async () => cfgOf({ mode: 'AUTOPILOT', writesLocked: true, execPermissions: { open: true } }) }],

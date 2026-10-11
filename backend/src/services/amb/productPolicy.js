@@ -110,6 +110,9 @@ export async function activatePolicy({ productId, storeId, confirm, confirmAutom
   const anyAuto = cur.draft.mode === 'AUTOMATIC' || Object.values(cur.draft.campaigns || {}).some((c) => c.mode === 'AUTOMATIC');
   if (anyAuto && confirmAutomatic !== true) throw fail(400, 'تفعيل AUTOMATIC على منتج/حملة محتاج تأكيد ADMIN إضافي واضح (confirmAutomatic).', 'CONFIRM_AUTOMATIC_REQUIRED');
   const errors = validatePolicy(cur.draft); if (errors.length) throw fail(400, errors.join(' '), 'INVALID_POLICY');
+  // AUTOMATIC is never allowed on an incomplete product: economics, stock, mapping, spend limits, CPA limits and an approved pause policy must all exist (the engine re-checks this at every tick)
+  if (anyAuto) { const rd = await (deps.readiness ? deps.readiness({ productId, storeId, policy: cur.draft }) : import('./automationReadiness.js').then((m) => m.productAutomationReadiness({ productId, storeId, deps: { policy: cur.draft } })));
+    if (!rd.ready) { const e = fail(409, `مينفعش تفعّل AUTOMATIC — المنتج ناقص: ${rd.missing.map((m) => m.label + (m.detail ? ` (${m.detail})` : '')).join(' · ')}`, 'AUTOMATIC_NOT_READY'); e.details = { missing: rd.missing, checks: rd.checks }; throw e; } }
   all[k] = { ...cur, active: cur.draft, draft: null, activatedAt: new Date().toISOString(), activatedById: Number(userId), version: (cur.version || 0) + 1 };
   await writeAll(raw, all, userId);
   const backup = await syncProductConfig({ productId, storeId, policy: all[k].active, userId }); all[k].mirrorBackup = cur.active ? (cur.mirrorBackup || backup) : backup; await writeAll(raw, all, userId);
