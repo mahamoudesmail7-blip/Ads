@@ -114,7 +114,7 @@ export async function evaluateAutomation({ now = new Date(), live = false, only 
     if (dp.trigger) {
       const blockers = dp.blockers.map((code) => ({ code, message: code }));
       // guards: a zero-order pause carries the optimizer row's own verdict; the other triggers run the full guard chain here
-      if (dp.trigger === 'ZERO_ORDER' && pauseRow) { for (const g of pauseRow.guards.filter((x) => /\[B\]/.test(x))) blockers.push({ code: g.split('[')[0], message: g }); }
+      if (dp.trigger === 'ZERO_ORDER' && pauseRow) { for (const g of pauseRow.guards.filter((x) => /\[B\]/.test(x))) blockers.push({ code: g.split('[')[0], message: g }); if (rows.length > 1 && !rows.every((x) => x.intended?.action === 'PAUSE')) blockers.push({ code: 'PARTIAL_ADSETS', message: 'الصرف بدون أوردرات على بعض الـAd Sets فقط — إيقاف الحملة كلها محتاج موافقتك' }); }
       else {
         const gb = deps.guardsOf ? await deps.guardsOf({ ...base0, trigger: dp.trigger }) : await pauseGuards({ world, cx, c, config, counters, now, trigger: dp.trigger, m3 });
         blockers.push(...gb);
