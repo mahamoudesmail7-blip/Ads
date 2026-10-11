@@ -50,6 +50,10 @@ import { performanceReport, executedWithOutcomes, operatorHealth, ruleAuditLog, 
 import { decisionEvents } from '../services/amb/operatorReports.js';
 import { retryFailedDecision } from '../services/amb/operatorEngine.js';
 import { LIFECYCLE, LIFECYCLE_LABEL_AR } from '../services/amb/operatorDecision.js';
+import * as PAUSEP from '../services/amb/pausePolicy.js';
+import * as AUTO from '../services/amb/automationEngine.js';
+import * as AREADY from '../services/amb/automationReadiness.js';
+import * as MANUAL from '../services/amb/manualOperations.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
@@ -375,5 +379,24 @@ router.get('/brief', asyncRoute(async (req, res) => res.json(await dailyBrief({ 
 router.get('/autopilot-gate', asyncRoute(async (req, res) => res.json({ gate: await store.autopilotGate(), attestKeys: store.ATTEST_KEYS })));
 router.post('/autopilot-gate/attest', ADMIN, asyncRoute(async (req, res) => { await store.attestAutopilot({ keys: req.body?.keys, userId: req.user.id }); res.json({ gate: await store.autopilotGate() }); }));
 router.delete('/autopilot-gate/attest', ADMIN, asyncRoute(async (req, res) => { await store.revokeAttestations({ userId: req.user.id }); res.json({ gate: await store.autopilotGate() }); }));
+
+// ---- 2026-10-11: pause policy · automation engine · AUTOMATIC readiness / activation summary · MANUAL operations -----------------------------------------------------------------------------------
+router.get('/pause-policy', asyncRoute(async (req, res) => { const p = await PAUSEP.getPausePolicy(); res.json({ policy: { ...p, history: p.history.slice(-10).reverse() }, active: PAUSEP.pausePolicyActive(p), precedence: PAUSEP.PRECEDENCE_AR, triggers: PAUSEP.TRIGGER_AR }); }));
+router.put('/pause-policy', ADMIN, asyncRoute(async (req, res) => res.json(await PAUSEP.savePausePolicy({ patch: req.body || {}, userId: req.user.id }))));
+router.post('/pause-policy/enable', ADMIN, asyncRoute(async (req, res) => res.json(await PAUSEP.setPausePolicyEnabled({ enabled: req.body?.enabled, confirm: req.body?.confirm, userId: req.user.id }))));
+router.get('/automation/status', asyncRoute(async (req, res) => { const cfg = await store.getOperatorConfig(); const dcfg = await daily.getDailyPlanConfig(); const pause = await PAUSEP.getPausePolicy(); const open = await OC.getOpenCpaPolicy();
+  const since = new Date(Date.now() - 24 * 3_600_000); const rows = await prisma.ambOperatorDecision.groupBy({ by: ['status'], where: { rule_name: { startsWith: 'AUTO:' }, created_at: { gte: since } }, _count: true });
+  res.json({ mode: cfg.mode === 'OFF' ? 'MANUAL' : cfg.mode, emergencyStop: cfg.emergency_stop, writesLocked: cfg.writesLocked, permissions: cfg.execPermissions, scheduledExecution: dcfg.scheduledExecution.enabled, queueHalted: dcfg.halted, lastTick: AUTO.getAutomationStatus().lastRun, operatorScheduler: getOperatorSchedulerStatus(),
+    policies: { open: { enabled: open.enabled, version: open.version, approvedVersion: open.approved?.version ?? null }, pause: { enabled: pause.enabled, version: pause.version, approvedVersion: pause.approved?.version ?? null, active: PAUSEP.pausePolicyActive(pause), scheduledClose: pause.scheduledClose.enabled } }, last24h: Object.fromEntries(rows.map((r) => [r.status, r._count])) }); }));
+router.get('/automation/candidates', ADMIN, asyncRoute(async (req, res) => { const r = await AUTO.evaluateAutomation({ now: clockNow(), live: false }); res.json({ ...r, candidates: r.candidates.map((c) => ({ key: c.key, kind: c.kind, kindLabel: AUTO.KIND_LABEL[c.kind], action: c.action, campaignId: c.campaignId, campaignName: c.campaignName, productId: c.productId, productName: c.productName, productMode: c.productMode, effective: c.effective, canExecuteNow: c.canExecuteNow, permission: c.permission, permissionOn: c.permissionOn, fromBudget: c.fromBudget, toBudget: c.toBudget, reason: c.reason, blockers: c.blockers, autoBlockers: c.autoBlockers })) }); }));
+router.post('/automation/tick', ADMIN, asyncRoute(async (req, res) => { if (req.body?.confirm !== true) return res.status(400).json({ message: 'تشغيل دورة الأتمتة يدويًا محتاج تأكيد صريح — نفس بوابات الأمان بتتطبق.', code: 'CONFIRM_REQUIRED' }); res.json(await AUTO.runAutomationTick({ now: new Date() })); }));
+router.get('/automation/readiness', asyncRoute(async (req, res) => { const m = await AREADY.automationReadinessMap(); res.json({ products: [...m.values()], required: AREADY.REQUIRED_KEYS }); }));
+router.get('/automation/readiness/:productId', asyncRoute(async (req, res) => res.json(await AREADY.productAutomationReadiness({ productId: Number(req.params.productId), storeId: req.query.storeId || null }))));
+router.get('/automation/activation-summary/:productId', asyncRoute(async (req, res) => res.json(await AREADY.activationSummary({ productId: Number(req.params.productId), storeId: req.query.storeId || null }))));
+router.get('/manual/targets', asyncRoute(async (req, res) => { const acc = await adAccountId(); if (!acc) return res.json({ campaigns: [] }); const q = String(req.query.q || '').trim().toLowerCase(); const idx = await (await import('../services/amb/operatorContext.js')).buildCampaignProductIndex({ adAccountId: acc });
+  const list = (await listCampaignsFromSnapshots({ adAccountId: acc })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status) && (!q || `${c.name || ''} ${c.id}`.toLowerCase().includes(q))).sort((a, b) => (a.status === b.status ? 0 : a.status === 'ACTIVE' ? -1 : 1)).slice(0, 200);
+  res.json({ campaigns: list.map((c) => ({ id: c.id, name: c.name, status: c.status, budget: c.budget, budgetType: c.budgetType, verified: !!idx.get(c.id)?.verified, mapped: idx.has(c.id) })), operations: Object.fromEntries(Object.entries(MANUAL.MANUAL_OPS).map(([k, v]) => [k, v.label])) }); }));
+router.post('/manual/preflight', ADMIN, asyncRoute(async (req, res) => res.json(await MANUAL.manualPreflight({ campaignId: req.body?.campaignId, entityId: req.body?.entityId || null, level: req.body?.level || 'campaign', operation: req.body?.operation, toBudget: req.body?.toBudget ?? null, pct: req.body?.pct ?? null, userId: req.user.id }))));
+router.post('/manual/execute', ADMIN, asyncRoute(async (req, res) => { try { res.json(await MANUAL.manualExecute({ campaignId: req.body?.campaignId, entityId: req.body?.entityId || null, level: req.body?.level || 'campaign', operation: req.body?.operation, confirm: req.body?.confirm, userId: req.user.id })); } catch (e) { if (e.code && e.status) return res.status(e.status).json({ message: e.message, code: e.code, blockers: e.blockers, requiresAck: e.requiresAck, current: e.current, reasons: e.reasons }); throw e; } }));
 
 export default router;

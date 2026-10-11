@@ -33,11 +33,13 @@ export const AUTO_PREFIX = 'AUTO:';
 export const isAutoRule = (name) => String(name || '').startsWith(AUTO_PREFIX);
 export const AMB_ACTION = { PAUSE: 'PAUSE', SCALE_UP: 'INCREASE_BUDGET', SCALE_DOWN: 'DECREASE_BUDGET' };
 export const DEFAULT_AUTOMATION = Object.freeze({ flipHours: 72, maxActionsPerTick: 10, spacingSeconds: 3, metaMinDailyBudget: null });
-export const KIND_LABEL = { STOCK_OUT: 'إيقاف: نفاد المخزون', ZERO_ORDER: 'إيقاف: صرف بدون أوردرات', HIGH_CPA: 'إيقاف: CPA عالي', REDUCE: 'تقليل ميزانية', INCREASE: 'زيادة ميزانية' };
+export const KIND_LABEL = { MANUAL_OPEN: 'فتح (يدوي)', MANUAL_PAUSE: 'إيقاف (يدوي)', MANUAL_INCREASE: 'زيادة ميزانية (يدوي)', MANUAL_REDUCE: 'تقليل ميزانية (يدوي)', STOCK_OUT: 'إيقاف: نفاد المخزون', ZERO_ORDER: 'إيقاف: صرف بدون أوردرات', HIGH_CPA: 'إيقاف: CPA عالي', REDUCE: 'تقليل ميزانية', INCREASE: 'زيادة ميزانية' };
 const RATE_LIMIT_RE = /rate limit|request limit reached|too many (api )?calls|(#(4|17|32|613))/i; // Meta's throttling answers (also when the executor reports them as a plain failure message)
 const round0 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v)));
 const slim = (m) => (m ? { spend: round0(m.spend ?? 0), purchases: m.purchases ?? 0, cpa: m.cpa == null ? null : round0(m.cpa) } : { spend: 0, purchases: 0, cpa: null });
 const settingsOf = (config) => ({ ...DEFAULT_AUTOMATION, ...(config?.limits?.automation || {}) });
+/** a refused AUTOMATIC execution must never be silent: one deduplicated alert says what was NOT done and why */
+const alertRefused = (row, params, code, message) => raiseAlert({ severity: 'WARNING', category: 'OPERATOR', title: `AUTOMATIC ما نفّذش — ${row.campaign_name || row.campaign_id}`, message: `${KIND_LABEL[params.kind] || row.action}: ${message}`.slice(0, 480), adAccountId: row.ad_account_id, entityId: row.campaign_id, dedupeKey: `operator:autorefused:${row.id}:${code}` }).catch(() => {});
 const event = async (data) => { try { await prisma.ambOperatorEvent.create({ data }); } catch (e) { logger.warn('[automation] event write failed', { message: e.message }); } };
 const transition = (decisionId, from, to, { actor = 'AUTOPILOT', actorId = null, note = null, data = null, campaignId = null } = {}) => event({ decision_id: decisionId, kind: 'TRANSITION', from_status: from, to_status: to, actor, actor_id: actorId, note, data_json: data ? JSON.stringify(data).slice(0, 3000) : null, campaign_id: campaignId });
 
@@ -193,9 +195,9 @@ export async function executeAutoDecision({ decisionId, source = 'AUTOPILOT', us
   if (!ambAction) return { ...out, status: 'ACTION_NOT_SUPPORTED', message: `الأكشن ${row.action} مش مدعوم.` };
   const config = deps.config || await getOperatorConfig();
   const wg = evaluateWriteGate({ config, actionType: ambAction, mode: source === 'AUTOPILOT' ? 'AUTOPILOT' : 'HUMAN' });
-  if (!wg.ok) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: `BLOCKED_AT_GATE ${wg.code}`, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: wg.code, message: wg.message, reasons: wg.reasons }; }
-  { const cf = await (deps.checkConflicts ? deps.checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id }) : (await import('./integration.js')).checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id, now })).catch(() => []); if (cf.length) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: `BLOCKED_AT_GATE ${cf[0].code}`, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: cf[0].code, message: `تعارض: ${cf[0].detail || cf[0].code}` }; } }
-  if (row.action === 'SCALE_UP') { const cap = await checkBudgetCaps({ action: 'SCALE_UP', delta: (params.toBudget ?? 0) - (params.fromBudget ?? 0), adAccountId: row.ad_account_id, campaignId: row.campaign_id, productId: row.product_id ?? null, productCapOverride: dailyCapFromLimits(config.limits, row.store_id, row.product_id, row.campaign_id), now, deps: deps.capsDeps || {} }); if (!cap.ok) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: 'BLOCKED_AT_GATE BUDGET_CAP', data: { violations: cap.violations }, campaignId: row.campaign_id }); return { ...out, status: 'BLOCKED', blocked: 'BUDGET_CAP', message: `الزيادة هتتجاوز حدّ الميزانية: ${cap.violations.map((v) => `${v.label} (${v.after} > ${v.cap})`).join('، ')}`, violations: cap.violations }; } }
+  if (!wg.ok) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: `BLOCKED_AT_GATE ${wg.code}`, campaignId: row.campaign_id }); if (source === 'AUTOPILOT') await alertRefused(row, params, wg.code, wg.message); return { ...out, status: 'BLOCKED', blocked: wg.code, message: wg.message, reasons: wg.reasons }; }
+  { const cf = await (deps.checkConflicts ? deps.checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id }) : (await import('./integration.js')).checkConflicts({ campaignId: row.campaign_id, want: row.action, excludeDecisionId: row.id, now })).catch(() => []); if (cf.length) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: `BLOCKED_AT_GATE ${cf[0].code}`, campaignId: row.campaign_id }); if (source === 'AUTOPILOT') await alertRefused(row, params, cf[0].code, `تعارض: ${cf[0].detail || cf[0].code}`); return { ...out, status: 'BLOCKED', blocked: cf[0].code, message: `تعارض: ${cf[0].detail || cf[0].code}` }; } }
+  if (row.action === 'SCALE_UP') { const cap = await checkBudgetCaps({ action: 'SCALE_UP', delta: (params.toBudget ?? 0) - (params.fromBudget ?? 0), adAccountId: row.ad_account_id, campaignId: row.campaign_id, productId: row.product_id ?? null, productCapOverride: dailyCapFromLimits(config.limits, row.store_id, row.product_id, row.campaign_id), now, deps: deps.capsDeps || {} }); if (!cap.ok) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: 'BLOCKED_AT_GATE BUDGET_CAP', data: { violations: cap.violations }, campaignId: row.campaign_id }); if (source === 'AUTOPILOT') await alertRefused(row, params, 'BUDGET_CAP', 'الزيادة هتتجاوز حدّ الميزانية'); return { ...out, status: 'BLOCKED', blocked: 'BUDGET_CAP', message: `الزيادة هتتجاوز حدّ الميزانية: ${cap.violations.map((v) => `${v.label} (${v.after} > ${v.cap})`).join('، ')}`, violations: cap.violations }; } }
 
   // fresh LIVE re-evaluation: the SAME decision (same kind, entity, budgets) or nothing
   const fresh = await (deps.reevaluate ? deps.reevaluate({ row, params }) : evaluateAutomation({ now, live: true, only: { campaignIds: [row.campaign_id] }, deps: deps.evalDeps || {} }));
@@ -213,9 +215,15 @@ export async function executeAutoDecision({ decisionId, source = 'AUTOPILOT', us
     const msg = `القرار اتبطل — الأدلة/الحالة اتغيّرت: ${reasons.map((r) => `${r.code}${r.detail ? ` (${r.detail})` : ''}`).join('، ')}`;
     await prisma.ambOperatorDecision.updateMany({ where: { id: row.id, status: 'PREPARED' }, data: { status: 'EXPIRED', error: msg, error_category: 'GUARD' } });
     await transition(row.id, 'PREPARED', 'EXPIRED', { actor, actorId: userId, note: msg, data: { reasons }, campaignId: row.campaign_id });
+    if (source === 'AUTOPILOT') await alertRefused(row, params, 'EXPIRED', msg);
     return { ...out, status: 'EXPIRED', message: msg, reasons };
   }
 
+  return performWrite({ row, params, ambAction, actor, source, userId, config, deps, out });
+}
+
+/** The shared WRITE stage: atomic claim → recommendation → the executor (central gate inside) → independent read-back → settle the decision. Used by the engine, by the owner's approval of a prepared decision and by MANUAL operations. */
+export async function performWrite({ row, params, ambAction, actor, source, userId, config, deps = {}, out }) {
   const approvedAt = new Date();
   const claim = await prisma.ambOperatorDecision.updateMany({ where: { id: row.id, status: 'PREPARED' }, data: { status: 'EXECUTING', approval_source: source, approved_by_id: userId, approved_at: approvedAt } });
   if (claim.count !== 1) return { ...out, status: 'RACE', message: 'القرار بيتنفذ بالفعل.' };
@@ -227,7 +235,7 @@ export async function executeAutoDecision({ decisionId, source = 'AUTOPILOT', us
   const polRef = await (deps.policyRef ? deps.policyRef({ productId: row.product_id, storeId: row.store_id, campaignId: row.campaign_id }) : (await import('./integration.js')).policyRefFor({ productId: row.product_id, storeId: row.store_id, campaignId: row.campaign_id })).catch(() => null);
   const rec = await prisma.ambRecommendation.create({ data: { batch_id: `operator-auto-${row.id}`, ad_account_id: row.ad_account_id, amb_product_id: amb?.id ?? null, product_name: row.product_id != null ? null : null, level, entity_id: entityId, entity_name: row.campaign_name, campaign_id: row.campaign_id, campaign_name: row.campaign_name,
     adset_id: level === 'adset' ? entityId : null, decision: ambAction, action_type: ambAction, executable: true, current_metrics_json: JSON.stringify(ev.m3 || {}), current_budget: params.fromBudget ?? null, recommended_budget: params.toBudget ?? null, budget_change_pct: params.pct ? (row.action === 'SCALE_UP' ? params.pct : -params.pct) : null,
-    reason: `AI Operator (${source === 'AUTOPILOT' ? 'AUTOMATIC' : 'APPROVED'}) — ${KIND_LABEL[params.kind] || row.rule_name}: ${j(row.why_json, {})?.why || ''}`.slice(0, 900), reason_facts_json: JSON.stringify({ ...ev, policyRef: polRef }), confidence: 'HIGH', risk_level: row.action === 'SCALE_UP' ? 'MEDIUM' : 'LOW', data_sufficiency: 'STRONG', priority: 'P2', time_window_label: 'آخر 3 أيام', source: 'OPERATOR', status: 'PENDING' } });
+    reason: `AI Operator (${source === 'AUTOPILOT' ? 'AUTOMATIC' : String(params.kind || '').startsWith('MANUAL_') ? 'MANUAL' : 'APPROVED'}) — ${KIND_LABEL[params.kind] || row.rule_name}: ${j(row.why_json, {})?.why || ''}`.slice(0, 900), reason_facts_json: JSON.stringify({ ...ev, policyRef: polRef }), confidence: 'HIGH', risk_level: row.action === 'SCALE_UP' ? 'MEDIUM' : 'LOW', data_sufficiency: 'STRONG', priority: 'P2', time_window_label: 'آخر 3 أيام', source: String(params.kind || '').startsWith('MANUAL_') ? 'MANUAL' : 'OPERATOR', status: 'PENDING' } });
   await prisma.ambOperatorDecision.update({ where: { id: row.id }, data: { amb_recommendation_id: rec.id } });
 
   const exec = deps.approveAndExecute || (await import('./executor.js')).approveAndExecute; let result = null, err = null;
@@ -277,6 +285,7 @@ export async function runAutomationTick({ now = new Date(), deps = {} } = {}) {
     const gate = tickGate({ config, dcfg, metaStale: ev.metaStale, autopilotOk: apOk });
     const out = { at: now.toISOString(), mode: config.mode, gate: gate.map((g) => g.code), evaluated: ev.candidates.length, summary: ev.summary, executed: [], deferred: [], skipped: ev.skipped.length };
     if (ev.metaStale) { out.stale = true; lastRun = out; return out; } // nothing is recorded or executed on untrusted data
+    for (const c of ev.candidates.filter((x) => x.productMode === 'AUTOMATIC' && x.autoBlockers.some((b) => b.code === 'NEEDS_CONFIGURATION'))) await raiseAlert({ severity: 'WARNING', category: 'OPERATOR', title: `AUTOMATIC متوقف على منتج ناقص: ${c.productName || c.productKey}`, message: c.autoBlockers.find((b) => b.code === 'NEEDS_CONFIGURATION').message.slice(0, 460), entityId: c.campaignId, dedupeKey: `automation:needs:${c.productKey}:${cairoDate(now)}` }).catch(() => {});
     const p = await persistCandidates(ev.candidates, { adAccountId: ev.adAccountId, mode: config.mode, now }); out.persisted = { created: p.created, updated: p.updated };
     if (gate.length) { lastRun = out; return out; } // the owner still sees what WOULD run (PREPARED decisions), nothing executes
     let sent = 0; const counters = deps.counters || await loadCounters({ now, campaigns: [] }).catch(() => ({ actionsLastHour: 0 })); const hourly = config.limits.maxActionsPerHour || null;

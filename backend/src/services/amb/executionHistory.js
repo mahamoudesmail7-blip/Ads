@@ -26,7 +26,9 @@ export function shapeActionRow(a) {
     { key: final === 'REQUESTED' ? 'PENDING' : final, done: !['REQUESTED', 'VALIDATED'].includes(final), at: a.executed_at || null },
   ];
   const before = oldV.budget != null ? oldV.budget : oldV.status ?? null; const after = newV.budget != null ? newV.budget : newV.status ?? null;
+  const origin = a.approval_status === 'AUTO' ? 'AUTOMATIC' : a.recommendation?.source === 'MANUAL' ? 'MANUAL' : 'APPROVED'; const kind = facts.history?.kind || facts.trigger || null;
   return {
+    origin, originLabel: { AUTOMATIC: 'تلقائي', MANUAL: 'يدوي', APPROVED: 'بموافقة' }[origin], kind, trigger: kind, decisionReason: a.ai_reason || null,
     id: a.id, at: a.executed_at || a.created_at, requestedAt: a.created_at, campaignId: a.campaign_id || a.entity_id, campaignName: a.entity_name || null, level: a.level, type: a.action_type, typeLabel: OP_LABEL[a.action_type] || a.action_type,
     mode: a.mode, approval: a.approval_status, by: a.executed_by?.name || (a.approval_status === 'AUTO' ? 'النظام (Autopilot)' : null), before, after, budgetChange: oldV.budget != null || newV.budget != null,
     final, finalLabel: FINAL_LABEL[final], stages, error: a.meta_error || (final === 'BLOCKED' ? (reval?.reason || 'اتمنع قبل الإرسال') : null), reason: a.ai_reason || null,
@@ -36,7 +38,7 @@ export function shapeActionRow(a) {
 }
 export async function listExecutionHistory({ limit = 100, type = null, final = null } = {}) {
   const take = Math.max(1, Math.min(300, Number(limit) || 100));
-  const rows = await prisma.ambAction.findMany({ where: type ? { action_type: type } : {}, orderBy: { id: 'desc' }, take, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true } } } });
+  const rows = await prisma.ambAction.findMany({ where: type ? { action_type: type } : {}, orderBy: { id: 'desc' }, take, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true } } } });
   const shaped = rows.map(shapeActionRow).filter((r) => !final || r.final === final);
   const counts = { total: shaped.length }; for (const r of shaped) counts[r.final] = (counts[r.final] || 0) + 1;
   return { rows: shaped, counts };
@@ -54,14 +56,14 @@ export function cairoDayStart(now = new Date()) {
  */
 export async function todaySummary({ now = new Date(), deps = {} } = {}) {
   const since = cairoDayStart(now);
-  const rows = await prisma.ambAction.findMany({ where: { OR: [{ executed_at: { gte: since } }, { executed_at: null, created_at: { gte: since } }] }, orderBy: { id: 'desc' }, take: 500, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true } } } });
+  const rows = await prisma.ambAction.findMany({ where: { OR: [{ executed_at: { gte: since } }, { executed_at: null, created_at: { gte: since } }] }, orderBy: { id: 'desc' }, take: 500, include: { executed_by: { select: { name: true } }, recommendation: { select: { reason_facts_json: true, source: true } } } });
   const sh = rows.map(shapeActionRow); const by = { RESUME: 'opened', PAUSE: 'paused', INCREASE_BUDGET: 'increased', DECREASE_BUDGET: 'reduced' };
   const out = { opened: { sent: 0, verified: 0 }, paused: { sent: 0, verified: 0 }, increased: { sent: 0, verified: 0 }, reduced: { sent: 0, verified: 0 } };
-  let exposureAdded = 0, budgetReleased = 0, failed = 0, blocked = 0, uncertain = 0;
+  let exposureAdded = 0, budgetReleased = 0, failed = 0, blocked = 0, uncertain = 0; const byOrigin = { AUTOMATIC: { opened: 0, paused: 0, increased: 0, reduced: 0 }, MANUAL: { opened: 0, paused: 0, increased: 0, reduced: 0 }, APPROVED: { opened: 0, paused: 0, increased: 0, reduced: 0 } };
   for (const r of sh) {
     if (r.final === 'FAILED') failed++; else if (r.final === 'BLOCKED') blocked++; else if (r.final === 'UNCERTAIN') uncertain++;
     const k = by[r.type]; if (!k || !['VERIFIED', 'UNCERTAIN'].includes(r.final)) continue;
-    out[k].sent++; if (r.final === 'VERIFIED') out[k].verified++;
+    out[k].sent++; byOrigin[r.origin][k]++; if (r.final === 'VERIFIED') out[k].verified++;
     const b = Number(r.after), a = Number(r.before);
     if (r.type === 'INCREASE_BUDGET' && Number.isFinite(b) && Number.isFinite(a)) exposureAdded += Math.max(0, b - a);
     else if (r.type === 'DECREASE_BUDGET' && Number.isFinite(b) && Number.isFinite(a)) budgetReleased += Math.max(0, a - b);
@@ -70,5 +72,5 @@ export async function todaySummary({ now = new Date(), deps = {} } = {}) {
   const cfg = deps.config || await (await import('./operatorStore.js')).getOperatorConfig();
   const health = { mode: cfg.mode, emergencyStop: !!cfg.emergency_stop, writesLocked: !!cfg.writesLocked, permissions: cfg.execPermissions, openAlerts: bar.importantAlerts ?? null };
   health.status = cfg.emergency_stop ? 'EMERGENCY_STOP' : cfg.writesLocked ? 'WRITES_LOCKED' : cfg.mode === 'APPROVAL' ? 'APPROVAL_READY' : cfg.mode === 'AUTOPILOT' ? 'AUTOMATIC' : 'OBSERVING';
-  return { since, ...out, exposureAdded, budgetReleased, failed, blocked, uncertain, pendingApprovals: bar.pendingApprovals ?? null, health };
+  return { since, ...out, byOrigin, exposureAdded, budgetReleased, failed, blocked, uncertain, pendingApprovals: bar.pendingApprovals ?? null, health };
 }

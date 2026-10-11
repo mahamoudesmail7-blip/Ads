@@ -60,7 +60,7 @@ function scenario(list, { mode = 'AUTOMATIC', ready = true, pause = pausePol(), 
     stockOf: async (id) => stock[id] || { status: 'IN_STOCK', current: 50 }, guardsOf: async ({ campaignId }) => guards[campaignId] || [], recent: new Map(), counters: { actionsLastHour: 0, actionsToday: 0, byAction: {} } };
 }
 const ev = (sc, config = cfg()) => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config } });
-const tick = (sc, config = cfg(), extra = {}) => AE.runAutomationTick({ now: NOW, deps: { config, dcfg: { halted: false }, autopilotOk: true, noSleep: true, evalDeps: { ...sc, config }, execDeps: { config, reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config } }), ...extra.execDeps }, ...extra } });
+const tick = (sc, config = cfg(), extra = {}) => AE.runAutomationTick({ now: NOW, deps: { config, dcfg: { halted: false }, autopilotOk: true, noSleep: true, evalDeps: { ...sc, config }, ...extra, execDeps: { config, reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config } }), ...(extra.execDeps || {}) } } });
 const dec = (campaignId) => prisma.ambOperatorDecision.findFirst({ where: { campaign_id: campaignId, rule_name: { startsWith: 'AUTO:' } }, orderBy: { id: 'desc' } });
 const actOf = (id) => prisma.ambAction.findFirst({ where: { entity_id: id }, orderBy: { id: 'desc' } });
 const cleanup = async () => { const ds = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: { startsWith: T } }, select: { id: true, amb_recommendation_id: true } }); const recIds = ds.map((d) => d.amb_recommendation_id).filter(Boolean);
@@ -112,6 +112,7 @@ try {
     ok('INCREASE +20% (300 → 360): ONE write, mock budget 36000, VERIFIED', writes(ids.up).length === 1 && world.entities.get(ids.up).daily_budget === '36000' && (await dec(ids.up)).status === 'VERIFIED');
     ok('REDUCE −20% (300 → 240): exactly ONE write over the whole test (done in the previous tick), VERIFIED', writes(ids.down).length === 1 && (await dec(ids.down)).status === 'VERIFIED');
     const before = allWrites().length; await tick(sc, cfg(ALL)); await tick(sc, cfg(ALL)); ok('IDEMPOTENT: two more ticks send ZERO additional requests (terminal decisions are never rewritten)', allWrites().length === before);
+    { const dd = await dec(ids.pause); const al = await prisma.ambAlert.findFirst({ where: { dedupe_key: `operator:autodone:${dd.id}` } }); ok('a SUCCESS alert is raised for every executed automatic action (INFO, names the campaign and the Meta confirmation)', !!al && al.severity === 'INFO' && /AUTOMATIC/.test(al.title)); }
     ok('every executed action carries the audit trail (decision events, amb_action with before/after)', (await prisma.ambOperatorEvent.count({ where: { campaign_id: ids.up, kind: 'TRANSITION' } })) >= 3 && !!JSON.parse((await actOf(ids.up)).new_value_json || '{}').budget); }
 
   console.log('\n4. Limits, rate limit and uncertain writes');
@@ -151,6 +152,9 @@ try {
 
   console.log('\n7. Conflicts and the open-vs-pause race');
   { const x = `${T}c_1`; setEntity(x); const sc = scenario([{ id: x, pid: pid(50), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }]);
-    const r = await tick(sc, cfg(ALL), { execDeps: { checkConflicts: async () => [{ code: 'CONFLICT_OPEN_AND_PAUSE', detail: 'خطة فتح معتمدة' }] } }); ok('a conflicting approved plan on the same campaign blocks the write (decision stays PREPARED)', writes(x).length === 0 && (await dec(x)).status === 'PREPARED' && r.executed[0]?.status === 'BLOCKED', JSON.stringify(r.executed)); }
+    const r = await tick(sc, cfg(ALL), { execDeps: { checkConflicts: async () => [{ code: 'CONFLICT_OPEN_AND_PAUSE', detail: 'خطة فتح معتمدة' }] } }); ok('a conflicting approved plan on the same campaign blocks the write (decision stays PREPARED)', writes(x).length === 0 && (await dec(x)).status === 'PREPARED' && r.executed[0]?.status === 'BLOCKED', JSON.stringify(r.executed));
+    { const dd = await dec(x); const al = await prisma.ambAlert.findFirst({ where: { dedupe_key: `operator:autorefused:${dd.id}:CONFLICT_OPEN_AND_PAUSE` } }); ok('a REFUSED automatic execution is never silent: a WARNING alert states what was not done and why', !!al && al.severity === 'WARNING' && /تعارض/.test(al.message), JSON.stringify(await prisma.ambAlert.findMany({ where: { entity_id: x }, select: { dedupe_key: true, severity: true, message: true } })) + ' dec=' + dd.id); }
+    const f0 = `${T}fail_al`; setEntity(f0); world.failNext = { type: 'rate', id: f0 }; await tick(scenario([{ id: f0, pid: pid(51), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }]), cfg(ALL)); { const dd = await dec(f0); const al = await prisma.ambAlert.findFirst({ where: { dedupe_key: `operator:autofail:${dd.id}` } }); ok('a FAILED automatic execution raises a WARNING alert', !!al && al.severity === 'WARNING'); }
+    const nc = `${T}needs_al`; setEntity(nc); await tick(scenario([{ id: nc, pid: pid(52), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }], { ready: false }), cfg(ALL)); ok('an AUTOMATIC product that is NOT ready raises ONE alert per day naming what is missing, and nothing executes', (await prisma.ambAlert.count({ where: { dedupe_key: { startsWith: `automation:needs:${pk(pid(52))}` } } })) === 1 && writes(nc).length === 0); }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

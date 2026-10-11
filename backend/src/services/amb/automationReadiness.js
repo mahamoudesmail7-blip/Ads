@@ -46,3 +46,25 @@ export async function automationReadinessMap({ deps = {} } = {}) {
   for (const r of rows) { const k = policyKey(r.storeId, r.productId); out.set(k, { productId: r.productId, storeId: r.storeId, name: r.name, ...evaluateReadiness({ row: r, policy: pols.get(k) || null, pause, open, minStockRequired: open?.enabled ? open.minStock : null }) }); }
   return out;
 }
+
+/**
+ * The ACTIVATION SUMMARY an ADMIN reads before switching a product to AUTOMATIC: exactly what would be allowed to act (campaigns, operations), under which policy VERSIONS, with what maximum exposure and risk,
+ * and what is still missing. Read-only. deps (tests): rows, policy, pause, open, campaigns, exposure, config.
+ */
+export async function activationSummary({ productId, storeId = null, now = new Date(), deps = {} }) {
+  const { getOperatorConfig } = await import('./operatorStore.js'); const { getProductPolicy, mergeEffective } = await import('./productPolicy.js');
+  const sid = storeId || 'default'; const pp = await getProductPolicy({ productId, storeId: sid }); const eff = pp.active || pp.draft || null; const e = eff ? mergeEffective(eff) : null;
+  const rd = await productAutomationReadiness({ productId, storeId: sid, deps: { rows: deps.rows, policy: deps.policy !== undefined ? deps.policy : (eff || null), pause: deps.pause, open: deps.open } });
+  const [pause, open, config] = await Promise.all([deps.pause || getPausePolicy(), deps.open !== undefined ? deps.open : getOpenCpaPolicy().catch(() => null), deps.config || getOperatorConfig()]);
+  let campaigns = deps.campaigns; if (!campaigns) { const { listProductRules } = await import('./productPolicy.js'); const r = (await listProductRules({ now })).find((x) => Number(x.productId) === Number(productId)); campaigns = r?.campaigns || []; }
+  const active = campaigns.filter((c) => c.status === 'ACTIVE');
+  let runningBudget = deps.exposure ?? null;
+  if (runningBudget == null) { try { const { activeExposure } = await import('./automationScope.js'); const { getConnection } = await import('../metaAuth.js'); const x = await activeExposure({ adAccountId: (await getConnection())?.selected_ad_account_id, now }); runningBudget = active.reduce((t, c) => t + (x.byCampaign.get(c.id) || 0), 0); } catch { runningBudget = null; } }
+  const cap = e?.budget?.dailySpendCap ?? null; const perm = config.execPermissions || {};
+  const ops = [['OPEN', 'فتح', 'open', open?.enabled && open.approved?.version === open.version], ['PAUSE', 'إيقاف', 'pause', pausePolicyActive(pause)], ['INCREASE', 'زيادة ميزانية', 'budgetIncrease', true], ['REDUCE', 'تقليل ميزانية', 'budgetDecrease', true]].map(([k, label, p, policyOk]) => ({ op: k, label, permissionOn: perm[p] === true, policyApproved: !!policyOk, willRun: perm[p] === true && !!policyOk }));
+  const risks = []; if (cap == null) risks.push('مفيش حد يومي للمنتج'); if (!rd.ready) risks.push('المنتج ناقص إعدادات'); if (active.length > 5) risks.push(`${active.length} حملة شغالة`); if ((e?.budget?.increasePct ?? 20) > 20) risks.push('نسبة الزيادة أعلى من 20%'); if (config.writesLocked !== false) risks.push('كتابة Meta مقفولة على النشر');
+  return { productId: Number(productId), storeId: sid, name: rd.name, policy: { key: pp.key, status: pp.status, version: pp.version, mode: eff?.mode || null }, versions: { productPolicy: pp.version, openCpa: open ? { version: open.version, approvedVersion: open.approved?.version ?? null } : null, pausePolicy: { version: pause.version, approvedVersion: pause.approved?.version ?? null } },
+    scope: { campaigns: campaigns.map((c) => ({ id: c.id, name: c.name, status: c.status })), activeCount: active.length }, operations: ops, exposure: { runningBudget, maxDailyCap: cap, headroom: cap != null && runningBudget != null ? Math.max(0, cap - runningBudget) : null, maxPerCampaign: e?.budget?.maxBudget ?? null, minPerCampaign: e?.budget?.minBudget ?? null },
+    risk: { level: !rd.ready || cap == null ? 'HIGH' : risks.length >= 2 ? 'MEDIUM' : 'LOW', reasons: risks }, readiness: rd, global: { mode: config.mode === 'OFF' ? 'MANUAL' : config.mode, emergencyStop: !!config.emergency_stop, writesLocked: config.writesLocked !== false },
+    canActivate: rd.ready, note: 'التفعيل بيحتاج ADMIN + تأكيد AUTOMATIC. وضع النظام العام لازم يكون AUTOMATIC وصلاحيات التنفيذ مفتوحة عشان التنفيذ الفعلي يبدأ — وإلا بيفضل تجهيز/محاكاة.' };
+}

@@ -72,6 +72,7 @@ export function startOperatorScheduler() {
       nextRunAt = Date.now() + Math.min(MAX_BACKOFF_MS, INTERVAL_MS * 2 ** Math.min(consecutiveFailures, 5));
       lastRun = { at: new Date().toISOString(), error: err.message };
       logger.error('AI Operator tick failed', { message: err.message, consecutiveFailures });
+      if (consecutiveFailures >= 3) import('./alerts.js').then((m) => m.raiseAlert({ severity: 'CRITICAL', category: 'OPERATOR', title: 'AI Operator: دورة المراقبة بتفشل', message: `${consecutiveFailures} مرات ورا بعض: ${String(err.message).slice(0, 300)} — الأتمتة والتجهيز متوقفين لحد ما تتصلح (مفيش تنفيذ فايت بيحصل متأخر).`, dedupeKey: `operator:tickfail:${new Date().toISOString().slice(0, 13)}` })).catch(() => {});
     } finally { running = false; }
   }, INTERVAL_MS);
   timer.unref?.();

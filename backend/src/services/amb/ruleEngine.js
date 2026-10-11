@@ -103,7 +103,7 @@ export async function validateAction(p) {
 
   // 3. Minimum data.
   const minSpend = n(p.settings.ambMinSpendBeforeDecision) ?? 150;
-  const dataOk = (p.metrics.spend || 0) >= minSpend || p.actionType === 'RESUME';
+  const dataOk = (p.metrics.spend || 0) >= minSpend || p.actionType === 'RESUME' || p.humanDecision === true;
   add('minimum_data', dataOk, dataOk ? `الصرف (${Math.round(p.metrics.spend || 0)} جنيه) كافٍ لقرار.` : `الصرف (${Math.round(p.metrics.spend || 0)} جنيه) أقل من حد القرار (${minSpend} جنيه) — اجمع بيانات أكتر.`);
 
   // 4. Live entity status compatible with the action.

@@ -258,6 +258,7 @@ export async function approveAndExecute({ recId, userId, mode = 'APPROVAL', deps
       currentBudget: live.budgetMajor ?? rec.current_budget,
       recommendedBudget: rec.recommended_budget,
       excludeActionId: action.id, // this attempt's own row must not count as a "duplicate" of itself
+      humanDecision: mode === 'HUMAN' && rec.source === 'MANUAL', // the owner decided this operation himself: the AI "enough data to decide" rule does not apply (every safety rule still does)
     });
 
     if (material || !revalidation.passed) {
