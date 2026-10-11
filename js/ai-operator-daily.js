@@ -35,7 +35,7 @@ function openRow(it, editable) {
   return `<tr class="dp-row ${it.selected ? 'on' : ''} ${it.eligibility !== 'ELIGIBLE' ? 'dim' : ''}" data-cid="${E(it.campaignId)}">
     <td><input type="checkbox" class="dp-chk" data-cid="${E(it.campaignId)}" ${it.selected ? 'checked' : ''} ${dis} aria-label="اختيار"></td>
     <td class="dp-rank">${it.rank}</td>
-    <td class="dp-name"><b>${E(it.campaignName || it.campaignId)}</b><small>${E(it.productName || 'بدون منتج')} · ${E(it.campaignId)}${it.storeId ? ' · ' + E(it.storeId) : ''}</small>${it.eligibility !== 'ELIGIBLE' ? `<span class="op-pill ${it.eligibility === 'BLOCKED' ? 'red' : 'amber'}">${ELIG_AR[it.eligibility] || it.eligibility}</span>` : ''}</td>
+    <td class="dp-name"><b>${E(it.campaignName || it.campaignId)}</b><small>${E(it.productName || 'بدون منتج')} · ${E(it.campaignId)}${it.storeId ? ' · ' + E(it.storeId) : ''}</small>${it.eligibility !== 'ELIGIBLE' ? `<span class="op-pill ${it.eligibility === 'BLOCKED' ? 'red' : 'amber'}">${ELIG_AR[it.eligibility] || it.eligibility}</span>` : ''}${e.cpaPolicy && e.cpaPolicy.verdict !== 'ELIGIBLE' ? `<span class="op-pill ${it.selected && !e.cpaSpecial ? 'red' : 'amber'}" title="${E((e.cpaPolicy.reasons || []).join(' · '))}">${e.cpaSpecial ? 'موافقة خاصة (خارج CPA)' : 'خارج سياسة CPA'}</span>` : ''}</td>
     <td>${cpaPair(e.m7, e.m30)}</td><td>${num(e.m7?.purchases)}<small> / ${num(e.m30?.purchases)}</small></td><td>${num(e.m7?.spend)}<small> / ${num(e.m30?.spend)}</small></td>
     <td>${egp(e.budget)}<small>${e.budgetLevel || ''}</small></td><td>${e.lastActiveDate ? E(e.lastActiveDate) : '—'}${e.pausedBy ? `<small>${{ DAILY_SCHEDULE: 'روتين يومي', SYSTEM: 'السيستم', MANUAL: 'يدوي', UNKNOWN_OLD: 'سبب غير معروف' }[e.pausedBy] || ''}</small>` : ''}</td>
     <td class="dp-adv">${e.advisor ? `${E(e.advisor.stageLabel || '—')}<small>${E(e.advisor.problemLabel || '')}</small>` : '—'}</td>
@@ -94,12 +94,16 @@ function wirePlan(root, plan, rerender) {
       const okSpecial = await UI.confirmModal({ title: '⚠️ موافقة خاصة', message: `الحملة «${it.campaignName || it.campaignId}» اتوقفت ${it.evidence?.pausedBy === 'MANUAL' ? 'يدويًا' : 'لسبب غير معروف'}${it.evidence?.pausedAt ? ' (' + timeAr(it.evidence.pausedAt) + ')' : ''}. فتحها هنا هيكون بقرارك الصريح. متأكد؟`, confirmLabel: 'موافقة خاصة على الفتح' });
       if (!okSpecial) { c.checked = false; return; } special = [it.campaignId];
     }
+    if (c.checked && it && cpaViolates(plan, it)) {
+      const okCpa = await UI.confirmModal({ title: '⚠️ خارج سياسة CPA', message: `الحملة «${it.campaignName || it.campaignId}» خارج سياسة CPA ${plan.evidence.openCpa.minCpa}–${plan.evidence.openCpa.maxCpa} ج.م (CPA ${it.evidence.cpaPolicy.cpa ?? 'غير معروف'}). السياسة بتستبعدها. تختارها بموافقة خاصة صريحة منك؟`, confirmLabel: 'موافقة خاصة', danger: true });
+      if (!okCpa) { c.checked = false; return; } special = [...special, it.campaignId];
+    }
     c.closest('tr, .dp-card')?.classList.toggle('on', c.checked); saveSelection(plan.id, { [c.dataset.cid]: c.checked }, rerender, special); }; });
   root.querySelectorAll('[data-showall]').forEach((b) => { b.onclick = () => { D.showAll[plan.id] = true; rerender(); }; });
   root.querySelectorAll('[data-act]').forEach((b) => {
     b.onclick = async () => {
       const a = b.dataset.act;
-      if (a === 'eligible') { const sel = {}; plan.items.forEach((i) => { if (i.selectable && i.eligibility === 'ELIGIBLE') sel[i.campaignId] = plan.type === 'OPEN' ? !!i.evidence?.recommended : !!i.evidence?.policyPause; }); await saveSelection(plan.id, sel, rerender); }
+      if (a === 'eligible') { const sel = {}; const pol = plan.type === 'OPEN' && !!plan.evidence?.openCpa; plan.items.forEach((i) => { if (i.selectable && i.eligibility === 'ELIGIBLE') sel[i.campaignId] = plan.type === 'OPEN' ? (pol ? i.evidence?.cpaPolicy?.verdict === 'ELIGIBLE' && !i.evidence?.userDeselected : !!i.evidence?.recommended) : !!i.evidence?.policyPause; }); await saveSelection(plan.id, sel, rerender); } // with a CPA policy: exactly the campaigns the policy counts as eligible (the number in the banner)
       else if (a === 'none') { const sel = {}; plan.items.forEach((i) => { if (i.selected) sel[i.campaignId] = false; }); await saveSelection(plan.id, sel, rerender); }
       else if (a === 'approve') await approve(plan, rerender);
       else if (a === 'cancel') await cancelPlan(plan, rerender);
@@ -108,19 +112,41 @@ function wirePlan(root, plan, rerender) {
     };
   });
 }
+/** what the owner is confirming — everything the server re-checks: count, exposed budget, the exact campaign ids, the plan version and the CPA-policy version the plan was prepared under */
+const confirmOf = (plan) => { const sel = plan.items.filter((i) => i.selected); const ex = plan.exposure || { count: sel.length, exposedBudget: 0 }; return { count: ex.count, exposedBudget: ex.exposedBudget, campaignIds: (ex.campaignIds || sel.map((i) => i.campaignId)).slice().sort(), planVersion: plan.version, policyVersion: plan.evidence?.openCpa?.version ?? null }; };
+/** an OPEN-plan row that the saved CPA policy excludes (and that has no explicit special approval) */
+const cpaViolates = (plan, it) => plan.type === 'OPEN' && !!plan.evidence?.openCpa && !!it.evidence?.cpaPolicy && it.evidence.cpaPolicy.verdict !== 'ELIGIBLE' && !it.evidence.cpaSpecial;
+/** every failure becomes a clear Arabic sentence — never a silent button */
+function explainError(e) {
+  const st = e?.status; const msg = e?.message && !/^Request failed/.test(e.message) ? e.message : '';
+  if (st === 403) return msg || 'مفيش صلاحية: الاعتماد محتاج مستخدم ADMIN.';
+  if (st === 409) return msg || 'الخطة اتغيّرت (نسخة أحدث أو انتهت) — حدّث الصفحة وراجع قبل ما تعتمد.';
+  if (st === 423) return msg || 'كتابة Meta مقفولة (قفل النشر أو Emergency Stop) — مفيش حاجة اتنفذت.';
+  if (st >= 500) return 'حصل خطأ في السيرفر — مفيش تنفيذ اتأكد. شوف «سجل التنفيذ» قبل ما تحاول تاني.' + (msg ? ' (' + msg + ')' : '');
+  if (e instanceof TypeError || /fetch|network/i.test(e?.message || '')) return 'تعذر الوصول للسيرفر — اتأكد من الاتصال وجرّب تاني (مفيش حاجة اتنفذت).';
+  return msg || 'حصل خطأ غير متوقع — مفيش تنفيذ اتأكد.';
+}
+const STATUS_AR = { BLOCKED: 'الاعتماد اتمنع', STALE_DATA: 'بيانات Meta قديمة', EMPTY: 'مفيش حملة مختارة', MISSED: 'اليوم خلص — الخطة فاتت', NOT_DUE_YET: 'لسه ما جاش الموعد', CONFIRM_REQUIRED: 'التأكيد ناقص', CONFIRM_MISMATCH: 'الاختيار اتغيّر', POLICY_STALE: 'سياسة CPA اتغيّرت', CPA_POLICY_VIOLATION: 'حملات خارج سياسة CPA', RACE: 'الخطة اتغيّرت في نفس اللحظة' };
+const setResult = (plan, kind, title, message, items = []) => { D.result = D.result || {}; D.result[plan.id] = { kind, title, message, items, at: Date.now() }; };
+const resultBox = (plan) => { const r = D.result?.[plan.id]; if (!r) return ''; return '<div class="dp-note ' + (r.kind === 'ok' || r.kind === 'warn' ? '' : 'bad') + '" id="dpResult" role="status" aria-live="polite"><b>' + E(r.title) + '</b>' + (r.message ? ' — ' + E(r.message) : '') + (r.items.length ? '<ul style="margin:6px 18px 0">' + r.items.map((x) => '<li>' + E(x) + '</li>').join('') + '</ul>' : '') + '</div>'; };
 const blockedWhy = (c, perm) => [c.emergencyStop && 'Emergency Stop مفعّل', c.writesLocked && 'كتابة Meta مقفولة على مستوى النشر', !perm && 'صلاحية التنفيذ لهذا النوع مقفولة', c.halted && 'الطابور موقوف'].filter(Boolean);
 async function approve(plan, rerender) {
   const sel = plan.items.filter((i) => i.selected); const T = TYPE_META[plan.type]; const ctl = D.ov?.control || {};
   const live = ctl.mode === 'APPROVAL' && !ctl.writesLocked && (plan.type === 'OPEN' ? ctl.allowOpen : ctl.allowPause);
-  if (ctl.mode === 'APPROVAL' && !live) { UI.toast(`الاعتماد مش هيتنفذ دلوقتي: ${blockedWhy(ctl, plan.type === 'OPEN' ? ctl.allowOpen : ctl.allowPause).join(' · ') || 'الشروط مش مكتملة'} — الخطة فضلت جاهزة ومفيش حاجة اتغيرت.`, 'error'); return; } // APPROVAL mode: an approval that cannot execute is explained at once (no misleading «simulation» dialog)
+  if (ctl.mode === 'APPROVAL' && !live) { const why = blockedWhy(ctl, plan.type === 'OPEN' ? ctl.allowOpen : ctl.allowPause); setResult(plan, 'error', 'الاعتماد مش هيتنفذ دلوقتي', 'الخطة فضلت جاهزة ومفيش حاجة اتغيرت.', why.length ? why : ['الشروط مش مكتملة']); UI.toast(`الاعتماد مش هيتنفذ دلوقتي: ${why.join(' · ') || 'الشروط مش مكتملة'} — الخطة فضلت جاهزة ومفيش حاجة اتغيرت.`, 'error'); rerender(); return; } // APPROVAL mode: an approval that cannot execute is explained at once (no misleading «simulation» dialog)
   const ex = plan.exposure || { count: sel.length, exposedBudget: 0 }; const msg = `${ex.count} حملة · إجمالي ميزانية يومية ${ex.exposedBudget} جنيه — هتتعمل لها ${T.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل 3 ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل حملة هتتراجع مقابل حالتها الحية على Meta وتتسجّل "كان هيتنفذ" — مفيش أي كتابة على Meta.'}`;
+  if (D.approving) { UI.toast('الاعتماد شغال بالفعل — استنى النتيجة.', 'warning'); return; } // no double submit
+  { const bad = sel.filter((i) => cpaViolates(plan, i)); if (bad.length) { setResult(plan, 'error', 'مينفعش تعتمد', `${bad.length} حملة مختارة خارج سياسة CPA ${plan.evidence.openCpa.minCpa}–${plan.evidence.openCpa.maxCpa} ج.م — شيلها من الاختيار أو اعتمدها بموافقة خاصة صريحة (علّم الصندوق وأكّد).`, bad.slice(0, 8).map((i) => `${i.campaignName || i.campaignId} — CPA ${i.evidence.cpaPolicy.cpa ?? 'غير معروف'}`)); UI.toast('فيه حملات مختارة خارج سياسة CPA — شيلها الأول.', 'error'); rerender(); return; } }
   if (!(await UI.confirmModal({ title: `${T.icon} ${T.approve}`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة SHADOW)', danger: live }))) return;
+  D.approving = plan.id; const btns = [...document.querySelectorAll('[data-act="approve"]')]; const labels = btns.map((b) => b.textContent); btns.forEach((b) => { b.disabled = true; b.textContent = '⏳ جاري الاعتماد…'; });
   try {
-    const r = await api.post(`${API}/${plan.id}/approve`, { confirm: { count: ex.count, exposedBudget: ex.exposedBudget } });
-    if (!r.ok) { UI.toast(r.message || 'الاعتماد اتمنع', 'error'); return; }
+    const r = await api.post(`${API}/${plan.id}/approve`, { confirm: confirmOf(plan) });
+    if (!r.ok) { const items = (r.violations || []).slice(0, 8).map((v) => `${v.name || v.campaignId} — CPA ${v.cpa ?? 'غير معروف'}`); setResult(plan, 'error', STATUS_AR[r.status] || 'الاعتماد اتمنع', r.message || '', items); UI.toast(r.message || 'الاعتماد اتمنع', 'error'); await reload().catch(() => {}); return; }
+    setResult(plan, 'ok', r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ على Meta واحدة واحدة' : 'اتعتمدت كمحاكاة (SHADOW) — مفيش أي كتابة على Meta', 'النتيجة (VERIFIED / FAILED / UNCERTAIN لكل حملة) هتظهر هنا وفي «سجل التنفيذ».');
     UI.toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW بدأت (مفيش كتابة على Meta)');
-    await reload(); rerender(); pollRunning(rerender);
-  } catch (e) { UI.toast(e.message, 'error'); }
+    await reload(); pollRunning(rerender);
+  } catch (e) { const m2 = explainError(e); setResult(plan, 'error', 'الاعتماد ما تمّش', m2); UI.toast(m2, 'error'); }
+  finally { D.approving = null; btns.forEach((b, k) => { if (document.body.contains(b)) { b.disabled = false; b.textContent = labels[k]; } }); rerender(); }
 }
 async function cancelPlan(plan, rerender) {
   if (!(await UI.confirmModal({ title: 'إلغاء الخطة', message: 'الخطة هتتلغي ومش هيتنفذ منها حاجة. هتتجهز خطة جديدة تلقائيًا في الموعد التالي فقط.', confirmLabel: 'إلغاء الخطة', danger: true }))) return;
@@ -186,7 +212,7 @@ function panelHtml(type, plan) {
     <div class="dp-meta"><span>بيانات Meta: <b class="${stale ? 'bad' : ''}">${stale ? 'STALE ⛔' : 'FRESH ✓'}</b> ${plan.dataAsOf ? ago(plan.dataAsOf) : ''}</span><span>مختارة: <b>${sel}</b> من ${plan.counts.selectable} قابلة للاختيار</span><span>محمية/ممنوعة: ${plan.counts.protected}</span>${plan.approvedAt ? `<span>اتعتمدت: ${timeAr(plan.approvedAt)} (${plan.executionMode === 'LIVE' ? 'فعلي' : 'محاكاة'})</span>` : ''}</div>
     ${stale ? '<div class="dp-note bad">⛔ بيانات Meta قديمة — مفيش اعتماد ولا تنفيذ لحد ما التحديث ينجح.</div>' : ''}
     <div class="dp-actions">${editable ? `<button class="amb-btn sm" data-act="eligible">✔ اختيار المؤهّل</button><button class="amb-btn sm" data-act="none">✖ إلغاء التحديد</button>` : ''}
-      ${D.isAdmin && plan.status === 'PREPARED' ? `<button class="amb-btn ${ctl.mode === 'APPROVAL' ? 'orange' : 'primary'}" data-act="approve" ${sel && !stale ? '' : 'disabled'}>${plan.key.includes('|T-') ? 'اعتماد وتنفيذ' : E(T.approve)}</button>` : ''}
+      ${D.isAdmin && plan.status === 'PREPARED' ? `<button class="amb-btn ${ctl.mode === 'APPROVAL' ? 'orange' : 'primary'}" data-act="approve" ${sel && !stale && D.approving !== plan.id ? '' : 'disabled'}>${D.approving === plan.id ? '⏳ جاري الاعتماد…' : plan.key.includes('|T-') ? 'اعتماد وتنفيذ' : E(T.approve)}</button>` : ''}
       ${D.isAdmin && ['PREPARED', 'APPROVED'].includes(plan.status) ? '<button class="amb-btn sm danger" data-act="cancel">إلغاء الخطة</button>' : ''}${['PREPARED', 'APPROVED'].includes(plan.status) && D.isAdmin ? '<button class="amb-btn sm" data-act="preview">👁 معاينة التنفيذ</button>' : ''}<button class="amb-btn sm ghost" data-act="audit">📜 السجل</button></div>
     ${!editable && plan.status !== 'PREPARED' ? `<div class="dp-note">🔒 الخطة ${PLAN_AR[plan.status] || plan.status} ومحفوظة — مربعات الاختيار معطّلة. لاختيار حملات تانية اضغط «➕ إنشاء خطة جديدة» فوق.</div>` : ''}
     ${summaryBox(plan)}${tableHtml(plan, { editable })}${timeline(plan)}</section>`;
@@ -253,13 +279,14 @@ function renderPopup() {
   const summary = ['COMPLETED', 'RUNNING', 'APPROVED'].includes(plan.status);
   el.innerHTML = `<div class="dp-popup"><header><h2>${T.icon} ${plan.type === 'OPEN' ? 'موعد فتح الحملات — 12:00 ص' : 'موعد إيقاف الحملات — 1:00 ظ'}</h2><button class="amb-btn ghost" id="dpPopClose" aria-label="إغلاق">✕</button></header>
     <div class="op-sub">${plan.type === 'OPEN' ? 'الحملات المتوقفة المرشحة للفتح، الأفضل CPA والأقوى أوردرات أولًا.' : 'الحملات النشطة المقترح إيقافها، الأسوأ والأعلى تكلفة أولًا.'} الاختيار هنا مجرد تحديد — <b>مفيش حاجة بتتنفذ قبل ما تضغط زر الاعتماد.</b> ${D.ov?.control?.mode !== 'APPROVAL' ? `(الوضع ${E(D.ov?.control?.mode || 'SHADOW')}: الاعتماد = محاكاة بدون كتابة على Meta)` : ''}</div>
+    ${resultBox(plan)}
     ${stale ? '<div class="dp-note bad">⛔ STALE DATA — بيانات Meta قديمة ومفيش تنفيذ لحد ما تتحدّث.</div>' : ''}
     ${plan.evidence?.openCpa ? `<div class="dp-note">🎯 سياسة الفتح حسب CPA v${plan.evidence.openCpa.version}: ${plan.evidence.openCpa.minCpa}–${plan.evidence.openCpa.maxCpa} ج.م (${E({ today: 'اليوم', 7: 'آخر 7 أيام', 30: 'آخر 30 يوم', 90: 'آخر 90 يوم', custom: 'فترة مخصصة' }[plan.evidence.openCpa.window] || plan.evidence.openCpa.window)}) — مؤهلة <b>${plan.evidence.openCpa.counts?.eligible ?? 0}</b> · مستبعدة <b>${plan.evidence.openCpa.counts?.excluded ?? 0}</b> من ${plan.evidence.openCpa.counts?.matched ?? 0} مطابقة. التجهيز اختيار فقط — مفيش تنفيذ قبل الاعتماد.</div>` : ''}
     <div class="dp-meta"><span>مختارة: <b id="dpPopSel">${sel}</b></span><span>قابلة للاختيار: ${plan.counts.selectable}</span><span>بيانات Meta: ${plan.dataAsOf ? ago(plan.dataAsOf) : '—'}</span><span>${E(plan.date)} · القاهرة</span></div>
     <div class="dp-actions">${editable ? '<button class="amb-btn sm" data-act="eligible">✔ اختيار المؤهّل</button><button class="amb-btn sm" data-act="none">✖ إلغاء التحديد</button>' : ''}</div>
     ${summary ? summaryBox(plan) + timeline(plan) : ''}
     <div class="dp-popbody">${tableHtml(plan, { editable, limit: 25, compact: true })}</div>
-    <footer>${D.isAdmin && plan.status === 'PREPARED' ? `<button class="amb-btn orange" data-act="approve" ${sel && !stale ? '' : 'disabled'}>${E(T.popupApprove)}</button>` : ''}<button class="amb-btn" id="dpPopCenter">فتح مركز التشغيل اليومي</button><button class="amb-btn ghost" id="dpPopLater">لاحقًا</button></footer></div>`;
+    <footer>${D.isAdmin && plan.status === 'PREPARED' ? `<button class="amb-btn orange" data-act="approve" ${sel && !stale && D.approving !== plan.id ? '' : 'disabled'}>${D.approving === plan.id ? '⏳ جاري الاعتماد…' : E(T.popupApprove)}</button>` : ''}<button class="amb-btn" id="dpPopCenter">فتح مركز التشغيل اليومي</button><button class="amb-btn ghost" id="dpPopLater">لاحقًا</button></footer></div>`;
   const rr = () => renderPopup();
   wirePlan(el, plan, rr);
   $('dpPopClose').onclick = $('dpPopLater').onclick = async () => { await dismiss(plan.id); closePopup(); };

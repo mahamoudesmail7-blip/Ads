@@ -357,6 +357,45 @@ try {
   await js(`document.querySelector('[data-planreject]').click()`); ok('reject asks for confirmation first (cancel leaves the plan untouched)', await waitFor(`!!document.querySelector('.confirm-modal-overlay')`));
   await js(`document.querySelector('.confirm-modal-overlay [data-action="cancel"]').click()`); await sleep(400);
   ok('the plan is still PREPARED after cancelling the rejection', (await js(`fetch('/api/operator/approvals').then(r => r.json())`)).plans.some((p) => p.planId === planNums.id));
+
+  console.log('\n17. The daily popup approve button: always a visible answer (APPROVAL + lock closed, SHADOW), policy-aware selection, loading + no double submit');
+  {
+    const api = (m, p, b) => js(`fetch('${p}',{method:'${m}',headers:{'content-type':'application/json'},body:${b === undefined ? 'undefined' : JSON.stringify(JSON.stringify(b))}}).then(async r=>({s:r.status,j:await r.json().catch(()=>null)}))`);
+    spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs'), '--popup'], { stdio: 'ignore' });
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } });
+    await api('PUT', '/api/operator/daily-plan/open-cpa', { minCpa: 20, maxCpa: 150, window: '7' }); await api('POST', '/api/operator/daily-plan/open-cpa/enable', { enabled: true, confirm: true }); const prep = await api('POST', '/api/operator/daily-plan/open-cpa/prepare', {});
+    ok('setup: a saved + enabled CPA policy 20–150 and the plan prepared under it (every item carries its verdict)', prep.s === 200 && prep.j?.ok === true, JSON.stringify(prep).slice(0, 200));
+    const ov = (await api('GET', '/api/operator/daily-plan/overview')).j; const openPlan = ov.plans.OPEN; const eligibleN = openPlan.items.filter((i) => i.evidence?.cpaPolicy?.verdict === 'ELIGIBLE').length; const outItem = openPlan.items.find((i) => i.selectable && i.eligibility === 'ELIGIBLE' && i.evidence?.cpaPolicy && i.evidence.cpaPolicy.verdict !== 'ELIGIBLE'); // a normally-eligible campaign the CPA policy excludes (the manually-stopped ones have their OWN special-approval dialog)
+    ok('fixture sanity: the plan has policy-eligible AND out-of-range campaigns', eligibleN >= 1 && !!outItem, `eligible=${eligibleN} out=${outItem?.campaignId}`);
+    // ---- APPROVAL mode with the deployment lock closed = production's state
+    await api('PUT', '/api/operator/mode', { mode: 'APPROVAL' });
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } });
+    ok('the popup opens by itself', await waitFor(`!!document.querySelector('.dp-popup')`, 70000));
+    await js(`document.querySelector('.dp-popup [data-act="eligible"]').click()`); await waitFor(`document.getElementById('dpPopSel') && document.getElementById('dpPopSel').textContent.trim() === '${eligibleN}'`, 30000);
+    ok(`«اختيار المؤهّل» selects exactly the campaigns the saved CPA policy counts as eligible (${eligibleN}), not the generic "recommended" set`, (await js(`document.getElementById('dpPopSel').textContent.trim()`)) === String(eligibleN));
+    await js(`(()=>{const c=document.querySelector('.dp-popup .dp-chk[data-cid="${outItem.campaignId}"]'); c.checked = true; c.dispatchEvent(new Event('change'));})()`);
+    ok('ticking an out-of-range campaign asks for an explicit special approval, and the dialog is ABOVE the popup (visible, clickable)', await waitFor(`!!document.querySelector('.confirm-modal-overlay')`, 10000) && await js(`(()=>{const m=document.querySelector('.confirm-modal-overlay'); const r=m.querySelector('.confirm-modal-card').getBoundingClientRect(); return /خارج سياسة CPA/.test(m.innerText) && m.querySelector('.confirm-modal-card').contains(document.elementFromPoint(r.x + r.width/2, r.y + r.height/2));})()`));
+    await js(`document.querySelector('.confirm-modal-overlay [data-action="cancel"]').click()`); await sleep(500);
+    ok('declining leaves it un-ticked and nothing was saved', !(await js(`document.querySelector('.dp-popup .dp-chk[data-cid="${outItem.campaignId}"]').checked`)) && (await api('GET', '/api/operator/daily-plan/overview')).j.plans.OPEN.items.find((i) => i.campaignId === outItem.campaignId).selected === false);
+    await js(`window.__posts = []; const of = window.fetch; window.fetch = (u, o) => { if (/daily-plan\\/\\d+\\/approve/.test(String(u))) window.__posts.push(String(u)); return of(u, o); }; true`);
+    await js(`document.querySelector('.dp-popup footer [data-act="approve"]').click()`);
+    ok('APPROVAL mode + lock closed: the click is answered AT ONCE — no misleading simulation dialog, a toast AND a persistent result box naming the reasons, plan untouched', await waitFor(`!!document.getElementById('dpResult') && /مش هيتنفذ دلوقتي/.test(document.getElementById('dpResult').innerText) && /مقفولة/.test(document.getElementById('dpResult').innerText)`, 10000) && !(await js(`!!document.querySelector('.confirm-modal-overlay')`)) && (await js(`window.__posts.length`)) === 0 && (await api('GET', '/api/operator/daily-plan/overview')).j.plans.OPEN.status === 'PREPARED');
+    ok('the toast carrying the reason is the top-most element (not hidden behind the popup)', await js(`(()=>{const t=document.querySelector('.toast'); if(!t) return false; const r=t.getBoundingClientRect(); return t.contains(document.elementFromPoint(r.x + r.width/2, r.y + r.height/2));})()`));
+    // ---- SHADOW: confirm dialog on top → loading state → one request → visible result
+    await api('PUT', '/api/operator/mode', { mode: 'SHADOW' });
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.querySelector('.dp-popup')`, 70000);
+    await js(`document.querySelector('.dp-popup [data-act="eligible"]').click()`); await waitFor(`document.getElementById('dpPopSel') && document.getElementById('dpPopSel').textContent.trim() === '${eligibleN}'`, 30000);
+    await js(`window.__posts = []; window.__orig = window.fetch; window.fetch = (u, o) => { if (/daily-plan\\/\\d+\\/approve/.test(String(u))) { window.__posts.push(JSON.parse(o.body)); return new Promise((r) => setTimeout(() => r(window.__orig(u, o)), 1500)); } return window.__orig(u, o); }; true`);
+    await js(`document.querySelector('.dp-popup footer [data-act="approve"]').click()`);
+    ok('SHADOW: the confirmation dialog is visible above the popup and states the count and the exposed budget', await waitFor(`!!document.querySelector('.confirm-modal-overlay') && /حملة/.test(document.querySelector('.confirm-modal-overlay').innerText) && /ميزانية يومية/.test(document.querySelector('.confirm-modal-overlay').innerText)`, 10000));
+    await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`);
+    ok('while the request is in flight the button is DISABLED and says «جاري الاعتماد…» (loading state)', await waitFor(`(()=>{const b=document.querySelector('.dp-popup footer [data-act="approve"]'); return !!b && b.disabled && /جاري الاعتماد/.test(b.textContent);})()`, 5000));
+    await js(`document.querySelector('.dp-popup footer [data-act="approve"]')?.click()`); await js(`document.querySelector('.dp-popup footer [data-act="approve"]')?.click()`);
+    ok('result: a visible success box «اتعتمدت كمحاكاة (SHADOW)», exactly ONE approve request was sent (double-click ignored) and it carried the full confirmation contract', await waitFor(`!!document.getElementById('dpResult') && /محاكاة/.test(document.getElementById('dpResult').innerText)`, 20000) && (await js(`window.__posts.length`)) === 1 && await js(`(()=>{const c=window.__posts[0].confirm; return Number.isFinite(c.count) && Number.isFinite(c.exposedBudget) && Array.isArray(c.campaignIds) && c.campaignIds.length === c.count && c.planVersion >= 1 && c.policyVersion >= 1;})()`));
+    const after = (await api('GET', '/api/operator/daily-plan/overview')).j.plans.OPEN;
+    ok('server state: the plan left PREPARED as a SIMULATION — no item was ever SENT / VERIFIED (never a Meta write; on this server Meta is a dead port, so items end SIMULATED or SKIPPED) — and the stored approval snapshot lists the exact campaign ids', ['COMPLETED', 'RUNNING', 'APPROVED'].includes(after.status) && after.executionMode === 'SIMULATION' && after.items.filter((i) => i.selected).every((i) => !['SENT', 'VERIFIED', 'UNCERTAIN', 'FAILED'].includes(i.status)) && after.evidence?.approval?.campaignIds?.length === eligibleN, JSON.stringify([after.status, after.executionMode, after.items.filter((i) => i.selected).map((i) => i.status), after.evidence?.approval?.campaignIds?.length, eligibleN]));
+    await api('PUT', '/api/operator/mode', { mode: 'SHADOW' });
+  }
   spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs')], { stdio: 'ignore' });
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));

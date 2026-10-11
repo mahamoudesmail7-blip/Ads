@@ -77,7 +77,10 @@ export async function ensureFreshData({ now = new Date(), deps = {}, force = fal
 // =====================================================================================================================
 const shapeItemRow = (it) => ({ id: it.id, campaignId: it.campaign_id, campaignName: it.campaign_name, productId: it.product_id, productName: it.product_name, storeId: it.store_id, rank: it.rank, selected: it.selected, selectable: it.selectable, eligibility: it.eligibility, blockCodes: j(it.block_codes_json, []), risk: it.risk, riskScore: it.risk_score, reason: it.reason, evidence: j(it.evidence_json, {}), status: it.status, statusReason: it.status_reason, statusAt: it.status_at, ambActionId: it.amb_action_id, attempts: it.attempts });
 /** the two numbers the owner confirms before approving a plan: how many campaigns are selected and the total daily budget they expose (from the evidence captured when the plan was prepared) */
-export function planExposure(items = []) { const sel = items.filter((i) => i.selected); return { count: sel.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)) }; }
+export function planExposure(items = []) { const sel = items.filter((i) => i.selected); return { count: sel.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)), campaignIds: sel.map((i) => i.campaign_id).sort() }; }
+/** An OPEN-plan item that the SAVED + APPROVED CPA policy would exclude (CPA out of range, unknown CPA, too few orders…) and that was not explicitly special-approved. Pure. */
+export const cpaViolation = (item, policyActive) => { if (!policyActive) return null; const e = typeof item.evidence_json === 'string' || item.evidence_json == null ? j(item.evidence_json, {}) : (item.evidence || {}); const c = e.cpaPolicy; if (!c || c.verdict === 'ELIGIBLE' || e.cpaSpecial) return null; return { campaignId: item.campaign_id ?? item.campaignId, name: item.campaign_name ?? item.campaignName ?? null, verdict: c.verdict, cpa: c.cpa ?? null, purchases: c.purchases ?? null, codes: c.codes || [] }; };
+const policyIsActive = (pol) => !!(pol && pol.enabled && pol.approved);
 export function shapePlan(p, items = []) {
   const sel = items.filter((i) => i.selected);
   return {
@@ -233,17 +236,18 @@ export async function detectExternalSchedule({ wait = false, maxAgeMs = 15 * MS_
 // =====================================================================================================================
 /** unticking a campaign is the owner's decision: it is marked, and the CPA policy never re-ticks it on its own */
 const withDeselectMark = (ev, selected, userId, now) => { const e = { ...(ev || {}) }; if (selected) delete e.userDeselected; else e.userDeselected = { at: now.toISOString(), by: userId ?? null }; return e; };
-export async function updateSelection({ planId, selections, special = [], userId, now = new Date() }) {
+export async function updateSelection({ planId, selections, special = [], userId, now = new Date(), deps = {} }) {
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   if (!plan) { const e = new Error('الخطة غير موجودة.'); e.status = 404; throw e; }
   const latest = await prisma.ambDailyPlan.findFirst({ where: { plan_key: plan.plan_key }, orderBy: { version: 'desc' } });
   if (latest.id !== plan.id) { const e = new Error('دي نسخة قديمة من الخطة — اشتغل على آخر نسخة.'); e.status = 409; throw e; }
   if (['RUNNING', 'COMPLETED', 'CANCELLED', 'SUPERSEDED', 'MISSED'].includes(plan.status)) { const e = new Error(`الخطة ${plan.status} — مش قابلة للتعديل.`); e.status = 409; throw e; }
   const changes = []; const byId = new Map(plan.items.map((i) => [i.campaign_id, i]));
-  for (const [cid, want] of Object.entries(selections || {})) { const it = byId.get(cid); if (!it) continue; const v = !!want; if (v && !it.selectable) { const e = new Error(`الحملة ${it.campaign_name || cid} ممنوعة/محمية — مينفعش تتختار.`); e.status = 400; throw e; } if (v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' && !(special || []).includes(cid)) { const e = new Error(`الحملة ${it.campaign_name || cid} اتوقفت لسبب غير معروف/يدويًا — محتاجة موافقة خاصة صريحة قبل اختيارها.`); e.status = 400; e.code = 'SPECIAL_APPROVAL_REQUIRED'; throw e; } if (it.selected !== v) changes.push({ campaignId: cid, name: it.campaign_name, from: it.selected, to: v, ev: j(it.evidence_json, {}), ...(v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' ? { specialApproval: true } : {}) }); }
+  const polOn = plan.type === 'OPEN' && !plan.simulated && !!j(plan.evidence_json, {}).openCpa && policyIsActive(await (deps.openCpaPolicy ? deps.openCpaPolicy() : getOpenCpaPolicy()));
+  for (const [cid, want] of Object.entries(selections || {})) { const it = byId.get(cid); if (!it) continue; const v = !!want; { const viol = v ? cpaViolation(it, polOn) : null; if (viol && !(special || []).includes(cid)) { const e = new Error(`الحملة «${it.campaign_name || cid}» خارج سياسة CPA المعتمدة (${viol.cpa != null ? 'CPA ' + viol.cpa : 'CPA غير معروف'} — ${(viol.codes || []).map((c) => REASON_AR?.[c] || c).join('، ') || viol.verdict}) — محتاجة موافقة خاصة صريحة قبل اختيارها.`); e.status = 409; e.code = 'CPA_POLICY_SPECIAL_REQUIRED'; e.details = { violation: viol }; throw e; } } if (v && !it.selectable) { const e = new Error(`الحملة ${it.campaign_name || cid} ممنوعة/محمية — مينفعش تتختار.`); e.status = 400; throw e; } if (v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' && !(special || []).includes(cid)) { const e = new Error(`الحملة ${it.campaign_name || cid} اتوقفت لسبب غير معروف/يدويًا — محتاجة موافقة خاصة صريحة قبل اختيارها.`); e.status = 400; e.code = 'SPECIAL_APPROVAL_REQUIRED'; throw e; } if (it.selected !== v) changes.push({ campaignId: cid, name: it.campaign_name, from: it.selected, to: v, ev: j(it.evidence_json, {}), ...(v && it.eligibility === 'NEEDS_SPECIAL_APPROVAL' ? { specialApproval: true } : {}), ...(v && cpaViolation(it, polOn) ? { cpaSpecial: true } : {}) }); }
   if (!changes.length) return { plan: shapePlan(plan, plan.items), changed: 0, newVersion: false };
   if (plan.status === 'PREPARED') {
-    for (const c of changes) await prisma.ambDailyPlanItem.updateMany({ where: { plan_id: plan.id, campaign_id: c.campaignId }, data: { selected: c.to, evidence_json: JSON.stringify(withDeselectMark(c.ev, c.to, userId, now)) } });
+    for (const c of changes) await prisma.ambDailyPlanItem.updateMany({ where: { plan_id: plan.id, campaign_id: c.campaignId }, data: { selected: c.to, evidence_json: JSON.stringify(c.cpaSpecial ? { ...withDeselectMark(c.ev, c.to, userId, now), cpaSpecial: { at: now.toISOString(), by: userId ?? null } } : (() => { const e = withDeselectMark(c.ev, c.to, userId, now); if (!c.to) delete e.cpaSpecial; return e; })()) } });
     await audit({ planId: plan.id, userId, note: `تعديل اختيارات (${changes.length})`, data: { action: 'SELECTION', version: plan.version, changes } });
     const fresh = await prisma.ambDailyPlan.findUnique({ where: { id: plan.id }, include: { items: { orderBy: { rank: 'asc' } } } });
     return { plan: shapePlan(fresh, fresh.items), changed: changes.length, newVersion: false };
@@ -319,16 +323,28 @@ export async function approvePlan({ planId, userId, now = new Date(), deps = {},
   if (!selected.length) return { ok: false, status: 'EMPTY', message: 'مفيش حملة مختارة.' };
   // a REAL plan is only approved against the exact numbers the owner saw: campaign count + total exposed daily budget (simulated/SHADOW plans have nothing to protect)
   const exposure = planExposure(plan.items);
+  const pol = plan.type === 'OPEN' && !plan.simulated ? await (deps.openCpaPolicy ? deps.openCpaPolicy() : getOpenCpaPolicy()) : null; const polOn = policyIsActive(pol); const usedPolicy = j(plan.evidence_json, {}).openCpa || null;
+  const actual = { ...exposure, planVersion: plan.version, policyVersion: polOn ? pol.version : null };
   if (!plan.simulated) {
-    if (!confirm || confirm.count == null || confirm.exposedBudget == null) return { ok: false, status: 'CONFIRM_REQUIRED', message: 'اعتماد الخطة محتاج تأكيد عدد الحملات والميزانية المعرّضة.', actual: exposure };
-    if (Number(confirm.count) !== exposure.count || Math.abs(Number(confirm.exposedBudget) - exposure.exposedBudget) > 0.5) return { ok: false, status: 'CONFIRM_MISMATCH', message: `الاختيار اتغيّر: دلوقتي ${exposure.count} حملة / ${exposure.exposedBudget} جنيه — مش اللي أكدته (${confirm.count} / ${confirm.exposedBudget}). راجع الخطة واعتمد تاني.`, actual: exposure, confirmed: { count: Number(confirm.count), exposedBudget: Number(confirm.exposedBudget) } };
+    // the saved + approved «الفتح حسب CPA» policy is a RULE, not a suggestion: the plan must have been evaluated under the CURRENT version, and every selected campaign must pass it (or carry an explicit special approval)
+    if (polOn) {
+      if (!usedPolicy || usedPolicy.version !== pol.version) return { ok: false, status: 'POLICY_STALE', message: `الخطة اتجهزت ${usedPolicy ? `بسياسة CPA v${usedPolicy.version}` : 'من غير تطبيق سياسة CPA'} والسياسة المعتمدة دلوقتي v${pol.version} — اضغط «تجهيز الحملات المطابقة» الأول وراجع الاختيار.`, actual };
+      const bad = selected.map((i) => cpaViolation(i, true)).filter(Boolean);
+      if (bad.length) return { ok: false, status: 'CPA_POLICY_VIOLATION', message: `${bad.length} حملة مختارة خارج سياسة CPA ${pol.minCpa}–${pol.maxCpa} ج.م: ${bad.slice(0, 6).map((b) => `${b.name || b.campaignId} (${b.cpa != null ? 'CPA ' + b.cpa : 'CPA غير معروف'})`).join('، ')}${bad.length > 6 ? '…' : ''}. شيلها من الاختيار (أو اعتمدها بموافقة خاصة صريحة) وحاول تاني.`, violations: bad, actual };
+    }
+    const sameIds = Array.isArray(confirm?.campaignIds) && confirm.campaignIds.length === exposure.campaignIds.length && [...confirm.campaignIds].map(String).sort().every((x, k) => x === exposure.campaignIds[k]);
+    if (!confirm || confirm.count == null || confirm.exposedBudget == null) return { ok: false, status: 'CONFIRM_REQUIRED', message: 'اعتماد الخطة محتاج تأكيد عدد الحملات والميزانية المعرّضة.', actual };
+    if (Number(confirm.count) !== exposure.count || Math.abs(Number(confirm.exposedBudget) - exposure.exposedBudget) > 0.5 || (confirm.campaignIds != null && !sameIds)) return { ok: false, status: 'CONFIRM_MISMATCH', message: `الاختيار اتغيّر: دلوقتي ${exposure.count} حملة / ${exposure.exposedBudget} جنيه — مش اللي أكدته (${confirm.count} / ${confirm.exposedBudget}). راجع الخطة واعتمد تاني.`, actual, confirmed: { count: Number(confirm.count), exposedBudget: Number(confirm.exposedBudget) } };
+    if (confirm.planVersion != null && Number(confirm.planVersion) !== plan.version) return { ok: false, status: 'CONFIRM_MISMATCH', message: `الخطة اتغيّرت لنسخة v${plan.version} (انت أكدت v${confirm.planVersion}) — راجع واعتمد تاني.`, actual };
+    if (polOn && confirm.policyVersion != null && Number(confirm.policyVersion) !== pol.version) return { ok: false, status: 'CONFIRM_MISMATCH', message: `سياسة CPA اتغيّرت لـv${pol.version} (انت أكدت v${confirm.policyVersion}) — راجع واعتمد تاني.`, actual };
+    if (!Array.isArray(confirm.campaignIds) || confirm.planVersion == null) return { ok: false, status: 'CONFIRM_REQUIRED', message: 'التأكيد ناقص: محتاج أسماء الحملات ونسخة الخطة (حدّث الصفحة وجرّب تاني).', actual };
   }
   const config = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig();
   const gate = executionGate({ config, dcfg, type: plan.type, simulatedPlan: plan.simulated });
   const early = now.getTime() < plan.scheduled_at.getTime();
   if (early && !dcfg.scheduledExecution.enabled) return { ok: false, status: 'NOT_DUE_YET', message: 'لسه ما جاش موعد الجدول. الاعتماد المبكر محتاج تفعيل "التنفيذ المجدول" صراحة (مقفول).' };
   if (gate.blocked) { await audit({ planId: plan.id, userId, note: `الاعتماد اتمنع: ${gate.blocked.code}`, data: { action: 'APPROVE_BLOCKED', code: gate.blocked.code } }); return { ok: false, status: 'BLOCKED', blocked: gate.blocked.code, message: gate.blocked.message }; }
-  const claim = await prisma.ambDailyPlan.updateMany({ where: { id: plan.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: userId, approved_at: now, approval_mode: config.mode, execution_mode: gate.mode, dismissed_at: plan.dismissed_at || now, evidence_json: JSON.stringify({ ...j(plan.evidence_json, {}), approval: { count: exposure.count, exposedBudget: exposure.exposedBudget, by: userId, at: now.toISOString(), confirmed: !!confirm } }) } });
+  const claim = await prisma.ambDailyPlan.updateMany({ where: { id: plan.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: userId, approved_at: now, approval_mode: config.mode, execution_mode: gate.mode, dismissed_at: plan.dismissed_at || now, evidence_json: JSON.stringify({ ...j(plan.evidence_json, {}), approval: { count: exposure.count, exposedBudget: exposure.exposedBudget, campaignIds: exposure.campaignIds, planVersion: plan.version, policyVersion: polOn ? pol.version : null, by: userId, at: now.toISOString(), confirmed: !!confirm } }) } });
   if (claim.count !== 1) return { ok: false, status: 'RACE', message: 'الخطة اتغيّرت في نفس اللحظة.' };
   await audit({ planId: plan.id, userId, note: `الخطة اتعتمدت (${selected.length} حملة) — تنفيذ ${gate.mode === 'LIVE' ? 'فعلي' : 'تجريبي (SHADOW، مفيش كتابة على Meta)'}`, data: { action: 'APPROVED', version: plan.version, mode: config.mode, executionMode: gate.mode, selected: selected.map((i) => i.campaign_id) } });
   await notify(plan, { title: `اتعتمد جدول ${plan.type === 'OPEN' ? 'الفتح' : 'الإيقاف'} (${selected.length} حملة)`, message: gate.mode === 'LIVE' ? 'التنفيذ هيبدأ واحدة واحدة.' : 'SHADOW: تنفيذ تجريبي بدون أي كتابة على Meta.', suffix: 'approved' });
@@ -600,7 +616,8 @@ export function startDailyPlanScheduler() {
 }
 
 /** the numbers an approval must confirm RIGHT NOW for a plan (what the owner's screen should show) */
-export async function currentConfirmation(planId) {
-  const items = await prisma.ambDailyPlanItem.findMany({ where: { plan_id: Number(planId) }, select: { selected: true, evidence_json: true } });
-  return planExposure(items);
+export async function currentConfirmation(planId, deps = {}) {
+  const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, select: { version: true, type: true, simulated: true } }); const items = await prisma.ambDailyPlanItem.findMany({ where: { plan_id: Number(planId) }, select: { campaign_id: true, selected: true, evidence_json: true } });
+  const pol = plan && plan.type === 'OPEN' && !plan.simulated ? await (deps.openCpaPolicy ? deps.openCpaPolicy() : getOpenCpaPolicy()) : null;
+  return { ...planExposure(items), planVersion: plan?.version ?? null, policyVersion: policyIsActive(pol) ? pol.version : null };
 }
