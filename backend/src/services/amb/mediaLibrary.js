@@ -49,6 +49,10 @@ const GENERIC_NAME_RE = /^(🔥|خصم|عرض|offer|sale|discount|creative\s)/i;
 // Fingerprint — the dedup key
 // ---------------------------------------------------------------------------
 /** Pull every asset reference + copy sample out of a Graph creative node. */
+/** Meta text cut with .slice() can end in HALF an emoji (a lone UTF-16 surrogate); Prisma's query engine rejects it («unexpected end of hex escape») and the whole creative was skipped on every sync. */
+export const wellFormed = (v) => (typeof v === 'string' ? v.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD') : v);
+export const safeSlice = (v, n) => { if (typeof v !== 'string') return v; const t = v.slice(0, n); return /[\uD800-\uDBFF]$/.test(t) && v.length > n ? t.slice(0, -1) : t; };
+export const cleanStrings = (o) => Object.fromEntries(Object.entries(o).map(([k, x]) => [k, wellFormed(x)]));
 export function extractCreativeContent(node) {
   const oss = node.object_story_spec || {};
   const link = oss.link_data || {};
@@ -158,7 +162,7 @@ export async function syncMediaLibraryForAccount({ adAccountId, token, sinceDays
       if (!asset) {
         const pid = autoProduct();
         asset = await prisma.mediaLibraryAsset.create({
-          data: {
+          data: cleanStrings({
             fingerprint: fp.fingerprint,
             primary_format: fp.format,
             asset_name: deriveAssetName({ hook: ca?.hook, sampleTitle: fp.sampleTitle, sampleBody: fp.sampleBody, nodeName: node.name, creativeId: cid }),
@@ -168,13 +172,13 @@ export async function syncMediaLibraryForAccount({ adAccountId, token, sinceDays
             hook_types_json: ca?.hook_types_json || null,
             selling_angle: ca?.selling_angle || null,
             creative_type: ca?.creative_type || null,
-            sample_body: fp.sampleBody?.slice(0, 600) || null,
-            sample_title: fp.sampleTitle?.slice(0, 300) || null,
+            sample_body: safeSlice(fp.sampleBody, 600) || null,
+            sample_title: safeSlice(fp.sampleTitle, 300) || null,
             sample_cta: fp.cta || null,
-            sample_link_url: fp.sampleLink?.slice(0, 500) || null,
+            sample_link_url: safeSlice(fp.sampleLink, 500) || null,
             thumbnail_url: fp.thumb || null,
             page_id: fp.pageId || null,
-          },
+          }),
         });
         newAssets++;
       } else {
@@ -190,16 +194,16 @@ export async function syncMediaLibraryForAccount({ adAccountId, token, sinceDays
           const pid = autoProduct();
           if (pid) { patch.amb_product_id = pid; patch.link_source = 'AUTO_CAMPAIGN_MAP'; }
         }
-        await prisma.mediaLibraryAsset.update({ where: { id: asset.id }, data: patch });
+        await prisma.mediaLibraryAsset.update({ where: { id: asset.id }, data: cleanStrings(patch) });
       }
 
       await prisma.mediaLibraryCreativeRef.upsert({
         where: { ad_account_id_creative_id: { ad_account_id: adAccountId, creative_id: cid } },
-        create: {
+        create: cleanStrings({
           asset_id: asset.id, ad_account_id: adAccountId, creative_id: cid, creative_name: node.name || null,
           format: fp.format, image_hashes_json: JSON.stringify(fp.imageHashes), video_ids_json: JSON.stringify(fp.videoIds),
           origin: 'DISCOVERED',
-        },
+        }),
         update: {
           asset_id: asset.id, last_seen_at: new Date(), format: fp.format,
           image_hashes_json: JSON.stringify(fp.imageHashes), video_ids_json: JSON.stringify(fp.videoIds),
@@ -552,7 +556,7 @@ export async function registerLaunchCreativeRef({ payload, adAccountId, creative
       if (ambProduct?.id && !asset.amb_product_id && asset.link_source !== 'MANUAL') { patch.amb_product_id = ambProduct.id; patch.link_source = 'AUTO_CAMPAIGN_MAP'; }
       if (hook && !asset.hook) patch.hook = hook;
       if (sellingAngle && !asset.selling_angle) patch.selling_angle = sellingAngle;
-      await prisma.mediaLibraryAsset.update({ where: { id: asset.id }, data: patch });
+      await prisma.mediaLibraryAsset.update({ where: { id: asset.id }, data: cleanStrings(patch) });
     }
 
     await prisma.mediaLibraryCreativeRef.upsert({

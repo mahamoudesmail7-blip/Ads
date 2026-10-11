@@ -173,5 +173,15 @@ try {
     ok('…enough NEW spend but only 1 new order (< the 2 needed) → still no increase, although the 3-day window holds 12 orders', call({ spend: 200, purchases: 1, cpa: 200, hours: 30 }).action === null);
     ok('…2 NEW orders at a good CPA since the change → the next increase is allowed', call({ spend: 200, purchases: 3, cpa: 66, hours: 30 }).action === 'SCALE_UP');
     ok('cooldown: 10h after an increase nothing happens even with new orders', BO.classifyBudget({ m: m(900, 12), m7: m(900, 12), ageHours: 200, lastChange: { at: new Date(at.getTime() - 10 * 3_600_000), action: 'SCALE_UP' }, since: { spend: 400, purchases: 6, cpa: 66, hours: 10 }, policy: BO.DEFAULT_POLICY, now: at }).zone === 'COOLDOWN'); }
+
+  console.log('\n9. Maximum changes per day (per product, inherited from the global rules)');
+  { const a = `${T}mc_a`, b = `${T}mc_b`; setEntity(a); setEntity(b);
+    const mk = () => scenario([{ id: a, pid: pid(40), m3: m(600, 10), row: { action: 'SCALE_UP', decision: 'WOULD_INCREASE', to: 360 } }, { id: b, pid: pid(40), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]);
+    const pols = (cap) => new Map([[pk(pid(40)), { mode: 'AUTOMATIC', budget: { maxChangesPerDay: cap } }]]);
+    const w0 = allWrites().length; const r1 = await tick(mk(), cfg(ALL), { policies: pols(2), changesToday: async () => 2 });
+    ok('the product already made 2 of its 2 allowed changes today → BOTH candidates are deferred (PRODUCT_MAX_CHANGES_PER_DAY), ZERO requests', allWrites().length === w0 && r1.deferred.filter((d) => d.code === 'PRODUCT_MAX_CHANGES_PER_DAY').length === 2, JSON.stringify(r1.deferred));
+    const r2 = await tick(mk(), cfg(ALL), { policies: pols(2), changesToday: async () => 1 });
+    ok('1 of 2 used → exactly ONE more change goes out in this tick, the other is deferred (the counter includes what this tick already sent)', writes(a).length + writes(b).length === 1 && r2.deferred.some((d) => d.code === 'PRODUCT_MAX_CHANGES_PER_DAY'), JSON.stringify(r2.deferred));
+  }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

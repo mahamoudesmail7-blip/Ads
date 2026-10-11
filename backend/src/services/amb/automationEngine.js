@@ -25,6 +25,7 @@ import { checkBudgetCaps } from './budgetCaps.js';
 import { dailyCapFromLimits } from './productPolicy.js';
 import { raiseAlert } from './alerts.js';
 import { cairoDate } from './dailyPlanTime.js';
+import { cairoDayStart } from './executionHistory.js';
 import { defaultReadBack } from './budgetExecution.js';
 
 const MS_H = 3_600_000;
@@ -290,14 +291,17 @@ export async function runAutomationTick({ now = new Date(), deps = {} } = {}) {
     for (const c of ev.candidates.filter((x) => x.productMode === 'AUTOMATIC' && x.autoBlockers.some((b) => b.code === 'NEEDS_CONFIGURATION'))) await raiseAlert({ severity: 'WARNING', category: 'OPERATOR', title: `AUTOMATIC متوقف على منتج ناقص: ${c.productName || c.productKey}`, message: c.autoBlockers.find((b) => b.code === 'NEEDS_CONFIGURATION').message.slice(0, 460), entityId: c.campaignId, dedupeKey: `automation:needs:${c.productKey}:${cairoDate(now)}` }).catch(() => {});
     const p = await persistCandidates(ev.candidates, { adAccountId: ev.adAccountId, mode: config.mode, now }); out.persisted = { created: p.created, updated: p.updated };
     if (gate.length) { lastRun = out; return out; } // the owner still sees what WOULD run (PREPARED decisions), nothing executes
+    const policies = deps.policies || await loadActivePolicies().catch(() => new Map()); const dayStart = cairoDayStart(now); const sentByProduct = new Map();
+    const changesToday = deps.changesToday || ((productId) => (productId == null ? 0 : prisma.ambOperatorDecision.count({ where: { product_id: productId, rule_name: { startsWith: AUTO_PREFIX }, NOT: { rule_name: { startsWith: `${AUTO_PREFIX}MANUAL` } }, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED', 'UNCERTAIN'] }, updated_at: { gte: dayStart } } })));
     let sent = 0; const counters = deps.counters || await loadCounters({ now, campaigns: [] }).catch(() => ({ actionsLastHour: 0 })); const hourly = config.limits.maxActionsPerHour || null;
     for (const c of ev.candidates.filter((x) => x.canExecuteNow)) {
       if (sent >= S.maxActionsPerTick) { out.deferred.push({ campaignId: c.campaignId, code: 'MAX_ACTIONS_PER_TICK' }); continue; }
       if (hourly && (counters.actionsLastHour || 0) + sent >= hourly) { out.deferred.push({ campaignId: c.campaignId, code: 'MAX_ACTIONS_PER_HOUR' }); continue; }
       const id = p.ids.get(c.key); if (!id) continue;
+      { const cap = mergeEffective(policies.get(c.productKey), c.campaignId).budget.maxChangesPerDay; if (cap != null) { const done = await changesToday(c.productId) + (deps.changesToday ? (sentByProduct.get(c.productId) || 0) : 0); if (done >= cap) { out.deferred.push({ campaignId: c.campaignId, code: 'PRODUCT_MAX_CHANGES_PER_DAY', detail: `${done}/${cap}` }); continue; } } }
       if (sent > 0 && !deps.noSleep) await new Promise((r) => setTimeout(r, Math.max(3, S.spacingSeconds) * 1000));
       const r = await executeAutoDecision({ decisionId: id, source: 'AUTOPILOT', userId: null, now, deps: deps.execDeps || {} });
-      out.executed.push({ decisionId: id, campaignId: c.campaignId, kind: c.kind, status: r.status, verified: r.verified, message: r.message }); if (r.sentRequest || r.executed) sent++;
+      out.executed.push({ decisionId: id, campaignId: c.campaignId, kind: c.kind, status: r.status, verified: r.verified, message: r.message }); if (r.sentRequest || r.executed) { sent++; sentByProduct.set(c.productId, (sentByProduct.get(c.productId) || 0) + 1); }
       if (r.rateLimited) { out.deferred.push({ code: 'META_RATE_LIMIT_STOP' }); break; } // one rate-limit answer stops the whole tick; the rest waits for the next one
     }
     lastRun = out; return out;

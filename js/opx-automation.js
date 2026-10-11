@@ -3,6 +3,7 @@
 import { api } from './api-client.js';
 import { E, num, egp, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, openDrawer, closeDrawer, toast, confirmModal, $ } from './opx-ui.js';
 import { openActivationSheet } from './opx-activation.js';
+import { mountAutomationConsole } from './opx-automation-console.js';
 
 const A = { root: null, ctx: null, st: null, pp: null, rd: null, cand: null, form: null, dirty: false };
 const DAYS = [[6, 'سبت'], [0, 'أحد'], [1, 'اتنين'], [2, 'تلات'], [3, 'أربع'], [4, 'خميس'], [5, 'جمعة']];
@@ -32,10 +33,12 @@ function draw() {
     <div class="opx-card opx-head opx-fade"><div class="opx-head-icon violet">${ICONS.shield}</div><div class="grow"><h1>الأتمتة (AUTOMATIC)</h1><p>AUTOMATIC بيشتغل <b>على منتج معيّن فقط</b> بعد ما يستوفي كل الشروط. أي منتج ناقص بيترفض مع السبب، وكل تنفيذ بيعدّي على بوابة الأمان المركزية ويتسجّل في سجل التنفيذ.</p></div>${pill(health[1], health[0])}</div>
     <div class="opx-kpis">${kpiCard({ label: 'وضع النظام', value: s.mode, icon: 'shield', tone: 'violet' })}${kpiCard({ label: 'قرارات آخر 24س (اتنفذت)', value: num(sum('VERIFIED', 'EXECUTED')), icon: 'check', tone: 'green' })}${kpiCard({ label: 'جاهزة للموافقة', value: num(sum('PREPARED')), icon: 'clock', tone: 'amber' })}${kpiCard({ label: 'ممنوعة / منتهية / فاشلة', value: `${num(sum('BLOCKED'))} / ${num(sum('EXPIRED'))} / ${num(sum('FAILED'))}`, icon: 'stop', tone: sum('FAILED') ? 'red' : 'gray' })}</div>
     <div class="opx-card opx-fade" style="padding:14px 16px"><b>آخر دورة أتمتة:</b> ${s.lastTick ? `${E(ago(s.lastTick.at))} — ${s.lastTick.skipped ? E(s.lastTick.skipped) : s.lastTick.stale ? 'بيانات Meta قديمة (مفيش تسجيل)' : `${num(s.lastTick.evaluated)} قرار · نُفّذ ${num((s.lastTick.executed || []).length)}${(s.lastTick.gate || []).length ? ` · بوابات مقفولة: ${E(s.lastTick.gate.join('، '))}` : ''}`}` : 'لسه ما اشتغلتش (بتشتغل كل 10 دقايق)'} · السياسة المعتمدة للفتح: ${s.policies.open.enabled ? `v${s.policies.open.approvedVersion ?? '—'}` : 'مش مفعّلة'} · للإيقاف: ${s.policies.pause.active ? `v${s.policies.pause.approvedVersion}` : 'مش معتمدة'}${admin ? ` <button class="opx-btn sm" id="auTick" style="margin-inline-start:10px">${ICONS.play} شغّل دورة الآن</button>` : ''}</div>
+    <div id="auConsole"></div>
     ${pausePanel(pol, approvedHere, admin)}
     <div class="opx-card opx-tablecard opx-fade"><div class="opx-tablehead"><h3>جاهزية المنتجات لـAUTOMATIC</h3></div><div class="opx-scroll">${readyTable()}</div></div>
     <div class="opx-card opx-tablecard opx-fade"><div class="opx-tablehead"><h3>إيه اللي المحرك هيعمله دلوقتي (${num(A.cand.candidates.length)})</h3></div><div class="opx-scroll">${candTable()}</div></div>`;
   wire();
+  if (admin) mountAutomationConsole($('auConsole'), A.ctx, { onChange: () => load() });
 }
 function pausePanel(pol, approvedHere, admin) {
   const f = A.form; const dis = admin ? '' : 'disabled'; const chk = (id, v, label) => `<label class="opx-note" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="${id}" ${v ? 'checked' : ''} ${dis}> ${label}</label>`; const inp = (id, label, v) => `<label class="opx-field"><span>${label}</span><input class="opx-input" id="${id}" inputmode="decimal" value="${E(v)}" ${dis}></label>`;

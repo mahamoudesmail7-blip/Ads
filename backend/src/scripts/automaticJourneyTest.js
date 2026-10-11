@@ -135,5 +135,16 @@ try {
   const rEm3 = await tick(sc2, cfg(OFF)); ok('all four permissions OFF → ZERO requests', allWrites().length === wEm);
   const rRel = await tick(sc2, cfg(ALL)); ok('Emergency Stop released (all gates open) → the same prepared decisions execute exactly once', writes(e1).length === 1 && writes(e2).length === 1 && world.entities.get(e1).status === 'PAUSED' && world.entities.get(e2).daily_budget === '36000', JSON.stringify(rRel.executed));
   ok('total new Meta actions of the whole journey = 6 (open, pause, increase, reduce + the two after release)', (await prisma.ambAction.count()) - a0 === 6, String((await prisma.ambAction.count()) - a0));
+
+  // ---- stage 6: two scheduler INSTANCES (separate processes share one database) execute the same prepared decisions at the same moment
+  const m1 = `${T}j_mi1`, m2 = `${T}j_mi2`; setEntity(m1); setEntity(m2);
+  const sc3 = scenario([{ id: m1, pid: pid(36), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }, { id: m2, pid: pid(37), m3: m(600, 10), row: { action: 'SCALE_UP', decision: 'WOULD_INCREASE', to: 360 } }]);
+  await tick(sc3, cfg(ALL, { writesLocked: true })); // prepares the decisions only (lock closed)
+  const d1 = await dec(m1), d2 = await dec(m2); const wMi = allWrites().length; const config = cfg(ALL);
+  const xd = { config, reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...sc3, config } }) };
+  const results = await Promise.all([d1, d2, d1, d2].map((d) => AE.executeAutoDecision({ decisionId: d.id, source: 'AUTOPILOT', userId: null, now: NOW, deps: xd })));
+  ok('MULTI-INSTANCE: four simultaneous executions of two prepared decisions (two instances × two decisions) → exactly ONE request per decision on Meta', allWrites().length === wMi + 2 && writes(m1).length === 1 && writes(m2).length === 1, JSON.stringify(results.map((r) => [r.status, r.executed, r.sentRequest])));
+  ok('MULTI-INSTANCE: the instance that lost the claim sent nothing and reports it (no error, no duplicate), both decisions end VERIFIED once', (await dec(m1)).status === 'VERIFIED' && (await dec(m2)).status === 'VERIFIED' && (await prisma.ambAction.count({ where: { entity_id: { in: [m1, m2] } } })) === 2);
+  const wAfter = allWrites().length; await Promise.all([tick(sc3, cfg(ALL)), AE.executeAutoDecision({ decisionId: d1.id, source: 'AUTOPILOT', now: NOW, deps: xd })]); ok('MULTI-INSTANCE: later ticks / a late instance on terminal decisions send ZERO more requests', allWrites().length === wAfter);
 } finally { try { await journeyCleanup(); await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

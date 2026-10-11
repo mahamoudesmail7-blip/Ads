@@ -5,7 +5,7 @@
 // Required for AUTOMATIC: an ACTIVE product policy in mode AUTOMATIC · complete economics (Smart Pricing) · known stock · a verified campaign mapping · required spend limits (daily cap + min/max budget)
 // · CPA limits (scale / reduce / hard stop) · the pause policy enabled AND approved at its current version. Nothing is assumed: an unknown value is a missing value.
 import { readinessList } from './operatorReadiness.js';
-import { getProductPolicy, mergeEffective } from './productPolicy.js';
+import { getProductPolicy, mergeEffective, overlayGlobal, getGlobalRules, stockPolicyDefault } from './productPolicy.js';
 import { getPausePolicy, pausePolicyActive } from './pausePolicy.js';
 import { getOpenCpaPolicy } from './openCpaPolicy.js';
 
@@ -14,12 +14,12 @@ const check = (key, label, ok, detail, fix, required = true) => ({ key, label, o
 
 /** Pure. row = one entry of readinessList() (or null), policy = ACTIVE product policy (or null), pause/open = the saved global policies. */
 export function evaluateReadiness({ row, policy, pause, open = null, minStockRequired = null }) {
-  const eff = policy ? mergeEffective(policy) : null; const b = eff?.budget || {}; const c = eff?.cpa || {};
+  const eff = policy ? mergeEffective(policy) : null; const b = eff?.budget || {}; const c = eff?.cpa || {}; const strictStock = (eff?.stockPolicy ?? stockPolicyDefault) === 'BLOCK';
   const checks = [
     check('POLICY_ACTIVE', 'سياسة المنتج مفعّلة (مش مسودة)', !!policy, policy ? 'مفعّلة' : 'مفيش سياسة مفعّلة', { tab: 'rules', label: 'فعّل سياسة المنتج من «قواعد المنتج»' }),
     check('MODE_AUTOMATIC', 'وضع المنتج AUTOMATIC', policy?.mode === 'AUTOMATIC', `الوضع: ${policy?.mode || '—'}`, { tab: 'rules', label: 'اختار AUTOMATIC في سياسة المنتج' }),
     check('ECONOMICS', 'اقتصاديات المنتج مكتملة (تكلفة + شحن + سعر + CPA متوقع)', row?.economicsComplete, row?.economicsComplete ? 'مكتملة' : 'ناقصة', { tab: 'pricing', label: 'أكمل التكلفة والشحن من «التسعير الذكي»' }),
-    check('STOCK', minStockRequired ? `المخزون معروف وأعلى من الحد الأدنى (${minStockRequired})` : 'المخزون معروف', row?.stockKnown && (minStockRequired == null || Number(row.stock) >= minStockRequired), row?.stockKnown ? `المخزون ${row.stock}` : 'غير معروف', { tab: 'integration', label: 'سجّل المخزون أو اربط الـInventory' }),
+    check('STOCK', minStockRequired ? `المخزون معروف وأعلى من الحد الأدنى (${minStockRequired})` : (strictStock ? 'المخزون معروف (حماية المخزون الصارمة مفعّلة)' : 'المخزون معروف (غير المعروف = تحذير فقط، نفاد المخزون = منع دايمًا)'), row?.stockKnown && (minStockRequired == null || Number(row.stock) >= minStockRequired), row?.stockKnown ? `المخزون ${row.stock}` : (strictStock ? 'غير معروف' : 'غير معروف — تحذير'), { tab: 'integration', label: 'سجّل المخزون أو اربط الـInventory' }, strictStock || !!minStockRequired),
     check('MAPPING', 'حملة واحدة على الأقل مربوطة بالمنتج بشكل مؤكد', (row?.campaignsMapped || 0) >= 1, `${row?.campaignsMapped || 0} حملة مؤكدة`, { tab: 'integration', label: 'أكّد ربط الحملات بالمنتج' }),
     check('SPEND_LIMITS', 'حدود الصرف مطلوبة: الحد اليومي للمنتج + أقل وأقصى ميزانية', b.dailySpendCap != null && b.minBudget != null && b.maxBudget != null, b.dailySpendCap != null && b.minBudget != null && b.maxBudget != null ? `سقف ${b.dailySpendCap} · ${b.minBudget}–${b.maxBudget}` : `ناقص: ${[b.dailySpendCap == null && 'الحد اليومي', b.minBudget == null && 'أقل ميزانية', b.maxBudget == null && 'أقصى ميزانية'].filter(Boolean).join('، ')}`, { tab: 'rules', label: 'حدّد الحد اليومي وأقل/أقصى ميزانية في سياسة المنتج' }),
     check('CPA_LIMITS', 'حدود الـCPA: Scale وReduce وHard Stop', c.scale != null && c.reduce != null && c.hardStop != null, c.scale != null && c.reduce != null && c.hardStop != null ? `Scale ≤ ${c.scale} · Reduce ≥ ${c.reduce} · Hard Stop ${c.hardStop}` : `ناقص: ${[c.scale == null && 'Scale', c.reduce == null && 'Reduce', c.hardStop == null && 'Hard Stop'].filter(Boolean).join('، ')}`, { tab: 'rules', label: 'حدّد حدود الـCPA في سياسة المنتج' }),
@@ -34,7 +34,7 @@ export function evaluateReadiness({ row, policy, pause, open = null, minStockReq
 export async function productAutomationReadiness({ productId, storeId = null, deps = {} }) {
   const rows = deps.rows || await readinessList({});
   const row = rows.find((r) => Number(r.productId) === Number(productId) && (!storeId || storeId === 'default' || r.storeId === storeId)) || null;
-  const pol = deps.policy !== undefined ? deps.policy : (await getProductPolicy({ productId, storeId: storeId || row?.storeId })).active;
+  const pol = deps.policy !== undefined ? deps.policy : (await getProductPolicy({ productId, storeId: storeId || row?.storeId })).effective;
   const [pause, open] = await Promise.all([deps.pause || getPausePolicy(), deps.open !== undefined ? deps.open : getOpenCpaPolicy().catch(() => null)]);
   return { productId: Number(productId), storeId: storeId || row?.storeId || 'default', name: row?.name || null, ...evaluateReadiness({ row, policy: pol, pause, open, minStockRequired: open?.enabled ? open.minStock : null }) };
 }
@@ -53,7 +53,7 @@ export async function automationReadinessMap({ deps = {} } = {}) {
  */
 export async function activationSummary({ productId, storeId = null, now = new Date(), deps = {} }) {
   const { getOperatorConfig } = await import('./operatorStore.js'); const { getProductPolicy, mergeEffective } = await import('./productPolicy.js');
-  const sid = storeId || 'default'; const pp = await getProductPolicy({ productId, storeId: sid }); const eff = pp.active || pp.draft || null; const e = eff ? mergeEffective(eff) : null;
+  const sid = storeId || 'default'; const pp = await getProductPolicy({ productId, storeId: sid }); const gl = (await getGlobalRules().catch(() => ({ active: null }))).active; const eff = pp.active ? pp.effective : pp.draft ? overlayGlobal(gl, pp.draft) : null; const e = eff ? mergeEffective(eff) : null;
   const rd = await productAutomationReadiness({ productId, storeId: sid, deps: { rows: deps.rows, policy: deps.policy !== undefined ? deps.policy : (eff || null), pause: deps.pause, open: deps.open } });
   const [pause, open, config] = await Promise.all([deps.pause || getPausePolicy(), deps.open !== undefined ? deps.open : getOpenCpaPolicy().catch(() => null), deps.config || getOperatorConfig()]);
   let campaigns = deps.campaigns; if (!campaigns) { const { listProductRules } = await import('./productPolicy.js'); const r = (await listProductRules({ now })).find((x) => Number(x.productId) === Number(productId)); campaigns = r?.campaigns || []; }

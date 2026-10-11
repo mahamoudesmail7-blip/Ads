@@ -20,7 +20,7 @@ export function normalizePolicy(raw = {}) {
   if (o.schedule.days && !o.schedule.days.length) o.schedule.days = null;
   o.cpa = pick(r.cpa, ['normalMin', 'normalMax', 'scale', 'reduce', 'hardStop']);
   o.zeroOrder = pick(r.zeroOrder, ['spend', 'minAgeHours', 'windowDays']);
-  o.budget = pick(r.budget, ['increasePct', 'decreasePct', 'minPurchases', 'cooldownHours', 'minBudget', 'maxBudget', 'dailySpendCap']);
+  o.budget = pick(r.budget, ['increasePct', 'decreasePct', 'minPurchases', 'cooldownHours', 'minBudget', 'maxBudget', 'dailySpendCap', 'maxChangesPerDay']);
   o.manualOverrideHours = num(r.manualOverrideHours);
   o.stockPolicy = ['WARN', 'BLOCK'].includes(r.stockPolicy) ? r.stockPolicy : null;
   for (const grp of ['cpa', 'zeroOrder', 'budget']) for (const k of Object.keys(o[grp])) { const n = num(o[grp][k]); o[grp][k] = n === null ? null : n; }
@@ -44,7 +44,7 @@ export function validatePolicy(p, { scopeLabel = '' } = {}) {
   rng('الصرف بدون أوردرات', z.spend, 50, 100000); rng('أقل عمر للحملة (ساعات)', z.minAgeHours, 0, 720);
   if (z.windowDays != null && ![3, 7].includes(z.windowDays)) errors.push(L('نافذة القياس لازم 3 أو 7 أيام.'));
   rng('نسبة الزيادة %', b.increasePct, 1, 50); rng('نسبة التقليل %', b.decreasePct, 1, 50); rng('أقل عدد أوردرات', b.minPurchases, 1, 100); rng('Cooldown (ساعات)', b.cooldownHours, 6, 336);
-  rng('أقل ميزانية', b.minBudget, 1, 1e7); rng('أقصى ميزانية', b.maxBudget, 1, 1e7); rng('الحد اليومي لميزانية المنتج (Daily Spend Cap)', b.dailySpendCap, 1, 1e7); rng('حماية التعديل اليدوي (ساعات)', p.manualOverrideHours, 1, 720);
+  rng('أقل ميزانية', b.minBudget, 1, 1e7); rng('أقصى ميزانية', b.maxBudget, 1, 1e7); rng('الحد اليومي لميزانية المنتج (Daily Spend Cap)', b.dailySpendCap, 1, 1e7); rng('حماية التعديل اليدوي (ساعات)', p.manualOverrideHours, 1, 720); rng('أقصى عدد تعديلات في اليوم للمنتج', b.maxChangesPerDay, 1, 50);
   if (b.dailySpendCap != null && b.maxBudget != null && b.maxBudget > b.dailySpendCap) errors.push(L('أقصى ميزانية للحملة لا يمكن أن تتجاوز الحد اليومي للمنتج.'));
   if (b.minBudget != null && b.maxBudget != null && b.minBudget > b.maxBudget) errors.push(L('أقل ميزانية لازم تكون ≤ أقصى ميزانية.'));
   for (const [cid, c] of Object.entries(p.campaigns || {})) errors.push(...validatePolicy({ ...c, campaigns: {} }, { scopeLabel: `حملة ${cid}: ` }));
@@ -76,6 +76,70 @@ export function mergeEffective(policy, campaignId = null) {
     cpa: m(base.cpa, ov.cpa), zeroOrder: m(base.zeroOrder, ov.zeroOrder), budget: m(base.budget, ov.budget), stockPolicy: ov.stockPolicy ?? base.stockPolicy, campaigns: {} };
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// GLOBAL AUTOMATION RULES — one versioned rule set that every product inherits unless it (or one of its campaigns) says otherwise.
+//   product value ← wins over → global value; campaign value wins over both. A null at a level means «inherit». The global set NEVER carries a mode: AUTOMATIC stays an explicit per-product decision.
+//   Nothing here executes anything. A product without its own ACTIVE policy is not touched by the global rules at all (it is simply not enrolled).
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+export const stockPolicyDefault = 'WARN'; // owner decision (2026-10-12): STOCK_UNKNOWN = WARNING for now; OUT_OF_STOCK always blocks. 'BLOCK' = strict protection, set explicitly (and scoped) by the owner.
+export function normalizeGlobal(raw = {}) { const n = normalizePolicy({ ...(raw || {}), mode: null, campaigns: {} }); n.mode = null; delete n.campaigns; return n; }
+/** the policy the engine really uses: product values, with every null filled from the global ACTIVE rules (campaign overrides are kept and still win in mergeEffective) */
+export function overlayGlobal(globalActive, policy) {
+  if (!policy) return policy; if (!globalActive) return policy;
+  const g = normalizeGlobal(globalActive); const p = normalizePolicy(policy); const m = (a, b) => Object.fromEntries(Object.keys(a).map((k) => [k, a[k] ?? b[k] ?? null]));
+  return { ...p, schedule: { openTime: p.schedule.openTime ?? g.schedule.openTime, closeTime: p.schedule.closeTime ?? g.schedule.closeTime, days: p.schedule.days ?? g.schedule.days }, cpa: m(p.cpa, g.cpa), zeroOrder: m(p.zeroOrder, g.zeroOrder), budget: m(p.budget, g.budget), manualOverrideHours: p.manualOverrideHours ?? g.manualOverrideHours, stockPolicy: p.stockPolicy ?? g.stockPolicy };
+}
+const LEAVES = [['schedule', 'openTime'], ['schedule', 'closeTime'], ['schedule', 'days'], ['cpa', 'normalMin'], ['cpa', 'normalMax'], ['cpa', 'scale'], ['cpa', 'reduce'], ['cpa', 'hardStop'], ['zeroOrder', 'spend'], ['zeroOrder', 'minAgeHours'], ['zeroOrder', 'windowDays'],
+  ['budget', 'increasePct'], ['budget', 'decreasePct'], ['budget', 'minPurchases'], ['budget', 'cooldownHours'], ['budget', 'minBudget'], ['budget', 'maxBudget'], ['budget', 'dailySpendCap'], ['budget', 'maxChangesPerDay'], ['manualOverrideHours'], ['stockPolicy']];
+/** Where every effective value comes from: CAMPAIGN | PRODUCT | GLOBAL (with the global version) | DEFAULT | UNSET. Pure. */
+export function resolveSources({ global = null, globalVersion = null, product = null, campaignId = null } = {}) {
+  const g = global ? normalizeGlobal(global) : null; const p = product ? normalizePolicy(product) : null; const c = campaignId && product?.campaigns?.[campaignId] ? normalizePolicy({ ...product.campaigns[campaignId], campaigns: undefined }) : null;
+  const get = (o, path) => (o ? path.reduce((x, k) => x?.[k], o) : null); const out = {};
+  for (const path of LEAVES) {
+    const cv = get(c, path), pv = get(p, path), gv = get(g, path); const key = path.join('.');
+    out[key] = cv != null ? { value: cv, source: 'CAMPAIGN' } : pv != null ? { value: pv, source: 'PRODUCT' } : gv != null ? { value: gv, source: 'GLOBAL', version: globalVersion } : key === 'stockPolicy' ? { value: stockPolicyDefault, source: 'DEFAULT' } : { value: null, source: 'UNSET' };
+  }
+  return out;
+}
+const globalState = (e = {}) => ({ active: e.active || null, draft: e.draft || null, version: e.version || 0, status: e.active ? (e.draft ? 'ACTIVE_WITH_DRAFT' : 'ACTIVE') : e.draft ? 'DRAFT' : 'NONE', savedAt: e.savedAt || null, activatedAt: e.activatedAt || null, activatedById: e.activatedById || null, history: (e.history || []).slice(-10).reverse() });
+/** one config read: the whole policy book (global rules + every product policy + account limits) for the bulk screens */
+export async function policyBook() { const { raw, all } = await readAll(); return { global: globalState(raw.automationRules || {}), products: all, account: raw.account || {} }; }
+export async function getGlobalRules() { const { raw } = await readAll(); return globalState(raw.automationRules || {}); }
+export async function saveGlobalDraft({ policy, userId, deps = {} }) {
+  await requireAdmin(userId, deps); const norm = normalizeGlobal(policy); const errors = validatePolicy(norm); if (errors.length) { const e = fail(400, errors.join(' '), 'INVALID_POLICY'); e.details = errors; throw e; }
+  const { raw } = await readAll(); const cur = raw.automationRules || {}; raw.automationRules = { ...cur, draft: norm, savedAt: new Date().toISOString(), savedById: Number(userId) };
+  await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(raw), updated_by_id: userId ?? null } });
+  await audit(userId, 'OPERATOR_GLOBAL_RULES_DRAFT', { draft: norm }); await event(userId, 'GLOBAL_RULES_SAVED', 'حفظ مسودة القواعد العامة للأتمتة (لم تُفعَّل)', {});
+  return getGlobalRules();
+}
+/** ADMIN + confirm. Refused when any ACTIVE product policy would become invalid under the new global values (the conflicts are listed). Changes the inherited values of enrolled products — nothing executes. */
+export async function activateGlobalRules({ confirm, userId, deps = {} }) {
+  await requireAdmin(userId, deps); if (confirm !== true) throw fail(400, 'تفعيل القواعد العامة محتاج تأكيد صريح (confirm).', 'CONFIRM_REQUIRED');
+  const { raw, all } = await readAll(); const cur = raw.automationRules || {}; if (!cur.draft) throw fail(409, 'مفيش مسودة للقواعد العامة — احفظها الأول.', 'NO_DRAFT');
+  const errors = validatePolicy(cur.draft); if (errors.length) throw fail(400, errors.join(' '), 'INVALID_POLICY');
+  const conflicts = []; for (const [k, e] of Object.entries(all)) if (e?.active) { const er = validatePolicy(overlayGlobal(cur.draft, e.active), { scopeLabel: `${k}: ` }); if (er.length) conflicts.push({ key: k, errors: er }); }
+  if (conflicts.length) { const e = fail(409, `القواعد العامة الجديدة بتكسر سياسات منتجات مفعّلة: ${conflicts.map((c) => c.key).join('، ')}`, 'GLOBAL_CONFLICTS'); e.details = conflicts; throw e; }
+  const version = (cur.version || 0) + 1; const enrolled = Object.values(all).filter((e) => e?.active).length;
+  raw.automationRules = { ...cur, active: cur.draft, draft: null, version, activatedAt: new Date().toISOString(), activatedById: Number(userId), history: [...(cur.history || []), { version, at: new Date().toISOString(), by: Number(userId), previous: cur.active || null }].slice(-20) };
+  await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(raw), updated_by_id: userId ?? null } });
+  await audit(userId, 'OPERATOR_GLOBAL_RULES_ACTIVATE', { version, enrolledProducts: enrolled }); await event(userId, 'GLOBAL_RULES_ACTIVATED', `تفعيل القواعد العامة v${version} (المنتجات المسجّلة: ${enrolled}) — مفيش تنفيذ`, { version, enrolled });
+  return { ...(await getGlobalRules()), enrolledProducts: enrolled };
+}
+export async function deactivateGlobalRules({ confirm, userId, deps = {} }) {
+  await requireAdmin(userId, deps); if (confirm !== true) throw fail(400, 'محتاج تأكيد صريح (confirm).', 'CONFIRM_REQUIRED');
+  const { raw } = await readAll(); const cur = raw.automationRules || {}; if (!cur.active) throw fail(409, 'مفيش قواعد عامة مفعّلة.', 'NOT_ACTIVE');
+  const version = (cur.version || 0) + 1; raw.automationRules = { ...cur, draft: cur.draft || cur.active, active: null, version, history: [...(cur.history || []), { version, at: new Date().toISOString(), by: Number(userId), previous: cur.active, deactivated: true }].slice(-20) };
+  await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(raw), updated_by_id: userId ?? null } });
+  await audit(userId, 'OPERATOR_GLOBAL_RULES_DEACTIVATE', { version }); await event(userId, 'GLOBAL_RULES_DEACTIVATED', 'إيقاف القواعد العامة — المنتجات بترجع لقيمها الخاصة فقط', { version });
+  return getGlobalRules();
+}
+/** the sources of every effective value for a product (and optionally one campaign) — what the UI shows as «موروث من العام v3» */
+export async function effectivePolicyView({ productId, storeId, campaignId = null }) {
+  const { raw, all } = await readAll(); const e = all[policyKey(storeId, productId)] || null; const g = raw.automationRules || {}; const product = e?.active || e?.draft || null;
+  return { productStatus: e?.active ? 'ACTIVE' : e?.draft ? 'DRAFT' : 'NONE', usesDraft: !e?.active && !!e?.draft, globalVersion: g.active ? g.version : null, globalActive: !!g.active, sources: resolveSources({ global: g.active || null, globalVersion: g.version || null, product, campaignId }) };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // storage
 // ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -87,8 +151,8 @@ async function requireAdmin(userId, deps = {}) { const u = deps.user || await pr
 const fail = (status, message, code) => { const e = new Error(message); e.status = status; if (code) e.code = code; return e; };
 
 export async function getProductPolicy({ productId, storeId }) {
-  const { all } = await readAll(); const e = all[policyKey(storeId, productId)] || null;
-  return { key: policyKey(storeId, productId), productId: Number(productId), storeId: storeId || 'default', active: e?.active || null, draft: e?.draft || null, status: e?.active ? (e.draft ? 'ACTIVE_WITH_DRAFT' : 'ACTIVE') : e?.draft ? 'DRAFT' : 'NONE', savedAt: e?.savedAt || null, activatedAt: e?.activatedAt || null, activatedById: e?.activatedById || null, version: e?.version || 0 };
+  const { raw, all } = await readAll(); const e = all[policyKey(storeId, productId)] || null; const gl = raw.automationRules?.active || null;
+  return { key: policyKey(storeId, productId), productId: Number(productId), storeId: storeId || 'default', effective: e?.active ? overlayGlobal(gl, e.active) : null, globalVersion: gl ? raw.automationRules.version : null, active: e?.active || null, draft: e?.draft || null, status: e?.active ? (e.draft ? 'ACTIVE_WITH_DRAFT' : 'ACTIVE') : e?.draft ? 'DRAFT' : 'NONE', savedAt: e?.savedAt || null, activatedAt: e?.activatedAt || null, activatedById: e?.activatedById || null, version: e?.version || 0 };
 }
 
 /** DRAFT only — never changes behaviour. */
@@ -109,9 +173,10 @@ export async function activatePolicy({ productId, storeId, confirm, confirmAutom
   if (!cur?.draft) throw fail(409, 'مفيش مسودة للتفعيل — احفظ المسودة الأول.', 'NO_DRAFT');
   const anyAuto = cur.draft.mode === 'AUTOMATIC' || Object.values(cur.draft.campaigns || {}).some((c) => c.mode === 'AUTOMATIC');
   if (anyAuto && confirmAutomatic !== true) throw fail(400, 'تفعيل AUTOMATIC على منتج/حملة محتاج تأكيد ADMIN إضافي واضح (confirmAutomatic).', 'CONFIRM_AUTOMATIC_REQUIRED');
-  const errors = validatePolicy(cur.draft); if (errors.length) throw fail(400, errors.join(' '), 'INVALID_POLICY');
+  const gl = raw.automationRules?.active || null; const eff0 = overlayGlobal(gl, cur.draft);
+  const errors = validatePolicy(eff0); if (errors.length) throw fail(400, errors.join(' '), 'INVALID_POLICY');
   // AUTOMATIC is never allowed on an incomplete product: economics, stock, mapping, spend limits, CPA limits and an approved pause policy must all exist (the engine re-checks this at every tick)
-  if (anyAuto) { const rd = await (deps.readiness ? deps.readiness({ productId, storeId, policy: cur.draft }) : import('./automationReadiness.js').then((m) => m.productAutomationReadiness({ productId, storeId, deps: { policy: cur.draft } })));
+  if (anyAuto) { const rd = await (deps.readiness ? deps.readiness({ productId, storeId, policy: cur.draft }) : import('./automationReadiness.js').then((m) => m.productAutomationReadiness({ productId, storeId, deps: { policy: eff0 } })));
     if (!rd.ready) { const e = fail(409, `مينفعش تفعّل AUTOMATIC — المنتج ناقص: ${rd.missing.map((m) => m.label + (m.detail ? ` (${m.detail})` : '')).join(' · ')}`, 'AUTOMATIC_NOT_READY'); e.details = { missing: rd.missing, checks: rd.checks }; throw e; } }
   all[k] = { ...cur, active: cur.draft, draft: null, activatedAt: new Date().toISOString(), activatedById: Number(userId), version: (cur.version || 0) + 1 };
   await writeAll(raw, all, userId);
@@ -154,9 +219,9 @@ export async function copyPolicy({ from, to, userId, deps = {} }) {
 // engine-facing readers (cheap: one config read)
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 /** Map `${storeId}:${productId}` → ACTIVE policy */
-export async function loadActivePolicies() { const { all } = await readAll(); const m = new Map(); for (const [k, e] of Object.entries(all)) if (e?.active) m.set(k, e.active); return m; }
+export async function loadActivePolicies() { const { raw, all } = await readAll(); const g = raw.automationRules?.active || null; const m = new Map(); for (const [k, e] of Object.entries(all)) if (e?.active) m.set(k, overlayGlobal(g, e.active)); return m; }
 /** ACTIVE policy of a product from the operator config's limits object (what the engine already holds), or null */
-export const activePolicyFromLimits = (limits, storeId, productId) => (productId == null ? null : limits?.productPolicies?.[policyKey(storeId, productId)]?.active || null);
+export const activePolicyFromLimits = (limits, storeId, productId) => { if (productId == null) return null; const a = limits?.productPolicies?.[policyKey(storeId, productId)]?.active || null; return a ? overlayGlobal(limits?.automationRules?.active || null, a) : null; };
 /** hours the owner's MANUAL change protects a campaign: never below the GLOBAL cooldown — a product policy can only extend it */
 export const effectiveManualOverrideHours = (limits, storeId, productId, campaignId = null) => { const g = Number(limits?.manualOverrideCooldownHours ?? 24); const p = activePolicyFromLimits(limits, storeId, productId); const h = p ? mergeEffective(p, campaignId).manualOverrideHours : null; return Math.max(g, Number(h) || 0); };
 /** the product's daily budget cap override (null = use the global product cap) */
