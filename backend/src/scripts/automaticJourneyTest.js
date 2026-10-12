@@ -146,5 +146,25 @@ try {
   ok('MULTI-INSTANCE: four simultaneous executions of two prepared decisions (two instances × two decisions) → exactly ONE request per decision on Meta', allWrites().length === wMi + 2 && writes(m1).length === 1 && writes(m2).length === 1, JSON.stringify(results.map((r) => [r.status, r.executed, r.sentRequest])));
   ok('MULTI-INSTANCE: the instance that lost the claim sent nothing and reports it (no error, no duplicate), both decisions end VERIFIED once', (await dec(m1)).status === 'VERIFIED' && (await dec(m2)).status === 'VERIFIED' && (await prisma.ambAction.count({ where: { entity_id: { in: [m1, m2] } } })) === 2);
   const wAfter = allWrites().length; await Promise.all([tick(sc3, cfg(ALL)), AE.executeAutoDecision({ decisionId: d1.id, source: 'AUTOPILOT', now: NOW, deps: xd })]); ok('MULTI-INSTANCE: later ticks / a late instance on terminal decisions send ZERO more requests', allWrites().length === wAfter);
+
+  // ---- stage 7: ISOLATION — one automatic campaign in the day's OPEN plan; the owner's other selections must stay untouched
+  const iA = `${T}j_isoA`, iB = `${T}j_isoB`; setEntity(iA, { status: 'PAUSED', effective_status: 'PAUSED', daily_budget: '30000' }); setEntity(iB, { status: 'PAUSED', effective_status: 'PAUSED', daily_budget: '30000' });
+  const date7 = '2031-07-03'; const now7 = new Date(TM.dueAt('OPEN', date7).getTime() + 30 * 60_000);
+  const mkItem7 = (id, pidn) => ({ campaignId: id, campaignName: id, productId: pidn, productName: 'fixture', storeId: ST, rank: 1, selected: false, selectable: true, eligibility: 'ELIGIBLE', blockCodes: [], warnings: [], risk: 'LOW', riskScore: 10, reason: 'fixture', evidence: { mapping: 'VERIFIED', budget: 300, budgetLevel: 'CBO', status: 'PAUSED', stock: { status: 'IN_STOCK' } } });
+  const plan7 = (await DP.preparePlan({ type: 'OPEN', date: date7, now: now7, simulated: false, userId: ADMIN_ID, deps: { ...FRESH, build: async () => ({ items: [mkItem7(iA, pid(40)), mkItem7(iB, pid(41))], policy: null, openCpa: { version: pol.version } }) } })).plan; planIds.push(plan7.id);
+  await DP.prepareOpenCpaMatches({ planId: plan7.id, userId: ADMIN_ID, now: now7, simulated: false, deps: { ...D0, openCpaMetrics: new Map([[iA, { spend: 1000, purchases: 10 }], [iB, { spend: 1000, purchases: 10 }]]) } });
+  const sel7 = async () => (await prisma.ambDailyPlan.findUnique({ where: { id: plan7.id }, include: { items: true } }));
+  ok('both campaigns are ticked in the standard OPEN plan before the automatic run', (await sel7()).items.filter((i) => i.selected).length === 2);
+  const gate7 = (it) => (it.campaign_id === iA ? { ok: true } : { ok: false, reason: 'PRODUCT_NOT_AUTOMATIC' });
+  const w7 = allWrites().length; const r7 = await DP.runOpenCpaAutomatic({ now: now7, deps: openDeps(cfg(ALL), gate7) }); const iso = r7.plans.find((x) => x.isolated);
+  if (iso?.childPlanId) planIds.push(iso.childPlanId);
+  const std = await sel7(); const child = iso ? await prisma.ambDailyPlan.findUnique({ where: { id: iso.childPlanId }, include: { items: true } }) : null;
+  ok('ISOLATION: ONLY the automatic campaign is opened (one write, mock ACTIVE); the other campaign is untouched (zero writes, still PAUSED)', allWrites().length === w7 + 1 && writes(iA).length === 1 && world.entities.get(iA).status === 'ACTIVE' && writes(iB).length === 0 && world.entities.get(iB).status === 'PAUSED', JSON.stringify(r7).slice(0, 300));
+  ok('ISOLATION: the standard plan is NOT consumed — it stays PREPARED, the owner\'s other campaign is STILL ticked and not marked with any drop reason', std.status === 'PREPARED' && std.items.find((i) => i.campaign_id === iB).selected === true && !std.items.find((i) => i.campaign_id === iB).status_reason);
+  ok('ISOLATION: the automatic campaign is un-ticked in the standard plan with a pointer to the child plan (it cannot be approved twice); the child plan ran under AUTOPILOT and its item is VERIFIED', std.items.find((i) => i.campaign_id === iA).selected === false && /AUTOMATIC_PLAN#/.test(std.items.find((i) => i.campaign_id === iA).status_reason || '') && child?.status === 'COMPLETED' && child.approval_mode === 'AUTOPILOT' && child.items.length === 1 && child.items[0].status === 'VERIFIED');
+  const w7b = allWrites().length; await DP.runOpenCpaAutomatic({ now: now7, deps: openDeps(cfg(ALL), gate7) });
+  ok('ISOLATION: a second run (next tick) opens nothing more and creates no second child plan', allWrites().length === w7b);
+  const rNone = await DP.runOpenCpaAutomatic({ now: now7, deps: openDeps(cfg(ALL), () => ({ ok: false, reason: 'PRODUCT_NOT_AUTOMATIC' })) });
+  ok('with no automatic campaign at all the standard plan and every selection stay exactly as they are', (await sel7()).items.find((i) => i.campaign_id === iB).selected === true && (await sel7()).status === 'PREPARED' && allWrites().length === w7b);
 } finally { try { await journeyCleanup(); await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);
