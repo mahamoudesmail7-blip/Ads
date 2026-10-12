@@ -34,7 +34,7 @@ export const AUTO_PREFIX = 'AUTO:';
 export const isAutoRule = (name) => String(name || '').startsWith(AUTO_PREFIX);
 export const AMB_ACTION = { PAUSE: 'PAUSE', SCALE_UP: 'INCREASE_BUDGET', SCALE_DOWN: 'DECREASE_BUDGET' };
 export const DEFAULT_AUTOMATION = Object.freeze({ flipHours: 72, maxActionsPerTick: 10, spacingSeconds: 3, metaMinDailyBudget: null });
-export const KIND_LABEL = { MANUAL_OPEN: 'فتح (يدوي)', MANUAL_PAUSE: 'إيقاف (يدوي)', MANUAL_INCREASE: 'زيادة ميزانية (يدوي)', MANUAL_REDUCE: 'تقليل ميزانية (يدوي)', STOCK_OUT: 'إيقاف: نفاد المخزون', ZERO_ORDER: 'إيقاف: صرف بدون أوردرات', HIGH_CPA: 'إيقاف: CPA عالي', REDUCE: 'تقليل ميزانية', INCREASE: 'زيادة ميزانية' };
+export const KIND_LABEL = { DAILY_ZERO_SPEND: 'إيقاف: صرف بدون أوردرات (فحص يومي)', MANUAL_OPEN: 'فتح (يدوي)', MANUAL_PAUSE: 'إيقاف (يدوي)', MANUAL_INCREASE: 'زيادة ميزانية (يدوي)', MANUAL_REDUCE: 'تقليل ميزانية (يدوي)', STOCK_OUT: 'إيقاف: نفاد المخزون', ZERO_ORDER: 'إيقاف: صرف بدون أوردرات', HIGH_CPA: 'إيقاف: CPA عالي', REDUCE: 'تقليل ميزانية', INCREASE: 'زيادة ميزانية' };
 const RATE_LIMIT_RE = /rate limit|request limit reached|too many (api )?calls|(#(4|17|32|613))/i; // Meta's throttling answers (also when the executor reports them as a plain failure message)
 const round0 = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Math.round(Number(v)));
 const slim = (m) => (m ? { spend: round0(m.spend ?? 0), purchases: m.purchases ?? 0, cpa: m.cpa == null ? null : round0(m.cpa) } : { spend: 0, purchases: 0, cpa: null });
@@ -156,7 +156,7 @@ export function summarize(cands) {
   for (const c of cands) { s.byKind[c.kind] = (s.byKind[c.kind] || 0) + 1; s.byEffective[c.effective] = (s.byEffective[c.effective] || 0) + 1; if (c.canExecuteNow) s.wouldExecuteNow++; }
   return s;
 }
-async function pauseGuards({ world, cx, c, config, counters, now, trigger, m3 }) {
+export async function pauseGuards({ world, cx, c, config, counters, now, trigger, m3 }) {
   try {
     const ctx = cx || await (async () => { const rc = await loadRecentActions({ campaignIds: [c.id], now, pendingHours: config.limits.pendingEvaluationHours }); const x = await buildCampaignContext({ world, campaign: c, recentByCampaign: rc }); await ensureHeavy(x); return x; })();
     if (!ctx.lastPurchaseLoaded) { ctx.lastPurchaseLoaded = true; ctx.lastPurchaseAt = await computeLastPurchaseAt({ campaignId: c.id, now }).catch(() => null); }
@@ -203,7 +203,7 @@ export async function executeAutoDecision({ decisionId, source = 'AUTOPILOT', us
   if (row.action !== 'PAUSE') { const { preWriteBounds } = await import('./budgetChange.js'); const bb = await preWriteBounds({ operation: row.action === 'SCALE_UP' ? 'INCREASE' : 'REDUCE', from: params.fromBudget, to: params.toBudget, entityId: params.entityId || row.campaign_id, campaignId: row.campaign_id, config, now, deps: deps.boundsDeps || {} });
     if (!bb.ok) { await transition(row.id, 'PREPARED', 'PREPARED', { actor, actorId: userId, note: `BLOCKED_AT_GATE ${bb.blockers[0].code}`, data: { blockers: bb.blockers }, campaignId: row.campaign_id }); if (source === 'AUTOPILOT') await alertRefused(row, params, bb.blockers[0].code, bb.blockers[0].message); return { ...out, status: 'BLOCKED', blocked: bb.blockers[0].code, message: bb.blockers[0].message, blockers: bb.blockers }; } }
   // fresh LIVE re-evaluation: the SAME decision (same kind, entity, budgets) or nothing
-  const fresh = await (deps.reevaluate ? deps.reevaluate({ row, params }) : evaluateAutomation({ now, live: true, only: { campaignIds: [row.campaign_id] }, deps: deps.evalDeps || {} }));
+  const fresh = await (deps.reevaluate ? deps.reevaluate({ row, params }) : params.kind === 'DAILY_ZERO_SPEND' ? (await import('./zeroSpendCheck.js')).reevaluateDecision({ row, params, now, deps: deps.zeroSpendDeps || {} }) : evaluateAutomation({ now, live: true, only: { campaignIds: [row.campaign_id] }, deps: deps.evalDeps || {} }));
   const f = (fresh.candidates || []).find((x) => x.campaignId === row.campaign_id && x.kind === params.kind && x.action === row.action && String(x.entity.id) === String(params.entityId));
   const reasons = [];
   if (fresh.structureSource && fresh.structureSource !== 'META_LIVE' && !deps.reevaluate && !deps.evalDeps) reasons.push({ code: 'NO_LIVE_DATA', detail: String(fresh.structureSource) });

@@ -490,6 +490,30 @@ try {
     ok('phone: the advanced panel fits (no horizontal scroll)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
   }
 
+  console.log('\n21. Daily zero-order spend check on the «إيقاف الحملات» page — settings, summary, preview (read-only), save ≠ approve');
+  {
+    const api21 = (m, p, b) => js(`fetch('${p}',{method:'${m}',headers:{'content-type':'application/json'},body:${b === undefined ? 'undefined' : JSON.stringify(JSON.stringify(b))}}).then(async r=>({s:r.status,j:await r.json().catch(()=>null)}))`);
+    const hist0 = (await api21('GET', '/api/operator/execution-history?limit=5')).j.counts.total;
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'pause' } });
+    ok('the policy card is on the existing pause page, right under the header, and says the time is only the moment of checking', await waitFor(`!!document.getElementById('zsCard') && /فحص الشروط فقط/.test(document.getElementById('zsCard').innerText)`, 60000));
+    ok('defaults of an empty policy are shown: 13:00 Cairo, limit 150, «أكبر من», all active campaigns — and it is NOT active', await js(`document.getElementById('zsTime').value === '13:00' && document.getElementById('zsLimit').value === '150' && document.getElementById('zsCmp').value === 'GT' && document.getElementById('zsScope').value === 'ALL_ACTIVE' && /مش مفعّلة/.test(document.getElementById('zsCard').innerText) && document.getElementById('zsOn').disabled === true && document.getElementById('zsSave').disabled === true`));
+    await js(`(()=>{const e=document.getElementById('zsLimit'); e.value='200'; e.dispatchEvent(new Event('input',{bubbles:true})); const c=document.getElementById('zsCmp'); c.value='GTE'; c.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    ok('the summary updates live BEFORE saving (time, comparison «أكبر من أو يساوي», limit 200) and Save becomes available', await js(`/13:00/.test(document.getElementById('zsSummary').innerText) && /أكبر من أو يساوي 200/.test(document.getElementById('zsSummary').innerText) && document.getElementById('zsSave').disabled === false`));
+    await js(`document.getElementById('zsPrev').click()`);
+    ok('the preview works on today\'s data with NO execution: a table (or an honest empty message) and the line «معاينة فقط»', await waitFor(`/معاينة فقط/.test(document.getElementById('zsCard').innerText)`, 30000) && (await api21('GET', '/api/operator/execution-history?limit=5')).j.counts.total === hist0);
+    await js(`document.getElementById('zsSave').click()`);
+    ok('saving creates version 1: NOT active, approval still needed, nothing paused', await waitFor(`/v1/.test(document.getElementById('zsCard').innerText) && /محتاجة اعتماد/.test(document.getElementById('zsCard').innerText)`, 15000) && await (async () => { const r = (await api21('GET', '/api/operator/zero-spend/policy')).j; return r.policy.version === 1 && r.policy.limit === 200 && r.policy.comparison === 'GTE' && r.active === false; })());
+    ok('the policy API refuses an invalid value with the reason and saves nothing (time 25:61)', await (async () => { const bad = await api21('PUT', '/api/operator/zero-spend/policy', { policy: { checkTime: '25:61' } }); const r = (await api21('GET', '/api/operator/zero-spend/policy')).j; return bad.s === 400 && r.policy.version === 1; })());
+    await js(`document.getElementById('zsOn').click()`);
+    ok('approving asks for an explicit confirmation that states it pauses nothing', await waitFor(`!!document.querySelector('.confirm-modal-overlay') && /لا يوقف أي حملة/.test(document.querySelector('.confirm-modal-overlay').innerText)`, 10000));
+    await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`);
+    ok('after confirming: version 1 is approved/active — and still no Meta action exists', await waitFor(`/معتمدة v1/.test(document.getElementById('zsCard').innerText)`, 15000) && (await api21('GET', '/api/operator/zero-spend/policy')).j.active === true && (await api21('GET', '/api/operator/execution-history?limit=5')).j.counts.total === hist0);
+    await js(`document.getElementById('zsOff').click()`); await waitFor(`document.querySelector('.confirm-modal-overlay')`, 10000); await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`);
+    ok('the policy can be switched off again (left disabled so the rest of the run is unaffected)', await waitFor(`!document.getElementById('zsOff')`, 15000));
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'pause' } }); await waitFor(`!!document.getElementById('zsCard')`, 60000); await sleep(600);
+    ok('phone: the card fits (no horizontal scroll)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
+  }
+
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
 } catch (e) { fail++; console.log('  ✗ UI test crashed —', e.message); }
 finally { ws.close(); proc.kill(); }

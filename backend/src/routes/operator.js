@@ -15,6 +15,7 @@ import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import * as PP from '../services/amb/productPolicy.js';
 import * as ASHEET from '../services/amb/activationSheet.js';
 import * as BULK from '../services/amb/bulkActivation.js';
+import * as ZS from '../services/amb/zeroSpendCheck.js';
 import { campaignWindowMetrics, parseWindow, productImages } from '../services/amb/periodMetrics.js';
 import { listExecutionHistory, todaySummary } from '../services/amb/executionHistory.js';
 import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
@@ -33,7 +34,7 @@ import { getBudgetCaps, setBudgetCaps } from '../services/amb/budgetCaps.js';
 import { runSmartAlerts } from '../services/amb/smartAlerts.js';
 import { listApprovals, bulkPreview, statusBar, previewDecision } from '../services/amb/approvalCenter.js';
 import { buildOperatorBrief } from '../services/amb/operatorBrief.js';
-import { setTestClock, clockNow, isTestClock, testClockAllowed, cairoDate } from '../services/amb/dailyPlanTime.js';
+import { setTestClock, clockNow, isTestClock, testClockAllowed, cairoDate, dueAtTime } from '../services/amb/dailyPlanTime.js';
 import { inventoryWebhookHealth } from './inventoryWebhook.js';
 import { validateRule, detectRuleConflicts, parseArabicRule, FIELDS, OPS_FOR, PRECEDENCE, ACTIONS, ACTION_LABEL_AR, RULE_MODES, WINDOW_KEYS, WINDOW_LABEL_AR } from '../services/amb/operatorRules.js';
 import { evaluateOperator, approveDecision, rejectDecision, snoozeDecision, prepareRollback } from '../services/amb/operatorEngine.js';
@@ -396,6 +397,13 @@ router.get('/automation/readiness', asyncRoute(async (req, res) => { const m = a
 router.get('/automation/readiness/:productId', asyncRoute(async (req, res) => res.json(await AREADY.productAutomationReadiness({ productId: Number(req.params.productId), storeId: req.query.storeId || null }))));
 router.get('/automation/activation-summary/:productId', asyncRoute(async (req, res) => res.json(await AREADY.activationSummary({ productId: Number(req.params.productId), storeId: req.query.storeId || null }))));
 router.get('/automation/activation-sheet/:productId', ADMIN, asyncRoute(async (req, res) => res.json(await ASHEET.activationSheet({ productId: Number(req.params.productId), storeId: req.query.storeId || null })))); // read-only: confirmed values, CPA mapping PROPOSAL, campaign performance, live open candidates, missing decisions
+// ---- daily zero-order spend check (policy: versioned + approved separately; preview = read-only on today's data; the check time only decides WHEN conditions are checked)
+const zsView = async () => { const policy = await ZS.getZeroSpendPolicy(); const date = cairoDate(clockNow()); const marker = await prisma.ambOperatorEvent.findFirst({ where: { kind: 'ZERO_SPEND_CHECK', campaign_id: `zs:${date}` } }); return { policy, active: ZS.zeroSpendActive(policy), summary: ZS.describePolicy(policy), today: { date, checked: !!marker, result: marker ? JSON.parse(marker.data_json || '{}') : null, checkAt: dueAtTime(date, policy.checkTime).toISOString() } }; };
+router.get('/zero-spend/policy', asyncRoute(async (req, res) => res.json(await zsView())));
+router.put('/zero-spend/policy', ADMIN, asyncRoute(async (req, res) => { const r = await ZS.saveZeroSpendPolicy({ patch: req.body?.policy || req.body, userId: req.user.id }); res.json({ ...r, ...(await zsView()) }); }));
+router.post('/zero-spend/policy/enable', ADMIN, asyncRoute(async (req, res) => { await ZS.setZeroSpendEnabled({ enabled: req.body?.enabled === true, confirm: req.body?.confirm, userId: req.user.id }); res.json(await zsView()); }));
+router.post('/zero-spend/preview', ADMIN, asyncRoute(async (req, res) => { const base = await ZS.getZeroSpendPolicy(); const draft = req.body?.policy ? ZS.normalizeZs({ ...base, ...req.body.policy }) : base; const errors = ZS.validateZs(draft); if (errors.length) return res.status(400).json({ error: errors.join(' '), details: errors }); const ev = await ZS.evaluateZeroSpendCheck({ now: clockNow(), policy: draft }); const dec = await ZS.todayDecisions({ date: ev.date }); res.json({ ...ev, summaryText: ZS.describePolicy(draft), readOnly: true, rows: ev.rows.map((r) => { const d = dec.get(r.campaignId); return { ...r, decision: d ? { id: d.id, status: d.status, statusLabel: ZS.STATUS_LABEL[d.status] || d.status, error: d.error || null, by: d.approval_source || null } : null }; }) }); }));
+router.get('/zero-spend/accounts', ADMIN, asyncRoute(async (req, res) => { const rows = await prisma.metaPerformanceSnapshot.findMany({ where: { level: 'campaign' }, distinct: ['ad_account_id'], select: { ad_account_id: true } }); const conn = await getConnection(); res.json({ selected: conn?.selected_ad_account_id || null, accounts: rows.map((r) => r.ad_account_id).filter(Boolean) }); }));
 // ---- global automation rules (versioned; draft ≠ active; never carries a mode) + the inherited-value view
 router.get('/automation/global-rules', asyncRoute(async (req, res) => res.json(await PP.getGlobalRules())));
 router.put('/automation/global-rules', ADMIN, asyncRoute(async (req, res) => res.json(await PP.saveGlobalDraft({ policy: req.body?.policy, userId: req.user.id }))));

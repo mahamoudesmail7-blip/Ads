@@ -4,6 +4,7 @@
 // Non-candidate campaigns are shown for reading only (no checkbox). Nothing here talks to Meta.
 import { api } from './api-client.js';
 import { advPanel, wireAdv, advFrom, advDirty } from './opx-open-adv.js';
+import { mountZeroSpend } from './opx-zero-spend.js';
 import { E, $, num, egp, cairoTime, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, skeletonCards, openDrawer, closeDrawer, toast, confirmModal, store, thumb, hydrateThumbs } from './opx-ui.js';
 import { BLOCK_AR, ELIG_AR, ITEM_AR, ITEM_PILL } from './ai-operator-daily.js';
 
@@ -254,6 +255,7 @@ function draw() {
     </div>
     <div class="opx-actionbar" id="opxActionBar"><div class="opx-ab-info"><b>${num(sel.length)}</b> حملة مختارة<small>${egp(lastBudget)}</small></div><button class="opx-btn" data-act="preview" ${p && sel.length ? '' : 'disabled'}>${ICONS.eye} معاينة</button><button class="opx-btn primary" data-act="approve" ${editable && sel.length ? '' : 'disabled'}>${ICONS[m.icon]} اعتماد</button></div>`;
   wire(p, editable);
+  if (P.type === 'PAUSE') { const head = $('opxPlanBody')?.querySelector('.opx-head'); if (head) { const host = document.createElement('div'); host.id = 'opxZeroSpend'; head.insertAdjacentElement('afterend', host); mountZeroSpend(host, P.ctx); } } // the daily zero-order spend check lives on this page, right under the header
   hydrateThumbs($('opxPlanBody'));
 }
 function countdownHtml(at) {

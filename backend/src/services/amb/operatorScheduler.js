@@ -46,6 +46,8 @@ export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
   await detectManualChanges({ now, throttleMin: 30 }).catch(() => null); // before any optimizer decision, so the owner's latest edit is already a cooldown
   // Automation engine (automatic PAUSE / budget INCREASE / REDUCE): SHADOW records, APPROVAL prepares, AUTOMATIC executes ONLY for products opted in + READY — all behind the central write gate. Open/Pause plans run from the daily-plan tick.
   out.automation = await runAutomationTick({ now, deps: deps.automation || {} }).catch((e) => ({ error: e.message }));
+  // Daily zero-order spend check (own versioned policy; the time only decides WHEN the conditions are checked): prepares for the owner in APPROVAL, executes only in an approved AUTOMATIC setup, never touches the daily plans.
+  out.zeroSpend = await (await import('./zeroSpendCheck.js')).runZeroSpendCheck({ now, deps: deps.zeroSpend || {} }).catch((e) => ({ error: e.message }));
   // Dynamic Budget Optimizer: OFF by default (policy.enabled=false). When the owner enables it, it records SHADOW/PREPARED decisions with their action history; it never writes to Meta from here.
   let optRows = [], optPolicy = null;
   try { const pol = await getBudgetPolicy(); optPolicy = pol; if (pol.enabled) { const r = await evaluateBudgetOptimization({ persist: true, now }); optRows = r.rows || []; out.budgetOptimizer = { counts: r.counts, persisted: r.persisted }; } } catch (e) { out.budgetOptimizer = { error: e.message }; }
