@@ -110,7 +110,7 @@ export async function evaluateAutomation({ now = new Date(), live = false, only 
 
     // ---------------- pause ----------------
     const pauseRow = rows.find((x) => x.intended?.action === 'PAUSE') || null;
-    const dp = pauseOn ? decidePause({ policy: pause, campaignId: c.id, productId: r0.productId, storeId: r0.storeId, optimizer: pauseRow?.intended || null, m3, stock, winner: isWinner({ m7, m30 }), weekday }) : { trigger: null, skipped: [], blockers: ['PAUSE_POLICY_NOT_APPROVED'], fired: [] };
+    const dp = pauseOn ? decidePause({ policy: pause, campaignId: c.id, productId: r0.productId, storeId: r0.storeId, optimizer: pauseRow?.intended || null, m3, mToday: slim(world.windows.today?.get(c.id)), productHighCpa: mergeEffective(pol, c.id).cpa.hardStop ?? null, stock, winner: isWinner({ m7, m30 }), weekday }) : { trigger: null, skipped: [], blockers: ['PAUSE_POLICY_NOT_APPROVED'], fired: [] };
     let chosen = null;
     if (dp.trigger) {
       const blockers = dp.blockers.map((code) => ({ code, message: code }));

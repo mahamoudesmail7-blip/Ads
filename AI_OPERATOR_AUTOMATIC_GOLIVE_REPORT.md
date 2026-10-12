@@ -36,3 +36,10 @@ New suites: `automaticJourneyTest` (23 — open → pause → increase → reduc
 ## Not done / needs the owner
 - Nothing is activated: no global rules saved, no product policy activated, no AUTOMATIC mode, no write opened.
 - Values only the owner can decide are listed in the decision form (see the final message): account daily exposure cap, product caps, CPA scale / reduce, zero-order spend, % changes, budgets, schedule, changes per day, pause policy approval, mapping confirmations.
+
+## Addendum (after the first deploy `a2992be`) — NOT deployed yet
+- Pause policy: **per-product HIGH_CPA limit** (the product's own Hard Stop CPA wins over the global figure; with no global figure only products that have their own Hard Stop are covered) and **recent-improvement protection** (a high 3-day CPA does not pause when TODAY already recovered: ≥ N orders at a CPA inside the limit; zero-order and stock-out are never softened).
+- Budget optimizer: the product's Hard Stop CPA is the start of its HIGH_CPA zone.
+- UI: pause form has the recent-improvement toggle.
+- Production draft prepared by the owner's request (inactive): global rules DRAFT only — schedule 00:00/13:00, increase/decrease 20%, cooldown 24h, manual-override 24h, unknown stock = WARN. No CPA, cap or budget figure. `economics-bulk-form.csv` = the one bulk form of saved economics (blank = unknown).
+- Tests: clean FULL run 64/65 (the one failure was a UI assertion that relied on the old validation; fixed and re-run: opxUiTest 223, budgetUiTest 28). Neon 9/9.

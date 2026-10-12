@@ -58,6 +58,7 @@ export function applyToBudgetPolicy(globalPolicy, policy, campaignId = null) {
   const set = (obj, k, v) => { if (v != null) obj[k] = v; };
   set(out.scale, 'pct', eff.budget.increasePct); set(out.scale, 'maxCpa', eff.cpa.scale); set(out.scale, 'minPurchases', eff.budget.minPurchases); set(out.scale, 'cooldownHours', eff.budget.cooldownHours);
   set(out.reduce, 'pct', eff.budget.decreasePct); set(out.reduce, 'minCpa', eff.cpa.reduce); set(out.reduce, 'minPurchases', eff.budget.minPurchases); set(out.reduce, 'cooldownHours', eff.budget.cooldownHours);
+  set(out.highCpa, 'above', eff.cpa.hardStop); // the product's own Hard Stop CPA is the start of its HIGH_CPA zone
   if (eff.cpa.normalMin != null) out.keep.minCpa = eff.cpa.normalMin; if (eff.cpa.normalMax != null) out.keep.maxCpa = eff.cpa.normalMax;
   set(out.zeroOrders, 'spend', eff.zeroOrder.spend); set(out.zeroOrders, 'minAgeHours', eff.zeroOrder.minAgeHours);
   if (eff.zeroOrder.windowDays) out.window = eff.zeroOrder.windowDays === 7 ? 'last7' : 'last3';

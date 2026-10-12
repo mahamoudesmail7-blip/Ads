@@ -17,7 +17,7 @@ export const DEFAULT_PAUSE = Object.freeze({
   zeroOrder: { enabled: true, spend: null },                                  // spend null → the product policy / account budget policy value; a number replaces the ACCOUNT default (e.g. 150)
   highCpa: { enabled: false, above: null, minPurchases: 5, minSpend: null },  // direct pause when the 3-day CPA is above `above` with a real sample (otherwise the budget policy reduces first)
   stockOut: { enabled: true },
-  protections: { winnerProtection: true, precedence: 'PROTECTION_WINS' },
+  protections: { winnerProtection: true, precedence: 'PROTECTION_WINS', recentImprovement: { enabled: true, minPurchases: 2 } }, // recentImprovement: TODAY already recovered (>= N orders at a CPA not above the HIGH_CPA limit) → the HIGH_CPA pause waits
   scope: emptyScope(), days: null,
 });
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -32,13 +32,13 @@ export function normalizePause(raw = {}) {
     zeroOrder: { enabled: bool(r.zeroOrder?.enabled, true), spend: num(r.zeroOrder?.spend) },
     highCpa: { enabled: bool(r.highCpa?.enabled, false), above: num(r.highCpa?.above), minPurchases: num(r.highCpa?.minPurchases) ?? D.highCpa.minPurchases, minSpend: num(r.highCpa?.minSpend) },
     stockOut: { enabled: bool(r.stockOut?.enabled, true) },
-    protections: { winnerProtection: bool(r.protections?.winnerProtection, true), precedence: PRECEDENCE.includes(r.protections?.precedence) ? r.protections.precedence : 'PROTECTION_WINS' },
+    protections: { winnerProtection: bool(r.protections?.winnerProtection, true), precedence: PRECEDENCE.includes(r.protections?.precedence) ? r.protections.precedence : 'PROTECTION_WINS', recentImprovement: { enabled: bool(r.protections?.recentImprovement?.enabled, true), minPurchases: num(r.protections?.recentImprovement?.minPurchases) ?? 2 } },
     scope: normalizeScope(r.scope), days: normalizeDays(r.days) };
 }
 export function validatePause(p, { requireTrigger = false } = {}) {
   const e = []; const pos = (path, v, min, max) => { if (v === null || v === undefined) return; if (!Number.isFinite(v) || v < min || v > max) e.push(`${path}: لازم بين ${min} و${max}.`); };
   pos('حد الصرف بدون أوردرات', p.zeroOrder.spend, 1, 1e6); pos('CPA العالي', p.highCpa.above, 1, 1e5); pos('أقل أوردرات لحكم CPA', p.highCpa.minPurchases, 1, 100); pos('أقل صرف لحكم CPA', p.highCpa.minSpend, 0, 1e7);
-  if (p.highCpa.enabled && p.highCpa.above == null) e.push('الإيقاف بالـCPA العالي محتاج تحدد الحد (CPA أعلى من).');
+  // highCpa.above may stay empty: then only products with their OWN Hard Stop CPA are covered (each product has its own CPA limit)
   if (!PRECEDENCE.includes(p.protections.precedence)) e.push('أولوية الحماية لازم PROTECTION_WINS أو RULE_WINS.');
   e.push(...validateScope(p.scope)); if (!validDays(p.days)) e.push('أيام الأسبوع لازم تكون أرقام من 0 إلى 6.');
   if (requireTrigger && !(p.scheduledClose.enabled || p.zeroOrder.enabled || p.highCpa.enabled || p.stockOut.enabled)) e.push('فعّل سبب إيقاف واحد على الأقل.');
@@ -52,7 +52,7 @@ export function validatePause(p, { requireTrigger = false } = {}) {
  * input: { policy, campaignId, productId, storeId, optimizer: {action:'PAUSE'|…, zone, zeroLimit}|null, m3, stock: {status}|null, winner, weekday }
  * Returns { trigger: 'STOCK_OUT'|'ZERO_ORDER'|'HIGH_CPA'|null, skipped: [{trigger, code}], blockers: [codes] } — `blockers` = reasons the policy itself forbids a pause right now (scope / weekday / disabled).
  */
-export function decidePause({ policy, campaignId, productId = null, storeId = null, optimizer = null, m3 = null, stock = null, winner = false, weekday = null }) {
+export function decidePause({ policy, campaignId, productId = null, storeId = null, optimizer = null, m3 = null, mToday = null, productHighCpa = null, stock = null, winner = false, weekday = null }) {
   const skipped = []; const blockers = [];
   const sv = scopeVerdict(policy.scope, { productId, storeId, campaignId }); if (sv) blockers.push(sv);
   if (weekday != null && !weekdayAllowed(policy.days, weekday)) blockers.push('DAY_NOT_ALLOWED');
@@ -62,10 +62,12 @@ export function decidePause({ policy, campaignId, productId = null, storeId = nu
     const lim = policy.zeroOrder.spend; const zero = optimizer ? optimizer.action === 'PAUSE' : (lim != null && (m3?.purchases ?? 0) === 0 && (m3?.spend ?? 0) >= lim); // the optimizer row already applied the limit + minimum age + attribution grace
     if (zero) fired.push('ZERO_ORDER');
   }
-  if (policy.highCpa.enabled && policy.highCpa.above != null && m3?.cpa != null && m3.cpa > policy.highCpa.above && (m3.purchases ?? 0) >= policy.highCpa.minPurchases && (m3.spend ?? 0) >= (policy.highCpa.minSpend ?? 0)) fired.push('HIGH_CPA');
+  const limit = productHighCpa ?? policy.highCpa.above; // the product's own Hard Stop CPA wins over the global figure
+  if (policy.highCpa.enabled && limit != null && m3?.cpa != null && m3.cpa > limit && (m3.purchases ?? 0) >= policy.highCpa.minPurchases && (m3.spend ?? 0) >= (policy.highCpa.minSpend ?? 0)) fired.push('HIGH_CPA');
   const protectedWinner = policy.protections.winnerProtection && winner && policy.protections.precedence === 'PROTECTION_WINS';
   let trigger = null;
-  for (const t of ['STOCK_OUT', 'ZERO_ORDER', 'HIGH_CPA']) { if (!fired.includes(t)) continue; if (protectedWinner && t !== 'STOCK_OUT') { skipped.push({ trigger: t, code: 'WINNER_PROTECTED' }); continue; } trigger = t; break; }
+  const ri = policy.protections.recentImprovement; const improving = !!(ri?.enabled && mToday && (mToday.purchases ?? 0) >= (ri.minPurchases ?? 2) && mToday.cpa != null && limit != null && mToday.cpa <= limit);
+  for (const t of ['STOCK_OUT', 'ZERO_ORDER', 'HIGH_CPA']) { if (!fired.includes(t)) continue; if (protectedWinner && t !== 'STOCK_OUT') { skipped.push({ trigger: t, code: 'WINNER_PROTECTED' }); continue; } if (improving && t === 'HIGH_CPA') { skipped.push({ trigger: t, code: 'RECENT_IMPROVEMENT' }); continue; } trigger = t; break; }
   return { trigger, skipped, blockers, fired };
 }
 

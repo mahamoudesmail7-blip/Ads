@@ -26,6 +26,15 @@ try {
   const r = d({ m3: m(1500, 4), winner: true }); ok('PROTECTION_WINS: a winner is protected from HIGH_CPA and the skip is reported', r.trigger === null && r.skipped[0]?.code === 'WINNER_PROTECTED');
   ok('RULE_WINS: the same winner is paused', d({ policy: pol({ protections: { winnerProtection: true, precedence: 'RULE_WINS' } }), m3: m(1500, 4), winner: true }).trigger === 'HIGH_CPA');
   ok('winnerProtection OFF: nothing protects it', d({ policy: pol({ protections: { winnerProtection: false, precedence: 'PROTECTION_WINS' } }), m3: m(1500, 4), winner: true }).trigger === 'HIGH_CPA');
+  { const hi = d({ m3: m(1500, 4), mToday: m(300, 3) }); ok('RECENT IMPROVEMENT: a high 3-day CPA does NOT pause when TODAY already recovered (3 orders at CPA 100 ≤ the limit) — the skip is reported', hi.trigger === null && hi.skipped.some((s) => s.code === 'RECENT_IMPROVEMENT'), JSON.stringify(hi));
+    ok('…but one lucky order is not a recovery (needs the configured minimum of 2) → still paused', d({ m3: m(1500, 4), mToday: m(100, 1) }).trigger === 'HIGH_CPA');
+    ok('…and today\'s CPA must be inside the limit: 3 orders at CPA 400 → still paused', d({ m3: m(1500, 4), mToday: m(1200, 3) }).trigger === 'HIGH_CPA');
+    ok('zero-order and stock-out are NEVER softened by a recent improvement', d({ optimizer: { action: 'PAUSE' }, m3: m(260, 0), mToday: m(300, 3) }).trigger === 'ZERO_ORDER' && d({ stock: { status: 'OUT_OF_STOCK' }, m3: m(1500, 4), mToday: m(300, 3) }).trigger === 'STOCK_OUT');
+    ok('the protection can be switched off', d({ policy: pol({ protections: { winnerProtection: true, precedence: 'PROTECTION_WINS', recentImprovement: { enabled: false, minPurchases: 2 } } }), m3: m(1500, 4), mToday: m(300, 3) }).trigger === 'HIGH_CPA'); }
+  { const own = (o = {}) => d({ policy: pol({ highCpa: { enabled: true, above: null, minPurchases: 3, minSpend: 300 } }), ...o });
+    ok('PER-PRODUCT CPA: with no global figure, a product\'s own Hard Stop (200) pauses a 4-order CPA of 375; without one nothing fires (no number is invented)', own({ m3: m(1500, 4), productHighCpa: 200 }).trigger === 'HIGH_CPA' && own({ m3: m(1500, 4) }).trigger === null);
+    ok('the product\'s Hard Stop wins over the global figure: global 300 but own 400 → 375 is fine; own 200 → paused', d({ m3: m(1500, 4), productHighCpa: 400 }).trigger === null && d({ m3: m(1500, 4), productHighCpa: 200 }).trigger === 'HIGH_CPA');
+    ok('recent improvement uses the same per-product limit (today 3 orders at 150 ≤ own 200 → waits)', d({ m3: m(1500, 4), productHighCpa: 200, mToday: m(450, 3) }).trigger === null); }
   ok('scope / weekday are reported as blockers', d({ policy: pol({ scope: { excludeStores: ['s'] } }) }).blockers.includes('EXCLUDED_BY_POLICY') && d({ policy: pol({ days: [1] }) }).blockers.includes('DAY_NOT_ALLOWED'));
 
   console.log('\n2. Pause policy: versioned save, separate approval');
@@ -39,7 +48,7 @@ try {
     ok('enable records WHICH version was approved and makes it active', en.policy.approved.version === 1 && PP.pausePolicyActive(en.policy));
     const s2 = await PP.savePausePolicy({ patch: { highCpa: { enabled: true, above: 350 } }, userId: 1, deps: { user: ADMIN } });
     ok('a later change is version 2 but the APPROVED version is still 1 → NOT active until re-approved', s2.policy.version === 2 && s2.policy.approved.version === 1 && !PP.pausePolicyActive(s2.policy) && s2.policy.history.some((h) => h.version === 1));
-    ok('an invalid policy is refused (high CPA enabled without a limit)', (await rej(() => PP.savePausePolicy({ patch: { highCpa: { enabled: true, above: null } }, userId: 1, deps: { user: ADMIN } })))?.status === 400);
+    ok('high CPA enabled WITHOUT a global figure is accepted: it then covers only products that have their OWN Hard Stop CPA (each product has its own limit); an out-of-range figure is still refused', (await rej(() => PP.savePausePolicy({ patch: { highCpa: { enabled: true, above: null } }, userId: 1, deps: { user: ADMIN } }))) === null && (await rej(() => PP.savePausePolicy({ patch: { highCpa: { enabled: true, above: -5 } }, userId: 1, deps: { user: ADMIN } })))?.status === 400);
     ok('disabling an enabled policy cannot leave it without any trigger', (await rej(() => PP.savePausePolicy({ patch: { scheduledClose: { enabled: false }, zeroOrder: { enabled: false }, highCpa: { enabled: false }, stockOut: { enabled: false } }, userId: 1, deps: { user: ADMIN } })))?.status === 400);
   } finally { await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: limits0 } }); await prisma.ambOperatorEvent.deleteMany({ where: { kind: { in: ['PAUSE_POLICY_SAVED', 'PAUSE_POLICY_ENABLED'] } } }); }
 
