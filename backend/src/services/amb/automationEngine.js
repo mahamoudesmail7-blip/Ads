@@ -170,17 +170,23 @@ export async function pauseGuards({ world, cx, c, config, counters, now, trigger
 // =====================================================================================================================
 const STATUS_OF = { SHADOW: 'SHADOW', APPROVAL: 'PREPARED', AUTOMATIC: 'PREPARED', BLOCKED: 'BLOCKED' };
 export async function persistCandidates(cands, { adAccountId, mode, now = new Date() }) {
-  let created = 0, updated = 0; const ids = new Map();
+  let created = 0, updated = 0, merged = 0; const ids = new Map();
   for (const c of cands) {
     const status = STATUS_OF[c.effective] || 'BLOCKED';
     const data = { store_id: c.storeId || 'UNKNOWN', product_id: c.productId, ad_account_id: adAccountId, campaign_id: c.campaignId, campaign_name: c.campaignName, action: c.action, rule_id: null, rule_name: `${AUTO_PREFIX}${c.kind}`, mode_at_decision: mode, confidence: 'HIGH',
       blocked_codes_json: JSON.stringify([...c.blockers, ...c.autoBlockers].map((b) => ({ code: b.code, message: b.message }))), evidence_json: JSON.stringify({ ...c.evidence, history: { beforeBudget: c.fromBudget, afterBudget: c.toBudget, level: c.entity.level, entityId: c.entity.id, kind: c.kind, timestamp: now.toISOString() }, auto: { effective: c.effective, productMode: c.productMode, pausePolicyVersion: c.pausePolicyVersion ?? null, permission: c.permission, permissionOn: c.permissionOn } }),
       why_json: JSON.stringify({ what: `${KIND_LABEL[c.kind]} — ${c.campaignName}`, why: c.reason }), params_json: JSON.stringify({ kind: c.kind, level: c.entity.level, entityId: c.entity.id, entityName: c.entity.name || null, pct: c.pct, fromBudget: c.fromBudget, toBudget: c.toBudget, window: 'since-last-change' }) };
     const ex = await prisma.ambOperatorDecision.findUnique({ where: { decision_key: c.key } });
+    // ONE pause request per campaign: if another rule already has a live pause decision on the table (prepared / being executed / executed in the last 24h), this rule's reasons are MERGED into it instead of creating a second request.
+    // A stock-out is never merged (nothing to sell: it keeps its own decision; the executor's duplicate guard and the live status check still allow only one write).
+    if (!ex && c.action === 'PAUSE' && c.kind !== 'STOCK_OUT') {
+      const other = await prisma.ambOperatorDecision.findFirst({ where: { campaign_id: c.campaignId, action: 'PAUSE', rule_name: { startsWith: AUTO_PREFIX }, NOT: { rule_name: { startsWith: `${AUTO_PREFIX}MANUAL` } }, decision_key: { not: c.key }, status: { in: ['PREPARED', 'APPROVED', 'EXECUTING', 'EXECUTED', 'VERIFIED'] }, created_at: { gte: new Date(now.getTime() - 24 * MS_H) } }, orderBy: { id: 'asc' } });
+      if (other) { const ev0 = j(other.evidence_json, {}) || {}; const also = Array.isArray(ev0.alsoFired) ? ev0.alsoFired : []; if (!also.some((x) => x.kind === c.kind)) also.push({ kind: c.kind, label: KIND_LABEL[c.kind] || c.kind, reason: c.reason, at: now.toISOString() }); await prisma.ambOperatorDecision.update({ where: { id: other.id }, data: { evidence_json: JSON.stringify({ ...ev0, alsoFired: also }) } }).catch(() => {}); ids.set(c.key, other.id); merged++; continue; }
+    }
     if (!ex) { try { const row = await prisma.ambOperatorDecision.create({ data: { decision_key: c.key, status, before_json: JSON.stringify({ budget: c.fromBudget ?? c.entity.budget, level: c.entity.level, status: 'ACTIVE' }), ...data } }); await transition(row.id, 'CANDIDATE', status, { actor: 'SYSTEM', note: c.blockers[0]?.code || c.autoBlockers[0]?.code || null, campaignId: c.campaignId }); created++; ids.set(c.key, row.id); } catch (e) { if (e.code !== 'P2002') throw e; ids.set(c.key, (await prisma.ambOperatorDecision.findUnique({ where: { decision_key: c.key } }))?.id); } }
     else { ids.set(c.key, ex.id); if (['SHADOW', 'BLOCKED', 'PREPARED', 'EXPIRED'].includes(ex.status)) { await prisma.ambOperatorDecision.update({ where: { id: ex.id }, data: { ...data, status, error: null } }); updated++; } }
   }
-  return { created, updated, ids };
+  return { created, updated, merged, ids };
 }
 
 // =====================================================================================================================
