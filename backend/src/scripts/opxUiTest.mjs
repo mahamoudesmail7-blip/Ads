@@ -18,13 +18,13 @@ const PORT = 9700 + Math.floor(Math.random() * 200); const dir = mkdtempSync(joi
 const proc = spawn(BROWSER, ['--headless=new', `--remote-debugging-port=${PORT}`, '--no-first-run', '--disable-gpu', `--user-data-dir=${dir}`, 'about:blank'], { stdio: 'ignore' });
 let targets; for (let i = 0; i < 80; i++) { try { targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json(); if (targets.length) break; } catch { /* starting */ } await sleep(250); }
 const page = targets.find((t) => t.type === 'page'); const ws = new WebSocket(page.webSocketDebuggerUrl); await new Promise((r) => { ws.onopen = r; });
-let id = 0; const pending = new Map(); const consoleErrors = [];
-ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } else if (d.method === 'Runtime.exceptionThrown') consoleErrors.push(d.params.exceptionDetails?.exception?.description || d.params.exceptionDetails?.text); else if (d.method === 'Runtime.consoleAPICalled' && d.params.type === 'error') consoleErrors.push((d.params.args || []).map((a) => a.value || a.description).join(' ')); };
+let id = 0; const pending = new Map(); const consoleErrors = []; const serverErrors = [];
+ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } else if (d.method === 'Network.responseReceived') { const r = d.params.response; if (r.status >= 500 && r.url.includes('/api/')) serverErrors.push(`${r.status} ${new URL(r.url).pathname}`); } else if (d.method === 'Runtime.exceptionThrown') consoleErrors.push(d.params.exceptionDetails?.exception?.description || d.params.exceptionDetails?.text); else if (d.method === 'Runtime.consoleAPICalled' && d.params.type === 'error') consoleErrors.push((d.params.args || []).map((a) => a.value || a.description).join(' ')); };
 const send = (method, params = {}) => new Promise((res, rej) => { const i = ++id; pending.set(i, (d) => (d.error ? rej(new Error(d.error.message)) : res(d.result))); ws.send(JSON.stringify({ id: i, method, params })); });
 const js = async (expression) => { const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || 'js error'); return r.result.value; };
 const goto = async (path, { width = 1440, height = 900, mobile = false, ls = {} } = {}) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile }); await send('Page.navigate', { url: `${BASE}/login.html` }); await waitFor(`document.readyState === 'complete'`, 20000); await js(`${Object.entries(ls).map(([k, v]) => `localStorage.setItem('${k}','${v}');`).join('')} true`); await send('Page.navigate', { url: `${BASE}${path}` }); await sleep(path.includes('#operator') ? 300 : 6500); if (path.includes('#operator')) await waitFor(`!!document.getElementById('opxRoot') && !!document.querySelector('.opx-head h1') && !document.querySelector('.opx-skel')`, 45000); /* every workspace finished its data call before any assertion runs (the API answers in 1-8 s, it varies) */ };
 const waitFor = async (expr, ms = Number(process.env.OPX_WAIT_MS) || 15000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await js(expr)) return true; } catch { /* page reloading */ } await sleep(300); } return false; };
-await send('Page.enable'); await send('Runtime.enable');
+await send('Page.enable'); await send('Runtime.enable'); await send('Network.enable');
 try {
   await send('Page.navigate', { url: `${BASE}/login.html` }); await sleep(1200);
   const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
@@ -504,6 +504,10 @@ try {
     ok('the preview is split into the five groups (eligible · continuing · manual review · excluded · incomplete data) with counts, plus search, an ad-account filter and a CSV export', await js(`document.querySelectorAll('[data-ztab]').length === 5 && !!document.getElementById('zsQ') && !!document.getElementById('zsAccF') && !!document.getElementById('zsCsv') && /آخر مزامنة Meta/.test(document.getElementById('zsCard').innerText) && /موثوقية البيانات/.test(document.getElementById('zsCard').innerText)`));
     ok('Winner protection settings are on the card: the default for a historically strong campaign is MANUAL REVIEW, daily stop limits are optional and empty, and the Winner thresholds are visible', await js(`document.getElementById('zsWAct').value === 'MANUAL_REVIEW' && document.getElementById('zsMaxN').value === '' && document.getElementById('zsMaxP').value === '' && document.getElementById('zsW30').value === '10' && document.getElementById('zsW7').value === '2'`));
     await js(`(()=>{const e=document.getElementById('zsMaxN'); e.value='2'; e.dispatchEvent(new Event('input',{bubbles:true})); const w=document.getElementById('zsWAct'); w.value='EXEMPT'; w.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    ok('Unknown Winner Handling is on the card with three choices and the DEFAULT is manual review', await js(`(()=>{const e=document.getElementById('zsUAct'); return !!e && e.value === 'MANUAL_REVIEW' && e.options.length === 3 && /مراجعة يدوية/.test(e.options[0].text) && /قاعدة/.test(e.options[1].text) && /استثناء/.test(e.options[2].text);})()`));
+    await js(`(()=>{const u=document.getElementById('zsUAct'); u.value='EXEMPT'; u.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    ok('the summary states the Unknown handling as it is edited', await js(`/غير معروف: استثناء من السياسة/.test(document.getElementById('zsSummary').innerText)`));
+    await js(`(()=>{const u=document.getElementById('zsUAct'); u.value='MANUAL_REVIEW'; u.dispatchEvent(new Event('change',{bubbles:true}));})()`);
     ok('the summary mentions the Winner action and the daily limit as they are edited', await js(`/استثناء من السياسة/.test(document.getElementById('zsSummary').innerText) && /أقصى 2 إيقاف يوميًا/.test(document.getElementById('zsSummary').innerText)`));
     await js(`(()=>{const w=document.getElementById('zsWAct'); w.value='MANUAL_REVIEW'; w.dispatchEvent(new Event('change',{bubbles:true})); const e=document.getElementById('zsMaxN'); e.value=''; e.dispatchEvent(new Event('input',{bubbles:true}));})()`);
     await js(`document.getElementById('zsSave').click()`);
@@ -517,6 +521,39 @@ try {
     ok('the policy can be switched off again (left disabled so the rest of the run is unaffected)', await waitFor(`!document.getElementById('zsOff')`, 15000));
     await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { 'opx.ws': 'pause' } }); await waitFor(`!!document.getElementById('zsCard')`, 60000); await sleep(600);
     ok('phone: the card fits (no horizontal scroll)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`));
+  }
+
+  console.log('\n22. A closed execution gate is EXPLAINED (persistent panel naming each gate), not reported as a vanishing red error — on the plan page and in the approvals center; nothing is sent');
+  {
+    await api('PUT', '/api/operator/mode', { mode: 'APPROVAL' });
+    const instr = `window.__posts = []; if (!window.__fp) { window.__fp = true; const of = window.fetch; window.fetch = (u, o) => { if (/daily-plan\/\d+\/approve/.test(String(u))) window.__posts.push(String(u)); return of(u, o); }; } true`;
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.querySelector('[data-act="approve"]')`); await sleep(800);
+    await js(`(()=>{const b=document.querySelector('[data-act="approve"]'); if (b.disabled) { const c=[...document.querySelectorAll('.opx-check')].find((x)=>!x.disabled && !x.checked); if (c) c.click(); }})()`); await sleep(1800);
+    await js(instr); await js(`document.querySelector('[data-act="approve"]').click()`);
+    ok('plan page, APPROVAL + lock closed: the click opens a persistent panel that says this is an intentional lock (not an error) and lists each gate with how it is opened', await waitFor(`/قفل أمان مقصود/.test(document.querySelector('.opx-drawer-head')?.innerText || '') && /مش خطأ في السيستم/.test(document.querySelector('.opx-drawer-body').innerText) && /OPERATOR_ALLOW_META_WRITES/.test(document.querySelector('.opx-drawer-body').innerText) && /مقفولة/.test(document.querySelector('.opx-drawer-body').innerText)`, 10000));
+    ok('…no confirmation dialog, NO approve request was sent, and the plan is still PREPARED (nothing changed)', !(await js(`!!document.querySelector('.confirm-modal-overlay')`)) && (await js(`window.__posts.length`)) === 0 && (await api('GET', '/api/operator/daily-plan/overview')).j.plans.OPEN.status === 'PREPARED');
+    await js(`document.getElementById('opxDrawerX').click()`);
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'approvals' } }); await waitFor(`document.querySelectorAll('.opx-planblock').length >= 1`); await js(instr);
+    await js(`document.querySelector('[data-planapprove]').click()`);
+    ok('approvals center, APPROVAL + lock closed: the same explanation panel (gates table), no confirm dialog, no approve request', await waitFor(`/قفل أمان مقصود/.test(document.querySelector('.opx-drawer-head')?.innerText || '') && /OPERATOR_ALLOW_META_WRITES/.test(document.querySelector('.opx-drawer-body').innerText)`, 10000) && !(await js(`!!document.querySelector('.confirm-modal-overlay')`)) && (await js(`window.__posts.length`)) === 0);
+    await js(`document.getElementById('opxDrawerX').click()`);
+    await api('PUT', '/api/operator/mode', { mode: 'SHADOW' });
+  }
+
+  console.log('\n23. Sweep of EVERY workspace (desktop + phone): loads and settles, no JS error, no 5xx from the API, no raw undefined/NaN, no stuck loader, no load-error card, no horizontal scroll');
+  {
+    const KEYS = ['open', 'pause', 'budget', 'automation', 'manual', 'rules', 'pricing', 'approvals', 'history', 'alerts', 'integration', 'perms', 'control', 'advanced'];
+    for (const [label, w, h, mobile] of [['desktop', 1440, 900, false], ['phone', 390, 844, true]]) {
+      for (const key of KEYS) {
+        const e0 = consoleErrors.length, s0 = serverErrors.length;
+        await goto('/ai-media-buyer.html#operator', { width: w, height: h, mobile, ls: { 'opx.ws': key } });
+        await waitFor(`!!document.querySelector('.opx-head h1') || !!document.getElementById('opxRoot')`, 30000); await sleep(1500);
+        const settled = await waitFor(`document.querySelectorAll('.opx-skel').length === 0`, 30000);
+        const m = await js(`(()=>{const root=document.getElementById('opxRoot')||document.body; const t=root.innerText||''; const bad=[]; const re=/\\bundefined\\b|\\bNaN\\b|\\[object Object\\]/g; let x; while((x=re.exec(t))&&bad.length<3) bad.push(t.slice(Math.max(0,x.index-50),x.index+25).replace(/\\s+/g,' ')); return { bad, loadErr:[...document.querySelectorAll('.opx-card.opx-empty')].filter((e)=>/^\\s*⚠️/.test(e.innerText)).map((e)=>e.innerText.slice(0,80)), overflow: document.documentElement.scrollWidth - window.innerWidth, len:t.length };})()`);
+        ok(label + ' · ' + key + ': loads and settles (no stuck loader), no raw undefined/NaN, no load-error card' + (mobile ? ', no horizontal scroll' : ''), settled && m.len > 40 && !m.bad.length && !m.loadErr.length && (!mobile || m.overflow <= 2), JSON.stringify({ settled, m }));
+        ok(label + ' · ' + key + ': no JavaScript error and no 5xx from the API while loading', consoleErrors.length === e0 && serverErrors.length === s0, JSON.stringify({ js: consoleErrors.slice(e0, e0 + 2), api: serverErrors.slice(s0, s0 + 3) }));
+      }
+    }
   }
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));

@@ -77,7 +77,8 @@ async function runSuite(name) {
       const r0 = Date.now(); child.on('close', (code) => { clearTimeout(timer); tRun = Date.now() - r0; status = code; resolve(); });
     });
   } catch (e) { out += `\nrunner error: ${e.message}`; } finally { await dropDb(dbName).catch(() => {}); }
-  active--; done++; const sum = [...out.matchAll(/(\d+) passed, (\d+) failed/g)].pop(); const failedLines = out.split('\n').filter((l) => /✗|crashed|TEST GUARD|runner error/.test(l)).slice(0, 6);
+  active--; done++; const sum = [...out.matchAll(/(\d+) passed, (\d+) failed/g)].pop(); let failedLines = out.split('\n').filter((l) => /✗|crashed|TEST GUARD|runner error/.test(l)).slice(0, 6);
+  if (status !== 0 && !failedLines.length) failedLines = [`exit ${status}${timedOut ? ' (timeout)' : ''} with no failed assertion — last output:`, ...out.split('\n').filter(Boolean).slice(-5)]; // a non-zero exit with zero failed assertions must show WHY
   const r = { name, target: 'local', status: status === 0 ? 'ok' : 'FAIL', passed: sum ? +sum[1] : null, failed: sum ? +sum[2] : null, ms: Date.now() - t0, cloneMs: tClone, runMs: tRun, failedLines, timedOut };
   results.push(r); history[name] = { ms: r.ms }; say(`${r.status === 'ok' ? '✓' : '✗'} ${name.padEnd(30)} ${sum ? `${sum[1]} passed, ${sum[2]} failed` : `exit ${status}${timedOut ? ' (timeout)' : ''}`} · ${fmt(r.ms)}  [${done}/${plan.length}]`);
   for (const l of failedLines) if (r.status !== 'ok') console.log(`           ${l.slice(0, 200)}`);

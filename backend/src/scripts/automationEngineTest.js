@@ -28,7 +28,7 @@ const server = http.createServer((req, res) => {
     const e = world.entities.get(id);
     if (req.method === 'GET') { if (e) return send(200, e); if (/^(act_|__optest_acc)/.test(id || '')) return send(200, { id, name: 'mock account', currency: 'EGP', account_status: 1 }); return send(404, { error: { message: 'Unsupported get request (mock)', code: 100 } }); }
     if (!e) return send(404, { error: { message: 'Unsupported post request (mock)', code: 100 } });
-    const f = world.failNext; if (f && (!f.id || f.id === id)) { world.failNext = null; if (f.type === 'rate') return send(400, { error: { message: '(#17) User request limit reached', type: 'OAuthException', code: 17, error_subcode: 2446079, error_user_title: 'Ad Account Has Too Many API Calls' } }); if (f.type === 'noop') return send(200, { success: true }); }
+    const f = world.failNext; if (f && (!f.id || f.id === id)) { world.failNext = null; if (f.type === 'rate') return send(400, { error: { message: '(#17) User request limit reached', type: 'OAuthException', code: 17, error_subcode: 2446079, error_user_title: 'Ad Account Has Too Many API Calls' } }); if (f.type === 'noop') return send(200, { success: true }); if (f.type === 'token') return send(401, { error: { message: 'Error validating access token: Session has expired', type: 'OAuthException', code: 190, error_subcode: 463 } }); if (f.type === 'server') return send(500, { error: { message: 'An unexpected error has occurred. Please retry your request later.', type: 'OAuthException', code: 2, is_transient: true } }); }
     if (body.status) { e.status = body.status; e.effective_status = body.status; }
     if (body.daily_budget) e.daily_budget = String(body.daily_budget);
     return send(200, { success: true });
@@ -184,6 +184,41 @@ try {
     { const p1 = `${T}mc_p`; setEntity(p1); const scp = scenario([{ id: p1, pid: pid(40), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }]); const wP = allWrites().length; await tick(scp, cfg(ALL), { policies: pols(1), changesToday: async () => 1 });
       ok('the daily limit counts BUDGET changes only: a PAUSE still goes out when the product already used its 1 budget change today', writes(p1).length === 1 && allWrites().length === wP + 1 && world.entities.get(p1).status === 'PAUSED'); }
     ok('1 of 2 used → exactly ONE more change goes out in this tick, the other is deferred (the counter includes what this tick already sent)', writes(a).length + writes(b).length === 1 && r2.deferred.some((d) => d.code === 'PRODUCT_MAX_CHANGES_PER_DAY'), JSON.stringify(r2.deferred));
+  }
+
+  console.log('\n9. Failure modes — expired token, Meta 5xx, database failures: fail closed, never a blind resend');
+  { const clean = async (ids) => { await prisma.ambAction.deleteMany({ where: { entity_id: { in: ids } } }); await prisma.ambOperatorDecision.deleteMany({ where: { campaign_id: { in: ids } } }); };
+    const mkSc = (id, p) => scenario([{ id, pid: pid(p), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }]);
+    // A) expired access token
+    const tk = `${T}fm_tok`; setEntity(tk); await clean([tk]); world.failNext = { type: 'token', id: tk }; const wTk = writes(tk).length;
+    await tick(mkSc(tk, 80), cfg(ALL)); const dTk = await dec(tk);
+    ok('EXPIRED Meta token on the write: ONE attempt, the decision FAILS and says why, Meta is unchanged, nothing is resent', writes(tk).length === wTk + 1 && dTk.status === 'FAILED' && !!dTk.error && world.entities.get(tk).status === 'ACTIVE', JSON.stringify([dTk.status, dTk.error]));
+    const wTk2 = writes(tk).length; await tick(mkSc(tk, 80), cfg(ALL));
+    ok('the next tick does not hammer Meta with the same dead token on that campaign (the failed decision is not retried blindly)', writes(tk).length <= wTk2 + 1, String(writes(tk).length - wTk2));
+    // B) Meta-side HTTP 500
+    const sv = `${T}fm_500`; setEntity(sv); await clean([sv]); world.failNext = { type: 'server', id: sv }; const wSv = writes(sv).length;
+    await tick(mkSc(sv, 81), cfg(ALL)); const dSv = await dec(sv);
+    ok('Meta HTTP 500 on the write: ONE POST, never "success" (FAILED, or EXECUTED-but-unverified when the read-back cannot confirm), Meta unchanged, no resend', writes(sv).length === wSv + 1 && ['FAILED', 'EXECUTED'].includes(dSv.status) && dSv.status !== 'VERIFIED' && world.entities.get(sv).status === 'ACTIVE', JSON.stringify([dSv.status, dSv.error]));
+    // C) the database is unreachable at the moment of the claim: nothing is sent, the decision stays PREPARED, and one later approval sends exactly one write
+    const db1 = `${T}fm_db1`; setEntity(db1); await clean([db1]); await tick(mkSc(db1, 82), cfg(ALL, { mode: 'APPROVAL' })); const dDb = await dec(db1); const wDb = writes(db1).length;
+    const origUM = prisma.ambOperatorDecision.updateMany; let thrown = 0; prisma.ambOperatorDecision.updateMany = async () => { thrown++; const e = new Error("Can't reach database server at the Neon host"); e.code = 'P1001'; throw e; };
+    let err1 = null; try { await AE.executeAutoDecision({ decisionId: dDb.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...mkSc(db1, 82), config: cfg(ALL, { mode: 'APPROVAL' }) } }) } }); } catch (e) { err1 = e; } finally { prisma.ambOperatorDecision.updateMany = origUM; }
+    ok('database DOWN at the claim: the approval fails loudly (not silently), ZERO requests reach Meta, the decision is still PREPARED', thrown >= 1 && !!err1 && writes(db1).length === wDb && (await dec(db1)).status === 'PREPARED', JSON.stringify([thrown, err1?.message?.slice(0, 80)]));
+    const okRun = await AE.executeAutoDecision({ decisionId: dDb.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...mkSc(db1, 82), config: cfg(ALL, { mode: 'APPROVAL' }) } }) } });
+    ok('…and once the database is back the SAME decision executes exactly once', writes(db1).length === wDb + 1 && world.entities.get(db1).status === 'PAUSED' && ['VERIFIED', 'EXECUTED'].includes((await dec(db1)).status), JSON.stringify({ st: okRun.status, msg: okRun.message, bl: okRun.blocked, w: writes(db1).length - wDb, ds: (await dec(db1)).status }));
+    // D) the database fails AFTER the claim but BEFORE anything is sent: no request goes out and the restart recovery returns it to the owner's queue
+    const db2 = `${T}fm_db2`; setEntity(db2); await clean([db2]); await tick(mkSc(db2, 83), cfg(ALL, { mode: 'APPROVAL' })); const dDb2 = await dec(db2); const wDb2 = writes(db2).length;
+    const origRC = prisma.ambRecommendation.create; prisma.ambRecommendation.create = async () => { const e = new Error('Connection terminated unexpectedly'); e.code = 'P1017'; throw e; };
+    let err2 = null; try { await AE.executeAutoDecision({ decisionId: dDb2.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...mkSc(db2, 83), config: cfg(ALL, { mode: 'APPROVAL' }) } }) } }); } catch (e) { err2 = e; } finally { prisma.ambRecommendation.create = origRC; }
+    const stuck = (await dec(db2)).status; const rec2 = await ER.recoverInterruptedDecisions({ now: NOW, onStartup: true });
+    ok('database fails after the claim: ZERO requests reach Meta; the interrupted decision is returned to PREPARED by the restart recovery (fresh approval + fresh live check needed), never left EXECUTING', !!err2 && writes(db2).length === wDb2 && stuck === 'EXECUTING' && (await dec(db2)).status === 'PREPARED' && rec2.some((x) => x.decisionId === dDb2.id), JSON.stringify({ stuck, now: (await dec(db2)).status, rec2, w: writes(db2).length - wDb2, e2: err2?.message }));
+    // E) the configuration cannot be read (database down): the central write gate fails CLOSED
+    const WG = await imp('../services/amb/writeGate.js'); const gc = await WG.checkMetaWrite({ actionType: 'PAUSE', mode: 'APPROVAL', deps: { config: async () => { throw new Error('db down'); }, audit: false } });
+    ok('config unreadable (database down) → the central write gate refuses (NO_CONFIG, fail-closed), nothing is sent', gc.ok === false && gc.code === 'NO_CONFIG');
+    // F) the whole tick while every decision lookup fails: no write is attempted
+    const tf = `${T}fm_tick`; setEntity(tf); await clean([tf]); const wTf = allWrites().length; const origFU = prisma.ambOperatorDecision.findUnique; prisma.ambOperatorDecision.findUnique = async () => { const e = new Error("Can't reach database server"); e.code = 'P1001'; throw e; };
+    let errT = null; try { await tick(mkSc(tf, 84), cfg(ALL)); } catch (e) { errT = e; } finally { prisma.ambOperatorDecision.findUnique = origFU; }
+    ok('a whole automation tick while the database is unreachable: NO Meta request is made (it either fails visibly or does nothing)', allWrites().length === wTf && world.entities.get(tf).status === 'ACTIVE', String(errT?.message || 'no throw').slice(0, 100));
   }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

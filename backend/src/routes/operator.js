@@ -378,7 +378,8 @@ router.post('/decisions/bulk-approve', ADMIN, asyncRoute(async (req, res) => res
 router.post('/what-will-happen', asyncRoute(async (req, res) => res.json(await whatWillHappen({}))));
 router.get('/health', asyncRoute(async (req, res) => res.json(await operatorHealth({ scheduler: getOperatorSchedulerStatus() }))));
 router.get('/performance', asyncRoute(async (req, res) => res.json({ ...(await performanceReport({ days: Math.min(Number(req.query.days) || 30, 180) })), executed: await executedWithOutcomes({ days: Math.min(Number(req.query.days) || 14, 90) }) })));
-router.get('/brief', asyncRoute(async (req, res) => res.json(await dailyBrief({ adAccountId: await adAccountId() }))));
+// the legacy «مركز التحكم» tab shape (did / needsApproval / blocked …). It used to be registered as a SECOND '/brief' that Express never reached (the first '/brief' wins), so that tab failed with «Cannot read properties of undefined».
+router.get('/ops-brief', asyncRoute(async (req, res) => res.json(await dailyBrief({ adAccountId: await adAccountId() }))));
 router.get('/autopilot-gate', asyncRoute(async (req, res) => res.json({ gate: await store.autopilotGate(), attestKeys: store.ATTEST_KEYS })));
 router.post('/autopilot-gate/attest', ADMIN, asyncRoute(async (req, res) => { await store.attestAutopilot({ keys: req.body?.keys, userId: req.user.id }); res.json({ gate: await store.autopilotGate() }); }));
 router.delete('/autopilot-gate/attest', ADMIN, asyncRoute(async (req, res) => { await store.revokeAttestations({ userId: req.user.id }); res.json({ gate: await store.autopilotGate() }); }));

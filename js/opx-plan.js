@@ -5,7 +5,7 @@
 import { api } from './api-client.js';
 import { advPanel, wireAdv, advFrom, advDirty } from './opx-open-adv.js';
 import { mountZeroSpend } from './opx-zero-spend.js';
-import { E, $, num, egp, cairoTime, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, skeletonCards, openDrawer, closeDrawer, toast, confirmModal, store, thumb, hydrateThumbs } from './opx-ui.js';
+import { E, $, num, egp, cairoTime, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, skeletonCards, openDrawer, closeDrawer, toast, confirmModal, showLockNotice, gatesFor, store, thumb, hydrateThumbs } from './opx-ui.js';
 import { BLOCK_AR, ELIG_AR, ITEM_AR, ITEM_PILL } from './ai-operator-daily.js';
 
 const API = '/api/operator/daily-plan';
@@ -383,13 +383,13 @@ function wire(p, editable) {
   if (P.type === 'OPEN' && P.cpa && P.advForm) wireAdv(P.advForm, () => P.cpa.policy, async () => { P.advForm = null; await load(); });
 }
 async function approve(p) {
-  const m = META[P.type]; const sel = p.items.filter((i) => i.selected); const c = P.ov.control || {}; const live = c.mode === 'APPROVAL' && !c.writesLocked && c[m.permKey];
-  if (c.mode === 'APPROVAL' && !live) { const why = [c.emergencyStop && 'Emergency Stop مفعّل', c.writesLocked && 'كتابة Meta مقفولة على مستوى النشر', !c[m.permKey] && 'صلاحية التنفيذ لهذا النوع مقفولة', c.halted && 'الطابور موقوف'].filter(Boolean); toast(`الاعتماد مش هيتنفذ دلوقتي: ${why.join(' · ') || 'الشروط مش مكتملة'} — الخطة فضلت جاهزة ومفيش حاجة اتغيرت.`, 'error'); return; }
+  const m = META[P.type]; const sel = p.items.filter((i) => i.selected); const c = P.ov.control || {}; const live = c.mode === 'APPROVAL' && !c.emergencyStop && !c.halted && !c.writesLocked && !!c[m.permKey];
+  if (c.mode === 'APPROVAL' && !live) { showLockNotice({ what: `اعتماد خطة ${m.verb} الحملات`, gates: gatesFor(c, m.permKey, m.verb) }); return; } // an intentional lock, explained — not an error, and no request is sent
   if (P.approving) { toast('الاعتماد شغال بالفعل — استنى النتيجة.', 'warning'); return; }
   const ex = p.exposure || { count: sel.length, exposedBudget: 0 }; const confirmBody = { count: ex.count, exposedBudget: ex.exposedBudget, campaignIds: (ex.campaignIds || sel.map((i) => i.campaignId || i.id)).slice().sort(), planVersion: p.version, policyVersion: p.evidence?.openCpa?.version ?? null }; const msg = `${ex.count} حملة · إجمالي ميزانية يومية ${egp(ex.exposedBudget)} — هتتعمل لها ${m.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل ' + (c.spacingSeconds ?? 3) + ' ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل خطوة بتتسجل لكن مفيش أي كتابة على Meta.'}`;
   if (!(await confirmModal({ title: `اعتماد خطة ${m.verb} الحملات`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة)', danger: !!live }))) return;
   P.approving = p.id; const abtn = document.querySelector('[data-act="approve"]'); const alabel = abtn?.innerHTML; if (abtn) { abtn.disabled = true; abtn.textContent = '⏳ جاري الاعتماد…'; }
-  try { const r = await api.post(`${API}/${p.id}/approve`, { confirm: confirmBody }); if (!r.ok) { toast(`${r.message || 'الاعتماد اتمنع'}${(r.violations || []).length ? ' — ' + r.violations.slice(0, 4).map((v) => v.name || v.campaignId).join('، ') : ''}`, 'error'); return; } toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW (مفيش كتابة على Meta)'); await load(); } catch (e) { const st = e?.status; toast(st === 403 ? 'مفيش صلاحية: الاعتماد محتاج ADMIN.' : st >= 500 ? 'خطأ في السيرفر — مفيش تنفيذ اتأكد، راجع سجل التنفيذ.' : (e.message || 'الاعتماد ما تمّش'), 'error'); }
+  try { const r = await api.post(`${API}/${p.id}/approve`, { confirm: confirmBody }); if (!r.ok && r.status === 'BLOCKED') { showLockNotice({ what: `اعتماد خطة ${m.verb} الحملات`, gates: gatesFor(c, m.permKey, m.verb), message: r.message }); await load(); return; } if (!r.ok) { toast(`${r.message || 'الاعتماد اتمنع'}${(r.violations || []).length ? ' — ' + r.violations.slice(0, 4).map((v) => v.name || v.campaignId).join('، ') : ''}`, 'error'); return; } toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW (مفيش كتابة على Meta)'); await load(); } catch (e) { const st = e?.status; toast(st === 403 ? 'مفيش صلاحية: الاعتماد محتاج ADMIN.' : st >= 500 ? 'خطأ في السيرفر — مفيش تنفيذ اتأكد، راجع سجل التنفيذ.' : (e.message || 'الاعتماد ما تمّش'), 'error'); }
   finally { P.approving = null; if (abtn && document.body.contains(abtn)) { abtn.disabled = false; if (alabel != null) abtn.innerHTML = alabel; } }
 }
 async function preview(p) {

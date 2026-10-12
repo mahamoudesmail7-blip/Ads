@@ -271,7 +271,7 @@ export async function drawPerformance(body) {
 // =====================================================================================================================
 export async function drawControl(body) {
   body.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
-  const [g, hl, br] = await Promise.all([api.get('/api/operator/global-readiness'), api.get('/api/operator/health'), api.get('/api/operator/brief')]);
+  const [g, hl, br] = await Promise.all([api.get('/api/operator/global-readiness'), api.get('/api/operator/health'), api.get('/api/operator/ops-brief')]);
   body.innerHTML = `
     <div id="opCompletion"></div>
     <div class="amb-panel"><h3>🧭 جاهزية الأتمتة (إيه اللازم تظبطه قبل Autopilot)</h3>

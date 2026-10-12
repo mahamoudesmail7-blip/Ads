@@ -44,14 +44,14 @@ export const WINNER_WARNING = 'الحملة رابحة تاريخيًا، لكن
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 export const DEFAULT_ZS = Object.freeze({ enabled: false, version: 0, approved: null, updatedAt: null, updatedBy: null, history: [],
   checkTime: '13:00', limit: 150, comparison: 'GT', scope: 'ALL_ACTIVE', adAccountIds: [], includeCampaignIds: [], excludeCampaignIds: [], maxDataAgeMin: 30, retryMinutes: 180,
-  winnerAction: 'MANUAL_REVIEW', winnerMinOrders30: 10, winnerMinOrders7: 2, winnerFallbackCpa: null, maxPausesPerDay: null, maxPausePct: null, protectedCampaignIds: [] });
+  winnerAction: 'MANUAL_REVIEW', unknownWinnerAction: 'MANUAL_REVIEW', winnerMinOrders30: 10, winnerMinOrders7: 2, winnerFallbackCpa: null, maxPausesPerDay: null, maxPausePct: null, protectedCampaignIds: [] });
 export function normalizeZs(raw = {}) {
   const r = raw || {}; const D = DEFAULT_ZS; const num = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
   return { enabled: r.enabled === true, version: Number(r.version) || 0, approved: r.approved || null, updatedAt: r.updatedAt || null, updatedBy: r.updatedBy ?? null, history: Array.isArray(r.history) ? r.history : [],
     checkTime: typeof r.checkTime === 'string' && r.checkTime.trim() ? r.checkTime.trim() : D.checkTime, limit: num(r.limit, D.limit), comparison: ['GT', 'GTE'].includes(r.comparison) ? r.comparison : (r.comparison == null ? D.comparison : String(r.comparison)),
     scope: ['ALL_ACTIVE', 'SELECTED'].includes(r.scope) ? r.scope : (r.scope == null ? D.scope : String(r.scope)), adAccountIds: ids(r.adAccountIds), includeCampaignIds: ids(r.includeCampaignIds), excludeCampaignIds: ids(r.excludeCampaignIds),
     maxDataAgeMin: num(r.maxDataAgeMin, D.maxDataAgeMin), retryMinutes: num(r.retryMinutes, D.retryMinutes),
-    winnerAction: ['MANUAL_REVIEW', 'RULE', 'EXEMPT'].includes(r.winnerAction) ? r.winnerAction : (r.winnerAction == null ? D.winnerAction : String(r.winnerAction)), winnerMinOrders30: num(r.winnerMinOrders30, D.winnerMinOrders30), winnerMinOrders7: num(r.winnerMinOrders7, D.winnerMinOrders7), winnerFallbackCpa: numOrNull(r.winnerFallbackCpa),
+    winnerAction: ['MANUAL_REVIEW', 'RULE', 'EXEMPT'].includes(r.winnerAction) ? r.winnerAction : (r.winnerAction == null ? D.winnerAction : String(r.winnerAction)), unknownWinnerAction: ['MANUAL_REVIEW', 'RULE', 'EXEMPT'].includes(r.unknownWinnerAction) ? r.unknownWinnerAction : (r.unknownWinnerAction == null ? D.unknownWinnerAction : String(r.unknownWinnerAction)), winnerMinOrders30: num(r.winnerMinOrders30, D.winnerMinOrders30), winnerMinOrders7: num(r.winnerMinOrders7, D.winnerMinOrders7), winnerFallbackCpa: numOrNull(r.winnerFallbackCpa),
     maxPausesPerDay: numOrNull(r.maxPausesPerDay), maxPausePct: numOrNull(r.maxPausePct), protectedCampaignIds: ids(r.protectedCampaignIds) };
 }
 export function validateZs(p) {
@@ -61,13 +61,14 @@ export function validateZs(p) {
   if (p.scope === 'SELECTED' && !p.includeCampaignIds.length) e.push('نطاق «حملات محددة» محتاج تختار حملة واحدة على الأقل.');
   if (!Number.isFinite(p.maxDataAgeMin) || p.maxDataAgeMin < 5 || p.maxDataAgeMin > 240) e.push('أقصى عمر للبيانات لازم يكون بين 5 و240 دقيقة.'); if (!Number.isFinite(p.retryMinutes) || p.retryMinutes < 15 || p.retryMinutes > 600) e.push('مهلة إعادة المحاولة لازم تكون بين 15 و600 دقيقة.');
   if (!['MANUAL_REVIEW', 'RULE', 'EXEMPT'].includes(p.winnerAction)) e.push('تصرف حماية الحملات الرابحة لازم يكون: مراجعة يدوية أو حسب القاعدة أو استثناء.');
+  if (!['MANUAL_REVIEW', 'RULE', 'EXEMPT'].includes(p.unknownWinnerAction)) e.push('تصرف الحملة اللي تصنيفها Winner غير معروف لازم يكون: مراجعة يدوية أو حسب القاعدة أو استثناء.');
   if (!Number.isFinite(p.winnerMinOrders30) || p.winnerMinOrders30 < 1 || p.winnerMinOrders30 > 1000) e.push('أقل أوردرات 30 يوم لتصنيف Winner لازم تكون بين 1 و1000.'); if (!Number.isFinite(p.winnerMinOrders7) || p.winnerMinOrders7 < 1 || p.winnerMinOrders7 > 1000) e.push('أقل أوردرات 7 أيام لتصنيف Winner لازم تكون بين 1 و1000.');
   if (p.winnerFallbackCpa != null && (!Number.isFinite(p.winnerFallbackCpa) || p.winnerFallbackCpa <= 0)) e.push('CPA البديل لتصنيف Winner لازم يكون رقم موجب أو فاضي.');
   if (p.maxPausesPerDay != null && (!Number.isInteger(p.maxPausesPerDay) || p.maxPausesPerDay < 0 || p.maxPausesPerDay > 500)) e.push('أقصى عدد إيقافات يومية لازم يكون رقم صحيح بين 0 و500 (أو فاضي = بدون حد).');
   if (p.maxPausePct != null && (!Number.isFinite(p.maxPausePct) || p.maxPausePct < 0 || p.maxPausePct > 100)) e.push('أقصى نسبة إيقاف لازم تكون بين 0 و100 (أو فاضي = بدون حد).');
   return e;
 }
-const MATERIAL = ['checkTime', 'limit', 'comparison', 'scope', 'adAccountIds', 'includeCampaignIds', 'excludeCampaignIds', 'maxDataAgeMin', 'retryMinutes', 'winnerAction', 'winnerMinOrders30', 'winnerMinOrders7', 'winnerFallbackCpa', 'maxPausesPerDay', 'maxPausePct', 'protectedCampaignIds'];
+const MATERIAL = ['checkTime', 'limit', 'comparison', 'scope', 'adAccountIds', 'includeCampaignIds', 'excludeCampaignIds', 'maxDataAgeMin', 'retryMinutes', 'winnerAction', 'unknownWinnerAction', 'winnerMinOrders30', 'winnerMinOrders7', 'winnerFallbackCpa', 'maxPausesPerDay', 'maxPausePct', 'protectedCampaignIds'];
 const snap = (p) => ({ version: p.version, enabled: p.enabled, ...Object.fromEntries(MATERIAL.map((k) => [k, p[k]])) });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export const zeroSpendActive = (p) => !!(p?.enabled && p.approved && p.approved.version === p.version);
@@ -101,7 +102,7 @@ const WACT_AR = { MANUAL_REVIEW: 'مراجعة يدوية', RULE: 'إيقاف ح
 export function describePolicy(p) {
   const cmp = p.comparison === 'GTE' ? 'أكبر من أو يساوي' : 'أكبر من'; const scope = p.scope === 'SELECTED' ? `${p.includeCampaignIds.length} حملة محددة` : 'كل الحملات النشطة'; const acc = p.adAccountIds.length ? `${p.adAccountIds.length} حساب إعلاني` : 'الحساب المتصل';
   const lim = [p.maxPausesPerDay != null ? `أقصى ${p.maxPausesPerDay} إيقاف يوميًا` : null, p.maxPausePct != null ? `أقصى ${p.maxPausePct}% من الحملات النشطة` : null].filter(Boolean).join(' · ');
-  return `فحص يومي الساعة ${p.checkTime} (القاهرة): أي حملة صرفها اليوم ${cmp} ${p.limit} ج.م وأوردراتها اليوم = 0 تبقى مؤهلة للإيقاف — النطاق: ${scope} · ${acc}${p.excludeCampaignIds.length ? ` · مستثنى ${p.excludeCampaignIds.length} حملة` : ''}. الحملة الرابحة تاريخيًا: ${WACT_AR[p.winnerAction]}${p.protectedCampaignIds.length ? ` · ${p.protectedCampaignIds.length} حملة أساسية محمية (مراجعة يدوية)` : ''}${lim ? ` · ${lim} (الزيادة للمراجعة اليدوية)` : ' · بدون حد أقصى للإيقافات'}.`;
+  return `فحص يومي الساعة ${p.checkTime} (القاهرة): أي حملة صرفها اليوم ${cmp} ${p.limit} ج.م وأوردراتها اليوم = 0 تبقى مؤهلة للإيقاف — النطاق: ${scope} · ${acc}${p.excludeCampaignIds.length ? ` · مستثنى ${p.excludeCampaignIds.length} حملة` : ''}. الحملة الرابحة تاريخيًا: ${WACT_AR[p.winnerAction]} · الحملة اللي تصنيفها غير معروف: ${WACT_AR[p.unknownWinnerAction]}${p.protectedCampaignIds.length ? ` · ${p.protectedCampaignIds.length} حملة أساسية محمية (مراجعة يدوية)` : ''}${lim ? ` · ${lim} (الزيادة للمراجعة اليدوية)` : ' · بدون حد أقصى للإيقافات'}.`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -163,9 +164,15 @@ export function applyRefinements(rows, policy, { executedToday = 0 } = {}) {
       if (policy.winnerAction === 'EXEMPT') { r.state = 'EXCLUDED'; r.code = 'WINNER_EXEMPT'; r.reason = `${WINNER_WARNING} — مستثناة حسب إعداد حماية الـWinner.`; }
       else if (policy.winnerAction === 'MANUAL_REVIEW') { r.state = 'REVIEW'; r.code = 'WINNER_REVIEW'; r.reason = `${WINNER_WARNING} — محتاجة مراجعة يدوية (مفيش إيقاف تلقائي).`; }
       else r.reason = `${r.reason} ⚠️ ${WINNER_WARNING} (الإعداد: إيقاف حسب القاعدة).`;
+    } else if (r.winner?.status === 'UNKNOWN') {
+      // the base condition (zero orders AND spend over the limit) is unchanged; only WHAT HAPPENS when the history cannot prove the campaign is NOT a winner is the owner's choice (default: a human decides)
+      const why = `تصنيف الـWinner غير معروف: ${r.winner.reason}`;
+      if (policy.unknownWinnerAction === 'EXEMPT') { r.state = 'EXCLUDED'; r.code = 'UNKNOWN_WINNER_EXEMPT'; r.reason = `${r.reason} — ${why} — مستثناة حسب إعداد «Unknown Winner Handling».`; }
+      else if (policy.unknownWinnerAction === 'MANUAL_REVIEW') { r.state = 'REVIEW'; r.code = 'UNKNOWN_WINNER_REVIEW'; r.reason = `${r.reason} — ${why} — محتاجة مراجعة يدوية (مفيش إيقاف تلقائي).`; }
+      else r.reason = `${r.reason} (${why} — الإعداد: إيقاف حسب القاعدة).`;
     }
   }
-  const covered = rows.filter((r) => !['EXCLUDED', 'OUT_OF_SCOPE'].includes(r.state) || r.code === 'WINNER_EXEMPT').length; const cands = rows.filter((r) => r.state === 'ELIGIBLE').sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
+  const covered = rows.filter((r) => !['EXCLUDED', 'OUT_OF_SCOPE'].includes(r.state) || ['WINNER_EXEMPT', 'UNKNOWN_WINNER_EXEMPT'].includes(r.code)).length; const cands = rows.filter((r) => r.state === 'ELIGIBLE').sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
   const byPct = policy.maxPausePct != null ? Math.floor((covered * policy.maxPausePct) / 100) : Infinity; const byCount = policy.maxPausesPerDay != null ? policy.maxPausesPerDay : Infinity;
   const quota = Math.max(0, Math.min(byPct, byCount) - executedToday);
   if (Number.isFinite(quota)) cands.forEach((r, n) => { if (n >= quota) { r.state = 'REVIEW'; r.code = 'DAILY_STOP_LIMIT'; r.reason = `${r.reason} — تجاوزت حد الإيقافات اليومية للسياسة (${Number.isFinite(byCount) ? `${byCount} حملة` : ''}${Number.isFinite(byCount) && Number.isFinite(byPct) ? ' / ' : ''}${Number.isFinite(byPct) ? `${policy.maxPausePct}% = ${byPct}` : ''}، اتنفذ ${executedToday}): للمراجعة اليدوية.`; warn.push(r.campaignId); } });
@@ -232,7 +239,7 @@ export async function evaluateZeroSpendCheck({ now = new Date(), policy = null, 
   const executedToday = await executedTodayCount(date, deps); const ref = applyRefinements(out.rows, pol, { executedToday }); out.limits = { maxPausesPerDay: pol.maxPausesPerDay, maxPausePct: pol.maxPausePct, executedToday, quotaLeft: ref.quota, overLimit: ref.overLimit };
   const flagged = out.rows.filter((r) => ['ELIGIBLE', 'REVIEW'].includes(r.state)).map((r) => r.campaignId); const conf = await conflictsFor(flagged, date, now, deps); for (const r of out.rows) { r.conflicts = (conf.get(r.campaignId) || []).filter((x) => x.code !== 'SAME_POLICY_DECISION'); r.hasOtherPause = r.conflicts.some((x) => ['OTHER_PAUSE_DECISION', 'PAUSE_PLAN_SELECTED'].includes(x.code)); }
   for (const r of out.rows) r.stateLabel = STATE_LABEL[r.state];
-  const count = (s) => out.rows.filter((r) => r.state === s).length; out.summary = { total: out.rows.length, ELIGIBLE: count('ELIGIBLE'), CONTINUE: count('CONTINUE'), REVIEW: count('REVIEW'), INCOMPLETE: count('INCOMPLETE'), EXCLUDED: count('EXCLUDED'), OUT_OF_SCOPE: count('OUT_OF_SCOPE'), winnersAtRisk: out.rows.filter((r) => r.baseState === 'ELIGIBLE' && r.winner.status === 'WINNER').length };
+  const count = (s) => out.rows.filter((r) => r.state === s).length; out.summary = { total: out.rows.length, ELIGIBLE: count('ELIGIBLE'), CONTINUE: count('CONTINUE'), REVIEW: count('REVIEW'), INCOMPLETE: count('INCOMPLETE'), EXCLUDED: count('EXCLUDED'), OUT_OF_SCOPE: count('OUT_OF_SCOPE'), unknownWinnerReview: out.rows.filter((r) => r.code === 'UNKNOWN_WINNER_REVIEW').length, winnersAtRisk: out.rows.filter((r) => r.baseState === 'ELIGIBLE' && r.winner.status === 'WINNER').length };
   return out;
 }
 /** the decision row of today for one campaign (what the screen shows as approval / execution state) */

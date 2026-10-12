@@ -199,6 +199,7 @@ function timeline(plan) {
 }
 function summaryBox(plan) {
   const s = plan.summary; if (!s || s.missed || s.cancelled) return s?.missed ? `<div class="dp-note bad">⌛ ${E(s.reason)}</div>` : s?.cancelled ? `<div class="dp-note">🚫 الخطة اتلغت: ${E(s.reason || '')}</div>` : '';
+  if (s.selected == null && s.verified == null && s.simulated == null) return ''; // an empty / partial summary (no run yet) has nothing honest to show — never print «undefined من undefined»
   const T = TYPE_META[plan.type];
   return `<div class="dp-note ${s.failed || s.uncertain ? 'bad' : 'ok'}"><b>ملخص:</b> ${s.executionMode === 'LIVE' ? `${T.verb} فعليًا ${s.verified} من ${s.selected}` : `محاكاة SHADOW — ${s.simulated} من ${s.selected} كانوا هيتنفذوا (مفيش كتابة على Meta)`} · متخطّي ${s.skipped} · ممنوع ${s.blocked} · فشل ${s.failed}${s.uncertain ? ` · غير مؤكد ${s.uncertain}` : ''} · كتابات Meta فعلية: <b>${s.metaWrites}</b>${Object.keys(s.byReason || {}).length ? `<small>${Object.entries(s.byReason).map(([k, v]) => `${E(k)} ×${v}`).join(' · ')}</small>` : ''}</div>`;
 }

@@ -51,6 +51,22 @@ export function openDrawer({ title, body, foot = '', theme }) {
 }
 export function closeDrawer() { if (!drawerEls) return; drawerEls.bg.classList.remove('open'); drawerEls.panel.classList.remove('open'); }
 export const toast = UI.toast; export const confirmModal = UI.confirmModal;
+/**
+ * A CLOSED execution gate is an intentional safety lock, not an error: this explains — in a persistent panel, not a vanishing red toast — which gates are open / closed and who opens them.
+ * Nothing here opens a gate. «gates» = [{ label, ok, help }]; «reasons» = plain strings when only the reasons are known (the approvals center).
+ */
+export function showLockNotice({ what = 'الاعتماد', gates = [], reasons = [], message = '' } = {}) {
+  const table = gates.length ? `<div class="opx-scroll"><table class="opx-table"><thead><tr><th>البوابة</th><th>الحالة</th><th>إزاي تتفتح</th></tr></thead><tbody>${gates.map((g) => `<tr><td><b>${E(g.label)}</b></td><td>${pill(g.ok ? 'مفتوحة' : 'مقفولة', g.ok ? 'green' : 'amber')}</td><td class="opx-why">${g.ok ? '—' : E(g.help || '')}</td></tr>`).join('')}</tbody></table></div>` : '';
+  const list = !gates.length && reasons.length ? `<ul class="opx-note">${reasons.map((r) => `<li>${E(r)}</li>`).join('')}</ul>` : '';
+  openDrawer({ title: 'التنفيذ الحقيقي مقفول — قفل أمان مقصود', body: `<div class="opx-notice blue"><div class="grow"><b>ده مش خطأ في السيستم.</b><small>${E(what)} في وضع APPROVAL بينفّذ على Meta في نفس الخطوة، فلازم كل بوابات الأمان تكون مفتوحة. طالما واحدة مقفولة: الخطة بتفضل <b>جاهزة (PREPARED)</b>، ومفيش حاجة اتغيرت ولا اتبعتت لـMeta.</small></div></div>${message ? `<p class="opx-note">${E(message)}</p>` : ''}${table}${list}<p class="opx-note">تقدر تراجع الخطة وتعمل «معاينة التنفيذ» (قراءة فقط) في أي وقت. فتح أي بوابة بيتم بقرار صريح منك — النظام مش بيفتحها لوحده.</p>` });
+  toast('التنفيذ مقفول بقفل أمان مقصود — الخطة فضلت جاهزة ومفيش حاجة اتغيرت. التفاصيل في اللوحة.', 'warning');
+}
+export const gatesFor = (c, permKey, verb) => [
+  { label: 'Emergency Stop', ok: !c.emergencyStop, help: 'ألغِ إيقاف الطوارئ من مركز التحكم (ADMIN).' },
+  { label: 'وضع النظام = APPROVAL', ok: c.mode === 'APPROVAL', help: 'بدّل الوضع من مفتاح الوضع أعلى الصفحة (ADMIN).' },
+  { label: 'قفل كتابة Meta على مستوى النشر (OPERATOR_ALLOW_META_WRITES)', ok: !c.writesLocked, help: 'بيتفتح بقرار نشر صريح على السيرفر فقط — مفيش زر في الواجهة بيفتحه.' },
+  { label: `صلاحية تنفيذ ${verb}`, ok: !!c[permKey], help: 'فعّلها من «صلاحيات التنفيذ» (ADMIN + تأكيد).' },
+  { label: 'الطابور (Kill Switch)', ok: !c.halted, help: 'شغّل الطابور من مركز التحكم (ADMIN).' }];
 export const store = { get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* private window */ } } };
 
 // ---- product thumbnails: the REAL product image (AmbProduct.image_url, fetched once per product) with a graceful fallback — the initial letter on a tinted tile, also when the image fails to load

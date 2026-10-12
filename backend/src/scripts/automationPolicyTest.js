@@ -77,4 +77,5 @@ try {
     ok('summary is honest that writes are locked / operations will not run while permissions are OFF', s.operations.every((o) => o.permissionOn === false || o.willRun === (o.permissionOn && o.policyApproved)) && s.risk.reasons.some((r) => /مقفولة|ناقص/.test(r)));
   } finally { await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: limits0 } }); await prisma.ambOperatorProductConfig.deleteMany({ where: { product_id: PID } }).catch(() => {}); await prisma.ambOperatorEvent.deleteMany({ where: { kind: { in: ['PRODUCT_POLICY_SAVED', 'PRODUCT_POLICY_ACTIVATED'] }, created_at: { gte: new Date(Date.now() - 600_000) } } }); }
 } finally { await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: limits0 } }).catch(() => {}); }
-console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);
+// the exit code still reflects every failed assertion; the exit itself is deferred so libuv finishes closing the Prisma handles first (a hard process.exit() right after $disconnect() intermittently crashed Node on Windows with «UV_HANDLE_CLOSING» AFTER all assertions had passed)
+console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 400);
