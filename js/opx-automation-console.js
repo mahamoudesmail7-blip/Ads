@@ -12,7 +12,7 @@ const FIELDS = [
   ['cpa.normalMin', 'CPA الطبيعي — من (Minimum)'], ['cpa.normalMax', 'CPA الطبيعي — إلى (Maximum)'], ['cpa.scale', 'CPA الزيادة (Scale ≤)'], ['cpa.reduce', 'CPA التقليل (Reduce ≥)'], ['cpa.hardStop', 'Hard Stop CPA'],
   ['zeroOrder.spend', 'حد الصرف بدون أوردرات (ج)'], ['zeroOrder.minAgeHours', 'أقل عمر للحملة (ساعات)'], ['budget.minPurchases', 'أقل عدد أوردرات'],
   ['budget.increasePct', 'نسبة الزيادة %'], ['budget.decreasePct', 'نسبة التقليل %'], ['budget.minBudget', 'أقل ميزانية للحملة'], ['budget.maxBudget', 'أقصى ميزانية للحملة'],
-  ['budget.dailySpendCap', 'سقف الصرف اليومي للمنتج'], ['budget.cooldownHours', 'Cooldown (ساعات، أقل 6)'], ['budget.maxChangesPerDay', 'أقصى تعديلات في اليوم للمنتج'], ['manualOverrideHours', 'حماية التعديل اليدوي (ساعات)'],
+  ['budget.dailySpendCap', 'سقف الصرف اليومي للمنتج'], ['budget.cooldownHours', 'Cooldown (ساعات، أقل 6)'], ['budget.maxChangesPerDay', 'أقصى تعديلات ميزانية في اليوم للمنتج'], ['manualOverrideHours', 'حماية التعديل اليدوي (ساعات)'],
 ];
 const getp = (o, path) => path.split('.').reduce((x, k) => x?.[k], o);
 const fieldsHtml = (pre, values, dis) => `<div class="opx-form">${FIELDS.map(([p, l]) => `<label>${E(l)}<input class="opx-input" id="${pre}_${p.replace('.', '_')}" type="number" step="any" min="0" value="${E(V(getp(values, p)))}" ${dis}></label>`).join('')}

@@ -23,6 +23,7 @@ export function normalizePolicy(raw = {}) {
   o.budget = pick(r.budget, ['increasePct', 'decreasePct', 'minPurchases', 'cooldownHours', 'minBudget', 'maxBudget', 'dailySpendCap', 'maxChangesPerDay']);
   o.manualOverrideHours = num(r.manualOverrideHours);
   o.stockPolicy = ['WARN', 'BLOCK'].includes(r.stockPolicy) ? r.stockPolicy : null;
+  o.automaticOnly = Array.isArray(r.automaticOnly) ? [...new Set(r.automaticOnly.map((x) => String(x).trim()).filter(Boolean))].slice(0, 200) : []; // AUTOMATIC applies ONLY to these campaign ids (empty = every campaign of the product)
   for (const grp of ['cpa', 'zeroOrder', 'budget']) for (const k of Object.keys(o[grp])) { const n = num(o[grp][k]); o[grp][k] = n === null ? null : n; }
   o.campaigns = {};
   for (const [cid, c] of Object.entries(r.campaigns || {})) { if (!cid) continue; const n = normalizePolicy({ ...c, campaigns: undefined }); delete n.campaigns; if (JSON.stringify(n) !== JSON.stringify(emptyOverride())) o.campaigns[String(cid)] = n; }
@@ -44,9 +45,10 @@ export function validatePolicy(p, { scopeLabel = '' } = {}) {
   rng('الصرف بدون أوردرات', z.spend, 50, 100000); rng('أقل عمر للحملة (ساعات)', z.minAgeHours, 0, 720);
   if (z.windowDays != null && ![3, 7].includes(z.windowDays)) errors.push(L('نافذة القياس لازم 3 أو 7 أيام.'));
   rng('نسبة الزيادة %', b.increasePct, 1, 50); rng('نسبة التقليل %', b.decreasePct, 1, 50); rng('أقل عدد أوردرات', b.minPurchases, 1, 100); rng('Cooldown (ساعات)', b.cooldownHours, 6, 336);
-  rng('أقل ميزانية', b.minBudget, 1, 1e7); rng('أقصى ميزانية', b.maxBudget, 1, 1e7); rng('الحد اليومي لميزانية المنتج (Daily Spend Cap)', b.dailySpendCap, 1, 1e7); rng('حماية التعديل اليدوي (ساعات)', p.manualOverrideHours, 1, 720); rng('أقصى عدد تعديلات في اليوم للمنتج', b.maxChangesPerDay, 1, 50);
+  rng('أقل ميزانية', b.minBudget, 1, 1e7); rng('أقصى ميزانية', b.maxBudget, 1, 1e7); rng('الحد اليومي لميزانية المنتج (Daily Spend Cap)', b.dailySpendCap, 1, 1e7); rng('حماية التعديل اليدوي (ساعات)', p.manualOverrideHours, 1, 720); rng('أقصى تعديلات ميزانية في اليوم للمنتج', b.maxChangesPerDay, 1, 50);
   if (b.dailySpendCap != null && b.maxBudget != null && b.maxBudget > b.dailySpendCap) errors.push(L('أقصى ميزانية للحملة لا يمكن أن تتجاوز الحد اليومي للمنتج.'));
   if (b.minBudget != null && b.maxBudget != null && b.minBudget > b.maxBudget) errors.push(L('أقل ميزانية لازم تكون ≤ أقصى ميزانية.'));
+  if ((p.automaticOnly || []).length > 200) errors.push(L('قائمة حملات AUTOMATIC أكبر من 200.'));
   for (const [cid, c] of Object.entries(p.campaigns || {})) errors.push(...validatePolicy({ ...c, campaigns: {} }, { scopeLabel: `حملة ${cid}: ` }));
   return errors;
 }
@@ -70,6 +72,11 @@ export function applyToBudgetPolicy(globalPolicy, policy, campaignId = null) {
 }
 /** campaign override wins over the product value (null in the override = inherit the product value) */
 export function mergeEffective(policy, campaignId = null) {
+  const m0 = mergeEffective0(policy, campaignId); const only = policy ? normalizePolicy(policy).automaticOnly : [];
+  if (campaignId && m0.mode === 'AUTOMATIC' && only.length && !only.includes(String(campaignId))) return { ...m0, mode: 'APPROVAL' }; // not on the AUTOMATIC list → the owner approves, nothing runs alone
+  return m0;
+}
+function mergeEffective0(policy, campaignId = null) {
   const base = policy ? normalizePolicy(policy) : emptyOverride(); const ov = campaignId && policy?.campaigns?.[campaignId] ? normalizePolicy({ ...policy.campaigns[campaignId], campaigns: undefined }) : null;
   if (!ov) return base;
   const m = (a, b) => Object.fromEntries(Object.keys(a).map((k) => [k, b[k] ?? a[k]]));

@@ -181,6 +181,8 @@ try {
     const w0 = allWrites().length; const r1 = await tick(mk(), cfg(ALL), { policies: pols(2), changesToday: async () => 2 });
     ok('the product already made 2 of its 2 allowed changes today → BOTH candidates are deferred (PRODUCT_MAX_CHANGES_PER_DAY), ZERO requests', allWrites().length === w0 && r1.deferred.filter((d) => d.code === 'PRODUCT_MAX_CHANGES_PER_DAY').length === 2, JSON.stringify(r1.deferred));
     const r2 = await tick(mk(), cfg(ALL), { policies: pols(2), changesToday: async () => 1 });
+    { const p1 = `${T}mc_p`; setEntity(p1); const scp = scenario([{ id: p1, pid: pid(40), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }]); const wP = allWrites().length; await tick(scp, cfg(ALL), { policies: pols(1), changesToday: async () => 1 });
+      ok('the daily limit counts BUDGET changes only: a PAUSE still goes out when the product already used its 1 budget change today', writes(p1).length === 1 && allWrites().length === wP + 1 && world.entities.get(p1).status === 'PAUSED'); }
     ok('1 of 2 used → exactly ONE more change goes out in this tick, the other is deferred (the counter includes what this tick already sent)', writes(a).length + writes(b).length === 1 && r2.deferred.some((d) => d.code === 'PRODUCT_MAX_CHANGES_PER_DAY'), JSON.stringify(r2.deferred));
   }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
