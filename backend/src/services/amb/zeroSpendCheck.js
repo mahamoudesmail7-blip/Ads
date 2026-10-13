@@ -191,7 +191,7 @@ async function historyOf(acc, date, deps) {
   if (deps.historyMetrics) return deps.historyMetrics(acc, date);
   const out = {}; for (const k of ['last3', 'last7', 'last30']) { const r = windowRange(k, date); out[k] = await entityWindowMetrics({ level: 'campaign', from: r.from, to: r.to, adAccountId: acc }, { force: !!deps.forceFresh }); } return out;
 }
-async function profitLimitOf(campaignId, cache, deps) {
+export async function profitLimitOf(campaignId, cache, deps) {
   if (deps.profitLimitOf) return deps.profitLimitOf(campaignId);
   try { const INT = await import('./integration.js'); const idn = await INT.campaignIdentity(campaignId); if (idn?.productId == null || !idn.verified) return null; if (!cache.has(idn.productId)) { const RD = await import('./operatorReadiness.js'); const p = await RD.getProductProfile({ productId: idn.productId }).catch(() => null); cache.set(idn.productId, p ? (p.economics.maxCpa.value ?? p.economics.targetCpa.value ?? null) : null); } return cache.get(idn.productId); } catch { return null; }
 }

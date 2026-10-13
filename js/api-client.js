@@ -9,12 +9,13 @@
 // login), so `credentials: 'include'` is what attaches it — there is no
 // token in JS memory or localStorage to leak.
 
-async function request(method, path, body) {
+async function request(method, path, body, opts) {
   const res = await fetch(path, {
     method,
     credentials: 'include',
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: opts?.signal, // optional: lets a screen cancel a superseded request (AbortController)
   });
 
   if (res.status === 401) {
@@ -53,9 +54,18 @@ function qs(params) {
   return '?' + entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
 }
 
+/** POST that answers with a FILE (e.g. a CSV export): resolves { blob, filename, count } — never parsed as JSON. */
+async function download(path, body) {
+  const res = await fetch(path, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+  if (!res.ok) { let m = null; try { m = await res.json(); } catch { /* not json */ } const err = new Error(m?.message || `Request failed: POST ${path} (${res.status})`); err.code = m?.error || 'REQUEST_FAILED'; err.status = res.status; throw err; }
+  const cd = res.headers.get('content-disposition') || ''; const filename = (cd.match(/filename="?([^";]+)"?/) || [])[1] || 'export.csv';
+  return { blob: await res.blob(), filename, count: Number(res.headers.get('x-row-count')) || null };
+}
+
 export const api = {
-  get: (path, params) => request('GET', path + qs(params)),
-  post: (path, body) => request('POST', path, body ?? {}),
+  get: (path, params, opts) => request('GET', path + qs(params), undefined, opts),
+  download,
+  post: (path, body, opts) => request('POST', path, body ?? {}, opts),
   patch: (path, body) => request('PATCH', path, body ?? {}),
   put: (path, body) => request('PUT', path, body ?? {}),
   delete: (path) => request('DELETE', path),

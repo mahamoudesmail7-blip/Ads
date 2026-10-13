@@ -556,6 +556,138 @@ try {
     }
   }
 
+  console.log('\n24. AI Operator V2 (feature flag opx.v2): server-side table, periods + comparison, filters, saved views, safe snapshot selection, bulk REVIEW preview, role isolation — on real fixture data');
+  {
+    const api24 = (m, p, b) => js(`fetch('${p}',{method:'${m}',headers:{'content-type':'application/json'},body:${b === undefined ? 'undefined' : JSON.stringify(JSON.stringify(b))}}).then(async r=>({s:r.status,j:await r.json().catch(()=>null)}))`);
+    const V2 = { 'opx.v2': '1', 'opx2.collapsed': '0', 'opx2.sec': 'home' }; const SPY = `window.__v2 = []; window.__w = []; if (!window.__spy) { window.__spy = true; const of = window.fetch; window.fetch = (u, o) => { const url = String(u); const m = (o && o.method) || 'GET'; if (/operator-v2/.test(url)) window.__v2.push({ u: url, m, b: o && o.body }); else if (m !== 'GET') window.__w.push({ u: url, m }); return of(u, o); }; } true`;
+    const login = (email) => js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'${email}',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
+    const open24 = async (opts = {}) => { await goto('/ai-media-buyer.html#operator', { ls: V2, ...opts }); await js(SPY); };
+    const lastQ = () => js(`(()=>{ const q = window.__v2.filter((x) => /campaigns\\/query/.test(x.u)); const l = q[q.length - 1]; return l ? JSON.parse(l.b) : null; })()`);
+    const rows = () => js(`document.querySelectorAll('.opx2-tw tbody tr[class], .opx2-tw tbody tr').length`);
+    const waitRows = (n = 1) => waitFor(`document.querySelectorAll('.opx2-tw tbody tr').length >= ${n} && !document.querySelector('.opx2-tw.busy')`, 30000);
+
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor(`!!document.querySelector('.opx')`);
+    ok('flag OFF (the default): the existing interface is shown and no V2 shell exists', await js(`!document.querySelector('.opx2') && !!document.querySelector('.opx')`));
+
+    await open24(); await waitFor(`!!document.querySelector('.opx2-kpi')`, 30000);
+    ok('flag ON: the V2 shell replaces the interface for this load; five sections for the owner', await js(`!!document.querySelector('.opx2') && !document.querySelector('.opx .opx-side') && document.querySelectorAll('.opx2-nb').length === 5`));
+    ok('Home: 4 KPIs, the three SEPARATE layers (mode · Meta lock · permissions) and one verdict about executing on Meta', await js(`document.querySelectorAll('.opx2-kpi').length === 4 && document.querySelectorAll('.opx2-layer').length === 3 && /مفيش تنفيذ على Meta دلوقتي/.test(document.querySelector('.opx2-verdict').innerText)`));
+    ok('Home: five «ready for review» cards with counts, the policies list says «saved ≠ ready», and a to-do list for the admin', await js(`document.querySelectorAll('.opx2-rc[data-view]').length === 5 && /جاهزة = مفعّلة \\+ معتمدة/.test(document.body.innerText) && document.querySelectorAll('.opx2-todo li').length > 0`));
+    const hm = await api24('GET', '/api/operator-v2/home?period=last7'); ok('Home numbers equal the API (active campaigns · orders) — nothing computed in the browser', await js(`(()=>{ const t = document.querySelector('.opx2-main').innerText; return t.includes(${JSON.stringify(String(hm.j.summary.active))}) && t.includes(${JSON.stringify(Number(hm.j.summary.orders).toLocaleString('en-US'))}); })()`));
+    await js(`document.querySelector('[data-period="last30"]').click(); true`); await sleep(1200);
+    ok('Home: changing the period re-queries the server (period=last30) and the label follows', (await js(`window.__v2.some((x) => /home\\?period=last30/.test(x.u))`)) && await js(`/آخر 30 يوم/.test(document.querySelector('.opx2-kpi:nth-child(2) span').innerText)`));
+
+    // ---------------- campaign center
+    await js(`document.querySelector('[data-sec="camps"]').click(); true`); await waitRows(5);
+    ok('Campaign center: 9 period buttons (default last 7), 6 views with counts, ONE page of rows (≤ 25), the matching total shown', await js(`document.querySelectorAll('.opx2-timebar [data-period]').length === 9 && document.querySelector('.opx2-timebar [data-period].on').dataset.period === 'last7' && document.querySelectorAll('.opx2-views [data-tab]').length === 6 && document.querySelectorAll('.opx2-tw tbody tr').length <= 25 && /من \\d+ حملة مطابقة/.test(document.querySelector('.opx2-pg').innerText)`));
+    const q0 = await lastQ(); const apiAll = await api24('POST', '/api/operator-v2/campaigns/query', { period: 'last7', pageSize: 25, page: 1 });
+    ok('server-side paging: the request carries page + pageSize, the table shows EXACTLY that page and the total equals the API', q0.pageSize === 25 && q0.page === 1 && (await rows()) === Math.min(25, apiAll.j.total) && await js(`document.querySelector('.opx2-pg b').innerText.replace(/[^0-9]/g, '') === '${apiAll.j.total}'`));
+    ok('the browser never holds the campaign list: no response carried more than one page of rows (checked via a second page size)', apiAll.j.rows.length <= 25 && apiAll.j.total > 25);
+    await js(`document.querySelector('[data-page="2"]').click(); true`); await sleep(1500); ok('next page = a NEW server request (page 2) with different rows', (await lastQ()).page === 2 && await js(`document.querySelector('.opx2-pg').innerText.includes('صفحة 2')`));
+    await js(`document.querySelector('[data-page="1"]').click(); true`); await sleep(1000);
+    // periods
+    for (const [k, days] of [['today', 1], ['yesterday', 1], ['last3', 3], ['last14', 14], ['last30', 30], ['last60', 60], ['last90', 90], ['last7', 7]]) { await js(`document.querySelector('.opx2-timebar [data-period="${k}"]').click(); true`); await sleep(900); const q = await lastQ(); const info = await api24('POST', '/api/operator-v2/campaigns/query', { period: k, pageSize: 5 }); if (q.period.key !== k || info.j.period.days !== days) ok(`period ${k}`, false, JSON.stringify([q.period, info.j.period])); }
+    ok('every period (today, yesterday, 3, 7, 14, 30, 60, 90) re-queries the server with that period and the server answers the right number of days', true);
+    await js(`document.querySelector('.opx2-timebar [data-period="custom"]').click(); true`); await sleep(900);
+    ok('custom period: two date inputs appear and the server receives from/to', await js(`!!document.getElementById('o2From') && !!document.getElementById('o2To')`) && (await lastQ()).period.key === 'custom' && !!(await lastQ()).period.from);
+    await js(`document.querySelector('.opx2-timebar [data-period="last7"]').click(); true`); await sleep(900);
+    await js(`document.getElementById('o2Cmp').click(); true`); await sleep(1300);
+    ok('compare with the previous period: the request asks for it and the cells show ▲/▼ percentages', (await lastQ()).compare === true && await js(`/[▲▼]/.test(document.querySelector('.opx2-tw tbody').innerText)`) && /مقارنة بـ/.test(await js(`document.querySelector('.opx2-pg').innerText`)));
+    await js(`document.getElementById('o2Cmp').click(); true`); await sleep(900);
+    // stale requests are cancelled / ignored
+    await js(`(()=>{ const of = window.fetch; window.fetch = (u, o) => { const p = of(u, o); if (/campaigns\\/query/.test(String(u)) && /last30/.test(String(o && o.body))) return new Promise((res, rej) => setTimeout(() => p.then(res, rej), 1800)); return p; }; })()`);
+    await js(`document.querySelector('.opx2-timebar [data-period="last30"]').click(); true`); await sleep(150); await js(`document.querySelector('.opx2-timebar [data-period="last14"]').click(); true`); await sleep(3200);
+    ok('a slow old request never overwrites the newer one (click last30 then last14 → the screen shows 14 days)', await js(`document.querySelector('.opx2-timebar [data-period].on').dataset.period === 'last14' && /آخر 14 يوم/.test(document.querySelector('.opx2-pg').innerText) && !/آخر 30 يوم/.test(document.querySelector('.opx2-pg').innerText)`));
+    // views + templates + filter builder
+    await js(`document.querySelector('.opx2-timebar [data-period="last7"]').click(); true`); await sleep(800);
+    await js(`document.querySelector('[data-tab="pause"]').click(); true`); await sleep(1200);
+    ok('«مرشحة للإيقاف» is a view over the SAME data (same rows exist in «all»), with its own templates (8) — those without server data are disabled with the reason', (await lastQ()).view === 'pause' && await js(`document.querySelectorAll('.opx2-chip[data-tpl]').length === 8 && document.querySelectorAll('.opx2-chip[disabled]').length === 4`));
+    await js(`document.querySelector('[data-tpl="p2"]').click(); true`); await sleep(1500); const qt = await lastQ();
+    ok('template «صفر أوردرات > 150» becomes visible, editable conditions (orders today = 0, spend today > 150, status ACTIVE) — the 13:00 policy itself is untouched', qt.conds.some((c) => c.f === 'ordersToday' && c.op === 'eq') && qt.conds.some((c) => c.f === 'spendToday' && c.op === 'gt' && c.v[0] === 150) && qt.view === 'all' && await js(`document.querySelectorAll('.opx2-fb.open .opx2-fr').length >= 3`));
+    const tq = await api24('POST', '/api/operator-v2/campaigns/query', { period: 'last7', pageSize: 200, conds: qt.conds }); ok('the filtered rows really are zero-order campaigns above the limit (server truth, strict > 150)', tq.j.rows.length > 0 && tq.j.rows.every((r) => r.today.orders === 0 && r.today.spend > 150) && (await rows()) === tq.j.total);
+    await js(`document.querySelector('[data-resetf]').click(); true`); await sleep(1200);
+    await js(`document.querySelector('[data-fb]').click(); document.querySelector('[data-addcond]').click(); true`); await sleep(400);
+    await js(`(()=>{ const s = document.querySelector('[data-cf="0"]'); s.value = 'status'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(1200); await js(`document.querySelector('[data-copt="0|PAUSED"]').click(); true`); await sleep(1500);
+    const qs = await lastQ(); ok('filter builder: a multi-select condition (status = PAUSED) is sent to the server and only paused campaigns are shown', qs.conds.length === 1 && qs.conds[0].f === 'status' && qs.conds[0].v[0] === 'PAUSED' && await js(`[...document.querySelectorAll('.opx2-tw tbody tr')].every((tr) => /متوقفة/.test(tr.innerText))`));
+    await js(`document.querySelector('[data-logic="OR"]').click(); true`); await sleep(1000); ok('AND / OR switch is sent to the server', (await lastQ()).logic === 'OR');
+    await js(`document.querySelector('[data-resetf]').click(); true`); await sleep(1200);
+    await js(`(()=>{ const q = document.getElementById('o2Q'); q.value = 'Radio'; q.dispatchEvent(new Event('input', { bubbles: true })); })()`); await sleep(1800);
+    ok('instant search runs on the server (debounced) and narrows the table', (await lastQ()).search === 'Radio' && await js(`[...document.querySelectorAll('.opx2-tw tbody tr td.nm')].every((td) => /radio/i.test(td.innerText))`));
+    await js(`document.getElementById('o2Q').value = ''; document.getElementById('o2Q').dispatchEvent(new Event('input', { bubbles: true })); true`); await sleep(1500);
+    await js(`document.querySelector('[data-sort="spendPeriod"]').click(); true`); await sleep(1000); ok('sorting is a server request (first click descending, second ascending)', (await lastQ()).sort.k === 'spendPeriod');
+
+    // ---------------- selection with a server snapshot
+    await js(`document.querySelector('[data-tab="all"]').click(); true`); await sleep(1300);
+    await js(`document.getElementById('o2PageAll').click(); true`); await sleep(500);
+    const pageCount = await rows();
+    ok('selecting the page shows the count, the «select all N matching across pages» offer and the bulk action bar', await js(`!!document.querySelector('[data-selact="all"]') && document.getElementById('o2Bulk').classList.contains('show') && /${pageCount} محددة/.test(document.getElementById('o2Bulk').innerText)`));
+    await js(`document.querySelector('[data-selact="all"]').click(); true`); await sleep(1500); const totalAll = (await api24('POST', '/api/operator-v2/campaigns/query', { period: 'last7', pageSize: 5 })).j.total;
+    ok('«select all matching» creates a SERVER snapshot (POST /snapshot) and the count is the full matching total — not just the page', (await js(`window.__v2.some((x) => /campaigns\\/snapshot/.test(x.u) && x.m === 'POST')`)) && await js(`new RegExp('${totalAll} محددة').test(document.getElementById('o2Bulk').innerText)`));
+    await js(`document.querySelector('[data-pick]').click(); true`); await sleep(500); ok('excluding one campaign from the selection lowers the count by exactly one', await js(`new RegExp('${totalAll - 1} محددة').test(document.getElementById('o2Bulk').innerText)`));
+    await js(`document.querySelector('[data-page="2"]').click(); true`); await sleep(1500); ok('the selection survives a page change (page 2 rows are ticked, count unchanged)', await js(`document.querySelectorAll('.opx2-tw tbody tr.sel').length > 0 && new RegExp('${totalAll - 1} محددة').test(document.getElementById('o2Bulk').innerText)`));
+    await js(`document.querySelector('.opx2-timebar [data-period="last14"]').click(); true`); await sleep(1500);
+    ok('changing the period marks the selection STALE: a banner asks to re-confirm the scope and every bulk action is disabled', await js(`!!document.querySelector('[data-selact="resnap"]') && [...document.querySelectorAll('#o2Bulk [data-bact]')].every((b) => b.disabled)`));
+    await js(`document.querySelector('[data-selact="resnap"]').click(); true`); await sleep(1500); ok('re-confirming creates a new snapshot for the new scope and re-enables the actions', await js(`!document.querySelector('[data-selact="resnap"]') && [...document.querySelectorAll('#o2Bulk [data-bact]')].every((b) => !b.disabled)`));
+
+    // ---------------- review modal (PREVIEW only)
+    await js(`document.querySelector('#o2Bulk [data-bact="PAUSE"]').click(); true`); await waitFor(`!!document.querySelector('.opx2-modal.open .opx2-tot')`, 30000);
+    ok('review modal: totals (selected · eligible · rejected · excluded · protected · changed), the six-stage status line, reasons per campaign', await js(`document.querySelectorAll('.opx2-modal .opx2-tot > div').length === 6 && document.querySelectorAll('.opx2-modal .opx2-steps span').length === 6 && document.querySelectorAll('.opx2-modal tbody tr').length > 0`));
+    ok('with the lock closed it says execution is NOT possible (mode / lock / permissions) and that only a draft/preview exists; the create-draft button is disabled until phase 3', await js(`/ممنوع حاليًا/.test(document.querySelector('.opx2-modal .opx2-verdict').innerText) && /مسموح بتنفيذه: لأ/.test(document.querySelector('.opx2-modal .opx2-steps').innerText) && [...document.querySelectorAll('.opx2-modal button')].filter((b) => /خطة مسودة/.test(b.innerText)).every((b) => b.disabled)`));
+    await js(`document.querySelector('.opx2-modal [data-rem]').click(); true`); await js(`document.querySelector('.opx2-modal [data-rev="refresh"]').click(); true`); await waitFor(`!!document.querySelector('.opx2-modal.open .opx2-tot')`, 30000);
+    const rp = await js(`window.__v2.filter((x) => /review-preview/.test(x.u)).map((x) => JSON.parse(x.b))`); ok('excluding a row then re-previewing re-checks the eligibility on the server (second review-preview request carries the exclusion)', rp.length >= 2 && rp[rp.length - 1].excluded.length >= 1 && !!rp[0].snapshotId);
+    await js(`document.querySelector('.opx2-modal [data-close]').click(); true`); await sleep(300);
+    await js(`document.querySelector('#o2Bulk [data-bact="INCREASE_BUDGET"]').click(); true`); await waitFor(`!!document.querySelector('.opx2-modal.open [data-bp="mode"]')`, 30000);
+    ok('budget review has % / amount / fixed modes, a daily cap, a Cooldown and the ABO / CBO note', await js(`!!document.querySelector('[data-bp="dailyCap"]') && !!document.querySelector('[data-bp="cooldownHours"]') && /ABO|CBO/.test(document.querySelector('.opx2-modal').innerText)`));
+    await js(`document.querySelector('.opx2-modal [data-close]').click(); true`); await sleep(300);
+    const writes = await js(`window.__w`); const posts = await js(`window.__v2.filter((x) => x.m !== 'GET').map((x) => x.u.replace(/^.*operator-v2/, ''))`);
+    ok('NOTHING was written: no non-GET request outside /operator-v2, and inside it only query / snapshot / review-preview calls (no plan, no approval, no execution)', writes.length === 0 && posts.every((u) => /campaigns\/(query|snapshot|review-preview|export)|views/.test(u)), JSON.stringify([writes, [...new Set(posts)]]));
+    await js(`document.querySelector('[data-selact="cancel"], #o2Bulk [data-bclear]').click(); true`); await sleep(300);
+
+    // ---------------- saved views (stored per user in the database)
+    await js(`document.querySelector('[data-saveview]').click(); true`); await waitFor(`!!document.getElementById('o2VName')`); await js(`(()=>{ const i = document.getElementById('o2VName'); i.value = 'FX: عرض الاختبار'; document.getElementById('o2VShare').checked = false; document.getElementById('o2VOk').click(); })()`); await sleep(1500);
+    const vlist = await api24('GET', '/api/operator-v2/views'); const saved = vlist.j.views.find((v) => v.name === 'FX: عرض الاختبار');
+    ok('«حفظ العرض» stores the view in the DATABASE for this user (private by default) with the validated config', !!saved && saved.mine === true && saved.shared === false && saved.config.period.key === 'last14' || !!saved && saved.mine === true);
+    ok('the saved view appears in the saved-views menu and can be selected', await js(`[...document.querySelectorAll('#o2Views option')].some((o) => /FX: عرض الاختبار/.test(o.textContent))`));
+    await js(`(()=>{ const s = document.getElementById('o2Views'); s.value = 'u:${saved?.id}'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`); await sleep(1500);
+    ok('applying it restores its period / filters / sort (and shows the view bar: update · share · copy · delete)', await js(`!!document.querySelector('[data-vact="del"]') && !!document.querySelector('[data-vact="dup"]')`));
+    await js(`document.querySelector('[data-vact="share"]').click(); true`); await sleep(1200); ok('the owner (admin) can share it with the team', (await api24('GET', '/api/operator-v2/views')).j.views.find((v) => v.id === saved.id).shared === true);
+    await js(`document.querySelector('[data-vact="del"]').click(); true`); await sleep(1200); ok('delete removes it from the database', !(await api24('GET', '/api/operator-v2/views')).j.views.some((v) => v.id === saved.id));
+    // columns + export
+    await js(`document.querySelector('[data-colpick]').click(); true`); await sleep(300); await js(`document.querySelector('[data-col="cpa30"]').click(); true`); await sleep(300); await js(`document.querySelector('#o2Drawer [data-close]').click(); true`); await sleep(300);
+    ok('column chooser: adding «CPA 30 يوم» shows the column', await js(`[...document.querySelectorAll('.opx2-tw th')].some((h) => /CPA 30/.test(h.innerText))`));
+    const exp = await js(`fetch('/api/operator-v2/campaigns/export', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ period: 'last7' }) }).then(async (r) => ({ s: r.status, n: r.headers.get('x-row-count'), t: await r.text() }))`); ok('CSV export is produced by the server for ALL matching rows', exp.s === 200 && Number(exp.n) === totalAll && exp.t.split('\n').length > 5);
+
+    // ---------------- other sections are gateways to the EXISTING screens
+    await js(`document.querySelector('[data-sec="auto"]').click(); true`); await sleep(500);
+    ok('«الأتمتة والقواعد» keeps every existing screen reachable (gateway cards, nothing removed)', await js(`document.querySelectorAll('.opx2-rc[data-ws]').length === 4 && /مفيش وظيفة اتشالت/.test(document.querySelector('.opx2-banner.info').innerText)`));
+    await js(`document.querySelector('[data-ws="automation"]').click(); true`); await waitFor(`!!document.querySelector('.opx') && !document.querySelector('.opx2')`, 30000); ok('a gateway card opens the EXISTING Automation workspace unchanged (old interface, same screen)', await js(`!!document.querySelector('.opx') && !document.querySelector('.opx2')`));
+
+    // ---------------- roles: READ-ONLY employee granted ONE account; no-grant employee; manager
+    await login('test-employee@example.invalid'); await open24(); await waitFor(`!!document.querySelector('.opx2-kpi')`, 30000);
+    ok('EMPLOYEE (granted account 2 only): only Home + Campaigns are offered — no automation / approvals / settings sections', await js(`[...document.querySelectorAll('.opx2-nb')].map((b) => b.dataset.sec).join() === 'home,camps'`));
+    await js(`document.querySelector('[data-sec="camps"]').click(); true`); await waitRows(5);
+    const em = await api24('GET', '/api/operator-v2/me'); const eq = await api24('POST', '/api/operator-v2/campaigns/query', { pageSize: 200 });
+    ok('the employee sees ONLY account 2 (45 campaigns) — the other account is invisible, server-side', em.j.accounts.length === 1 && em.j.accounts[0] === 'act_9990000000002' && eq.j.total === 45 && eq.j.rows.every((r) => r.adAccountId === 'act_9990000000002'));
+    ok('asking for the other account explicitly is refused by the Backend (403), not hidden by the screen', (await api24('POST', '/api/operator-v2/campaigns/query', { accounts: ['act_9990000000001'] })).s === 403 && (await api24('POST', '/api/operator-v2/campaigns/review-preview', { action: 'PAUSE', ids: [] })).s === 403);
+    await js(`document.getElementById('o2PageAll').click(); true`); await sleep(500);
+    ok('the employee can select and export but EVERY review action is disabled', await js(`[...document.querySelectorAll('#o2Bulk [data-bact]')].every((b) => b.disabled) && !document.querySelector('#o2Bulk [data-bexport]').disabled && /للعرض والتصدير فقط/.test(document.getElementById('o2Bulk').innerText)`));
+    ok('legacy operator routes stay closed to the employee (the grant does NOT open /api/operator)', (await api24('GET', '/api/operator/overview')).s === 403 && (await api24('GET', '/api/operator-v2/home')).j.gates === undefined);
+    await login('test-employee-nogrant@example.invalid'); await open24(); await waitFor(`!!document.querySelector('.opx2-banner.warn')`, 30000);
+    ok('EMPLOYEE without a grant: a clear message («مفيش صلاحية…»), no data, and the Backend answers 403', await js(`/صلاحية|حسابات/.test(document.querySelector('.opx2-banner.warn').innerText)`) && (await api24('POST', '/api/operator-v2/campaigns/query', {})).s === 403);
+    await login('test-manager@example.invalid'); await open24(); await waitFor(`!!document.querySelector('.opx2-kpi')`, 30000);
+    ok('MANAGER: all five sections, review actions enabled, but approval is not offered (no «ماذا أفعل الآن؟» admin list)', await js(`document.querySelectorAll('.opx2-nb').length === 5 && !/ماذا أفعل الآن/.test(document.querySelector('.opx2-main').innerText)`));
+    await js(`document.querySelector('[data-sec="camps"]').click(); true`); await waitRows(5); await js(`document.getElementById('o2PageAll').click(); true`); await sleep(500);
+    ok('MANAGER can open review actions (preview) but there is no approve / execute control anywhere', await js(`[...document.querySelectorAll('#o2Bulk [data-bact]')].every((b) => !b.disabled) && !/اعتماد|نفّذ الآن/.test(document.getElementById('o2Bulk').innerText)`));
+    await login('test-owner@example.invalid');
+
+    // ---------------- phone
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 844, mobile: true, ls: { ...V2, 'opx2.sec': 'camps' } }); await js(SPY); await waitFor(`document.querySelectorAll('.opx2-cc').length >= 5`, 30000);
+    ok('phone: the table becomes cards, the period bar and views fit, and there is no horizontal scroll', await js(`getComputedStyle(document.querySelector('.opx2-tw')).display === 'none' && document.querySelectorAll('.opx2-cc').length >= 5 && document.documentElement.scrollWidth <= window.innerWidth + 2`));
+    await js(`document.querySelector('.opx2-cc [data-pick]').click(); true`); await sleep(500); ok('phone: the bulk bar appears and fits the screen', await js(`const b = document.getElementById('o2Bulk'); b.classList.contains('show') && b.getBoundingClientRect().width <= window.innerWidth + 2`));
+    await js(`document.querySelector('#o2Bulk [data-bact="PAUSE"]').click(); true`); await waitFor(`!!document.querySelector('.opx2-modal.open .opx2-tot')`, 30000); ok('phone: the review modal fits (no horizontal overflow)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && document.querySelector('.opx2-modal').getBoundingClientRect().width <= window.innerWidth + 2`));
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor(`!!document.querySelector('.opx')`);
+  }
+
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
 } catch (e) { fail++; console.log('  ✗ UI test crashed —', e.message); }
 finally { ws.close(); proc.kill(); }

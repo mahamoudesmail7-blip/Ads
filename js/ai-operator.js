@@ -19,11 +19,17 @@ const TABS = [
 const PRIMARY_TABS = ['daily', 'approvals', 'perms', 'history', 'control']; // everything else lives under «المزيد» so the screen stays calm
 const DECISION_TABS = ['today', 'open', 'pause', 'scale'];
 
-export function stopOperatorPolling() { if (S.poll) { clearInterval(S.poll); S.poll = null; } stopShell(); }
+export function stopOperatorPolling() { if (S.poll) { clearInterval(S.poll); S.poll = null; } stopShell(); if (S.stopV2) { try { S.stopV2(); } catch { /* gone */ } S.stopV2 = null; } }
 
 /** the new workspace UI (default). `?legacy=1` or localStorage opx.legacy=1 keeps the previous single-page UI reachable. */
-export async function renderOperator(panel, { isAdmin = false } = {}) {
+export async function renderOperator(panel, { isAdmin = false, me = null } = {}) {
   let legacyMode = false; try { legacyMode = localStorage.getItem('opx.legacy') === '1' || /[?&]legacy=1/.test(location.search + location.hash); } catch { /* ignore */ }
+  // AI Operator V2 (feature flag `opx.v2` = '1' or ?ui=v2): OFF by default. The existing interface below is untouched and stays reachable («الواجهة الحالية» / any gateway card sets v2Suppressed for this page load).
+  let v2 = false; try { v2 = localStorage.getItem('opx.v2') === '1' || /[?&]ui=v2/.test(location.search + location.hash); } catch { /* ignore */ }
+  if (v2 && !legacyMode && !S.v2Suppressed) {
+    stopOperatorPolling(); const m = await import('./opx2-shell.js'); S.stopV2 = m.stopV2;
+    return m.renderV2(panel, { me, isAdmin, openLegacy: async (ws) => { S.v2Suppressed = true; if (ws) { try { localStorage.setItem('opx.ws', ws); } catch { /* ignore */ } } stopOperatorPolling(); return renderOperator(panel, { isAdmin, me }); } });
+  }
   if (!legacyMode) {
     S.isAdmin = isAdmin; stopOperatorPolling();
     return renderShell(panel, { isAdmin, legacy: { setOv: (ov) => { S.ov = ov; }, showGate: () => showGate(), mountBody: (c, tab) => mountLegacyBody(c, tab, isAdmin), mountFull: (c) => renderLegacy(c, { isAdmin }) } });

@@ -91,7 +91,7 @@ const NAV = [
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, operator: (panel) => renderOperator(panel, { isAdmin: state.isAdmin }), winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, tasks: renderTasks, history: renderHistory, settings: renderSettings };
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, operator: (panel) => renderOperator(panel, { isAdmin: state.isAdmin, me: state.me }), winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, tasks: renderTasks, history: renderHistory, settings: renderSettings };
 const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'مركز القرار الذكي', scale: 'مركز التوسّع', operator: 'AI Operator — التحكم الذكي في الحملات', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
 const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', operator: 'bot', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', tasks: 'doc', history: 'doc', settings: 'gear' };
 const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'decisions', 'scale', 'tasks', 'operator']);

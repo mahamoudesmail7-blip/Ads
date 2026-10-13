@@ -63,5 +63,22 @@ for (const [type, name, cid, st, o, n, reval, verify, err, hAgo] of hist) {
 for (const [pid, url] of [[9001, '/tests/fixtures/product-9001.svg'], [9002, null], [424, '/__missing_424.png']]) await prisma.ambProduct.updateMany({ where: { product_id: pid }, data: { image_url: url } });
 // start every UI run from the same state: no stored product policies
 const cfgRow = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } }); if (cfgRow?.limits_json) { const l = JSON.parse(cfgRow.limits_json); delete l.productPolicies; delete l.pricing; delete l.openCpa; await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: JSON.stringify(l) } }); }
+// ---- AI Operator V2 campaign center: a SECOND ad account (45 campaigns → real pagination) + a manager and a READ-ONLY employee granted ONLY that account (isolation fixtures)
+{
+  const ACC2 = 'act_9990000000002'; await prisma.ambDailyPlanItem.deleteMany({ where: { campaign_id: { startsWith: 'fx2_' } } }); await prisma.ambOperatorDecision.deleteMany({ where: { campaign_id: { startsWith: 'fx2_' } } }); await prisma.metaPerformanceSnapshot.deleteMany({ where: { ad_account_id: ACC2 } }); await prisma.ambSyncRun.deleteMany({ where: { ad_account_id: ACC2 } });
+  const run2 = await prisma.ambSyncRun.create({ data: { status: 'SUCCESS', ad_account_id: ACC2, finished_at: new Date() } }); const rows2 = []; const NAMES = ['Radio', 'Quran-Speaker', 'Camera', 'Mini-Fan', 'Posture', 'Neck-Massager', 'Smart-Bag'];
+  for (let i = 0; i < 45; i++) {
+    const cid = `fx2_${String(i + 1).padStart(2, '0')}`; const status = i % 3 === 0 ? 'PAUSED' : 'ACTIVE'; const cbo = i % 2 === 0; const name = `${NAMES[i % NAMES.length]} _ scale ${1 + (i % 9)}`;
+    for (const d of [0, 1, 2, 4, 8, 13, 25, 45, 70]) { const day = cairoOf(d); const spend = status === 'PAUSED' && d < 3 ? 0 : 60 + ((i * 7 + d * 5) % 240); const purchases = i % 11 === 0 ? null : i % 5 === 0 ? 0 : 1 + ((i + d) % 4); const zeroToday = d === 0 && status === 'ACTIVE' && [1, 4, 10, 13, 22].includes(i);
+      rows2.push({ sync_run_id: run2.id, ad_account_id: ACC2, level: 'campaign', date_start: day, date_stop: day, campaign_id: cid, campaign_name: name, campaign_status: status, campaign_budget: cbo ? 150 + (i % 6) * 50 : null, campaign_budget_type: cbo ? 'DAILY' : null, spend: zeroToday ? 210 : spend, meta_purchases: zeroToday ? 0 : status === 'PAUSED' && d < 3 ? 0 : purchases, meta_revenue: i % 2 === 0 && purchases != null && !zeroToday ? purchases * 420 : null, snapshot_at: i >= 42 ? new Date(Date.now() - 4 * 3_600_000) : new Date() }); }
+    if (!cbo) rows2.push({ sync_run_id: run2.id, ad_account_id: ACC2, level: 'adset', date_start: cairoOf(0), date_stop: cairoOf(0), campaign_id: cid, campaign_name: name, campaign_status: status, adset_id: `${cid}_s1`, adset_name: 's1', adset_status: status, adset_budget: 200, spend: 1, snapshot_at: new Date() });
+  }
+  await prisma.metaPerformanceSnapshot.createMany({ data: rows2 });
+  for (const [cid, action] of [['fx2_05', 'SCALE_UP'], ['fx2_07', 'SCALE_UP'], ['fx2_09', 'SCALE_DOWN'], ['fx2_03', 'PAUSE']]) await prisma.ambOperatorDecision.create({ data: { decision_key: `fx2dec-${cid}-${Date.now()}`, store_id: 'default', ad_account_id: ACC2, campaign_id: cid, campaign_name: cid, action, rule_name: 'AUTO:FIXTURE', mode_at_decision: 'APPROVAL', status: 'PREPARED' } });
+  const { default: bcrypt } = await import('bcryptjs'); const { TEST_OWNER_PASSWORD } = await imp('./testDb.mjs'); const hash = await bcrypt.hash(TEST_OWNER_PASSWORD, 10);
+  for (const [email, name, role, perms] of [['test-manager@example.invalid', 'TEST MANAGER', 'MANAGER', {}], ['test-employee@example.invalid', 'TEST EMPLOYEE (read-only, account 2 only)', 'EMPLOYEE', { 'operator.view': true, 'operator.accounts': [ACC2] }], ['test-employee-nogrant@example.invalid', 'TEST EMPLOYEE (no grant)', 'EMPLOYEE', {}]])
+    await prisma.user.upsert({ where: { email }, update: { password_hash: hash, role, status: 'ACTIVE', permissions: JSON.stringify(perms) }, create: { email, password_hash: hash, name, role, status: 'ACTIVE', permissions: JSON.stringify(perms), is_owner: false } });
+  await prisma.ambOperatorSavedView.deleteMany({ where: { name: { startsWith: 'FX:' } } });
+}
 console.log('UI fixtures created for', date, '(test database only)');
 await prisma.$disconnect();

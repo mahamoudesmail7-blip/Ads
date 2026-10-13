@@ -3449,3 +3449,41 @@ model AmbDailyPlanItem {
   @@index([campaign_id])
   @@map("amb_daily_plan_items")
 }
+
+// =====================================================================================================================
+// AI Operator V2 — campaign center support (additive: two NEW tables, no existing table touched).
+// =====================================================================================================================
+/// Per-user saved views of the campaign center (filters / period / columns / sort). A view is a PRESENTATION preference only: it never grants access, never changes a policy, never starts an action.
+model AmbOperatorSavedView {
+  id              Int      @id @default(autoincrement())
+  owner_id        Int
+  scope           String   @default("CAMPAIGNS")
+  name            String
+  config_json     String // {view, period, compare, logic, conds, search, sort, columns, pageSize}
+  shared          Boolean  @default(false) // visible to other users who have access to the campaign center (never widens THEIR data scope)
+  shared_min_role String? // EMPLOYEE | MANAGER | ADMIN — the lowest role that can see a shared view (null = everyone with access)
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  @@unique([owner_id, scope, name])
+  @@index([shared, scope])
+  @@map("amb_operator_saved_views")
+}
+
+/// A frozen result set («select all N matching across pages»): the exact ids a user selected under an exact query. Bulk actions re-validate eligibility against LIVE data; the snapshot only fixes WHICH campaigns were meant.
+model AmbOperatorSelectionSnapshot {
+  id           String    @id
+  owner_id     Int
+  scope        String    @default("CAMPAIGNS")
+  query_json   String
+  ids_json     String
+  total        Int
+  ids_hash     String
+  data_as_of   DateTime?
+  created_at   DateTime  @default(now())
+  expires_at   DateTime
+
+  @@index([owner_id, created_at])
+  @@index([expires_at])
+  @@map("amb_operator_selection_snapshots")
+}
