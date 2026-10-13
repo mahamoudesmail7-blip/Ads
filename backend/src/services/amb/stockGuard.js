@@ -45,15 +45,26 @@ export const SNAPSHOT_MAX_AGE_DAYS = 3;
 export async function resolveStockInputs(productId, { now = new Date() } = {}) {
   const { prisma } = await import('../../prisma.js');
   const product = await prisma.product.findUnique({ where: { id: Number(productId) }, select: { current_stock: true, minimum_stock: true } });
-  const minimum = product?.minimum_stock ?? null;
-  // Inventory API (webhook / reconciliation): the OFFICIAL source only for a product whose owner approved it (productOverrides[pid].inventory.primary).
-  // Until then API snapshots are stored and exposed as `apiShadow` for comparison and the manual/catalogue stock stays authoritative.
   const api = await import('./inventoryApi.js');
   const latest = await api.latestApiSnapshot(productId);
+  let cfg = null, staleHours = null, lastReconcile = null;
+  if (latest) { cfg = await (await import('./operatorStore.js')).getOperatorConfig(); staleHours = await api.getStaleHours(); lastReconcile = await api.lastReconcileResult(); }
+  const apiPrimary = !!(latest && api.primaryOf(cfg, productId)?.primary);
+  let snap = null;
+  if (!apiPrimary && product?.current_stock == null) snap = await prisma.inventorySnapshot.findFirst({ where: { product_id: Number(productId), OR: [{ source: null }, { NOT: { source: { startsWith: 'INVENTORY_API' } } }] }, orderBy: { date: 'desc' }, select: { date: true, closing_stock: true, source: true } });
+  return decideStockInputs({ productId, product, latest, cfg, staleHours, lastReconcile, snap, now, api });
+}
+
+/**
+ * PURE decision of the stock source (the body of resolveStockInputs, moved here unchanged so the single-product path and the BATCH loader of the campaign center can never disagree).
+ * Inputs are already loaded: product {current_stock, minimum_stock}, latest = latest INVENTORY_API snapshot ({row, state}) or null, cfg = operator config (only needed with `latest`),
+ * staleHours / lastReconcile (only with `latest`), snap = latest NON-API InventorySnapshot ({date, closing_stock, source}) or null, api = the inventoryApi module (apiStateOf / primaryOf).
+ */
+export function decideStockInputs({ productId, product, latest, cfg, staleHours, lastReconcile, snap, now = new Date(), api }) {
+  const minimum = product?.minimum_stock ?? null;
   let apiShadow = null;
   if (latest) {
-    const cfg = await (await import('./operatorStore.js')).getOperatorConfig();
-    const s = api.apiStateOf({ snapshot: latest, now, staleHours: await api.getStaleHours(), lastReconcile: await api.lastReconcileResult() });
+    const s = api.apiStateOf({ snapshot: latest, now, staleHours, lastReconcile });
     const t = latest.state?.totals || {};
     const available = t.available ?? latest.row.closing_stock;
     const view = { apiState: s.state, lastSyncAt: s.lastSyncAt, onHand: t.current ?? null, reserved: t.reserved ?? null, available };
@@ -67,7 +78,6 @@ export async function resolveStockInputs(productId, { now = new Date() } = {}) {
   }
   const shadow = apiShadow ? { apiShadow } : {};
   if (product?.current_stock != null) return { current: product.current_stock, minimum, source: 'CATALOG', asOf: null, stale: false, staleValue: null, ...shadow };
-  const snap = await prisma.inventorySnapshot.findFirst({ where: { product_id: Number(productId), OR: [{ source: null }, { NOT: { source: { startsWith: 'INVENTORY_API' } } }] }, orderBy: { date: 'desc' }, select: { date: true, closing_stock: true, source: true } });
   if (snap) {
     const ageDays = (now.getTime() - new Date(`${snap.date}T00:00:00Z`).getTime()) / 86_400_000;
     const stale = !(ageDays <= SNAPSHOT_MAX_AGE_DAYS);

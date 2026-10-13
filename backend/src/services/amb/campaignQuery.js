@@ -4,14 +4,15 @@
 //   • numbers are honest: no purchases → CPA is null (never 0); no revenue → ROAS null; a campaign whose data is old is flagged (dataFresh=false), never shown as if it were fresh
 //   • the views are filters over the SAME rows, driven by what the existing engines already decided (open decisions, today's plan items, the saved zero-spend limit) — nothing here invents a new rule
 import { prisma } from '../../prisma.js';
+import { logger } from '../../logger.js';
 import { getAmbSettings } from './settings.js';
 import { getSyncStatus } from './snapshotSync.js';
-import { entityWindowMetrics } from './metricsEngine.js';
-import { listCampaignsFromSnapshots, buildCampaignProductIndex } from './operatorContext.js';
+import { entityWindowMetricsMulti } from './metricsEngine.js';
+import { buildCampaignProductIndex } from './operatorContext.js';
 import { loadCampaignTags, listExceptions, exceptionsFor } from './operatorStore.js';
 import { getBudgetPolicy } from './budgetOptimizer.js';
 import { activePolicyFromLimits, applyToBudgetPolicy, mergeEffective } from './productPolicy.js';
-import { stockGuardForProduct } from './stockGuard.js';
+import { loadProductFactsBatch } from './productFactsBatch.js';
 import { zonesFor } from './campaignBoard.js';
 import { cairoDate, addDays } from './dailyPlanTime.js';
 import { getZeroSpendPolicy, classifyWinner } from './zeroSpendCheck.js';
@@ -87,8 +88,11 @@ function condOk(row, c) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // the rows
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-const CACHE = new Map(); const CACHE_MS = 20_000;
-export const __clearQueryCache = () => CACHE.clear();
+// result cache: 45 s (the Meta snapshots only change every ~15 min; decisions / plans are re-read on every build). A build with PROVISIONAL numbers (Easy Orders catalogue not loaded yet) lives only 5 s.
+// Anything that CHANGES what the list shows (creating a draft) clears it explicitly — see invalidateQueryCache(); previews, snapshots, exports and plan creation always bypass it (noCache).
+const CACHE = new Map(); const CACHE_MS = 45_000; const CACHE_PROVISIONAL_MS = 5_000; const INFLIGHT = new Map();
+export const __clearQueryCache = () => { CACHE.clear(); INFLIGHT.clear(); };
+export const invalidateQueryCache = __clearQueryCache;
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : Math.round(((a - b) / b) * 100));
 const slim = (m) => { if (!m) return { spend: 0, orders: null, cpa: null, revenue: null, roas: null }; const spend = round(m.spend, 2) ?? 0; const orders = m.purchases == null ? null : Number(m.purchases); const revenue = m.revenue == null ? null : round(m.revenue, 2); return { spend, orders, cpa: cpaOf(spend, orders), revenue, roas: revenue != null && spend > 0 ? round(revenue / spend, 2) : null }; };
 /** Target / Reduce / Hard Stop CPA from the SAME policy the budget optimizer acts on: the product's ACTIVE policy layered on the global budget policy (or the global one alone). Missing → null, never a default. */
@@ -126,19 +130,31 @@ export function profitOf(orders, spend, info) {
 }
 const hist = (m) => ({ orders: m ? Number(m.purchases ?? 0) : 0, spend: m ? round(m.spend, 2) ?? 0 : 0, cpa: m && Number(m.purchases) > 0 ? Math.round(Number(m.spend) / Number(m.purchases)) : null });
 
+/**
+ * Latest known row per campaign (status + budget) of the last `days` days — the SAME result as operatorContext.listCampaignsFromSnapshots, but the «latest row per campaign» is picked INSIDE the database
+ * (DISTINCT ON) instead of pulling every snapshot row of the window into Node and de-duplicating there (that read ≈ 10 s of rows per account on production).
+ */
+export async function listCampaignsLatest({ adAccountId, days = 90, now = new Date() }) {
+  const since = new Date(now.getTime() - days * 86_400_000);
+  const rows = await prisma.$queryRawUnsafe("select distinct on (campaign_id) campaign_id, campaign_name, campaign_status, campaign_budget, campaign_budget_type, snapshot_at from meta_performance_snapshots where level = 'campaign' and ad_account_id = $1 and snapshot_at >= $2 and campaign_id is not null and campaign_status is not null order by campaign_id asc, snapshot_at desc", adAccountId, since);
+  const firsts = await prisma.$queryRawUnsafe("select campaign_id, min(date_start) as first_day from meta_performance_snapshots where level = 'campaign' and ad_account_id = $1 and snapshot_at >= $2 and campaign_id is not null group by campaign_id", adAccountId, since);
+  const firstSeen = new Map(firsts.map((f) => [f.campaign_id, f.first_day ? new Date(`${f.first_day}T00:00:00Z`) : null]));
+  return rows.map((r) => ({ id: r.campaign_id, name: r.campaign_name, status: r.campaign_status || 'UNKNOWN', budget: r.campaign_budget == null ? null : Number(r.campaign_budget), budgetType: r.campaign_budget_type, lastSeenAt: r.snapshot_at, firstSeenAt: firstSeen.get(r.campaign_id) || null }));
+}
+
 async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
-  const campaigns = (await listCampaignsFromSnapshots({ adAccountId, days: 90 })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status));
+  const campaigns = (await listCampaignsLatest({ adAccountId, days: 90, now })).filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status));
   if (!campaigns.length) return [];
   const ids = campaigns.map((c) => c.id); const ranges = {};
   const addR = (k, from, to) => { ranges[k] = { from, to }; };
   addR('today', today, today); addR('period', period.from, period.to); if (compare) addR('prev', period.prev.from, period.prev.to);
   for (const [k, n] of [['d3', 3], ['d7', 7], ['d14', 14], ['d30', 30], ['d60', 60]]) addR(k, addDays(today, -(n - 1)), today);
-  const mem = new Map(); const maps = {};
-  for (const [k, r] of Object.entries(ranges)) { const key = `${r.from}|${r.to}`; if (!mem.has(key)) mem.set(key, await entityWindowMetrics({ level: 'campaign', from: r.from, to: r.to, adAccountId }, { force: !!ctx.force })); maps[k] = mem.get(key); }
-  const prodIndex = await buildCampaignProductIndex({ adAccountId }); const tags = await loadCampaignTags(adAccountId); const exceptions = await listExceptions({ now });
+  const maps = await entityWindowMetricsMulti({ level: 'campaign', adAccountId, ranges }, { force: !!ctx.force }); // ONE read of the widest window, every window cut out of it (same pure aggregation as before)
+  const prodIndex = await buildCampaignProductIndex({ adAccountId }); const tags = await loadCampaignTags(adAccountId); const exceptions = ctx.exceptions;
   const ambIds = [...new Set([...prodIndex.values()].map((v) => v.ambProductId).filter(Boolean))];
   const ambs = ambIds.length ? await prisma.$queryRawUnsafe('select ap.id as amb_id, p.id as product_id, p.product_name, p.store_id from amb_products ap join products p on p.id = ap.product_id where ap.id = any($1::int[])', ambIds) : [];
   const ambBy = new Map(ambs.map((a) => [a.amb_id, a]));
+  await ctx.prime(ambs.map((a) => a.product_id)); // ONE batched read of every product's economics + stock for this account
   const adsetRows = await prisma.$queryRawUnsafe("select campaign_id, sum(adset_budget) filter (where adset_status = 'ACTIVE') as b, count(distinct adset_id)::int as n from (select distinct on (adset_id) campaign_id, adset_id, adset_budget, adset_status from meta_performance_snapshots where level = 'adset' and campaign_id = any($1::text[]) order by adset_id, snapshot_at desc) t group by campaign_id", ids);
   const adsetBy = new Map(adsetRows.map((r) => [r.campaign_id, { budget: Number(r.b || 0) || null, n: r.n }]));
   const dailyRows = await prisma.$queryRawUnsafe("select distinct on (campaign_id, date_start) campaign_id, date_start, spend, meta_purchases from meta_performance_snapshots where level = 'campaign' and ad_account_id = $1 and campaign_id = any($2::text[]) and date_start >= $3 order by campaign_id, date_start, snapshot_at desc", adAccountId, ids, addDays(today, -89));
@@ -149,7 +165,7 @@ async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
   const decBy = new Map(); for (const d of decs) if (!decBy.has(d.campaign_id)) decBy.set(d.campaign_id, d);
   const planItems = await prisma.ambDailyPlanItem.findMany({ where: { campaign_id: { in: ids }, plan: { plan_date: today, status: { in: ['PREPARED', 'APPROVED', 'RUNNING'] } } }, select: { campaign_id: true, eligibility: true, selected: true, status: true, plan: { select: { id: true, type: true, version: true } } } });
   const planBy = new Map(); for (const it of planItems) { const cur = planBy.get(it.campaign_id); if (!cur || it.plan.version > cur.plan.version) planBy.set(it.campaign_id, it); }
-  const raw = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' }, select: { limits_json: true } }).catch(() => null); const rawLimits = j(raw?.limits_json, {}) || {};
+  const rawLimits = ctx.rawLimits;
   const intervalMs = (Number(ctx.settings.ambSyncIntervalMinutes) || 15) * 60_000; const freshMs = intervalMs * 4;
   const limitCache = ctx.limitCache; const zs = ctx.zeroSpend;
   const out = [];
@@ -201,22 +217,36 @@ export function viewOf(row, zeroLimit, zeroCmp = 'GT') {
 
 async function loadContext({ now }) {
   const settings = await getAmbSettings(); const zeroSpend = await getZeroSpendPolicy(); const globalBudget = await getBudgetPolicy().catch(() => null); const limitCache = new Map();
-  const infoCache = new Map(); const productInfo = async (productId) => { if (infoCache.has(productId)) return infoCache.get(productId); let v = null; try { const RD = await import('./operatorReadiness.js'); const p = await RD.getProductProfile({ productId }).catch(() => null); v = p ? { profitLimit: p.economics.maxCpa.value ?? p.economics.targetCpa.value ?? null, unitMargin: p.economics.unitMargin ?? null, complete: !!p.economics.complete } : null; } catch { v = null; } infoCache.set(productId, v); return v; };
+  const exceptions = await listExceptions({ now }); const rawCfg = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' }, select: { limits_json: true } }).catch(() => null); const rawLimits = j(rawCfg?.limits_json, {}) || {}; // read ONCE per build, not once per ad account
+  // per-product facts (profit limit, margin, stock) are loaded IN BULK per account (productFactsBatch) — never one product at a time
+  const factsBy = new Map(); const pendingStores = new Set();
+  const prime = async (ids) => { const need = [...new Set(ids.filter((i) => i != null && !factsBy.has(i)))]; if (!need.length) return; const r = await loadProductFactsBatch(need, { now }); for (const [k, v] of r.facts) factsBy.set(k, v); for (const st of r.pendingStores) pendingStores.add(st); };
+  const productInfo = async (productId) => { await prime([productId]); return factsBy.get(productId)?.info ?? null; };
   const profitLimit = async (productId) => (await productInfo(productId))?.profitLimit ?? null;
-  const stockCache = new Map(); const stockOf = async (productId, storeId) => { if (stockCache.has(productId)) return stockCache.get(productId); let v = null; try { const g = await stockGuardForProduct({ productId, storeId }); v = g ? { status: g.status, current: g.currentStock ?? null, minimum: g.minimumStock ?? null } : null; } catch { v = null; } stockCache.set(productId, v); return v; };
-  return { settings, zeroSpend, globalBudget, limitCache, profitLimit, productInfo, stockOf };
+  const stockOf = async (productId) => { await prime([productId]); return factsBy.get(productId)?.stock ?? { status: 'STOCK_UNKNOWN', current: null, minimum: null }; };
+  return { settings, zeroSpend, globalBudget, limitCache, exceptions, rawLimits, profitLimit, productInfo, stockOf, prime, pendingStores, factsCount: () => factsBy.size };
 }
 
 /** every row the user may see, for the period (cached ~20 s per account-set + period) */
 export async function buildRows({ accounts, stores = null, period, compare = false, basis = 'CALENDAR', operatingDays = 7, now = new Date(), noCache = false }) {
   const today = cairoDate(now); const key = JSON.stringify([[...accounts].sort(), stores ? [...stores].sort() : null, period.from, period.to, !!compare, basis, operatingDays]);
-  const hit = CACHE.get(key); if (!noCache && hit && now.getTime() - hit.at < CACHE_MS) return hit.value;
-  const ctx = await loadContext({ now }); ctx.force = !!noCache; ctx.basis = basis; ctx.operatingDays = operatingDays; const rows = []; // noCache = a fresh read of the metrics too (selection snapshots, review previews and exports must see the CURRENT numbers)
-  for (const a of accounts) rows.push(...await accountRows({ adAccountId: a, today, period, compare, now, ctx }));
+  const hit = CACHE.get(key); if (!noCache && hit && now.getTime() - hit.at < (hit.value.catalog?.provisional ? CACHE_PROVISIONAL_MS : CACHE_MS)) return hit.value;
+  if (!noCache && INFLIGHT.has(key)) return INFLIGHT.get(key); // concurrent identical requests share ONE build (no stampede on the database)
+  const run = buildRowsUncached({ key, accounts, stores, period, compare, basis, operatingDays, now, noCache, today });
+  if (!noCache) { INFLIGHT.set(key, run); run.finally(() => { if (INFLIGHT.get(key) === run) INFLIGHT.delete(key); }).catch(() => {}); }
+  return run;
+}
+async function buildRowsUncached({ key, accounts, stores, period, compare, basis, operatingDays, now, noCache, today }) {
+  const t0 = Date.now(); const ctx = await loadContext({ now }); ctx.force = !!noCache; ctx.basis = basis; ctx.operatingDays = operatingDays; const rows = []; // noCache = a fresh read of the metrics too (selection snapshots, review previews and exports must see the CURRENT numbers)
+  // the ad accounts are independent: build them side by side (at most 4 at a time — the connection pool is never flooded) and keep the original account order
+  const parts = new Array(accounts.length); let next = 0; const worker = async () => { for (;;) { const i = next++; if (i >= accounts.length) return; parts[i] = await accountRows({ adAccountId: accounts[i], today, period, compare, now, ctx }); } };
+  await Promise.all(Array.from({ length: Math.min(4, accounts.length) }, worker)); for (const p of parts) rows.push(...p);
   const scoped = stores && stores.length ? rows.filter((r) => r.storeId != null && stores.includes(String(r.storeId))) : rows; // a store-restricted user never sees a campaign of another store — nor an unlinked one (its store is unknown)
   const sync = await getSyncStatus().catch(() => null);
-  const value = { rows: scoped, today, sync: sync ? { lastSuccessAt: sync.lastSuccessAt || null, intervalMinutes: sync.intervalMinutes || null } : null, zero: { limit: ctx.zeroSpend.limit, comparison: ctx.zeroSpend.comparison, version: ctx.zeroSpend.version, approved: !!ctx.zeroSpend.approved }, builtAt: now.toISOString() };
-  CACHE.set(key, { at: now.getTime(), value }); return value;
+  const value = { rows: scoped, today, sync: sync ? { lastSuccessAt: sync.lastSuccessAt || null, intervalMinutes: sync.intervalMinutes || null } : null, zero: { limit: ctx.zeroSpend.limit, comparison: ctx.zeroSpend.comparison, version: ctx.zeroSpend.version, approved: !!ctx.zeroSpend.approved }, builtAt: now.toISOString(), catalog: { pendingStores: [...ctx.pendingStores], provisional: ctx.pendingStores.size > 0 } };
+  CACHE.set(key, { at: now.getTime(), value });
+  logger.info('[campaignQuery] build', { ms: Date.now() - t0, accounts: accounts.length, campaigns: rows.length, products: ctx.factsCount?.() ?? null, provisional: value.catalog.provisional, noCache: !!noCache }); // timing evidence for the V2 list (one line per uncached build)
+  return value;
 }
 
 /** validates the request body into a normalised query */
@@ -258,7 +288,7 @@ export async function queryCampaigns({ access, body, now = new Date(), noCache =
     period: { key: q.period.key, label: q.period.label, from: q.period.from, to: q.period.to, days: q.period.days, prev: q.compare ? q.period.prev : null }, basis: q.basis, operatingDays: q.operatingDays, compare: q.compare, view: q.view, logic: q.logic, conds: q.conds, search: q.search, sort: q.sort,
     page, pageSize: q.pageSize, pages, total, rows: matched.slice((page - 1) * q.pageSize, page * q.pageSize), viewCounts, viewExposure, summary,
     facets: { accounts: q.accounts, stores: uniq((r) => (r.storeId ? { id: r.storeId, name: r.storeId } : null)), products: uniq((r) => (r.productId != null ? { id: String(r.productId), name: r.productName } : null)) },
-    freshness: { generatedAt: built.builtAt, lastSyncAt: built.sync?.lastSuccessAt || null, oldestCampaignSeenAt: lastSeen, staleCampaigns: stale },
+    catalog: built.catalog || { pendingStores: [], provisional: false }, freshness: { generatedAt: built.builtAt, lastSyncAt: built.sync?.lastSuccessAt || null, oldestCampaignSeenAt: lastSeen, staleCampaigns: stale },
     attribution: { orders: 'META_PURCHASES', note: 'الأوردرات = مشتريات Meta (إسناد الإعلانات). الإيراد وROAS من Meta ومش بيانات ربح فعلي.' }, zeroSpendLimit: built.zero,
   };
 }

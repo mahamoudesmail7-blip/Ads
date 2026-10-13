@@ -54,7 +54,7 @@ export function resolveSellingPrice({ product, ambProduct, storeCatalog, ownerCo
 // ---- cached store catalogue reader (the app's own existing reader, 1h cache, read-only; failure => null, never throws)
 const TTL_MS = 60 * 60_000;
 const cache = new Map(); // storeId -> {at, index, products}
-export function clearStoreCatalogCache() { cache.clear(); }
+export function clearStoreCatalogCache() { cache.clear(); failedAt.clear(); }
 const inflight = new Map(); // storeId -> Promise — concurrent callers (several screens at once) share ONE catalogue fetch
 async function loadEntry(storeId, opts = {}) {
   if (!storeId) return null;
@@ -73,6 +73,19 @@ async function loadEntryUncached(storeId, { fetcher = getAllEasyOrdersProductsSt
     cache.set(storeId, e);
     return e;
   } catch { return null; }
+}
+/**
+ * NON-BLOCKING reader for screens that must answer fast (the V2 campaign list): the cached catalogue index (even an expired one) is returned at once and a background refresh is started when it is
+ * missing or expired — the caller NEVER waits for the external Easy Orders fetch. {index, ready}: ready=false until the first copy for that store exists (index is then null = «not cross-checked yet»).
+ */
+const failedAt = new Map(); // storeId -> ms: the last background fetch that THREW (no copy at all) — not retried for 5 minutes, and the store counts as «not cross-checked» instead of «still loading»
+export function peekStoreCatalog(storeId, opts = {}) {
+  if (!storeId) return { index: null, ready: true };
+  const hit = cache.get(storeId); const now = opts.now ?? Date.now();
+  if (hit && now - hit.at < TTL_MS) return { index: hit.index || null, ready: true };
+  const failed = failedAt.get(storeId); if (!hit && failed != null && now - failed < 5 * 60_000) return { index: null, ready: true, failed: true };
+  loadEntry(storeId, opts).then((e) => { if (e) failedAt.delete(storeId); else failedAt.set(storeId, Date.now()); }).catch(() => failedAt.set(storeId, Date.now()));
+  return { index: hit?.index || null, ready: !!hit };
 }
 export async function loadStoreCatalogIndex(storeId, opts) { return (await loadEntry(storeId, opts))?.index || null; }
 /** Raw complete catalogue of a store ({id,name,slug,price,...}) or null. */

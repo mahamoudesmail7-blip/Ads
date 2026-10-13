@@ -254,6 +254,30 @@ async function _entityWindowMetricsUncached({ level, from, to, adAccountId }, { 
 }
 
 /**
+ * SEVERAL windows of the same level / account from ONE read: the rows of the widest window are loaded once (latest snapshot per entity per day) and every requested window is cut out of them with the
+ * SAME pure functions entityWindowMetrics uses (latestPerDayPerEntity → aggregateRows → data sufficiency). «Latest snapshot per entity per day» does not depend on the window, so each window's result is
+ * identical to a separate entityWindowMetrics call — it just costs one query instead of one per window.
+ * ranges: { name: {from, to} } → returns { name: Map(entityId → metrics) }.
+ */
+export async function entityWindowMetricsMulti({ level, adAccountId, ranges }, opts = {}) {
+  const { minSpend = 150, minPurchases = 5, force = false } = opts; const names = Object.keys(ranges); if (!names.length) return {};
+  const from = names.map((k) => ranges[k].from).reduce((a, b) => (a < b ? a : b)); const to = names.map((k) => ranges[k].to).reduce((a, b) => (a > b ? a : b));
+  const key = `entityWindowMetricsMulti:${level}:${from}:${to}:${adAccountId}`;
+  const rows = await cachedMetaFetch(key, () => loadSnapshots({ level, from, to, adAccountId }), { ttlMs: ENTITY_METRICS_TTL_MS, force });
+  const out = {};
+  for (const k of names) {
+    const r = ranges[k]; const inRange = rows.filter((x) => x.date_start >= r.from && x.date_start <= r.to); const byEntity = latestPerDayPerEntity(inRange, level); const m = new Map();
+    for (const [id, dayMap] of byEntity.entries()) {
+      const agg = aggregateRows([...dayMap.values()]); if (!agg) continue;
+      const strong = agg.spend >= minSpend * 2 && (agg.purchases || 0) >= minPurchases; const moderate = agg.spend >= minSpend && (agg.purchases || 0) >= Math.max(1, Math.round(minPurchases / 2));
+      m.set(id, { entityId: id, ...agg, dataSufficiency: strong ? 'STRONG' : moderate ? 'MODERATE' : 'WEAK' });
+    }
+    out[k] = m;
+  }
+  return out;
+}
+
+/**
  * Intra-day trend for ONE entity: diff the most recent snapshot of today's
  * cumulative row against the snapshot closest to `hoursAgo` earlier.
  * Returns null when there aren't at least two snapshots spanning the window.

@@ -9,6 +9,7 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { reviewPreview, previewHashOf, CREATABLE } from './campaignReview.js';
+import { invalidateQueryCache } from './campaignQuery.js';
 import { preparePlan, cancelPlan } from './dailyPlans.js';
 import { cairoDate, isTestClock } from './dailyPlanTime.js';
 import { getOperatorConfig } from './operatorStore.js';
@@ -38,7 +39,10 @@ async function conflictsFor({ ids, action, today, now, planKeyPrefix }) {
   return out;
 }
 
-export async function createBulkPlan({ user, access, body, now = new Date(), deps = {} }) {
+export async function createBulkPlan(args) {
+  try { return await createBulkPlanInner(args); } finally { invalidateQueryCache(); } // whatever happened, the list must re-read decisions / plans / approvals on its next request (never show a stale «pending decision»)
+}
+async function createBulkPlanInner({ user, access, body, now = new Date(), deps = {} }) {
   const b = body || {}; const action = String(b.action || ''); if (!CREATABLE.includes(action)) throw bad('الإنشاء متاح لـ: فتح · إيقاف · زيادة ميزانية · تقليل ميزانية. (الاستثناءات والأرقام المخصصة معاينة فقط.)', 'ACTION_NOT_CREATABLE');
   // 1) re-validate the snapshot and every campaign on LIVE data — exactly the verdicts the user saw
   const prev = await reviewPreview({ user, access, body: { ...b, action }, now });
