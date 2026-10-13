@@ -74,3 +74,11 @@
   .opx2[data-collapsed="1"] .opx2-nb .tx, .opx2[data-collapsed="1"] .opx2-sf .tx { display: inline; }
 }
 @media (max-width: 520px) { .opx2-g4 { grid-template-columns: 1fr 1fr; } .opx2-kpi b { font-size: 21px; } .opx2-tot { grid-template-columns: 1fr 1fr; } .opx2 h1 { font-size: 21px; } .opx2-seg button { padding: 5px 8px; font-size: 13px; } .opx2-bulk { width: 96vw; flex-wrap: wrap; justify-content: center; padding: 8px 10px; max-height: 40vh; overflow-y: auto; } .opx2-bulk .opx2-btn { padding: 5px 9px; font-size: 12.5px; } .opx2-bulk .cnt { flex: 0 0 100%; text-align: center; margin: 0; } }
+
+/* phase 3: operating-days basis, nomination reasons, draft result, help center, access screen */
+.opx2-g3 { grid-template-columns: repeat(3, 1fr); } .opx2-basis { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 6px 2px; } .opx2-basis select { padding: 3px 6px; }
+.opx2-nom { display: flex; flex-direction: column; gap: 2px; min-width: 240px; white-space: normal; font-size: 12.5px; } .opx2-nom span { color: var(--mut); line-height: 1.45; } .opx2-nom span:first-child { color: inherit; font-weight: 600; }
+.opx2-steps span.done { background: var(--okbg); color: var(--ok); } .opx2 td .up { color: var(--ok); } .opx2 td .dn { color: var(--bad); }
+.opx2-help details { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 6px 0; background: var(--card, var(--bg)); } .opx2-help summary { cursor: pointer; font-weight: 700; } .opx2-help details[open] summary { margin-bottom: 8px; } .opx2-help ol, .opx2-help ul { margin: 6px 18px; line-height: 1.8; }
+.opx2-acc .opx2-fr { align-items: center; } .opx2-stop { border: 2px solid var(--bad); background: var(--badbg); border-radius: 12px; padding: 12px 16px; margin: 10px 0; }
+@media (max-width: 760px) { .opx2-g3 { grid-template-columns: 1fr; } }

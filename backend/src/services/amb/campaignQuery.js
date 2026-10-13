@@ -54,11 +54,12 @@ export const FIELDS = {
   lastBudgetChangeDays: { t: NUM, label: 'أيام منذ آخر تعديل ميزانية', get: (r) => r.lastBudgetChange?.daysAgo ?? null }, pauseReason: { t: TEXT, label: 'سبب آخر إيقاف', get: (r) => r.lastPause?.reason ?? null },
   winner: { t: MULTI, label: 'تصنيف Winner', get: (r) => r.winner.status },
   profit: { t: NUM, label: 'الربح التقديري', get: (r) => r.profit?.value ?? null }, automation: { t: MULTI, label: 'حالة الأتمتة', get: (r) => r.automation },
+  cpaTrend: { t: NUM, label: 'تدهور CPA % (آخر 3 أيام مقابل 14 يوم)', get: (r) => (r.cpa.d3 != null && r.cpa.d14 > 0 ? Math.round(((r.cpa.d3 - r.cpa.d14) / r.cpa.d14) * 100) : null) },
   target: { t: NUM, label: 'Target CPA (حد التوسع)', get: (r) => r.limits?.target ?? null }, reduce: { t: NUM, label: 'Reduce CPA', get: (r) => r.limits?.reduce ?? null }, hardStop: { t: NUM, label: 'Hard Stop CPA', get: (r) => r.limits?.hardStop ?? null },
   cpaVsLimits: { t: MULTI, label: 'CPA مقابل حدود المنتج', get: (r) => r.cpaVsLimits }, stock: { t: MULTI, label: 'حالة المخزون', get: (r) => r.stock?.status ?? null }, losingDays: { t: NUM, label: 'أيام خسارة متتالية', get: (r) => r.losingDays }, lastRunDays: { t: NUM, label: 'مدة آخر فترة تشغيل (أيام)', get: (r) => r.lastRun?.days ?? null }, approval: { t: MULTI, label: 'حالة الموافقة', get: (r) => r.approval.code }, eligibility: { t: MULTI, label: 'الأهلية (من خطة اليوم)', get: (r) => r.eligibility },
   linked: { t: MULTI, label: 'الربط بالمنتج', get: (r) => (r.linked ? 'LINKED' : 'UNLINKED') }, guard: { t: MULTI, label: 'محمية / مستثناة', get: (r) => (r.protectedC ? 'PROTECTED' : r.excluded ? 'EXCLUDED' : 'NORMAL') }, dataFresh: { t: MULTI, label: 'حداثة البيانات', get: (r) => (r.dataFresh ? 'FRESH' : 'STALE') },
 };
-export const SORT_KEYS = ['name', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'roas', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'dataAgeMin', 'lastActiveDays', 'lastPausedDays', 'lastBudgetChangeDays', 'target', 'reduce', 'hardStop', 'losingDays', 'lastRunDays', 'profit'];
+export const SORT_KEYS = ['name', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'roas', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'dataAgeMin', 'lastActiveDays', 'lastPausedDays', 'lastBudgetChangeDays', 'target', 'reduce', 'hardStop', 'losingDays', 'lastRunDays', 'profit', 'cpaTrend'];
 const OPS = ['gte', 'lte', 'gt', 'lt', 'eq', 'between', 'in', 'contains'];
 const VIEWS = ['all', 'open', 'pause', 'up', 'down', 'review'];
 export const VIEW_LABEL = { all: 'كل الحملات', open: 'جاهزة للفتح', pause: 'مرشحة للإيقاف', up: 'فرص زيادة ميزانية', down: 'فرص تقليل ميزانية', review: 'تحتاج مراجعة' };

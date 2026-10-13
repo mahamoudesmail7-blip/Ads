@@ -4,6 +4,9 @@ import { api } from './api-client.js';
 import { E, store, setRoot, closeAll, errorCard } from './opx2-ui.js';
 import { mountHome, stopHome } from './opx2-home.js';
 import { mountCampaigns, stopCampaigns } from './opx2-campaigns.js';
+import { mountAccess, stopAccess } from './opx2-access.js';
+import { mountHelp } from './opx2-help.js';
+import { openEmergencyStop } from './opx2-safety.js';
 
 const SECTIONS = [
   { key: 'home', ic: '🏠', label: 'الرئيسية', min: 1 }, { key: 'camps', ic: '📣', label: 'الحملات', min: 1 },
@@ -19,7 +22,7 @@ const GATEWAY = {
 const V = { root: null, me: null, sec: 'home', opts: null, nav: null, ambWasCollapsed: null };
 
 export function v2Enabled() { try { return store.get('opx.v2') === '1' || /[?&]ui=v2\b/.test(location.search + location.hash); } catch { return false; } }
-export function stopV2() { stopHome(); stopCampaigns(); const nav = document.getElementById('ambNav'); if (V.ambWasCollapsed === false) nav?.classList.remove('collapsed'); V.ambWasCollapsed = null; V.root = null; }
+export function stopV2() { stopHome(); stopCampaigns(); stopAccess(); const nav = document.getElementById('ambNav'); if (V.ambWasCollapsed === false) nav?.classList.remove('collapsed'); V.ambWasCollapsed = null; V.root = null; }
 
 export async function renderV2(panel, opts = {}) {
   V.opts = opts; stopV2(); const nav = document.getElementById('ambNav'); V.ambWasCollapsed = !!nav?.classList.contains('collapsed'); nav?.classList.add('collapsed');
@@ -38,28 +41,30 @@ function buildFrame() {
   r.querySelector('.opx2-side').innerHTML = `<div class="opx2-brand"><div class="opx2-logo">AI</div><div><b>AI Operator</b><small>مساحة عمل Media Buying</small></div></div>
     <nav id="o2Nav">${items.map((s) => `<button class="opx2-nb" data-sec="${s.key}"><span class="ic">${s.ic}</span><span class="tx">${E(s.label)}</span></button>`).join('')}</nav>
     <div class="opx2-sf"><div class="opx2-who"><span class="tx">${E(LEVEL_AR[V.me.level] || V.me.level)} · ${V.me.accounts.length} حساب</span></div>
-      <button id="o2Theme">🌙 <span class="tx">المظهر</span></button><button id="o2Col">⇤ <span class="tx">طي القائمة</span></button><button id="o2Old"><span class="tx">↩ الواجهة الحالية</span></button></div>`;
+      <button id="o2Help">❓ <span class="tx">مركز المساعدة</span></button>${rank() >= 2 ? '<button id="o2Emg" style="color:var(--bad)">🛑 <span class="tx">إيقاف الطوارئ</span></button>' : ''}<button id="o2Theme">🌙 <span class="tx">المظهر</span></button><button id="o2Col">⇤ <span class="tx">طي القائمة</span></button><button id="o2Old"><span class="tx">↩ الواجهة الحالية</span></button></div>`;
   const main = r.querySelector('.opx2-main'); main.innerHTML = `<div class="opx2-top"><button class="opx2-btn" id="o2Burger">☰ القائمة</button></div><div id="o2View"></div>`;
   r.insertAdjacentHTML('beforeend', '<div class="opx2-scrim" id="o2Scrim"></div><aside class="opx2-drawer" id="o2Drawer" aria-label="تفاصيل"></aside><div class="opx2-modal" id="o2Modal" role="dialog" aria-modal="true"></div><div class="opx2-bulk" id="o2Bulk" role="toolbar" aria-label="إجراءات جماعية"></div>');
   r.querySelector('#o2Nav').onclick = (e) => { const b = e.target.closest('[data-sec]'); if (b) go(b.dataset.sec); };
   r.querySelector('#o2Theme').onclick = () => { const t = r.dataset.theme === 'dark' ? 'light' : 'dark'; r.dataset.theme = t; store.set('opx2.theme', t); };
   r.querySelector('#o2Col').onclick = () => { const c = r.dataset.collapsed === '1' ? '0' : '1'; r.dataset.collapsed = c; store.set('opx2.collapsed', c); };
   r.querySelector('#o2Old').onclick = () => V.opts.openLegacy?.(null);
+  r.querySelector('#o2Help').onclick = () => go('help'); const emg = r.querySelector('#o2Emg'); if (emg) emg.onclick = () => openEmergencyStop(() => { if (V.sec === 'home') go('home'); });
   r.querySelector('#o2Burger').onclick = () => { r.dataset.mobileOpen = r.dataset.mobileOpen === '1' ? '0' : '1'; };
   r.querySelector('#o2Scrim').onclick = closeAll;
 }
 const ctx = () => ({ me: V.me, level: V.me.level, caps: V.me.capabilities, go: (sec, o) => go(sec, o), openLegacy: (ws) => V.opts.openLegacy?.(ws), root: V.root });
 export async function go(sec, o = {}) {
-  const s = SECTIONS.find((x) => x.key === sec && allowed(x)) || SECTIONS[0]; V.sec = s.key; store.set('opx2.sec', s.key); closeAll(); V.root.dataset.mobileOpen = '0';
-  V.root.querySelectorAll('.opx2-nb').forEach((b) => b.classList.toggle('on', b.dataset.sec === s.key)); stopHome(); stopCampaigns();
+  const s = sec === 'help' ? { key: 'help' } : SECTIONS.find((x) => x.key === sec && allowed(x)) || SECTIONS[0]; V.sec = s.key; if (s.key !== 'help') store.set('opx2.sec', s.key); closeAll(); V.root.dataset.mobileOpen = '0';
+  V.root.querySelectorAll('.opx2-nb').forEach((b) => b.classList.toggle('on', b.dataset.sec === s.key)); stopHome(); stopCampaigns(); stopAccess();
   const host = V.root.querySelector('#o2View'); V.root.querySelector('#o2Bulk')?.classList.remove('show');
   try {
-    if (s.key === 'home') await mountHome(host, ctx(), o); else if (s.key === 'camps') await mountCampaigns(host, ctx(), o); else mountGateway(host, s.key);
+    if (s.key === 'home') await mountHome(host, ctx(), o); else if (s.key === 'camps') await mountCampaigns(host, ctx(), o); else if (s.key === 'help') mountHelp(host, ctx()); else if (s.key === 'set' && o.sub === 'access' && V.me.level === 'ADMIN') await mountAccess(host, ctx()); else mountGateway(host, s.key);
   } catch (e) { host.innerHTML = errorCard(e.message || 'تعذّر تحميل الشاشة.'); host.querySelector('#o2Retry')?.addEventListener('click', () => go(sec, o)); }
 }
 function mountGateway(host, key) {
   const g = GATEWAY[key];
-  host.innerHTML = `<h1>${E(g.title)}</h1><p class="lead">${E(g.lead)}</p><div class="opx2-banner info">المرحلة 2 بتغطي «الرئيسية» و«مركز الحملات». الشاشات دي لسه بتفتح من الواجهة الحالية بنفس سلوكها — مفيش وظيفة اتشالت.</div>
-    <div class="opx2-grid opx2-g4">${g.items.map(([ws, t, d]) => `<button class="opx2-rc" data-ws="${ws}"><b style="font-size:16px">${E(t)}</b><span>${E(d)}</span></button>`).join('')}</div>`;
-  host.onclick = (e) => { const b = e.target.closest('[data-ws]'); if (b) V.opts.openLegacy?.(b.dataset.ws); };
+  const native = key === 'set' && V.me.level === 'ADMIN' ? `<button class="opx2-rc" data-sub="access"><b style="font-size:16px">👥 صلاحيات الموظفين</b><span>مين يشوف أنهي حسابات ومتاجر، وهل يراجع ويجهّز مسودات (بدون اعتماد أو تنفيذ)</span></button>` : '';
+  host.innerHTML = `<h1>${E(g.title)}</h1><p class="lead">${E(g.lead)}</p><div class="opx2-banner info">«الرئيسية» و«مركز الحملات» و«صلاحيات الموظفين» و«المساعدة» شاشات V2 جديدة. باقي الشاشات بتفتح من الواجهة الحالية بنفس سلوكها — مفيش وظيفة اتشالت.</div>
+    <div class="opx2-grid opx2-g4">${native}${g.items.map(([ws, t, d]) => `<button class="opx2-rc" data-ws="${ws}"><b style="font-size:16px">${E(t)}</b><span>${E(d)}</span></button>`).join('')}</div>`;
+  host.onclick = (e) => { const s = e.target.closest('[data-sub]'); if (s) { go(key, { sub: s.dataset.sub }); return; } const b = e.target.closest('[data-ws]'); if (b) V.opts.openLegacy?.(b.dataset.ws); };
 }

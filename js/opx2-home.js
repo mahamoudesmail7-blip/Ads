@@ -2,6 +2,7 @@
 // Everything comes from /api/operator-v2/home (composed server-side from the existing sources). A saved policy is NEVER shown as ready — only «enabled + approved». Missing data is shown as «—», never as 0.
 import { api } from './api-client.js';
 import { E, num, egp, pill, ago, skeleton, errorCard, timebarHtml, bindTimebar, periodLabel } from './opx2-ui.js';
+import { emergencyBanner, openEmergencyOff } from './opx2-safety.js';
 
 const H = { host: null, ctx: null, st: { period: { key: 'last7' }, compare: false }, gen: 0, ctl: null, poll: null };
 export function stopHome() { clearInterval(H.poll); H.poll = null; H.ctl?.abort?.(); H.host = null; }
@@ -27,6 +28,9 @@ function draw(d) {
   <h1>الرئيسية</h1><p class="lead">صورة واحدة: النظام شغال ولا لأ، وإيه الجاهز للمراجعة، وإيه المطلوب.</p>
   ${syncAge != null && syncAge > 60 ? `<div class="opx2-banner warn">⚠️ آخر مزامنة Meta من ${syncAge} دقيقة — الأرقام ممكن تكون متأخرة. ${fresh.staleCampaigns} حملة بياناتها قديمة.</div>` : ''}
   <div class="opx2-grid opx2-g4"><div class="opx2-card opx2-kpi"><b>${num(s.active)}</b><span>حملات نشطة (من ${num(s.campaigns)})</span></div><div class="opx2-card opx2-kpi"><b>${num(s.orders)}</b><span>أوردرات — ${E(periodLabel(d.period.key))}</span></div><div class="opx2-card opx2-kpi"><b>${egp(s.spend)}</b><span>الصرف</span></div><div class="opx2-card opx2-kpi"><b>${s.cpa == null ? '—' : egp(s.cpa)}</b><span>CPA${s.cpa == null ? ' (مفيش أوردرات متاحة)' : ''}</span></div></div>
+  <div class="opx2-grid opx2-g4" data-home-extra="1"><div class="opx2-card opx2-kpi"><b>${num(s.paused)}</b><span>حملات متوقفة</span></div><div class="opx2-card opx2-kpi"><b>${num(s.winners)}</b><span>Winners (شغالة)</span></div><div class="opx2-card opx2-kpi"><b>${num(s.losing)}</b><span>خاسرة 3 أيام متتالية أو أكتر</span></div><div class="opx2-card opx2-kpi"><b>${s.profit ? egp(s.profit.value) : 'غير متوفر'}</b><span>${s.profit ? `ربح تقديري (${s.profit.campaigns} من ${s.profit.of} حملة لها اقتصاديات كاملة)` : 'الربح التقديري: مفيش حملة اقتصادياتها مكتملة'}</span></div></div>
+  <div class="opx2-card" style="padding:10px 14px"><div class="opx2-kv"><span>اتصال Meta</span><b>${fresh.lastSyncAt ? pill(syncAge <= 30 ? 'متصل — بيانات حديثة' : syncAge <= 120 ? 'متصل — مزامنة متأخرة' : 'مزامنة متوقفة', syncAge <= 30 ? 'ok' : 'warn') : pill('مفيش مزامنة', 'bad')} <small class="opx2-note">${fresh.lastSyncAt ? ago(fresh.lastSyncAt) : ''}</small></b></div>${g ? `<div class="opx2-kv"><span>حالة الأتمتة (AUTOMATIC)</span><b>${pill(g.mode === 'AUTOPILOT' ? 'تلقائي مفعّل' : 'غير مفعّلة', g.mode === 'AUTOPILOT' ? 'warn' : 'ok')} <small class="opx2-note">الوضع الحالي: ${MODE_AR[g.mode] || E(g.mode)}</small></b></div>` : ''}</div>
+  ${g ? emergencyBanner(g, H.ctx.level) : ''}
   ${g ? `<div class="opx2-card"><h2>هل هينفّذ على Meta؟</h2><div class="opx2-layers">
      <div class="opx2-layer"><div class="t">① وضع التشغيل ${pill(MODE_AR[g.mode] || E(g.mode), 'info')}</div><small>مين بيقرر</small></div>
      <div class="opx2-layer"><div class="t">② قفل Meta ${pill(g.writesLocked ? '🔒 مقفول' : '🔓 مفتوح', g.writesLocked ? 'warn' : 'ok')}</div><small>قراءة فقط — مفيش زر بيفتحه</small></div>
@@ -44,4 +48,5 @@ function draw(d) {
   bindTimebar(host, H.st, () => load());
   host.querySelectorAll('[data-view]').forEach((b) => { b.onclick = () => H.ctx.go('camps', { view: b.dataset.view, period: { ...H.st.period }, compare: H.st.compare }); });
   host.querySelectorAll('[data-sec]').forEach((b) => { b.onclick = () => H.ctx.go(b.dataset.sec); }); void caps;
+  const eo = host.querySelector('[data-emoff]'); if (eo) eo.onclick = () => openEmergencyOff(() => load());
 }

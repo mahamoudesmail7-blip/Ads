@@ -9,7 +9,7 @@ import { sanitizeConds, PERIOD_KEYS, SORT_KEYS, FIELDS } from './campaignQuery.j
 import { ROLE_RANK, levelOf } from './operatorV2Access.js';
 
 export const MAX_VIEWS_PER_USER = 50; const SCOPE = 'CAMPAIGNS';
-export const COLUMN_KEYS = ['name', 'account', 'store', 'product', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'roas', 'zones', 'budgetLevel', 'lastSync', 'lastDecision', 'winner', 'recommendation', 'approval', 'eligibility', 'lastPause', 'lastBudgetChange', 'profit', 'target', 'reduce', 'hardStop', 'stock', 'automation'];
+export const COLUMN_KEYS = ['name', 'account', 'store', 'product', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'roas', 'zones', 'budgetLevel', 'lastSync', 'lastDecision', 'winner', 'recommendation', 'approval', 'eligibility', 'lastPause', 'lastBudgetChange', 'profit', 'target', 'reduce', 'hardStop', 'stock', 'automation', 'lastRun', 'losingDays', 'bounds'];
 const VIEW_KEYS = ['all', 'open', 'pause', 'up', 'down', 'review'];
 const fail = (status, message, code) => { const e = new Error(message); e.status = status; if (code) e.code = code; return e; };
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
