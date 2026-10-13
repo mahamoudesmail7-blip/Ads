@@ -2,7 +2,8 @@
 //   ADMIN / owner  → every known ad account, full capabilities (approve, policies, permissions — each still behind its own existing gate)
 //   MANAGER        → every known ad account, may PREPARE / SAVE drafts (never approve or execute)
 //   EMPLOYEE       → READ ONLY, and ONLY when the owner granted it explicitly in the user's permissions JSON:
-//                      "operator.view": true   and   "operator.accounts": ["act_…", …]
+//                      "operator.view": true   and   "operator.accounts": ["act_…", …]   (optionally "operator.stores": [store ids] to narrow further)
+//                    and, only if the admin chose so: "operator.review" (bulk REVIEW preview) and "operator.drafts" (create a PREPARED draft plan). Approval / execution can NEVER be granted here.
 //                    nothing is granted by default, so no existing user's access changes. An account that is not in the list is invisible (not "empty": a request for it is refused).
 // The checks live here (the Backend). The screen only hides what the user cannot do.
 import { prisma } from '../../prisma.js';
@@ -27,16 +28,19 @@ export async function knownAccounts() {
 }
 
 /** → { ok, level, accounts, capabilities } | { ok:false, status, message } */
+/** what an EMPLOYEE may do from the grants (never approve / execute / manage policies) */
+export const employeeCapabilities = (p = {}) => { const review = p['operator.review'] === true; return { ...CAPABILITIES.EMPLOYEE, reviewActions: review, prepareDrafts: review && p['operator.drafts'] === true }; };
 export async function resolveAccess(user, { known = null } = {}) {
   if (!user) return { ok: false, status: 401, message: 'لازم تسجل دخول أولاً.' };
   const level = levelOf(user); const all = known || await knownAccounts();
-  if (level !== 'EMPLOYEE') return { ok: true, level, accounts: all, capabilities: CAPABILITIES[level] };
+  if (level !== 'EMPLOYEE') return { ok: true, level, accounts: all, stores: null, capabilities: CAPABILITIES[level] };
   const p = user.permissions || {};
   if (p['operator.view'] !== true) return { ok: false, status: 403, message: 'مفيش صلاحية عرض مركز الحملات لحسابك. اطلب من المسؤول يفعّلها.' };
   const granted = Array.isArray(p['operator.accounts']) ? p['operator.accounts'].map(String) : [];
   const accounts = all.filter((a) => granted.includes(a));
   if (!accounts.length) return { ok: false, status: 403, message: 'مفيش حسابات إعلانية مسموح لك بيها.' };
-  return { ok: true, level, accounts, capabilities: CAPABILITIES.EMPLOYEE };
+  const stores = Array.isArray(p['operator.stores']) && p['operator.stores'].length ? p['operator.stores'].map(String) : null;
+  return { ok: true, level, accounts, stores, capabilities: employeeCapabilities(p) };
 }
 
 /** Express middleware: sets req.v2 = { level, accounts, capabilities } or answers 401/403. */

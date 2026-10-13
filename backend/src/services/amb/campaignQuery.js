@@ -10,7 +10,8 @@ import { entityWindowMetrics } from './metricsEngine.js';
 import { listCampaignsFromSnapshots, buildCampaignProductIndex } from './operatorContext.js';
 import { loadCampaignTags, listExceptions, exceptionsFor } from './operatorStore.js';
 import { getBudgetPolicy } from './budgetOptimizer.js';
-import { activePolicyFromLimits } from './productPolicy.js';
+import { activePolicyFromLimits, applyToBudgetPolicy } from './productPolicy.js';
+import { stockGuardForProduct } from './stockGuard.js';
 import { zonesFor } from './campaignBoard.js';
 import { cairoDate, addDays } from './dailyPlanTime.js';
 import { getZeroSpendPolicy, classifyWinner } from './zeroSpendCheck.js';
@@ -51,10 +52,12 @@ export const FIELDS = {
   cpa3: { t: NUM, label: 'CPA آخر 3 أيام', get: (r) => r.cpa.d3 }, cpa7: { t: NUM, label: 'CPA آخر 7 أيام', get: (r) => r.cpa.d7 }, cpa14: { t: NUM, label: 'CPA آخر 14 يوم', get: (r) => r.cpa.d14 }, cpa30: { t: NUM, label: 'CPA آخر 30 يوم', get: (r) => r.cpa.d30 }, cpa60: { t: NUM, label: 'CPA آخر 60 يوم', get: (r) => r.cpa.d60 },
   dataAgeMin: { t: NUM, label: 'عمر آخر مزامنة (دقيقة)', get: (r) => r.dataAgeMin }, lastActiveDays: { t: NUM, label: 'أيام منذ آخر صرف فعلي', get: (r) => r.lastActiveDaysAgo }, lastPausedDays: { t: NUM, label: 'أيام منذ آخر إيقاف', get: (r) => r.lastPause?.daysAgo ?? null },
   lastBudgetChangeDays: { t: NUM, label: 'أيام منذ آخر تعديل ميزانية', get: (r) => r.lastBudgetChange?.daysAgo ?? null }, pauseReason: { t: TEXT, label: 'سبب آخر إيقاف', get: (r) => r.lastPause?.reason ?? null },
-  winner: { t: MULTI, label: 'تصنيف Winner', get: (r) => r.winner.status }, approval: { t: MULTI, label: 'حالة الموافقة', get: (r) => r.approval.code }, eligibility: { t: MULTI, label: 'الأهلية (من خطة اليوم)', get: (r) => r.eligibility },
+  winner: { t: MULTI, label: 'تصنيف Winner', get: (r) => r.winner.status },
+  target: { t: NUM, label: 'Target CPA (حد التوسع)', get: (r) => r.limits?.target ?? null }, reduce: { t: NUM, label: 'Reduce CPA', get: (r) => r.limits?.reduce ?? null }, hardStop: { t: NUM, label: 'Hard Stop CPA', get: (r) => r.limits?.hardStop ?? null },
+  cpaVsLimits: { t: MULTI, label: 'CPA مقابل حدود المنتج', get: (r) => r.cpaVsLimits }, stock: { t: MULTI, label: 'حالة المخزون', get: (r) => r.stock?.status ?? null }, losingDays: { t: NUM, label: 'أيام خسارة متتالية', get: (r) => r.losingDays }, lastRunDays: { t: NUM, label: 'مدة آخر فترة تشغيل (أيام)', get: (r) => r.lastRun?.days ?? null }, approval: { t: MULTI, label: 'حالة الموافقة', get: (r) => r.approval.code }, eligibility: { t: MULTI, label: 'الأهلية (من خطة اليوم)', get: (r) => r.eligibility },
   linked: { t: MULTI, label: 'الربط بالمنتج', get: (r) => (r.linked ? 'LINKED' : 'UNLINKED') }, guard: { t: MULTI, label: 'محمية / مستثناة', get: (r) => (r.protectedC ? 'PROTECTED' : r.excluded ? 'EXCLUDED' : 'NORMAL') }, dataFresh: { t: MULTI, label: 'حداثة البيانات', get: (r) => (r.dataFresh ? 'FRESH' : 'STALE') },
 };
-export const SORT_KEYS = ['name', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'roas', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'dataAgeMin', 'lastActiveDays', 'lastPausedDays', 'lastBudgetChangeDays'];
+export const SORT_KEYS = ['name', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'roas', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'dataAgeMin', 'lastActiveDays', 'lastPausedDays', 'lastBudgetChangeDays', 'target', 'reduce', 'hardStop', 'losingDays', 'lastRunDays'];
 const OPS = ['gte', 'lte', 'gt', 'lt', 'eq', 'between', 'in', 'contains'];
 const VIEWS = ['all', 'open', 'pause', 'up', 'down', 'review'];
 export const VIEW_LABEL = { all: 'كل الحملات', open: 'جاهزة للفتح', pause: 'مرشحة للإيقاف', up: 'فرص زيادة ميزانية', down: 'فرص تقليل ميزانية', review: 'تحتاج مراجعة' };
@@ -86,6 +89,22 @@ const CACHE = new Map(); const CACHE_MS = 20_000;
 export const __clearQueryCache = () => CACHE.clear();
 const pct = (a, b) => (a == null || b == null || b === 0 ? null : Math.round(((a - b) / b) * 100));
 const slim = (m) => { if (!m) return { spend: 0, orders: null, cpa: null, revenue: null, roas: null }; const spend = round(m.spend, 2) ?? 0; const orders = m.purchases == null ? null : Number(m.purchases); const revenue = m.revenue == null ? null : round(m.revenue, 2); return { spend, orders, cpa: cpaOf(spend, orders), revenue, roas: revenue != null && spend > 0 ? round(revenue / spend, 2) : null }; };
+/** Target / Reduce / Hard Stop CPA from the SAME policy the budget optimizer acts on: the product's ACTIVE policy layered on the global budget policy (or the global one alone). Missing → null, never a default. */
+export function limitsFor(globalBudget, pol) {
+  if (!globalBudget?.scale || !globalBudget?.reduce) return null; const eff = pol ? applyToBudgetPolicy(globalBudget, pol).policy : globalBudget; const n = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+  const l = { target: n(eff.scale?.maxCpa), reduce: n(eff.reduce?.minCpa), hardStop: n(eff.highCpa?.above) }; return l.target || l.reduce || l.hardStop ? { ...l, source: pol ? 'PRODUCT_POLICY' : 'GLOBAL_POLICY' } : null;
+}
+/** where the period CPA sits against the limits: WITHIN_TARGET · BETWEEN · ABOVE_REDUCE · ABOVE_HARDSTOP · UNKNOWN (no CPA or no limits — never guessed) */
+export const cpaVsLimitsOf = (cpa, l) => { if (cpa == null || !l) return 'UNKNOWN'; if (l.hardStop != null && cpa > l.hardStop) return 'ABOVE_HARDSTOP'; if (l.reduce != null && cpa > l.reduce) return 'ABOVE_REDUCE'; if (l.target != null && cpa <= l.target) return 'WITHIN_TARGET'; return l.target == null && l.reduce == null ? 'UNKNOWN' : 'BETWEEN'; };
+/** consecutive LOSING days ending yesterday (today is partial): a day loses when it spent and either had no orders and spent ≥ the product's profit limit, or its CPA was above that limit. Unknown limit → null. */
+export function losingDaysOf(days, today, limit) {
+  if (limit == null) return null; let n = 0; for (let k = 1; k <= 7; k++) { const d = days.get(addDays(today, -k)); if (!d || !(d.spend > 0)) break; const lose = d.purchases == null ? false : d.purchases === 0 ? d.spend >= limit : d.spend / d.purchases > limit; if (!lose) break; n++; } return n;
+}
+/** the LAST contiguous run of days with spend (the last operating period before the pause / today) */
+export function lastRunOf(days, today) {
+  const spent = [...days.entries()].filter(([, v]) => v.spend > 0).map(([d]) => d).sort(); if (!spent.length) return null; const to = spent[spent.length - 1]; let from = to; for (;;) { const prev = addDays(from, -1); if (days.has(prev) && days.get(prev).spend > 0) from = prev; else break; }
+  return { from, to, days: diffDays(from, to) + 1, daysAgo: Math.max(0, diffDays(to, today)) };
+}
 const hist = (m) => ({ orders: m ? Number(m.purchases ?? 0) : 0, spend: m ? round(m.spend, 2) ?? 0 : 0, cpa: m && Number(m.purchases) > 0 ? Math.round(Number(m.spend) / Number(m.purchases)) : null });
 
 async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
@@ -103,8 +122,8 @@ async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
   const ambBy = new Map(ambs.map((a) => [a.amb_id, a]));
   const adsetRows = await prisma.$queryRawUnsafe("select campaign_id, sum(adset_budget) filter (where adset_status = 'ACTIVE') as b, count(distinct adset_id)::int as n from (select distinct on (adset_id) campaign_id, adset_id, adset_budget, adset_status from meta_performance_snapshots where level = 'adset' and campaign_id = any($1::text[]) order by adset_id, snapshot_at desc) t group by campaign_id", ids);
   const adsetBy = new Map(adsetRows.map((r) => [r.campaign_id, { budget: Number(r.b || 0) || null, n: r.n }]));
-  const lastActive = await prisma.$queryRawUnsafe("select campaign_id, max(date_start) as d from meta_performance_snapshots where level = 'campaign' and ad_account_id = $1 and spend > 0 and campaign_id = any($2::text[]) group by campaign_id", adAccountId, ids);
-  const lastActiveBy = new Map(lastActive.map((r) => [r.campaign_id, r.d]));
+  const dailyRows = await prisma.$queryRawUnsafe("select distinct on (campaign_id, date_start) campaign_id, date_start, spend, meta_purchases from meta_performance_snapshots where level = 'campaign' and ad_account_id = $1 and campaign_id = any($2::text[]) and date_start >= $3 order by campaign_id, date_start, snapshot_at desc", adAccountId, ids, addDays(today, -89));
+  const dailyBy = new Map(); for (const r of dailyRows) { if (!dailyBy.has(r.campaign_id)) dailyBy.set(r.campaign_id, new Map()); dailyBy.get(r.campaign_id).set(r.date_start, { spend: Number(r.spend) || 0, purchases: r.meta_purchases == null ? null : Number(r.meta_purchases) }); }
   const actions = await prisma.$queryRawUnsafe("select distinct on (campaign_id, action_type) campaign_id, action_type, executed_at, ai_reason from amb_actions where campaign_id = any($1::text[]) and execution_status in ('EXECUTED','VERIFIED') and action_type in ('PAUSE','RESUME','INCREASE_BUDGET','DECREASE_BUDGET') order by campaign_id, action_type, executed_at desc nulls last", ids);
   const actBy = new Map(); for (const a of actions) { if (!actBy.has(a.campaign_id)) actBy.set(a.campaign_id, {}); actBy.get(a.campaign_id)[a.action_type] = a; }
   const decs = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: { in: ids }, status: { in: ['SHADOW', 'PREPARED', 'APPROVED', 'BLOCKED', 'EXECUTING'] }, created_at: { gte: new Date(now.getTime() - 48 * 3_600_000) } }, orderBy: { id: 'desc' }, select: { id: true, campaign_id: true, action: true, status: true, rule_name: true } });
@@ -129,13 +148,15 @@ async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
     const daysAgo = (d) => (d ? Math.max(0, Math.round((now.getTime() - new Date(d).getTime()) / 86_400_000)) : null);
     const pauseA = acts.PAUSE || null; const incA = acts.INCREASE_BUDGET || null, decA = acts.DECREASE_BUDGET || null; const bud = incA && decA ? (new Date(incA.executed_at) > new Date(decA.executed_at) ? incA : decA) : incA || decA;
     const approval = dec ? ({ PREPARED: ['READY_FOR_REVIEW', 'جاهز للمراجعة'], APPROVED: ['APPROVED', 'معتمد'], BLOCKED: ['BLOCKED', 'ممنوع'], EXECUTING: ['APPROVED', 'قيد التنفيذ'], SHADOW: ['CANDIDATE', 'مرشح (محاكاة)'] }[dec.status] || ['CANDIDATE', 'مرشح']) : plan?.selected ? ['READY_FOR_REVIEW', 'مختارة في خطة اليوم'] : plan ? ['CANDIDATE', 'مرشحة في خطة اليوم'] : ['NONE', '—'];
-    const la = lastActiveBy.get(c.id) || null;
+    const series = dailyBy.get(c.id) || new Map(); const run = lastRunOf(series, today); const la = run?.to || null;
+    const limits = limitsFor(ctx.globalBudget, pol); const cpaVs = cpaVsLimitsOf(period_.cpa, limits); const stock = amb?.product_id != null ? await ctx.stockOf(amb.product_id, amb.store_id) : null;
+    const losing = linked ? losingDaysOf(series, today, (await ctx.profitLimit(amb.product_id)) ?? zs.winnerFallbackCpa ?? null) : null;
     out.push({
       key: `${adAccountId}:${c.id}`, campaignId: c.id, name: (c.name || '').trim(), adAccountId, storeId: amb?.store_id ?? null, productId: amb?.product_id ?? null, productName: amb?.product_name ?? null, linked, mappingVerified: !!px?.verified,
       status: c.status, budget: cbo ? Number(c.budget) : ab?.budget ?? null, budgetLevel: cbo ? 'CBO' : ab?.budget ? 'ABO' : null, adsets: ab?.n ?? null,
       today: today_, period: period_, prev: prev_, compare: prev_ ? { spendPct: pct(period_.spend, prev_.spend), ordersPct: pct(period_.orders, prev_.orders), cpaPct: pct(period_.cpa, prev_.cpa) } : null,
       cpa: { d3: cpaOf(hist(m('d3')).spend, hist(m('d3')).orders), d7: cpaOf(hist(m('d7')).spend, hist(m('d7')).orders), d14: cpaOf(hist(m('d14')).spend, hist(m('d14')).orders), d30: cpaOf(hist(m('d30')).spend, hist(m('d30')).orders), d60: cpaOf(hist(m('d60')).spend, hist(m('d60')).orders) },
-      zones: zonesFor(ctx.globalBudget, pol), winner, protectedC: excTypes.some((x) => ['NO_AUTOMATION', 'NO_AUTO_STOP'].includes(x)) || zs.protectedCampaignIds.includes(String(c.id)), excluded: excTypes.length > 0 || zs.excludeCampaignIds.includes(String(c.id)), exceptions: excTypes, tag: t,
+      zones: zonesFor(ctx.globalBudget, pol), limits, cpaVsLimits: cpaVs, stock, losingDays: losing, lastRun: run, winner, protectedC: excTypes.some((x) => ['NO_AUTOMATION', 'NO_AUTO_STOP'].includes(x)) || zs.protectedCampaignIds.includes(String(c.id)), excluded: excTypes.length > 0 || zs.excludeCampaignIds.includes(String(c.id)), exceptions: excTypes, tag: t,
       pendingDecision: dec ? { id: dec.id, action: dec.action, status: dec.status, rule: dec.rule_name } : null, planItem: plan ? { planId: plan.plan.id, type: plan.plan.type, eligibility: plan.eligibility, selected: plan.selected, status: plan.status } : null,
       approval: { code: approval[0], label: approval[1] }, eligibility: plan?.eligibility || 'NOT_EVALUATED',
       lastSeenAt: c.lastSeenAt, dataAgeMin: ageMin, dataFresh, lastActiveDate: la, lastActiveDaysAgo: la ? Math.max(0, diffDays(la, today)) : null,
@@ -159,17 +180,19 @@ export function viewOf(row, zeroLimit, zeroCmp = 'GT') {
 async function loadContext({ now }) {
   const settings = await getAmbSettings(); const zeroSpend = await getZeroSpendPolicy(); const globalBudget = await getBudgetPolicy().catch(() => null); const limitCache = new Map();
   const profitLimit = async (productId) => { if (limitCache.has(productId)) return limitCache.get(productId); let v = null; try { const RD = await import('./operatorReadiness.js'); const p = await RD.getProductProfile({ productId }).catch(() => null); v = p ? (p.economics.maxCpa.value ?? p.economics.targetCpa.value ?? null) : null; } catch { v = null; } limitCache.set(productId, v); return v; };
-  return { settings, zeroSpend, globalBudget, limitCache, profitLimit };
+  const stockCache = new Map(); const stockOf = async (productId, storeId) => { if (stockCache.has(productId)) return stockCache.get(productId); let v = null; try { const g = await stockGuardForProduct({ productId, storeId }); v = g ? { status: g.status, current: g.currentStock ?? null, minimum: g.minimumStock ?? null } : null; } catch { v = null; } stockCache.set(productId, v); return v; };
+  return { settings, zeroSpend, globalBudget, limitCache, profitLimit, stockOf };
 }
 
 /** every row the user may see, for the period (cached ~20 s per account-set + period) */
-export async function buildRows({ accounts, period, compare = false, now = new Date(), noCache = false }) {
-  const today = cairoDate(now); const key = JSON.stringify([[...accounts].sort(), period.from, period.to, !!compare]);
+export async function buildRows({ accounts, stores = null, period, compare = false, now = new Date(), noCache = false }) {
+  const today = cairoDate(now); const key = JSON.stringify([[...accounts].sort(), stores ? [...stores].sort() : null, period.from, period.to, !!compare]);
   const hit = CACHE.get(key); if (!noCache && hit && now.getTime() - hit.at < CACHE_MS) return hit.value;
   const ctx = await loadContext({ now }); ctx.force = !!noCache; const rows = []; // noCache = a fresh read of the metrics too (selection snapshots, review previews and exports must see the CURRENT numbers)
   for (const a of accounts) rows.push(...await accountRows({ adAccountId: a, today, period, compare, now, ctx }));
+  const scoped = stores && stores.length ? rows.filter((r) => r.storeId != null && stores.includes(String(r.storeId))) : rows; // a store-restricted user never sees a campaign of another store — nor an unlinked one (its store is unknown)
   const sync = await getSyncStatus().catch(() => null);
-  const value = { rows, today, sync: sync ? { lastSuccessAt: sync.lastSuccessAt || null, intervalMinutes: sync.intervalMinutes || null } : null, zero: { limit: ctx.zeroSpend.limit, comparison: ctx.zeroSpend.comparison, version: ctx.zeroSpend.version, approved: !!ctx.zeroSpend.approved }, builtAt: now.toISOString() };
+  const value = { rows: scoped, today, sync: sync ? { lastSuccessAt: sync.lastSuccessAt || null, intervalMinutes: sync.intervalMinutes || null } : null, zero: { limit: ctx.zeroSpend.limit, comparison: ctx.zeroSpend.comparison, version: ctx.zeroSpend.version, approved: !!ctx.zeroSpend.approved }, builtAt: now.toISOString() };
   CACHE.set(key, { at: now.getTime(), value }); return value;
 }
 
@@ -197,7 +220,7 @@ function sortRows(rows, { k, d }) {
 /** the page the screen asks for. NEVER returns more than `pageSize` rows. */
 export async function queryCampaigns({ access, body, now = new Date(), noCache = false }) {
   const today = cairoDate(now); const q = normalizeQuery(body, access, today);
-  const built = await buildRows({ accounts: q.accounts, period: q.period, compare: q.compare, now, noCache });
+  const built = await buildRows({ accounts: q.accounts, stores: access.stores, period: q.period, compare: q.compare, now, noCache });
   const matched = sortRows(filterRows(built.rows, q, built.zero), q.sort); const total = matched.length; const pages = Math.max(1, Math.ceil(total / q.pageSize)); const page = Math.min(q.page, pages);
   const withoutView = filterRows(built.rows, q, built.zero, { withView: false });
   const inView = (v) => withoutView.filter((r) => viewOf(r, built.zero.limit, built.zero.comparison).has(v)); const viewCounts = Object.fromEntries(VIEWS.map((v) => [v, inView(v).length]));
@@ -217,7 +240,7 @@ export async function queryCampaigns({ access, body, now = new Date(), noCache =
 
 /** ALL matching rows (ids + fingerprints) for a selection snapshot — still produced server-side, never sent to the browser as rows */
 export async function matchingRows({ access, body, now = new Date(), noCache = false }) {
-  const today = cairoDate(now); const q = normalizeQuery(body, access, today); const built = await buildRows({ accounts: q.accounts, period: q.period, compare: q.compare, now, noCache });
+  const today = cairoDate(now); const q = normalizeQuery(body, access, today); const built = await buildRows({ accounts: q.accounts, stores: access.stores, period: q.period, compare: q.compare, now, noCache });
   return { q, built, rows: sortRows(filterRows(built.rows, q, built.zero), q.sort) };
 }
 export const fingerprint = (r) => `${r.status}|${r.budget ?? ''}|${r.today.spend}|${r.today.orders ?? ''}|${r.period.spend}|${r.period.orders ?? ''}|${r.lastSeenAt ? new Date(r.lastSeenAt).getTime() : ''}|${r.pendingDecision?.id ?? ''}`;
