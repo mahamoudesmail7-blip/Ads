@@ -14,7 +14,7 @@ export async function createSnapshot({ user, access, body, now = new Date() }) {
   const items = rows.map((r) => ({ c: r.campaignId, a: r.adAccountId, fp: fingerprint(r) }));
   const idsHash = crypto.createHash('sha256').update(items.map((i) => `${i.a}:${i.c}`).join('|')).digest('hex').slice(0, 32);
   const id = crypto.randomUUID(); const expiresAt = new Date(now.getTime() + SNAPSHOT_TTL_MS);
-  const query = { period: { key: q.period.key, from: q.period.from, to: q.period.to }, compare: q.compare, view: q.view, logic: q.logic, conds: q.conds, search: q.search, sort: q.sort, accounts: q.accounts };
+  const query = { period: { key: q.period.key, from: q.period.from, to: q.period.to }, basis: q.basis, operatingDays: q.operatingDays, compare: q.compare, view: q.view, logic: q.logic, conds: q.conds, search: q.search, sort: q.sort, accounts: q.accounts };
   await prisma.ambOperatorSelectionSnapshot.create({ data: { id, owner_id: user.id, scope: 'CAMPAIGNS', query_json: JSON.stringify(query), ids_json: JSON.stringify(items), total: items.length, ids_hash: idsHash, data_as_of: built.sync?.lastSuccessAt ? new Date(built.sync.lastSuccessAt) : null, created_at: now, expires_at: expiresAt } });
   prisma.ambOperatorSelectionSnapshot.deleteMany({ where: { expires_at: { lt: new Date(now.getTime() - 24 * 3_600_000) } } }).catch(() => {}); // tidy old ones, best effort
   return { snapshotId: id, total: items.length, idsHash, createdAt: now.toISOString(), expiresAt: expiresAt.toISOString(), query, dataAsOf: built.sync?.lastSuccessAt || null };

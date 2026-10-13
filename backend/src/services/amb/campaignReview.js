@@ -60,6 +60,14 @@ export function verdictFor(row, action, params, { snapshotFp = null } = {}) {
       if (up && params.dailyCap != null && d > params.dailyCap) reject(`الزيادة ${d} فوق السقف اليومي ${params.dailyCap}.`);
       const lb = row.lastBudgetChange; if (lb?.daysAgo != null && lb.daysAgo * 24 < params.cooldownHours) reject(`Cooldown لسه ما خلصش (آخر تعديل من ${lb.daysAgo} يوم، الحد ${params.cooldownHours} ساعة).`);
       else if (lb?.daysAgo != null && lb.daysAgo < 3) warnings.push('تعديل متكرر — احتمال تأثير على مرحلة التعلم في Meta.');
+      const bd = row.bounds; // the product policy's own budget limits (the engine re-checks all of them when the draft is created)
+      if (bd) {
+        if (bd.maxBudget != null && nb > bd.maxBudget) reject(`الميزانية الجديدة ${nb} فوق أقصى ميزانية للمنتج (${bd.maxBudget}).`);
+        if (bd.minBudget != null && nb < bd.minBudget) reject(`الميزانية الجديدة ${nb} تحت أقل ميزانية للمنتج (${bd.minBudget}).`);
+        if (bd.dailySpendCap != null && nb > bd.dailySpendCap) reject(`الميزانية الجديدة ${nb} فوق سقف الصرف اليومي للمنتج (${bd.dailySpendCap}).`);
+        if (bd.cooldownHours != null && lb?.daysAgo != null && lb.daysAgo * 24 < bd.cooldownHours) reject(`Cooldown المنتج (${bd.cooldownHours} ساعة) لسه ما خلصش.`);
+        if (bd.maxChangesPerDay != null) { if (lb?.daysAgo === 0 && bd.maxChangesPerDay <= 1) reject(`وصلت الحد اليومي لتعديلات الميزانية (${bd.maxChangesPerDay}).`); else warnings.push(`حد تعديلات الميزانية اليومي للمنتج ${bd.maxChangesPerDay} — المحرك بيعدّها بدقة وقت إنشاء المسودة.`); }
+      }
       if (up && row.period.cpa != null && row.zones?.warn != null && row.period.cpa > row.zones.warn) warnings.push(`CPA ${row.period.cpa} فوق حد التحذير ${row.zones.warn}.`);
       warnings.push(row.budgetLevel === 'ABO' ? 'ABO: التعديل بيتم على ميزانيات الـ Ad Sets (مش على الحملة).' : 'CBO: التعديل على ميزانية الحملة.');
     }
@@ -70,14 +78,14 @@ export function verdictFor(row, action, params, { snapshotFp = null } = {}) {
 export async function reviewPreview({ user, access, body, now = new Date() }) {
   const b = body || {}; const action = String(b.action || ''); if (!ACTIONS[action]) throw bad(`الإجراء غير معروف: ${action}`);
   const params = sanitizeParams(action, b.params);
-  const excluded = new Set((Array.isArray(b.excluded) ? b.excluded : []).map(String)); let refs = [], fpBy = new Map(), period = { key: 'last7' }, snap = null;
-  if (b.snapshotId) { snap = await readSnapshot({ id: b.snapshotId, user, access, now }); refs = snap.items.map((i) => ({ c: i.c, a: i.a })); fpBy = new Map(snap.items.map((i) => [`${i.a}:${i.c}`, i.fp])); period = snap.query?.period || period; }
+  const excluded = new Set((Array.isArray(b.excluded) ? b.excluded : []).map(String)); let refs = [], fpBy = new Map(), period = { key: 'last7' }, snap = null, basis = 'CALENDAR', operatingDays = 7;
+  if (b.snapshotId) { snap = await readSnapshot({ id: b.snapshotId, user, access, now }); refs = snap.items.map((i) => ({ c: i.c, a: i.a })); fpBy = new Map(snap.items.map((i) => [`${i.a}:${i.c}`, i.fp])); period = snap.query?.period || period; basis = snap.query?.basis || 'CALENDAR'; operatingDays = snap.query?.operatingDays || 7; }
   else if (Array.isArray(b.ids)) { if (b.ids.length > 500) throw bad('الاختيار اليدوي أقصاه 500 حملة — استخدم «تحديد كل المطابق».'); refs = b.ids.map((i) => ({ c: String(i.campaignId), a: String(i.adAccountId) })); }
   else throw bad('محتاج snapshotId أو ids.');
   refs = refs.filter((r) => !excluded.has(r.c)); const today = cairoDate(now);
   const outOfScope = refs.filter((r) => !access.accounts.includes(r.a)); const inScope = refs.filter((r) => access.accounts.includes(r.a));
   const accts = [...new Set(inScope.map((r) => r.a))];
-  const live = new Map(); if (accts.length) { const p = resolvePeriod({ key: period.key || 'last7', from: period.from, to: period.to }, today); const built = await buildRows({ accounts: accts, stores: access.stores, period: p, compare: false, now, noCache: true }); for (const r of built.rows) live.set(`${r.adAccountId}:${r.campaignId}`, r); }
+  const live = new Map(); if (accts.length) { const p = resolvePeriod({ key: period.key || 'last7', from: period.from, to: period.to }, today); const built = await buildRows({ accounts: accts, stores: access.stores, period: p, compare: false, basis, operatingDays, now, noCache: true }); for (const r of built.rows) live.set(`${r.adAccountId}:${r.campaignId}`, r); }
   const items = []; let before = 0, afterSum = 0;
   for (const r of inScope) { const row = live.get(`${r.a}:${r.c}`); if (!row) { items.push({ campaignId: r.c, adAccountId: r.a, name: null, kind: 'NOT_FOUND', reasons: ['الحملة مبقتش موجودة في بيانات Meta المتزامنة.'], warnings: [], changed: true }); continue; }
     const v = verdictFor(row, action, params, { snapshotFp: fpBy.get(`${r.a}:${r.c}`) ?? null }); items.push({ campaignId: row.campaignId, adAccountId: row.adAccountId, name: row.name, productName: row.productName, status: row.status, budgetLevel: row.budgetLevel, ...v });

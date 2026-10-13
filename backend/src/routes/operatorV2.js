@@ -38,4 +38,11 @@ router.put('/views/:id', asyncRoute(async (req, res) => res.json(await updateVie
 router.delete('/views/:id', asyncRoute(async (req, res) => res.json(await deleteView({ user: req.user, id: req.params.id }))));
 router.post('/views/:id/duplicate', asyncRoute(async (req, res) => res.json(await duplicateView({ user: req.user, id: req.params.id }))));
 
+// the new code can be deployed BEFORE its migration ran: a missing table / column of the two V2 tables is a clear, retryable 503 (the rest of V2 — query, home, export — never touches them)
+router.use((err, req, res, next) => {
+  const missing = (err?.code === 'P2021' || err?.code === 'P2022') && /amb_operator_(saved_views|selection_snapshots)|AmbOperator(SavedView|SelectionSnapshot)/i.test(`${err?.meta?.table || ''} ${err?.meta?.modelName || ''} ${err?.message || ''}`);
+  if (!missing) return next(err);
+  res.status(503).json({ error: 'V2_TABLES_MISSING', message: 'جداول الفلاتر المحفوظة / تحديد الحملات لسه ما اتفعّلتش على قاعدة البيانات دي (الـ Migration ما اتطبّقش). باقي الشاشة شغّال.' });
+});
+
 export default router;

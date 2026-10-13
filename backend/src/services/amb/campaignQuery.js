@@ -10,7 +10,7 @@ import { entityWindowMetrics } from './metricsEngine.js';
 import { listCampaignsFromSnapshots, buildCampaignProductIndex } from './operatorContext.js';
 import { loadCampaignTags, listExceptions, exceptionsFor } from './operatorStore.js';
 import { getBudgetPolicy } from './budgetOptimizer.js';
-import { activePolicyFromLimits, applyToBudgetPolicy } from './productPolicy.js';
+import { activePolicyFromLimits, applyToBudgetPolicy, mergeEffective } from './productPolicy.js';
 import { stockGuardForProduct } from './stockGuard.js';
 import { zonesFor } from './campaignBoard.js';
 import { cairoDate, addDays } from './dailyPlanTime.js';
@@ -53,11 +53,12 @@ export const FIELDS = {
   dataAgeMin: { t: NUM, label: 'عمر آخر مزامنة (دقيقة)', get: (r) => r.dataAgeMin }, lastActiveDays: { t: NUM, label: 'أيام منذ آخر صرف فعلي', get: (r) => r.lastActiveDaysAgo }, lastPausedDays: { t: NUM, label: 'أيام منذ آخر إيقاف', get: (r) => r.lastPause?.daysAgo ?? null },
   lastBudgetChangeDays: { t: NUM, label: 'أيام منذ آخر تعديل ميزانية', get: (r) => r.lastBudgetChange?.daysAgo ?? null }, pauseReason: { t: TEXT, label: 'سبب آخر إيقاف', get: (r) => r.lastPause?.reason ?? null },
   winner: { t: MULTI, label: 'تصنيف Winner', get: (r) => r.winner.status },
+  profit: { t: NUM, label: 'الربح التقديري', get: (r) => r.profit?.value ?? null }, automation: { t: MULTI, label: 'حالة الأتمتة', get: (r) => r.automation },
   target: { t: NUM, label: 'Target CPA (حد التوسع)', get: (r) => r.limits?.target ?? null }, reduce: { t: NUM, label: 'Reduce CPA', get: (r) => r.limits?.reduce ?? null }, hardStop: { t: NUM, label: 'Hard Stop CPA', get: (r) => r.limits?.hardStop ?? null },
   cpaVsLimits: { t: MULTI, label: 'CPA مقابل حدود المنتج', get: (r) => r.cpaVsLimits }, stock: { t: MULTI, label: 'حالة المخزون', get: (r) => r.stock?.status ?? null }, losingDays: { t: NUM, label: 'أيام خسارة متتالية', get: (r) => r.losingDays }, lastRunDays: { t: NUM, label: 'مدة آخر فترة تشغيل (أيام)', get: (r) => r.lastRun?.days ?? null }, approval: { t: MULTI, label: 'حالة الموافقة', get: (r) => r.approval.code }, eligibility: { t: MULTI, label: 'الأهلية (من خطة اليوم)', get: (r) => r.eligibility },
   linked: { t: MULTI, label: 'الربط بالمنتج', get: (r) => (r.linked ? 'LINKED' : 'UNLINKED') }, guard: { t: MULTI, label: 'محمية / مستثناة', get: (r) => (r.protectedC ? 'PROTECTED' : r.excluded ? 'EXCLUDED' : 'NORMAL') }, dataFresh: { t: MULTI, label: 'حداثة البيانات', get: (r) => (r.dataFresh ? 'FRESH' : 'STALE') },
 };
-export const SORT_KEYS = ['name', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'roas', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'dataAgeMin', 'lastActiveDays', 'lastPausedDays', 'lastBudgetChangeDays', 'target', 'reduce', 'hardStop', 'losingDays', 'lastRunDays'];
+export const SORT_KEYS = ['name', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'roas', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'dataAgeMin', 'lastActiveDays', 'lastPausedDays', 'lastBudgetChangeDays', 'target', 'reduce', 'hardStop', 'losingDays', 'lastRunDays', 'profit'];
 const OPS = ['gte', 'lte', 'gt', 'lt', 'eq', 'between', 'in', 'contains'];
 const VIEWS = ['all', 'open', 'pause', 'up', 'down', 'review'];
 export const VIEW_LABEL = { all: 'كل الحملات', open: 'جاهزة للفتح', pause: 'مرشحة للإيقاف', up: 'فرص زيادة ميزانية', down: 'فرص تقليل ميزانية', review: 'تحتاج مراجعة' };
@@ -105,6 +106,23 @@ export function lastRunOf(days, today) {
   const spent = [...days.entries()].filter(([, v]) => v.spend > 0).map(([d]) => d).sort(); if (!spent.length) return null; const to = spent[spent.length - 1]; let from = to; for (;;) { const prev = addDays(from, -1); if (days.has(prev) && days.get(prev).spend > 0) from = prev; else break; }
   return { from, to, days: diffDays(from, to) + 1, daysAgo: Math.max(0, diffDays(to, today)) };
 }
+/** the last N days WITH SPEND (an «operating» window): block 0 = the latest N spending days, block 1 = the N before them. Calendar gaps (paused days) do not count. */
+export function operatingWindow(series, today, n, block = 0) {
+  const spent = [...series.entries()].filter(([d, v]) => v.spend > 0 && d <= today).map(([d]) => d).sort().reverse(); const pick = spent.slice(block * n, (block + 1) * n); if (!pick.length) return null;
+  let spend = 0, orders = null; for (const d of pick) { const v = series.get(d); spend += v.spend; if (v.purchases != null) orders = (orders ?? 0) + v.purchases; }
+  const from = pick[pick.length - 1], to = pick[0]; return { spend: round(spend, 2) ?? 0, orders, cpa: cpaOf(spend, orders), revenue: null, roas: null, days: pick.length, from, to, calendarSpan: diffDays(from, to) + 1 };
+}
+/** performance 3 days BEFORE vs up to 3 days AFTER the last budget change (daily series; an unfinished «after» is never invented). Null when there is no change or no day after it yet. */
+export function budgetImpactOf(series, today, change) {
+  if (!change?.at) return null; const day = cairoDate(new Date(change.at)); const agg = (from, to) => { let spend = 0, orders = null, n = 0; for (let d = from; d <= to; d = addDays(d, 1)) { const v = series.get(d); if (!v) continue; n++; spend += v.spend; if (v.purchases != null) orders = (orders ?? 0) + v.purchases; } return n ? { days: n, spend: round(spend, 2) ?? 0, orders, cpa: cpaOf(spend, orders) } : null; };
+  const before = agg(addDays(day, -3), addDays(day, -1)); const lastAfter = addDays(today, -1) < addDays(day, 3) ? addDays(today, -1) : addDays(day, 3); const after = lastAfter >= addDays(day, 1) ? agg(addDays(day, 1), lastAfter) : null;
+  return { changeDate: day, action: change.action, before, after, estimated: true, note: 'مقارنة تقديرية — مش ضمان إن التغيير هو سبب الفرق.' };
+}
+/** estimated profit = Meta purchases × the product's unit margin − spend. Only when the product economics are COMPLETE; says what it is based on. Never a guess. */
+export function profitOf(orders, spend, info) {
+  if (!info) return { value: null, reason: 'الحملة مش مربوطة بمنتج.' }; if (!info.complete || info.unitMargin == null) return { value: null, reason: 'اقتصاديات المنتج غير مكتملة (سعر/تكلفة).' }; if (orders == null) return { value: null, reason: 'عدد الأوردرات غير متاح.' };
+  return { value: Math.round(orders * info.unitMargin - spend), basis: 'مشتريات Meta × هامش الوحدة − الصرف', estimated: true };
+}
 const hist = (m) => ({ orders: m ? Number(m.purchases ?? 0) : 0, spend: m ? round(m.spend, 2) ?? 0 : 0, cpa: m && Number(m.purchases) > 0 ? Math.round(Number(m.spend) / Number(m.purchases)) : null });
 
 async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
@@ -138,7 +156,8 @@ async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
     const px = prodIndex.get(c.id); const amb = px ? ambBy.get(px.ambProductId) : null; const t = tags.get(c.id)?.tag || null;
     const excTypes = exceptionsFor({ exceptions, storeId: amb?.store_id ?? null, productId: amb?.product_id ?? null, campaignId: c.id, tag: t }).flatMap((e) => e.types || []);
     const cbo = Number(c.budget) > 0; const ab = adsetBy.get(c.id); const pol = amb ? activePolicyFromLimits(rawLimits, amb.store_id, amb.product_id) : null;
-    const m = (k) => maps[k]?.get(c.id); const today_ = slim(m('today')); const period_ = slim(m('period')); const prev_ = compare ? slim(m('prev')) : null;
+    const m = (k) => maps[k]?.get(c.id); const today_ = slim(m('today')); let period_ = slim(m('period')); let prev_ = compare ? slim(m('prev')) : null; const series0 = dailyBy.get(c.id) || new Map(); let operating = null;
+    if (ctx.basis === 'OPERATING') { const cur = operatingWindow(series0, today, ctx.operatingDays, 0); const pre = compare ? operatingWindow(series0, today, ctx.operatingDays, 1) : null; operating = cur ? { days: cur.days, from: cur.from, to: cur.to, calendarSpan: cur.calendarSpan, requested: ctx.operatingDays } : { days: 0, from: null, to: null, calendarSpan: 0, requested: ctx.operatingDays }; period_ = cur ? { spend: cur.spend, orders: cur.orders, cpa: cur.cpa, revenue: null, roas: null } : { spend: 0, orders: null, cpa: null, revenue: null, roas: null }; prev_ = compare ? (pre ? { spend: pre.spend, orders: pre.orders, cpa: pre.cpa, revenue: null, roas: null } : { spend: 0, orders: null, cpa: null, revenue: null, roas: null }) : null; }
     const ageMin = Math.max(0, Math.round((now.getTime() - new Date(c.lastSeenAt).getTime()) / 60_000)); const dataFresh = ageMin * 60_000 <= freshMs;
     const linked = !!amb && !!px?.verified;
     // Winner is never judged on CPA alone: 7d AND 30d orders + the product's profit limit + fresh data (the SAME classifier the zero-spend policy uses; anything missing → UNKNOWN)
@@ -150,13 +169,15 @@ async function accountRows({ adAccountId, today, period, compare, now, ctx }) {
     const approval = dec ? ({ PREPARED: ['READY_FOR_REVIEW', 'جاهز للمراجعة'], APPROVED: ['APPROVED', 'معتمد'], BLOCKED: ['BLOCKED', 'ممنوع'], EXECUTING: ['APPROVED', 'قيد التنفيذ'], SHADOW: ['CANDIDATE', 'مرشح (محاكاة)'] }[dec.status] || ['CANDIDATE', 'مرشح']) : plan?.selected ? ['READY_FOR_REVIEW', 'مختارة في خطة اليوم'] : plan ? ['CANDIDATE', 'مرشحة في خطة اليوم'] : ['NONE', '—'];
     const series = dailyBy.get(c.id) || new Map(); const run = lastRunOf(series, today); const la = run?.to || null;
     const limits = limitsFor(ctx.globalBudget, pol); const cpaVs = cpaVsLimitsOf(period_.cpa, limits); const stock = amb?.product_id != null ? await ctx.stockOf(amb.product_id, amb.store_id) : null;
-    const losing = linked ? losingDaysOf(series, today, (await ctx.profitLimit(amb.product_id)) ?? zs.winnerFallbackCpa ?? null) : null;
+    const info = linked ? await ctx.productInfo(amb.product_id) : null; const losing = linked ? losingDaysOf(series, today, (info?.profitLimit ?? null) ?? zs.winnerFallbackCpa ?? null) : null;
+    const eff = pol ? mergeEffective(pol, c.id) : null; const bounds = pol ? { minBudget: eff.budget.minBudget ?? null, maxBudget: eff.budget.maxBudget ?? null, dailySpendCap: eff.budget.dailySpendCap ?? null, maxChangesPerDay: eff.budget.maxChangesPerDay ?? null, cooldownHours: eff.budget.cooldownHours ?? null, source: 'PRODUCT_POLICY' } : null; const automation = pol ? (eff.mode || 'MANUAL') : 'NONE';
+    const lastBudget = bud ? { at: bud.executed_at, action: bud.action_type } : null; const profit = profitOf(period_.orders, period_.spend, info);
     out.push({
       key: `${adAccountId}:${c.id}`, campaignId: c.id, name: (c.name || '').trim(), adAccountId, storeId: amb?.store_id ?? null, productId: amb?.product_id ?? null, productName: amb?.product_name ?? null, linked, mappingVerified: !!px?.verified,
       status: c.status, budget: cbo ? Number(c.budget) : ab?.budget ?? null, budgetLevel: cbo ? 'CBO' : ab?.budget ? 'ABO' : null, adsets: ab?.n ?? null,
       today: today_, period: period_, prev: prev_, compare: prev_ ? { spendPct: pct(period_.spend, prev_.spend), ordersPct: pct(period_.orders, prev_.orders), cpaPct: pct(period_.cpa, prev_.cpa) } : null,
       cpa: { d3: cpaOf(hist(m('d3')).spend, hist(m('d3')).orders), d7: cpaOf(hist(m('d7')).spend, hist(m('d7')).orders), d14: cpaOf(hist(m('d14')).spend, hist(m('d14')).orders), d30: cpaOf(hist(m('d30')).spend, hist(m('d30')).orders), d60: cpaOf(hist(m('d60')).spend, hist(m('d60')).orders) },
-      zones: zonesFor(ctx.globalBudget, pol), limits, cpaVsLimits: cpaVs, stock, losingDays: losing, lastRun: run, winner, protectedC: excTypes.some((x) => ['NO_AUTOMATION', 'NO_AUTO_STOP'].includes(x)) || zs.protectedCampaignIds.includes(String(c.id)), excluded: excTypes.length > 0 || zs.excludeCampaignIds.includes(String(c.id)), exceptions: excTypes, tag: t,
+      zones: zonesFor(ctx.globalBudget, pol), limits, bounds, automation, profit, operating, budgetImpact: budgetImpactOf(series, today, lastBudget), cpaVsLimits: cpaVs, stock, losingDays: losing, lastRun: run, winner, protectedC: excTypes.some((x) => ['NO_AUTOMATION', 'NO_AUTO_STOP'].includes(x)) || zs.protectedCampaignIds.includes(String(c.id)), excluded: excTypes.length > 0 || zs.excludeCampaignIds.includes(String(c.id)), exceptions: excTypes, tag: t,
       pendingDecision: dec ? { id: dec.id, action: dec.action, status: dec.status, rule: dec.rule_name } : null, planItem: plan ? { planId: plan.plan.id, type: plan.plan.type, eligibility: plan.eligibility, selected: plan.selected, status: plan.status } : null,
       approval: { code: approval[0], label: approval[1] }, eligibility: plan?.eligibility || 'NOT_EVALUATED',
       lastSeenAt: c.lastSeenAt, dataAgeMin: ageMin, dataFresh, lastActiveDate: la, lastActiveDaysAgo: la ? Math.max(0, diffDays(la, today)) : null,
@@ -179,16 +200,17 @@ export function viewOf(row, zeroLimit, zeroCmp = 'GT') {
 
 async function loadContext({ now }) {
   const settings = await getAmbSettings(); const zeroSpend = await getZeroSpendPolicy(); const globalBudget = await getBudgetPolicy().catch(() => null); const limitCache = new Map();
-  const profitLimit = async (productId) => { if (limitCache.has(productId)) return limitCache.get(productId); let v = null; try { const RD = await import('./operatorReadiness.js'); const p = await RD.getProductProfile({ productId }).catch(() => null); v = p ? (p.economics.maxCpa.value ?? p.economics.targetCpa.value ?? null) : null; } catch { v = null; } limitCache.set(productId, v); return v; };
+  const infoCache = new Map(); const productInfo = async (productId) => { if (infoCache.has(productId)) return infoCache.get(productId); let v = null; try { const RD = await import('./operatorReadiness.js'); const p = await RD.getProductProfile({ productId }).catch(() => null); v = p ? { profitLimit: p.economics.maxCpa.value ?? p.economics.targetCpa.value ?? null, unitMargin: p.economics.unitMargin ?? null, complete: !!p.economics.complete } : null; } catch { v = null; } infoCache.set(productId, v); return v; };
+  const profitLimit = async (productId) => (await productInfo(productId))?.profitLimit ?? null;
   const stockCache = new Map(); const stockOf = async (productId, storeId) => { if (stockCache.has(productId)) return stockCache.get(productId); let v = null; try { const g = await stockGuardForProduct({ productId, storeId }); v = g ? { status: g.status, current: g.currentStock ?? null, minimum: g.minimumStock ?? null } : null; } catch { v = null; } stockCache.set(productId, v); return v; };
-  return { settings, zeroSpend, globalBudget, limitCache, profitLimit, stockOf };
+  return { settings, zeroSpend, globalBudget, limitCache, profitLimit, productInfo, stockOf };
 }
 
 /** every row the user may see, for the period (cached ~20 s per account-set + period) */
-export async function buildRows({ accounts, stores = null, period, compare = false, now = new Date(), noCache = false }) {
-  const today = cairoDate(now); const key = JSON.stringify([[...accounts].sort(), stores ? [...stores].sort() : null, period.from, period.to, !!compare]);
+export async function buildRows({ accounts, stores = null, period, compare = false, basis = 'CALENDAR', operatingDays = 7, now = new Date(), noCache = false }) {
+  const today = cairoDate(now); const key = JSON.stringify([[...accounts].sort(), stores ? [...stores].sort() : null, period.from, period.to, !!compare, basis, operatingDays]);
   const hit = CACHE.get(key); if (!noCache && hit && now.getTime() - hit.at < CACHE_MS) return hit.value;
-  const ctx = await loadContext({ now }); ctx.force = !!noCache; const rows = []; // noCache = a fresh read of the metrics too (selection snapshots, review previews and exports must see the CURRENT numbers)
+  const ctx = await loadContext({ now }); ctx.force = !!noCache; ctx.basis = basis; ctx.operatingDays = operatingDays; const rows = []; // noCache = a fresh read of the metrics too (selection snapshots, review previews and exports must see the CURRENT numbers)
   for (const a of accounts) rows.push(...await accountRows({ adAccountId: a, today, period, compare, now, ctx }));
   const scoped = stores && stores.length ? rows.filter((r) => r.storeId != null && stores.includes(String(r.storeId))) : rows; // a store-restricted user never sees a campaign of another store — nor an unlinked one (its store is unknown)
   const sync = await getSyncStatus().catch(() => null);
@@ -205,7 +227,8 @@ export function normalizeQuery(body = {}, access, today) {
   const pageSize = Math.min(200, Math.max(5, Math.floor(Number(b.pageSize) || 25))); const page = Math.max(1, Math.floor(Number(b.page) || 1));
   let accounts = access.accounts;
   if (b.accounts != null) { if (!Array.isArray(b.accounts)) throw bad('accounts لازم تكون قائمة.'); const want = b.accounts.map(String); const denied = want.filter((a) => !access.accounts.includes(a)); if (denied.length) throw bad('حساب إعلاني خارج نطاق صلاحيتك.', 'ACCOUNT_FORBIDDEN', 403); accounts = want.length ? want : access.accounts; }
-  return { period, compare: b.compare === true, view, logic, conds, search, sort: { k: sortKey, d: dir }, page, pageSize, accounts };
+  const basis = b.basis === 'OPERATING' ? 'OPERATING' : 'CALENDAR'; const od = Number(b.operatingDays); const operatingDays = [3, 7, 14, 30].includes(od) ? od : 7;
+  return { period, basis, operatingDays, compare: b.compare === true, view, logic, conds, search, sort: { k: sortKey, d: dir }, page, pageSize, accounts };
 }
 
 function filterRows(rows, q, zero, { withView = true } = {}) {
@@ -220,17 +243,18 @@ function sortRows(rows, { k, d }) {
 /** the page the screen asks for. NEVER returns more than `pageSize` rows. */
 export async function queryCampaigns({ access, body, now = new Date(), noCache = false }) {
   const today = cairoDate(now); const q = normalizeQuery(body, access, today);
-  const built = await buildRows({ accounts: q.accounts, stores: access.stores, period: q.period, compare: q.compare, now, noCache });
+  const built = await buildRows({ accounts: q.accounts, stores: access.stores, period: q.period, compare: q.compare, basis: q.basis, operatingDays: q.operatingDays, now, noCache });
   const matched = sortRows(filterRows(built.rows, q, built.zero), q.sort); const total = matched.length; const pages = Math.max(1, Math.ceil(total / q.pageSize)); const page = Math.min(q.page, pages);
   const withoutView = filterRows(built.rows, q, built.zero, { withView: false });
   const inView = (v) => withoutView.filter((r) => viewOf(r, built.zero.limit, built.zero.comparison).has(v)); const viewCounts = Object.fromEntries(VIEWS.map((v) => [v, inView(v).length]));
   const viewExposure = Object.fromEntries(VIEWS.map((v) => [v, Math.round(inView(v).reduce((t, r) => t + (r.budget || 0), 0))]));
   const known = matched.filter((r) => r.period.orders != null); const spendAll = matched.reduce((t, r) => t + (r.period.spend || 0), 0); const ordersAll = known.length ? known.reduce((t, r) => t + r.period.orders, 0) : null; const revKnown = matched.filter((r) => r.period.revenue != null); const revenue = revKnown.length ? revKnown.reduce((t, r) => t + r.period.revenue, 0) : null; const spendRev = revKnown.reduce((t, r) => t + r.period.spend, 0);
-  const summary = { campaigns: total, active: matched.filter((r) => r.status === 'ACTIVE').length, paused: matched.filter((r) => r.status === 'PAUSED').length, spend: Math.round(spendAll), orders: ordersAll, cpa: cpaOf(spendAll, ordersAll), revenue: revenue == null ? null : Math.round(revenue), roas: revenue != null && spendRev > 0 ? round(revenue / spendRev, 2) : null };
+  const summary = { campaigns: total, active: matched.filter((r) => r.status === 'ACTIVE').length, paused: matched.filter((r) => r.status === 'PAUSED').length, spend: Math.round(spendAll), orders: ordersAll, cpa: cpaOf(spendAll, ordersAll), revenue: revenue == null ? null : Math.round(revenue), roas: revenue != null && spendRev > 0 ? round(revenue / spendRev, 2) : null,
+    winners: matched.filter((r) => r.status === 'ACTIVE' && r.winner.status === 'WINNER').length, losing: matched.filter((r) => r.status === 'ACTIVE' && (r.losingDays ?? 0) >= 3).length, profit: (() => { const k = matched.filter((r) => r.profit?.value != null); return k.length ? { value: k.reduce((t, r) => t + r.profit.value, 0), campaigns: k.length, of: matched.length, estimated: true } : null; })() };
   const uniq = (fn) => [...new Map(built.rows.map((r) => [fn(r)?.id, fn(r)]).filter(([k]) => k != null)).values()];
   const stale = built.rows.filter((r) => !r.dataFresh).length; const lastSeen = built.rows.length ? built.rows.reduce((t, r) => (new Date(r.lastSeenAt) < t ? new Date(r.lastSeenAt) : t), new Date(built.rows[0].lastSeenAt)) : null;
   return {
-    period: { key: q.period.key, label: q.period.label, from: q.period.from, to: q.period.to, days: q.period.days, prev: q.compare ? q.period.prev : null }, compare: q.compare, view: q.view, logic: q.logic, conds: q.conds, search: q.search, sort: q.sort,
+    period: { key: q.period.key, label: q.period.label, from: q.period.from, to: q.period.to, days: q.period.days, prev: q.compare ? q.period.prev : null }, basis: q.basis, operatingDays: q.operatingDays, compare: q.compare, view: q.view, logic: q.logic, conds: q.conds, search: q.search, sort: q.sort,
     page, pageSize: q.pageSize, pages, total, rows: matched.slice((page - 1) * q.pageSize, page * q.pageSize), viewCounts, viewExposure, summary,
     facets: { accounts: q.accounts, stores: uniq((r) => (r.storeId ? { id: r.storeId, name: r.storeId } : null)), products: uniq((r) => (r.productId != null ? { id: String(r.productId), name: r.productName } : null)) },
     freshness: { generatedAt: built.builtAt, lastSyncAt: built.sync?.lastSuccessAt || null, oldestCampaignSeenAt: lastSeen, staleCampaigns: stale },
@@ -240,7 +264,7 @@ export async function queryCampaigns({ access, body, now = new Date(), noCache =
 
 /** ALL matching rows (ids + fingerprints) for a selection snapshot — still produced server-side, never sent to the browser as rows */
 export async function matchingRows({ access, body, now = new Date(), noCache = false }) {
-  const today = cairoDate(now); const q = normalizeQuery(body, access, today); const built = await buildRows({ accounts: q.accounts, stores: access.stores, period: q.period, compare: q.compare, now, noCache });
+  const today = cairoDate(now); const q = normalizeQuery(body, access, today); const built = await buildRows({ accounts: q.accounts, stores: access.stores, period: q.period, compare: q.compare, basis: q.basis, operatingDays: q.operatingDays, now, noCache });
   return { q, built, rows: sortRows(filterRows(built.rows, q, built.zero), q.sort) };
 }
 export const fingerprint = (r) => `${r.status}|${r.budget ?? ''}|${r.today.spend}|${r.today.orders ?? ''}|${r.period.spend}|${r.period.orders ?? ''}|${r.lastSeenAt ? new Date(r.lastSeenAt).getTime() : ''}|${r.pendingDecision?.id ?? ''}`;

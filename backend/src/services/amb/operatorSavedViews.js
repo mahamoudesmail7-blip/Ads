@@ -9,7 +9,7 @@ import { sanitizeConds, PERIOD_KEYS, SORT_KEYS, FIELDS } from './campaignQuery.j
 import { ROLE_RANK, levelOf } from './operatorV2Access.js';
 
 export const MAX_VIEWS_PER_USER = 50; const SCOPE = 'CAMPAIGNS';
-export const COLUMN_KEYS = ['name', 'account', 'store', 'product', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'roas', 'zones', 'budgetLevel', 'lastSync', 'lastDecision', 'winner', 'recommendation', 'approval', 'eligibility', 'lastPause', 'lastBudgetChange'];
+export const COLUMN_KEYS = ['name', 'account', 'store', 'product', 'status', 'budget', 'spendToday', 'ordersToday', 'cpaToday', 'spendPeriod', 'ordersPeriod', 'cpaPeriod', 'cpa3', 'cpa7', 'cpa14', 'cpa30', 'cpa60', 'roas', 'zones', 'budgetLevel', 'lastSync', 'lastDecision', 'winner', 'recommendation', 'approval', 'eligibility', 'lastPause', 'lastBudgetChange', 'profit', 'target', 'reduce', 'hardStop', 'stock', 'automation'];
 const VIEW_KEYS = ['all', 'open', 'pause', 'up', 'down', 'review'];
 const fail = (status, message, code) => { const e = new Error(message); e.status = status; if (code) e.code = code; return e; };
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -18,7 +18,7 @@ export function sanitizeConfig(cfg) {
   const c = cfg || {}; const out = {};
   out.view = VIEW_KEYS.includes(c.view) ? c.view : 'all';
   out.period = { key: PERIOD_KEYS.includes(c.period?.key) ? c.period.key : 'last7' }; if (out.period.key === 'custom') { const re = /^\d{4}-\d{2}-\d{2}$/; if (!re.test(String(c.period?.from)) || !re.test(String(c.period?.to))) throw fail(400, 'الفترة المخصصة في العرض محتاجة تاريخين صالحين.'); out.period.from = c.period.from; out.period.to = c.period.to; }
-  out.compare = c.compare === true; out.logic = c.logic === 'OR' ? 'OR' : 'AND'; out.conds = sanitizeConds(c.conds); out.search = String(c.search ?? '').slice(0, 100);
+  out.basis = c.basis === 'OPERATING' ? 'OPERATING' : 'CALENDAR'; out.operatingDays = [3, 7, 14, 30].includes(Number(c.operatingDays)) ? Number(c.operatingDays) : 7; out.compare = c.compare === true; out.logic = c.logic === 'OR' ? 'OR' : 'AND'; out.conds = sanitizeConds(c.conds); out.search = String(c.search ?? '').slice(0, 100);
   const sk = c.sort?.k ?? 'spendPeriod'; if (!SORT_KEYS.includes(sk)) throw fail(400, `ترتيب غير مدعوم في العرض: ${sk}`); out.sort = { k: sk, d: Number(c.sort?.d) === 1 ? 1 : -1 };
   const cols = Array.isArray(c.columns) ? c.columns.map(String) : []; const bad = cols.filter((x) => !COLUMN_KEYS.includes(x)); if (bad.length) throw fail(400, `أعمدة غير معروفة: ${bad.slice(0, 3).join(', ')}`); out.columns = cols.length ? [...new Set(cols)] : null;
   out.pageSize = Math.min(200, Math.max(5, Math.floor(Number(c.pageSize) || 25)));
