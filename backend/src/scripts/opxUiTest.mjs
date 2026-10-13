@@ -298,7 +298,8 @@ try {
   await setC('cpaMin', '20'); await setC('cpaMax', '200'); await js(`document.getElementById('cpaSave').click()`); await waitFor(`/v2/.test(document.getElementById('opxCpa').innerText)`, 8000); await sleep(800);
   const pol2 = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
   ok('tomorrow 50–150 → 20–200 is a NEW version (v2) and v1 is kept in the history', pol2.policy.version === 2 && pol2.policy.minCpa === 20 && pol2.policy.history[0].version === 1 && pol2.policy.history[0].minCpa === 50);
-  ok('the waiting plan is flagged "prepared under an older version" — nothing was executed or re-ticked by saving', pol2.plan.stale === true && await js(`/نسخة سياسة أقدم/.test(document.getElementById('opxCpa').innerText)`));
+  ok('saving a new version while the plan is still PREPARED re-evaluates it under v2 right away (selection only: not stale, still PREPARED, nothing executed) and shows the review screen', pol2.plan.stale === false && pol2.plan.policyVersion === 2 && pol2.plan.status === 'PREPARED' && (await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json()).then(o=>o.plans.OPEN.status)`)) === 'PREPARED');
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`); await sleep(300);
   await js(`document.getElementById('cpaOn').click()`); await waitFor(`!!document.querySelector('.confirm-modal-overlay')`);
   ok('enabling asks for confirmation and says it opens nothing', await js(`/لا يفتح أي حملة/.test(document.querySelector('.confirm-modal-overlay').innerText)`));
   await js(`document.querySelector('.confirm-modal-overlay [data-action="confirm"]').click()`); await sleep(1500);
@@ -310,6 +311,36 @@ try {
   ok('Custom shows from / to date fields', await js(`!!document.getElementById('cpaFrom') && !!document.getElementById('cpaTo')`));
   await setC('cpaMin', '300'); await setC('cpaMax', '100'); await js(`document.querySelector('[data-cpaw="30"]').click()`); await sleep(300); await setC('cpaMin', '300'); await setC('cpaMax', '100'); await js(`document.getElementById('cpaSave').click()`); await sleep(1200);
   ok('min above max is refused with a clear message and nothing is saved', await js(`/أقل من أو يساوي/.test(document.getElementById('cpaErr').innerText)`) && (await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`)).policy.version === 2);
+  // ---- the tidy review screen («مراجعة واعتماد الحملات»): opens by itself once, one row per eligible campaign, a checkbox each, one approve button; closing it approves nothing
+  console.log('   · review screen');
+  await js(`fetch('/api/operator/daily-plan/open-cpa',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({minCpa:20,maxCpa:200,window:'7'})}).then(r=>r.status)`);
+  await js(`fetch('/api/operator/daily-plan/open-cpa/prepare',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(r=>r.status)`);
+  const ovR = await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json())`); const rvIds = ovR.plans.OPEN.items.filter((i) => i.evidence?.cpaPolicy?.verdict === 'ELIGIBLE' && i.selectable).map((i) => i.campaignId).sort();
+  await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.rv.seen': '' } });
+  ok('the review screen opens BY ITSELF when eligible campaigns are waiting', rvIds.length > 0 && await waitFor(`!!document.querySelector('.opx-rv')`, 30000), String(rvIds.length));
+  ok('it states the range and the basis, and lists exactly the eligible campaigns — one row each with a checkbox', await js(`(()=>{const t=document.querySelector('.opx-rv').innerText; return /الحملات اللي السيستم هيفتحها/.test(t) && /20/.test(t) && /200/.test(t) && /آخر 7 أيام/.test(t) && document.querySelectorAll('.opx-rv-row').length === ${rvIds.length} && document.querySelectorAll('.opx-rv-row input[type=checkbox]').length === ${rvIds.length}})()`));
+  ok('each row shows the product, CPA + orders for the last 7 days and for the last 30 days, and the budget', await js(`(()=>{const r=document.querySelector('.opx-rv-row'); return r.querySelectorAll('.opx-rv-m').length === 2 && /أوردر/.test(r.querySelectorAll('.opx-rv-m')[0].innerText) && /أوردر/.test(r.querySelectorAll('.opx-rv-m')[1].innerText) && !!r.querySelector('.opx-rv-prod b') && !!r.querySelector('.opx-rv-b')})()`));
+  ok('every eligible row starts ticked and the approve button counts them', await js(`[...document.querySelectorAll('.opx-rv-row input[type=checkbox]')].every(c=>c.checked) && new RegExp('اعتماد وفتح \\\\(${rvIds.length}\\\\)').test(document.getElementById('rvOk').innerText)`));
+  ok('the screen says what mode it is in (the test server is SHADOW → simulation only, nothing reaches Meta)', await js(`/محاكاة فقط/.test(document.querySelector('.opx-rv').innerText)`));
+  if (rvIds.length > 1) {
+    await js(`document.querySelector('.opx-rv-row input[type=checkbox]').click()`); await waitFor(`document.querySelectorAll('.opx-rv-row input[type=checkbox]:checked').length === ${rvIds.length - 1}`, 8000);
+    const ovR2 = await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json())`);
+    ok('un-ticking one campaign is saved on the server at once and the count follows (approve button, KPI)', ovR2.plans.OPEN.items.filter((i) => i.selected && i.evidence?.cpaPolicy?.verdict === 'ELIGIBLE').length === rvIds.length - 1 && await js(`new RegExp('اعتماد وفتح \\\\(${rvIds.length - 1}\\\\)').test(document.getElementById('rvOk').innerText)`));
+    await js(`document.getElementById('rvNone').click()`); await waitFor(`document.querySelectorAll('.opx-rv-row input[type=checkbox]:checked').length === 0`, 8000);
+    ok('«إلغاء الكل» unticks everything and disables approve', await js(`document.getElementById('rvOk').disabled`));
+    await js(`document.getElementById('rvAll').click()`); await waitFor(`document.querySelectorAll('.opx-rv-row input[type=checkbox]:checked').length === ${rvIds.length}`, 8000);
+    ok('«تحديد الكل» re-ticks every eligible campaign', await js(`!document.getElementById('rvOk').disabled`));
+  }
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`); await sleep(300);
+  ok('closing the screen (Esc) is NOT an approval — the plan is still PREPARED and nothing was executed', !(await js(`!!document.querySelector('.opx-rv')`)) && (await js(`fetch('/api/operator/daily-plan/overview').then(r=>r.json()).then(o=>o.plans.OPEN.status)`)) === 'PREPARED');
+  await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('cpaReview')`); await sleep(1500);
+  ok('after it was dismissed it does not pop up again for the same set of campaigns', !(await js(`!!document.querySelector('.opx-rv')`)));
+  await js(`document.getElementById('cpaReview').click()`);
+  ok('the «مراجعة واعتماد الحملات» button reopens it on demand', await waitFor(`!!document.querySelector('.opx-rv')`, 8000));
+  await js(`document.getElementById('rvLater').click()`); await sleep(300);
+  await goto('/ai-media-buyer.html#operator', { width: 390, height: 800, mobile: true, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('cpaReview')`); await js(`document.getElementById('cpaReview').click()`); await waitFor(`!!document.querySelector('.opx-rv')`, 8000);
+  ok('on a phone the screen fits the width (no horizontal scroll) and the approve button stays reachable', await js(`(()=>{const r=document.querySelector('.opx-rv').getBoundingClientRect(), b=document.getElementById('rvOk').getBoundingClientRect(); return r.right <= window.innerWidth + 1 && r.left >= -1 && b.bottom <= window.innerHeight + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1})()`));
+  await js(`document.getElementById('rvLater').click()`); await sleep(300);
   // the popup at the open time carries the policy summary (plan prepared under the policy, not dismissed)
   spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs'), '--popup'], { stdio: 'ignore' });
   await js(`fetch('/api/operator/daily-plan/open-cpa',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({minCpa:20,maxCpa:200,window:'7'})}).then(r=>r.status)`);

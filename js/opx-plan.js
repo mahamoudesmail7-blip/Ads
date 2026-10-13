@@ -5,6 +5,7 @@
 import { api } from './api-client.js';
 import { advPanel, wireAdv, advFrom, advDirty } from './opx-open-adv.js';
 import { mountZeroSpend } from './opx-zero-spend.js';
+import { openReview, closeReview, refreshReview, isReviewOpen } from './opx-open-review.js';
 import { E, $, num, egp, cairoTime, cairoDateTime, ago, ICONS, kpiCard, pill, skeletonRows, skeletonCards, openDrawer, closeDrawer, toast, confirmModal, showLockNotice, gatesFor, store, thumb, hydrateThumbs } from './opx-ui.js';
 import { BLOCK_AR, ELIG_AR, ITEM_AR, ITEM_PILL } from './ai-operator-daily.js';
 
@@ -39,7 +40,7 @@ export async function mountPlanWorkspace(root, type, ctx) {
   clearTimeout(P.rzTimer); if (!P.rz) { P.rz = true; window.addEventListener('resize', () => { clearTimeout(P.rzTimer); P.rzTimer = setTimeout(() => { if (P.ov && P.root && document.body.contains(P.root) && layoutOf() !== P.layout) draw(); }, 250); }); }
   P.timer = setInterval(() => { if (!document.body.contains(root)) return clearInterval(P.timer); tickCountdown(); }, 1000);
 }
-export function unmountPlanWorkspace() { clearInterval(P.timer); clearTimeout(P.prepTimer); }
+export function unmountPlanWorkspace() { clearInterval(P.timer); clearTimeout(P.prepTimer); closeReview(); }
 
 async function load({ quiet = false } = {}) {
   try { P.ov = await api.get(`${API}/overview`); } catch (e) { P.root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; return; }
@@ -47,6 +48,7 @@ async function load({ quiet = false } = {}) {
   await loadCpa();
   await ensurePeriodMetrics();
   if (!quiet || document.body.contains(P.root)) draw();
+  maybeAutoReview();
   const preparing = (P.ov.preparing || []).some((p) => !p.error);
   clearTimeout(P.prepTimer); if (preparing) P.prepTimer = setTimeout(() => load({ quiet: true }), 5000);
   const running = P.ov.plans?.[P.type] && ['APPROVED', 'RUNNING'].includes(P.ov.plans[P.type].status);
@@ -80,6 +82,7 @@ function cpaPanel(p, editable) {
       ${f.window === 'custom' ? `<label class="opx-field"><span>من</span><input class="opx-input" type="date" id="cpaFrom" value="${E(f.from)}" ${admin ? '' : 'disabled'}></label><label class="opx-field"><span>إلى</span><input class="opx-input" type="date" id="cpaTo" value="${E(f.to)}" ${admin ? '' : 'disabled'}></label>` : ''}</div>
     <div id="cpaErr"></div>
     <div class="opx-cpa-now"><div><b>السياسة المحفوظة الحالية</b><p>${polText}</p></div><div class="opx-cpa-btns">
+      <button class="opx-btn success" id="cpaReview" ${complete && p && ['PREPARED', 'APPROVED'].includes(p.status) ? '' : 'disabled'} title="${complete ? 'شاشة مرتبة: الحملات اللي هتتفتح + علامة لكل واحدة + اعتماد' : 'كمّل حدود الـ CPA الأول'}">${ICONS.check} مراجعة واعتماد الحملات${pv?.eligible ? ` (${num(pv.eligible)})` : ''}</button>
       <button class="opx-btn" id="cpaPreview" ${complete ? '' : 'disabled'} title="${complete ? '' : 'كمّل حدود الـ CPA الأول'}">${ICONS.eye} معاينة النتائج</button>
       <button class="opx-btn primary" id="cpaPrepare" ${admin && complete && p && ['PREPARED', 'APPROVED'].includes(p.status) && !dirty ? '' : 'disabled'} title="${dirty ? 'احفظ التعديلات الأول' : ''}">${ICONS.target} تجهيز الحملات المطابقة</button>
       <button class="opx-btn ${dirty ? 'accent' : ''}" id="cpaSave" ${admin && dirty ? '' : 'disabled'} title="${!admin ? 'للأدمن فقط' : dirty ? '' : 'مفيش تعديلات لحفظها'}">${ICONS.history} حفظ السياسة كنسخة جديدة</button><button class="opx-btn ghost sm" id="cpaHist">سجل النسخ</button></div></div>
@@ -94,7 +97,8 @@ function wireCpa(p) {
   const err = (m) => { $('cpaErr').innerHTML = m ? `<div class="opx-note bad">⚠️ ${E(m)}</div>` : ''; };
   if ($('cpaSave')) $('cpaSave').onclick = async () => {
     try { const r = await api.put(`${API}/open-cpa`, { minCpa: f.minCpa, maxCpa: f.maxCpa, window: f.window, from: f.from, to: f.to, minPurchases: f.minPurchases, maxDataAgeMin: f.maxDataAgeMin }); P.cpaDirty = false; P.cpaForm = null;
-      toast(r.changed ? `اتحفظت نسخة جديدة v${r.policy.version}${r.reconcile?.superseded?.length ? ' — الخطة المعتمدة اتلغت ومحتاجة اعتماد جديد' : ''}. مفيش حملة اتفتحت.` : 'مفيش تغيير يتحفظ', r.reconcile?.superseded?.length ? 'warning' : undefined); await load(); }
+      toast(r.changed ? `اتحفظت نسخة جديدة v${r.policy.version}${r.reconcile?.superseded?.length ? ' — الخطة المعتمدة اتلغت ومحتاجة اعتماد جديد' : ''}. مفيش حملة اتفتحت.` : 'مفيش تغيير يتحفظ', r.reconcile?.superseded?.length ? 'warning' : undefined); await load();
+      if (r.changed && P.cpa?.plan?.status === 'PREPARED' && P.ctx.isAdmin) { const pr = await api.post(`${API}/open-cpa/prepare`, {}); if (pr.ok) { toast(`اتجهزت: ${num(pr.counts.eligible)} مؤهلة · ${num(pr.counts.excluded)} مستبعدة من ${num(pr.counts.matched)} مطابقة. مفيش حملة اتفتحت.`); await load(); if (pr.counts.eligible) showReview(); } else toast(pr.message || 'التجهيز مش متاح دلوقتي', 'warning'); } }
     catch (e) { err((e.details || [e.message]).join(' ')); }
   };
   if ($('cpaOn')) $('cpaOn').onclick = async () => {
@@ -104,6 +108,7 @@ function wireCpa(p) {
   };
   if ($('cpaApprove')) $('cpaApprove').onclick = async () => { try { await api.post(`${API}/open-cpa/enable`, { enabled: true, confirm: true }); toast('اتعتمدت النسخة الحالية'); await load(); } catch (e) { err(e.message); } };
   if ($('cpaPreview')) $('cpaPreview').onclick = () => cpaPreviewDrawer();
+  if ($('cpaReview')) $('cpaReview').onclick = () => showReview();
   if ($('cpaHist')) $('cpaHist').onclick = () => openDrawer({ title: 'سجل نسخ سياسة الفتح حسب CPA', body: (d.policy.history || []).length ? `<table class="opx-table"><thead><tr><th>النسخة</th><th class="num">أقل</th><th class="num">أعلى</th><th>الفترة</th><th>اتبدلت</th></tr></thead><tbody>${d.policy.history.map((h) => `<tr><td>v${h.version}${h.enabled ? ' ' + pill('كانت مفعّلة', 'green') : ''}</td><td class="num">${h.minCpa ?? '—'}</td><td class="num">${h.maxCpa ?? '—'}</td><td>${E(WIN_AR[h.window] || h.window)}${h.window === 'custom' ? ' ' + E(h.from) + ' → ' + E(h.to) : ''}</td><td>${E(cairoDateTime(h.replacedAt))}</td></tr>`).join('')}</tbody></table>` : '<div class="opx-empty">النسخة الأولى — مفيش سجل بعد.</div>' });
   if ($('cpaPrepare')) $('cpaPrepare').onclick = async () => {
     if (p?.status === 'APPROVED' && !(await confirmModal({ title: 'تجهيز على خطة معتمدة', message: 'الخطة معتمدة. التجهيز هيلغي النسخة المعتمدة وينشئ نسخة جديدة محتاجة اعتماد جديد. مفيش تنفيذ.', confirmLabel: 'متابعة' }))) return;
@@ -120,6 +125,36 @@ function cpaPreviewDrawer() {
       <div class="opx-scroll" style="max-height:60vh"><table class="opx-table"><thead><tr><th>الحملة</th><th>الحكم</th><th class="num">CPA</th><th class="num">أوردرات</th><th>السبب</th></tr></thead><tbody>${rows.map((r) => `<tr><td><b>${E(r.productName || '—')}</b><small>${E(r.campaignName || r.campaignId)}</small></td><td>${pill(CPA_V[r.verdict][1], CPA_V[r.verdict][0])}</td><td class="num">${r.cpa == null ? 'غير متاح' : num(r.cpa)}</td><td class="num">${r.purchases == null ? '—' : num(r.purchases)}</td><td class="opx-why">${r.verdict === 'ELIGIBLE' ? 'اجتازت كل الشروط' : E((r.reasons || []).join(' · ')) + ((r.guardCodes || []).length ? '<small>' + E(r.guardCodes.map((c) => BLOCK_AR[c] || c).join(' · ')) + '</small>' : '')}</td></tr>`).join('') || '<tr><td colspan="5" class="opx-empty">مفيش</td></tr>'}</tbody></table></div>` });
     panel.querySelectorAll('[data-f]').forEach((b) => { b.onclick = () => { flt = b.dataset.f; show(); }; }); };
   show();
+}
+// ---- «مراجعة واعتماد»: the tidy review screen (opx-open-review.js) over the SAME plan, selection and approve path as the table. It opens by itself ONCE per distinct set of eligible campaigns; closing it is not an approval.
+const rvRows = (pl) => (pl?.items || []).filter((i) => i.evidence?.cpaPolicy).map((i) => { const r = mkRow(i.campaignId, i, P.bmap.get(i.campaignId)); const cp = i.evidence.cpaPolicy;
+  return { id: i.campaignId, product: r.product, productId: r.productId, name: r.name, store: r.storeId, selected: !!i.selected, selectable: !!i.selectable, eligible: cp.verdict === 'ELIGIBLE', matched: !!cp.matched, reasons: cp.reasons || [], d7: mt(r, 'd7'), d30: mt(r, 'd30'), budget: r.budget, special: i.eligibility === 'NEEDS_SPECIAL_APPROVAL' ? 'اتقفلت يدويًا — محتاجة موافقة خاصة' : '' }; });
+function rvNote() {
+  const c = P.ov?.control || {};
+  if (c.emergencyStop) return { title: 'إيقاف الطوارئ مفعّل', text: 'الاعتماد هيتمنع لحد ما تلغي الطوارئ.' };
+  if (c.mode === 'AUTOPILOT') return { title: 'الوضع الحالي AUTOPILOT — الاعتماد اليدوي لجدول الفتح هيتمنع', text: 'السيرفر بينفّذ الجداول المعتمدة يدويًا في وضع APPROVAL فقط. الاختيار بيتحفظ، لكن الفتح الفعلي مش هيتم من هنا طالما الوضع AUTOPILOT.' };
+  if (c.mode === 'SHADOW' || c.mode === 'OFF') return { title: 'محاكاة فقط', text: 'الوضع الحالي ' + (MODE_AR[c.mode] || c.mode) + ' — الاعتماد هيسجل خطوات تجريبية ومفيش أي كتابة على Meta.' };
+  if (c.writesLocked || !c.allowOpen) return { title: c.writesLocked ? 'قفل كتابة Meta مقفول' : 'صلاحية الفتح مقفولة', text: 'الاعتماد هيتمنع لحد ما تفتحهم بنفسك من إعدادات الأمان.' };
+  return null;
+}
+function showReview() {
+  if (!plan() || !P.cpa?.policy) return;
+  const sels = (fn) => { const o = {}; for (const i of plan()?.items || []) { const v = fn(i); if (v !== undefined) o[i.campaignId] = v; } return o; };
+  openReview(() => { const pl = plan(); return { policy: P.cpa.policy, editable: !!pl && pl.status === 'PREPARED' && P.ctx.isAdmin, note: rvNote(), rows: rvRows(pl) }; }, {
+    toggle: async (id, checked) => { const it = plan()?.items.find((x) => x.campaignId === id); let special = [];
+      if (checked && it?.eligibility === 'NEEDS_SPECIAL_APPROVAL') { if (!(await confirmModal({ title: '⚠️ موافقة خاصة', message: 'الحملة «' + (it.campaignName || it.campaignId) + '» اتوقفت ' + (it.evidence?.pausedBy === 'MANUAL' ? 'يدويًا' : 'لسبب غير معروف') + '. تأكيد إنك عايز تفتحها؟', confirmLabel: 'موافقة خاصة' }))) return; special = [id]; }
+      await saveSelection({ [id]: checked }, special); },
+    all: () => saveSelection(sels((i) => (i.selectable && i.evidence?.cpaPolicy?.verdict === 'ELIGIBLE' && !i.selected ? true : undefined))),
+    none: () => saveSelection(sels((i) => (i.selected ? false : undefined))),
+    approve: async () => { const pl = plan(); return pl ? approve(pl) : false; },
+    openTable: () => $('opxPlanBody')?.scrollIntoView?.({ behavior: 'smooth' }), dismiss: () => {},
+  });
+}
+function maybeAutoReview() {
+  if (P.type !== 'OPEN' || isReviewOpen() || !P.ctx?.isAdmin || !P.root || !document.body.contains(P.root)) return;
+  const pl = plan(); if (!pl || pl.status !== 'PREPARED') return;
+  const ids = (pl.items || []).filter((i) => i.selected && i.evidence?.cpaPolicy?.verdict === 'ELIGIBLE').map((i) => i.campaignId).sort(); if (!ids.length) return;
+  const key = pl.id + ':' + ids.join(','); if (store.get('opx.rv.seen') === key) return; store.set('opx.rv.seen', key); showReview();
 }
 const plansOfType = () => [P.ov?.plans?.[P.type], ...((P.ov?.oneOffPlans || []).filter((p) => p.type === P.type))].filter(Boolean);
 const plan = () => { const all = plansOfType(); return all.find((p) => p.key === P.sel) || P.ov?.plans?.[P.type] || all[0] || null; };
@@ -257,6 +292,7 @@ function draw() {
   wire(p, editable);
   if (P.type === 'PAUSE') { const head = $('opxPlanBody')?.querySelector('.opx-head'); if (head) { const host = document.createElement('div'); host.id = 'opxZeroSpend'; head.insertAdjacentElement('afterend', host); mountZeroSpend(host, P.ctx); } } // the daily zero-order spend check lives on this page, right under the header
   hydrateThumbs($('opxPlanBody'));
+  refreshReview();
 }
 function countdownHtml(at) {
   if (!at) return '<div><b>—</b><small>الموعد القادم</small></div>';
@@ -384,12 +420,12 @@ function wire(p, editable) {
 }
 async function approve(p) {
   const m = META[P.type]; const sel = p.items.filter((i) => i.selected); const c = P.ov.control || {}; const live = c.mode === 'APPROVAL' && !c.emergencyStop && !c.halted && !c.writesLocked && !!c[m.permKey];
-  if (c.mode === 'APPROVAL' && !live) { showLockNotice({ what: `اعتماد خطة ${m.verb} الحملات`, gates: gatesFor(c, m.permKey, m.verb) }); return; } // an intentional lock, explained — not an error, and no request is sent
-  if (P.approving) { toast('الاعتماد شغال بالفعل — استنى النتيجة.', 'warning'); return; }
+  if (c.mode === 'APPROVAL' && !live) { showLockNotice({ what: `اعتماد خطة ${m.verb} الحملات`, gates: gatesFor(c, m.permKey, m.verb) }); return false; } // an intentional lock, explained — not an error, and no request is sent
+  if (P.approving) { toast('الاعتماد شغال بالفعل — استنى النتيجة.', 'warning'); return false; }
   const ex = p.exposure || { count: sel.length, exposedBudget: 0 }; const confirmBody = { count: ex.count, exposedBudget: ex.exposedBudget, campaignIds: (ex.campaignIds || sel.map((i) => i.campaignId || i.id)).slice().sort(), planVersion: p.version, policyVersion: p.evidence?.openCpa?.version ?? null }; const msg = `${ex.count} حملة · إجمالي ميزانية يومية ${egp(ex.exposedBudget)} — هتتعمل لها ${m.verb} ${live ? 'فعليًا على Meta واحدة واحدة (بفاصل ' + (c.spacingSeconds ?? 3) + ' ثواني، مع إعادة تحقق قبل كل واحدة وقراءة من Meta بعدها).' : 'كتنفيذ تجريبي (SHADOW): كل خطوة بتتسجل لكن مفيش أي كتابة على Meta.'}`;
-  if (!(await confirmModal({ title: `اعتماد خطة ${m.verb} الحملات`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة)', danger: !!live }))) return;
+  if (!(await confirmModal({ title: `اعتماد خطة ${m.verb} الحملات`, message: msg, confirmLabel: live ? 'اعتماد وتنفيذ' : 'اعتماد (محاكاة)', danger: !!live }))) return false;
   P.approving = p.id; const abtn = document.querySelector('[data-act="approve"]'); const alabel = abtn?.innerHTML; if (abtn) { abtn.disabled = true; abtn.textContent = '⏳ جاري الاعتماد…'; }
-  try { const r = await api.post(`${API}/${p.id}/approve`, { confirm: confirmBody }); if (!r.ok && r.status === 'BLOCKED') { showLockNotice({ what: `اعتماد خطة ${m.verb} الحملات`, gates: gatesFor(c, m.permKey, m.verb), message: r.message }); await load(); return; } if (!r.ok) { toast(`${r.message || 'الاعتماد اتمنع'}${(r.violations || []).length ? ' — ' + r.violations.slice(0, 4).map((v) => v.name || v.campaignId).join('، ') : ''}`, 'error'); return; } toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW (مفيش كتابة على Meta)'); await load(); } catch (e) { const st = e?.status; toast(st === 403 ? 'مفيش صلاحية: الاعتماد محتاج ADMIN.' : st >= 500 ? 'خطأ في السيرفر — مفيش تنفيذ اتأكد، راجع سجل التنفيذ.' : (e.message || 'الاعتماد ما تمّش'), 'error'); }
+  try { const r = await api.post(`${API}/${p.id}/approve`, { confirm: confirmBody }); if (!r.ok && r.status === 'BLOCKED') { showLockNotice({ what: `اعتماد خطة ${m.verb} الحملات`, gates: gatesFor(c, m.permKey, m.verb), message: r.message }); await load(); return false; } if (!r.ok) { toast(`${r.message || 'الاعتماد اتمنع'}${(r.violations || []).length ? ' — ' + r.violations.slice(0, 4).map((v) => v.name || v.campaignId).join('، ') : ''}`, 'error'); return false; } toast(r.executionMode === 'LIVE' ? 'اتعتمدت — التنفيذ بدأ' : 'اتعتمدت — محاكاة SHADOW (مفيش كتابة على Meta)'); await load(); return true; } catch (e) { const st = e?.status; toast(st === 403 ? 'مفيش صلاحية: الاعتماد محتاج ADMIN.' : st >= 500 ? 'خطأ في السيرفر — مفيش تنفيذ اتأكد، راجع سجل التنفيذ.' : (e.message || 'الاعتماد ما تمّش'), 'error'); return false; }
   finally { P.approving = null; if (abtn && document.body.contains(abtn)) { abtn.disabled = false; if (alabel != null) abtn.innerHTML = alabel; } }
 }
 async function preview(p) {
