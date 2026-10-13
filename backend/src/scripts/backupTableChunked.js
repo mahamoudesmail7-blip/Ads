@@ -15,7 +15,8 @@ const arg = (k, d = null) => { const a = process.argv.find((x) => x.startsWith(`
 const TABLE = arg('table', 'meta_performance_snapshots'); if (!/^[a-z_][a-z0-9_]*$/.test(TABLE)) throw new Error('bad table name');
 const OUT = arg('out', `backups/${TABLE}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}`); const PAGE = Number(arg('page', 10000)); const PART_ROWS = Number(arg('part', 100000)); const VERIFY = process.argv.includes('--verify');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-let prisma = new PrismaClient(); const reconnect = async () => { try { await prisma.$disconnect(); } catch { /* gone */ } prisma = new PrismaClient(); };
+const mk = () => (process.env.DIRECT_DATABASE_URL && !process.argv.includes('--pooled') ? new PrismaClient({ datasourceUrl: process.env.DIRECT_DATABASE_URL }) : new PrismaClient()); // the direct (non-pooler) endpoint holds long reads far better
+let prisma = mk(); const reconnect = async () => { try { await prisma.$disconnect(); } catch { /* gone */ } prisma = mk(); };
 async function q(sql, ...params) { for (let i = 0; ; i++) { try { return await prisma.$queryRawUnsafe(sql, ...params); } catch (e) { if (i >= 8) throw e; console.log(`[chunked] retry ${i + 1} after: ${String(e.message).split('\n').filter(Boolean).pop().slice(0, 100)}`); await reconnect(); await sleep(1500 * (i + 1)); } } }
 const jsonLine = (r) => JSON.stringify(r, (k, v) => (typeof v === 'bigint' ? v.toString() : v)) + '\n';
 const sha256File = (f) => new Promise((res, rej) => { const h = createHash('sha256'); createReadStream(f).on('data', (d) => h.update(d)).on('end', () => res(h.digest('hex'))).on('error', rej); });
