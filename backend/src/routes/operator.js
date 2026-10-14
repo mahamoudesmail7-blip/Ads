@@ -21,6 +21,7 @@ import { listExecutionHistory, todaySummary } from '../services/amb/executionHis
 import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
 import * as SP from '../services/amb/smartPricing.js';
 import * as OC from '../services/amb/openCpaPolicy.js';
+import { openCpaReport, openCpaReportCsv } from '../services/amb/openCpaReport.js';
 import * as INT from '../services/amb/integration.js';
 import * as AMBP from '../services/amb/ambProducts.js';
 import { getProductPerformance } from '../services/amb/productPerformance.js';
@@ -193,6 +194,10 @@ router.get('/production-readiness', asyncRoute(async (req, res) => res.json(awai
 // ---- «الفتح حسب CPA»: a saved, versioned opening policy. Saving ≠ enabling; neither opens a campaign. Preparing only SELECTS (approval + live revalidation are unchanged).
 router.get('/daily-plan/open-cpa', asyncRoute(async (req, res) => res.json(await daily.getOpenCpaOverview({ now: clockNow() }))));
 router.put('/daily-plan/open-cpa', ADMIN, asyncRoute(async (req, res) => { const r = await OC.saveOpenCpaPolicy({ patch: req.body || {}, userId: req.user.id, now: clockNow() }); const reconcile = r.changed ? await daily.reconcileOpenCpaPlans({ userId: req.user.id, now: clockNow() }) : null; res.json({ ...r, reconcile }); }));
+// read-only: what blocks the unattended opening right now + which products are cleared to run without a click; and «إيه اللي اتفتح» (JSON + CSV of the same rows)
+router.get('/daily-plan/open-cpa/automatic-status', asyncRoute(async (req, res) => res.json(await daily.getOpenCpaAutomaticStatus())));
+router.get('/daily-plan/open-cpa/report', asyncRoute(async (req, res) => res.json(await openCpaReport({ from: req.query.from || null, to: req.query.to || null, now: clockNow() }))));
+router.post('/daily-plan/open-cpa/report/export', asyncRoute(async (req, res) => { const r = await openCpaReportCsv({ from: req.body?.from || null, to: req.body?.to || null, now: clockNow() }); res.setHeader('Content-Type', 'text/csv; charset=utf-8'); res.setHeader('Content-Disposition', `attachment; filename="${r.filename}"`); res.setHeader('X-Row-Count', String(r.count)); res.send(r.csv); }));
 router.post('/daily-plan/open-cpa/enable', ADMIN, asyncRoute(async (req, res) => res.json(await OC.setOpenCpaEnabled({ enabled: req.body?.enabled, confirm: req.body?.confirm, userId: req.user.id, now: clockNow() }))));
 router.post('/daily-plan/open-cpa/prepare', ADMIN, asyncRoute(async (req, res) => res.json(await daily.prepareOpenCpaMatches({ planId: req.body?.planId, userId: req.user.id, reselect: Array.isArray(req.body?.reselect) ? req.body.reselect : [], confirmSpecial: req.body?.confirmSpecial === true, now: clockNow() }))));
 // ---- Integration Layer: one versioned policy view per product / campaign, the link map and a live health check (read-only)

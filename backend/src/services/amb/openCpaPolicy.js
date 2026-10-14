@@ -42,8 +42,9 @@ export function normalizeOpenCpa(raw = {}) {
 /** Arabic error strings; `requireRange` is true when enabling / preparing */
 export function validateOpenCpa(p, { today = cairoDate(new Date()), requireRange = false } = {}) {
   const e = [];
-  const num = (k, label) => { const v = p[k]; if (v === null) return; if (!Number.isFinite(v) || v <= 0) e.push(`${label}: لازم يكون رقم أكبر من صفر.`); else if (v > 100000) e.push(`${label}: أكبر من اللازم.`); };
-  num('minCpa', 'أقل CPA'); num('maxCpa', 'أعلى CPA');
+  // 2026-10-14: the LOWER limit may be 0 (= «من صفر»: no floor); the UPPER limit must stay above zero
+  const num = (k, label, allowZero = false) => { const v = p[k]; if (v === null) return; if (!Number.isFinite(v) || v < 0 || (v === 0 && !allowZero)) e.push(`${label}: لازم يكون ${allowZero ? 'رقم صفر أو أكبر' : 'رقم أكبر من صفر'}.`); else if (v > 100000) e.push(`${label}: أكبر من اللازم.`); };
+  num('minCpa', 'أقل CPA', true); num('maxCpa', 'أعلى CPA');
   if (requireRange && (p.minCpa === null || p.maxCpa === null)) e.push('لازم تحدد أقل CPA وأعلى CPA — السيستم مش بيفترض نطاق.');
   if (p.minCpa !== null && p.maxCpa !== null && p.minCpa > p.maxCpa) e.push('أقل CPA لازم يكون أقل من أو يساوي أعلى CPA.');
   if (!OPEN_CPA_WINDOWS.includes(p.window)) e.push('فترة القياس لازم تكون: اليوم / 7 / 30 / 90 / مخصصة.');

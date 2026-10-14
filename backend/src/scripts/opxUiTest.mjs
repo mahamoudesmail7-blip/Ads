@@ -341,6 +341,20 @@ try {
   await goto('/ai-media-buyer.html#operator', { width: 390, height: 800, mobile: true, ls: { 'opx.ws': 'open' } }); await waitFor(`!!document.getElementById('cpaReview')`); await js(`document.getElementById('cpaReview').click()`); await waitFor(`!!document.querySelector('.opx-rv')`, 8000);
   ok('on a phone the screen fits the width (no horizontal scroll) and the approve button stays reachable', await js(`(()=>{const r=document.querySelector('.opx-rv').getBoundingClientRect(), b=document.getElementById('rvOk').getBoundingClientRect(); return r.right <= window.innerWidth + 1 && r.left >= -1 && b.bottom <= window.innerHeight + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1})()`));
   await js(`document.getElementById('rvLater').click()`); await sleep(300);
+  // ---- «من 0 لحد 150», the honest automatic-status card, and «إيه اللي اتفتح» (report + CSV)
+  console.log('   · automatic status, min 0, report');
+  await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.rv.seen': 'x' } }); await waitFor(`!!document.getElementById('cpaMin') && !!document.querySelector('.opx-cpa-auto')`, 20000);
+  ok('the panel says whether the unattended opening can run and WHY NOT (the test server is not in AUTOMATIC), plus the product rule', await js(`(()=>{const t=document.querySelector('.opx-cpa-auto').innerText; return /مش هيشتغل لوحده/.test(t) && /الوضع العام مش AUTOMATIC/.test(t) && /AUTOMATIC/.test(t) && !!document.getElementById('cpaReport')})()`));
+  await setC('cpaMin', '0'); await setC('cpaMax', '150'); await js(`document.getElementById('cpaSave').click()`); await sleep(2500);
+  await js(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`); await sleep(300);
+  const pol0 = await js(`fetch('/api/operator/daily-plan/open-cpa').then(r=>r.json())`);
+  ok('a lower limit of 0 is accepted and kept as 0 (no «must be above zero» refusal)', pol0.policy.minCpa === 0 && pol0.policy.maxCpa === 150 && !(await js(`/أكبر من صفر/.test(document.getElementById('cpaErr')?.innerText || '')`)), JSON.stringify(pol0.policy).slice(0, 200));
+  ok('the field says 0 means no minimum', await js(`/0 = من غير حد أدنى/.test(document.getElementById('opxCpa').innerText)`));
+  await js(`document.getElementById('cpaReport').click()`); await waitFor(`!!document.querySelector('.opx-drawer.open #rpCsv')`, 15000);
+  ok('«إيه اللي اتفتح» opens a report with the date range, a summary line and the CSV export button — it changes nothing', await js(`(()=>{const d=document.querySelector('.opx-drawer.open'); return /إيه اللي اتفتح/.test(d.innerText) && /اتفتحت \\(Meta أكد\\)/.test(d.innerText) && !!d.querySelector('#rpFrom') && !!d.querySelector('#rpTo') && !!d.querySelector('#rpCsv')})()`));
+  const csvRes = await js(`fetch('/api/operator/daily-plan/open-cpa/report/export',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}).then(async r=>({s:r.status,t:r.headers.get('content-type'),d:r.headers.get('content-disposition'),b:[...new Uint8Array((await r.arrayBuffer()).slice(0,3))].join()}))`);
+  ok('the export endpoint answers a UTF-8 CSV attachment with a BOM', csvRes.s === 200 && /text\/csv/.test(csvRes.t) && /open-by-cpa-/.test(csvRes.d) && csvRes.b === '239,187,191', JSON.stringify(csvRes)); // the raw bytes EF BB BF (fetch().text() would strip the BOM)
+  await js(`document.getElementById('opxDrawerX').click()`); await sleep(300);
   // the popup at the open time carries the policy summary (plan prepared under the policy, not dismissed)
   spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedUiFixtures.mjs'), '--popup'], { stdio: 'ignore' });
   await js(`fetch('/api/operator/daily-plan/open-cpa',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({minCpa:20,maxCpa:200,window:'7'})}).then(r=>r.status)`);

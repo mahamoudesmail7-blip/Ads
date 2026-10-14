@@ -568,10 +568,25 @@ export async function reconcileOpenCpaPlans({ userId = null, now = new Date(), s
 /** AUTOMATIC mode only — DORMANT: every gate below must be open (mode AUTOMATIC, writes unlocked, permission «فتح» ON, scheduled execution ON, no Emergency Stop / halt, the AUTOPILOT readiness gate green,
  *  the policy ENABLED + APPROVED at its CURRENT version, a plan prepared under that version from FRESH data, the due time reached). It then un-ticks everything that is not ELIGIBLE by the policy and runs the SAME
  *  queue as an approved plan (live revalidation → one write → read-back per campaign). SHADOW / APPROVAL / MANUAL never come through here. */
-export async function runOpenCpaAutomatic({ now = new Date(), deps = {} } = {}) {
-  const cfg = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig(); const pol = await getOpenCpaPolicy(); const why = [];
+/** Every reason the unattended «open by CPA» runner would NOT run right now (empty = clear). One list for the runner and for the read-only status shown to the owner. */
+export function openCpaAutomaticBlockers({ cfg, dcfg, pol }) {
+  const why = [];
   if (cfg.mode !== 'AUTOPILOT') why.push('MODE_NOT_AUTOMATIC'); if (cfg.emergency_stop) why.push('EMERGENCY_STOP'); if (cfg.writesLocked ?? metaWritesLocked()) why.push('META_WRITES_LOCKED'); if (cfg.execPermissions?.open !== true) why.push('OPEN_PERMISSION_OFF');
   if (!dcfg.scheduledExecution?.enabled) why.push('SCHEDULED_EXECUTION_OFF'); if (dcfg.halted) why.push('QUEUE_HALTED'); if (!pol.enabled || !pol.approved || pol.approved.version !== pol.version) why.push('POLICY_NOT_APPROVED_AT_CURRENT_VERSION');
+  return why;
+}
+export const AUTOMATIC_BLOCKER_AR = { MODE_NOT_AUTOMATIC: 'الوضع العام مش AUTOMATIC', EMERGENCY_STOP: 'إيقاف الطوارئ مفعّل', META_WRITES_LOCKED: 'قفل كتابة Meta مقفول', OPEN_PERMISSION_OFF: 'صلاحية الفتح OFF', SCHEDULED_EXECUTION_OFF: '«التنفيذ المجدول» مقفول — الخطة بتتجهز بس ومابتتنفذش من غير ضغطة اعتماد', QUEUE_HALTED: 'الجدولة موقوفة (Kill Switch)', POLICY_NOT_APPROVED_AT_CURRENT_VERSION: 'سياسة الفتح حسب CPA مش مفعّلة/معتمدة على نسختها الحالية' };
+/** READ-ONLY status of the unattended opening: what blocks it (if anything) and which products are cleared to run without a click (active AUTOMATIC policy + READY). Writes nothing, calls nothing on Meta. */
+export async function getOpenCpaAutomaticStatus({ deps = {} } = {}) {
+  const cfg = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig(); const pol = await getOpenCpaPolicy();
+  const why = openCpaAutomaticBlockers({ cfg, dcfg, pol }); const { loadActivePolicies, mergeEffective } = await import('./productPolicy.js'); const { automationReadinessMap } = await import('./automationReadiness.js');
+  const policies = await loadActivePolicies(); const ready = await automationReadinessMap({ deps: { policies } }); const products = [];
+  for (const [k, p] of policies) { const rd = ready.get(k); const auto = (p.mode || mergeEffective(p, null).mode) === 'AUTOMATIC'; products.push({ key: k, productId: rd?.productId ?? null, storeId: rd?.storeId ?? null, name: rd?.name ?? k, automatic: auto, ready: !!rd?.ready, missing: (rd?.missing || []).map((m) => m.label) }); }
+  return { canRunUnattended: why.length === 0, blockers: why.map((code) => ({ code, label: AUTOMATIC_BLOCKER_AR[code] || code })), mode: cfg.mode === 'OFF' ? 'MANUAL' : cfg.mode, scheduledExecution: !!dcfg.scheduledExecution?.enabled, policy: { enabled: !!pol.enabled, version: pol.version, approvedVersion: pol.approved?.version ?? null, minCpa: pol.minCpa, maxCpa: pol.maxCpa, window: pol.window, minPurchases: pol.minPurchases },
+    products, unattendedProducts: products.filter((x) => x.automatic && x.ready).length, note: 'الفتح التلقائي بيشتغل بس على منتجات ليها سياسة منتج مفعّلة بوضع AUTOMATIC وجاهزة (READY). أي حملة لمنتج تاني بتفضل مستنية موافقتك.' };
+}
+export async function runOpenCpaAutomatic({ now = new Date(), deps = {} } = {}) {
+  const cfg = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig(); const pol = await getOpenCpaPolicy(); const why = openCpaAutomaticBlockers({ cfg, dcfg, pol });
   if (why.length) return { ran: false, why };
   const gate = await (deps.autopilotGate ? deps.autopilotGate() : (await import('./operatorStore.js')).autopilotGate()); if (!gate.ok) return { ran: false, why: ['AUTOPILOT_GATE_NOT_READY'] };
   const out = { ran: true, plans: [] };
