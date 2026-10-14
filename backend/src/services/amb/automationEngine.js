@@ -24,6 +24,7 @@ import { isWinner } from './dailyPlanCandidates.js';
 import { checkBudgetCaps } from './budgetCaps.js';
 import { dailyCapFromLimits } from './productPolicy.js';
 import { raiseAlert } from './alerts.js';
+import { recordAutomaticExecution, kindOfDecision } from './firstAutomatic.js';
 import { cairoDate } from './dailyPlanTime.js';
 import { cairoDayStart } from './executionHistory.js';
 import { defaultReadBack } from './budgetExecution.js';
@@ -271,7 +272,8 @@ export async function performWrite({ row, params, ambAction, actor, source, user
   const verified = !!verify?.verified; out.stages.readBack = verify ? { at: action?.verified_at?.toISOString?.() || new Date().toISOString(), verified, observed: verify.live || null, ...(verify.reconciled ? { independent: true } : {}) } : null;
   await prisma.ambOperatorDecision.update({ where: { id: row.id }, data: { ...base, status: verified ? 'VERIFIED' : 'EXECUTED', executed_at: action?.executed_at || new Date(), verified_at: verified ? (action?.verified_at || new Date()) : null, verify_json: verify ? JSON.stringify(verify) : (action?.verify_json || null), error: verified ? null : 'تم إرسال الطلب إلى Meta لكن القراءة الفورية لم تؤكد التغيير (Unverified).' } });
   await transition(row.id, 'EXECUTING', verified ? 'VERIFIED' : 'EXECUTED', { actor, actorId: userId, campaignId: row.campaign_id, data: { verified, before: oldV, after: newV } });
-  await raiseAlert({ severity: verified ? 'INFO' : 'WARNING', category: 'OPERATOR', title: `${source === 'AUTOPILOT' ? 'AUTOMATIC نفّذ' : 'اتنفذ'}: ${KIND_LABEL[params.kind] || row.action} — ${row.campaign_name}`, message: verified ? `${row.action === 'PAUSE' ? 'اتوقفت' : `الميزانية ${params.fromBudget} → ${params.toBudget}`} — اتأكد من قراءة Meta.` : 'الطلب اتبعت لكن القراءة ما أكدتش (Unverified).', adAccountId: row.ad_account_id, entityId: row.campaign_id, dedupeKey: `operator:autodone:${row.id}` }).catch(() => {});
+  await raiseAlert({ severity: verified ? 'INFO' : 'WARNING', category: 'OPERATOR', title: `${source === 'AUTOPILOT' ? 'AUTOMATIC نفّذ' : 'اتنفذ'}: ${KIND_LABEL[params.kind] || row.action} — ${row.campaign_name}`, message: verified ? `${row.action === 'PAUSE' ? 'اتوقفت' : `الميزانية ${params.fromBudget} → ${params.toBudget}`} — اتأكد من قراءة Meta.${j(row.why_json, {})?.why ? ` السبب: ${j(row.why_json, {}).why}` : ''}`.slice(0, 480) : 'الطلب اتبعت لكن القراءة ما أكدتش (Unverified).', adAccountId: row.ad_account_id, entityId: row.campaign_id, dedupeKey: `operator:autodone:${row.id}` }).catch(() => {});
+  if (source === 'AUTOPILOT') await recordAutomaticExecution({ kind: kindOfDecision(row.action), campaignId: row.campaign_id, campaignName: row.campaign_name, reason: String(j(row.why_json, {})?.why || KIND_LABEL[params.kind] || ''), before: row.action === 'PAUSE' ? null : params.fromBudget, after: row.action === 'PAUSE' ? null : params.toBudget, verified, ambActionId: action?.id ?? null, decisionId: row.id, adAccountId: row.ad_account_id }); // log reason + real Meta result; the FIRST one of each kind raises its own alert
   out.stages.verified = verified ? 'VERIFIED' : 'UNVERIFIED';
   return { ...out, ok: true, executed: true, verified, status: verified ? 'VERIFIED' : 'EXECUTED', before: oldV, after: newV, message: verified ? 'تم التنفيذ — اتأكد من قراءة Meta.' : 'تم إرسال الطلب إلى Meta — لسه مفيش تأكيد بقراءة Meta (Unverified).' };
 }

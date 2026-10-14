@@ -76,6 +76,7 @@ const dcfgOn = { ...(await DP.getDailyPlanConfig()), halted: false, scheduledExe
 const J = { open: `${T}j_open`, pause: `${T}j_pause`, up: `${T}j_up`, down: `${T}j_down` };
 const planIds = [];
 const journeyCleanup = async () => {
+  await prisma.ambAlert.deleteMany({ where: { dedupe_key: { startsWith: 'operator:first:' } } }).catch(() => {});
   await prisma.ambOperatorConfig.update({ where: { scope: 'GLOBAL' }, data: { limits_json: limits0 } });
   const rs = await prisma.ambRecommendation.findMany({ where: { entity_id: { startsWith: T } }, select: { id: true } });
   await prisma.ambActionResult.deleteMany({ where: { action: { recommendation_id: { in: rs.map((r) => r.id) } } } }).catch(() => {});
@@ -118,6 +119,11 @@ try {
   // ---- stage 3: independent read-back + decisions
   for (const [k, id] of [['pause', J.pause], ['up', J.up], ['down', J.down]]) { const d = await dec(id); const a = await actOf(id); ok(`${k.toUpperCase()}: decision VERIFIED, read-back AFTER the write, action EXECUTED with verify.verified, approval AUTO`, d?.status === 'VERIFIED' && getsAfterWrite(id) && a?.execution_status === 'EXECUTED' && JSON.parse(a.verify_json || '{}').verified === true && a.approval_status === 'AUTO', JSON.stringify({ d: d?.status, a: a?.execution_status })); }
   const wDone = allWrites().length; await tick(sc, cfg(ALL)); await tick(sc, cfg(ALL)); ok('IDEMPOTENT: two more ticks send ZERO additional requests', allWrites().length === wDone);
+
+  // ---- stage 3b (2026-10-14): every AUTOMATIC execution is LOGGED with its reason + the real Meta read-back; the FIRST of each kind raises one prominent alert
+  { const evs = await prisma.ambOperatorEvent.findMany({ where: { kind: 'AUTOMATIC_EXECUTION', campaign_id: { in: [J.pause, J.up, J.down] } } }); const al = await prisma.ambAlert.findMany({ where: { dedupe_key: { in: ['operator:first:PAUSE', 'operator:first:INCREASE', 'operator:first:DECREASE'] } } });
+    ok('LOG: one AUTOMATIC_EXECUTION event per automatic pause / increase / reduce, each with the reason and the confirmed Meta result (and before → after for budgets)', evs.length === 3 && evs.every((e) => /AUTOMATIC/.test(e.note) && /اتأكد من قراءة Meta/.test(e.note) && /السبب/.test(e.note) && JSON.parse(e.data_json).verified === true) && evs.some((e) => /300 → 360/.test(e.note)) && evs.some((e) => /300 → 240/.test(e.note)), JSON.stringify(evs.map((e) => e.note)));
+    ok('FIRST-ONE ALERTS: exactly one prominent (WARNING) alert for the first pause, the first increase and the first reduce — and the idempotent re-ticks added no more', al.length === 3 && al.every((a) => a.severity === 'WARNING' && /أول .* تلقائي على Meta/.test(a.title) && /اتأكد من قراءة Meta/.test(a.message)) && al.some((a) => /أول إيقاف/.test(a.title)) && al.some((a) => /أول زيادة ميزانية/.test(a.title)) && al.some((a) => /أول تخفيض ميزانية/.test(a.title)), JSON.stringify(al.map((a) => a.title))); }
 
   // ---- stage 4: Execution History tells the story
   const h = await H.listExecutionHistory({ limit: 300 }); const mine = h.rows.filter((r) => [J.open, J.pause, J.up, J.down].includes(r.entityId) || String(r.entityName || '').startsWith(T) || String(r.campaignName || '').startsWith(T) || [J.open, J.pause, J.up, J.down].includes(r.campaignId));

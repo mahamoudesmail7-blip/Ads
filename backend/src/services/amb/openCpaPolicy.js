@@ -5,6 +5,7 @@
 // A campaign is ELIGIBLE only if: its CPA for the chosen window is KNOWN and inside [min, max] · it has at least `minPurchases` orders in that window · the Meta data is fresh ·
 // it passed the plan's Eligibility + Safety Guards · it is not a campaign that needs a special approval · the owner did not untick it. Nothing else is ever assumed.
 import { prisma } from '../../prisma.js';
+import { PROTECTION_AR, recentContradiction } from './reopenProtection.js';
 import { getConnection } from '../metaAuth.js';
 import { entityWindowMetrics } from './metricsEngine.js';
 import { cairoDate } from './dailyPlanTime.js';
@@ -15,6 +16,7 @@ export const WINDOW_LABEL = { today: 'اليوم', 7: 'آخر 7 أيام', 30: '
 // 2026-10-11: scope (include/exclude products · stores · campaigns), weekdays, a total-exposure ceiling, a minimum stock and manual-pause protection are part of the SAME versioned, approved policy.
 export const DEFAULT_OPEN_CPA = Object.freeze({ enabled: false, minCpa: null, maxCpa: null, window: '7', from: null, to: null, minPurchases: 5, maxDataAgeMin: 30, scope: emptyScope(), days: null, maxTotalExposure: null, minStock: null, protectManualPause: { enabled: true, hours: 48 }, version: 0, approved: null, updatedAt: null, updatedBy: null, history: [] });
 export const REASON_AR = {
+  ...PROTECTION_AR,
   GUARD_BLOCKED: 'ممنوعة بحارس أمان', NEEDS_SPECIAL_APPROVAL: 'محتاجة موافقة خاصة (اتقفلت يدويًا/غير معروف)', CPA_UNKNOWN: 'CPA غير معروف (مفيش أوردرات في الفترة)', CPA_BELOW_MIN: 'CPA أقل من الحد الأدنى للنطاق', CPA_ABOVE_MAX: 'CPA أعلى من الحد الأقصى للنطاق',
   SAMPLE_TOO_SMALL: 'عدد الأوردرات أقل من الحد الأدنى للعينة', DATA_STALE: 'بيانات Meta قديمة', USER_DESELECTED: 'استبعدتها يدويًا — لا تُعاد بدون موافقة خاصة',
   EXCLUDED_BY_POLICY: 'مستبعدة بالسياسة (منتج / متجر / حملة)', OUT_OF_SCOPE: 'خارج نطاق السياسة (مش ضمن المنتجات/المتاجر/الحملات المضمّنة)', DAY_NOT_ALLOWED: 'اليوم مش ضمن أيام الفتح في السياسة',
@@ -79,6 +81,9 @@ export function evaluateCampaign({ policy, item, metrics, dataAgeMin = 0, resele
   else if (item.eligibility === 'NEEDS_SPECIAL_APPROVAL') codes.push('NEEDS_SPECIAL_APPROVAL');
   if (dataAgeMin > policy.maxDataAgeMin) codes.push('DATA_STALE');
   if (item.evidence?.userDeselected && !reselect) codes.push('USER_DESELECTED');
+  // 2026-10-14 reopen protection: a performance pause by the system, or recent numbers that contradict the range, are never overridden by a long-window average (only an explicit owner re-selection can)
+  if (item.evidence?.systemPause?.kind === 'PERFORMANCE' && !reselect) codes.push('PAUSED_FOR_PERFORMANCE');
+  if (recentContradiction({ m7: item.evidence?.m7, maxCpa: policy.maxCpa }) && !reselect) codes.push('RECENT_CPA_ABOVE_MAX');
   // ---- 2026-10-11: scope, weekday, minimum stock, manual-pause protection (all part of the approved policy version)
   { const sv = scopeVerdict(policy.scope, { productId: item.productId ?? item.evidence?.productId ?? null, storeId: item.storeId ?? item.evidence?.storeId ?? null, campaignId: item.campaignId ?? null }); if (sv) codes.push(sv); }
   if (weekday != null && !weekdayAllowed(policy.days, weekday)) codes.push('DAY_NOT_ALLOWED');

@@ -20,6 +20,7 @@ import { priorityScore } from './priorityScore.js';
 import { loadActivePolicies, policyKey, mergeEffective, dayAllowed, weekdayOfCairoDate } from './productPolicy.js';
 import { SLOTS, cairoDate } from './dailyPlanTime.js';
 import { getOpenCpaPolicy, applyPolicyToItems, loadWindowMetrics } from './openCpaPolicy.js';
+import { loadSystemPauses, PROTECTION_AR } from './reopenProtection.js';
 import { activeExposure } from './automationScope.js';
 
 /** Per-product policy gate for a daily plan: the product's days of the week + its own opening/closing time (a product with its own time lives in its own slot plan). Pure. */
@@ -143,6 +144,7 @@ export async function buildOpenCandidates({ now = new Date(), slotTime = SLOTS.O
   const ids = pool.map((c) => c.id);
   const recent = deps.recent || await loadRecentActions({ campaignIds: ids, now, pendingHours: world.config.limits.pendingEvaluationHours });
   const origin = deps.origin || await loadPausedOrigin({ campaignIds: ids, recentByCampaign: recent, now, deps });
+  const sysPauses = deps.systemPauses || await loadSystemPauses({ campaignIds: ids, now }); // fail-CLOSED: if this read fails the plan build fails — it never silently opens a campaign the system paused for performance
   const lastActive = await loadLastActiveDates(ids, deps);
   const structure = deps.structure || await loadBudgetStructureFromSnapshots({ adAccountId: world.adAccountId, campaignIds: ids, now });
   const dataAgeMin = await syncAgeMin(deps);
@@ -171,7 +173,8 @@ export async function buildOpenCandidates({ now = new Date(), slotTime = SLOTS.O
       if (cx.econ && !cx.econ.complete) warnings.push('ECONOMICS_INCOMPLETE');
     }
     const po = origin.get(c.id) || { origin: 'UNKNOWN_OLD', at: null };
-    const needsSpecial = ['MANUAL', 'UNKNOWN_OLD'].includes(po.origin);
+    const sp = sysPauses.get(String(c.id)) || null; const perfPaused = sp?.kind === 'PERFORMANCE'; // paused by US for CPA / zero orders / loss (or a cause we cannot prove harmless): never auto-opened on a long-window average
+    const needsSpecial = ['MANUAL', 'UNKNOWN_OLD'].includes(po.origin) || perfPaused;
     const rec = openRecommended({ m7, m30 }); const score = openScore({ m7, m30, daysSinceActive: daysBetween(lastActive.get(c.id), now) });
     const risk = openRisk({ m7, m30, stock: cx.stock?.status, warnings });
     const bud = plannedBudget(structure.get(c.id));
@@ -180,8 +183,8 @@ export async function buildOpenCandidates({ now = new Date(), slotTime = SLOTS.O
     const reason = blocks.length ? `ممنوعة: ${blocks.join(' · ')}` : rec.ok ? `CPA ${round0(cpaRef)} على ${(m30.purchases >= 5 ? m30 : m7).purchases} أوردر (${cpaStability({ m7, m30 }) === 'STABLE' ? 'مستقر بين 7 و30 يوم' : 'عينة كافية'}) — ${po.origin === 'DAILY_SCHEDULE' ? 'اتقفلت بالروتين اليومي' : po.origin === 'SYSTEM' ? 'اتقفلت بقرار السيستم' : 'اتقفلت يدويًا/غير معروف'}` : `مش مرشحة تلقائيًا: ${rec.why}`;
     items.push({
       campaignId: c.id, campaignName: (c.name || '').trim(), productId: cx.product?.id ?? null, productName: cx.product?.name || null, storeId: cx.storeId || null,
-      eligibility, selectable: !blocks.length, selected: !blocks.length && !needsSpecial && rec.ok, blockCodes: blocks, warnings, risk: risk.level, riskScore: risk.score, rankScore: score, reason,
-      evidence: { status: 'PAUSED', priority: priorityScore({ m3, m7, m30, ageHours: null, dataAgeMin, blocks, warnings }), m3, m7, m30, budget: bud.budget, budgetLevel: bud.level, adsets: bud.adsets ?? null, lastActiveDate: lastActive.get(c.id) || null, daysSinceActive: daysBetween(lastActive.get(c.id), now), pausedBy: po.origin, pausedAt: po.at ? new Date(po.at).toISOString() : null, stability: cpaStability({ m7, m30 }), tier: sampleTier(m30.purchases), recommended: rec.ok, notRecommendedBecause: rec.why, stock: cx.stock ? { status: cx.stock.status, current: cx.stock.currentStock ?? null } : null, mapping: ms.state, advisor: advisorSummary(cx.advisor) },
+      eligibility, selectable: !blocks.length, selected: !blocks.length && !needsSpecial && rec.ok, blockCodes: blocks, warnings, risk: risk.level, riskScore: risk.score, rankScore: score, reason: perfPaused ? PROTECTION_AR.PAUSED_FOR_PERFORMANCE : reason,
+      evidence: { status: 'PAUSED', priority: priorityScore({ m3, m7, m30, ageHours: null, dataAgeMin, blocks, warnings }), m3, m7, m30, budget: bud.budget, budgetLevel: bud.level, adsets: bud.adsets ?? null, lastActiveDate: lastActive.get(c.id) || null, daysSinceActive: daysBetween(lastActive.get(c.id), now), systemPause: sp, pausedBy: po.origin, pausedAt: po.at ? new Date(po.at).toISOString() : null, stability: cpaStability({ m7, m30 }), tier: sampleTier(m30.purchases), recommended: rec.ok, notRecommendedBecause: rec.why, stock: cx.stock ? { status: cx.stock.status, current: cx.stock.currentStock ?? null } : null, mapping: ms.state, advisor: advisorSummary(cx.advisor) },
     });
   }
   // the saved «الفتح حسب CPA» policy (only when ON and complete): it decides the default selection from the policy window of the SAME fresh snapshots; every guard above stays above it

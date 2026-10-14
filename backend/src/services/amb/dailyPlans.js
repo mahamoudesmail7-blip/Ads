@@ -19,6 +19,8 @@ import { getSyncStatus, runSnapshotSync } from './snapshotSync.js';
 import { raiseAlert } from './alerts.js';
 import { buildOpenCandidates, buildPauseCandidates } from './dailyPlanCandidates.js';
 import { getOpenCpaPolicy, validateOpenCpa, evaluateCampaign, summarizeEvaluations, loadWindowMetrics, windowRangeFor, REASON_AR, applyCapToEvals, runtimeBlock } from './openCpaPolicy.js';
+import { recentContradiction } from './reopenProtection.js';
+import { recordAutomaticExecution } from './firstAutomatic.js';
 import { activeExposure, scopeVerdict, weekdayAllowed } from './automationScope.js';
 import { getPausePolicy, pausePolicyActive } from './pausePolicy.js';
 import { SLOTS, TYPE_LABEL_AR, CAIRO_TZ, cairoDate, cairoParts, dueTypes, dueAt, dueAtTime, slotVariant, expiresAt, nextDue, planKey, clockNow, isTestClock } from './dailyPlanTime.js';
@@ -428,6 +430,7 @@ export async function runPlanExecution({ planId, userId = null, now = new Date()
     await setItem(item, 'SENT', 'الطلب اتبعت لـMeta (مستني القراءة بعده)', {}, plan.id, userId); sent++;
     const r = await liveExecuteItem({ plan, item, userId, deps });
     await setItem(item, r.status, r.reason, r.extra || {}, plan.id, userId);
+    if (plan.approval_mode === 'AUTOPILOT' && !plan.simulated && ['VERIFIED', 'UNCERTAIN'].includes(r.status) && process.env.DAILY_PLAN_DISABLE_ALERTS !== '1') { const bud = j(item.evidence_json, {})?.budget; await recordAutomaticExecution({ kind: plan.type === 'OPEN' ? 'OPEN' : 'PAUSE', campaignId: item.campaign_id, campaignName: item.campaign_name, productName: item.product_name, reason: `${item.reason || ''}${bud != null ? ` (ميزانية يومية ${Math.round(bud)} ج)` : ''}`.trim(), verified: r.status === 'VERIFIED', ambActionId: r.extra?.amb_action_id ?? null, planId: plan.id, adAccountId: null }); }
     if (['FAILED', 'UNCERTAIN'].includes(r.status) && !plan.simulated && process.env.DAILY_PLAN_DISABLE_ALERTS !== '1') await raiseAlert({ severity: r.status === 'FAILED' ? 'CRITICAL' : 'WARNING', category: 'EXECUTION', title: `${r.status === 'FAILED' ? 'فشل' : 'غير مؤكد'}: ${plan.type === 'OPEN' ? 'فتح' : 'إيقاف'} ${item.campaign_name || item.campaign_id}`, message: `${r.reason || ''} — راجع الحملة في Meta يدويًا. مفيش إعادة إرسال تلقائي.`.slice(0, 480), campaignId: item.campaign_id, entityId: item.campaign_id, entityName: item.campaign_name, dedupeKey: `dailyplan-item:${plan.plan_key}:v${plan.version}:${item.campaign_id}:${r.status}` }).catch(() => {});
     if (r.rateLimited) { rateLimited++; await sleep(Math.min(120_000, 15_000 * 2 ** rateLimited)); if (rateLimited >= dcfg.rateLimitStopAfter) abort = 'RATE_LIMIT_STOP'; }
   }
@@ -594,7 +597,9 @@ export async function runOpenCpaAutomatic({ now = new Date(), deps = {} } = {}) 
     if (p.status !== 'PREPARED' || p.scheduled_at > now || p.expires_at <= now) continue; const used = j(p.evidence_json, {}).openCpa; if (!used || used.version !== pol.version) { out.plans.push({ planId: p.id, skipped: 'PLAN_NOT_PREPARED_UNDER_CURRENT_POLICY' }); continue; }
     const fresh = await ensureFreshData({ now, deps }); if (fresh.state === 'STALE') { out.plans.push({ planId: p.id, skipped: 'STALE_DATA' }); continue; }
     const gate = await automaticProductGate(deps); const notAuto = []; // AUTOMATIC is per product: only campaigns of a product whose ACTIVE policy is AUTOMATIC and READY run unattended; the rest stay for the owner's approval
-    const ok = p.items.filter((i) => { if (!(i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && j(i.evidence_json, {}).cpaPolicy?.verdict === 'ELIGIBLE' && !j(i.evidence_json, {}).userDeselected)) return false; const g = gate(i); if (!g.ok) { notAuto.push({ campaignId: i.campaign_id, reason: g.reason, detail: g.detail || null }); return false; } return true; });
+    const ok = p.items.filter((i) => { if (!(i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && j(i.evidence_json, {}).cpaPolicy?.verdict === 'ELIGIBLE' && !j(i.evidence_json, {}).userDeselected)) return false;
+      { const ev0 = j(i.evidence_json, {}) || {}; const rc = recentContradiction({ m7: ev0.m7, maxCpa: pol.maxCpa }); if (ev0.systemPause?.kind === 'PERFORMANCE' || rc) { notAuto.push({ campaignId: i.campaign_id, reason: ev0.systemPause?.kind === 'PERFORMANCE' ? 'PAUSED_FOR_PERFORMANCE' : 'RECENT_CPA_ABOVE_MAX', detail: null }); return false; } } // belt and braces: the unattended runner re-checks the reopen protection itself
+      const g = gate(i); if (!g.ok) { notAuto.push({ campaignId: i.campaign_id, reason: g.reason, detail: g.detail || null }); return false; } return true; });
     const drop = p.items.filter((i) => i.selected && !ok.includes(i)); // selected campaigns that are NOT cleared for unattended opening (other products, other campaigns, not READY)
     if (!ok.length) { out.plans.push({ planId: p.id, skipped: 'NOTHING_ELIGIBLE', notAutomatic: notAuto.length }); continue; } // the owner's selection is left EXACTLY as it is — unattended opening never un-ticks anything it does not run
     const approvedBy = pol.approved.by;
