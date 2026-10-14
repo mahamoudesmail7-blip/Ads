@@ -6,10 +6,11 @@ import { mountHome, stopHome } from './opx2-home.js';
 import { mountCampaigns, stopCampaigns } from './opx2-campaigns.js';
 import { mountAccess, stopAccess } from './opx2-access.js';
 import { mountHelp } from './opx2-help.js';
+import { mountProducts, stopProducts } from './opx2-products.js';
 import { openEmergencyStop } from './opx2-safety.js';
 
 const SECTIONS = [
-  { key: 'home', ic: '🏠', label: 'الرئيسية', min: 1 }, { key: 'camps', ic: '📣', label: 'الحملات', min: 1 },
+  { key: 'home', ic: '🏠', label: 'الرئيسية', min: 1 }, { key: 'camps', ic: '📣', label: 'الحملات', min: 1 }, { key: 'prod', ic: '💰', label: 'اقتصاديات المنتجات', min: 2 },
   { key: 'auto', ic: '⚙️', label: 'الأتمتة والقواعد', min: 2 }, { key: 'appr', ic: '✅', label: 'الموافقات والإجراءات', min: 2 }, { key: 'set', ic: '🛡️', label: 'الإعدادات والأمان', min: 2 },
 ];
 const LEVEL_RANK = { EMPLOYEE: 1, MANAGER: 2, ADMIN: 3 }; const LEVEL_AR = { EMPLOYEE: 'موظف (قراءة فقط)', MANAGER: 'مشرف', ADMIN: 'مسؤول' };
@@ -22,7 +23,7 @@ const GATEWAY = {
 const V = { root: null, me: null, sec: 'home', opts: null, nav: null, ambWasCollapsed: null };
 
 export function v2Enabled() { try { return store.get('opx.v2') === '1' || /[?&]ui=v2\b/.test(location.search + location.hash); } catch { return false; } }
-export function stopV2() { stopHome(); stopCampaigns(); stopAccess(); const nav = document.getElementById('ambNav'); if (V.ambWasCollapsed === false) nav?.classList.remove('collapsed'); V.ambWasCollapsed = null; V.root = null; }
+export function stopV2() { stopHome(); stopCampaigns(); stopAccess(); stopProducts(); const nav = document.getElementById('ambNav'); if (V.ambWasCollapsed === false) nav?.classList.remove('collapsed'); V.ambWasCollapsed = null; V.root = null; }
 
 export async function renderV2(panel, opts = {}) {
   V.opts = opts; stopV2(); const nav = document.getElementById('ambNav'); V.ambWasCollapsed = !!nav?.classList.contains('collapsed'); nav?.classList.add('collapsed');
@@ -55,10 +56,10 @@ function buildFrame() {
 const ctx = () => ({ me: V.me, level: V.me.level, caps: V.me.capabilities, go: (sec, o) => go(sec, o), openLegacy: (ws) => V.opts.openLegacy?.(ws), root: V.root });
 export async function go(sec, o = {}) {
   const s = sec === 'help' ? { key: 'help' } : SECTIONS.find((x) => x.key === sec && allowed(x)) || SECTIONS[0]; V.sec = s.key; if (s.key !== 'help') store.set('opx2.sec', s.key); closeAll(); V.root.dataset.mobileOpen = '0';
-  V.root.querySelectorAll('.opx2-nb').forEach((b) => b.classList.toggle('on', b.dataset.sec === s.key)); stopHome(); stopCampaigns(); stopAccess();
+  V.root.querySelectorAll('.opx2-nb').forEach((b) => b.classList.toggle('on', b.dataset.sec === s.key)); stopHome(); stopCampaigns(); stopAccess(); stopProducts();
   const host = V.root.querySelector('#o2View'); V.root.querySelector('#o2Bulk')?.classList.remove('show');
   try {
-    if (s.key === 'home') await mountHome(host, ctx(), o); else if (s.key === 'camps') await mountCampaigns(host, ctx(), o); else if (s.key === 'help') mountHelp(host, ctx()); else if (s.key === 'set' && o.sub === 'access' && V.me.level === 'ADMIN') await mountAccess(host, ctx()); else mountGateway(host, s.key);
+    if (s.key === 'home') await mountHome(host, ctx(), o); else if (s.key === 'camps') await mountCampaigns(host, ctx(), o); else if (s.key === 'prod') await mountProducts(host, ctx()); else if (s.key === 'help') mountHelp(host, ctx()); else if (s.key === 'set' && o.sub === 'access' && V.me.level === 'ADMIN') await mountAccess(host, ctx()); else mountGateway(host, s.key);
   } catch (e) { host.innerHTML = errorCard(e.message || 'تعذّر تحميل الشاشة.'); host.querySelector('#o2Retry')?.addEventListener('click', () => go(sec, o)); }
 }
 function mountGateway(host, key) {

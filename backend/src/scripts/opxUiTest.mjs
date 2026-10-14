@@ -615,7 +615,7 @@ try {
     ok('flag OFF (the default): the existing interface is shown and no V2 shell exists', await js(`!document.querySelector('.opx2') && !!document.querySelector('.opx')`));
 
     await open24(); await waitFor(`!!document.querySelector('.opx2-kpi')`, 30000);
-    ok('flag ON: the V2 shell replaces the interface for this load; five sections for the owner', await js(`!!document.querySelector('.opx2') && !document.querySelector('.opx .opx-side') && document.querySelectorAll('.opx2-nb').length === 5`));
+    ok('flag ON: the V2 shell replaces the interface for this load; six sections for the owner (home, campaigns, product economics, automation, approvals, settings)', await js(`!!document.querySelector('.opx2') && !document.querySelector('.opx .opx-side') && document.querySelectorAll('.opx2-nb').length === 6`));
     ok('Home: 8 KPIs (4 + paused / winners / losing / estimated profit), the three SEPARATE layers (mode · Meta lock · permissions) and one verdict about executing on Meta', await js(`document.querySelectorAll('.opx2-kpi').length === 8 && document.querySelectorAll('.opx2-layer').length === 3 && /مفيش تنفيذ على Meta دلوقتي/.test(document.querySelector('.opx2-verdict').innerText)`));
     ok('Home: five «ready for review» cards with counts, the policies list says «saved ≠ ready», and a to-do list for the admin', await js(`document.querySelectorAll('.opx2-rc[data-view]').length === 5 && /جاهزة = مفعّلة \\+ معتمدة/.test(document.body.innerText) && document.querySelectorAll('.opx2-todo li').length > 0`));
     const hm = await api24('GET', '/api/operator-v2/home?period=last7'); ok('Home numbers equal the API (active campaigns · orders) — nothing computed in the browser', await js(`(()=>{ const t = document.querySelector('.opx2-main').innerText; return t.includes(${JSON.stringify(String(hm.j.summary.active))}) && t.includes(${JSON.stringify(Number(hm.j.summary.orders).toLocaleString('en-US'))}); })()`));
@@ -720,7 +720,7 @@ try {
     await login('test-employee-nogrant@example.invalid'); await open24(); await waitFor(`!!document.querySelector('.opx2-banner.warn')`, 30000);
     ok('EMPLOYEE without a grant: a clear message («مفيش صلاحية…»), no data, and the Backend answers 403', await js(`/صلاحية|حسابات/.test(document.querySelector('.opx2-banner.warn').innerText)`) && (await api24('POST', '/api/operator-v2/campaigns/query', {})).s === 403);
     await login('test-manager@example.invalid'); await open24(); await waitFor(`!!document.querySelector('.opx2-kpi')`, 30000);
-    ok('MANAGER: all five sections, review actions enabled, but approval is not offered (no «ماذا أفعل الآن؟» admin list)', await js(`document.querySelectorAll('.opx2-nb').length === 5 && !/ماذا أفعل الآن/.test(document.querySelector('.opx2-main').innerText)`));
+    ok('MANAGER: all six sections, review actions enabled, but approval is not offered (no «ماذا أفعل الآن؟» admin list)', await js(`document.querySelectorAll('.opx2-nb').length === 6 && !/ماذا أفعل الآن/.test(document.querySelector('.opx2-main').innerText)`));
     await js(`document.querySelector('[data-sec="camps"]').click(); true`); await waitRows(5); await js(`document.getElementById('o2PageAll').click(); true`); await sleep(500);
     ok('MANAGER can open review actions (preview) but there is no approve / execute control anywhere', await js(`[...document.querySelectorAll('#o2Bulk [data-bact]')].every((b) => !b.disabled) && !/اعتماد|نفّذ الآن/.test(document.getElementById('o2Bulk').innerText)`));
     await login('test-owner@example.invalid');
@@ -887,6 +887,66 @@ try {
     await js(`document.querySelector('[data-edit]').click(); true`); await sleep(400); ok('phone: the permissions editor modal fits the screen', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2 && document.querySelector('.opx2-modal').getBoundingClientRect().width <= window.innerWidth + 2`));
     await js(`document.getElementById('o2AccNo').click(); true`);
     await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor(`!!document.querySelector('.opx')`);
+  }
+
+  console.log('\n25. «اقتصاديات المنتجات» (V2): the real numbers, the missing ones, entry from the screen, live profitability + simulation, draft-only saving, readiness, locks — nothing is activated');
+  {
+    spawnSync(process.execPath, [join(process.cwd(), 'src/scripts/seedEconomicsFixture.mjs')], { stdio: 'ignore' });
+    const PE = { 'opx.v2': '1', 'opx2.collapsed': '0', 'opx2.sec': 'prod' };
+    const SPY2 = 'window.__w2 = []; if (!window.__spy2) { window.__spy2 = true; const of = window.fetch; window.fetch = (u, o) => { const url = String(u); const m = (o && o.method) || "GET"; if (m !== "GET") window.__w2.push({ u: url, m }); return of(u, o); }; } true';
+    const apiJ = (m, p, b) => js('fetch("' + p + '",{method:"' + m + '",headers:{"content-type":"application/json"},body:' + (b === undefined ? 'undefined' : JSON.stringify(JSON.stringify(b))) + '}).then(async r=>({s:r.status,j:await r.json().catch(()=>null)}))');
+    const cardOf = (n) => '[...document.querySelectorAll(".opx2-pc")].find((c) => c.innerText.includes("' + n + '"))';
+    const setIn = (g, k, v) => js('(()=>{ const i = document.querySelector("[data-g=\\"' + g + '\\"][data-k=\\"' + k + '\\"]"); i.value = "' + v + '"; i.dispatchEvent(new Event("input")); return true; })()');
+    const board = async () => (await apiJ('GET', '/api/operator/product-economics?scope=all')).j.products;
+    await goto('/ai-media-buyer.html#operator', { ls: PE }); await js(SPY2); await waitFor('!!document.querySelector(".opx2-pe")', 30000);
+    ok('the section «اقتصاديات المنتجات» is in the V2 menu and opens', await js('[...document.querySelectorAll("#o2Nav .tx")].some((x) => /اقتصاديات المنتجات/.test(x.textContent)) && !!document.querySelector(".opx2-pe")'));
+    ok('it says plainly: saving = a DRAFT only, empty = «غير متوفر» (not zero)', await js('/مسودة فقط/.test(document.querySelector(".opx2-pe").innerText) && /غير متوفر/.test(document.querySelector(".opx2-pe").innerText)'));
+    await js('document.querySelector("[data-scope=\\"all\\"]").click(); true'); await waitFor('!!(' + cardOf('UIPEC Alpha') + ') && !!(' + cardOf('UIPEC Locked') + ')', 30000);
+    ok('the board lists the products with their real numbers; the incomplete one shows «غير متوفر» for margin and profit (never 0) and a «ناقص» status', await js('(()=>{ const t = (' + cardOf('UIPEC Alpha') + ').innerText; return /ناقص/.test(t) && /غير متوفر/.test(t); })()'));
+    ok('the complete one (Beta) shows its real unit margin: 800 − (300 + 50 + 30) = 420', await js('/420/.test((' + cardOf('UIPEC Beta') + ').innerText)'));
+    ok('the product that already runs a policy is shown LOCKED («شغّال AUTOMATIC») and its button says view-only', await js('(()=>{ const c = ' + cardOf('UIPEC Locked') + '; return /شغّال AUTOMATIC/.test(c.innerText) && /عرض \\(مقفول\\)/.test(c.innerText); })()'));
+    // ---- fill the incomplete product from the screen
+    await js('(' + cardOf('UIPEC Alpha') + ').querySelector("[data-open]").click(); true'); await waitFor('!!document.querySelector(".opx2-ped #peSave")', 10000);
+    ok('the editor opens with the sections: economics + stock · CPA limits · budget limits · 20% / stop rules, and the price is read-only with its status', await js('(()=>{ const t = document.querySelector(".opx2-ped").innerText; return /1\\) الاقتصاديات والمخزون/.test(t) && /2\\) حدود CPA/.test(t) && /3\\) حدود الميزانية/.test(t) && /4\\) قواعد الزيادة والتقليل والإيقاف/.test(t) && !document.querySelector("[data-k=\\"price\\"]"); })()'));
+    ok('the 20% / 5 orders / 24h / 4 changes / zero-order values are offered as EDITABLE «مقترح» starters (dashed), while every CPA line and budget limit starts EMPTY', await js('(()=>{ const v = (g, k) => document.querySelector("[data-g=\\"" + g + "\\"][data-k=\\"" + k + "\\"]"); return v("pl", "increasePct").value === "20" && v("pl", "increasePct").classList.contains("sug") && v("pl", "scale").value === "" && v("pl", "minBudget").value === "" && v("pl", "dailySpendCap").value === "" && v("ec", "cost").value === ""; })()'));
+    await setIn('ec', 'cost', '400'); await setIn('ec', 'shipping', '60'); await setIn('ec', 'packaging', '40'); await setIn('cl', 'max', '200');
+    await waitFor('/500 ج/.test(document.querySelector("#peLive").innerText)', 15000);
+    ok('LIVE profitability from the typed numbers (nothing saved): unit margin 1000 − 500 = 500, 50% of the price', await js('(()=>{ const t = document.querySelector("#peLive").innerText; return /500 ج\\.م/.test(t) && /50%/.test(t); })()'));
+    ok('nothing was saved while typing (the cost is still «not entered»)', (await board()).find((p) => p.name === 'UIPEC Alpha').economics.cost.entered === false);
+    await js('document.querySelector("#peSug").click(); true'); await waitFor('document.querySelector("[data-g=\\"pl\\"][data-k=\\"scale\\"]").value === "120"', 10000);
+    ok('«استخدم المقترح» fills Scale 120 / Reduce 180 / Hard Stop 200 from the typed max CPA 200 (0.6 / 0.9 / 1.0)', await js('(()=>{ const v = (k) => document.querySelector("[data-g=\\"pl\\"][data-k=\\"" + k + "\\"]").value; return v("scale") === "120" && v("reduce") === "180" && v("hardStop") === "200"; })()'));
+    await setIn('pl', 'scale', '190'); await waitFor('!!document.querySelector("#peLive .opx2-banner.bad")', 15000);
+    ok('a wrong combination (Scale 190 ≥ Reduce 180) is flagged live, in Arabic', await js('!!document.querySelector("#peLive .opx2-banner.bad")'));
+    await js('document.querySelector("#peSave").click(); true'); await sleep(1500);
+    ok('saving a wrong form is refused and NOTHING is written (cost still not entered)', (await board()).find((p) => p.name === 'UIPEC Alpha').economics.cost.entered === false);
+    await setIn('pl', 'scale', '120'); await setIn('pl', 'minBudget', '200'); await setIn('pl', 'maxBudget', '600'); await setIn('pl', 'dailySpendCap', '2100'); await setIn('ec', 'currentStock', '150'); await setIn('ec', 'minimumStock', '30'); await setIn('cl', 'target', '120'); await setIn('cl', 'hardStop', '220');
+    await waitFor('!!document.querySelector("#peLive .opx2-kv") && !document.querySelector("#peLive .opx2-banner.bad")', 15000); await js('document.querySelector("#peSave").click(); true');
+    await waitFor('/✅[^\n]*اقتصاديات/.test(document.querySelector("#peReady").innerText)', 20000); // the checklist is replaced by the SAVED card's readiness
+    const alpha = (await board()).find((p) => p.name === 'UIPEC Alpha');
+    ok('saved: cost 400 · shipping 60 · packaging 40 · stock 150 / min 30 · CPA 120 / 200 / 220 — and the economics are now COMPLETE with a real margin of 500', alpha.economics.cost.value === 400 && alpha.economics.shipping.value === 60 && alpha.economics.complete === true && alpha.profit.unitMargin === 500 && alpha.stock.manualCurrent === 150 && alpha.cpa.target === 120 && alpha.cpa.max === 200 && alpha.cpa.hardStop === 220, JSON.stringify(alpha.economics));
+    ok('the policy is only a DRAFT (AUTOMATIC intent) — nothing active', alpha.policy.status === 'DRAFT' && alpha.policy.mode === 'AUTOMATIC' && alpha.policy.active === null);
+    ok('the checklist now shows economics / spend limits / CPA limits as ✅ and the missing campaign mapping as ❌ (honest)', await js('(()=>{ const t = document.querySelector("#peReady").innerText; return /✅[^\\n]*اقتصاديات/.test(t) && /✅[^\\n]*حدود الصرف/.test(t) && /✅[^\\n]*حدود الـCPA/.test(t) && /❌[^\\n]*مربوطة/.test(t); })()'));
+    ok('«اعتماد وتفعيل AUTOMATIC» stays DISABLED while anything is missing', await js('document.querySelector("#peAct").disabled === true'));
+    await js('document.querySelector("#peCheck").click(); true'); await waitFor('/ناقص:/.test(document.querySelector("#peReady").innerText)', 15000);
+    ok('«فحص الجاهزية» states what is still missing and keeps activation closed', await js('/ناقص:/.test(document.querySelector("#peReady").innerText) && document.querySelector("#peAct").disabled === true'));
+    const writes = await js('window.__w2'); // what the SCREEN sent so far — taken BEFORE this test's own direct API calls below
+    const act = await apiJ('POST', '/api/operator/product-rules/' + alpha.productId + '/activate', { storeId: 'trendy-storeee', confirm: true, confirmAutomatic: true });
+    ok('even a direct activation call is refused by the server for the incomplete product (AUTOMATIC_NOT_READY) — the policy stays a draft', act.s === 409 && /AUTOMATIC_NOT_READY/.test(JSON.stringify(act.j)) && (await board()).find((p) => p.name === 'UIPEC Alpha').policy.status === 'DRAFT', JSON.stringify(act));
+    await js('document.querySelector("#peX").click(); true');
+    // ---- the locked product
+    const lockedId = (await board()).find((p) => p.name === 'UIPEC Locked').productId;
+    await js('(' + cardOf('UIPEC Locked') + ').querySelector("[data-open]").click(); true'); await waitFor('!!document.querySelector(".opx2-ped #peSave")', 10000);
+    ok('the locked product opens read-only: every field and the save button are disabled, with the reason and a link to «قواعد المنتجات»', await js('(()=>{ const m = document.querySelector(".opx2-ped"); return [...m.querySelectorAll("input[data-g]")].every((i) => i.disabled) && m.querySelector("#peSave").disabled && /مقفولة/.test(m.innerText) && !!m.querySelector("#peLegacy"); })()'));
+    const lk = await apiJ('PUT', '/api/operator/product-economics/' + lockedId, { economics: { cost: 999 } }); ok('and the server itself refuses any edit of it (423 PRODUCT_LOCKED)', lk.s === 423 && /PRODUCT_LOCKED/.test(JSON.stringify(lk.j)));
+    await js('document.querySelector("#peX").click(); true');
+    // ---- safety: what the screen itself sent
+    ok('everything the SCREEN sent was economics saves / previews only — no activation, no plan, no approval, nothing on Meta', writes.length > 0 && writes.every((w) => /product-economics/.test(w.u)), JSON.stringify(writes.slice(0, 6)));
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 800, mobile: true, ls: PE }); await waitFor('!!document.querySelector(".opx2-pe")', 30000); await js('document.querySelector("[data-scope=\\"all\\"]").click(); true'); await waitFor('!!(' + cardOf('UIPEC Beta') + ')', 30000);
+    ok('phone: the cards stack and nothing scrolls horizontally', await js('document.documentElement.scrollWidth <= window.innerWidth + 2'));
+    await js('(' + cardOf('UIPEC Beta') + ').querySelector("[data-open]").click(); true'); await waitFor('!!document.querySelector(".opx2-ped")', 10000); await sleep(600);
+    ok('phone: the editor fits the screen (single column, no horizontal scroll)', await js('document.documentElement.scrollWidth <= window.innerWidth + 2 && document.querySelector(".opx2-modal").getBoundingClientRect().width <= window.innerWidth + 2'));
+    await js('document.querySelector("#peX").click(); true');
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor('!!document.querySelector(".opx")');
   }
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));

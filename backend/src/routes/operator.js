@@ -22,6 +22,7 @@ import { buildCampaignBoard } from '../services/amb/campaignBoard.js';
 import * as SP from '../services/amb/smartPricing.js';
 import * as OC from '../services/amb/openCpaPolicy.js';
 import { openCpaReport, openCpaReportCsv } from '../services/amb/openCpaReport.js';
+import * as PEC from '../services/amb/productEconomicsCenter.js';
 import * as INT from '../services/amb/integration.js';
 import * as AMBP from '../services/amb/ambProducts.js';
 import { getProductPerformance } from '../services/amb/productPerformance.js';
@@ -129,6 +130,11 @@ router.get('/budget-caps', asyncRoute(async (req, res) => res.json({ caps: await
 router.put('/budget-caps', ADMIN, asyncRoute(async (req, res) => res.json({ caps: await setBudgetCaps({ caps: req.body?.caps, confirm: req.body?.confirm === true, userId: req.user.id }) })));
 router.post('/smart-alerts/run', ADMIN, asyncRoute(async (req, res) => res.json(await runSmartAlerts({}))));
 // 🧩 Product Rules — per-product operating policy (draft → ADMIN activation). Saving never changes behaviour.
+// ---- «اقتصاديات المنتجات» (AMB V2): the board (read-only) + saving economics / CPA limits / a policy DRAFT (ADMIN) + a pure preview + the readiness check. Activation stays the existing gated /product-rules/:id/activate.
+router.get('/product-economics', asyncRoute(async (req, res) => res.json(await PEC.getProductEconomicsBoard({ scope: req.query.scope === 'all' ? 'all' : 'six' }))));
+router.get('/product-economics/:productId/readiness', asyncRoute(async (req, res) => res.json(await PEC.productReadinessCheck({ productId: req.params.productId }))));
+router.put('/product-economics/:productId', ADMIN, asyncRoute(async (req, res) => res.json(await PEC.saveProductEconomics({ productId: req.params.productId, economics: req.body?.economics, cpaLimits: req.body?.cpaLimits, policyForm: req.body?.policy, userId: req.user.id }))));
+router.post('/product-economics/:productId/preview', ADMIN, asyncRoute(async (req, res) => res.json(await PEC.previewProductForm({ productId: req.params.productId, economics: req.body?.economics, cpaLimits: req.body?.cpaLimits, policyForm: req.body?.policy }))));
 router.get('/product-rules', asyncRoute(async (req, res) => res.json({ products: await PP.listProductRules({}) })));
 // ---- التسعير الذكي (Smart Pricing): suggestions + analysis only. Nothing here changes a store / Easy Orders price, activates a rule, or touches Meta. Writes are ADMIN + explicit confirm.
 const pricingPerfCache = new Map(); // `${productId}` -> { at, windows }  (3 performance reads are not repeated on every keystroke)
