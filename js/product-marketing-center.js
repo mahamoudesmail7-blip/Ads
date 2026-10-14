@@ -1138,6 +1138,7 @@ function renderOverview(mount, s) {
   mount.innerHTML = `
     ${liveHeaderSkeletonHtml()}
     <div id="pmcLiveIntelligence"></div>
+    <div id="pmcEconomics"></div>
     ${kpiRowHtml(s, state.profile)}
     <div class="pmc-card" style="margin-bottom:14px;">
       <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
@@ -1192,6 +1193,44 @@ function renderOverview(mount, s) {
   fetchAndRenderLiveHeader();
   startLiveHeaderRefresh();
   fetchAndRenderLiveIntelligence();
+  fetchAndRenderEconomics();
+}
+
+// ---------------------------------------------------------------------------
+// Economics + AUTOMATIC readiness — the same real numbers as the V2 «اقتصاديات المنتجات» screen (real margin, max CPA, profit from Meta orders, stock, readiness checklist). Fetched ONCE per Overview open
+// (it composes the whole economics board — never on the 60 s ticker). A missing input is shown as «غير متوفر», never 0; nothing is activated or saved from here.
+// ---------------------------------------------------------------------------
+let economicsGen = 0;
+function economicsHtml(e) {
+  const wrap = (inner) => `<div class="pmc-card" style="margin-bottom:14px;">${inner}</div>`;
+  if (!e?.linked) return wrap(`<div class="h">💰 اقتصاديات المنتج</div><div class="pmc-empty" style="padding:10px;">${E(e?.reason || 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.')}</div>`);
+  if (e.available === false) return wrap(`<div class="h">💰 اقتصاديات المنتج</div><div class="pmc-empty" style="padding:10px;">${E(e.reason)}</div>`);
+  const na = '<span class="faint">غير متوفر</span>'; const v = (x, f) => (x == null ? na : f(x));
+  const money = (x) => (x == null ? na : `<b style="color:${x < 0 ? '#b42318' : '#067647'}">${fmtEGP(x)}</b>`);
+  const r = e.readiness; const pct = r.total ? Math.round((r.okCount / r.total) * 100) : 0;
+  const pill = e.locked ? '<span class="badge blue">🔒 شغّال AUTOMATIC</span>' : r.ready ? '<span class="badge green">✅ جاهز للتفعيل</span>' : `<span class="badge yellow">⚠️ ناقص ${r.missing.length}</span>`;
+  return wrap(`<div class="h" style="display:flex;justify-content:space-between;align-items:center;"><span>💰 اقتصاديات المنتج وجاهزية AUTOMATIC</span>${pill}</div>
+    <div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));">
+      <div class="pmc-kv"><span>سعر البيع</span><b>${v(e.price?.value, fmtEGP)}</b></div>
+      <div class="pmc-kv"><span>هامش الوحدة</span><b>${v(e.unitMargin, fmtEGP)}</b></div>
+      <div class="pmc-kv"><span>الهامش من السعر</span><b>${v(e.marginPct, (x) => x + '%')}</b></div>
+      <div class="pmc-kv"><span>أقصى CPA</span><b>${v(e.cpa?.max, fmtEGP)}</b></div>
+      <div class="pmc-kv"><span>صافي 7 أيام (تقديري)</span>${money(e.profit7)}</div>
+      <div class="pmc-kv"><span>صافي 30 يوم (تقديري)</span>${money(e.profit30)}</div>
+      <div class="pmc-kv"><span>المخزون</span><b>${e.stock?.current == null ? na : fmtNum(e.stock.current) + (e.stock.minimum != null ? ' / حد أدنى ' + fmtNum(e.stock.minimum) : '')}</b></div>
+    </div>
+    <div style="height:8px;border-radius:8px;background:#e4e7ec;overflow:hidden;margin-top:10px;"><div style="height:100%;width:${pct}%;background:#067647;"></div></div>
+    <div class="faint" style="font-size:12px;margin-top:6px;">جاهزية AUTOMATIC ${r.okCount}/${r.total}${r.missing.length ? ' — ناقص: ' + E(r.missing.slice(0, 4).map((m) => m.label.split('(')[0].trim()).join(' · ')) + (r.missing.length > 4 ? '…' : '') : ' — كل البنود تمام'}${e.locked ? ' — ' + E(e.lockedReason || '') : ''}</div>
+    <div class="faint" style="font-size:11.5px;margin-top:4px;">${E(e.profitNote || '')}</div>
+    <div style="margin-top:10px;"><button class="btn sm" id="pmcEconOpen">فتح «اقتصاديات المنتجات» (إدخال التكلفة والحدود)</button></div>`);
+}
+async function fetchAndRenderEconomics() {
+  const host = $('pmcEconomics'); if (!host || !state.profile) return; const myGen = ++economicsGen;
+  try {
+    const e = await api.get(`/api/product-marketing/profiles/${state.profile.id}/economics`, { storeId: state.storeId });
+    if (myGen !== economicsGen) return; const el = $('pmcEconomics'); if (!el) return; el.innerHTML = economicsHtml(e);
+    const b = $('pmcEconOpen'); if (b) b.onclick = () => { try { localStorage.setItem('opx2.sec', 'prod'); } catch { /* private mode */ } location.href = (e.screen?.path) || '/ai-media-buyer.html?ui=v2#operator'; };
+  } catch { /* non-critical: the rest of Overview already rendered */ }
 }
 
 function needsAttentionListHtml(items) {

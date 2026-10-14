@@ -15,6 +15,7 @@ import { prisma } from '../../prisma.js';
 import { getProductPerformance, resolveProductCampaigns } from './productPerformance.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { resolveEffectiveProductId } from './productMarketing.js';
+import { getProductEconomicsBoard } from './productEconomicsCenter.js';
 import { getAudienceBreakdownTrend } from './audienceBreakdownSync.js';
 import { governorateTrendForProduct } from './customerQuality.js';
 import { resolveWindow } from './metricsEngine.js';
@@ -271,4 +272,29 @@ export async function buildLiveIntelligenceForProduct({ productId, windowName = 
   const growthPlan = { ok: true, hasData: true, ...plan };
 
   return { testingBrain, growthPlan };
+}
+
+// ---------------------------------------------------------------------------
+// Product economics + AUTOMATIC readiness (2026-10-14) — the SAME numbers the V2 «اقتصاديات المنتجات» screen shows (real margin, max CPA, profit from Meta orders, stock, the readiness checklist),
+// summarised for the product page. A pure composition of productEconomicsCenter (itself a composition of the canonical economics / readiness engines): nothing is recomputed or assumed here — a missing
+// input stays null («غير متوفر»), never 0. Store isolation is the same fail-closed guard as every other live endpoint. A short cache keeps the product page cheap (the board reads every AMB product).
+// ---------------------------------------------------------------------------
+const ECON_TTL_MS = 45_000; const econCache = new Map();
+export async function getEconomicsSummary({ profileId, storeId }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, ...storeError };
+  if (!productId) return { linked: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
+  return getEconomicsSummaryByProductId({ productId });
+}
+export async function getEconomicsSummaryByProductId({ productId, now = new Date() }) {
+  const hit = econCache.get(productId); if (hit && now.getTime() - hit.at < ECON_TTL_MS) return hit.v;
+  const board = await getProductEconomicsBoard({ ids: [productId], now }); const c = board.products.find((x) => x.productId === productId);
+  let v;
+  if (!c) v = { linked: true, available: false, productId, reason: 'المنتج ملوش سجل اقتصاديات في AMB لسه — يتنشأ أول ما تحفظ بياناته من «اقتصاديات المنتجات».' };
+  else { const req = c.readiness.checks.filter((x) => x.required); v = { linked: true, available: true, productId, name: c.name, storeId: c.storeId, locked: c.locked, lockedReason: c.lockedReason,
+    economicsComplete: c.economics.complete, price: { value: c.economics.price.value, status: c.economics.price.status }, unitMargin: c.profit.unitMargin, marginPct: c.profit.marginPct, breakEvenCpa: c.profit.breakEvenCpa, profit7: c.profit.profit7, profit30: c.profit.profit30, profitNote: c.profit.note, profitState: c.profit.state,
+    cpa: { target: c.cpa.target, max: c.cpa.effectiveMax, hardStop: c.cpa.hardStop }, performance: { orders30: c.performance.orders30, cpa30: c.performance.cpa30, cpa7: c.performance.cpa7, orders7: c.performance.orders7 }, stock: { current: c.stock.current, minimum: c.stock.minimum, status: c.stock.status },
+    policy: { status: c.policy.status, mode: c.policy.mode }, readiness: { ready: c.readiness.ready, okCount: req.filter((x) => x.ok).length, total: req.length, missing: c.readiness.missing.map((m) => ({ key: m.key, label: m.label })) },
+    screen: { path: '/ai-media-buyer.html?ui=v2#operator', section: 'prod' } }; }
+  econCache.set(productId, { at: now.getTime(), v }); return v;
 }

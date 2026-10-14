@@ -208,6 +208,9 @@ function snapshotSlice(field) {
 router.get('/profiles/:id/live-status', asyncRoute(async (req, res) => {
   res.json(await LCS.getLiveCampaignStatus({ profileId: idParam(req.params.id), storeId: req.query.storeId || null, windowName: req.query.window }));
 }));
+router.get('/profiles/:id/economics', asyncRoute(async (req, res) => {
+  res.json(await LCS.getEconomicsSummary({ profileId: idParam(req.params.id), storeId: req.query.storeId || null }));
+}));
 router.get('/profiles/:id/timeline', asyncRoute(async (req, res) => {
   res.json(await LCS.buildProductTimeline({ profileId: idParam(req.params.id), storeId: req.query.storeId || null }));
 }));
