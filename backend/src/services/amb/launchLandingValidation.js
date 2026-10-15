@@ -10,6 +10,10 @@
 import { prisma } from '../../prisma.js';
 import { resolveLandingIdentity, loadLandingCatalogues, fetchLandingPage } from './landingProof.js';
 import { normalizeName } from '../../../../js/product-mapping.js';
+import { clearStoreCatalogCache } from './productPriceResolver.js';
+
+// reasons that can simply mean «our cached Easy Orders catalogue is older than the product the owner just added» (the catalogue is cached for an hour)
+const STALE_CATALOGUE_REASONS = new Set(['PAGE_BELONGS_TO_A_STORE_WE_DO_NOT_OWN', 'SLUG_DOES_NOT_MATCH_PAGE_PRODUCT', 'EO_PRODUCT_NOT_IN_PRODUCT_MASTER']);
 
 export const EVIDENCE_MAX_AGE_MS = 24 * 60 * 60_000;
 export const LANDING_BLOCK = {
@@ -38,13 +42,21 @@ export async function validateLaunchLanding({ product, campaigns, deps = {} }) {
   if (!product?.store_id) add('PRODUCT_STORE_UNRESOLVED');
   else if (!product.easy_orders_uuid) add('PRODUCT_NOT_LINKED_TO_EASY_ORDERS');
   let cat = deps.catalogues || null;
-  if (!errors.length && !cat) { try { cat = await loadLandingCatalogues(); } catch { add('CATALOGUE_UNAVAILABLE'); } }
+  if (!errors.length && !cat) { try { cat = await (deps.loadCatalogues || loadLandingCatalogues)(); } catch { add('CATALOGUE_UNAVAILABLE'); } }
+  // a product added on Easy Orders a minute ago is missing from the hour-old cached catalogue: the page then looks like «a store we do not own». Before refusing for that reason, drop the cache and look ONCE more on a fresh catalogue
+  // (a genuinely foreign page is still refused — the second look is just as strict). Skipped when a test injects its own catalogues.
+  const resolveAll = async (catalogues) => { const out = new Map(); for (const c of campaigns || []) { const url = String(c.websiteUrl || '').split('?')[0]; if (!out.has(url)) out.set(url, await resolveLandingIdentity(url, { ...catalogues, fetchPage: deps.fetchPage || fetchLandingPage })); } return out; };
+  let pre = null;
+  if (!errors.length && (!deps.catalogues || deps.loadCatalogues)) {
+    pre = await resolveAll(cat);
+    if ([...pre.values()].some((r) => r.status !== 'VERIFIED' && STALE_CATALOGUE_REASONS.has(r.reason))) { try { clearStoreCatalogCache(); cat = await (deps.loadCatalogues || loadLandingCatalogues)(); pre = await resolveAll(cat); } catch { add('CATALOGUE_UNAVAILABLE'); } }
+  }
   if (!errors.length) {
     const seen = new Map();
     for (const c of campaigns || []) {
       const url = String(c.websiteUrl || '').split('?')[0];
       let r = seen.get(url);
-      if (!r) { r = await resolveLandingIdentity(url, { ...cat, fetchPage: deps.fetchPage || fetchLandingPage }); seen.set(url, r); results.push({ url, status: r.status, reason: r.reason || null, store: r.store || null, productId: r.productId ?? null, eoProductId: r.eoProductId || null, productName: r.productName || null }); }
+      if (!r) { r = pre?.get(url) || await resolveLandingIdentity(url, { ...cat, fetchPage: deps.fetchPage || fetchLandingPage }); seen.set(url, r); results.push({ url, status: r.status, reason: r.reason || null, store: r.store || null, productId: r.productId ?? null, eoProductId: r.eoProductId || null, productName: r.productName || null }); }
       const where = { campaign: c.name, url };
       if (r.status !== 'VERIFIED') { add(r.reason in LANDING_BLOCK ? r.reason : 'PAGE_UNREACHABLE', where); continue; }
       if (r.store !== product.store_id) { add('WRONG_STORE', { ...where, pageStore: r.store, productStore: product.store_id, pageProduct: r.productName }); continue; }

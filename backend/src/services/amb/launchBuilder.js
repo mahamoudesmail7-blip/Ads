@@ -21,6 +21,7 @@ import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import { getAllAccessibleAdAccounts, getAccountIdentities, getAccountAssetsForClone, searchAdGeoLocations } from '../metaGraphClient.js';
 import { listStores } from '../easyOrdersStores.js';
 import { syncNewEasyOrdersProducts } from './productMarketing.js';
+import { clearStoreCatalogCache } from './productPriceResolver.js';
 
 export const JOB_STATUSES = ['DRAFT', 'VALIDATING', 'READY', 'PUBLISHING', 'PARTIAL', 'COMPLETE', 'FAILED', 'CANCELLED'];
 export const CAMPAIGN_STATUSES = ['PENDING', 'QUEUED', 'PUBLISHING', 'CAMPAIGN_CREATED', 'ADSETS_CREATED', 'ADS_CREATED', 'COMPLETE', 'FAILED', 'CANCELLED'];
@@ -603,6 +604,7 @@ export async function listLaunchableProducts({ storeId, forceRefresh = false } =
   // القائمة" button) bypasses that 1h cache for the one real moment it
   // matters — right after someone just added a product and doesn't want to
   // wait up to an hour for the automatic path to notice.
+  if (forceRefresh) clearStoreCatalogCache(); // the wizard's «🔄 تحديث القائمة»: the landing-page proof reads the SAME Easy Orders catalogue through a second hour-long cache — refresh both together
   if (storeId) {
     await syncNewEasyOrdersProducts(storeId, { forceRefresh });
   } else {

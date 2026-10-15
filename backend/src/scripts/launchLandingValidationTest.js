@@ -117,6 +117,21 @@ try {
   const left = { jobs: await prisma.ambLaunchJob.count({ where: { job_id: { in: created.jobs } } }), products: await prisma.product.count({ where: { product_name: { startsWith: T } } }) };
   ok('cleanup: no fixtures left', left.jobs === 0 && left.products === 0, JSON.stringify(left));
 }
+console.log('5) a product added on Easy Orders a minute ago (stale hour-old catalogue) is re-checked ONCE on a fresh catalogue — a foreign page is still refused');
+{
+  const NEWID = 'cccc0003-0000-4000-8000-00000000000c'; const NEWURL = 'https://shop.example/products/Brand-New';
+  const pg = new Map(pages); pg.set(NEWURL, { storeIds: ['S-T'], uuids: [NEWID] }); const fp = async (url) => pg.get(String(url).split('?')[0]) || null;
+  const stale = { catalogues, dbByUuid };
+  const freshCat = { 'trendy-storeee': { bySlug: new Map([...catalogues['trendy-storeee'].bySlug, ['brand-new', { id: NEWID, name: 'منتج جديد' }]]) }, default: catalogues.default };
+  const freshDb = { 'trendy-storeee': new Map([...dbByUuid['trendy-storeee'], [NEWID, { id: 777, product_name: 'منتج جديد' }]]), default: dbByUuid.default };
+  let loads = 0; const loadCatalogues = async () => { loads++; return loads === 1 ? stale : { catalogues: freshCat, dbByUuid: freshDb }; };
+  const r = await V.validateLaunchLanding({ product: sel(777, 'trendy-storeee', NEWID, 'منتج جديد'), campaigns: [{ name: 'c1', websiteUrl: NEWURL }], deps: { fetchPage: fp, loadCatalogues } });
+  ok('the new product passes after ONE automatic fresh look (the first, stale catalogue said «not our store»)', r.ok === true && loads === 2, JSON.stringify(r.errors));
+  loads = 0; const r2 = await V.validateLaunchLanding({ product: sel(185, 'trendy-storeee', U.u185, 'مصباح القمر الليلي'), campaigns: [{ name: 'f', websiteUrl: 'https://foreign.example/products/Calm-Light' }], deps: { fetchPage: fp, loadCatalogues: async () => { loads++; return stale; } } });
+  ok('a genuinely foreign page is still BLOCKED after the fresh look (second look is just as strict)', r2.ok === false && r2.errors[0].code === 'PAGE_BELONGS_TO_A_STORE_WE_DO_NOT_OWN' && loads === 2, JSON.stringify(r2.errors));
+  loads = 0; const r3 = await V.validateLaunchLanding({ product: sel(185, 'trendy-storeee', U.u185, 'مصباح القمر الليلي'), campaigns: [{ name: 'ok', websiteUrl: 'https://shop.example/products/Calm-Light' }], deps: { fetchPage: fp, loadCatalogues: async () => { loads++; return stale; } } });
+  ok('a page that verifies at once triggers no second catalogue load', r3.ok === true && loads === 1);
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 await prisma.$disconnect();
 process.exit(fail ? 1 : 0);
