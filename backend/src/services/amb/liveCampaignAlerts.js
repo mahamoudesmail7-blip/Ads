@@ -22,6 +22,44 @@ import { candidateProductIds } from './audienceBreakdownSync.js';
 import { getLiveCampaignStatusByProductId } from './liveCampaignStatus.js';
 import { raiseAlert } from './alerts.js';
 import { get_incidents } from '../aiTools.js';
+import { getEconomicsSummaryByProductId } from './liveCampaignStatus.js';
+import { prisma } from '../../prisma.js';
+
+/**
+ * Pure. Spec §33 milestone signals from REAL numbers only (never assumed):
+ *  - SAMPLE_REACHED: the last-7-day orders reached the minimum sample the engine itself requires before it trusts a CPA (ambMinPurchasesBeforeScaling).
+ *  - SCALE_ELIGIBLE: sample reached AND the product's economics are complete AND the last-7-day CPA is at/below the SCALE line (0.6 × max CPA — the same suggestion line the economics screen shows)
+ *    AND the product has a margin (break-even CPA known). If any of those is missing the signal is simply not raised (no guess).
+ * It is information only — it never changes a campaign, a budget or a policy.
+ */
+export function evaluateLiveSignals({ economics, minSample }) {
+  const out = []; const e = economics; if (!e || !e.available) return out;
+  const orders7 = e.performance?.orders7; const cpa7 = e.performance?.cpa7; const need = Math.max(1, Number(minSample) || 5);
+  if (orders7 == null || orders7 < need) return out;
+  out.push({ kind: 'SAMPLE_REACHED', orders7, cpa7, need });
+  const max = e.cpa?.max; if (e.economicsComplete && e.breakEvenCpa != null && max > 0 && cpa7 != null) {
+    const scaleLine = Math.round(max * 0.6);
+    if (cpa7 <= scaleLine) out.push({ kind: 'SCALE_ELIGIBLE', orders7, cpa7, scaleLine, max });
+  }
+  return out;
+}
+
+export async function raiseOnce(a) { // upsert would re-mark an already-read alert unread on every tick; a milestone is raised once per dedupe key
+  const hit = await prisma.ambAlert.findUnique({ where: { dedupe_key: a.dedupeKey }, select: { id: true } }).catch(() => null);
+  if (hit) return null; return raiseAlert(a);
+}
+
+async function checkMilestones({ productId, settings }) {
+  const need = Math.max(1, Number(settings.ambMinPurchasesBeforeScaling) || 5);
+  const economics = await getEconomicsSummaryByProductId({ productId });
+  const day = new Date().toISOString().slice(0, 10);
+  for (const sig of evaluateLiveSignals({ economics, minSample: need })) {
+    if (sig.kind === 'SAMPLE_REACHED') await raiseOnce({ severity: 'INFO', category: 'LIVE_CAMPAIGN', title: `العينة كفاية للحكم: ${economics.name || productId}`, entityId: String(productId), dedupeKey: `live-sample:${productId}:${need}`,
+      message: `وصل ${sig.orders7} أوردر في آخر 7 أيام (الحد الأدنى ${sig.need}) — الـ CPA ${sig.cpa7 != null ? Math.round(sig.cpa7) + ' ج.م' : 'غير متوفر'} بقى يتعتمد عليه في القرار. ده تنبيه معلومة بس — مفيش أي تنفيذ.` });
+    if (sig.kind === 'SCALE_ELIGIBLE') await raiseOnce({ severity: 'INFO', category: 'LIVE_CAMPAIGN', title: `مؤهّل للـ scale: ${economics.name || productId}`, entityId: String(productId), dedupeKey: `live-scale:${productId}:${day}`,
+      message: `الـ CPA ${Math.round(sig.cpa7)} ج.م في آخر 7 أيام (على ${sig.orders7} أوردر) تحت خط الـ scale (${sig.scaleLine} ج.م = 60% من أعلى CPA ${sig.max}) والاقتصاديات مكتملة. المنتج مؤهّل لزيادة الميزانية — القرار والتنفيذ حسب سياسة المنتج وموافقتك، التنبيه ده مش بينفّذ حاجة.` });
+  }
+}
 
 async function checkCustomThresholds({ productId, live, settings }) {
   const k = live.kpis || {};
@@ -59,7 +97,7 @@ export async function runLiveCampaignAlertsTick() {
   for (const productId of productIds) {
     try {
       const live = await getLiveCampaignStatusByProductId({ productId, windowName: 'today' });
-      if (live.linked) await checkCustomThresholds({ productId, live, settings });
+      if (live.linked) { await checkCustomThresholds({ productId, live, settings }); await checkMilestones({ productId, settings }).catch((e) => logger.warn('[liveCampaignAlerts] milestones failed', { productId, message: e.message })); }
       await get_incidents({ productId, window: 'last7' }).catch(() => {}); // reuses the real, existing, evidence-gated incident detection verbatim
       checked++;
     } catch (err) {
