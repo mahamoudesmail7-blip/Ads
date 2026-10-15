@@ -68,7 +68,7 @@ export function decidePause({ policy, campaignId, productId = null, storeId = nu
   let trigger = null;
   const ri = policy.protections.recentImprovement; const improving = !!(ri?.enabled && mToday && (mToday.purchases ?? 0) >= (ri.minPurchases ?? 2) && mToday.cpa != null && limit != null && mToday.cpa <= limit);
   for (const t of ['STOCK_OUT', 'ZERO_ORDER', 'HIGH_CPA']) { if (!fired.includes(t)) continue; if (protectedWinner && t !== 'STOCK_OUT') { skipped.push({ trigger: t, code: 'WINNER_PROTECTED' }); continue; } if (improving && t === 'HIGH_CPA') { skipped.push({ trigger: t, code: 'RECENT_IMPROVEMENT' }); continue; } trigger = t; break; }
-  return { trigger, skipped, blockers, fired };
+  return { trigger, skipped, blockers, fired, threshold: limit ?? null }; // the EFFECTIVE high-CPA line (the product's own Hard Stop wins) — the reason text must print this, never the empty global figure
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------

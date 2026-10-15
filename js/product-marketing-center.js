@@ -950,7 +950,7 @@ function liveHeaderHtml(live, timeline) {
     : `<span class="badge gray">⏸ كل الحملات متوقفة حاليًا</span>`;
   const running = live.launch?.timeRunningMs != null ? fmtDurationAr(live.launch.timeRunningMs) : null;
   const runningLabel = running
-    ? `شغالة منذ ${running}${live.launch.source === 'EARLIEST_KNOWN_ACTIVITY' ? ' (أقدم نشاط معروف)' : ''}`
+    ? `شغالة منذ ${running}${live.launch.source === 'EARLIEST_KNOWN_ACTIVITY' ? ' (أقدم نشاط معروف)' : ' (من وقت الإطلاق من النظام)'}${live.launch.at ? ' · الإطلاق: ' + new Date(live.launch.at).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo', dateStyle: 'medium', timeStyle: 'short' }) : ''}`
     : '';
   const k = live.kpis || {};
   const fr = live.freshness || {};
@@ -959,7 +959,7 @@ function liveHeaderHtml(live, timeline) {
     : '';
   return `
     <div class="h" style="display:flex;justify-content:space-between;align-items:center;">
-      <span>📡 حالة الحملة الحيّة</span>${statePill}
+      <span>📡 حالة الحملة الحيّة · 🟢 مراقبة مباشرة (تحديث دوري)</span>${statePill}
     </div>
     <div class="faint" style="font-size:12px;margin:2px 0 8px;">${E(runningLabel)}</div>
     <div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));">
@@ -970,12 +970,36 @@ function liveHeaderHtml(live, timeline) {
       <div class="pmc-kv"><span>CPM</span><b>${k.cpm != null ? fmtEGP(k.cpm) : '—'}</b></div>
       <div class="pmc-kv"><span>معدل التأكيد (Easy Orders)</span><b>${fmtPct1(k.easyOrdersConfirmationRate)}</b></div>
     </div>
+    <div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-top:8px;">
+      <div class="pmc-kv"><span>Impressions</span><b>${k.impressions != null ? fmtNum(k.impressions) : 'غير متوفر'}</b></div>
+      <div class="pmc-kv"><span>Reach</span><b>${k.reach != null ? fmtNum(k.reach) : 'غير متوفر'}</b></div>
+      <div class="pmc-kv"><span>Clicks</span><b>${k.clicks != null ? fmtNum(k.clicks) : 'غير متوفر'}</b></div>
+      <div class="pmc-kv"><span>CPC</span><b>${k.cpc != null ? fmtEGP(k.cpc) : 'غير متوفر'}</b></div>
+      <div class="pmc-kv"><span>LPV</span><b>${k.landingPageViews != null ? fmtNum(k.landingPageViews) : 'غير متوفر'}</b></div>
+      <div class="pmc-kv"><span>معدل التسليم (Easy Orders)</span><b>${k.easyOrdersDeliveryRate != null ? fmtPct1(k.easyOrdersDeliveryRate) : 'غير متوفر'}</b></div>
+      <div class="pmc-kv"><span>إيراد Meta (مش ربح)</span><b>${k.revenue != null ? fmtEGP(k.revenue) : 'غير متوفر'}</b></div>
+    </div>
+    <div class="faint" style="font-size:11px;margin-top:4px;">المصدر: Meta (الإنفاق والظهور والنقرات والمشتريات) و Easy Orders (التأكيد والتسليم) — أرقام منفصلة ومش مدمجة. الربح الحقيقي في كارت «اقتصاديات المنتج» تحت.</div>
     <div class="faint" style="font-size:11.5px;margin-top:8px;">
       ${BADGE_DOT[fr.badge] || ''} Meta: ${E(timeAgoAr(fr.meta?.lastSuccessAt) || 'غير معروف')}
       ${fr.easyOrders?.lastUpdatedAt ? ` · Easy Orders: ${E(timeAgoAr(fr.easyOrders.lastUpdatedAt))}` : ''}
     </div>
+    <div class="faint" style="font-size:11.5px;margin-top:10px;font-weight:700;">فترات ما بعد الإطلاق</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;" id="pmcWinChips">${LIVE_WINDOW_CHIPS.map(([k, t]) => `<button class="btn sm" data-lw="${k}">${t}</button>`).join('')}</div>
+    <div id="pmcWinOut" class="faint" style="font-size:12px;margin-top:6px;">اختار فترة — بتتحسب من لقطات Meta الحقيقية (مش بيانات ساعية مخترعة).</div>
     ${timelineHtml ? `<div class="faint" style="font-size:11px;margin-top:10px;font-weight:700;">الجدول الزمني</div>${timelineHtml}` : ''}
   `;
+}
+const LIVE_WINDOW_CHIPS = [['launch', 'منذ الإطلاق'], ['1h', 'آخر ساعة'], ['3h', '3 ساعات'], ['6h', '6 ساعات'], ['12h', '12 ساعة'], ['24h', '24 ساعة']];
+function liveWindowHtml(w) {
+  if (!w?.linked) return E(w?.reason || 'المنتج مش مربوط.');
+  if (!w.available) return `<b>غير متاح — ${E(w.label || '')}</b><br>${E(w.note || w.reason || '')}`;
+  const m = w.metrics || {}; const na = 'غير متوفر'; const v = (x, f) => (x == null ? na : f(x));
+  return `<b>${E(w.label)}</b>${w.partial ? ' <span class="badge yellow">تغطية جزئية</span>' : ''}<div class="pmc-top-grid" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-top:6px;"><div class="pmc-kv"><span>الصرف</span><b>${v(m.spend, fmtEGP)}</b></div><div class="pmc-kv"><span>مشتريات Meta</span><b>${v(m.purchases, fmtNum)}</b></div><div class="pmc-kv"><span>CPA</span><b>${v(m.cpa, fmtEGP)}</b></div><div class="pmc-kv"><span>Impressions</span><b>${v(m.impressions, fmtNum)}</b></div><div class="pmc-kv"><span>Clicks</span><b>${v(m.clicks, fmtNum)}</b></div><div class="pmc-kv"><span>CTR</span><b>${m.ctr == null ? na : (Math.round(m.ctr * 100) / 100) + '%'}</b></div><div class="pmc-kv"><span>CPC</span><b>${v(m.cpc, fmtEGP)}</b></div><div class="pmc-kv"><span>LPV</span><b>${v(m.landingPageViews, fmtNum)}</b></div></div><div class="faint" style="font-size:11px;margin-top:4px;">${E(w.note || '')}${w.coverage && w.partial ? ' — ' + w.coverage.covered + ' من ' + w.coverage.campaigns + ' حملة متغطية.' : ''}</div>`;
+}
+async function loadLiveWindow(key) {
+  const out = $('pmcWinOut'); if (!out || !state.profile) return; out.textContent = 'جاري الحساب…';
+  try { const w = await api.get(`/api/product-marketing/profiles/${state.profile.id}/live-window`, { w: key, storeId: state.storeId }); const el = $('pmcWinOut'); if (el) el.innerHTML = liveWindowHtml(w); } catch (e) { const el = $('pmcWinOut'); if (el) el.textContent = e.message || 'تعذّر تحميل الفترة.'; }
 }
 
 async function fetchAndRenderLiveHeader() {
@@ -989,7 +1013,7 @@ async function fetchAndRenderLiveHeader() {
     ]);
     if (myGen !== liveHeaderGen) return; // a newer request (tab re-entered, or a later tick) already won
     const el = $('pmcLiveHeader');
-    if (el) el.innerHTML = liveHeaderHtml(live, timeline);
+    if (el) { el.innerHTML = liveHeaderHtml(live, timeline); el.querySelectorAll('[data-lw]').forEach((b) => { b.onclick = () => loadLiveWindow(b.dataset.lw); }); }
   } catch {
     // Non-critical — the rest of Overview already rendered from the real
     // snapshot; a failed live-header refresh just leaves the last-known

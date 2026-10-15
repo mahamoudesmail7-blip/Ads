@@ -16,6 +16,8 @@ import { getProductPerformance, resolveProductCampaigns } from './productPerform
 import { getSyncStatus } from './snapshotSync.js';
 import { resolveEffectiveProductId } from './productMarketing.js';
 import { getProductEconomicsBoard } from './productEconomicsCenter.js';
+import { liveWindow, WINDOW_LABEL_AR } from './liveWindowMetrics.js';
+import { cairoDate } from './dailyPlanTime.js';
 import { getAudienceBreakdownTrend } from './audienceBreakdownSync.js';
 import { governorateTrendForProduct } from './customerQuality.js';
 import { resolveWindow } from './metricsEngine.js';
@@ -297,4 +299,29 @@ export async function getEconomicsSummaryByProductId({ productId, now = new Date
     policy: { status: c.policy.status, mode: c.policy.mode }, readiness: { ready: c.readiness.ready, okCount: req.filter((x) => x.ok).length, total: req.length, missing: c.readiness.missing.map((m) => ({ key: m.key, label: m.label })) },
     screen: { path: '/ai-media-buyer.html?ui=v2#operator', section: 'prod' } }; }
   econCache.set(productId, { at: now.getTime(), v }); return v;
+}
+
+// ---------------------------------------------------------------------------
+// Post-launch windows (spec §4): since launch · last 1 / 3 / 6 / 12 / 24 hours. The hour windows are snapshot DIFFERENCES (liveWindowMetrics.js — offered only where a real snapshot exists near the window start, never
+// invented); «since launch» is the sum of the real daily aggregates from the launch day (the wizard's Launch Job time when it exists, else the earliest known activity — labelled, never passed off as a launch time).
+// ---------------------------------------------------------------------------
+export async function getLiveWindow({ profileId, storeId, windowKey }) {
+  const { productId, storeError } = await resolveProductId(profileId, storeId);
+  if (storeError) return { linked: false, ...storeError };
+  if (!productId) return { linked: false, reason: 'المنتج لسه مش مربوط بمنتج حقيقي في الكتالوج.' };
+  return getLiveWindowByProductId({ productId, windowKey });
+}
+export async function getLiveWindowByProductId({ productId, windowKey, now = new Date() }) {
+  const campaigns = await resolveProductCampaigns(productId);
+  if (windowKey === 'launch') {
+    const [launchAt, earliest] = await Promise.all([launchJobTime(productId), earliestKnownActivity(campaigns)]);
+    const fromDay = launchAt ? cairoDate(launchAt) : earliest || null; const source = launchAt ? 'LAUNCH_JOB' : earliest ? 'EARLIEST_KNOWN_ACTIVITY' : null;
+    if (!fromDay) return { linked: true, available: false, windowKey, label: WINDOW_LABEL_AR.launch, reason: 'NO_LAUNCH_TIME', note: 'مفيش وقت إطلاق ولا نشاط معروف للحملات — مش هنخمّن.' };
+    const perf = await getProductPerformance({ productId, from: fromDay, to: cairoDate(now) }); const m = perf.meta;
+    return { linked: true, available: m.dataState === 'AVAILABLE', windowKey, label: WINDOW_LABEL_AR.launch, from: fromDay, to: cairoDate(now), launch: { at: launchAt, source },
+      metrics: { spend: m.spend, impressions: m.impressions, clicks: m.clicks, purchases: m.purchases, landingPageViews: m.landingPageViews, ctr: m.ctr, cpc: m.cpc, cpm: m.cpm, cpa: m.cpa, reach: m.reach }, metaDataState: m.dataState, source: 'META_DAILY_AGGREGATES',
+      note: source === 'LAUNCH_JOB' ? 'مجموع الأيام من يوم الإطلاق من النظام (إجماليات يومية حقيقية).' : 'من أقدم نشاط معروف للحملات — مش وقت إطلاق مؤكد.' };
+  }
+  const sync = await getSyncStatus();
+  return { linked: true, ...(await liveWindow({ campaignIds: campaigns.map((c) => c.campaignId), windowKey, now, intervalMinutes: sync.intervalMinutes })) };
 }
