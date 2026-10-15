@@ -228,8 +228,16 @@ export async function waitAndVerifyScale({
   }
   return { ok: true, counts, destinationCampaignId: campRow.destination_id };
 }
+// A clone job that Meta refused to even READ (rate limit on the ad account) used to surface as the generic «لم تُنشأ حملة الوجهة» — the real reason sits in the job's preflight checks.
+const META_RATE_RE = /too many (api )?calls|request limit reached|rate limit|\(#(4|17|32|613|80000|80003|80004)\)/i;
+export function describePreflightBlock(job) {
+  let pf = null; try { pf = JSON.parse(job?.preflight_json || 'null'); } catch { /* */ }
+  const blocks = (pf?.checks || []).filter((c) => c.status === 'BLOCK'); if (!blocks.length) return null;
+  const text = blocks.map((c) => `${c.name}: ${String(c.detail || '').slice(0, 200)}`).join(' · ');
+  return blocks.some((c) => META_RATE_RE.test(String(c.detail || ''))) ? `Meta حاطّة حد مؤقت على الحساب الإعلاني (طلبات كتير) ومفيش حاجة اتعملت — استنى 10–15 دقيقة وجرّب تاني. [${text}]` : `الفحص قبل الإنشاء رفض: ${text}`;
+}
 function firstErr(job, failed, fallback) {
-  return (failed.find((o) => o.error)?.error) || job?.error || fallback;
+  return (failed.find((o) => o.error)?.error) || job?.error || describePreflightBlock(job) || fallback;
 }
 
 /** Mark a winner campaign's scale suggestion as REJECTED so it is not re-surfaced. */

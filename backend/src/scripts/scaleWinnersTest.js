@@ -106,6 +106,17 @@ try {
   v = await waitAndVerifyScale({ batchId: BID, requiredAdSetIds: ['as1', 'as2'], selectedAdIds: ['ad1', 'ad3'], timeoutMs: 4000, pollMs: 500 });
   ok('C: 2 ad sets + 2 ads all created → ok', v.ok && v.counts.adSetsCreated === 2 && v.counts.adsCreated === 2);
   await cleanup();
+  // Meta rate-limited the source read (preflight BLOCK): the real reason is shown, not the generic «لم تُنشأ حملة الوجهة»
+  await prisma.ambCloneBatch.create({ data: { batch_id: BID, source_ad_account_id: 'act_x', destination_account_ids_json: '["act_x"]', campaign_ids_json: '["c1"]', total_copies: 1, status: 'SCHEDULED' } });
+  await prisma.ambCloneJob.create({ data: { batch_id: BID, source_ad_account_id: 'act_x', destination_ad_account_id: 'act_x', source_campaign_id: 'c1', status: 'PREFLIGHT_BLOCKED', preflight_status: 'BLOCKED', preflight_json: JSON.stringify({ status: 'BLOCKED', checks: [{ name: 'قراءة الحملة المصدر', status: 'BLOCK', detail: 'User request limit reached — Ad Account Has Too Many API Calls' }] }) } });
+  v = await waitAndVerifyScale({ batchId: BID, requiredAdSetIds: ['as1'], selectedAdIds: ['ad1'], timeoutMs: 4000, pollMs: 500 });
+  ok('preflight blocked by Meta rate limit → not ok, message names the rate limit + wait advice (not the generic text)', !v.ok && /حد مؤقت/.test(v.error) && /10–15 دقيقة/.test(v.error) && !/^لم تُنشأ حملة الوجهة/.test(v.error), v.error);
+  await cleanup();
+  await prisma.ambCloneBatch.create({ data: { batch_id: BID, source_ad_account_id: 'act_x', destination_account_ids_json: '["act_x"]', campaign_ids_json: '["c1"]', total_copies: 1, status: 'SCHEDULED' } });
+  await prisma.ambCloneJob.create({ data: { batch_id: BID, source_ad_account_id: 'act_x', destination_ad_account_id: 'act_x', source_campaign_id: 'c1', status: 'PREFLIGHT_BLOCKED', preflight_status: 'BLOCKED', preflight_json: JSON.stringify({ status: 'BLOCKED', checks: [{ name: 'عملة الحساب', status: 'BLOCK', detail: 'مختلفة' }] }) } });
+  v = await waitAndVerifyScale({ batchId: BID, requiredAdSetIds: ['as1'], selectedAdIds: ['ad1'], timeoutMs: 4000, pollMs: 500 });
+  ok('any other preflight block is shown with its own check name (never silently generic)', !v.ok && /الفحص قبل الإنشاء رفض: عملة الحساب/.test(v.error), v.error);
+  await cleanup();
 } finally {
   await cleanup();
 }
