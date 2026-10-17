@@ -3,6 +3,7 @@
 // the per-type execution permission, the deployment write lock, the guards, ADMIN approval and a live Meta read — all on the server.
 import { api } from './api-client.js';
 import { mountBudgetPanel } from './opx-manual.js';
+import { mountCpaBoard } from './opx-cpa.js';
 import { E, $, num, egp, ICONS, kpiCard, pill, skeletonRows, skeletonCards, toast, confirmModal, ago, thumb, hydrateThumbs } from './opx-ui.js';
 
 // ABO: a budget decision is about ONE ad set — say which (name + id)
@@ -54,6 +55,8 @@ function draw() {
   const pending = B.decisions.filter((d) => d.status === 'PREPARED').length;
   B.root.innerHTML = `
     <div class="opx-card opx-head opx-fade"><div class="opx-head-icon violet">${ICONS.budget}</div><div class="grow"><h1>إدارة الميزانيات</h1><p>زيادة وتقليل الميزانيات بقواعد واضحة — كل تغيير بيتحقق من Meta قبل وبعد ويبدأ Cooldown</p></div>${B.ctx.modeSegment()}<button class="opx-btn danger" data-opxstop ${B.ov.emergencyStop ? 'disabled' : ''}>${ICONS.stop} إيقاف فوري</button></div>
+    <div id="cpaBoard"></div>
+    <div class="opx-card opx-panel" style="padding:10px 16px"><b>الإعدادات الكاملة (التفاصيل القديمة)</b><span class="opx-note"> — نفس القيم والحدود بشكلها السابق، لو عايز تراجعها أو تغيّر خانة مش موجودة فوق.</span></div>
     <div class="opx-kpis">
       ${kpiCard({ label: 'محرك الميزانيات', value: p.enabled ? 'مفعّل' : 'متوقف', icon: 'budget', tone: p.enabled ? 'green' : 'amber' })}
       ${kpiCard({ label: 'فرص زيادة حالية', value: num(up.length), icon: 'megaphone', tone: 'green' })}
@@ -69,6 +72,7 @@ function draw() {
       <div class="opx-scroll opx-desk">${decisionsTable(B.decisions)}</div><div class="opx-cards">${decisionCards(B.decisions)}</div></div>
     <div class="opx-card opx-panel opx-fade"><h3>${ICONS.shield} الحمايات (لا تتجاوزها أي قاعدة)</h3><p class="opx-note">Cooldown بعد كل تعديل · أقل/أقصى ميزانية وحدود الحساب والمنتج · Emergency Stop · قفل النشر · صلاحيات التنفيذ · منع التكرار (Idempotency) · قراءة حية من Meta قبل وبعد · لا زيادة ثانية من نفس الأوردرات (حد أدنى صرف جديد: ${num(p.newEvidence?.minSpend)} ج.م).</p></div>`;
   wire(); hydrateThumbs(B.root);
+  if ($('cpaBoard')) mountCpaBoard($('cpaBoard'), B.ctx).catch((e) => { $('cpaBoard').innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; });
   if ($('bdManual')) mountBudgetPanel($('bdManual'), B.ctx).catch((e) => { $('bdManual').innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message)}</div>`; });
 }
 function decisionCards(list) {

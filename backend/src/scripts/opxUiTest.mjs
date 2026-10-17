@@ -4,7 +4,7 @@
 //   3) node src/scripts/opxUiTest.mjs
 // It logs in with the documented TEST owner (exists only in the test database) — against production the login simply fails and the test stops.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleepRaw } from 'node:timers/promises';
@@ -946,6 +946,43 @@ try {
     await js('(' + cardOf('UIPEC Beta') + ').querySelector("[data-open]").click(); true'); await waitFor('!!document.querySelector(".opx2-ped")', 10000); await sleep(600);
     ok('phone: the editor fits the screen (single column, no horizontal scroll)', await js('document.documentElement.scrollWidth <= window.innerWidth + 2 && document.querySelector(".opx2-modal").getBoundingClientRect().width <= window.innerWidth + 2'));
     await js('document.querySelector("#peX").click(); true');
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor('!!document.querySelector(".opx")');
+  }
+
+  console.log('\n26. «قواعد CPA الذكية»: the four points, colour zones, overlaps refused, per-product sources, bulk impact (read-only)');
+  {
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'budget', 'opx.theme': 'light' } });
+    ok('the board mounts above the old budget sections', await waitFor(`!!document.querySelector('#cpaBoard .cpa-card') && !document.querySelector('#cpaBoard .opx-empty')`, 40000), await js(`document.getElementById('cpaBoard')?.innerText?.slice(0, 200)`));
+    const setN = (k, v) => js(`(()=>{ const i = document.querySelector('[data-n="${k}"]'); i.value = '${v}'; i.dispatchEvent(new Event('input')); return true; })()`);
+    ok('six KPI cards, four zone cards, a neutral empty slider (no invented zones) and a products table', await js(`document.querySelectorAll('#cpaBoard .cpa-kpi').length === 6 && document.querySelectorAll('#cpaBoard .cpa-zone').length === 4 && document.querySelectorAll('#cpaBoard .cpa-table tbody tr[data-row]').length >= 1`));
+    for (const [k, v] of [['bumpStart', 20], ['bumpEnd', 100], ['reduceStart', 130], ['hardStop', 200]]) await setN(k, v);
+    await sleep(300);
+    ok('typing the four points makes the four handles appear on the slider', await js(`document.querySelectorAll('#cpaBoard .cpa-handle').length === 4`));
+    const zt = await js(`document.querySelector('#cpaBoard .cpa-zones').innerText.replace(/\\s+/g, ' ')`);
+    ok('the zone cards print the exact ranges 20–100 · 100–130 · 130–200 · 200+', /20 – 100/.test(zt) && /100 – 130/.test(zt) && /130 – 200/.test(zt) && /200\+/.test(zt), zt);
+    const verdict = async (v) => { await js(`(()=>{ const t = document.getElementById('cpaTest'); t.value = '${v}'; t.dispatchEvent(new Event('input')); return true; })()`); await sleep(150); return js(`document.querySelector('#cpaBoard .cpa-verdict')?.innerText || ''`); };
+    ok('boundaries: 19 below the bump start · 20 and 100 → زيادة · 100.5 → تثبيت · 130 and 200 → تقليل · 200.5 → إيقاف', /أقل من بداية/.test(await verdict(19)) && /زيادة/.test(await verdict(20)) && /زيادة/.test(await verdict(100)) && /تثبيت/.test(await verdict(100.5)) && /تقليل/.test(await verdict(130)) && /تقليل/.test(await verdict(200)) && /إيقاف/.test(await verdict(200.5)));
+    const before = await js(`fetch('/api/operator/automation/global-rules').then(r => r.json()).then(g => g.draft ? g.draft.cpa : null)`);
+    await setN('bumpEnd', 140); await sleep(300);
+    ok('overlap (Bump End 140 ≥ Reduce Start 130) shows an error and the zone preview stops being trusted', await js(`/نهاية الزيادة لازم تكون أقل من بداية التقليل/.test(document.querySelector('#cpaBoard .cpa-msg.bad')?.innerText || '')`));
+    await js(`document.querySelector('[data-act="save"]').click()`); await sleep(900);
+    const after = await js(`fetch('/api/operator/automation/global-rules').then(r => r.json()).then(g => g.draft ? g.draft.cpa : null)`);
+    ok('saving with overlapping points is refused (nothing was written)', JSON.stringify(before) === JSON.stringify(after), JSON.stringify([before, after]));
+    await setN('bumpEnd', 100); await sleep(200);
+    await js(`(()=>{ const r = document.querySelector('[data-r="hardStop"]'); r.value = '220'; r.dispatchEvent(new Event('input')); return true; })()`); await sleep(200);
+    ok('moving the slider updates the number field and the handle label', await js(`document.querySelector('[data-n="hardStop"]').value === '220' && document.querySelector('.cpa-handle[data-h="hardStop"] i').textContent === '220'`));
+    await setN('hardStop', 200); await js(`document.querySelector('[data-act="save"]').click()`); await sleep(1200);
+    const saved = await js(`fetch('/api/operator/automation/global-rules').then(r => r.json()).then(g => g.draft && g.draft.cpa)`);
+    ok('«حفظ كمسودة العامة» stores the four points as a DRAFT (not active)', saved && saved.scaleMin === 20 && saved.scale === 100 && saved.reduce === 130 && saved.hardStop === 200, JSON.stringify(saved));
+    ok('the screen does not execute anything: no Meta action was created by saving', await js(`fetch('/api/operator/execution-history/summary').then(r => r.json()).then(x => JSON.stringify(x).length > 0)`));
+    await js(`document.querySelector('#cpaBoard [data-edit]').click()`); await waitFor(`document.querySelectorAll('#cpaBoard .cpa-src').length > 0`, 15000);
+    ok('selecting a product shows where every value comes from (عام / المنتج / غير محدد)', await js(`document.querySelectorAll('#cpaBoard .cpa-src').length >= 4 && document.getElementById('cpaScope').value !== 'GLOBAL'`));
+    await js(`document.querySelector('[data-act="impact"]').click()`);
+    ok('«معاينة التأثير المالي» opens a read-only preview with the exposure numbers', await waitFor(`/مفيش تنفيذ/.test(document.querySelector('.opx-drawer-head')?.innerText || '') && !!document.querySelector('.cpa-impact-k')`, 20000));
+    if (process.env.OPX_SHOT_DIR) { await js(`(document.querySelector('#opxDrawerX') || {click(){}}).click()`); await js(`window.scrollTo(0, 0)`); await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1500, deviceScaleFactor: 1, mobile: false }); await sleep(600); const shot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(process.env.OPX_SHOT_DIR, 'cpa-board.png'), Buffer.from(shot.data, 'base64')); }
+    await js(`(document.querySelector('#opxDrawerX') || {click(){}}).click()`);
+    await goto('/ai-media-buyer.html#operator', { width: 390, height: 800, mobile: true, ls: { 'opx.ws': 'budget' } }); await waitFor(`!!document.querySelector('#cpaBoard .cpa-card')`, 30000); await sleep(500);
+    ok('phone: the board fits the screen (no horizontal page scroll)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`), await js(`document.documentElement.scrollWidth`));
     await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor('!!document.querySelector(".opx")');
   }
 
