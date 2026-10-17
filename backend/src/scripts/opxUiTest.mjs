@@ -954,7 +954,7 @@ try {
     await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'budget', 'opx.theme': 'light' } });
     ok('the board mounts above the old budget sections', await waitFor(`!!document.querySelector('#cpaBoard .cpa-card') && !document.querySelector('#cpaBoard .opx-empty')`, 40000), await js(`document.getElementById('cpaBoard')?.innerText?.slice(0, 200)`));
     const setN = (k, v) => js(`(()=>{ const i = document.querySelector('[data-n="${k}"]'); i.value = '${v}'; i.dispatchEvent(new Event('input')); return true; })()`);
-    ok('six KPI cards, four zone cards, a neutral empty slider (no invented zones) and a products table', await js(`document.querySelectorAll('#cpaBoard .cpa-kpi').length === 6 && document.querySelectorAll('#cpaBoard .cpa-zone').length === 4 && document.querySelectorAll('#cpaBoard .cpa-table tbody tr[data-row]').length >= 1`));
+    ok('six KPI cards, four zone cards, a neutral empty slider (no invented zones) and a products table', await js(`document.querySelectorAll('#cpaBoard .cpa-kpi').length === 6 && document.querySelectorAll('#cpaBoard .cpa-zone').length === 4 && document.querySelectorAll('#cpaBoard .cpa-prow[data-row]').length >= 1`));
     for (const [k, v] of [['bumpStart', 20], ['bumpEnd', 100], ['reduceStart', 130], ['hardStop', 200]]) await setN(k, v);
     await sleep(300);
     ok('typing the four points makes the four handles appear on the slider', await js(`document.querySelectorAll('#cpaBoard .cpa-handle').length === 4`));
@@ -980,6 +980,23 @@ try {
     const saved = await js(`fetch('/api/operator/automation/global-rules').then(r => r.json()).then(g => g.draft && g.draft.cpa)`);
     ok('«حفظ كمسودة العامة» stores the four points as a DRAFT (not active)', saved && saved.scaleMin === 20 && saved.scale === 100 && saved.reduce === 130 && saved.hardStop === 200, JSON.stringify(saved));
     ok('the screen does not execute anything: no Meta action was created by saving', await js(`fetch('/api/operator/execution-history/summary').then(r => r.json()).then(x => JSON.stringify(x).length > 0)`));
+    // the products dashboard: period + date range, status groups, filters, per-product performance status
+    const rowsN = () => js(`document.querySelectorAll('#cpaBoard .cpa-prow').length`); const total = await rowsN();
+    ok('the dashboard header shows the four periods and the real date range', await js(`document.querySelectorAll('#cpaBoard [data-period]').length === 4 && /📅/.test(document.querySelector('#cpaBoard .cpa-range-txt').innerText)`));
+    await js(`document.querySelector('[data-period="last7"]').click()`); await sleep(200);
+    ok('7 days → «من … إلى …» range and the chip is active · today → a single date', await js(`/من \\d\\d\\/\\d\\d إلى/.test(document.querySelector('.cpa-range-txt').innerText) && document.querySelector('[data-period="last7"]').classList.contains('on')`));
+    await js(`document.querySelector('[data-period="today"]').click()`); await sleep(200);
+    ok('…and today shows one date only', await js(`/📅 \\d\\d\\/\\d\\d/.test(document.querySelector('.cpa-range-txt').innerText) && !/إلى/.test(document.querySelector('.cpa-range-txt').innerText)`));
+    await js(`document.querySelector('[data-period="last3"]').click()`); await sleep(200);
+    ok('every product row has a performance status badge, its #number, a CPA figure and the orders / spend', await js(`[...document.querySelectorAll('#cpaBoard .cpa-prow')].every((r) => r.querySelector('.cpa-badge') && /#\\d+/.test(r.querySelector('.cpa-chips').innerText) && r.querySelector('.cpa-big') && r.querySelector('.c-num b'))`));
+    ok('six status groups whose counts add up to the number of products', await js(`(()=>{ const c = [...document.querySelectorAll('#cpaBoard .cpa-sumchip b')].map((b) => Number(b.textContent.replace(/,/g, ''))); return c.length === 6 && c.reduce((a, b) => a + b, 0) === ${total}; })()`));
+    await js(`document.querySelector('#cpaFPerf').value = 'none'; document.querySelector('#cpaFPerf').dispatchEvent(new Event('change'))`); await sleep(250);
+    ok('filtering by a status group shows exactly that group\'s count', await js(`document.querySelectorAll('#cpaBoard .cpa-prow').length === Number(document.querySelector('.cpa-sumchip[data-grp="none"] b').textContent.replace(/,/g, ''))`));
+    await js(`document.querySelector('#cpaReset').click()`); await sleep(400);
+    ok('«مسح الفلاتر» brings every product back', (await rowsN()) === total);
+    await js(`(()=>{ const q = document.getElementById('cpaQ'); q.value = 'Fixture product A'; q.dispatchEvent(new Event('input')); return true; })()`); await sleep(250);
+    ok('search by name narrows the list and the counter says so', (await rowsN()) >= 1 && (await rowsN()) < total && /من \d+ منتج/.test(await js(`document.getElementById('cpaCount').innerText`)));
+    await js(`(()=>{ const q = document.getElementById('cpaQ'); q.value = ''; q.dispatchEvent(new Event('input')); return true; })()`); await sleep(250);
     await js(`document.querySelector('#cpaBoard [data-edit]').click()`); await waitFor(`document.querySelectorAll('#cpaBoard .cpa-src').length > 0`, 15000);
     ok('selecting a product shows where every value comes from (عام / المنتج / غير محدد)', await js(`document.querySelectorAll('#cpaBoard .cpa-src').length >= 4 && document.getElementById('cpaScope').value !== 'GLOBAL'`));
     await js(`document.querySelector('[data-act="impact"]').click()`);

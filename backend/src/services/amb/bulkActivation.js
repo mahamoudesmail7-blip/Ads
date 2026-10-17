@@ -12,6 +12,8 @@ import { policyBook, policyKey, normalizePolicy, validatePolicy, overlayGlobal, 
 import { evaluateReadiness } from './automationReadiness.js';
 import { getPausePolicy } from './pausePolicy.js';
 import { getOpenCpaPolicy } from './openCpaPolicy.js';
+import { windowRange } from './operatorRules.js';
+import { cairoDate } from './dailyPlanTime.js';
 
 const fail = (status, message, code, details) => { const e = new Error(message); e.status = status; if (code) e.code = code; if (details) e.details = details; return e; };
 const round = (x) => Math.round(Number(x) || 0);
@@ -30,7 +32,7 @@ function wouldBePolicy(book, key) {
 /** Everything the owner needs in ONE table. deps (tests): rows, mapRows, world, exposure, pause, open, exceptions, book, config, openCandidates. */
 export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
   const [rows, book, pause, open, config, exceptions] = await Promise.all([deps.rows || readinessList({}), deps.book || policyBook(), deps.pause || getPausePolicy(), deps.open !== undefined ? deps.open : getOpenCpaPolicy().catch(() => null), deps.config || getOperatorConfig(), deps.exceptions || listExceptions({}).catch(() => [])]);
-  let world = deps.world; if (!world) { const { buildOperatorWorld } = await import('./operatorContext.js'); world = await buildOperatorWorld({ windowKeys: ['last3', 'last7', 'last30'], now }); }
+  let world = deps.world; if (!world) { const { buildOperatorWorld } = await import('./operatorContext.js'); world = await buildOperatorWorld({ windowKeys: ['today', 'last3', 'last7', 'last30'], now }); }
   const mapRows = deps.mapRows || (world.adAccountId ? (await mappingCenter({ adAccountId: world.adAccountId, limit: 5000 })).rows : []);
   let exposureBy = deps.exposure; if (!exposureBy) { try { const { activeExposure } = await import('./automationScope.js'); exposureBy = (await activeExposure({ adAccountId: world.adAccountId, now })).byCampaign; } catch { exposureBy = new Map(); } }
   const win = (k, id) => world.windows?.[k]?.get(id) || null;
@@ -45,7 +47,7 @@ export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
   for (const row of rows) {
     const key = policyKey(row.storeId, row.productId); const mine = byProd.get(row.productId)?.campaigns || [];
     const m = (k) => mine.reduce((t, c) => { const w = win(k, c.campaignId); return { spend: t.spend + (w?.spend || 0), orders: t.orders + (w?.purchases || 0) }; }, { spend: 0, orders: 0 });
-    const m3 = m('last3'), m7 = m('last7'), m30 = m('last30'); const active = mine.filter((c) => c.campaignStatus === 'ACTIVE');
+    const m0 = m('today'), m3 = m('last3'), m7 = m('last7'), m30 = m('last30'); const pf = (x) => ({ spend: round(x.spend), orders: x.orders, cpa: cpaOf(x.spend, x.orders) }); const active = mine.filter((c) => c.campaignStatus === 'ACTIVE');
     if (!mine.length && !(row.campaignsMapped > 0)) { /* no campaign at all: still listed so the owner sees it is BLOCKED, but only when it ever had orders */ if (!m7.orders && !m30.orders) continue; }
     const wp = wouldBePolicy(book, key); const rd = evaluateReadiness({ row, policy: wp, pause, open, minStockRequired: open?.enabled ? open.minStock : null });
     const toBeSet = new Set(['POLICY_ACTIVE', 'MODE_AUTOMATIC']); const missing = rd.missing.filter((x) => !toBeSet.has(x.key));
@@ -53,14 +55,15 @@ export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
     const blocked = !mine.length || noAutoEx; const state = blocked ? 'BLOCKED' : missing.length ? 'NEEDS_CONFIGURATION' : 'READY';
     const pol = book.products[key] || null; const eff = mergeEffective(wp);
     products.push({ key, productId: row.productId, storeId: row.storeId, name: row.name, state, blockedReason: blocked ? (noAutoEx ? 'استثناء NO_AUTOMATION على المنتج/المتجر' : 'مفيش حملة مربوطة بشكل مؤكد') : null, missing: missing.map((x) => ({ key: x.key, label: x.label, detail: x.detail })),
-      orders7: m7.orders, cpa: { d3: cpaOf(m3.spend, m3.orders), d7: cpaOf(m7.spend, m7.orders), d30: cpaOf(m30.spend, m30.orders) }, campaigns: { mapped: mine.length, active: active.length, ids: mine.map((c) => c.campaignId) }, runningBudget: round(active.reduce((t, c) => t + (exposureBy.get(c.campaignId) || 0), 0)),
-      policy: { status: pol?.active ? (pol.draft ? 'ACTIVE_WITH_DRAFT' : 'ACTIVE') : pol?.draft ? 'DRAFT' : 'NONE', mode: pol?.active?.mode || pol?.draft?.mode || null, version: pol?.version || 0 }, limits: { cpaScaleMin: eff.cpa.scaleMin, cpaScale: eff.cpa.scale, cpaReduce: eff.cpa.reduce, hardStop: eff.cpa.hardStop, dailyCap: eff.budget.dailySpendCap, minBudget: eff.budget.minBudget, maxBudget: eff.budget.maxBudget, maxChangesPerDay: eff.budget.maxChangesPerDay },
+      orders7: m7.orders, cpa: { d3: cpaOf(m3.spend, m3.orders), d7: cpaOf(m7.spend, m7.orders), d30: cpaOf(m30.spend, m30.orders) }, perf: { today: pf(m0), last3: pf(m3), last7: pf(m7), last30: pf(m30) }, campaigns: { mapped: mine.length, active: active.length, ids: mine.map((c) => c.campaignId) }, runningBudget: round(active.reduce((t, c) => t + (exposureBy.get(c.campaignId) || 0), 0)),
+      policy: { status: pol?.active ? (pol.draft ? 'ACTIVE_WITH_DRAFT' : 'ACTIVE') : pol?.draft ? 'DRAFT' : 'NONE', mode: pol?.active?.mode || pol?.draft?.mode || null, version: pol?.version || 0 }, limits: { minPurchases: eff.budget.minPurchases, zeroSpend: eff.zeroOrder.spend, increasePct: eff.budget.increasePct, decreasePct: eff.budget.decreasePct, cpaScaleMin: eff.cpa.scaleMin, cpaScale: eff.cpa.scale, cpaReduce: eff.cpa.reduce, hardStop: eff.cpa.hardStop, dailyCap: eff.budget.dailySpendCap, minBudget: eff.budget.minBudget, maxBudget: eff.budget.maxBudget, maxChangesPerDay: eff.budget.maxChangesPerDay },
       economicsComplete: !!row.economicsComplete, stockKnown: !!row.stockKnown });
   }
   const order = { READY: 0, NEEDS_CONFIGURATION: 1, BLOCKED: 2 }; products.sort((a, b) => order[a.state] - order[b.state] || b.orders7 - a.orders7);
   const count = (s) => products.filter((p) => p.state === s).length;
   return { generatedAt: now.toISOString(), global: { rulesVersion: book.global.active ? book.global.version : null, rulesStatus: book.global.status, pausePolicyApproved: !!(pause.enabled && pause.approved?.version === pause.version), openPolicy: open && { enabled: !!open.enabled, approved: open.approved?.version === open.version, minCpa: open.minCpa, maxCpa: open.maxCpa, window: open.window, minPurchases: open.minPurchases }, accountCap: config.limits?.account?.maxDailySpendUnderAi ?? null, writesLocked: config.writesLocked !== false, mode: config.mode, permissions: config.execPermissions || {}, emergencyStop: !!config.emergency_stop },
     totals: { products: products.length, READY: count('READY'), NEEDS_CONFIGURATION: count('NEEDS_CONFIGURATION'), BLOCKED: count('BLOCKED'), mappedCampaigns: products.reduce((t, p) => t + p.campaigns.mapped, 0), excludedCampaigns: excluded.length, runningBudget: products.reduce((t, p) => t + p.runningBudget, 0) },
+    windows: Object.fromEntries(['today', 'last3', 'last7', 'last30'].map((k) => [k, windowRange(k, cairoDate(now))])), // the real date range behind each period chip
     products, excluded: excluded.sort((a, b) => (b.spend7d || 0) - (a.spend7d || 0)).slice(0, 80) };
 }
 

@@ -51,4 +51,16 @@ console.log('\n4. Product policy: the four points flow from the screen into the 
   ok('the source of Bump Start is shown (GLOBAL v3) and Bump End is PRODUCT', src['cpa.scaleMin'].source === 'GLOBAL' && src['cpa.scaleMin'].version === 3 && src['cpa.scale'].source === 'PRODUCT');
   const ov = PP.overlayGlobal(PP.normalizeGlobal({ cpa: { scaleMin: 15, scale: 90, reduce: 140, hardStop: 210 } }), PP.normalizePolicy({ cpa: { scale: 100 } })); ok('a product overrides only what it sets; the rest comes from the global rules', ov.cpa.scale === 100 && ov.cpa.scaleMin === 15 && ov.cpa.hardStop === 210);
 }
+console.log('\n5. Performance status per product: «did the campaigns reach the target / the excellent cost?»');
+{
+  const ps = (o) => Z.performanceStatus({ ranges: R, minOrders: 5, zeroSpend: 200, ...o });
+  ok('CPA 85 with 8 orders → BUMP «حقق الهدف» (green)', ps({ cpa: 85, orders: 8, spend: 680 }).code === 'BUMP' && ps({ cpa: 85, orders: 8, spend: 680 }).tone === 'green');
+  ok('CPA 110 → HOLD · 150 → REDUCE (amber) · 230 → STOP (red)', ps({ cpa: 110, orders: 8, spend: 900 }).code === 'HOLD' && ps({ cpa: 150, orders: 8, spend: 1200 }).code === 'REDUCE' && ps({ cpa: 150, orders: 8, spend: 1200 }).tone === 'amber' && ps({ cpa: 230, orders: 8, spend: 1840 }).code === 'STOP' && ps({ cpa: 230, orders: 8, spend: 1840 }).tone === 'red');
+  ok('the boundary values follow the engine: 100 → BUMP, 200 → REDUCE, 200.01 → STOP', ps({ cpa: 100, orders: 6, spend: 600 }).code === 'BUMP' && ps({ cpa: 200, orders: 6, spend: 1200 }).code === 'REDUCE' && ps({ cpa: 200.01, orders: 6, spend: 1200 }).code === 'STOP');
+  ok('too few orders (3 < 5) → LOW_SAMPLE even with a great CPA (never «reached the target» on a thin sample)', ps({ cpa: 40, orders: 3, spend: 120 }).code === 'LOW_SAMPLE' && /3 من 5/.test(ps({ cpa: 40, orders: 3, spend: 120 }).detail));
+  ok('spend without orders: under the limit → ZERO_ORDERS (amber) · at/over → ZERO_ORDERS_OVER (red)', ps({ orders: 0, spend: 120 }).code === 'ZERO_ORDERS' && ps({ orders: 0, spend: 200 }).code === 'ZERO_ORDERS_OVER' && ps({ orders: 0, spend: 350 }).tone === 'red');
+  ok('no spend at all → NO_SPEND · no points set → NO_RANGES (never a verdict on invented limits)', ps({ orders: 0, spend: 0 }).code === 'NO_SPEND' && Z.performanceStatus({ cpa: 90, orders: 9, spend: 800, ranges: {}, minOrders: 5 }).code === 'NO_RANGES');
+  ok('CPA below Bump Start → BELOW_BUMP (check the number first)', ps({ cpa: 12, orders: 9, spend: 108 }).code === 'BELOW_BUMP');
+  ok('the attention order: STOP first, then spend-without-orders, then REDUCE … BUMP … HOLD', Z.PERF_META.STOP.rank < Z.PERF_META.ZERO_ORDERS_OVER.rank && Z.PERF_META.ZERO_ORDERS_OVER.rank < Z.PERF_META.REDUCE.rank && Z.PERF_META.REDUCE.rank < Z.PERF_META.BUMP.rank && Z.PERF_META.BUMP.rank < Z.PERF_META.HOLD.rank);
+}
 console.log(`\n${fail ? '❌' : '✅'} cpaZonesTest: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

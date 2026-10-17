@@ -4,9 +4,9 @@
 // anything; the example numbers are only a preview — nothing is applied until the owner saves and approves.
 import { api } from './api-client.js';
 import { E, num, egp, pill, toast, confirmModal, openDrawer, closeDrawer } from './opx-ui.js';
-import { classifyCpa, validateRanges, describeZones, ZONE_META } from './cpa-zones.js';
+import { classifyCpa, validateRanges, describeZones, ZONE_META, performanceStatus } from './cpa-zones.js';
 
-const C = { open: new Set(), root: null, ctx: null, ov: null, gl: null, scope: 'GLOBAL', pol: null, eff: null, V: {}, base: {}, touched: new Set(), filter: { q: '', state: '', mode: '' }, sel: new Set(), test: '' };
+const C = { open: new Set(), root: null, ctx: null, ov: null, gl: null, scope: 'GLOBAL', pol: null, eff: null, V: {}, base: {}, touched: new Set(), filter: { q: '', state: '', perf: '', mode: '', store: '' }, period: (() => { try { return localStorage.getItem('opx.cpa.period') || 'last3'; } catch { return 'last3'; } })(), sort: 'attention', sel: new Set(), test: '' };
 // form field → [group, key] in the policy
 const MAP = { bumpStart: ['cpa', 'scaleMin'], bumpEnd: ['cpa', 'scale'], reduceStart: ['cpa', 'reduce'], hardStop: ['cpa', 'hardStop'], incPct: ['budget', 'increasePct'], decPct: ['budget', 'decreasePct'], minOrders: ['budget', 'minPurchases'], cooldown: ['budget', 'cooldownHours'], maxChanges: ['budget', 'maxChangesPerDay'],
   zeroSpend: ['zeroOrder', 'spend'], minBudget: ['budget', 'minBudget'], maxBudget: ['budget', 'maxBudget'], dailyCap: ['budget', 'dailySpendCap'], window: ['zeroOrder', 'windowDays'], manualHours: [null, 'manualOverrideHours'] };
@@ -121,34 +121,86 @@ function board() {
 }
 const windowField = () => `<div class="cpa-f" data-f="window"><label><span>نافذة التقييم ${srcTag('window')}</span>${moreBtn('window')}</label>${popOf('window')}<select class="opx-input" data-n="window" ${isAdmin() ? '' : 'disabled'}><option value="3" ${C.V.window === 3 || C.V.window == null ? 'selected' : ''}>آخر 3 أيام</option><option value="7" ${C.V.window === 7 ? 'selected' : ''}>آخر 7 أيام</option></select></div>`;
 
-function miniBar(l) {
-  const r = { bumpStart: l.cpaScaleMin, bumpEnd: l.cpaScale, reduceStart: l.cpaReduce, hardStop: l.hardStop }; if (r.bumpEnd == null) return '<span class="opx-note">غير محدد</span>';
-  const AX = Math.max(250, (r.hardStop || 0) * 1.3); const p = (v) => (v == null ? 0 : Math.min(100, (v / AX) * 100));
-  return `<span class="cpa-mini" style="background:${trackBg(r, AX)}" title="زيادة ≤ ${r.bumpEnd} · تقليل ≥ ${r.reduceStart ?? '—'} · إيقاف > ${r.hardStop ?? '—'}"></span>`;
+// ================= the products dashboard: filters · period · performance status per product =================
+const PERIODS = [['today', 'اليوم'], ['last3', '3 أيام'], ['last7', '7 أيام'], ['last30', '30 يوم']];
+const GROUP = { BUMP: 'good', HOLD: 'ok', REDUCE: 'weak', ZERO_ORDERS: 'weak', STOP: 'bad', ZERO_ORDERS_OVER: 'bad', LOW_SAMPLE: 'low', BELOW_BUMP: 'low', NO_SPEND: 'none', NO_RANGES: 'none' };
+const GROUP_META = { good: { label: 'حققوا الهدف', tone: 'green', ic: '🎯' }, ok: { label: 'مقبول (تثبيت)', tone: 'gray', ic: '⚖' }, weak: { label: 'ضعيف', tone: 'amber', ic: '⚠' }, bad: { label: 'خسارة / إيقاف', tone: 'red', ic: '⛔' }, low: { label: 'عينة قليلة', tone: 'blue', ic: '🔎' }, none: { label: 'بدون صرف / غير محدد', tone: 'gray', ic: '—' } };
+const PERF_ICON = { BUMP: '🎯', HOLD: '⚖', REDUCE: '📉', STOP: '⛔', ZERO_ORDERS_OVER: '🔥', ZERO_ORDERS: '⏳', LOW_SAMPLE: '🔎', BELOW_BUMP: '❓', NO_SPEND: '💤', NO_RANGES: '⚙' };
+const dmy = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : '');
+const rangesOf = (l) => ({ bumpStart: l.cpaScaleMin, bumpEnd: l.cpaScale, reduceStart: l.cpaReduce, hardStop: l.hardStop });
+function perfRow(p) {
+  const w = p.perf?.[C.period] || { spend: 0, orders: 0, cpa: null }; const l = p.limits || {}; const ranges = rangesOf(l);
+  const st = performanceStatus({ cpa: w.cpa, orders: w.orders, spend: w.spend, ranges, minOrders: l.minPurchases, zeroSpend: l.zeroSpend });
+  return { p, w, ranges, st, group: GROUP[st.code] };
 }
-function tableRows() {
+function dashRows() {
   const f = C.filter; const q = f.q.trim().toLowerCase();
-  const rows = C.ov.products.filter((p) => (!q || p.name.toLowerCase().includes(q)) && (!f.state || p.state === f.state) && (!f.mode || (p.policy.mode || 'NONE') === f.mode));
-  const ST = { READY: ['جاهز', 'green'], NEEDS_CONFIGURATION: ['يحتاج إعداد', 'amber'], BLOCKED: ['ممنوع', 'red'] };
-  if (!rows.length) return '<tr><td colspan="10" class="opx-empty">مفيش منتجات بالفلتر ده.</td></tr>';
-  return rows.map((p) => { const [stl, tone] = ST[p.state] || ['—', 'gray']; const auto = p.policy.mode === 'AUTOMATIC' && (p.policy.status === 'ACTIVE' || p.policy.status === 'ACTIVE_WITH_DRAFT');
-    const why = p.state === 'READY' ? '' : (p.blockedReason || (p.missing || []).map((m) => m.label).join(' · '));
-    return `<tr data-row="${E(p.key)}" class="${C.scope === p.key ? 'cur' : ''}"><td><input type="checkbox" data-sel="${E(p.key)}" ${C.sel.has(p.key) ? 'checked' : ''}></td>
-      <td><b>${E(p.name)}</b><small class="opx-note">${E(p.storeId || '')}</small></td><td>${pill(stl, tone)}${why ? `<small class="cpa-why">${E(why)}</small>` : ''}</td>
-      <td class="num">${num(p.campaigns.active)}/${num(p.campaigns.mapped)}</td><td class="num">${p.cpa.d7 != null ? num(p.cpa.d7) + ' ج' : '—'}<small class="opx-note"> 3د: ${p.cpa.d3 ?? '—'}</small></td>
-      <td>${p.stockKnown ? '<span class="cpa-ok">✓</span>' : '<span class="cpa-warn" title="STOCK_UNKNOWN = تحذير">؟</span>'}</td><td>${miniBar(p.limits)}</td><td class="num">${p.limits.maxBudget != null ? num(p.limits.maxBudget) + ' ج' : '—'}<small class="opx-note"> جاري: ${num(p.runningBudget)}</small></td>
-      <td><button class="cpa-mode ${auto ? 'auto' : ''}" data-mode="${E(p.key)}" ${isAdmin() ? '' : 'disabled'} title="${auto ? 'AUTOMATIC شغّال — اضغط للرجوع لـAPPROVAL' : p.state === 'READY' ? 'اضغط لتفعيل AUTOMATIC (بتأكيد صريح)' : 'مش جاهز — مينفعش AUTOMATIC'}"><b>${auto ? 'AUTOMATIC' : (p.policy.mode || 'APPROVAL')}</b><span class="cpa-sw ${auto ? 'on' : ''}"></span></button></td>
-      <td><button class="opx-btn sm" data-edit="${E(p.key)}" title="ضبط قواعد المنتج">⚙</button></td></tr>`; }).join('');
+  let rows = C.ov.products.map(perfRow).filter(({ p, group }) => (!q || p.name.toLowerCase().includes(q) || String(p.productId) === q.replace('#', '')) && (!f.state || p.state === f.state) && (!f.perf || group === f.perf) && (!f.mode || (p.policy.mode || 'NONE') === f.mode) && (!f.store || p.storeId === f.store));
+  const by = { attention: (a, b) => a.st.rank - b.st.rank || (b.w.spend - a.w.spend), cpa: (a, b) => (b.w.cpa ?? -1) - (a.w.cpa ?? -1), cpaAsc: (a, b) => (a.w.cpa ?? 1e9) - (b.w.cpa ?? 1e9), orders: (a, b) => b.w.orders - a.w.orders, spend: (a, b) => b.w.spend - a.w.spend, name: (a, b) => a.p.name.localeCompare(b.p.name, 'ar') }[C.sort] || null;
+  return by ? rows.sort(by) : rows;
 }
-function table() {
-  const t = C.ov.totals || {}; const g = C.ov.global || {};
-  return `<div class="opx-card cpa-tablecard"><div class="cpa-tools"><input class="opx-input" id="cpaQ" placeholder="بحث عن منتج…" value="${E(C.filter.q)}"><select class="opx-input" id="cpaFState"><option value="">كل الحالات</option><option value="READY">جاهز (${num(t.READY)})</option><option value="NEEDS_CONFIGURATION">يحتاج إعداد (${num(t.NEEDS_CONFIGURATION)})</option><option value="BLOCKED">ممنوع (${num(t.BLOCKED)})</option></select>
-      <select class="opx-input" id="cpaFMode"><option value="">كل الأوضاع</option><option value="AUTOMATIC">AUTOMATIC</option><option value="APPROVAL">APPROVAL</option><option value="NONE">بدون سياسة</option></select>
-      <span class="opx-note">القواعد العامة: ${g.rulesVersion ? 'v' + g.rulesVersion + ' معتمدة' : 'غير معتمدة'} · سياسة الإيقاف ${g.pausePolicyApproved ? 'معتمدة' : 'غير معتمدة'} · سقف الحساب ${g.accountCap != null ? egp(g.accountCap) : 'غير محدد'}</span></div>
-    <div class="opx-scroll"><table class="opx-table cpa-table"><thead><tr><th><input type="checkbox" id="cpaAll"></th><th>المنتج</th><th>الحالة</th><th>الحملات (شغالة/مرتبطة)</th><th>CPA الحالي (7 أيام)</th><th>المخزون</th><th>قواعد CPA</th><th>أقصى ميزانية</th><th>الوضع</th><th></th></tr></thead><tbody>${tableRows()}</tbody></table></div></div>`;
+function rangeBar(ranges, cpa) {
+  const AX = Math.max(250, (ranges.hardStop || ranges.reduceStart || ranges.bumpEnd || 0) * 1.3, (cpa || 0) * 1.1); const pos = (v) => Math.min(100, Math.max(0, (v / AX) * 100));
+  const has = [ranges.bumpStart, ranges.bumpEnd, ranges.reduceStart, ranges.hardStop].some((v) => v != null);
+  return `<div class="cpa-rbar" style="background:${has ? trackBg(ranges, AX) : '#e3e8f2'}">${cpa != null ? `<i style="left:${pos(cpa)}%" title="CPA الحالي ${Math.round(cpa)}"></i>` : ''}</div>`;
+}
+function rowHtml({ p, w, ranges, st }) {
+  const ST = { READY: ['جاهز', 'green'], NEEDS_CONFIGURATION: ['يحتاج إعداد', 'amber'], BLOCKED: ['ممنوع', 'red'] }; const [stl, stTone] = ST[p.state] || ['—', 'gray'];
+  const auto = p.policy.mode === 'AUTOMATIC' && String(p.policy.status).startsWith('ACTIVE'); const why = p.state === 'READY' ? '' : (p.blockedReason || (p.missing || []).map((m) => m.label).join(' · '));
+  const trio = PERIODS.map(([k, l]) => `<span class="${k === C.period ? 'on' : ''}" title="${E(l)}"><em>${E(l.replace(' يوم', 'ي').replace(' أيام', 'د'))}</em>${p.perf?.[k]?.cpa != null ? num(p.perf[k].cpa) : '—'}</span>`).join('');
+  return `<div class="cpa-prow t-${st.tone} ${C.scope === p.key ? 'cur' : ''}" data-row="${E(p.key)}">
+    <div class="c-sel"><input type="checkbox" data-sel="${E(p.key)}" ${C.sel.has(p.key) ? 'checked' : ''} aria-label="تحديد ${E(p.name)}"></div>
+    <div class="c-prod"><b title="${E(p.name)}">${E(p.name)}</b><span class="cpa-chips"><i>#${p.productId}</i><i>${E(p.storeId || '')}</i>${pill(stl, stTone)}</span>${why ? `<small class="cpa-why">${E(why)}</small>` : ''}</div>
+    <div class="c-stat"><span class="cpa-badge ${st.tone}">${PERF_ICON[st.code] || ''} ${E(st.label)}</span><small>${E(st.detail)}</small></div>
+    <div class="c-cpa"><div class="cpa-big">${w.cpa != null ? num(w.cpa) : '—'}<u>ج</u></div>${rangeBar(ranges, w.cpa)}<div class="cpa-trio">${trio}</div></div>
+    <div class="c-num"><b>${num(w.orders)}</b><small>أوردر</small><b class="sp">${num(w.spend)}</b><small>جنيه صرف</small></div>
+    <div class="c-camp"><b>${num(p.campaigns.active)}<span>/${num(p.campaigns.mapped)}</span></b><small>حملات شغالة/مرتبطة</small><small>ميزانية شغالة ${num(p.runningBudget)} ج</small></div>
+    <div class="c-mode"><button class="cpa-mode ${auto ? 'auto' : ''}" data-mode="${E(p.key)}" ${isAdmin() ? '' : 'disabled'} title="${auto ? 'AUTOMATIC شغّال — اضغط للرجوع لـAPPROVAL' : p.state === 'READY' ? 'اضغط لتفعيل AUTOMATIC (بتأكيد صريح)' : 'مش جاهز — مينفعش AUTOMATIC'}"><span class="cpa-sw ${auto ? 'on' : ''}"></span><b>${auto ? 'AUTOMATIC' : (p.policy.mode || 'APPROVAL')}</b></button></div>
+    <div class="c-act"><button class="opx-btn sm" data-edit="${E(p.key)}" title="ضبط قواعد المنتج" aria-label="ضبط قواعد ${E(p.name)}">⚙</button></div></div>`;
+}
+function listHtml() {
+  const rows = dashRows(); if (!rows.length) return '<div class="cpa-none">مفيش منتجات بالفلتر ده. جرّب تمسح الفلاتر.</div>';
+  return `<div class="cpa-phead"><div class="c-sel"><input type="checkbox" id="cpaAll" aria-label="تحديد الكل"></div><div class="c-prod">المنتج</div><div class="c-stat">الحالة (هل وصلت للهدف؟)</div><div class="c-cpa">CPA وموقعه من النطاقات</div><div class="c-num">الأوردرات والصرف</div><div class="c-camp">الحملات</div><div class="c-mode">الوضع</div><div class="c-act"></div></div>${rows.map(rowHtml).join('')}`;
+}
+function summaryHtml() {
+  const all = C.ov.products.map(perfRow); const cnt = (g) => all.filter((r) => r.group === g).length;
+  return `<div class="cpa-sum">${Object.entries(GROUP_META).map(([g, m]) => `<button class="cpa-sumchip ${m.tone} ${C.filter.perf === g ? 'on' : ''}" data-grp="${g}"><span>${m.ic}</span><b>${num(cnt(g))}</b><em>${E(m.label)}</em></button>`).join('')}</div>`;
+}
+function dash() {
+  const t = C.ov.totals || {}; const g = C.ov.global || {}; const w = C.ov.windows?.[C.period]; const stores = [...new Set(C.ov.products.map((p) => p.storeId).filter(Boolean))];
+  const at = C.ov.generatedAt ? new Date(C.ov.generatedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : '';
+  const sel = (id, label, opts, cur) => `<label class="cpa-sel"><span>${label}</span><select class="opx-input" id="${id}">${opts.map(([v, l]) => `<option value="${E(v)}" ${String(cur) === String(v) ? 'selected' : ''}>${E(l)}</option>`).join('')}</select></label>`;
+  return `<div class="opx-card cpa-dash"><div class="cpa-dash-head"><div><h3>لوحة أداء المنتجات</h3><p>كل منتج وحالته: هل حملاته وصلت للهدف وللتكلفة الممتازة ولا لأ — حسب نقاط الـCPA بتاعته.</p></div>
+      <div class="cpa-periods" role="tablist" aria-label="الفترة">${PERIODS.map(([k, l]) => `<button role="tab" class="${C.period === k ? 'on' : ''}" data-period="${k}" aria-selected="${C.period === k}">${E(l)}</button>`).join('')}<span class="cpa-range-txt">${w ? (w.from === w.to ? `📅 ${dmy(w.from)}` : `📅 من ${dmy(w.from)} إلى ${dmy(w.to)}`) : ''}${at ? ` · آخر تحديث ${E(at)}` : ''}</span></div></div>
+    <div id="cpaSum">${summaryHtml()}</div>
+    <div class="cpa-filters"><input class="opx-input" id="cpaQ" placeholder="🔍 ابحث باسم المنتج أو رقمه…" value="${E(C.filter.q)}">
+      ${sel('cpaFState', 'الجاهزية', [['', 'الكل'], ['READY', `جاهز (${num(t.READY)})`], ['NEEDS_CONFIGURATION', `يحتاج إعداد (${num(t.NEEDS_CONFIGURATION)})`], ['BLOCKED', `ممنوع (${num(t.BLOCKED)})`]], C.filter.state)}
+      ${sel('cpaFPerf', 'حالة الأداء', [['', 'الكل'], ...Object.entries(GROUP_META).map(([k, m]) => [k, m.label])], C.filter.perf)}
+      ${sel('cpaFMode', 'الوضع', [['', 'الكل'], ['AUTOMATIC', 'AUTOMATIC'], ['APPROVAL', 'APPROVAL'], ['NONE', 'بدون سياسة']], C.filter.mode)}
+      ${stores.length > 1 ? sel('cpaFStore', 'المتجر', [['', 'كل المتاجر'], ...stores.map((s) => [s, s])], C.filter.store) : ''}
+      ${sel('cpaSort', 'الترتيب', [['attention', 'الأهم أولًا (الخسارة فوق)'], ['cpa', 'الأعلى CPA'], ['cpaAsc', 'الأقل CPA'], ['orders', 'الأكتر أوردرات'], ['spend', 'الأكتر صرف'], ['name', 'الاسم']], C.sort)}
+      <button class="opx-btn sm" id="cpaReset" type="button">مسح الفلاتر</button><span class="cpa-count" id="cpaCount"></span></div>
+    <div class="cpa-meta opx-note">القواعد العامة: ${g.rulesVersion ? 'v' + g.rulesVersion + ' معتمدة' : 'غير معتمدة'} · سياسة الإيقاف ${g.pausePolicyApproved ? 'معتمدة' : 'غير معتمدة'} · سقف الحساب ${g.accountCap != null ? egp(g.accountCap) : 'غير محدد'}</div>
+    <div class="cpa-plist" id="cpaList">${listHtml()}</div></div>`;
+}
+function redrawList() {
+  const R = C.root; R.querySelector('#cpaList').innerHTML = listHtml(); R.querySelector('#cpaSum').innerHTML = summaryHtml();
+  R.querySelector('#cpaCount').textContent = `${dashRows().length} من ${C.ov.products.length} منتج`; R.querySelectorAll('[data-period]').forEach((b) => { const on = b.dataset.period === C.period; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
+  const w = C.ov.windows?.[C.period]; const rt = R.querySelector('.cpa-range-txt'); if (rt && w) rt.textContent = (w.from === w.to ? `📅 ${dmy(w.from)}` : `📅 من ${dmy(w.from)} إلى ${dmy(w.to)}`) + (C.ov.generatedAt ? ` · آخر تحديث ${new Date(C.ov.generatedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : '');
+  wireRows(); wireSumChips(); updSel();
+}
+function wireSumChips() { C.root.querySelectorAll('[data-grp]').forEach((b) => { b.onclick = () => { C.filter.perf = C.filter.perf === b.dataset.grp ? '' : b.dataset.grp; const s = C.root.querySelector('#cpaFPerf'); if (s) s.value = C.filter.perf; redrawList(); }; }); }
+function wireDash() {
+  const R = C.root; const set = (id, key) => { const el = R.querySelector(id); if (el) el.onchange = () => { C.filter[key] = el.value; redrawList(); }; };
+  R.querySelector('#cpaQ').oninput = (e) => { C.filter.q = e.target.value; redrawList(); };
+  set('#cpaFState', 'state'); set('#cpaFPerf', 'perf'); set('#cpaFMode', 'mode'); set('#cpaFStore', 'store');
+  R.querySelector('#cpaSort').onchange = (e) => { C.sort = e.target.value; redrawList(); };
+  R.querySelectorAll('[data-period]').forEach((b) => { b.onclick = () => { C.period = b.dataset.period; try { localStorage.setItem('opx.cpa.period', C.period); } catch { /* private mode */ } redrawList(); }; });
+  R.querySelector('#cpaReset').onclick = () => { C.filter = { q: '', state: '', perf: '', mode: '', store: '' }; C.sort = 'attention'; draw(); };
+  R.querySelector('#cpaCount').textContent = `${dashRows().length} من ${C.ov.products.length} منتج`; wireSumChips();
 }
 function draw() {
-  C.root.innerHTML = `${kpis()}${board()}${table()}`; wire();
+  C.root.innerHTML = `${kpis()}${board()}${dash()}`; wire();
 }
 
 // ---------- interaction ----------
@@ -178,15 +230,11 @@ function wire() {
   wireHandles(); wireTest();
   const ex = R.querySelector('[data-act="example"]'); if (ex) ex.onclick = () => { for (const [k, v] of [['bumpStart', 20], ['bumpEnd', 100], ['reduceStart', 130], ['hardStop', 200]]) setVal(k, v); draw(); msg('دي أرقام مثال للمعاينة فقط — مش محفوظة ومش متطبّقة على أي حاجة.'); };
   R.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => act(b.dataset.act); });
-  R.querySelector('#cpaQ').oninput = (e) => { C.filter.q = e.target.value; R.querySelector('tbody').innerHTML = tableRows(); wireRows(); };
-  R.querySelector('#cpaFState').value = C.filter.state; R.querySelector('#cpaFState').onchange = (e) => { C.filter.state = e.target.value; R.querySelector('tbody').innerHTML = tableRows(); wireRows(); };
-  R.querySelector('#cpaFMode').value = C.filter.mode; R.querySelector('#cpaFMode').onchange = (e) => { C.filter.mode = e.target.value; R.querySelector('tbody').innerHTML = tableRows(); wireRows(); };
-  R.querySelector('#cpaAll').onchange = (e) => { R.querySelectorAll('[data-sel]').forEach((c) => { c.checked = e.target.checked; e.target.checked ? C.sel.add(c.dataset.sel) : C.sel.delete(c.dataset.sel); }); updSel(); };
-  wireRows();
+  wireDash(); wireRows();
 }
 function updSel() { const b = C.root.querySelector('[data-act="applysel"]'); if (b) b.textContent = `تطبيق على المحدد (${C.sel.size})`; }
 function wireRows() {
-  const R = C.root;
+  const R = C.root; const all = R.querySelector('#cpaAll'); if (all) all.onchange = (e) => { R.querySelectorAll('[data-sel]').forEach((c) => { c.checked = e.target.checked; e.target.checked ? C.sel.add(c.dataset.sel) : C.sel.delete(c.dataset.sel); }); updSel(); };
   R.querySelectorAll('[data-sel]').forEach((c) => { c.onchange = () => { c.checked ? C.sel.add(c.dataset.sel) : C.sel.delete(c.dataset.sel); updSel(); }; });
   R.querySelectorAll('[data-edit]').forEach((b) => { b.onclick = async () => { C.scope = b.dataset.edit; try { await loadScope(); draw(); R.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (err) { toast(err.message, 'error'); } }; });
   R.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => toggleMode(b.dataset.mode); });
