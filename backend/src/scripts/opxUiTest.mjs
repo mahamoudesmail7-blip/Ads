@@ -958,6 +958,11 @@ try {
     for (const [k, v] of [['bumpStart', 20], ['bumpEnd', 100], ['reduceStart', 130], ['hardStop', 200]]) await setN(k, v);
     await sleep(300);
     ok('typing the four points makes the four handles appear on the slider', await js(`document.querySelectorAll('#cpaBoard .cpa-handle').length === 4`));
+    ok('every box has a small «تفاصيل» button (14 boxes), all closed at first', await js(`document.querySelectorAll('#cpaBoard .cpa-more').length === 14 && [...document.querySelectorAll('#cpaBoard .cpa-pop')].every((p) => p.hidden)`));
+    await js(`document.querySelector('[data-more="bumpEnd"]').click()`); await sleep(150);
+    ok('pressing «تفاصيل» opens a plain explanation: what it is, what to type, an example', await js(`(()=>{ const p = document.querySelector('[data-pop="bumpEnd"]'); return !p.hidden && /ده إيه/.test(p.innerText) && /أكتب إيه/.test(p.innerText) && /مثال/.test(p.innerText) && document.querySelector('[data-more="bumpEnd"]').getAttribute('aria-expanded') === 'true'; })()`));
+    await js(`document.querySelector('[data-more="bumpEnd"]').click()`); await sleep(100);
+    ok('pressing it again closes the explanation', await js(`document.querySelector('[data-pop="bumpEnd"]').hidden`));
     const zt = await js(`document.querySelector('#cpaBoard .cpa-zones').innerText.replace(/\\s+/g, ' ')`);
     ok('the zone cards print the exact ranges 20–100 · 100–130 · 130–200 · 200+', /20 – 100/.test(zt) && /100 – 130/.test(zt) && /130 – 200/.test(zt) && /200\+/.test(zt), zt);
     const verdict = async (v) => { await js(`(()=>{ const t = document.getElementById('cpaTest'); t.value = '${v}'; t.dispatchEvent(new Event('input')); return true; })()`); await sleep(150); return js(`document.querySelector('#cpaBoard .cpa-verdict')?.innerText || ''`); };
