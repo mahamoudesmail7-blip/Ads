@@ -31,7 +31,7 @@ const P = { cpa: null, cpaForm: null, cpaDirty: false, shown: PAGE, pm: null, pm
 
 export async function mountPlanWorkspace(root, type, ctx) {
   P.type = type; P.ctx = ctx; P.root = root; P.ov = null; P.sel = null; P.board = null; P.bmap = new Map();
-  P.f = { q: '', store: '', sort: 'purchases', period: '7', view: 'candidates', cat: '', from: '', to: '', ...(JSON.parse(store.get(`opx.f.${type}`, 'null')) || {}) };
+  P.f = { q: '', store: '', sort: 'purchases', period: '7', view: 'candidates', cat: '', from: '', to: '', cpaMin: null, cpaMax: null, minOrders: 0, ...(JSON.parse(store.get(`opx.f.${type}`, 'null')) || {}) };
   if (!SORTS[P.f.sort]) P.f.sort = 'purchases'; if (!VIEWS.some(([k]) => k === P.f.view)) P.f.view = 'candidates';
   P.pm = null; P.pmErr = null; P.shown = PAGE;
   clearInterval(P.timer); clearTimeout(P.prepTimer);
@@ -49,6 +49,12 @@ async function load({ quiet = false } = {}) {
   await ensurePeriodMetrics();
   if (!quiet || document.body.contains(P.root)) draw();
   maybeAutoReview();
+  if (P.autoSelect) {
+    const fresh = plansOfType().find((x) => !P.autoSelect.before.has(x.key) && x.status === 'PREPARED');
+    if (fresh) { P.autoSelect = null; P.sel = fresh.key; draw(); await selectEligible(fresh); }
+    else if (Date.now() > P.autoSelect.until) { P.autoSelect = null; toast('تجهيز الخطة اتأخر — حدّث الصفحة وجرّب تاني', 'warning'); }
+    else { clearTimeout(P.prepTimer); P.prepTimer = setTimeout(() => load({ quiet: true }), 4000); return; }
+  }
   const preparing = (P.ov.preparing || []).some((p) => !p.error);
   clearTimeout(P.prepTimer); if (preparing) P.prepTimer = setTimeout(() => load({ quiet: true }), 5000);
   const running = P.ov.plans?.[P.type] && ['APPROVED', 'RUNNING'].includes(P.ov.plans[P.type].status);
@@ -228,9 +234,38 @@ async function ensurePeriodMetrics() {
 function matchView(r) {
   switch (P.f.view) { case 'candidates': return r.candidate; case 'active': return r.status === 'ACTIVE'; case 'paused': return r.status === 'PAUSED'; case 'protected': return r.protectedF; case 'blocked': return r.blockedF; default: return true; }
 }
+// ---- the CPA-range slider + minimum-orders slider: they only FILTER what is shown (and scope «تحديد المؤهل»); nothing is approved or opened from here
+const sliderOn = () => P.f.cpaMin != null || P.f.cpaMax != null || Number(P.f.minOrders) > 0;
+function sliderOk(r) {
+  const m = pv(r); const lo = P.f.cpaMin, hi = P.f.cpaMax, mo = Number(P.f.minOrders) || 0;
+  if (mo > 0 && !((m.purchases ?? 0) >= mo)) return false;
+  if (lo != null || hi != null) { if (m.cpa == null) return false; if (lo != null && m.cpa < lo) return false; if (hi != null && m.cpa > hi) return false; }
+  return true;
+}
+function sliderMax() { const top = Math.max(0, ...allRows().map((r) => Number(pv(r).cpa) || 0)); return Math.min(1000, Math.max(300, Math.ceil(top / 50) * 50)); }
+function sliderCard(count) {
+  const max = sliderMax(); const lo = Math.min(P.f.cpaMin ?? 0, max); const hi = Math.min(P.f.cpaMax ?? max, max); const mo = Math.min(Number(P.f.minOrders) || 0, 30); const pct = (v) => (v / max) * 100;
+  return `<div class="opx-card opx-slidecard opx-fade"><div class="opx-slide"><div class="opx-slide-h"><b>🎚 نطاق CPA (${E(periodTitle())})</b><span id="opxCpaTxt" class="opx-slide-v">${lo} – ${hi >= max ? hi + '+' : hi} ج</span></div>
+      <div class="opx-dual"><div class="opx-dual-track"><i id="opxDualFill" style="left:${pct(lo)}%;width:${pct(hi) - pct(lo)}%"></i></div><input type="range" id="opxCpaLo" min="0" max="${max}" step="1" value="${lo}" aria-label="أقل CPA"><input type="range" id="opxCpaHi" min="0" max="${max}" step="1" value="${hi}" aria-label="أعلى CPA"></div>
+      <div class="opx-dual-ax"><span>0</span><span>${Math.round(max / 2)}</span><span>${max}+</span></div></div>
+    <div class="opx-slide"><div class="opx-slide-h"><b>📦 أقل عدد أوردرات</b><span id="opxMoTxt" class="opx-slide-v">${mo}</span></div><input type="range" id="opxMo" class="opx-mo" min="0" max="30" step="1" value="${mo}" aria-label="أقل عدد أوردرات"><div class="opx-dual-ax"><span>0</span><span>15</span><span>30+</span></div></div>
+    <div class="opx-slide-act"><b id="opxSlideCount">${num(count)}</b><span class="opx-note">حملة داخل الفلاتر</span>${sliderOn() ? '<button class="opx-btn sm" data-act="resetf">مسح الفلاتر</button>' : ''}</div></div>`;
+}
+function wireSlider() {
+  const lo = $('opxCpaLo'), hi = $('opxCpaHi'); if (!lo || !hi) return; const max = Number(lo.max);
+  const live = (src) => { let a = Number(lo.value), b = Number(hi.value); if (a > b) { if (src === lo) { a = b; lo.value = a; } else { b = a; hi.value = b; } } const fill = $('opxDualFill'); fill.style.left = `${(a / max) * 100}%`; fill.style.width = `${((b - a) / max) * 100}%`; $('opxCpaTxt').textContent = `${a} – ${b >= max ? b + '+' : b} ج`; };
+  const commit = () => { const a = Number(lo.value), b = Number(hi.value); P.f.cpaMin = a > 0 ? a : null; P.f.cpaMax = b < max ? b : null; saveF(); P.shown = PAGE; draw(); };
+  lo.oninput = () => live(lo); hi.oninput = () => live(hi); lo.onchange = commit; hi.onchange = commit;
+  const mo = $('opxMo'); mo.oninput = () => { $('opxMoTxt').textContent = mo.value; }; mo.onchange = () => { P.f.minOrders = Number(mo.value) || 0; saveF(); P.shown = PAGE; draw(); };
+}
+const PLAN_ST_AR = { COMPLETED: 'اتنفّذت', APPROVED: 'معتمدة وبتستنى التنفيذ', RUNNING: 'بتتنفّذ دلوقتي', CANCELLED: 'ملغية', MISSED: 'فاتت من غير اعتماد', SUPERSEDED: 'اتحلّت بنسخة أحدث', EXPIRED: 'انتهت' };
+function renewNotice(p, m) {
+  if (p && p.status === 'PREPARED') return '';
+  return `<div class="opx-notice amber opx-fade"><div class="grow"><b>${p ? `خطة ${m.verb} الحالية ${E(PLAN_ST_AR[p.status] || p.status)} — مش بتقبل تحديد` : `مفيش خطة ${m.verb} تتحدد عليها`}</b><small>عشان تحدّد المؤهل وتعتمد: جهّز خطة جديدة. هتتجهز بنفس السياسة، والمؤهل بيتحدد تلقائيًا، وانت تراجع وتعتمد بنفسك. مفيش تنفيذ على Meta قبل اعتمادك.</small></div>${P.ctx.isAdmin ? '<button class="opx-btn primary" data-act="renew">جهّز خطة جديدة وحدّد المؤهل</button>' : '<span class="opx-note">للأدمن فقط</span>'}</div>`;
+}
 function visibleRows(rows = allRows()) {
   const q = P.f.q.trim().toLowerCase();
-  let out = rows.filter((r) => matchView(r) && (!q || `${r.name || ''} ${r.product || ''} ${r.id}`.toLowerCase().includes(q)) && (!P.f.store || (r.storeId || '') === P.f.store) && (!P.f.cat || catOf(r.item).has(P.f.cat)));
+  let out = rows.filter((r) => matchView(r) && (!q || `${r.name || ''} ${r.product || ''} ${r.id}`.toLowerCase().includes(q)) && (!P.f.store || (r.storeId || '') === P.f.store) && (!P.f.cat || catOf(r.item).has(P.f.cat)) && sliderOk(r));
   const orders = (r) => pv(r).purchases ?? -1, cpa = (r) => (pv(r).cpa == null ? Infinity : Number(pv(r).cpa));
   const MIN = 3; // a CPA from a tiny sample must not outrank a proven campaign
   const by = {
@@ -271,6 +306,7 @@ function draw() {
   const stateText = c.emergencyStop ? 'إيقاف طوارئ مفعّل' : live ? 'التنفيذ الفعلي مفتوح' : autoLive ? `AUTOMATIC — ${m.verb} تلقائي حسب السياسات المعتمدة${c.scheduledExecution ? '' : ' (التنفيذ المجدول OFF: مفيش ' + m.verb + ' من غير اعتماد)'}` : c.writesLocked ? 'كتابة Meta مقفولة — محاكاة فقط' : c.mode !== 'APPROVAL' ? `الوضع ${MODE_AR[c.mode] || c.mode} — لا تنفيذ فعلي` : `صلاحية ${m.verb} مقفولة`;
   const counts = Object.fromEntries(VIEWS.map(([k]) => [k, rowsAll.filter((r) => { const keep = P.f.view; P.f.view = k; const ok = matchView(r); P.f.view = keep; return ok; }).length]));
   const viewLabel = VIEWS.find(([k]) => k === P.f.view)?.[1] || '';
+  const scopeSet = sliderOn() || P.f.q || P.f.store ? new Set(rows.map((r) => r.id)) : null; const eligN = (p?.items || []).filter((i) => i.selectable && i.eligibility === 'ELIGIBLE' && (!scopeSet || scopeSet.has(i.campaignId))).length;
   $('opxPlanBody').innerHTML = `
     <div class="opx-card opx-head opx-fade">
       <div class="opx-head-icon ${m.tone}">${ICONS[m.icon]}</div>
@@ -290,6 +326,7 @@ function draw() {
     <div class="opx-work opx-work-plan">
       <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
         ${P.type === 'OPEN' ? cpaPanel(p, editable) + (P.cpa && P.advForm ? advPanel(P.cpa.policy, P.advForm, P.ctx.isAdmin) : '') : ''}
+        ${renewNotice(p, m)}
         ${plansOfType().length > 1 ? `<div class="opx-card opx-filters" id="opxPlans">${plansOfType().map((x) => `<button class="opx-chip ${x.key === (p?.key) ? 'on' : ''}" data-plan="${E(x.key)}">${E(planLabel(x))} · ${num(x.counts?.total)} حملة</button>`).join('')}</div>` : ''}
         <div class="opx-card opx-filters">
           <div class="opx-chips opx-views" role="group" aria-label="عرض الحملات">${VIEWS.map(([k, t]) => `<button class="opx-chip ${P.f.view === k ? 'on' : ''}" data-view="${k}">${t} <span class="opx-chip-n">${num(counts[k])}</span></button>`).join('')}</div>
@@ -301,10 +338,11 @@ function draw() {
           ${P.type === 'PAUSE' ? `<select class="opx-select" id="opxCat"><option value="">كل التصنيفات</option>${Object.entries(PAUSE_CATS).map(([k, v]) => `<option value="${k}" ${P.f.cat === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}
           <select class="opx-select" id="opxSort" aria-label="الترتيب">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${P.f.sort === k ? 'selected' : ''}>ترتيب: ${v}${['purchases', 'cpa', 'spend'].includes(k) ? ' — ' + periodLabel() : ''}</option>`).join('')}</select>
         </div>
+        ${sliderCard(rows.length)}
         <div class="opx-card opx-tablecard opx-fade">
           <div class="opx-tablehead"><h3>الحملات — ${E(viewLabel)} (${num(rows.length)} حملة${rows.length > P.shown ? ` — المعروض ${num(P.shown)}` : ''})<small class="opx-sub">اليوم = ${E(P.board?.today || '—')} بتوقيت القاهرة · CPA = الصرف ÷ الأوردرات لنفس الفترة${P.board?.staleExcluded ? ` · استُبعدت ${num(P.board.staleExcluded)} حملة لقدم بياناتها` : ''}${P.board ? '' : ' · ⚠️ تعذّر تحميل كل الحملات — المعروض المرشحة فقط'}</small></h3>
             <button class="opx-btn sm opx-set-btn" data-act="settings">${ICONS.clock} إعدادات الجدولة</button>
-            <button class="opx-btn sm" data-act="eligible" ${editable ? '' : 'disabled'}>${ICONS.check} تحديد المؤهل</button><button class="opx-btn sm" data-act="none" ${editable ? '' : 'disabled'}>${ICONS.x} إلغاء التحديد</button>
+            <button class="opx-btn sm ${editable ? '' : 'opx-soft'}" data-act="eligible" ${P.ctx.isAdmin ? '' : 'disabled'} title="${editable ? 'يحدد الحملات المؤهلة (داخل الفلاتر لو فيه فلاتر) — بعدها راجعهم واعتمد' : 'الخطة مقفولة — هعرض عليك تجهيز خطة جديدة'}">${ICONS.check} تحديد المؤهل (${num(eligN)})</button><button class="opx-btn sm ${editable ? '' : 'opx-soft'}" data-act="none" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.x} إلغاء التحديد</button>
             <button class="opx-btn sm" data-act="new" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.plus} إنشاء خطة جديدة</button></div>
           ${narrow
             ? `<div class="opx-cards" style="display:flex">${pageRows.length ? pageRows.map((r) => rowCard(r, editable)).join('') : `<div class="opx-empty">${E(m.empty)}</div>`}${moreBtn}</div>`
@@ -396,6 +434,22 @@ function panelHtml(p, c, nextAt) {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // interactions
 // ---------------------------------------------------------------------------------------------------------------------------------------------
+/** Selects the ELIGIBLE campaigns of the plan (only those inside the active filters when a filter / slider is on). Selecting is not approving: the owner reviews, then presses «اعتماد المحدد». */
+async function selectEligible(p) {
+  const scope = sliderOn() || P.f.q || P.f.store ? new Set(visibleRows(allRows()).map((r) => r.id)) : null;
+  const sel = {}; p.items.forEach((i) => { if (i.selectable && i.eligibility === 'ELIGIBLE' && (!scope || scope.has(i.campaignId))) sel[i.campaignId] = P.type === 'OPEN' ? !!i.evidence?.recommended : !!i.evidence?.policyPause; });
+  if (!Object.keys(sel).length) { toast('مفيش حملة مؤهلة داخل الفلاتر دي.', 'warning'); return 0; }
+  const n = Object.values(sel).filter(Boolean).length; await saveSelection(sel);
+  toast(n ? `اتحدد ${num(n)} حملة مؤهلة — راجعهم وبعدين اضغط «اعتماد المحدد»` : 'المؤهلات دي مش موصى بيها بالسياسة الحالية — مفيش حاجة اتحددت', n ? undefined : 'warning'); return n;
+}
+async function renew() {
+  if (!P.ctx.isAdmin) { toast('تجهيز خطة جديدة للأدمن فقط', 'error'); return; }
+  const p = plan(); const m = META[P.type];
+  if (!(await confirmModal({ title: 'خطة جديدة وتحديد المؤهل', message: `${p ? `الخطة الحالية ${PLAN_ST_AR[p.status] || p.status}` : 'مفيش خطة حالية'} فمينفعش تتعدل. هجهّز خطة ${m.verb} جديدة بنفس السياسة وأحدد الحملات المؤهلة تلقائيًا، وانت تراجعهم وتعتمد بنفسك. مفيش تنفيذ على Meta قبل اعتمادك.`, confirmLabel: 'جهّز وحدّد المؤهل' }))) return;
+  P.autoSelect = { until: Date.now() + 150000, before: new Set(plansOfType().map((x) => x.key)) };
+  try { await api.post(`${API}/new`, { type: P.type }); toast('بيجهّز الخطة… هتتحدد المؤهلة أول ما تجهز'); } catch (e) { P.autoSelect = null; toast(e.message, 'error'); return; }
+  await load({ quiet: true });
+}
 async function saveSelection(selections, special = []) {
   const p = plan(); if (!p) return;
   try {
@@ -434,8 +488,10 @@ function wire(p, editable) {
     saveSelection({ [c.dataset.cid]: c.checked }, special); }; });
   root.querySelectorAll('[data-act]').forEach((b) => { b.onclick = async () => {
     const a = b.dataset.act;
-    if (a === 'eligible') { const sel = {}; p.items.forEach((i) => { if (i.selectable && i.eligibility === 'ELIGIBLE') sel[i.campaignId] = P.type === 'OPEN' ? !!i.evidence?.recommended : !!i.evidence?.policyPause; }); await saveSelection(sel); }
-    else if (a === 'none') { const sel = {}; p.items.forEach((i) => { if (i.selected) sel[i.campaignId] = false; }); await saveSelection(sel); }
+    if (a === 'eligible') { if (editable) await selectEligible(p); else await renew(); }
+    else if (a === 'renew') await renew();
+    else if (a === 'resetf') { P.f.cpaMin = null; P.f.cpaMax = null; P.f.minOrders = 0; P.f.q = ''; P.f.store = ''; saveF(); P.shown = PAGE; draw(); }
+    else if (a === 'none') { if (!editable) toast(`الخطة دي ${PLAN_ST_AR[p?.status] || ''} — مفيش تحديد لإلغائه. جهّز خطة جديدة لو عايز تحدد من جديد.`, 'warning'); else { const sel = {}; p.items.forEach((i) => { if (i.selected) sel[i.campaignId] = false; }); await saveSelection(sel); } }
     else if (a === 'more') { P.shown += PAGE; draw(); }
     else if (a === 'settings') { const panel = openDrawer({ title: 'إعدادات الجدولة', body: `<div class="opx-panel" style="padding:0">${panelHtml(p, P.ov.control || {}, P.ov.dashboard?.nextByType?.[P.type]?.at ? new Date(P.ov.dashboard.nextByType[P.type].at) : null)}</div>` }); wirePanel(panel, p); }
     else if (a === 'preview') await preview(p); else if (a === 'approve') await approve(p);
@@ -443,7 +499,7 @@ function wire(p, editable) {
   }; });
   root.querySelectorAll('[data-row]').forEach((b) => { b.onclick = () => rowDrawer(allRows().find((x) => x.id === b.dataset.row)); });
   wirePanel(root.querySelector('aside.opx-panel'), p);
-  wireCpa(p);
+  wireCpa(p); wireSlider();
   if (P.type === 'OPEN' && P.cpa && P.advForm) wireAdv(P.advForm, () => P.cpa.policy, async () => { P.advForm = null; await load(); });
 }
 async function approve(p) {

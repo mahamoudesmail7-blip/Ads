@@ -489,6 +489,21 @@ body:has(.opx) { overflow-x: hidden; } .opx { max-width: 100%; }
 .cpa-trio { display: flex; gap: 5px; direction: ltr; } .cpa-trio span { flex: 1; text-align: center; font-size: 11.5px; font-weight: 800; padding: 2px 0; border-radius: 8px; background: var(--opx-bg); color: var(--opx-muted); font-family: 'JetBrains Mono', monospace; } .cpa-trio span.on { background: var(--opx-primary-soft); color: var(--opx-primary); } .cpa-trio em { display: block; font-style: normal; font-size: 9.5px; font-weight: 600; font-family: 'Cairo', sans-serif; }
 .c-num b { font-size: 20px; display: block; line-height: 1.1; } .c-num b.sp { font-size: 15px; margin-top: 6px; color: var(--opx-muted); } .c-num small, .c-camp small { display: block; font-size: 11px; color: var(--opx-muted); line-height: 1.5; }
 .c-camp b { font-size: 20px; line-height: 1.1; } .c-camp b span { font-size: 13px; color: var(--opx-muted); }
+.cpa-need { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; } .cpa-need li { padding: 12px 14px; border-radius: 12px; background: var(--opx-warning-soft); border: 1px solid var(--opx-border); font-size: 13.5px; line-height: 1.7; } .cpa-need small { display: block; color: var(--opx-muted); font-size: 12px; } .cpa-need small.how { color: var(--opx-text); } .cpa-need .opx-btn { margin-top: 8px; } .cpa-why b { color: #a45e00; }
 .cpa-none { padding: 30px; text-align: center; color: var(--opx-muted); background: var(--opx-bg); border-radius: 14px; }
 @media (max-width: 1100px) { .cpa-sum { grid-template-columns: repeat(3, 1fr); } .cpa-dash-head { padding: 14px 16px; } .cpa-filters, .cpa-sum, .cpa-plist, .cpa-meta { padding-left: 14px; padding-right: 14px; } }
 @media (max-width: 560px) { .cpa-sum { grid-template-columns: repeat(2, 1fr); } .cpa-filters > .opx-input { max-width: none; } }
+
+/* ---------- «فتح/إيقاف الحملات»: CPA range slider + min orders + select-eligible (opx-plan.js) ---------- */
+.opx-slidecard { display: grid; grid-template-columns: 1.5fr 1fr auto; gap: 26px; align-items: center; padding: 14px 20px; }
+.opx-slide-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 6px; } .opx-slide-v { font-weight: 800; font-family: 'JetBrains Mono', 'Cairo', monospace; direction: ltr; color: var(--opx-primary); background: var(--opx-primary-soft); border-radius: 999px; padding: 1px 12px; }
+.opx-dual { position: relative; height: 28px; direction: ltr; } .opx-dual-track { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 4px; background: #e3e8f2; } .opx-dual-track i { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: linear-gradient(90deg, #34c38f, #6d5dff); }
+.opx-dual input[type=range] { position: absolute; left: 0; top: 0; width: 100%; height: 28px; margin: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; }
+.opx-dual input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 28px; } .opx-dual input[type=range]::-moz-range-track { background: transparent; }
+.opx-dual input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 22px; height: 22px; margin-top: 3px; border-radius: 50%; background: #fff; border: 3px solid var(--opx-primary); box-shadow: 0 2px 8px rgba(23, 37, 84, .3); cursor: grab; }
+.opx-dual input[type=range]::-moz-range-thumb { pointer-events: auto; width: 16px; height: 16px; border-radius: 50%; background: #fff; border: 3px solid var(--opx-primary); box-shadow: 0 2px 8px rgba(23, 37, 84, .3); cursor: grab; }
+.opx-dual-ax { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--opx-muted); direction: ltr; margin-top: 2px; }
+.opx-mo { width: 100%; margin: 4px 0 0; accent-color: var(--opx-primary); direction: ltr; }
+.opx-slide-act { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 120px; text-align: center; } .opx-slide-act b { font-size: 26px; line-height: 1; }
+.opx-btn.opx-soft { opacity: .8; }
+@media (max-width: 900px) { .opx-slidecard { grid-template-columns: 1fr; gap: 14px; } .opx-slide-act { flex-direction: row; justify-content: space-between; } }

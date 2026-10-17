@@ -150,7 +150,7 @@ function rowHtml({ p, w, ranges, st }) {
   const trio = PERIODS.map(([k, l]) => `<span class="${k === C.period ? 'on' : ''}" title="${E(l)}"><em>${E(l.replace(' يوم', 'ي').replace(' أيام', 'د'))}</em>${p.perf?.[k]?.cpa != null ? num(p.perf[k].cpa) : '—'}</span>`).join('');
   return `<div class="cpa-prow t-${st.tone} ${C.scope === p.key ? 'cur' : ''}" data-row="${E(p.key)}">
     <div class="c-sel"><input type="checkbox" data-sel="${E(p.key)}" ${C.sel.has(p.key) ? 'checked' : ''} aria-label="تحديد ${E(p.name)}"></div>
-    <div class="c-prod"><b title="${E(p.name)}">${E(p.name)}</b><span class="cpa-chips"><i>#${p.productId}</i><i>${E(p.storeId || '')}</i>${pill(stl, stTone)}</span>${why ? `<small class="cpa-why">${E(why)}</small>` : ''}</div>
+    <div class="c-prod"><b title="${E(p.name)}">${E(p.name)}</b><span class="cpa-chips"><i>#${p.productId}</i><i>${E(p.storeId || '')}</i>${pill(stl, stTone)}</span>${why ? `<small class="cpa-why"><b>${p.state === 'BLOCKED' ? 'ممنوع:' : 'ناقص:'}</b> ${E(why)}</small>` : ''}</div>
     <div class="c-stat"><span class="cpa-badge ${st.tone}">${PERF_ICON[st.code] || ''} ${E(st.label)}</span><small>${E(st.detail)}</small></div>
     <div class="c-cpa"><div class="cpa-big">${w.cpa != null ? num(w.cpa) : '—'}<u>ج</u></div>${rangeBar(ranges, w.cpa)}<div class="cpa-trio">${trio}</div></div>
     <div class="c-num"><b>${num(w.orders)}</b><small>أوردر</small><b class="sp">${num(w.spend)}</b><small>جنيه صرف</small></div>
@@ -286,10 +286,30 @@ async function impact() {
   if (!(await confirmModal({ title: 'تأكيد نهائي — AUTOMATIC', message: `هتحوّل ${pv.confirm.products} منتج لـAUTOMATIC (${pv.confirm.campaigns} حملة، تعرّض ${egp(ex.running)}). ده مش بيفتح قفل Meta ومش بيغيّر وضع النظام — التنفيذ لسه بيمشي على الوضع والصلاحيات والـGuards.` }))) return;
   const r = await api.post('/api/operator/automation/bulk/activate', { productKeys: pv.included.map((p) => p.key), confirm: pv.confirm, confirmAutomatic: true }); toast(`اتفعّل AUTOMATIC: ${r.activated.length}${r.skipped.length ? ` · اتخطّى ${r.skipped.length}` : ''}`); await reload();
 }
+// What blocks AUTOMATIC for this product, in plain words, with the way to fix each item and a direct button where there is one. Nothing is changed from here.
+const FIX = {
+  ECONOMICS: { how: 'أدخل التكلفة والشحن والسعر وأقصى CPA للمنتج من شاشة «اقتصاديات المنتجات».', btn: ['econ', 'افتح اقتصاديات المنتجات'] },
+  STOCK: { how: 'لازم المخزون يبقى معروف للمنتج (من إعدادات المخزون). OUT_OF_STOCK بيمنع دايمًا، وغير معروف تحذير بس حسب الإعداد.' },
+  MAPPING: { how: 'أكّد ربط حملة واحدة على الأقل بالمنتج من «مركز الربط».' },
+  SPEND_LIMITS: { how: 'اكتب أقصى ميزانية للحملة وأقل ميزانية والحد الأقصى لميزانية المنتج في الخانات اللي في الشاشة دي.', btn: ['scope', 'اضبطها هنا'] },
+  CPA_LIMITS: { how: 'حدّد نقاط الـCPA (نهاية الزيادة وبداية التقليل وبداية الإيقاف) للمنتج أو من القواعد العامة.', btn: ['scope', 'اضبطها هنا'] },
+  PAUSE_POLICY: { how: 'اعتمد سياسة الإيقاف من «الأتمتة (AUTOMATIC)».' },
+  OPEN_POLICY: { how: 'اعتمد سياسة الفتح لو الفتح تلقائي.' },
+};
+function showNotReady(p) {
+  const items = p.blockedReason ? [{ key: 'BLOCKED', label: p.blockedReason, detail: '' }] : (p.missing || []);
+  const body = `<p class="opx-note">المنتج ده مش هينفع يتحوّل لـAUTOMATIC لحد ما الحاجات دي تتظبط. ده فحص أمان: السيستم مش بيشغّل منتج ناقص.</p><ul class="cpa-need">${items.map((m) => { const fx = FIX[m.key]; return `<li><b>ناقص:</b> ${E(m.label)}${m.detail ? `<small>الوضع الحالي: ${E(m.detail)}</small>` : ''}${fx ? `<small class="how"><b>الحل:</b> ${E(fx.how)}</small>` : ''}${fx?.btn ? `<button class="opx-btn sm" data-fix="${fx.btn[0]}">${E(fx.btn[1])}</button>` : ''}</li>`; }).join('')}</ul>`;
+  const panel = openDrawer({ title: `مش جاهز لـAUTOMATIC: ${E(p.name)}`, body, foot: '<button class="opx-btn" id="cpaNrX">تمام</button>' });
+  panel.querySelector('#cpaNrX').onclick = closeDrawer;
+  panel.querySelectorAll('[data-fix]').forEach((b) => { b.onclick = async () => {
+    if (b.dataset.fix === 'scope') { closeDrawer(); C.scope = p.key; try { await loadScope(); draw(); C.root.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) { toast(e.message, 'error'); } return; }
+    try { localStorage.setItem('opx2.sec', 'prod'); } catch { /* private mode */ } location.href = '/ai-media-buyer.html?ui=v2#operator'; location.reload();
+  }; });
+}
 async function toggleMode(key) {
   const p = C.ov.products.find((x) => x.key === key); const auto = p.policy.mode === 'AUTOMATIC' && p.policy.status.startsWith('ACTIVE');
   try {
-    if (!auto && p.state !== 'READY') { toast(`المنتج مش جاهز: ${p.blockedReason || (p.missing || []).map((m) => m.label).join(' · ')}`, 'error'); return; }
+    if (!auto && p.state !== 'READY') { showNotReady(p); return; }
     const to = auto ? 'APPROVAL' : 'AUTOMATIC';
     if (!(await confirmModal({ title: `تحويل ${p.name} إلى ${to}`, message: to === 'AUTOMATIC' ? 'بعد التفعيل، السيستم هينفّذ زيادة/تقليل/إيقاف على الحملات المربوطة بالمنتج لوحده ضمن حدوده — بشرط وضع النظام AUTOMATIC وقفل Meta مفتوح وصلاحيات التنفيذ ON. التفعيل بيتحقق من الجاهزية تاني على السيرفر.' : 'هيرجع للموافقة اليدوية على كل عملية.' }))) return;
     const cur = (await api.get(`/api/operator/product-rules/${p.productId}`, { store: p.storeId })); const base = cur.draft || cur.active || {};

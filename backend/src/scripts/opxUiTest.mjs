@@ -997,6 +997,10 @@ try {
     await js(`(()=>{ const q = document.getElementById('cpaQ'); q.value = 'Fixture product A'; q.dispatchEvent(new Event('input')); return true; })()`); await sleep(250);
     ok('search by name narrows the list and the counter says so', (await rowsN()) >= 1 && (await rowsN()) < total && /من \d+ منتج/.test(await js(`document.getElementById('cpaCount').innerText`)));
     await js(`(()=>{ const q = document.getElementById('cpaQ'); q.value = ''; q.dispatchEvent(new Event('input')); return true; })()`); await sleep(250);
+    await js(`document.querySelector('#cpaBoard .cpa-prow [data-mode]').click()`);
+    ok('a not-ready product explains what is missing (ناقص), how to fix it and offers a direct button instead of a one-line error', await waitFor(`/مش جاهز لـAUTOMATIC/.test(document.querySelector('.opx-drawer-head')?.innerText || '') && /ناقص:/.test(document.querySelector('.cpa-need')?.innerText || '') && /الحل:/.test(document.querySelector('.cpa-need')?.innerText || '')`, 10000));
+    ok('…and nothing was activated by that click (the product is still not AUTOMATIC)', await js(`!document.querySelector('#cpaBoard .cpa-mode.auto')`));
+    await js(`document.getElementById('cpaNrX').click()`); await sleep(200);
     await js(`document.querySelector('#cpaBoard [data-edit]').click()`); await waitFor(`document.querySelectorAll('#cpaBoard .cpa-src').length > 0`, 15000);
     ok('selecting a product shows where every value comes from (عام / المنتج / غير محدد)', await js(`document.querySelectorAll('#cpaBoard .cpa-src').length >= 4 && document.getElementById('cpaScope').value !== 'GLOBAL'`));
     await js(`document.querySelector('[data-act="impact"]').click()`);
@@ -1006,6 +1010,36 @@ try {
     await goto('/ai-media-buyer.html#operator', { width: 390, height: 800, mobile: true, ls: { 'opx.ws': 'budget' } }); await waitFor(`!!document.querySelector('#cpaBoard .cpa-card')`, 30000); await sleep(500);
     ok('phone: the board fits the screen (no horizontal page scroll)', await js(`document.documentElement.scrollWidth <= window.innerWidth + 2`), await js(`document.documentElement.scrollWidth`));
     await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.v2': '0' } }); await waitFor('!!document.querySelector(".opx")');
+  }
+
+  console.log('\n27. «فتح الحملات»: CPA range slider + minimum orders + «تحديد المؤهل (n)» + the locked-plan notice');
+  {
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'open', 'opx.theme': 'light' } });
+    ok('the open workspace renders the candidate rows and the slider card', await waitFor(`document.querySelectorAll('.opx-table tbody tr').length >= 1 && !!document.getElementById('opxCpaLo') && !!document.getElementById('opxCpaHi') && !!document.getElementById('opxMo')`, 40000));
+    const rowsN = () => js(`document.querySelectorAll('.opx-table tbody tr').length`); const total = await rowsN();
+    ok('«تحديد المؤهل» shows how many eligible campaigns it will select and is usable by the admin', await js(`(()=>{ const b = document.querySelector('[data-act="eligible"]'); return !b.disabled && /تحديد المؤهل \\(\\d+\\)/.test(b.innerText); })()`));
+    ok('an editable (PREPARED) plan shows no «new plan» notice', await js(`!document.querySelector('[data-act="renew"]')`));
+    await js(`(()=>{ const m = document.getElementById('opxMo'); m.value = 30; m.dispatchEvent(new Event('input')); m.dispatchEvent(new Event('change')); return true; })()`); await sleep(400);
+    ok('minimum orders = 30 hides the campaigns below it (the counter matches the rows) and offers «مسح الفلاتر»', (await rowsN()) < total && await js(`!!document.querySelector('[data-act="resetf"]') && Number(document.getElementById('opxSlideCount').innerText.replace(/,/g, '')) === document.querySelectorAll('.opx-table tbody tr').length`));
+    await js(`document.querySelector('[data-act="resetf"]').click()`); await sleep(400);
+    ok('«مسح الفلاتر» brings every campaign back', (await rowsN()) === total && await js(`!document.querySelector('[data-act="resetf"]')`));
+    await js(`(()=>{ const h = document.getElementById('opxCpaHi'); h.value = 1; h.dispatchEvent(new Event('input')); h.dispatchEvent(new Event('change')); return true; })()`); await sleep(400);
+    ok('a CPA ceiling of 1 hides everything with a CPA (a campaign without a CPA is never shown as «in range»)', (await rowsN()) === 0 && /1 ج/.test(await js(`document.getElementById('opxCpaTxt').innerText`)));
+    await js(`document.querySelector('[data-act="resetf"]').click()`); await sleep(400);
+    await js(`(()=>{ const l = document.getElementById('opxCpaLo'); const h = document.getElementById('opxCpaHi'); l.value = 100; l.dispatchEvent(new Event('input')); h.value = 60; h.dispatchEvent(new Event('input')); return true; })()`);
+    ok('the two handles never cross (lower ≤ upper while dragging)', await js(`Number(document.getElementById('opxCpaLo').value) <= Number(document.getElementById('opxCpaHi').value)`));
+    await js(`document.getElementById('opxCpaHi').dispatchEvent(new Event('change'))`); await sleep(300); await js(`(document.querySelector('[data-act="resetf"]') || { click() {} }).click()`); await sleep(300);
+    const planSt = await js(`fetch('/api/operator/daily-plan/overview').then(r => r.json()).then(o => o.plans.OPEN.status)`);
+    if (planSt === 'PREPARED') {
+      await js(`document.querySelector('[data-act="eligible"]').click()`); await sleep(1500);
+      ok('«تحديد المؤهل» selects the eligible campaigns (the foot line reports a count) and approves nothing (the plan is still PREPARED)', await js(`/تم تحديد \\d+ حملة/.test(document.querySelector('.opx-foot b').innerText) && fetch('/api/operator/daily-plan/overview').then(r => r.json()).then(o => o.plans.OPEN.status === 'PREPARED')`));
+    } else {
+      ok('a locked plan (' + planSt + ') explains itself with a «جهّز خطة جديدة وحدّد المؤهل» notice instead of dead buttons', await js(`!!document.querySelector('[data-act="renew"]') && !document.querySelector('[data-act="eligible"]').disabled`));
+      await js(`document.querySelector('[data-act="eligible"]').click()`);
+      ok('pressing «تحديد المؤهل» on a locked plan opens the confirmation to prepare a new plan (nothing is sent before it)', await waitFor(`/خطة جديدة/.test(document.querySelector('.confirm-modal-card')?.innerText || '')`, 8000));
+      await js(`document.querySelector('.confirm-modal-card [data-action="cancel"]').click()`); await sleep(300);
+      ok('cancelling creates no plan and changes nothing', await js(`fetch('/api/operator/daily-plan/overview').then(r => r.json()).then(o => o.plans.OPEN.status) === '${planSt}'`.replace('${planSt}', planSt)));
+    }
   }
 
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
