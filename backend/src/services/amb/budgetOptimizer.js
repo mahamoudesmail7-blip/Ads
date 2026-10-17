@@ -36,7 +36,7 @@ export const DEFAULT_POLICY = {
   enabled: false, // the scheduler ignores the optimizer until the owner turns it on (and even then: SHADOW/APPROVAL follow the global mode, Meta stays locked)
   window: 'last3',
   zeroOrders: { spend: 200, minAgeHours: 24 },
-  scale: { minPurchases: 2, minSpend: 150, maxCpa: 80, pct: 20, cooldownHours: 24, minAgeHours: 48 }, // never scale a very new campaign (age = since Meta first reported it)
+  scale: { minPurchases: 2, minSpend: 150, minCpa: null, maxCpa: 80, pct: 20, cooldownHours: 24, minAgeHours: 48 }, // never scale a very new campaign (age = since Meta first reported it)
   keep: { minCpa: 81, maxCpa: 149 },
   reduce: { minPurchases: 3, minSpend: 450, minCpa: 150, maxCpa: 200, min7dCpa: 150, pct: 20, cooldownHours: 48 },
   highCpa: { above: 200, minPurchases: 3, minSpend: 450, pct: 20 },
@@ -66,6 +66,7 @@ export function validatePolicy(p) {
   pos('highCpa.above', p.highCpa.above, 1); pos('highCpa.minPurchases', p.highCpa.minPurchases, 1, 100); pos('highCpa.minSpend', p.highCpa.minSpend, 0); pos('highCpa.pct', p.highCpa.pct, 1, 90);
   pos('newEvidence.minSpend', p.newEvidence.minSpend, 0);
   if (p.scale.maxCpa >= p.reduce.minCpa) errors.push('حد الـScale لازم يكون أقل من بداية منطقة الـReduce.');
+  if (p.scale.minCpa != null && !(Number(p.scale.minCpa) >= 1 && Number(p.scale.minCpa) < Number(p.scale.maxCpa))) errors.push('scale.minCpa: لازم يكون ≥ 1 وأقل من حد الـScale.');
   if (p.reduce.maxCpa > p.highCpa.above) errors.push('نهاية منطقة الـReduce لازم تكون ≤ بداية HIGH_CPA.');
   if (p.window && !['last3', 'last7'].includes(p.window)) errors.push('window لازم last3 أو last7.');
   for (const k of ['economicsMissing', 'stockUnknown']) if (!['WARN', 'BLOCK'].includes(p.accountWide?.[k])) errors.push(`accountWide.${k} لازم WARN أو BLOCK.`);
@@ -204,6 +205,7 @@ export function classifyBudget({ m, m7 = null, ageHours = null, lastChange = nul
   }
   // with purchases: CPA zones
   if (cpa <= P.scale.maxCpa) {
+    if (P.scale.minCpa != null && cpa < P.scale.minCpa) return { zone: 'SCALE_CPA_BELOW_BUMP_START', action: null, rule: 'DYN_KEEP', evidence, sample, reasons: [`CPA ${round0(cpa)} أقل من بداية نطاق الزيادة (${P.scale.minCpa}) — رقم منخفض بشكل غير معتاد، مفيش زيادة تلقائية قبل ما تراجعه`] };
     if (purchases >= P.scale.minPurchases && spend >= P.scale.minSpend && (ageHours == null || ageHours < P.scale.minAgeHours)) return { zone: 'SCALE_TOO_YOUNG', action: null, rule: 'DYN_KEEP', evidence, sample, reasons: [`CPA ${round0(cpa)} ممتاز لكن عمر الحملة ${ageHours}س < ${P.scale.minAgeHours}س — مفيش Scale لحملة جديدة جدًا`] };
     if (purchases >= P.scale.minPurchases && spend >= P.scale.minSpend) return { zone: 'SCALE', action: 'SCALE_UP', pct: P.scale.pct, rule: 'DYN_SCALE_UP', evidence, sample, reasons: [`CPA ${round0(cpa)} ≤ ${P.scale.maxCpa} بـ ${purchases} أوردر وصرف ${round0(spend)}`], needs: { profit: true, stock: true } };
     return { zone: 'SCALE_SAMPLE_INSUFFICIENT', action: null, rule: 'DYN_KEEP', evidence, sample, reasons: [`CPA ${round0(cpa)} ممتاز لكن العينة غير كافية (${purchases} أوردر، صرف ${round0(spend)}) — الحد ${P.scale.minPurchases} أوردر و${P.scale.minSpend} صرف`] };

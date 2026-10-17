@@ -18,7 +18,7 @@ export function normalizePolicy(raw = {}) {
   o.mode = ['MANUAL', 'APPROVAL', 'AUTOMATIC'].includes(r.mode) ? r.mode : null;
   o.schedule = { ...pick(r.schedule, ['openTime', 'closeTime']), days: Array.isArray(r.schedule?.days) ? [...new Set(r.schedule.days.map(Number))].filter((d) => Number.isInteger(d) && d >= 0 && d <= 6).sort() : null };
   if (o.schedule.days && !o.schedule.days.length) o.schedule.days = null;
-  o.cpa = pick(r.cpa, ['normalMin', 'normalMax', 'scale', 'reduce', 'hardStop']);
+  o.cpa = pick(r.cpa, ['normalMin', 'normalMax', 'scaleMin', 'scale', 'reduce', 'hardStop']); // scaleMin = «Bump Start CPA»: below it no automatic increase (an unrealistically low CPA is a data question, not a win)
   o.zeroOrder = pick(r.zeroOrder, ['spend', 'minAgeHours', 'windowDays']);
   o.budget = pick(r.budget, ['increasePct', 'decreasePct', 'minPurchases', 'cooldownHours', 'minBudget', 'maxBudget', 'dailySpendCap', 'maxChangesPerDay']);
   o.manualOverrideHours = num(r.manualOverrideHours);
@@ -40,6 +40,7 @@ export function validatePolicy(p, { scopeLabel = '' } = {}) {
   for (const [k, v] of Object.entries(cpa)) rng(`CPA (${k})`, v, 1, 100000);
   if (cpa.normalMin != null && cpa.normalMax != null && cpa.normalMin > cpa.normalMax) errors.push(L('الحد الأدنى للـCPA الطبيعي لازم يكون ≤ الأقصى.'));
   if (cpa.scale != null && cpa.reduce != null && cpa.scale >= cpa.reduce) errors.push(L('حد الـScale لازم يكون أقل من حد الـReduce.'));
+  if (cpa.scaleMin != null && cpa.scale != null && cpa.scaleMin >= cpa.scale) errors.push(L('بداية نطاق الزيادة (Bump Start) لازم تكون أقل من نهايته (Bump End).'));
   if (cpa.reduce != null && cpa.hardStop != null && cpa.reduce > cpa.hardStop) errors.push(L('حد الـReduce لازم يكون ≤ Hard Stop CPA.'));
   if (cpa.normalMax != null && cpa.hardStop != null && cpa.normalMax > cpa.hardStop) errors.push(L('نهاية الـCPA الطبيعي لازم تكون ≤ Hard Stop.'));
   rng('الصرف بدون أوردرات', z.spend, 50, 100000); rng('أقل عمر للحملة (ساعات)', z.minAgeHours, 0, 720);
@@ -58,9 +59,10 @@ export function applyToBudgetPolicy(globalPolicy, policy, campaignId = null) {
   const eff = mergeEffective(policy, campaignId);
   const out = JSON.parse(JSON.stringify(globalPolicy));
   const set = (obj, k, v) => { if (v != null) obj[k] = v; };
-  set(out.scale, 'pct', eff.budget.increasePct); set(out.scale, 'maxCpa', eff.cpa.scale); set(out.scale, 'minPurchases', eff.budget.minPurchases); set(out.scale, 'cooldownHours', eff.budget.cooldownHours);
+  set(out.scale, 'pct', eff.budget.increasePct); set(out.scale, 'maxCpa', eff.cpa.scale); set(out.scale, 'minCpa', eff.cpa.scaleMin); set(out.scale, 'minPurchases', eff.budget.minPurchases); set(out.scale, 'cooldownHours', eff.budget.cooldownHours);
   set(out.reduce, 'pct', eff.budget.decreasePct); set(out.reduce, 'minCpa', eff.cpa.reduce); set(out.reduce, 'minPurchases', eff.budget.minPurchases); set(out.reduce, 'cooldownHours', eff.budget.cooldownHours);
   set(out.highCpa, 'above', eff.cpa.hardStop); // the product's own Hard Stop CPA is the start of its HIGH_CPA zone
+  set(out.reduce, 'maxCpa', eff.cpa.hardStop); // …and the end of its reduce zone: four points = four zones, no gap between «reduce» and «stop»
   if (eff.cpa.normalMin != null) out.keep.minCpa = eff.cpa.normalMin; if (eff.cpa.normalMax != null) out.keep.maxCpa = eff.cpa.normalMax;
   set(out.zeroOrders, 'spend', eff.zeroOrder.spend); set(out.zeroOrders, 'minAgeHours', eff.zeroOrder.minAgeHours);
   if (eff.zeroOrder.windowDays) out.window = eff.zeroOrder.windowDays === 7 ? 'last7' : 'last3';
@@ -98,7 +100,7 @@ export function overlayGlobal(globalActive, policy) {
   const g = normalizeGlobal(globalActive); const p = normalizePolicy(policy); const m = (a, b) => Object.fromEntries(Object.keys(a).map((k) => [k, a[k] ?? b[k] ?? null]));
   return { ...p, schedule: { openTime: p.schedule.openTime ?? g.schedule.openTime, closeTime: p.schedule.closeTime ?? g.schedule.closeTime, days: p.schedule.days ?? g.schedule.days }, cpa: m(p.cpa, g.cpa), zeroOrder: m(p.zeroOrder, g.zeroOrder), budget: m(p.budget, g.budget), manualOverrideHours: p.manualOverrideHours ?? g.manualOverrideHours, stockPolicy: p.stockPolicy ?? g.stockPolicy };
 }
-const LEAVES = [['schedule', 'openTime'], ['schedule', 'closeTime'], ['schedule', 'days'], ['cpa', 'normalMin'], ['cpa', 'normalMax'], ['cpa', 'scale'], ['cpa', 'reduce'], ['cpa', 'hardStop'], ['zeroOrder', 'spend'], ['zeroOrder', 'minAgeHours'], ['zeroOrder', 'windowDays'],
+const LEAVES = [['schedule', 'openTime'], ['schedule', 'closeTime'], ['schedule', 'days'], ['cpa', 'normalMin'], ['cpa', 'normalMax'], ['cpa', 'scaleMin'], ['cpa', 'scale'], ['cpa', 'reduce'], ['cpa', 'hardStop'], ['zeroOrder', 'spend'], ['zeroOrder', 'minAgeHours'], ['zeroOrder', 'windowDays'],
   ['budget', 'increasePct'], ['budget', 'decreasePct'], ['budget', 'minPurchases'], ['budget', 'cooldownHours'], ['budget', 'minBudget'], ['budget', 'maxBudget'], ['budget', 'dailySpendCap'], ['budget', 'maxChangesPerDay'], ['manualOverrideHours'], ['stockPolicy']];
 /** Where every effective value comes from: CAMPAIGN | PRODUCT | GLOBAL (with the global version) | DEFAULT | UNSET. Pure. */
 export function resolveSources({ global = null, globalVersion = null, product = null, campaignId = null } = {}) {
