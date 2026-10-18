@@ -10,8 +10,8 @@ import { E, $, num, egp, ICONS, kpiCard, pill, skeletonRows, skeletonCards, toas
 const adsetTag = (d) => (d.params?.level === 'adset' ? ` <small class="opx-note">Ad Set: ${E(d.evidence?.history?.entityName || d.params.entityId)} (${E(d.params.entityId)})</small>` : '');
 const B = { ctx: null, root: null, policy: null, caps: null, decisions: [], ov: null, cfg: null };
 const DIR = {
-  up: { key: 'scale', toggle: 'up', perm: 'budgetIncrease', tone: 'green', icon: 'budget', title: 'زيادة الميزانية', sub: 'ترفع الميزانية بنسبة محددة عند أداء قوي وعينة كافية — وبدون زيادة ثانية من نفس الأوردرات', action: 'SCALE_UP', verb: 'زيادة' },
-  down: { key: 'reduce', toggle: 'down', perm: 'budgetDecrease', tone: 'red', icon: 'coins', title: 'تقليل الميزانية', sub: 'تخفّض الميزانية عند CPA مرتفع مؤكد باتجاه 7 أيام — بدون رد فعل لتذبذب بسيط', action: 'SCALE_DOWN', verb: 'تقليل' },
+  up: { key: 'scale', toggle: 'up', keys: ['scale', 'budgetIncrease'], perm: 'budgetIncrease', tone: 'green', icon: 'budget', title: 'زيادة الميزانية', sub: 'ترفع الميزانية بنسبة محددة عند أداء قوي وعينة كافية — وبدون زيادة ثانية من نفس الأوردرات', action: 'SCALE_UP', verb: 'زيادة' },
+  down: { key: 'reduce', toggle: 'down', keys: ['budgetReduce'], perm: 'budgetDecrease', tone: 'red', icon: 'coins', title: 'تقليل الميزانية', sub: 'تخفّض الميزانية عند CPA مرتفع مؤكد باتجاه 7 أيام — بدون رد فعل لتذبذب بسيط', action: 'SCALE_DOWN', verb: 'تقليل' },
 };
 
 export async function mountBudgetWorkspace(root, ctx) {
@@ -23,9 +23,11 @@ async function load() {
   B.policy = p.policy; B.caps = caps.caps; B.cfg = cfg; B.decisions = dec.decisions || []; B.ov = ov;
 }
 const toggles = () => Object.fromEntries((B.ov?.control?.toggles || []).map((t) => [t.key, t.on]));
+// the server's real switches: Auto Budget Reduce · Auto Budget Increase + Auto Scale (an automatic INCREASE needs BOTH). The page used to send the made-up keys «up» / «down» → «صلاحية غير معروفة»
+const isOn = (d) => d.keys.every((k) => !!toggles()[k]);
 const perms = () => B.cfg?.config?.execPermissions || {};
 function effectiveMode(d) {
-  const mode = B.ov.mode, on = !!toggles()[d.toggle], perm = !!perms()[d.perm];
+  const mode = B.ov.mode, on = isOn(d), perm = !!perms()[d.perm];
   if (B.ov.emergencyStop) return ['red', 'إيقاف طوارئ'];
   if (mode === 'OFF') return ['gray', 'MANUAL — لا تنفيذ آلي'];
   if (mode === 'SHADOW') return ['blue', 'SHADOW — محاكاة'];
@@ -35,7 +37,7 @@ function effectiveMode(d) {
 const fld = (id, label, v, { step = 'any', min = 0, hint = '' } = {}) => `<label>${E(label)}<input class="opx-input" id="${id}" type="number" step="${step}" min="${min}" value="${v ?? ''}" ${B.ctx.isAdmin ? '' : 'disabled'}>${hint ? `<small style="font-weight:600;color:var(--opx-muted)">${E(hint)}</small>` : ''}</label>`;
 
 function section(d) {
-  const p = B.policy; const s = d.key === 'scale' ? p.scale : p.reduce; const on = !!toggles()[d.toggle]; const perm = !!perms()[d.perm]; const em = effectiveMode(d);
+  const p = B.policy; const s = d.key === 'scale' ? p.scale : p.reduce; const on = isOn(d); const perm = !!perms()[d.perm]; const em = effectiveMode(d);
   const fields = d.key === 'scale'
     ? `${fld('sc_pct', 'نسبة الزيادة %', s.pct, { hint: 'الخطوة الواحدة (مثال 100 → 120 → 144)' })}${fld('sc_maxCpa', 'حد CPA للزيادة (≤)', s.maxCpa)}${fld('sc_minPurchases', 'أقل عدد أوردرات', s.minPurchases)}${fld('sc_minSpend', 'أقل صرف', s.minSpend)}${fld('sc_cooldownHours', 'Cooldown (ساعات)', s.cooldownHours)}${fld('sc_minAgeHours', 'أقل عمر للحملة (ساعات)', s.minAgeHours)}`
     : `${fld('rd_pct', 'نسبة التقليل %', s.pct, { hint: 'مثال 150 → 120' })}${fld('rd_minCpa', 'بداية منطقة التقليل (CPA ≥)', s.minCpa)}${fld('rd_maxCpa', 'نهاية منطقة التقليل (CPA ≤)', s.maxCpa)}${fld('rd_min7dCpa', 'تأكيد باتجاه 7 أيام (CPA ≥)', s.min7dCpa, { hint: 'مفيش تقليل لو متوسط 7 أيام أحسن' })}${fld('rd_minPurchases', 'أقل عدد أوردرات', s.minPurchases)}${fld('rd_minSpend', 'أقل صرف', s.minSpend)}${fld('rd_cooldownHours', 'Cooldown (ساعات)', s.cooldownHours)}`;
@@ -88,9 +90,9 @@ function decisionsTable(list) {
 function wire() {
   const root = B.root; const stop = root.querySelectorAll('[data-opxstop]'); stop.forEach((b) => { b.onclick = B.ctx.emergencyStop; });
   root.querySelectorAll('[data-toggle]').forEach((b) => { b.onclick = async () => {
-    const key = b.dataset.toggle; const on = !toggles()[key];
-    if (on && !(await confirmModal({ title: 'تفعيل تشغيل تلقائي', message: 'ده بيدّي صلاحية فقط — مفيش تنفيذ إلا لو الوضع AUTOMATIC وصلاحية التنفيذ ON وقفل النشر مفتوح.', confirmLabel: 'تفعيل' }))) return;
-    try { await api.put('/api/operator/auto-actions', { [key]: on }); toast('تم'); await B.ctx.refresh(); await load(); draw(); } catch (e) { toast(e.message, 'error'); }
+    const d = DIR[b.dataset.toggle]; const on = !isOn(d);
+    if (on && !(await confirmModal({ title: 'تفعيل تشغيل تلقائي', message: `ده بيدّي صلاحية فقط — مفيش تنفيذ إلا لو الوضع AUTOMATIC وصلاحية التنفيذ ON وقفل النشر مفتوح.${d.keys.length > 1 ? ' (الزيادة التلقائية بتفعّل مفتاحين: «توسع تلقائي» و«زيادة ميزانية تلقائية».)' : ''}`, confirmLabel: 'تفعيل' }))) return;
+    try { await api.put('/api/operator/auto-actions', Object.fromEntries(d.keys.map((k) => [k, on]))); toast('تم'); await B.ctx.refresh(); await load(); draw(); } catch (e) { toast(e.message, 'error'); }
   }; });
   const eng = root.querySelector('[data-engine]'); if (eng && B.ctx.isAdmin) eng.onclick = async () => {
     const next = !B.policy.enabled; if (next && !(await confirmModal({ title: 'تشغيل محرك الميزانيات', message: 'الـScheduler هيبدأ يجهّز قرارات زيادة/تقليل (التنفيذ لسه حسب الوضع والصلاحيات).', confirmLabel: 'تشغيل' }))) return;

@@ -1042,6 +1042,21 @@ try {
     }
   }
 
+  console.log('\n28. «إدارة الميزانيات»: the Auto تقليل / Auto زيادة switches really switch (they used to answer «صلاحية غير معروفة: up»)');
+  {
+    await goto('/ai-media-buyer.html#operator', { ls: { 'opx.ws': 'budget', 'opx.theme': 'light' } });
+    ok('both switches are shown (OFF by default)', await waitFor(`!!document.querySelector('[data-toggle="down"]') && !!document.querySelector('[data-toggle="up"]') && !document.querySelector('[data-toggle="down"]').classList.contains('on')`, 40000));
+    for (const k of ['down', 'up']) {
+      await js(`document.querySelector('[data-toggle="${k}"]').click()`);
+      ok('«Auto ' + (k === 'down' ? 'تقليل' : 'زيادة') + '» asks for a confirmation first', await waitFor(`/تفعيل تشغيل تلقائي/.test(document.querySelector('.confirm-modal-card')?.innerText || '')`, 8000));
+      await js(`document.querySelector('.confirm-modal-card [data-action="confirm"]').click()`);
+      ok('…and after confirming the switch is ON and the state really comes back from the server', await waitFor(`document.querySelector('[data-toggle="${k}"]')?.classList.contains('on')`, 15000));
+    }
+    ok('Auto زيادة turns on BOTH server switches it needs (scale + budgetIncrease) and Auto تقليل turns on budgetReduce', await js(`fetch('/api/operator/control').then(r => r.json()).then((c) => { const t = Object.fromEntries((c.toggles || []).map((x) => [x.key, x.on])); return t.scale === true && t.budgetIncrease === true && t.budgetReduce === true; })`));
+    for (const k of ['down', 'up']) { await js(`document.querySelector('[data-toggle="${k}"]').click()`); await waitFor(`!document.querySelector('[data-toggle="${k}"]')?.classList.contains('on')`, 15000); }
+    ok('turning them OFF again works (back to the safe default)', await js(`!document.querySelector('[data-toggle="down"]').classList.contains('on') && !document.querySelector('[data-toggle="up"]').classList.contains('on')`));
+  }
+
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
 } catch (e) { fail++; console.log('  ✗ UI test crashed —', e.message); }
 finally { ws.close(); proc.kill(); }
