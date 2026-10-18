@@ -507,3 +507,12 @@ body:has(.opx) { overflow-x: hidden; } .opx { max-width: 100%; }
 .opx-slide-act { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 120px; text-align: center; } .opx-slide-act b { font-size: 26px; line-height: 1; }
 .opx-btn.opx-soft { opacity: .8; }
 @media (max-width: 900px) { .opx-slidecard { grid-template-columns: 1fr; gap: 14px; } .opx-slide-act { flex-direction: row; justify-content: space-between; } }
+
+/* AUTOMATIC daily-limit meters (used / limit / remaining) */
+.opx-meters{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin:10px 0}
+.opx-meter{border:1px solid var(--opx-line,#e2e8f0);border-radius:12px;padding:12px;background:var(--opx-surface,transparent);display:flex;flex-direction:column;gap:6px}
+.opx-meter-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.opx-meter-bar{height:8px;border-radius:99px;background:rgba(120,130,150,.22);overflow:hidden}
+.opx-meter-bar i{display:block;height:100%;border-radius:99px;background:#22c55e}
+.opx-meter-bar i.amber{background:#f59e0b}.opx-meter-bar i.red{background:#ef4444}
+.opx-meter-n{display:flex;justify-content:space-between;gap:8px;font-size:13px;flex-wrap:wrap}

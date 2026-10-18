@@ -14,6 +14,7 @@ import { getPausePolicy } from './pausePolicy.js';
 import { getOpenCpaPolicy } from './openCpaPolicy.js';
 import { windowRange } from './operatorRules.js';
 import { cairoDate } from './dailyPlanTime.js';
+import { limitUsage, DIFFERENCE_NOTE } from './dailyLimits.js';
 
 const fail = (status, message, code, details) => { const e = new Error(message); e.status = status; if (code) e.code = code; if (details) e.details = details; return e; };
 const round = (x) => Math.round(Number(x) || 0);
@@ -35,6 +36,8 @@ export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
   let world = deps.world; if (!world) { const { buildOperatorWorld } = await import('./operatorContext.js'); world = await buildOperatorWorld({ windowKeys: ['today', 'last3', 'last7', 'last30'], now }); }
   const mapRows = deps.mapRows || (world.adAccountId ? (await mappingCenter({ adAccountId: world.adAccountId, limit: 5000 })).rows : []);
   let exposureBy = deps.exposure; if (!exposureBy) { try { const { activeExposure } = await import('./automationScope.js'); exposureBy = (await activeExposure({ adAccountId: world.adAccountId, now })).byCampaign; } catch { exposureBy = new Map(); } }
+  // the REAL daily counters (what the guards compare against): used / limit / remaining for every daily limit — read-only
+  let dailyLimits = null; try { const { loadCounters } = await import('./operatorContext.js'); const counters = deps.counters || await loadCounters({ now, campaigns: world.campaigns || [] }); dailyLimits = { window: 'ROLLING_24H', rows: limitUsage({ config, counters }), note: DIFFERENCE_NOTE, storeLimitsConfigured: Object.keys(config.storeLimits || {}).length > 0, countsOnly: 'تنفيذ الـOperator التلقائي والمعتمد منه (جدول الفتح/الإيقاف اليدوي مش محسوب).', generatedAt: now.toISOString() }; } catch (e) { dailyLimits = { error: String(e.message).slice(0, 160), rows: [], note: DIFFERENCE_NOTE }; }
   const win = (k, id) => world.windows?.[k]?.get(id) || null;
   const noAuto = new Set(exceptions.filter((x) => x.types?.includes('NO_AUTOMATION') && ['PRODUCT', 'STORE'].includes(x.scope_type)).map((x) => `${x.scope_type}:${x.scope_id}`));
   const byProd = new Map(); const excluded = [];
@@ -61,7 +64,7 @@ export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
   }
   const order = { READY: 0, NEEDS_CONFIGURATION: 1, BLOCKED: 2 }; products.sort((a, b) => order[a.state] - order[b.state] || b.orders7 - a.orders7);
   const count = (s) => products.filter((p) => p.state === s).length;
-  return { generatedAt: now.toISOString(), global: { rulesVersion: book.global.active ? book.global.version : null, rulesStatus: book.global.status, pausePolicyApproved: !!(pause.enabled && pause.approved?.version === pause.version), openPolicy: open && { enabled: !!open.enabled, approved: open.approved?.version === open.version, minCpa: open.minCpa, maxCpa: open.maxCpa, window: open.window, minPurchases: open.minPurchases }, accountCap: config.limits?.account?.maxDailySpendUnderAi ?? null, writesLocked: config.writesLocked !== false, mode: config.mode, permissions: config.execPermissions || {}, emergencyStop: !!config.emergency_stop },
+  return { generatedAt: now.toISOString(), dailyLimits, global: { rulesVersion: book.global.active ? book.global.version : null, rulesStatus: book.global.status, pausePolicyApproved: !!(pause.enabled && pause.approved?.version === pause.version), openPolicy: open && { enabled: !!open.enabled, approved: open.approved?.version === open.version, minCpa: open.minCpa, maxCpa: open.maxCpa, window: open.window, minPurchases: open.minPurchases }, accountCap: config.limits?.account?.maxDailySpendUnderAi ?? null, writesLocked: config.writesLocked !== false, mode: config.mode, permissions: config.execPermissions || {}, emergencyStop: !!config.emergency_stop },
     totals: { products: products.length, READY: count('READY'), NEEDS_CONFIGURATION: count('NEEDS_CONFIGURATION'), BLOCKED: count('BLOCKED'), mappedCampaigns: products.reduce((t, p) => t + p.campaigns.mapped, 0), excludedCampaigns: excluded.length, runningBudget: products.reduce((t, p) => t + p.runningBudget, 0) },
     windows: Object.fromEntries(['today', 'last3', 'last7', 'last30'].map((k) => [k, windowRange(k, cairoDate(now))])), // the real date range behind each period chip
     products, excluded: excluded.sort((a, b) => (b.spend7d || 0) - (a.spend7d || 0)).slice(0, 80) };

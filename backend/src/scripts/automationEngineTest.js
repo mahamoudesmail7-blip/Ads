@@ -66,6 +66,7 @@ const actOf = (id) => prisma.ambAction.findFirst({ where: { entity_id: id }, ord
 const cleanup = async () => { const ds = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: { startsWith: T } }, select: { id: true, amb_recommendation_id: true } }); const recIds = ds.map((d) => d.amb_recommendation_id).filter(Boolean);
   await prisma.ambOperatorEvent.deleteMany({ where: { OR: [{ campaign_id: { startsWith: T } }, { decision_id: { in: ds.map((d) => d.id) } }] } }); await prisma.ambAction.deleteMany({ where: { OR: [{ entity_id: { startsWith: T } }, { recommendation_id: { in: recIds } }] } }); await prisma.ambOperatorDecision.deleteMany({ where: { campaign_id: { startsWith: T } } }); await prisma.ambRecommendation.deleteMany({ where: { OR: [{ id: { in: recIds } }, { entity_id: { startsWith: T } }] } }); await prisma.ambAlert.deleteMany({ where: { entity_id: { startsWith: T } } }).catch(() => {}); };
 const pid = (n) => 880000 + n;
+const cairoToday = () => new Date(Date.now() + 3 * 3_600_000).toISOString().slice(0, 10); // Cairo = UTC+3 in October (the engine uses cairoDate(now))
 
 try {
   await cleanup();
@@ -224,5 +225,42 @@ try {
     let errT = null; try { await tick(mkSc(tf, 84), cfg(ALL)); } catch (e) { errT = e; } finally { prisma.ambOperatorDecision.findUnique = origFU; }
     ok('a whole automation tick while the database is unreachable: NO Meta request is made (it either fails visibly or does nothing)', allWrites().length === wTf && world.entities.get(tf).status === 'ACTIVE', String(errT?.message || 'no throw').slice(0, 100));
   }
+
+  console.log('\n10. Duplicate decisions: never applied twice, old ones are closed, every old row is re-checked on Meta LIVE before it can execute');
+  { const mkRow = (campaignId, key, o = {}) => prisma.ambOperatorDecision.create({ data: { decision_key: `${T}${key}`, status: 'PREPARED', store_id: ST, product_id: null, ad_account_id: ACC, campaign_id: campaignId, campaign_name: campaignId, action: 'SCALE_DOWN', rule_name: 'AUTO:REDUCE', mode_at_decision: 'AUTOPILOT', confidence: 'HIGH', params_json: JSON.stringify({ kind: 'REDUCE', level: 'campaign', entityId: campaignId, fromBudget: 300, toBudget: 240, pct: 20 }), ...o } });
+    const statusOf = async (id) => (await prisma.ambOperatorDecision.findUnique({ where: { id } })).status;
+    const errorOf = async (id) => (await prisma.ambOperatorDecision.findUnique({ where: { id } })).error;
+    // a) three windows produced three PREPARED rows for the same change; the newest evaluation closes the older two
+    const a = `${T}dup_a`; setEntity(a); const o1 = await mkRow(a, 'dupa1'), o2 = await mkRow(a, 'dupa2');
+    const scA = scenario([{ id: a, pid: pid(90), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]);
+    await tick(scA, cfg(ALL, { mode: 'APPROVAL' }));
+    const cur = await dec(a);
+    ok('APPROVAL: the newest evaluation leaves exactly ONE open decision for the change; the two older duplicates are EXPIRED (SUPERSEDED_BY the newer one) — nothing piles up in «الموافقات»', cur.status === 'PREPARED' && cur.id > o2.id && (await statusOf(o1.id)) === 'EXPIRED' && (await statusOf(o2.id)) === 'EXPIRED' && (await errorOf(o1.id)) === `SUPERSEDED_BY:${cur.id}` && (await errorOf(o2.id)) === `SUPERSEDED_BY:${cur.id}` && writes(a).length === 0, JSON.stringify([cur.id, cur.status]));
+    ok('…and each closure is audited (a TRANSITION event per superseded row)', (await prisma.ambOperatorEvent.count({ where: { decision_id: { in: [o1.id, o2.id] }, kind: 'TRANSITION', to_status: 'EXPIRED' } })) === 2);
+    // b) AUTOMATIC with the same duplicates: ONE Meta write for the campaign
+    const b = `${T}dup_b`; setEntity(b, { daily_budget: '30000' }); const p1 = await mkRow(b, 'dupb1'), p2 = await mkRow(b, 'dupb2');
+    const scB = scenario([{ id: b, pid: pid(91), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]);
+    await tick(scB, cfg(ALL)); await tick(scB, cfg(ALL));
+    ok('AUTOMATIC with 2 older duplicate rows: exactly ONE write reaches Meta (300 → 240), the duplicates are EXPIRED and never executed, a second tick sends nothing', writes(b).length === 1 && world.entities.get(b).daily_budget === '24000' && (await statusOf(p1.id)) === 'EXPIRED' && (await statusOf(p2.id)) === 'EXPIRED' && (await dec(b)).status === 'VERIFIED');
+    // c) the SAME change was already applied by another decision (another rule family): the explicit idempotency guard refuses the second write
+    const c = `${T}dup_c`; setEntity(c); const scC = scenario([{ id: c, pid: pid(92), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]);
+    await tick(scC, cfg(ALL, { mode: 'APPROVAL' })); const dc = await dec(c);
+    await mkRow(c, 'dupc_done', { status: 'VERIFIED', rule_name: 'DYNAMIC_BUDGET:DYN_HIGH_CPA_REDUCE', executed_at: new Date() });
+    const rc = await AE.executeAutoDecision({ decisionId: dc.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...scC, config: cfg(ALL, { mode: 'APPROVAL' }) } }) } });
+    ok('the same 300 → 240 already VERIFIED by another decision (dynamic-budget family) → this one is EXPIRED with DUPLICATE_ALREADY_APPLIED, ZERO writes', rc.status === 'EXPIRED' && (rc.reasons || []).some((r) => r.code === 'DUPLICATE_ALREADY_APPLIED') && writes(c).length === 0, JSON.stringify(rc).slice(0, 300));
+    // d) an OLD prepared row whose live budget moved: re-checked on Meta LIVE -> expired, never sent
+    const d = `${T}dup_d`; setEntity(d, { daily_budget: '24000' }); const old = await mkRow(d, 'dupd_old', { created_at: new Date(Date.now() - 3 * 86_400_000) });
+    const scD = scenario([{ id: d, pid: pid(93), budget: 240, m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 192 } }]);
+    const rd = await AE.executeAutoDecision({ decisionId: old.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...scD, config: cfg(ALL, { mode: 'APPROVAL' }) } }) } });
+    ok('a 3-day-old PREPARED reduce (300 → 240) whose live budget is already 240 → EXPIRED by the live re-evaluation (BUDGET_CHANGED), ZERO writes', rd.status === 'EXPIRED' && (rd.reasons || []).some((r) => r.code === 'BUDGET_CHANGED') && writes(d).length === 0, JSON.stringify(rd.reasons));
+    const rd2 = await AE.executeAutoDecision({ decisionId: (await mkRow(d, 'dupd_old2')).id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => ({ candidates: [], structureSource: 'META_LIVE' }) } });
+    ok('an old row the live evaluation no longer produces → EXPIRED (DECISION_CHANGED), ZERO writes', rd2.status === 'EXPIRED' && (rd2.reasons || []).some((r) => r.code === 'DECISION_CHANGED') && writes(d).length === 0);
+    // e) stale sweep after a FULL evaluation: rows the engine no longer produces are closed; zero-spend rows of a past day are closed; today's stay
+    const e = `${T}dup_e`; const z1 = await mkRow(e, 'swp_engine', { action: 'PAUSE', rule_name: 'AUTO:HIGH_CPA', params_json: JSON.stringify({ kind: 'HIGH_CPA', level: 'campaign', entityId: e }) });
+    const zs = (date, k) => mkRow(e, k, { action: 'PAUSE', rule_name: 'AUTO:DAILY_ZERO_SPEND', params_json: JSON.stringify({ kind: 'DAILY_ZERO_SPEND', level: 'campaign', entityId: e }), evidence_json: JSON.stringify({ zeroSpend: { date } }) });
+    const zOld = await zs('2000-01-01', 'swp_zs_old'); const zNow = await zs(cairoToday(), 'swp_zs_now'); const man = await mkRow(e, 'swp_manual', { action: 'PAUSE', rule_name: 'AUTO:MANUAL_PAUSE' });
+    const rSw = await tick(scenario([]), cfg(ALL, { mode: 'APPROVAL' }), { sweepStale: true });
+    ok('full tick: an open engine decision it no longer produces is EXPIRED (NO_LONGER_APPLICABLE); a past-day zero-spend decision is EXPIRED (DECISION_DAY_PASSED); today\'s zero-spend and MANUAL operations are untouched', (await statusOf(z1.id)) === 'EXPIRED' && (await errorOf(z1.id)) === 'NO_LONGER_APPLICABLE' && (await statusOf(zOld.id)) === 'EXPIRED' && (await errorOf(zOld.id)) === 'DECISION_DAY_PASSED' && (await statusOf(zNow.id)) === 'PREPARED' && (await statusOf(man.id)) === 'PREPARED', JSON.stringify(rSw.persisted));
+    const rNo = await tick(scenario([]), cfg(ALL, { mode: 'APPROVAL' })); ok('a tick with an injected (partial) world never sweeps — the sweep is only for full evaluations', rNo.persisted?.expiredStale === undefined); }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

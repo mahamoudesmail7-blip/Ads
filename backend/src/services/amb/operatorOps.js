@@ -9,6 +9,7 @@ import { evaluateOperator, approveDecision } from './operatorEngine.js';
 import { shapeDecision } from './operatorReports.js';
 import { globalReadiness } from './operatorReadiness.js';
 import { ACTION_LABEL_AR } from './operatorRules.js';
+import { buildLimitReport, limitAlert } from './dailyLimits.js';
 
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 const MS_H = 3_600_000;
@@ -187,8 +188,10 @@ export async function emitOperatorNotifications({ now = new Date(), result = nul
   if (prepared > 0) await send({ severity: 'INFO', title: `AI Operator: ${prepared} قرار محتاج موافقتك`, message: 'افتح "قرارات اليوم" وراجع القرارات الجاهزة.', dedupeKey: `operator:needs-approval:${bucket(6)}` });
   const dq = await prisma.ambOperatorDecision.count({ where: { status: 'BLOCKED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, blocked_codes_json: { contains: '"group":"DATA_QUALITY"' } } });
   if (dq > 0) await send({ severity: 'WARNING', title: `AI Operator: جودة البيانات منعت ${dq} قرار`, message: 'القرارات المتوقفة بسبب جودة البيانات مش هتتنفذ لحد ما الجودة ترجع سليمة.', dedupeKey: `operator:dq-blocked:${bucket(24)}` });
-  const limit = await prisma.ambOperatorDecision.count({ where: { status: 'BLOCKED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, OR: [{ blocked_codes_json: { contains: 'ACCOUNT_DAILY_LIMIT' } }, { blocked_codes_json: { contains: 'STORE_DAILY_LIMIT' } }, { blocked_codes_json: { contains: 'RATE_LIMIT_DAY' } }] } });
-  if (limit > 0) await send({ severity: 'WARNING', title: 'AI Operator: وصل لحد يومي', message: 'حد الأكشنز/الميزانية اليومي اتوصل — الأكشنز الإضافية متوقفة لحد بكرة.', dedupeKey: `operator:daily-limit:${bucket(24)}` });
+  // daily limits: say WHICH limit, the value reached and whether the block is CURRENT (a decision the engine re-evaluated in the last 30 min) or OLD (nobody re-evaluated it since) — never "stopped until tomorrow" from a stale row
+  const limitRows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['BLOCKED', 'PREPARED'] }, updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, OR: ['ACCOUNT_DAILY_LIMIT', 'STORE_DAILY_LIMIT', 'RATE_LIMIT_DAY', 'RATE_LIMIT_HOUR', 'CAMPAIGN_DAILY_LIMIT'].map((c) => ({ blocked_codes_json: { contains: c } })) }, select: { id: true, campaign_id: true, campaign_name: true, action: true, status: true, updated_at: true, blocked_codes_json: true }, orderBy: { id: 'desc' }, take: 60 });
+  const la = limitAlert(buildLimitReport({ rows: limitRows, now }));
+  if (la) await send({ severity: la.severity, title: la.title, message: la.message, dedupeKey: `operator:daily-limit:${la.kind}:${bucket(la.kind === 'CURRENT' ? 3 : 24)}` });
   const failedRows = await prisma.ambOperatorDecision.findMany({ where: { status: 'FAILED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) } }, select: { campaign_id: true, error_category: true } });
   if (failedRows.length >= 3) await send({ severity: 'CRITICAL', title: `AI Operator: ${failedRows.length} تنفيذ فشل آخر 24 ساعة`, message: 'تكرار فشل في الكتابة على Meta — راجع سجل التنفيذ. مفيش إعادة محاولة تلقائية.', dedupeKey: `operator:repeated-failure:${bucket(24)}` });
   return { sent };

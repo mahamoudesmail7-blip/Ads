@@ -28,6 +28,7 @@ import { recordAutomaticExecution, kindOfDecision } from './firstAutomatic.js';
 import { cairoDate } from './dailyPlanTime.js';
 import { cairoDayStart } from './executionHistory.js';
 import { defaultReadBack } from './budgetExecution.js';
+import { supersedeOlder, sweepStale, findAlreadyApplied } from './decisionHygiene.js';
 
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -187,7 +188,10 @@ export async function persistCandidates(cands, { adAccountId, mode, now = new Da
     if (!ex) { try { const row = await prisma.ambOperatorDecision.create({ data: { decision_key: c.key, status, before_json: JSON.stringify({ budget: c.fromBudget ?? c.entity.budget, level: c.entity.level, status: 'ACTIVE' }), ...data } }); await transition(row.id, 'CANDIDATE', status, { actor: 'SYSTEM', note: c.blockers[0]?.code || c.autoBlockers[0]?.code || null, campaignId: c.campaignId }); created++; ids.set(c.key, row.id); } catch (e) { if (e.code !== 'P2002') throw e; ids.set(c.key, (await prisma.ambOperatorDecision.findUnique({ where: { decision_key: c.key } }))?.id); } }
     else { ids.set(c.key, ex.id); if (['SHADOW', 'BLOCKED', 'PREPARED', 'EXPIRED'].includes(ex.status)) { await prisma.ambOperatorDecision.update({ where: { id: ex.id }, data: { ...data, status, error: null } }); updated++; } }
   }
-  return { created, updated, merged, ids };
+  // a newer decision for the same campaign + action + rule replaces the older open ones (the cooldown bucket gives each window a new key) — duplicates never pile up in «الموافقات»
+  let superseded = 0;
+  for (const c of cands) { const id = ids.get(c.key); if (id) superseded += await supersedeOlder({ keepId: id, campaignId: c.campaignId, action: c.action, ruleName: `${AUTO_PREFIX}${c.kind}` }).catch(() => 0); }
+  return { created, updated, merged, superseded, ids };
 }
 
 // =====================================================================================================================
@@ -213,6 +217,7 @@ export async function executeAutoDecision({ decisionId, source = 'AUTOPILOT', us
   const fresh = await (deps.reevaluate ? deps.reevaluate({ row, params }) : params.kind === 'DAILY_ZERO_SPEND' ? (await import('./zeroSpendCheck.js')).reevaluateDecision({ row, params, now, deps: deps.zeroSpendDeps || {} }) : evaluateAutomation({ now, live: true, only: { campaignIds: [row.campaign_id] }, deps: deps.evalDeps || {} }));
   const f = (fresh.candidates || []).find((x) => x.campaignId === row.campaign_id && x.kind === params.kind && x.action === row.action && String(x.entity.id) === String(params.entityId));
   const reasons = [];
+  { const dup = await findAlreadyApplied({ row, params, now }).catch(() => null); if (dup) reasons.push({ code: 'DUPLICATE_ALREADY_APPLIED', detail: `نفس التغيير اتنفّذ بقرار #${dup.id}` }); }
   if (fresh.structureSource && fresh.structureSource !== 'META_LIVE' && !deps.reevaluate && !deps.evalDeps) reasons.push({ code: 'NO_LIVE_DATA', detail: String(fresh.structureSource) });
   if (!f) reasons.push({ code: 'DECISION_CHANGED', detail: 'القرار مبقاش ينتج من التقييم الحي' });
   else {
@@ -297,7 +302,9 @@ export async function runAutomationTick({ now = new Date(), deps = {} } = {}) {
     const out = { at: now.toISOString(), mode: config.mode, gate: gate.map((g) => g.code), evaluated: ev.candidates.length, summary: ev.summary, executed: [], deferred: [], skipped: ev.skipped.length };
     if (ev.metaStale) { out.stale = true; lastRun = out; return out; } // nothing is recorded or executed on untrusted data
     for (const c of ev.candidates.filter((x) => x.productMode === 'AUTOMATIC' && x.autoBlockers.some((b) => b.code === 'NEEDS_CONFIGURATION'))) await raiseAlert({ severity: 'WARNING', category: 'OPERATOR', title: `AUTOMATIC متوقف على منتج ناقص: ${c.productName || c.productKey}`, message: c.autoBlockers.find((b) => b.code === 'NEEDS_CONFIGURATION').message.slice(0, 460), entityId: c.campaignId, dedupeKey: `automation:needs:${c.productKey}:${cairoDate(now)}` }).catch(() => {});
-    const p = await persistCandidates(ev.candidates, { adAccountId: ev.adAccountId, mode: config.mode, now }); out.persisted = { created: p.created, updated: p.updated };
+    const p = await persistCandidates(ev.candidates, { adAccountId: ev.adAccountId, mode: config.mode, now }); out.persisted = { created: p.created, updated: p.updated, superseded: p.superseded || 0 };
+    if ((deps.sweepStale ?? !deps.evalDeps) && ev.adAccountId && !ev.skipped.some((x) => x.code === 'NO_ACTIVE_PRODUCT_POLICIES')) { // only after a FULL evaluation (a test that injects a partial world must opt in with deps.sweepStale)
+       try { const sw = await sweepStale({ seenKeys: new Set(ev.candidates.map((x) => x.key)), today: cairoDate(now) }); out.persisted.expiredStale = sw.expired; } catch (e) { logger.warn('[automation] stale sweep failed', { message: e.message }); } } // open AUTO decisions this full tick did not produce are closed, never left as «actionable»
     if (gate.length) { lastRun = out; return out; } // the owner still sees what WOULD run (PREPARED decisions), nothing executes
     const policies = deps.policies || await loadActivePolicies().catch(() => new Map()); const dayStart = cairoDayStart(now); const sentByProduct = new Map();
     const changesToday = deps.changesToday || ((productId) => (productId == null ? 0 : prisma.ambOperatorDecision.count({ where: { product_id: productId, rule_name: { startsWith: AUTO_PREFIX }, NOT: { rule_name: { startsWith: `${AUTO_PREFIX}MANUAL` } }, action: { in: ['SCALE_UP', 'SCALE_DOWN'] }, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED', 'UNCERTAIN'] }, updated_at: { gte: dayStart } } })));
