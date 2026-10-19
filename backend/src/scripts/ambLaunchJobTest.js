@@ -334,6 +334,11 @@ console.log('\n§10 validateLaunchConfig — authoritative server-side schedule 
 
   const vIg = await launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000000', instagramUsername: 'trendy.store' }));
   ok('Instagram selected WITH a real identity passes and is carried through', vIg.instagramId === '17841400000000000');
+  ok('a chosen identity defaults to kind LINKED and is stored in config_json.raw', vIg.instagramKind === 'LINKED' && vIg.raw.instagramKind === 'LINKED');
+  const vPb = await launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000099', instagramUsername: 'Trendy Store.', instagramKind: 'PAGE_BACKED' }));
+  ok('the PAGE-BACKED identity (the Page\'s own Instagram) passes validation and keeps its kind', vPb.instagramId === '17841400000000099' && vPb.instagramKind === 'PAGE_BACKED' && vPb.raw.instagramKind === 'PAGE_BACKED');
+  const vBad = await launch.validateLaunchConfig(baseConfig({ platforms: ['facebook', 'instagram'], instagramId: '17841400000000099', instagramKind: 'whatever' })); ok('an unknown kind is never trusted (falls back to LINKED)', vBad.instagramKind === 'LINKED');
+  const vNone = await launch.validateLaunchConfig(baseConfig({ platforms: ['facebook'], instagramId: null })); ok('Facebook only → no Instagram kind at all', vNone.instagramKind === null);
 }
 
 console.log('\n§11 "➕ إنشاء كامبين جديد" — a brand-new job never touches a previous COMPLETE job\'s rows:');

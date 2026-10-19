@@ -162,7 +162,9 @@ router.get(
     if (!/^\d{5,}$/.test(pageId)) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'pageId مطلوب.' });
     const token = await metaAuth.getDecryptedToken();
     const r = await metaGraph.getPageInstagramEx(token, pageId); // rateLimited = Meta throttled the read: «unknown», not «no Instagram»
-    res.json({ instagram: r.instagram, rateLimited: r.rateLimited });
+    let pageBacked = null, rateLimited = r.rateLimited;
+    if (!r.instagram && !r.rateLimited) { const pb = await metaGraph.getPageBackedInstagramEx(token, pageId); pageBacked = pb.pageBacked; rateLimited = pb.rateLimited; } // no linked account → the Page's own Instagram identity (what Ads Manager shows as «the Page's Instagram»)
+    res.json({ instagram: r.instagram, pageBacked, rateLimited });
   })
 );
 

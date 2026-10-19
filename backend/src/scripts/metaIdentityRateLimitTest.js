@@ -12,11 +12,12 @@ let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 500) : ''}`); } };
 
 // ---- the Meta mock: only the edges identity discovery reads
-const S = { igEdge: 'EMPTY', pageIg: 'NONE', calls: [] }; // igEdge: EMPTY | HAS | RATE ; pageIg: NONE | HAS | RATE
+const S = { igEdge: 'EMPTY', pageIg: 'NONE', pb: 'HAS', calls: [] }; // pb: HAS | NONE | RATE | NOPAGE // igEdge: EMPTY | HAS | RATE ; pageIg: NONE | HAS | RATE
 const RATE = { error: { message: '(#17) User request limit reached', type: 'OAuthException', code: 17, error_subcode: 2446079 } };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'); const path = u.pathname.replace(/^\/v[\d.]+/, ''); S.calls.push(path); const send = (code, j) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(j)); };
-  if (path === '/me/accounts') return send(200, { data: [{ id: '111111111', name: 'Trendy Store.' }] });
+  if (path === '/me/accounts') return send(200, { data: S.pb === 'NOPAGE' ? [] : [{ id: '111111111', name: 'Trendy Store.', access_token: 'PAGE_TOKEN_MOCK' }] });
+  if (/\/page_backed_instagram_accounts$/.test(path)) { if (u.searchParams.get('access_token') !== 'PAGE_TOKEN_MOCK') return send(400, { error: { message: 'wrong token', code: 190 } }); return S.pb === 'RATE' ? send(400, RATE) : send(200, { data: S.pb === 'HAS' ? [{ id: '17841478345529875' }] : [] }); }
   if (/\/promote_pages$/.test(path)) return send(200, { data: [] });
   if (/\/instagram_accounts$/.test(path)) return send(200, { data: [] });
   if (/\/connected_instagram_accounts$/.test(path)) return S.igEdge === 'RATE' ? send(400, RATE) : send(200, { data: S.igEdge === 'HAS' ? [{ id: '17841400000000001', username: 'trendy.store2020' }] : [] });
@@ -62,5 +63,29 @@ try {
     const a = await C.cachedMetaFetch('t:k1', loader, { cacheIf: (v) => !v.bad, incompleteTtlMs: 5 }); await new Promise((r) => setTimeout(r, 15)); const b = await C.cachedMetaFetch('t:k1', loader, { cacheIf: (v) => !v.bad });
     const c = await C.cachedMetaFetch('t:k1', loader, { cacheIf: (v) => !v.bad });
     ok('an incomplete value is kept only briefly, then re-read; the complete one is cached', a.v === 1 && b.v === 2 && c.v === 2 && n === 2, JSON.stringify([a, b, c, n])); }
+  console.log('\n7. The Page\'s OWN (page-backed) Instagram identity — read only');
+  { S.pb = 'HAS'; const a = await G.getPageBackedInstagramEx('tokF', '111111111'); ok('returns the Page\'s own Instagram identity (read with the PAGE token, not the user token)', a.pageBacked?.id === '17841478345529875' && a.rateLimited === false, JSON.stringify(a));
+    S.pb = 'NONE'; const b = await G.getPageBackedInstagramEx('tokF', '111111111'); ok('a Page with none → null, not throttled (never created from here)', b.pageBacked === null && b.rateLimited === false);
+    S.pb = 'RATE'; const c = await G.getPageBackedInstagramEx('tokF', '111111111'); ok('Meta throttling → rateLimited=true (unknown, not «none»)', c.pageBacked === null && c.rateLimited === true);
+    S.pb = 'NOPAGE'; const d = await G.getPageBackedInstagramEx('tokF', '111111111'); ok('a Page the connected user does not manage → null (no token for it)', d.pageBacked === null);
+    S.pb = 'HAS'; ok('no write call was ever made by discovery (GET only)', S.calls.length > 0); }
+
+  console.log('\n8. The creative: the right Instagram field per identity kind');
+  { const P = await imp('../services/amb/launchPublish.js'); const camp = { name: 'C', website_url: 'https://x.test', primary_text: 'p', headline: 'h' };
+    const mk = (kind, id = '17841478345529875') => ({ page_id: '111111111', instagram_id: id, config_json: JSON.stringify({ cta: 'ORDER_NOW', instagramKind: kind }) });
+    const vid = (job) => P.buildCreativePayload(job, camp, 0, 0, 'vid1', 'https://t.test/x.jpg').object_story_spec; const img = (job) => P.buildImageCreativePayload(job, camp, 0, 0, 'hash1').object_story_spec;
+    for (const [label, f] of [['video', vid], ['image', img]]) {
+      ok(label + ' creative, LINKED account → instagram_user_id only', f(mk('LINKED')).instagram_user_id === '17841478345529875' && !('instagram_actor_id' in f(mk('LINKED'))));
+      ok(label + ' creative, PAGE-BACKED identity → instagram_actor_id only (Meta\'s documented field for it)', f(mk('PAGE_BACKED')).instagram_actor_id === '17841478345529875' && !('instagram_user_id' in f(mk('PAGE_BACKED'))));
+      ok(label + ' creative, an old job with no kind → unchanged (instagram_user_id)', f(mk(undefined)).instagram_user_id === '17841478345529875');
+      ok(label + ' creative, no identity → neither field is sent', !('instagram_user_id' in f(mk('LINKED', null))) && !('instagram_actor_id' in f(mk('PAGE_BACKED', null)))); } }
+
+  console.log('\n9. Pre-publish check: the Page-backed identity must still be the Page\'s own — before anything is created on Meta');
+  { const P = await imp('../services/amb/launchPublish.js'); const job = { page_id: '111111111', instagram_id: '17841478345529875' }; const tok = () => 'tokG';
+    S.pb = 'HAS'; const okRes = await P.assertPageBackedInstagramStillValid(job, { token: tok }); ok('still the Page\'s own → passes', okRes.id === '17841478345529875');
+    const rej = async (fn) => { try { await fn(); return null; } catch (e) { return e; } };
+    S.pb = 'HAS'; const e1 = await rej(() => P.assertPageBackedInstagramStillValid({ ...job, instagram_id: '999' }, { token: tok })); ok('the stored id is no longer the Page\'s own → refused with a clear message, nothing created', /اتغيّر|مبقاش/.test(e1?.message || ''), e1?.message);
+    S.pb = 'NONE'; const e2 = await rej(() => P.assertPageBackedInstagramStillValid(job, { token: tok })); ok('the Page has no Instagram identity any more → refused', !!e2 && /مبقاش/.test(e2.message));
+    S.pb = 'RATE'; const e3 = await rej(() => P.assertPageBackedInstagramStillValid(job, { token: tok })); ok('Meta throttling → refused as «try in 2 minutes» (a throttle, not «missing»), nothing created', !!e3 && /محدّدة عدد الطلبات/.test(e3.message)); S.pb = 'HAS'; }
 } finally { server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

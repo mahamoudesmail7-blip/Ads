@@ -5095,6 +5095,7 @@ const launchState = {
   pageId: null,
   pageName: null,
   instagramId: null,
+  instagramKind: null,
   instagramUsername: null,
   pixelId: null,
   pixelName: null,
@@ -5169,7 +5170,7 @@ function launchCurrentAssets() {
 // a private-browsing tab or blocked storage just means this session behaves
 // as it always did (nothing persisted), never a hard failure.
 const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
-const LAUNCH_PERSISTED_FIELDS = ['step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'targeting', 'campaignCount', 'copyMode', 'campaigns'];
+const LAUNCH_PERSISTED_FIELDS = ['instagramKind', 'step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'targeting', 'campaignCount', 'copyMode', 'campaigns'];
 function saveLaunchSnapshot() {
   try {
     const snap = {};
@@ -5576,7 +5577,7 @@ async function renderLaunchAccount(body) {
         launchState.adAccountId = r.value;
         launchState.adAccountName = accts.find((a) => a.id === r.value)?.name || null;
         launchState.pageId = null; launchState.pageName = null;
-        launchState.instagramId = null; launchState.instagramUsername = null;
+        launchState.instagramId = null; launchState.instagramUsername = null; launchState.instagramKind = null;
         launchState.pixelId = null; launchState.pixelName = null;
         if (launchState.videos.length) { launchState.videos = []; launchState.jobId = null; launchState.jobStarted = false; launchState.videosRestored = false; }
       }
@@ -5736,6 +5737,7 @@ async function launchResolvePageInstagram(pageId) {
   try {
     const r = await api.get('/api/meta/page-instagram', { pageId });
     const ig = r?.instagram || null;
+    assets.pageBackedCache = assets.pageBackedCache || {}; if (!ig && r?.pageBacked?.id) assets.pageBackedCache[pageId] = r.pageBacked;
     if (r?.rateLimited && !ig) { assets.igRateLimited = true; return null; } // Meta throttled the read: «unknown», never cached as «no Instagram»
     assets.igRateLimited = false;
     assets.pageInstagramCache[pageId] = ig;
@@ -5754,7 +5756,8 @@ async function renderLaunchPlatforms(body) {
   }
   if (launchState.pageId) {
     const ig = await launchResolvePageInstagram(launchState.pageId);
-    if (ig?.id && !launchState.instagramId) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; }
+    if (ig?.id && !launchState.instagramId) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; launchState.instagramKind = 'LINKED'; }
+    else if (!ig?.id && !launchState.instagramId && launchState.platforms.instagram) { const pb = (launchCurrentAssets()?.pageBackedCache || {})[launchState.pageId]; if (pb?.id) { launchState.instagramId = pb.id; launchState.instagramUsername = pb.username || launchState.pageName; launchState.instagramKind = 'PAGE_BACKED'; } } // no linked account → the Page's OWN Instagram identity (what Ads Manager shows as «the Page's Instagram»)
   }
   const assets = launchCurrentAssets() || { pages: [], instagram: [], pixels: [], pagesVerified: false, instagramReadable: false };
 
@@ -5776,7 +5779,7 @@ async function renderLaunchPlatforms(body) {
         </label>`).join('')}</div>` : `<div class="amb-empty">${assets.pagesVerified ? 'مفيش صفحات فيسبوك متاحة على الاتصال الحالي.' : '⚠️ تعذّر قراءة الصفحات — راجع صلاحيات اتصال Meta.'}</div>`}
 
       <div class="section-title">Instagram Account</div>
-      ${launchState.platforms.instagram ? (
+      ${launchState.platforms.instagram && launchState.instagramKind === 'PAGE_BACKED' && launchState.instagramId ? `<div class="amb-radio-list" style="margin-bottom:6px;"><label class="amb-radio-row sel"><input type="radio" checked disabled /><span class="rr-main">🟦 إنستجرام الصفحة نفسها — ${E(launchState.instagramUsername || launchState.pageName || '')}</span><span class="rr-sub">${E(launchState.instagramId)} · Page-backed</span></label></div><div class="faint" style="font-size:12px; margin-bottom:6px;">الصفحة دي مالهاش حساب إنستجرام احترافي مربوط، فهنستخدم <b>إنستجرام الصفحة نفسها</b> (اللي Meta بتعرضه في Ads Manager). الإعلان هيظهر على إنستجرام باسم الصفحة. لو عايز حساب @ حقيقي اربطه من إعدادات الصفحة وادوس «إعادة المحاولة».</div>` : launchState.platforms.instagram ? (
         assets.instagram.length
           ? `<div class="amb-radio-list" style="margin-bottom:6px;">${assets.instagram.map((g) => `
               <label class="amb-radio-row ${launchState.instagramId === g.id ? 'sel' : ''}">
@@ -5853,12 +5856,13 @@ async function renderLaunchPlatforms(body) {
     if (fb) fb.onclick = () => { launchState.platforms.instagram = false; launchState.instagramId = null; launchState.instagramUsername = null; renderLaunchStep(); }; }
   body.querySelectorAll('input[name="ambLaunchPage"]').forEach((r) => { r.onchange = async () => {
     launchState.pageId = r.value; launchState.pageName = r.dataset.name;
-    launchState.instagramId = null; launchState.instagramUsername = null; // a different Page may have a different (or no) Instagram identity
+    launchState.instagramId = null; launchState.instagramUsername = null; launchState.instagramKind = null; // a different Page may have a different (or no) Instagram identity
     const ig = await launchResolvePageInstagram(r.value);
-    if (ig?.id) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; }
+    if (ig?.id) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; launchState.instagramKind = 'LINKED'; }
+    else if (launchState.platforms.instagram) { const pb = (launchCurrentAssets()?.pageBackedCache || {})[launchState.pageId]; if (pb?.id) { launchState.instagramId = pb.id; launchState.instagramUsername = pb.username || launchState.pageName; launchState.instagramKind = 'PAGE_BACKED'; } }
     renderLaunchStep();
   }; });
-  body.querySelectorAll('input[name="ambLaunchIg"]').forEach((r) => { r.onchange = () => { launchState.instagramId = r.value; launchState.instagramUsername = r.dataset.name; }; });
+  body.querySelectorAll('input[name="ambLaunchIg"]').forEach((r) => { r.onchange = () => { launchState.instagramId = r.value; launchState.instagramUsername = r.dataset.name; launchState.instagramKind = 'LINKED'; }; });
   body.querySelectorAll('input[name="ambLaunchPixel"]').forEach((r) => { r.onchange = () => { launchState.pixelId = r.value; launchState.pixelName = r.dataset.name; }; });
   $('ambLaunchConvEvent').onchange = (e) => { launchState.conversionEvent = e.target.value; };
 
@@ -6640,7 +6644,7 @@ async function renderLaunchReview(body) {
   const igLine = !launchState.platforms.instagram
     ? 'غير مفعّل ضمن المنصات'
     : launchState.instagramId
-      ? `🟢 @${launchState.instagramUsername || launchState.instagramId}`
+      ? (launchState.instagramKind === 'PAGE_BACKED' ? `🟦 إنستجرام الصفحة (${launchState.instagramUsername || launchState.instagramId})` : `🟢 @${launchState.instagramUsername || launchState.instagramId}`)
       : '🔴 لازم حساب إنستجرام حقيقي متصل بالصفحة';
 
   const launchModeLabel = { NOW: '🟢 تشغيل الآن (يتبني فورًا، يفضل PAUSED للتفعيل اليدوي)', PAUSED_REVIEW: '🟡 إنشاء متوقف للمراجعة (يفضل PAUSED للتفعيل اليدوي)', SCHEDULED: null }[launchState.launchMode];
@@ -6732,7 +6736,7 @@ async function renderLaunchReview(body) {
         <div><span class="rl">إجمالي العناصر المتوقعة</span><span class="rv">${launchState.campaigns.length} كامبين · ${launchState.campaigns.length * launchState.adSetsPerCampaign} Ad Set · ${launchState.campaigns.length * launchState.adSetsPerCampaign * launchState.adsPerAdSet} إعلان</span></div>
         <div><span class="rl">المنصات</span><span class="rv">${platformsArr.map((p) => (p === 'facebook' ? 'فيسبوك' : 'إنستجرام')).join(' + ') || '—'}</span></div>
         <div><span class="rl">Facebook Page</span><span class="rv">${E(launchState.pageName || '—')}</span></div>
-        <div><span class="rl">Instagram</span><span class="rv">${launchState.instagramId ? '@' + E(launchState.instagramUsername) : (launchState.platforms.instagram ? '⚠️ بدون حساب مخصص (هوية الصفحة فقط)' : '—')}</span></div>
+        <div><span class="rl">Instagram</span><span class="rv">${launchState.instagramId ? (launchState.instagramKind === 'PAGE_BACKED' ? '🟦 إنستجرام الصفحة نفسها (' + E(launchState.instagramUsername) + ')' : '@' + E(launchState.instagramUsername)) : (launchState.platforms.instagram ? '⚠️ بدون حساب مخصص (هوية الصفحة فقط)' : '—')}</span></div>
         <div><span class="rl">Meta Pixel</span><span class="rv">${E(launchState.pixelName || '—')}</span></div>
         <div><span class="rl">حدث التحويل</span><span class="rv">${E(LAUNCH_CONVERSION_EVENTS.find((c) => c.v === launchState.conversionEvent)?.l || launchState.conversionEvent)}</span></div>
         <div><span class="rl">الجمهور</span><span class="rv">${launchState.targeting.mode === 'CUSTOM' ? `${{ ALL: 'الكل', MALE: 'رجال', FEMALE: 'نساء' }[launchState.targeting.genders]} · ${launchState.targeting.ageMin}-${launchState.targeting.ageMax}` : 'Broad'}</span></div>
@@ -6781,6 +6785,7 @@ async function renderLaunchReview(body) {
     pageName: launchState.pageName,
     instagramId: launchState.instagramId,
     instagramUsername: launchState.instagramUsername,
+    instagramKind: launchState.instagramKind || null,
     objective: 'OUTCOME_SALES',
     budgetMode: launchState.budgetMode,
     pixelId: launchState.pixelId,

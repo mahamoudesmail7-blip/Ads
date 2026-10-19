@@ -1027,6 +1027,20 @@ export async function getPageInstagramEx(token, pageId) {
 export async function getPageInstagram(token, pageId) { return (await getPageInstagramEx(token, pageId)).instagram; }
 
 /**
+ * The PAGE-BACKED Instagram identity of a Page (the account Meta keeps for the Page itself, shown in Ads Manager as «the Page's Instagram»). READ ONLY — it never creates one.
+ * Needs the Page's own access token (from /me/accounts). Returns { pageBacked: {id, username}|null, rateLimited }.
+ */
+export async function getPageBackedInstagramEx(token, pageId) {
+  const acc = await graphGetProbe('/me/accounts', { fields: 'id,access_token', limit: 200 }, token);
+  if (!acc.ok) return { pageBacked: null, rateLimited: !!acc.rateLimited };
+  const pageToken = (acc.data?.data || []).find((p) => String(p.id) === String(pageId))?.access_token;
+  if (!pageToken) return { pageBacked: null, rateLimited: false };
+  const r = await graphGetProbe(`/${pageId}/page_backed_instagram_accounts`, { fields: 'id,name' }, pageToken);
+  const row = (r.data?.data || [])[0];
+  return { pageBacked: row?.id ? { id: String(row.id), username: row.name || null } : null, rateLimited: !!r.rateLimited };
+}
+
+/**
  * Recover the copy fields of a SHARE / boosted Page-post creative — one that
  * has an `object_story_id` but NO `object_story_spec`. For these the
  * destination URL, headline, description and CTA live on the underlying Page

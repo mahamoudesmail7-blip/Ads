@@ -341,6 +341,15 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
   return payload;
 }
 
+/**
+ * The Instagram identity field of a creative. A LINKED account (real Instagram professional account) goes in instagram_user_id — the field already proven live by this launcher.
+ * A PAGE_BACKED identity (the Page's own Instagram) is sent as instagram_actor_id, the field Meta documents for page-backed accounts. Nothing is sent when no identity was chosen.
+ */
+export function instagramIdentityFields(job, cfg = {}) {
+  if (!job?.instagram_id) return {};
+  return cfg.instagramKind === 'PAGE_BACKED' ? { instagram_actor_id: job.instagram_id } : { instagram_user_id: job.instagram_id };
+}
+
 /** Static-image counterpart to buildCreativePayload — object_story_spec.link_data with image_hash, the exact field shape already proven working against Meta by cloneEngine.js's own image-creative path (cloneEngine.js:1418-1422). Requires campaign.website_url (link_data has no thumbnail-from-Meta fallback the way video_data does — an image ad IS the picture, there is nothing to derive a link from). */
 export function buildImageCreativePayload(job, campaign, adSetIndex, adIndex, imageHash) {
   const cfg = JSON.parse(job.config_json || '{}');
@@ -348,7 +357,7 @@ export function buildImageCreativePayload(job, campaign, adSetIndex, adIndex, im
     name: `${campaign.name} - Creative ${adSetIndex + 1}.${adIndex + 1}`,
     object_story_spec: {
       page_id: job.page_id,
-      instagram_user_id: job.instagram_id || undefined,
+      ...instagramIdentityFields(job, cfg),
       link_data: {
         link: campaign.website_url,
         image_hash: imageHash,
@@ -375,7 +384,7 @@ export function buildCreativePayload(job, campaign, adSetIndex, adIndex, videoId
       // Meta creates the ad using only the Facebook Page identity and
       // Ads Manager prompts to "Add Instagram placement" manually, which
       // is exactly the real production issue this fixes at the root.
-      instagram_user_id: job.instagram_id || undefined,
+      ...instagramIdentityFields(job, cfg),
       video_data: {
         video_id: videoId,
         image_url: thumbnailUrl, // required by Meta (confirmed live, Phase F: "Your ad needs a video thumbnail") — reused from the video's own Meta-auto-generated picture, never a fabricated/external image
@@ -863,6 +872,15 @@ export async function retryLaunchCampaignNow({ jobId, campaignIndex }) {
  * already-COMPLETE job is a safe no-op (a double-click never restarts
  * anything or creates a second run).
  */
+/** The Page-backed identity chosen in the wizard must still be the Page's own on Meta (read-only check, before any campaign is created). A throttle is reported as a throttle, never as «missing». */
+export async function assertPageBackedInstagramStillValid(job, deps = {}) {
+  const token = await (deps.token ? deps.token() : requireLaunchToken());
+  const { getPageBackedInstagramEx } = deps.graph || await import('../metaGraphClient.js');
+  const r = await getPageBackedInstagramEx(token, job.page_id);
+  if (r.rateLimited) fail('Meta محدّدة عدد الطلبات دلوقتي فمقدرناش نتأكد من حساب إنستجرام الصفحة — مفيش حاجة اتعملت على Meta. جرّب بعد دقيقتين.');
+  if (!r.pageBacked || String(r.pageBacked.id) !== String(job.instagram_id)) fail('حساب إنستجرام الخاص بالصفحة مبقاش موجود/اتغيّر على Meta — مفيش حاجة اتعملت. ارجع لخطوة المنصات واختار الإنستجرام تاني.');
+  return r.pageBacked;
+}
 export async function startLaunchQueue({ jobId, userId }) {
   const job = await prisma.ambLaunchJob.findUnique({ where: { job_id: jobId }, include: { campaigns: true, videos: true, images: true } });
   if (!job) fail('طلب الرفع غير موجود.');
@@ -876,6 +894,7 @@ export async function startLaunchQueue({ jobId, userId }) {
   // never silently fall back to Facebook-only (the real production bug this fixes).
   const platforms = JSON.parse(job.platforms_json || '["facebook"]');
   if (platforms.includes('instagram') && !job.instagram_id) fail('اخترت إنستجرام كمنصة لكن لسه معملتش اختيار حساب إنستجرام حقيقي متصل بالصفحة.');
+  if (platforms.includes('instagram') && job.instagram_id && JSON.parse(job.config_json || '{}').instagramKind === 'PAGE_BACKED') await assertPageBackedInstagramStillValid(job); // before ANY object is created on Meta
   if (!job.campaigns.length) fail('لازم كامبين واحد على الأقل.');
   for (const c of job.campaigns) {
     if (!c.name?.trim() || !c.website_url?.trim()) fail(`الكامبين "${c.name || c.index}" ناقصه اسم أو رابط الموقع.`);

@@ -268,6 +268,7 @@ export async function validateLaunchConfig(input, { landingValidator = validateL
     pageName: cfg.pageName || null,
     instagramId: cfg.instagramId || null,
     instagramUsername: cfg.instagramUsername || null,
+    instagramKind: cfg.instagramId ? (cfg.instagramKind === 'PAGE_BACKED' ? 'PAGE_BACKED' : 'LINKED') : null, // LINKED = a real Instagram professional account linked to the Page · PAGE_BACKED = the Page's own Instagram identity
     objective: cfg.objective || 'OUTCOME_SALES',
     budgetMode: cfg.budgetMode,
     pixelId: cfg.pixelId || null,
@@ -295,6 +296,7 @@ export async function validateLaunchConfig(input, { landingValidator = validateL
     // Meta payloads — budget amounts, CTA, and video-to-adset/ad slot plan
     // don't need their own typed columns to be usable/idempotent.
     raw: {
+      instagramKind: cfg.instagramId ? (cfg.instagramKind === 'PAGE_BACKED' ? 'PAGE_BACKED' : 'LINKED') : null,
       budget: cfg.budget || null,
       cta: cfg.cta || 'ORDER_NOW',
       videoPlan: cfg.videoPlan || null,
