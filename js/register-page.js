@@ -56,9 +56,9 @@ async function submit() {
         date_of_birth: fields.dob,
       }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      errEl.textContent = data.message || 'حصل خطأ.';
+      errEl.textContent = data.message || (res.status === 429 ? 'محاولات كتير — استنى 10 دقايق وجرّب تاني. (السيرفر شغال)' : `حصل خطأ (${res.status}).`);
       errEl.style.display = 'block';
       btn.disabled = false;
       return;

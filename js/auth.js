@@ -49,9 +49,9 @@ async function submit() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({})); // a non-JSON answer (proxy page, rate limit) must not read as «the server is down»
     if (!res.ok) {
-      errEl.textContent = data.message || 'حصل خطأ.';
+      errEl.textContent = data.message || (res.status === 429 ? 'محاولات دخول كتير — استنى 10 دقايق وجرّب تاني. (السيرفر شغال)' : `حصل خطأ (${res.status}).`);
       errEl.style.display = 'block';
       btn.disabled = false;
       return;

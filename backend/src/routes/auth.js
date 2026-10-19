@@ -21,7 +21,11 @@ const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+// Brute-force protection: 20 FAILED attempts per 15 minutes per client. A successful login does not use up the allowance. When it IS reached the answer is JSON (it used to be plain text, which the login page read as «the server is down»).
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false, skipSuccessfulRequests: true,
+  handler: (req, res) => { const secs = Math.max(1, Math.ceil(((req.rateLimit?.resetTime ? new Date(req.rateLimit.resetTime).getTime() : Date.now() + 15 * 60 * 1000) - Date.now()) / 1000)); res.status(429).json({ error: 'TOO_MANY_ATTEMPTS', message: `محاولات دخول كتير — استنى ${Math.ceil(secs / 60)} دقيقة وجرّب تاني. (السيرفر شغال)`, retryAfterSeconds: secs }); },
+});
 
 const registerSchema = z
   .object({
