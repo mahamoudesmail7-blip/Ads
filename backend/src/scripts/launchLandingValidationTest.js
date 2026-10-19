@@ -69,6 +69,9 @@ console.log('2) identity of the SELECTED product + mixed campaigns');
   r = await run(sel(185, 'trendy-storeee', U.u185, 'مصباح القمر الليلي'), ['https://shop.example/products/Calm-Light', 'https://shop.example/products/Moon-Speaker']);
   ok('one good + one wrong campaign -> BLOCK listing only the wrong one', !r.ok && r.errors.length === 1 && r.errors[0].campaign === 'C2' && r.evidence.ok === false);
   ok('the Arabic block message names the campaign and the page product', V.landingBlockMessage(r.errors).includes('C2') && V.landingBlockMessage(r.errors).includes('الإطلاق ممنوع'));
+  { const foreign = V.landingBlockMessage([{ code: 'PAGE_BELONGS_TO_A_STORE_WE_DO_NOT_OWN', message: 'صفحة الهبوط تابعة لمتجر Easy Orders مش بتاعنا.', campaign: 'Nail-clipper- Test', url: 'https://other.myeasyorders.com/products/Kine' }]);
+    ok('a «store we do not own» block prints the EXACT url that was checked and tells the owner how to fix it (own store link, letter case matters)', foreign.includes('https://other.myeasyorders.com/products/Kine') && /الرابط اللي اتفحص/.test(foreign) && foreign.includes('www.trendy-egy.com/products/') && /حالة الحروف/.test(foreign));
+    ok('a wrong-product block (no URL problem) carries no URL hint', !/حالة الحروف/.test(V.landingBlockMessage([{ code: 'WRONG_PRODUCT', message: 'x', campaign: 'C' }]))); }
 }
 
 console.log('3) the bypass can never exist in production');

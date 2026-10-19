@@ -72,8 +72,10 @@ export async function validateLaunchLanding({ product, campaigns, deps = {} }) {
 
 /** Human-readable BLOCK message (Arabic) for the wizard / API. */
 export function landingBlockMessage(errors) {
-  const lines = errors.slice(0, 6).map((e) => `• ${e.campaign ? `«${e.campaign}»: ` : ''}${e.message}${e.pageProduct ? ` (الصفحة بتعرض: ${e.pageProduct})` : ''}`);
-  return `🚫 الإطلاق ممنوع — التحقق من صفحة الهبوط فشل:\n${lines.join('\n')}${errors.length > 6 ? `\n… و${errors.length - 6} مشكلة تانية` : ''}`;
+  const lines = errors.slice(0, 6).map((e) => `• ${e.campaign ? `«${e.campaign}»: ` : ''}${e.message}${e.pageProduct ? ` (الصفحة بتعرض: ${e.pageProduct})` : ''}${e.url ? `\n   الرابط اللي اتفحص: ${e.url}` : ''}`);
+  const needsHint = errors.some((e) => ['PAGE_BELONGS_TO_A_STORE_WE_DO_NOT_OWN', 'PAGE_UNREACHABLE', 'NO_SLUG', 'SLUG_DOES_NOT_MATCH_PAGE_PRODUCT'].includes(e.code));
+  const hint = needsHint ? '\n💡 لازم رابط صفحة منتج على متجرك (مثال: https://www.trendy-egy.com/products/Smart-Riing). حالة الحروف في آخر الرابط مهمة (Nail-clipper غير nail-clipper) — افتح الرابط في المتصفح وتأكد إنه بيفتح صفحة المنتج.' : '';
+  return `🚫 الإطلاق ممنوع — التحقق من صفحة الهبوط فشل:\n${lines.join('\n')}${errors.length > 6 ? `\n… و${errors.length - 6} مشكلة تانية` : ''}${hint}`;
 }
 
 /**
