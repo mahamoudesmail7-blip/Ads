@@ -489,6 +489,31 @@ export async function graphGetQuiet(path, params, token) {
   } catch { return null; }
 }
 
+const RATE_CODES = [4, 17, 32, 613, 80004];
+async function probeFetch(url) {
+  try {
+    const res = await fetch(url);
+    const data = await res.json().catch(() => null);
+    if (res.ok && !data?.error) return { ok: true, data, rateLimited: false };
+    const e = data?.error || {};
+    return { ok: false, data: null, rateLimited: RATE_CODES.includes(Number(e.code)) || /request limit reached|rate limit|too many calls/i.test(e.message || '') };
+  } catch { return { ok: false, data: null, rateLimited: false }; }
+}
+/** Like graphGetQuiet, but TELLS a Meta throttle apart from «nothing there»: { ok, data, rateLimited }. A rate-limited read is NOT an empty answer. */
+export async function graphGetProbe(path, params, token) {
+  const url = new URL(`${GRAPH_BASE}${path}`);
+  for (const [k, v] of Object.entries(params || {})) if (v !== undefined && v !== null) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
+  url.searchParams.set('access_token', token);
+  return probeFetch(url.toString());
+}
+async function graphListProbe(path, params, token) {
+  const first = await graphGetProbe(path, { ...params, limit: 200 }, token);
+  if (!first.ok) return { rows: [], ok: false, rateLimited: first.rateLimited };
+  const rows = [...(first.data.data || [])]; let next = first.data.paging?.next || null; let guard = 0, rateLimited = false;
+  while (next && guard++ < 20) { const r = await probeFetch(next); if (!r.ok) { rateLimited = r.rateLimited; break; } rows.push(...(r.data.data || [])); next = r.data.paging?.next || null; }
+  return { rows, ok: true, rateLimited };
+}
+
 /** Like graphGetQuiet but follows paging.next and concatenates `data`. Returns [] on any error. */
 async function graphListQuiet(path, params, token) {
   const rows = [];
@@ -994,11 +1019,12 @@ export async function getUserPages(token, { force = false } = {}) {
 }
 
 /** LAZY: the Instagram professional account linked to ONE Facebook Page. Quiet (null on a permission gap). No instagram_* scope needed — reads the Page's connected/business IG edge. */
-export async function getPageInstagram(token, pageId) {
-  const d = await graphGetQuiet(`/${pageId}`, { fields: 'connected_instagram_account{id,username},instagram_business_account{id,username}' }, token);
-  const ig = d?.connected_instagram_account || d?.instagram_business_account;
-  return ig?.id ? { id: String(ig.id), username: ig.username || ig.id } : null;
+export async function getPageInstagramEx(token, pageId) {
+  const r = await graphGetProbe(`/${pageId}`, { fields: 'connected_instagram_account{id,username},instagram_business_account{id,username}' }, token);
+  const ig = r.data?.connected_instagram_account || r.data?.instagram_business_account;
+  return { instagram: ig?.id ? { id: String(ig.id), username: ig.username || ig.id } : null, rateLimited: !!r.rateLimited };
 }
+export async function getPageInstagram(token, pageId) { return (await getPageInstagramEx(token, pageId)).instagram; }
 
 /**
  * Recover the copy fields of a SHARE / boosted Page-post creative — one that
@@ -1063,17 +1089,18 @@ export async function getPagePostContent(token, objectStoryId) {
  * they aren't re-fetched per destination account.
  */
 export async function getAccountIdentities(token, adAccountId, { force = false } = {}) {
-  return cachedMetaFetch(`identities:${fingerprintToken(token)}:${adAccountId}`, () => _getAccountIdentitiesUncached(token, adAccountId), { ttlMs: ASSET_TTL_MS, force });
+  return cachedMetaFetch(`identities:${fingerprintToken(token)}:${adAccountId}`, () => _getAccountIdentitiesUncached(token, adAccountId), { ttlMs: ASSET_TTL_MS, force, cacheIf: (v) => !v.instagramRateLimited }); // a throttled Instagram edge is never cached as «no Instagram»
 }
 async function _getAccountIdentitiesUncached(token, adAccountId) {
-  const [userIdent, promotePages, bizPages, igA, igB, bizIg] = await Promise.all([
+  const [userIdent, promotePages, bizPages, igAP, igBP, bizIgP] = await Promise.all([
     getUserPages(token),
     graphListQuiet(`/${adAccountId}/promote_pages`, { fields: 'id,name' }, token),
     graphGetQuiet(`/${adAccountId}`, { fields: 'business{id,name,owned_pages.limit(200){id,name,is_published},client_pages.limit(200){id,name}}' }, token),
-    graphListQuiet(`/${adAccountId}/instagram_accounts`, { fields: 'id,username' }, token),
-    graphListQuiet(`/${adAccountId}/connected_instagram_accounts`, { fields: 'id,username' }, token),
-    graphGetQuiet(`/${adAccountId}`, { fields: 'business{instagram_business_accounts.limit(100){id,username}}' }, token),
+    graphListProbe(`/${adAccountId}/instagram_accounts`, { fields: 'id,username' }, token),
+    graphListProbe(`/${adAccountId}/connected_instagram_accounts`, { fields: 'id,username' }, token),
+    graphGetProbe(`/${adAccountId}`, { fields: 'business{instagram_business_accounts.limit(100){id,username}}' }, token),
   ]);
+  const igA = igAP.rows, igB = igBP.rows, bizIg = bizIgP.data; const instagramRateLimited = !!(igAP.rateLimited || igBP.rateLimited || bizIgP.rateLimited);
   const pageMap = new Map();
   // 1) the user's own Facebook Pages first
   for (const p of userIdent.pages || []) pageMap.set(String(p.id), { id: String(p.id), name: p.name || p.id, source: 'user_account', verified: true });
@@ -1092,7 +1119,9 @@ async function _getAccountIdentitiesUncached(token, adAccountId) {
     pages: [...pageMap.values()],
     instagram: [...igMap.values()],
     pagesVerified: (userIdent.pages || []).length > 0 || (promotePages || []).length > 0 || Array.isArray(promotePages),
-    instagramReadable: (userIdent.instagram || []).length > 0 || (igA || []).length > 0 || (igB || []).length > 0 || !!(bizIg?.business),
+    // a throttled edge is «unknown», never «no Instagram»: instagramReadable stays false while nothing was read and Meta was rate-limiting
+    instagramReadable: (igMap.size > 0) || (!instagramRateLimited && ((userIdent.instagram || []).length > 0 || (igA || []).length > 0 || (igB || []).length > 0 || !!(bizIg?.business))),
+    instagramRateLimited,
   };
 }
 

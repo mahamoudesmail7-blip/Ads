@@ -726,7 +726,7 @@ router.get('/launch/discovery/account-assets', asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   const adAccountId = String(req.query.adAccountId || '');
   if (!adAccountId) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'adAccountId مطلوب.' });
-  res.json(await launch.getLaunchAccountAssets(adAccountId));
+  res.json(await launch.getLaunchAccountAssets(adAccountId, { force: req.query.force === '1' }));
 }));
 // Final core execution step — real Meta region-targeting search (never a
 // hardcoded governorate->key table). Used by the wizard's audience/geo step

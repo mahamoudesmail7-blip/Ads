@@ -161,7 +161,8 @@ router.get(
     const pageId = String(req.query.pageId || '');
     if (!/^\d{5,}$/.test(pageId)) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'pageId مطلوب.' });
     const token = await metaAuth.getDecryptedToken();
-    res.json({ instagram: await metaGraph.getPageInstagram(token, pageId) });
+    const r = await metaGraph.getPageInstagramEx(token, pageId); // rateLimited = Meta throttled the read: «unknown», not «no Instagram»
+    res.json({ instagram: r.instagram, rateLimited: r.rateLimited });
   })
 );
 

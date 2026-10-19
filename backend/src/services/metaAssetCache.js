@@ -56,17 +56,18 @@ export function noteRateLimit() {
  * @param loader     async () => value  (the real Meta fan-out)
  * @param opts.ttlMs override TTL
  * @param opts.force bypass a fresh entry and refresh
+ * @param opts.cacheIf (value) => boolean — false = the answer is INCOMPLETE (e.g. a rate-limited edge read as «nothing»): never cached as final; a previous good value is served instead (marked stale), otherwise it is kept only for opts.incompleteTtlMs
  * Returns the value. On a rate-limit with any prior value, returns that value
  * with a non-enumerable `__stale` marker.
  */
-export async function cachedMetaFetch(key, loader, { ttlMs = DEFAULT_TTL_MS, force = false } = {}) {
+export async function cachedMetaFetch(key, loader, { ttlMs = DEFAULT_TTL_MS, force = false, cacheIf = null, incompleteTtlMs = 2_000 } = {}) {
   const now = Date.now();
   const hit = store.get(key);
 
   if (!force && hit && hit.expiresAt > now) return hit.value;
 
   // During a rate-limit cooldown, serve whatever we have rather than pile on.
-  if (!force && isRateLimitedNow() && hit) {
+  if (!force && isRateLimitedNow() && hit && !hit.incomplete) { // (an INCOMPLETE entry is never served as «what we have» — only a complete one)
     return markStale(hit.value);
   }
 
@@ -75,6 +76,12 @@ export async function cachedMetaFetch(key, loader, { ttlMs = DEFAULT_TTL_MS, for
   const p = (async () => {
     try {
       const value = await loader();
+      if (cacheIf && !cacheIf(value)) {
+        noteRateLimit();
+        if (hit && !hit.incomplete) return markStale(hit.value); // keep the last COMPLETE answer rather than a false «none»
+        store.set(key, { value, expiresAt: Date.now() + incompleteTtlMs, at: Date.now(), incomplete: true });
+        return value;
+      }
       store.set(key, { value, expiresAt: Date.now() + ttlMs, at: Date.now() });
       return value;
     } catch (err) {

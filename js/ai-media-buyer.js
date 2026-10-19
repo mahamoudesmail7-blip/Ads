@@ -5736,6 +5736,8 @@ async function launchResolvePageInstagram(pageId) {
   try {
     const r = await api.get('/api/meta/page-instagram', { pageId });
     const ig = r?.instagram || null;
+    if (r?.rateLimited && !ig) { assets.igRateLimited = true; return null; } // Meta throttled the read: «unknown», never cached as «no Instagram»
+    assets.igRateLimited = false;
     assets.pageInstagramCache[pageId] = ig;
     if (ig?.id && !assets.instagram.some((g) => g.id === ig.id)) assets.instagram = [ig, ...assets.instagram];
     return ig;
@@ -5744,7 +5746,8 @@ async function launchResolvePageInstagram(pageId) {
 
 async function renderLaunchPlatforms(body) {
   if (!launchCurrentAssets()) {
-    const r = await api.get('/api/ai-media-buyer/launch/discovery/account-assets', { adAccountId: launchState.adAccountId });
+    const r = await api.get('/api/ai-media-buyer/launch/discovery/account-assets', { adAccountId: launchState.adAccountId, ...(launchState._forceAssets ? { force: 1 } : {}) });
+    launchState._forceAssets = false;
     launchState.assetsByAccount[launchState.adAccountId] = r;
     if (!launchState.pageId && r.pages?.length === 1) { launchState.pageId = r.pages[0].id; launchState.pageName = r.pages[0].name; }
     if (!launchState.pixelId && r.pixels?.length === 1) { launchState.pixelId = r.pixels[0].id; launchState.pixelName = r.pixels[0].name; }
@@ -5780,7 +5783,7 @@ async function renderLaunchPlatforms(body) {
                 <input type="radio" name="ambLaunchIg" value="${E(g.id)}" data-name="${E(g.username)}" ${launchState.instagramId === g.id ? 'checked' : ''} />
                 <span class="rr-main">@${E(g.username)}</span><span class="rr-sub">${E(g.id)}</span>
               </label>`).join('')}</div>`
-          : `<div class="amb-empty" style="text-align:right; padding:12px 14px; background:var(--amb-surface-2); border-radius:10px;">⚠️ ${assets.instagramReadable ? 'لا يوجد حساب إنستجرام متصل بالصفحة المختارة أو بهذا الحساب الإعلاني.' : 'تعذّر قراءة حسابات إنستجرام — راجع صلاحيات اتصال Meta.'} لازم حساب إنستجرام حقيقي عشان تكمل — أو بطّل تفعيل إنستجرام من المنصات فوق لو عايز تنشر على فيسبوك بس.</div>`
+          : `<div class="amb-empty" id="ambLaunchIgEmpty" style="text-align:right; padding:12px 14px; background:var(--amb-surface-2); border-radius:10px;">${(assets.instagramRateLimited || assets.igRateLimited) ? '⚠️ Meta محدّدة عدد الطلبات دلوقتي (Rate limit) فمقدرناش نقرأ حسابات إنستجرام — ده <b>مش معناه</b> إنها مش موجودة. استنى دقيقة أو اتنين وادوس «إعادة المحاولة»، أو كمّل على فيسبوك فقط.' : `⚠️ ${assets.instagramReadable ? 'لا يوجد حساب إنستجرام متصل بالصفحة المختارة أو بهذا الحساب الإعلاني.' : 'تعذّر قراءة حسابات إنستجرام — راجع صلاحيات اتصال Meta.'} لازم حساب إنستجرام حقيقي عشان تكمل — أو كمّل على فيسبوك فقط.`}<div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;"><button type="button" class="amb-btn" id="ambLaunchIgRetry">🔄 إعادة المحاولة</button><button type="button" class="amb-btn orange" id="ambLaunchIgFbOnly">كمّل على فيسبوك فقط</button></div></div>`
       ) : '<div class="faint" style="font-size:12px;">إنستجرام غير مفعّل ضمن المنصات المختارة.</div>'}
 
       <div class="section-title">مكان التحويل</div>
@@ -5845,6 +5848,9 @@ async function renderLaunchPlatforms(body) {
 
   $('ambLaunchPlatFb').onchange = (e) => { launchState.platforms.facebook = e.target.checked; };
   $('ambLaunchPlatIg').onchange = (e) => { launchState.platforms.instagram = e.target.checked; renderLaunchStep(); };
+  { const rb = $('ambLaunchIgRetry'), fb = $('ambLaunchIgFbOnly');
+    if (rb) rb.onclick = () => { const a = launchCurrentAssets(); if (a) a.pageInstagramCache = {}; delete launchState.assetsByAccount[launchState.adAccountId]; launchState._forceAssets = true; renderLaunchStep(); };
+    if (fb) fb.onclick = () => { launchState.platforms.instagram = false; launchState.instagramId = null; launchState.instagramUsername = null; renderLaunchStep(); }; }
   body.querySelectorAll('input[name="ambLaunchPage"]').forEach((r) => { r.onchange = async () => {
     launchState.pageId = r.value; launchState.pageName = r.dataset.name;
     launchState.instagramId = null; launchState.instagramUsername = null; // a different Page may have a different (or no) Instagram identity

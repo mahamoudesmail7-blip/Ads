@@ -658,11 +658,11 @@ export async function discoverLaunchAdAccounts() {
  * calls the Clone & Schedule feature already makes for the same purpose —
  * never a new Graph API surface.
  */
-export async function getLaunchAccountAssets(adAccountId) {
+export async function getLaunchAccountAssets(adAccountId, { force = false } = {}) {
   if (!adAccountId || typeof adAccountId !== 'string') fail('adAccountId مطلوب.');
   const { token } = await requireConnectedToken();
   const [identities, assets] = await Promise.all([
-    getAccountIdentities(token, adAccountId),
+    getAccountIdentities(token, adAccountId, { force }),
     getAccountAssetsForClone(token, adAccountId),
   ]);
   return {
@@ -672,6 +672,7 @@ export async function getLaunchAccountAssets(adAccountId) {
     pixels: assets.pixels, // [{ id, name }]
     pagesVerified: identities.pagesVerified,
     instagramReadable: identities.instagramReadable,
+    instagramRateLimited: !!identities.instagramRateLimited,
   };
 }
 
