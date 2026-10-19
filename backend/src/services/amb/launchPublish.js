@@ -343,11 +343,36 @@ export function buildAdSetPayload(job, campaign, metaCampaignId, adSetIndex, dai
 
 /**
  * The Instagram identity field of a creative. A LINKED account (real Instagram professional account) goes in instagram_user_id — the field already proven live by this launcher.
- * A PAGE_BACKED identity (the Page's own Instagram) is sent as instagram_actor_id, the field Meta documents for page-backed accounts. Nothing is sent when no identity was chosen.
+ * A PAGE_BACKED identity (the Page's own Instagram) is ALSO sent as instagram_user_id: Meta REJECTED instagram_actor_id for it (live, #100 «must be a valid Instagram account id»), instagram_user_id is the current field.
+ * If Meta rejects that too, createCreativeWithIdentityFallback() retries the creative ONCE with the Page's own identity only (no Instagram field) — see below. Nothing is sent when no identity was chosen.
  */
 export function instagramIdentityFields(job, cfg = {}) {
   if (!job?.instagram_id) return {};
-  return cfg.instagramKind === 'PAGE_BACKED' ? { instagram_actor_id: job.instagram_id } : { instagram_user_id: job.instagram_id };
+  return { instagram_user_id: job.instagram_id };
+}
+
+const IG_IDENTITY_REJECTED = /instagram[_ ](actor|user)[_ ]id|valid instagram account/i;
+/** Did Meta reject the Instagram identity field of a creative (and nothing else)? */
+export const isInstagramIdentityRejection = (err) => IG_IDENTITY_REJECTED.test(String(err?.message || ''));
+/** A copy of a creative payload WITHOUT any Instagram identity field (the Page's own identity serves the Instagram placement). Never mutates the original. */
+export function stripInstagramIdentity(payload) {
+  const oss = { ...(payload?.object_story_spec || {}) }; delete oss.instagram_user_id; delete oss.instagram_actor_id;
+  return { ...payload, object_story_spec: oss };
+}
+export const isPageBackedJob = (job) => { try { return JSON.parse(job?.config_json || '{}').instagramKind === 'PAGE_BACKED'; } catch { return false; } };
+export const isPageOnlyJob = (job) => { try { return JSON.parse(job?.config_json || '{}').instagramPageOnly === true; } catch { return false; } };
+/**
+ * Creates ONE creative. For a PAGE_BACKED job only: if Meta rejects the Instagram identity field, retry ONCE without it (the Page's own identity) and report it (onFallback) — never silent. A LINKED (real) account that Meta
+ * rejects is NOT retried: that is a real problem the owner must see. Any other error is rethrown untouched.
+ */
+export async function createCreativeWithIdentityFallback({ job, payload, create, onFallback }) {
+  try { return { res: await create(payload), payload, fallback: false }; }
+  catch (err) {
+    if (!isPageBackedJob(job) || !isInstagramIdentityRejection(err)) throw err;
+    const alt = stripInstagramIdentity(payload); const res = await create(alt);
+    if (onFallback) await onFallback(err);
+    return { res, payload: alt, fallback: true };
+  }
 }
 
 /** Static-image counterpart to buildCreativePayload — object_story_spec.link_data with image_hash, the exact field shape already proven working against Meta by cloneEngine.js's own image-creative path (cloneEngine.js:1418-1422). Requires campaign.website_url (link_data has no thumbnail-from-Meta fallback the way video_data does — an image ad IS the picture, there is nothing to derive a link from). */
@@ -514,7 +539,13 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, creative, to
     // THIS specific call is the one residual duplicate-creative risk in this engine
     // (a wasted, unused, PAUSED-parent-less creative object, never itself spend-bearing).
     // withDbRetry below at least removes the "Meta succeeded, DB write failed" case.
-    const res = await createAdCreative(token, job.ad_account_id, payload);
+    if (isPageBackedJob(job) && isPageOnlyJob(job)) payload = stripInstagramIdentity(payload); // this job already learned that Meta does not take the Page-backed id: straight to the Page's own identity
+    const made = await createCreativeWithIdentityFallback({ job, payload, create: (p) => createAdCreative(token, job.ad_account_id, p), onFallback: async (err) => {
+      logger.warn('[launch] Instagram identity rejected for a Page-backed job — creative created with the Page identity only', { jobId: job.job_id, message: err.message });
+      await audit('IG_IDENTITY_FALLBACK', `Meta رفضت هوية إنستجرام الصفحة (${String(err.message).slice(0, 140)}) — الكريتيف اتعمل بهوية الصفحة نفسها بدون حساب إنستجرام محدد.`, { level: 'CREATIVE', localKey });
+      try { const cfg = JSON.parse(job.config_json || '{}'); if (!cfg.instagramPageOnly) await prisma.ambLaunchJob.update({ where: { job_id: job.job_id }, data: { config_json: JSON.stringify({ ...cfg, instagramPageOnly: true }) } }); } catch { /* best-effort: the next creative simply tries the field once more */ }
+    } });
+    const res = made.res; payload = made.payload;
     await withDbRetry(() => markObjectResult({ campaignId: campaign.id, level: 'CREATIVE', localKey, destinationId: res.id, status: 'CREATED', payload }), 'creative.map');
     await audit('OBJECT_CREATED', `Creative ${adSetIndex + 1}.${adIndex + 1} — ${sourceLabel}`, { level: 'CREATIVE', metaCreativeId: res.id, payload });
     // Smart Decision Center Phase 1 — stable cross-job creative identity via
