@@ -5746,6 +5746,24 @@ async function launchResolvePageInstagram(pageId) {
   } catch { assets.pageInstagramCache[pageId] = null; return null; }
 }
 
+/**
+ * Which Instagram identity the launch uses — ONE rule, applied the same way when the step opens and when a Page is picked:
+ *   1. a real Instagram professional account linked to the Page (e.g. @trendy.store2020) — always wins, and REPLACES an earlier automatic Page-backed pick (that pick is only a stand-in);
+ *   2. otherwise the ONLY real account the ad account lists (more than one → the owner chooses, nothing is guessed);
+ *   3. otherwise the Page's own (page-backed) identity.
+ * A real account the owner picked by hand is never overridden.
+ */
+function launchAutoPickInstagram(pageLinked) {
+  if (!launchState.platforms.instagram) return;
+  const A = launchCurrentAssets(); const pick = (id, name, kind) => { launchState.instagramId = id; launchState.instagramUsername = name; launchState.instagramKind = kind; };
+  const standIn = launchState.instagramKind === 'PAGE_BACKED'; // an automatic stand-in, never the owner's own choice of a real account
+  if (pageLinked?.id) { if (!launchState.instagramId || standIn) pick(pageLinked.id, pageLinked.username, 'LINKED'); return; }
+  const acct = A?.instagram || [];
+  if (acct.length === 1 && (!launchState.instagramId || standIn)) { pick(acct[0].id, acct[0].username, 'LINKED'); return; }
+  if (acct.length > 1) { if (standIn) { launchState.instagramId = null; launchState.instagramUsername = null; launchState.instagramKind = null; } return; } // several real accounts exist: the owner picks — nothing is guessed, no Page-backed stand-in
+  if (!launchState.instagramId) { const pb = (A?.pageBackedCache || {})[launchState.pageId]; if (pb?.id) pick(pb.id, pb.username || launchState.pageName, 'PAGE_BACKED'); }
+}
+
 async function renderLaunchPlatforms(body) {
   if (!launchCurrentAssets()) {
     const r = await api.get('/api/ai-media-buyer/launch/discovery/account-assets', { adAccountId: launchState.adAccountId, ...(launchState._forceAssets ? { force: 1 } : {}) });
@@ -5756,8 +5774,7 @@ async function renderLaunchPlatforms(body) {
   }
   if (launchState.pageId) {
     const ig = await launchResolvePageInstagram(launchState.pageId);
-    if (ig?.id && !launchState.instagramId) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; launchState.instagramKind = 'LINKED'; }
-    else if (!ig?.id && !launchState.instagramId && launchState.platforms.instagram) { const pb = (launchCurrentAssets()?.pageBackedCache || {})[launchState.pageId]; if (pb?.id) { launchState.instagramId = pb.id; launchState.instagramUsername = pb.username || launchState.pageName; launchState.instagramKind = 'PAGE_BACKED'; } } // no linked account → the Page's OWN Instagram identity (what Ads Manager shows as «the Page's Instagram»)
+    launchAutoPickInstagram(ig);
   }
   const assets = launchCurrentAssets() || { pages: [], instagram: [], pixels: [], pagesVerified: false, instagramReadable: false };
 
@@ -5779,7 +5796,7 @@ async function renderLaunchPlatforms(body) {
         </label>`).join('')}</div>` : `<div class="amb-empty">${assets.pagesVerified ? 'مفيش صفحات فيسبوك متاحة على الاتصال الحالي.' : '⚠️ تعذّر قراءة الصفحات — راجع صلاحيات اتصال Meta.'}</div>`}
 
       <div class="section-title">Instagram Account</div>
-      ${launchState.platforms.instagram && launchState.instagramKind === 'PAGE_BACKED' && launchState.instagramId ? `<div class="amb-radio-list" style="margin-bottom:6px;"><label class="amb-radio-row sel"><input type="radio" checked disabled /><span class="rr-main">🟦 إنستجرام الصفحة نفسها — ${E(launchState.instagramUsername || launchState.pageName || '')}</span><span class="rr-sub">${E(launchState.instagramId)} · Page-backed</span></label></div><div class="faint" style="font-size:12px; margin-bottom:6px;">الصفحة دي مالهاش حساب إنستجرام احترافي مربوط، فهنستخدم <b>إنستجرام الصفحة نفسها</b> (اللي Meta بتعرضه في Ads Manager). الإعلان هيظهر على إنستجرام باسم الصفحة. لو عايز حساب @ حقيقي اربطه من إعدادات الصفحة وادوس «إعادة المحاولة».</div>` : launchState.platforms.instagram ? (
+      ${launchState.platforms.instagram && launchState.instagramKind === 'PAGE_BACKED' && launchState.instagramId && !assets.instagram.length ? `<div class="amb-radio-list" style="margin-bottom:6px;"><label class="amb-radio-row sel"><input type="radio" checked disabled /><span class="rr-main">🟦 إنستجرام الصفحة نفسها — ${E(launchState.instagramUsername || launchState.pageName || '')}</span><span class="rr-sub">${E(launchState.instagramId)} · Page-backed</span></label></div><div class="faint" style="font-size:12px; margin-bottom:6px;">الصفحة دي مالهاش حساب إنستجرام احترافي مربوط، فهنستخدم <b>إنستجرام الصفحة نفسها</b> (اللي Meta بتعرضه في Ads Manager). الإعلان هيظهر على إنستجرام باسم الصفحة. لو عايز حساب @ حقيقي اربطه من إعدادات الصفحة وادوس «إعادة المحاولة».</div>` : launchState.platforms.instagram ? (
         assets.instagram.length
           ? `<div class="amb-radio-list" style="margin-bottom:6px;">${assets.instagram.map((g) => `
               <label class="amb-radio-row ${launchState.instagramId === g.id ? 'sel' : ''}">
@@ -5850,7 +5867,7 @@ async function renderLaunchPlatforms(body) {
     ${launchNav(4, 'التالي: الفيديوهات', true)}`;
 
   $('ambLaunchPlatFb').onchange = (e) => { launchState.platforms.facebook = e.target.checked; };
-  $('ambLaunchPlatIg').onchange = (e) => { launchState.platforms.instagram = e.target.checked; renderLaunchStep(); };
+  $('ambLaunchPlatIg').onchange = (e) => { launchState.platforms.instagram = e.target.checked; if (!e.target.checked) { launchState.instagramId = null; launchState.instagramUsername = null; launchState.instagramKind = null; } renderLaunchStep(); };
   { const rb = $('ambLaunchIgRetry'), fb = $('ambLaunchIgFbOnly');
     if (rb) rb.onclick = () => { const a = launchCurrentAssets(); if (a) a.pageInstagramCache = {}; delete launchState.assetsByAccount[launchState.adAccountId]; launchState._forceAssets = true; renderLaunchStep(); };
     if (fb) fb.onclick = () => { launchState.platforms.instagram = false; launchState.instagramId = null; launchState.instagramUsername = null; renderLaunchStep(); }; }
@@ -5858,8 +5875,7 @@ async function renderLaunchPlatforms(body) {
     launchState.pageId = r.value; launchState.pageName = r.dataset.name;
     launchState.instagramId = null; launchState.instagramUsername = null; launchState.instagramKind = null; // a different Page may have a different (or no) Instagram identity
     const ig = await launchResolvePageInstagram(r.value);
-    if (ig?.id) { launchState.instagramId = ig.id; launchState.instagramUsername = ig.username; launchState.instagramKind = 'LINKED'; }
-    else if (launchState.platforms.instagram) { const pb = (launchCurrentAssets()?.pageBackedCache || {})[launchState.pageId]; if (pb?.id) { launchState.instagramId = pb.id; launchState.instagramUsername = pb.username || launchState.pageName; launchState.instagramKind = 'PAGE_BACKED'; } }
+    launchAutoPickInstagram(ig);
     renderLaunchStep();
   }; });
   body.querySelectorAll('input[name="ambLaunchIg"]').forEach((r) => { r.onchange = () => { launchState.instagramId = r.value; launchState.instagramUsername = r.dataset.name; launchState.instagramKind = 'LINKED'; }; });
