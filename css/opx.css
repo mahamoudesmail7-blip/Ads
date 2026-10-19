@@ -516,3 +516,9 @@ body:has(.opx) { overflow-x: hidden; } .opx { max-width: 100%; }
 .opx-meter-bar i{display:block;height:100%;border-radius:99px;background:#22c55e}
 .opx-meter-bar i.amber{background:#f59e0b}.opx-meter-bar i.red{background:#ef4444}
 .opx-meter-n{display:flex;justify-content:space-between;gap:8px;font-size:13px;flex-wrap:wrap}
+
+/* AUTOMATIC diagnostics */
+.opx-diagkpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:10px 0}
+.opx-diagk{border:1px solid var(--opx-line,#e2e8f0);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px}
+.opx-diagk b{font-size:20px}.opx-diagk small{color:var(--opx-muted)}
+.opx-diagk.green b{color:#16a34a}.opx-diagk.red b{color:#dc2626}.opx-diagk.amber b{color:#d97706}

@@ -424,6 +424,9 @@ router.post('/automation/global-rules/deactivate', ADMIN, asyncRoute(async (req,
 router.get('/product-rules/:productId/effective', asyncRoute(async (req, res) => res.json(await PP.effectivePolicyView({ productId: Number(req.params.productId), storeId: req.query.store || 'default', campaignId: req.query.campaignId || null }))));
 // ---- bulk: ONE table (READY / NEEDS_CONFIGURATION / BLOCKED), bulk drafts, bulk preview (read-only) and the gated bulk activation (exact confirmed numbers; no Meta write)
 router.get('/automation/overview', ADMIN, asyncRoute(async (req, res) => res.json(await BULK.bulkOverview({}))));
+// ---- «تشخيص AUTOMATIC»: why the engine did / did not execute — read-only (no Meta call, no setting changes)
+router.get('/automation/diagnostics', ADMIN, asyncRoute(async (req, res) => res.json(await (await import('../services/amb/automationDiagnostics.js')).automationDiagnostics({}))));
+router.get('/automation/diagnostics/product', ADMIN, asyncRoute(async (req, res) => res.json(await (await import('../services/amb/automationDiagnostics.js')).productDiagnosis({ key: String(req.query.key || '') }))));
 router.post('/automation/bulk/preview', ADMIN, asyncRoute(async (req, res) => res.json(await BULK.bulkPreview({ productKeys: Array.isArray(req.body?.productKeys) ? req.body.productKeys : null }))));
 router.post('/automation/bulk/configure', ADMIN, asyncRoute(async (req, res) => res.json(await BULK.bulkConfigure({ productKeys: req.body?.productKeys, patch: req.body?.patch, userId: req.user.id }))));
 router.post('/automation/bulk/activate', ADMIN, asyncRoute(async (req, res) => res.json(await BULK.bulkActivate({ productKeys: Array.isArray(req.body?.productKeys) ? req.body.productKeys : null, confirm: req.body?.confirm, confirmAutomatic: req.body?.confirmAutomatic, userId: req.user.id }))));
