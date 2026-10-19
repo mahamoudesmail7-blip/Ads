@@ -134,10 +134,13 @@ export async function loadRecentActions({ campaignIds, now = new Date(), days = 
   const since = new Date(now.getTime() - days * 86_400_000);
   const out = new Map();
   const bump = (cid, action, at) => { const e = out.get(cid) || { lastByAction: {}, todayCount: 0, harmfulScaleAt: null }; if (!e.lastByAction[action] || new Date(at) > new Date(e.lastByAction[action])) e.lastByAction[action] = at; if (now.getTime() - new Date(at).getTime() < 24 * MS_H) e.todayCount++; out.set(cid, e); return e; };
-  const ds = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: { in: campaignIds }, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED'] }, executed_at: { gte: since } }, select: { campaign_id: true, action: true, executed_at: true, outcome_json: true } });
+  const ds = await prisma.ambOperatorDecision.findMany({ where: { campaign_id: { in: campaignIds }, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED'] }, executed_at: { gte: since } }, select: { campaign_id: true, action: true, executed_at: true, outcome_json: true, amb_action_id: true, amb_recommendation_id: true } });
   for (const d of ds) { const e = bump(d.campaign_id, d.action, d.executed_at); if (d.action === 'SCALE_UP' && /"verdict":"(HARMFUL|FAILED)"/.test(d.outcome_json || '') && (!e.harmfulScaleAt || d.executed_at > e.harmfulScaleAt)) e.harmfulScaleAt = d.executed_at; }
-  const acts = await prisma.ambAction.findMany({ where: { entity_id: { in: campaignIds }, execution_status: 'EXECUTED', executed_at: { gte: since } }, select: { entity_id: true, action_type: true, executed_at: true } });
-  for (const a of acts) { const act = ACTION_FROM_AMB[a.action_type]; if (act) bump(a.entity_id, act, a.executed_at); }
+  // ONE real change = ONE count. An Operator decision and the AMB action it produced are the SAME change (decision.amb_action_id / amb_recommendation_id), so the action is not counted a second time — it used to double the
+  // per-campaign daily counter (one reduction read as two changes → CAMPAIGN_DAILY_LIMIT after a single write). An ABO write targets the AD SET (entity_id = ad set), so match by the campaign it belongs to as well.
+  const doneActionIds = new Set(ds.map((d) => d.amb_action_id).filter((x) => x != null)), doneRecIds = new Set(ds.map((d) => d.amb_recommendation_id).filter((x) => x != null));
+  const acts = await prisma.ambAction.findMany({ where: { OR: [{ entity_id: { in: campaignIds } }, { campaign_id: { in: campaignIds } }], execution_status: 'EXECUTED', executed_at: { gte: since } }, select: { id: true, entity_id: true, campaign_id: true, recommendation_id: true, action_type: true, executed_at: true } });
+  for (const a of acts) { if (doneActionIds.has(a.id) || (a.recommendation_id != null && doneRecIds.has(a.recommendation_id))) continue; const act = ACTION_FROM_AMB[a.action_type]; const cid = campaignIds.includes(a.campaign_id) ? a.campaign_id : a.entity_id; if (act) bump(cid, act, a.executed_at); }
   const entry = (cid) => out.get(cid) || (out.set(cid, { lastByAction: {}, todayCount: 0, harmfulScaleAt: null }), out.get(cid));
   // an executed OPEN / SCALE_UP whose effect has not been measured yet blocks another risky action (RECENT_ACTION_PENDING_EVALUATION)
   const pendH = Number(pendingHours) || 24;

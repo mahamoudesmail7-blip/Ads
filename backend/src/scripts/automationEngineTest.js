@@ -37,7 +37,7 @@ const server = http.createServer((req, res) => {
 await new Promise((rs) => server.listen(0, '127.0.0.1', rs));
 process.env.META_GRAPH_MOCK = '1'; process.env.META_GRAPH_MOCK_URL = `http://127.0.0.1:${server.address().port}`;
 const { prisma } = await imp('../prisma.js');
-const AE = await imp('../services/amb/automationEngine.js'); const PPol = await imp('../services/amb/pausePolicy.js'); const PP = await imp('../services/amb/productPolicy.js'); const ER = await imp('../services/amb/executionRecovery.js'); const OE = await imp('../services/amb/operatorEngine.js');
+const AE = await imp('../services/amb/automationEngine.js'); const OC = await imp('../services/amb/operatorContext.js'); const PPol = await imp('../services/amb/pausePolicy.js'); const PP = await imp('../services/amb/productPolicy.js'); const ER = await imp('../services/amb/executionRecovery.js'); const OE = await imp('../services/amb/operatorEngine.js');
 const conn = await (await imp('../services/metaAuth.js')).getConnection(); const settings = await (await imp('../services/amb/settings.js')).getAmbSettings();
 const T = '__optest_au_'; const ST = 'trendy-storeee'; const ACC = conn?.selected_ad_account_id;
 const OFF = { open: false, pause: false, budgetIncrease: false, budgetDecrease: false }; const ALL = { open: true, pause: true, budgetIncrease: true, budgetDecrease: true };
@@ -262,5 +262,48 @@ try {
     const rSw = await tick(scenario([]), cfg(ALL, { mode: 'APPROVAL' }), { sweepStale: true });
     ok('full tick: an open engine decision it no longer produces is EXPIRED (NO_LONGER_APPLICABLE); a past-day zero-spend decision is EXPIRED (DECISION_DAY_PASSED); today\'s zero-spend and MANUAL operations are untouched', (await statusOf(z1.id)) === 'EXPIRED' && (await errorOf(z1.id)) === 'NO_LONGER_APPLICABLE' && (await statusOf(zOld.id)) === 'EXPIRED' && (await errorOf(zOld.id)) === 'DECISION_DAY_PASSED' && (await statusOf(zNow.id)) === 'PREPARED' && (await statusOf(man.id)) === 'PREPARED', JSON.stringify(rSw.persisted));
     const rNo = await tick(scenario([]), cfg(ALL, { mode: 'APPROVAL' })); ok('a tick with an injected (partial) world never sweeps — the sweep is only for full evaluations', rNo.persisted?.expiredStale === undefined); }
+
+  console.log('\n11. Scope consistency: evaluation, preview and execution apply the SAME approved pause scope (and budget operations are independent of it)');
+  { const inP = `${T}sc_in`, outP = `${T}sc_out`, redP = `${T}sc_red`; for (const x of [inP, outP, redP]) setEntity(x, { daily_budget: '30000' });
+    const hi = (id, p) => ({ id, pid: p, m3: m(1500, 4), m7: m(1500, 4), m30: m(1500, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE' } });
+    const scope = { includeProducts: [String(pid(95))] }; const sc = scenario([hi(inP, pid(95)), hi(outP, pid(96))], { pause: pausePol({ scope }) });
+    const e = await ev(sc); const cIn = e.candidates.find((c) => c.campaignId === inP), cOut = e.candidates.find((c) => c.campaignId === outP);
+    ok('evaluation: the in-scope product gets the HIGH_CPA pause (AUTOMATIC); the out-of-scope one is BLOCKED with OUT_OF_SCOPE', cIn.kind === 'HIGH_CPA' && cIn.effective === 'AUTOMATIC' && cOut.kind === 'HIGH_CPA' && cOut.effective === 'BLOCKED' && cOut.blockers.some((b) => b.code === 'OUT_OF_SCOPE'));
+    ok('…and the blocker explains the real scope and who decides (not a bare code)', /منتجات مضمّنة: 1/.test(cOut.blockers.find((b) => b.code === 'OUT_OF_SCOPE').message) && /قرارك|بنفسك/.test(cOut.blockers.find((b) => b.code === 'OUT_OF_SCOPE').message));
+    const w0 = allWrites().length; const r = await tick(sc, cfg(ALL));
+    ok('execution: ONLY the in-scope campaign is paused on Meta; the out-of-scope one is persisted BLOCKED and is never sent', writes(inP).length === 1 && writes(outP).length === 0 && allWrites().length === w0 + 1 && (await dec(outP)).status === 'BLOCKED' && (await dec(inP)).status === 'VERIFIED', JSON.stringify(r.executed));
+    const refused = await AE.executeAutoDecision({ decisionId: (await dec(outP)).id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config: cfg(ALL) } }) } });
+    ok('forcing the BLOCKED out-of-scope decision (owner click) is refused, ZERO writes — the approved scope cannot be bypassed from the approval path', refused.executed !== true && writes(outP).length === 0, JSON.stringify(refused).slice(0, 200));
+    const scBud = scenario([{ id: redP, pid: pid(96), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }], { pause: pausePol({ scope }) }); await tick(scBud, cfg(ALL));
+    ok('the pause scope does NOT gate budget operations: a product outside the pause scope still gets its REDUCE (300 → 240) — each policy governs its own operation', writes(redP).length === 1 && world.entities.get(redP).daily_budget === '24000' && (await dec(redP)).status === 'VERIFIED');
+    ok('the saved scope was never widened by any of this (still only product ' + pid(95) + ')', JSON.stringify(scope.includeProducts) === JSON.stringify([String(pid(95))])); }
+
+  console.log('\n12. ABO and CBO: REDUCE / INCREASE / PAUSE through the real executor on the Meta mock (ad-set level writes), one real change = one count');
+  { const asC = `${T}abo_c`, asS = `${T}abo_s`, cbo = `${T}cbo_c`; const adset = `${T}abo_adset`; setEntity(asC, { daily_budget: undefined }); setEntity(adset, { daily_budget: '30000' }); setEntity(cbo, { daily_budget: '30000' });
+    const abo = (id, ad, action, to) => { const s = scenario([{ id, pid: pid(97), m3: m(900, 4), row: { action, decision: action === 'SCALE_UP' ? 'WOULD_INCREASE' : 'WOULD_REDUCE', to } }]); for (const r of s.opt.rows) r.entity = { level: 'adset', id: ad, budget: 300, name: 'adset' }; return s; };
+    await tick(abo(asC, adset, 'SCALE_DOWN', 240), cfg(ALL));
+    const dA = await dec(asC); const prm = JSON.parse(dA.params_json || '{}');
+    ok('ABO REDUCE: the write goes to the AD SET (not the campaign) — 300 → 240 on the mock, decision VERIFIED, level=adset recorded', writes(adset).length === 1 && writes(asC).length === 0 && world.entities.get(adset).daily_budget === '24000' && dA.status === 'VERIFIED' && prm.level === 'adset' && prm.entityId === adset, JSON.stringify([dA.status, prm]));
+    const rc = await OC.loadRecentActions({ campaignIds: [asC], now: new Date() });
+    ok('…and that ONE ABO write counts as ONE change for the campaign daily limit (decision + ad-set action are the same change)', rc.get(asC)?.todayCount === 1, rc.get(asC)?.todayCount);
+    const adset2 = `${T}abo_adset2`; setEntity(adset2, { daily_budget: '30000' }); await tick(abo(asS, adset2, 'SCALE_UP', 360), cfg(ALL));
+    ok('ABO INCREASE +20% (300 → 360) on the ad set: ONE write, mock 36000, VERIFIED', writes(adset2).length === 1 && world.entities.get(adset2).daily_budget === '36000' && (await dec(asS)).status === 'VERIFIED');
+    await tick(scenario([{ id: cbo, pid: pid(98), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]), cfg(ALL));
+    ok('CBO REDUCE: the write goes to the CAMPAIGN (300 → 240), VERIFIED, and counts as ONE change', writes(cbo).length === 1 && world.entities.get(cbo).daily_budget === '24000' && (await dec(cbo)).status === 'VERIFIED' && (await OC.loadRecentActions({ campaignIds: [cbo], now: new Date() })).get(cbo)?.todayCount === 1);
+    const pa = `${T}abo_pause`; setEntity(pa); await tick(scenario([{ id: pa, pid: pid(99), m3: m(260, 0), row: { action: 'PAUSE', decision: 'WOULD_PAUSE' } }]), cfg(ALL));
+    ok('PAUSE of a campaign: ONE write status=PAUSED, VERIFIED (OPEN is executed by the daily-plan scheduler — covered by dailyPlanTest)', writes(pa).length === 1 && world.entities.get(pa).status === 'PAUSED' && (await dec(pa)).status === 'VERIFIED');
+    const wBefore = allWrites().length; const sc2 = abo(asC, adset, 'SCALE_DOWN', 240); await tick(sc2, cfg(ALL)); await tick(sc2, cfg(ALL));
+    ok('re-running the same ABO tick twice sends ZERO additional requests (idempotent)', allWrites().length === wBefore); }
+
+  console.log('\n13. Concurrency: two schedulers / two approvals never write twice');
+  { const c1 = `${T}cc_1`; setEntity(c1, { daily_budget: '30000' }); const sc = scenario([{ id: c1, pid: pid(100), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]);
+    await tick(sc, cfg(ALL, { mode: 'APPROVAL' })); const d = await dec(c1); const w0 = writes(c1).length;
+    const run = () => AE.executeAutoDecision({ decisionId: d.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL, { mode: 'APPROVAL' }), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config: cfg(ALL, { mode: 'APPROVAL' }) } }) } });
+    const res = await Promise.all([run(), run(), run()]);
+    ok('three simultaneous approvals of ONE prepared decision → exactly ONE write on Meta, the others refused (RACE / not executable)', writes(c1).length === w0 + 1 && res.filter((x) => x.executed === true).length === 1, JSON.stringify(res.map((x) => x.status)));
+    const c2 = `${T}cc_2`; setEntity(c2, { daily_budget: '30000' }); const sc2 = scenario([{ id: c2, pid: pid(101), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }]);
+    const t1 = tick(sc2, cfg(ALL)); const t2 = AE.runAutomationTick({ now: NOW, deps: { config: cfg(ALL), dcfg: { halted: false }, autopilotOk: true, noSleep: true, evalDeps: { ...sc2, config: cfg(ALL) } } });
+    const [a, b] = await Promise.all([t1, t2]);
+    ok('two overlapping ticks (two schedulers): the second is skipped (ALREADY_RUNNING) and the campaign is written exactly ONCE', (a.skipped === 'ALREADY_RUNNING' || b.skipped === 'ALREADY_RUNNING') && writes(c2).length === 1 && world.entities.get(c2).daily_budget === '24000', JSON.stringify([a.skipped, b.skipped, writes(c2).length])); }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

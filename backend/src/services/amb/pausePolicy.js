@@ -6,7 +6,7 @@
 //   protections: winnerProtection + precedence — PROTECTION_WINS (a strong winner is not paused by ZERO_ORDER / HIGH_CPA; STOCK_OUT still pauses it) or RULE_WINS (a fired rule pauses even a winner)
 import { prisma } from '../../prisma.js';
 import { cairoDate } from './dailyPlanTime.js';
-import { emptyScope, normalizeScope, validateScope, normalizeDays, validDays, scopeVerdict, weekdayAllowed } from './automationScope.js';
+import { emptyScope, normalizeScope, validateScope, normalizeDays, validDays, scopeVerdict, weekdayAllowed, describeScope } from './automationScope.js';
 
 export const PRECEDENCE = ['PROTECTION_WINS', 'RULE_WINS'];
 export const PRECEDENCE_AR = { PROTECTION_WINS: 'حماية الـWinner أقوى من قواعد الإيقاف (ما عدا نفاد المخزون)', RULE_WINS: 'قاعدة الإيقاف أقوى حتى على الـWinner' };
@@ -69,6 +69,16 @@ export function decidePause({ policy, campaignId, productId = null, storeId = nu
   const ri = policy.protections.recentImprovement; const improving = !!(ri?.enabled && mToday && (mToday.purchases ?? 0) >= (ri.minPurchases ?? 2) && mToday.cpa != null && limit != null && mToday.cpa <= limit);
   for (const t of ['STOCK_OUT', 'ZERO_ORDER', 'HIGH_CPA']) { if (!fired.includes(t)) continue; if (protectedWinner && t !== 'STOCK_OUT') { skipped.push({ trigger: t, code: 'WINNER_PROTECTED' }); continue; } if (improving && t === 'HIGH_CPA') { skipped.push({ trigger: t, code: 'RECENT_IMPROVEMENT' }); continue; } trigger = t; break; }
   return { trigger, skipped, blockers, fired, threshold: limit ?? null }; // the EFFECTIVE high-CPA line (the product's own Hard Stop wins) — the reason text must print this, never the empty global figure
+}
+
+/** The owner reads this reason: WHICH rule of the approved pause policy forbids the pause (never a bare code). The policy itself is never widened by this. */
+export function pauseBlockMessage(code, policy) {
+  const v = policy?.version ? ` (v${policy.version})` : '';
+  if (code === 'OUT_OF_SCOPE') return `المنتج/الحملة خارج نطاق سياسة الإيقاف المعتمدة${v} — النطاق: ${describeScope(policy?.scope)}. السياسة ما بتغطيهوش، فمفيش إيقاف تلقائي ليه لحد ما تضيفه بنفسك.`;
+  if (code === 'EXCLUDED_BY_POLICY') return `مستبعد بقرار صريح في سياسة الإيقاف${v}.`;
+  if (code === 'DAY_NOT_ALLOWED') return `اليوم مش ضمن أيام الإيقاف في السياسة${v}.`;
+  if (code === 'PAUSE_POLICY_NOT_APPROVED') return 'سياسة الإيقاف غير مفعّلة أو غير معتمدة على نسختها الحالية.';
+  return code;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------

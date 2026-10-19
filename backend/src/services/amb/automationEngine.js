@@ -18,7 +18,7 @@ import { evaluateBudgetOptimization, getBudgetPolicy } from './budgetOptimizer.j
 import { buildOperatorWorld, buildCampaignContext, ensureHeavy, loadRecentActions, loadCounters, computeLastPurchaseAt } from './operatorContext.js';
 import { evaluateGuards } from './operatorGuards.js';
 import { loadActivePolicies, policyKey, mergeEffective } from './productPolicy.js';
-import { getPausePolicy, pausePolicyActive, decidePause, TRIGGER_AR } from './pausePolicy.js';
+import { getPausePolicy, pausePolicyActive, decidePause, TRIGGER_AR, pauseBlockMessage } from './pausePolicy.js';
 import { automationReadinessMap } from './automationReadiness.js';
 import { isWinner } from './dailyPlanCandidates.js';
 import { checkBudgetCaps } from './budgetCaps.js';
@@ -115,7 +115,7 @@ export async function evaluateAutomation({ now = new Date(), live = false, only 
     const dp = pauseOn ? decidePause({ policy: pause, campaignId: c.id, productId: r0.productId, storeId: r0.storeId, optimizer: pauseRow?.intended || null, m3, mToday: slim(world.windows.today?.get(c.id)), productHighCpa: mergeEffective(pol, c.id).cpa.hardStop ?? null, stock, winner: isWinner({ m7, m30 }), weekday }) : { trigger: null, skipped: [], blockers: ['PAUSE_POLICY_NOT_APPROVED'], fired: [] };
     let chosen = null;
     if (dp.trigger) {
-      const blockers = dp.blockers.map((code) => ({ code, message: code }));
+      const blockers = dp.blockers.map((code) => ({ code, message: pauseBlockMessage(code, pause) }));
       // guards: a zero-order pause carries the optimizer row's own verdict; the other triggers run the full guard chain here
       if (dp.trigger === 'ZERO_ORDER' && pauseRow) { for (const g of pauseRow.guards.filter((x) => /\[B\]/.test(x))) blockers.push({ code: g.split('[')[0], message: g }); if (rows.length > 1 && !rows.every((x) => x.intended?.action === 'PAUSE')) blockers.push({ code: 'PARTIAL_ADSETS', message: 'الصرف بدون أوردرات على بعض الـAd Sets فقط — إيقاف الحملة كلها محتاج موافقتك' }); }
       else {
