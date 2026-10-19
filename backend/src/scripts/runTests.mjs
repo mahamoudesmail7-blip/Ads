@@ -119,6 +119,20 @@ if (flag('ui') || (MODE === 'full' && !explicit.length && !flag('no-ui'))) {
     const r = { name: 'budgetUiTest', target: 'local+browser', status: code2 === 0 ? 'ok' : 'FAIL', passed: sum2 ? +sum2[1] : null, failed: sum2 ? +sum2[2] : null, ms: Date.now() - b0, failedLines: fl2 }; results.push(r);
     say(`${r.status === 'ok' ? '✓' : '✗'} budgetUiTest (CBO / ABO journey, desktop + phone)   ${sum2 ? `${sum2[1]} passed, ${sum2[2]} failed` : `exit ${code2}`} · ${fmt(r.ms)}`); for (const l of fl2) console.log(`           ${l.slice(0, 220)}`);
   }
+  { // the premium launch wizard (all nine steps + the interactive 3D globe): its own database + server (port 4002); every Meta-facing answer is an in-page fixture, nothing is ever created
+    const dbName3 = `optest_ui3_${process.pid}`; const url3 = await cloneDb(dbName3); const env3 = { ...process.env, TEST_DB_TARGET: 'local', LOCAL_TEST_DATABASE_URL: url3, PORT: '4002' }; delete env3.DIRECT_DATABASE_URL;
+    const seed3 = spawnSync(process.execPath, [path.join(here, 'seedUiFixtures.mjs')], { cwd: BACKEND, env: env3, encoding: 'utf8' });
+    const server3 = spawn(process.execPath, [path.join(here, 'serveOnTestDb.js')], { cwd: BACKEND, env: env3, stdio: 'ignore', windowsHide: true });
+    let up3 = false; for (let i = 0; i < 90 && !up3; i++) { try { up3 = (await fetch('http://localhost:4002/login.html')).ok; } catch { await sleep(500); } }
+    for (const [file, label] of [['launchWizardUiTest.mjs', 'launchWizardUiTest (9 premium steps, navigation, persistence, phone)'], ['launchGlobeUiTest.mjs', 'launchGlobeUiTest (real WebGL 3D globe, display-only, fallbacks)']]) {
+      const l0 = Date.now(); let o3 = ''; let c3 = -1;
+      if (up3 && seed3.status === 0) { const r3 = spawnSync(process.execPath, [path.join(here, file)], { cwd: BACKEND, env: { ...env3, OPX_WAIT_MS: env3.OPX_WAIT_MS || '60000' }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15 * 60_000 }); o3 = (r3.stdout || '') + (r3.stderr || ''); c3 = r3.status; } else o3 = `server did not start / seed failed (${seed3.status})`;
+      const sum3 = [...o3.matchAll(/(\d+) passed, (\d+) failed/g)].pop(); const fl3 = o3.split('\n').filter((l) => /✗/.test(l)).slice(0, 8);
+      const r = { name: file.replace('.mjs', ''), target: 'local+browser', status: c3 === 0 ? 'ok' : 'FAIL', passed: sum3 ? +sum3[1] : null, failed: sum3 ? +sum3[2] : null, ms: Date.now() - l0, failedLines: fl3 }; results.push(r);
+      say(`${r.status === 'ok' ? '✓' : '✗'} ${label}   ${sum3 ? `${sum3[1]} passed, ${sum3[2]} failed` : `exit ${c3}`} · ${fmt(r.ms)}`); for (const l of fl3) console.log(`           ${l.slice(0, 220)}`);
+    }
+    try { server3.kill('SIGKILL'); } catch { /* gone */ } spawnSync('taskkill', ['/PID', String(server3.pid), '/T', '/F'], { stdio: 'ignore' }); await dropDb(dbName3).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------- report

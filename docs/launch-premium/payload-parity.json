@@ -1,0 +1,73 @@
+{
+  "identical": true,
+  "payload": {
+    "jobId": "919c3ff6-8331-4912-836d-1c9e4778568a",
+    "productId": 2,
+    "adAccountId": "act_1",
+    "adAccountName": "New Media 2",
+    "pageId": "2222",
+    "pageName": "Green Glass",
+    "instagramId": "17841400000000002",
+    "instagramUsername": "green.glass",
+    "instagramKind": "LINKED",
+    "objective": "OUTCOME_SALES",
+    "budgetMode": "ABO",
+    "pixelId": "px1",
+    "pixelName": "trendy Pixel",
+    "conversionEvent": "PURCHASE",
+    "perCampaignPixel": false,
+    "platforms": [
+      "facebook",
+      "instagram"
+    ],
+    "adSetsPerCampaign": 2,
+    "adsPerAdSet": 2,
+    "campaignCount": 2,
+    "startMode": "NOW",
+    "startDate": null,
+    "startTime": null,
+    "timezone": "Africa/Cairo",
+    "launchMode": "PAUSED_REVIEW",
+    "bidding": {
+      "mode": "BID_CAP",
+      "bidCapMinor": 1200
+    },
+    "targeting": {
+      "mode": "CUSTOM",
+      "genders": "FEMALE",
+      "ageMin": 25,
+      "ageMax": 65,
+      "placementsMode": "AUTOMATIC",
+      "geoRegions": []
+    },
+    "cta": "ORDER_NOW",
+    "budget": {
+      "abo": {
+        "adSets": [
+          {
+            "dailyBudgetMinor": 20000
+          },
+          {
+            "dailyBudgetMinor": 30000
+          }
+        ]
+      }
+    },
+    "campaigns": [
+      {
+        "name": "Ear - Parity 1",
+        "primaryText": "نص رقم 1",
+        "headline": "عنوان 1",
+        "websiteUrl": "https://example.com/p1",
+        "pixelId": null
+      },
+      {
+        "name": "Ear - Parity 2",
+        "primaryText": "نص رقم 2",
+        "headline": "عنوان 2",
+        "websiteUrl": "https://example.com/p2",
+        "pixelId": null
+      }
+    ]
+  }
+}
