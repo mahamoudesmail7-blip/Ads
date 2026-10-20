@@ -24,10 +24,11 @@ import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import {
   getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
-  getCreativeNode, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
+  getCreativeNode, getCreativeNodes, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
   uploadAdImageFromUrl, uploadAdVideoFromUrl, createCampaign, createAdSet, createAdCreative, createAd,
   setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
 } from '../metaGraphClient.js';
+import { cachedMetaFetch, fingerprintToken, noteRateLimit } from '../metaAssetCache.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
 import { assertMetaWritesAllowed, checkGlobalMetaWrite } from './writeGate.js';
@@ -90,11 +91,12 @@ export function isMetaThrottle(e) {
   return !!(e.isMetaRateLimit || [4, 17, 32, 613, 80004].includes(Number(e.graphCode)) || THROTTLE_RE.test(e.message || String(e)));
 }
 const throttleWaits = (waits) => { const o = Number(process.env.CLONE_THROTTLE_WAIT_MS); return Number.isFinite(o) && process.env.CLONE_THROTTLE_WAIT_MS !== undefined ? waits.map(() => o) : waits; };
-async function withThrottleRetry(fn, label, waitsMs = [20_000, 60_000, 120_000]) {
+async function withThrottleRetry(fn, label, waitsMs = [30_000, 90_000, 180_000, 300_000]) {
   const waits = throttleWaits(waitsMs);
   for (let i = 0; ; i++) {
     try { return await fn(); } catch (e) {
       if (!isMetaThrottle(e) || i >= waits.length) throw e;
+      noteRateLimit(); // tell every other Meta reader to prefer its cache for the next 2 minutes instead of piling on (a throttle lasts longer the more it is hammered)
       logger.warn('AMB clone: Meta throttled a read — waiting then retrying', { label, attempt: i + 1, waitMs: waits[i] });
       await new Promise((r) => setTimeout(r, waits[i]));
     }
@@ -200,10 +202,7 @@ async function readCampaignTree(token, campaignId) {
     getAdNodes(token, campaignId),
   ]);
   const creativeIds = [...new Set(ads.map((a) => a.creative?.id).filter(Boolean))];
-  const creatives = new Map();
-  for (const cid of creativeIds) {
-    try { creatives.set(cid, await getCreativeNode(token, cid)); } catch (e) { creatives.set(cid, { id: cid, __error: e.message }); }
-  }
+  const creatives = await getCreativeNodes(token, creativeIds); // ONE call per 40 creatives (was one call per creative)
   // SHARE / boosted Page-post creatives (object_story_id, no object_story_spec):
   // the URL / headline / description / CTA live on the underlying Page POST,
   // not the AdCreative. Recover them here so the reconstruction has real data.
@@ -217,6 +216,19 @@ async function readCampaignTree(token, campaignId) {
     }
   }
   return { campaign, adsets, ads, creatives };
+}
+
+// The source campaign is READ at preview, again at clone time and again on every resume — on a development-access Meta app that is what trips «Too Many API Calls».
+// One shared 10-minute copy (de-duplicated, stale-on-throttle) serves all of them. Each caller gets its OWN deep copy because cloneJob mutates the tree (ad allow-list …).
+const SRC_READ_TTL_MS = 10 * 60 * 1000;
+const copyTree = (t) => ({ ...t, campaign: t.campaign ? JSON.parse(JSON.stringify(t.campaign)) : t.campaign, adsets: JSON.parse(JSON.stringify(t.adsets || [])), ads: JSON.parse(JSON.stringify(t.ads || [])), creatives: new Map([...(t.creatives || new Map())].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))])) });
+async function readCampaignTreeShared(token, campaignId) {
+  const t = await cachedMetaFetch(`clonetree:${fingerprintToken(token)}:${campaignId}`, () => readCampaignTree(token, campaignId), { ttlMs: SRC_READ_TTL_MS });
+  return copyTree(t);
+}
+async function resolveSourceAssetsShared(token, sourceAccountId, tree, campaignId) {
+  const v = await cachedMetaFetch(`clonesrc:${fingerprintToken(token)}:${campaignId}`, () => resolveSourceAssets(token, sourceAccountId, tree), { ttlMs: SRC_READ_TTL_MS });
+  return JSON.parse(JSON.stringify(v));
 }
 
 /** Resolve every source image_hash → a downloadable URL and every source video_id → a source URL (for re-upload into a destination account). */
@@ -389,9 +401,9 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
   const srcAssets = new Map();
   for (const cid of camps) {
     try {
-      const tree = await withThrottleRetry(() => readCampaignTree(token, cid), 'preview:tree', [6_000, 15_000]);
+      const tree = await withThrottleRetry(() => readCampaignTreeShared(token, cid), 'preview:tree', [6_000, 15_000]);
       trees.set(cid, tree);
-      srcAssets.set(cid, await withThrottleRetry(() => resolveSourceAssets(token, sourceAccountId, tree), 'preview:assets', [6_000, 15_000]));
+      srcAssets.set(cid, await withThrottleRetry(() => resolveSourceAssetsShared(token, sourceAccountId, tree, cid), 'preview:assets', [6_000, 15_000]));
     } catch (e) {
       trees.set(cid, { __error: e.message, __throttled: isMetaThrottle(e) });
     }
@@ -784,8 +796,8 @@ async function cloneJob(jobId, token) {
   // also produces the `resolved` asset map — audience id remap + the source
   // image/video URLs needed for re-upload.
   const pf = j(job.preflight_json, {}) || {};
-  const tree = await withThrottleRetry(() => readCampaignTree(token, job.source_campaign_id), 'clone:tree');
-  const sourceAssets = await withThrottleRetry(() => resolveSourceAssets(token, src, tree), 'clone:assets');
+  const tree = await withThrottleRetry(() => readCampaignTreeShared(token, job.source_campaign_id), 'clone:tree');
+  const sourceAssets = await withThrottleRetry(() => resolveSourceAssetsShared(token, src, tree, job.source_campaign_id), 'clone:assets');
   const destAssets = await withThrottleRetry(() => getAccountAssetsForClone(token, dest), 'clone:destAssets');
   const libHints = new Map();
   for (const [crId, crNode] of tree.creatives) {

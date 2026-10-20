@@ -930,16 +930,38 @@ export async function getAdNodes(token, campaignId) {
  * effective_object_story_id / actor_id so a "flat" creative (a boosted
  * organic post, or an Advantage+ creative with no object_story_spec) can be
  * detected and reconstructed correctly. */
+const CREATIVE_NODE_FIELDS = [
+  'id', 'name', 'object_story_spec', 'asset_feed_spec', 'degrees_of_freedom_spec', 'object_type',
+  'title', 'body', 'image_hash', 'image_url', 'video_id', 'thumbnail_url', 'call_to_action_type',
+  'link_url', 'url_tags', 'template_url_spec', 'product_set_id', 'instagram_user_id',
+  'instagram_permalink_url', 'effective_instagram_media_id', 'contextual_multi_ads', 'authorization_category',
+  'object_story_id', 'effective_object_story_id', 'actor_id', 'template_url',
+].join(',');
 export async function getCreativeNode(token, creativeId) {
-  return graphFetch(`/${creativeId}`, {
-    fields: [
-      'id', 'name', 'object_story_spec', 'asset_feed_spec', 'degrees_of_freedom_spec', 'object_type',
-      'title', 'body', 'image_hash', 'image_url', 'video_id', 'thumbnail_url', 'call_to_action_type',
-      'link_url', 'url_tags', 'template_url_spec', 'product_set_id', 'instagram_user_id',
-      'instagram_permalink_url', 'effective_instagram_media_id', 'contextual_multi_ads', 'authorization_category',
-      'object_story_id', 'effective_object_story_id', 'actor_id', 'template_url',
-    ].join(','),
-  }, token);
+  return graphFetch(`/${creativeId}`, { fields: CREATIVE_NODE_FIELDS }, token);
+}
+/**
+ * Many creatives in ONE Graph call (`?ids=a,b,c`, up to 40 per call) instead of one call per creative — a campaign with 30 ads used to cost 30 reads
+ * (and tripped Meta's «Too Many API Calls» on a development-access app). Same fields, same result shape as getCreativeNode: Map(id → node). If a batch
+ * fails for a reason other than a throttle (e.g. one id is not readable) it falls back to one-by-one so a single bad creative is still just that
+ * creative's `__error`; a THROTTLE is rethrown (never turned into a per-creative error).
+ */
+export async function getCreativeNodes(token, creativeIds) {
+  const ids = [...new Set((creativeIds || []).map(String).filter(Boolean))];
+  const out = new Map();
+  for (let i = 0; i < ids.length; i += 40) {
+    const chunk = ids.slice(i, i + 40);
+    try {
+      const r = await graphFetch('/', { ids: chunk.join(','), fields: CREATIVE_NODE_FIELDS }, token);
+      for (const id of chunk) out.set(id, r?.[id] && !r[id].error ? r[id] : { id, __error: 'لم يرجع Meta بيانات هذا الكرياتيف.' });
+    } catch (e) {
+      if (e.isMetaRateLimit) throw e;
+      for (const id of chunk) {
+        try { out.set(id, await getCreativeNode(token, id)); } catch (e2) { if (e2.isMetaRateLimit) throw e2; out.set(id, { id, __error: e2.message }); }
+      }
+    }
+  }
+  return out;
 }
 
 /** Resolve a source account's image hashes to downloadable URLs (for re-upload into a destination account). */

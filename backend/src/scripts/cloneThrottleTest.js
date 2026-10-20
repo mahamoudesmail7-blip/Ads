@@ -6,6 +6,7 @@
 import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import fs from 'node:fs';
+import http from 'node:http';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +14,19 @@ const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
 let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 300) : ''}`); } };
 
+// a loopback Meta mock (the graph client honours META_GRAPH_MOCK only for 127.0.0.1)
+const hits = []; let mode = 'ok';
+const mock = http.createServer((req, res) => {
+  const u = new URL(req.url, 'http://x'); hits.push(u.pathname + '?' + u.searchParams.toString().slice(0, 60));
+  const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+  const ids = (u.searchParams.get('ids') || '').split(',').filter(Boolean);
+  if (mode === 'throttle') return json(400, { error: { message: '(#17) User request limit reached', code: 17, type: 'OAuthException' } });
+  if (ids.length) { if (ids.includes('999')) return json(400, { error: { message: 'Unsupported get request. Object with ID 999 does not exist', code: 100, type: 'GraphMethodException' } }); return json(200, Object.fromEntries(ids.map((i) => [i, { id: i, name: 'cr' + i }]))); }
+  const one = u.pathname.split('/').pop(); if (one === '999') return json(400, { error: { message: 'Unsupported get request. Object with ID 999 does not exist', code: 100, type: 'GraphMethodException' } });
+  return json(200, { id: one, name: 'cr' + one });
+});
+await new Promise((r) => mock.listen(0, '127.0.0.1', r));
+process.env.META_GRAPH_MOCK = '1'; process.env.META_GRAPH_MOCK_URL = 'http://127.0.0.1:' + mock.address().port;
 const { prisma } = await imp('../prisma.js');
 const { isMetaThrottle, rearmThrottleBlockedJobs } = await imp('../services/amb/cloneEngine.js');
 
@@ -47,9 +61,23 @@ await prisma.ambCloneBatch.delete({ where: { batch_id: bid } }).catch(() => {});
 
 console.log('\n3. The preview never turns a throttle into a permanent BLOCK');
 const src = fs.readFileSync(join(__dirname, '../services/amb/cloneEngine.js'), 'utf8');
-ok('the source-campaign read is retried on a throttle (preview + clone time)', /withThrottleRetry\(\(\) => readCampaignTree\(token, cid\)/.test(src) && /withThrottleRetry\(\(\) => readCampaignTree\(token, job\.source_campaign_id\)/.test(src));
+ok('the source-campaign read is retried on a throttle (preview + clone time)', src.includes('withThrottleRetry(() => readCampaignTreeShared(token, cid)') && src.includes('withThrottleRetry(() => readCampaignTreeShared(token, job.source_campaign_id)'));
 ok('a throttled read is tagged and becomes a WARNING row with a WARN check; a real error still BLOCKs', /__throttled: isMetaThrottle\(e\)/.test(src) && /status: tree\.__throttled \? 'WARNING' : 'BLOCKED'/.test(src) && /tree\.__throttled \? \{ name: 'قراءة الحملة المصدر', status: 'WARN'/.test(src));
 ok('a run / resume re-arms old throttle-blocked copies first', /async function runBatch\(batchId\) \{\s*await rearmThrottleBlockedJobs\(batchId\)/.test(src));
 
+console.log('\n4. Speed + fewer Meta calls: batched creatives, shared source read');
+const { getCreativeNodes } = await imp('../services/metaGraphClient.js');
+hits.length = 0; mode = 'ok';
+const many = await getCreativeNodes('tok', ['11', '12', '13', '14', '15', '16']);
+ok('6 creatives are read with ONE Graph call (was 6)', hits.length === 1 && many.size === 6 && many.get('13').name === 'cr13', JSON.stringify(hits));
+hits.length = 0; const dup = await getCreativeNodes('tok', ['21', '21', '22']);
+ok('duplicate ids are de-duplicated', dup.size === 2 && hits.length === 1);
+hits.length = 0; const mixed = await getCreativeNodes('tok', ['31', '999', '32']);
+ok('one unreadable creative does not lose the others (falls back one-by-one; only that id gets an __error)', mixed.get('31').name === 'cr31' && mixed.get('32').name === 'cr32' && /does not exist/.test(mixed.get('999').__error || ''), JSON.stringify([...mixed]));
+hits.length = 0; mode = 'throttle'; let thrown = null; try { await getCreativeNodes('tok', ['41', '42']); } catch (e) { thrown = e; }
+ok('a throttle is RETHROWN (never disguised as a per-creative error) so the retry / WARNING logic sees it', !!thrown && isMetaThrottle(thrown), thrown && thrown.message);
+ok('and it did not fan out into one request per creative (exactly one request was sent)', hits.length === 1, String(hits.length));
+ok('the clone engine reads the source through the shared cache and the batched creative call', src.includes('readCampaignTreeShared') && src.includes('getCreativeNodes(token, creativeIds)') && src.includes('cachedMetaFetch(`clonetree:') && src.includes('noteRateLimit();'));;
+mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
