@@ -28,7 +28,8 @@ const mock = http.createServer((req, res) => {
 await new Promise((r) => mock.listen(0, '127.0.0.1', r));
 process.env.META_GRAPH_MOCK = '1'; process.env.META_GRAPH_MOCK_URL = 'http://127.0.0.1:' + mock.address().port;
 const { prisma } = await imp('../prisma.js');
-const { isMetaThrottle, rearmThrottleBlockedJobs } = await imp('../services/amb/cloneEngine.js');
+process.env.CLONE_THROTTLE_WAIT_MS = '0'; // no real waiting in tests
+const { isMetaThrottle, rearmThrottleBlockedJobs, withThrottleRetry } = await imp('../services/amb/cloneEngine.js');
 
 console.log('\n1. Throttle classification');
 const err = (message, extra = {}) => Object.assign(new Error(message), extra);
@@ -78,6 +79,16 @@ hits.length = 0; mode = 'throttle'; let thrown = null; try { await getCreativeNo
 ok('a throttle is RETHROWN (never disguised as a per-creative error) so the retry / WARNING logic sees it', !!thrown && isMetaThrottle(thrown), thrown && thrown.message);
 ok('and it did not fan out into one request per creative (exactly one request was sent)', hits.length === 1, String(hits.length));
 ok('the clone engine reads the source through the shared cache and the batched creative call', src.includes('readCampaignTreeShared') && src.includes('getCreativeNodes(token, creativeIds)') && src.includes('cachedMetaFetch(`clonetree:') && src.includes('noteRateLimit();'));;
+console.log('\n5. Meta WRITES (create campaign / ad set / ad …) wait out «too many calls to this ad-account» (80004 / 2446079) instead of failing the copy');
+const W = err('There have been too many calls to this ad-account. Wait a bit and try again. [code=80004, subcode=2446079]', { graphCode: 80004, graphSubcode: 2446079 });
+let n1 = 0; const r1 = await withThrottleRetry(async () => { n1++; if (n1 < 3) throw W; return { id: 'camp1' }; }, 't', [0, 0, 0]);
+ok('a write rejected twice by the ad-account limit succeeds on the 3rd try (nothing was created by the rejected tries)', r1.id === 'camp1' && n1 === 3, String(n1));
+let n2 = 0; let e2 = null; try { await withThrottleRetry(async () => { n2++; throw W; }, 't', [0, 0]); } catch (e) { e2 = e; }
+ok('if Meta never recovers it gives up after the configured waits and surfaces the real error (copy → FAILED, resumable)', n2 === 3 && /too many calls/.test(e2?.message || ''), String(n2));
+let n3 = 0; let e3 = null; try { await withThrottleRetry(async () => { n3++; throw err('Invalid parameter', { graphCode: 100, graphSubcode: 1487 }); }, 't', [0, 0, 0]); } catch (e) { e3 = e; }
+ok('a real error (bad payload) is NEVER retried — one attempt, same error', n3 === 1 && /Invalid parameter/.test(e3?.message || ''));
+ok('every clone-engine Meta write goes through the throttle-aware wrapper (create campaign / ad set / creative / ad / image / video / status)', ['_createCampaign', '_createAdSet', '_createAdCreative', '_createAd', '_uploadAdImageFromUrl', '_uploadAdVideoFromUrl', '_setEntityStatus'].every((n) => src.includes('writeRetry(() => ' + n + '(')));
+ok('clone batches run one at a time (a single run chain) so two batches never hammer the same quota together', src.includes('let runChain = Promise.resolve()') && src.includes('runChain = runChain.then(async () => {'));
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

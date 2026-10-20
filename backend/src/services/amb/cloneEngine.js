@@ -25,8 +25,9 @@ import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import {
   getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
   getCreativeNode, getCreativeNodes, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
-  uploadAdImageFromUrl, uploadAdVideoFromUrl, createCampaign, createAdSet, createAdCreative, createAd,
-  setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
+  uploadAdImageFromUrl as _uploadAdImageFromUrl, uploadAdVideoFromUrl as _uploadAdVideoFromUrl, createCampaign as _createCampaign,
+  createAdSet as _createAdSet, createAdCreative as _createAdCreative, createAd as _createAd,
+  setEntityStatus as _setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
 } from '../metaGraphClient.js';
 import { cachedMetaFetch, fingerprintToken, noteRateLimit } from '../metaAssetCache.js';
 import { getAmbSettings } from './settings.js';
@@ -102,6 +103,18 @@ async function withThrottleRetry(fn, label, waitsMs = [30_000, 90_000, 180_000, 
     }
   }
 }
+// Meta WRITES hit the SAME temporary limit («There have been too many calls to this ad-account», code 80004 / subcode 2446079 — the ads_management bucket of a
+// development-access app). A request Meta rejects for rate-limiting was NOT executed, so waiting and re-sending it cannot duplicate anything (the object map
+// still guards resume). Patience is longer than for reads because the bucket needs minutes, not seconds, to refill.
+const WRITE_WAITS_MS = [45_000, 90_000, 180_000, 300_000];
+const writeRetry = (fn, label) => withThrottleRetry(fn, label, WRITE_WAITS_MS);
+const createCampaign = (...a) => writeRetry(() => _createCampaign(...a), 'write:campaign');
+const createAdSet = (...a) => writeRetry(() => _createAdSet(...a), 'write:adset');
+const createAdCreative = (...a) => writeRetry(() => _createAdCreative(...a), 'write:creative');
+const createAd = (...a) => writeRetry(() => _createAd(...a), 'write:ad');
+const uploadAdImageFromUrl = (...a) => writeRetry(() => _uploadAdImageFromUrl(...a), 'write:image');
+const uploadAdVideoFromUrl = (...a) => writeRetry(() => _uploadAdVideoFromUrl(...a), 'write:video');
+const setEntityStatus = (...a) => writeRetry(() => _setEntityStatus(...a), 'write:status');
 const SRC_READ_CHECK = 'قراءة الحملة المصدر';
 /** A job that was blocked ONLY because Meta throttled the source-campaign read (an old verdict, not a real problem) goes back to PENDING so a resume re-reads it. */
 async function rearmThrottleBlockedJobs(batchId) {
@@ -117,7 +130,7 @@ async function rearmThrottleBlockedJobs(batchId) {
   }
   return n;
 }
-export { rearmThrottleBlockedJobs };
+export { rearmThrottleBlockedJobs, withThrottleRetry };
 
 // Meta error subcodes that are PAYLOAD-STRUCTURE problems, not "asset not
 // usable" — re-uploading would not help, so the re-upload retry must NOT fire.
@@ -678,10 +691,11 @@ export async function cancelBatch({ batchId, userId }) {
 // ---------------------------------------------------------------------------
 // The clone worker
 // ---------------------------------------------------------------------------
+let runChain = Promise.resolve(); // batches run ONE AT A TIME (two batches hammering the same development-access quota is what turns a slow day into «Too Many API Calls»)
 function kickRun(batchId) {
   if (running.has(batchId)) return;
   running.add(batchId);
-  setImmediate(async () => {
+  runChain = runChain.then(async () => {
     try { await runBatch(batchId); }
     catch (err) { logger.error('AMB clone runBatch crashed', { batchId, message: err.message }); }
     finally { running.delete(batchId); }
