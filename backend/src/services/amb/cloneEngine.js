@@ -79,6 +79,44 @@ function metaErrData(e) {
     blameFields: e?.graphBlameFields ?? null, fbtraceId: e?.fbtraceId ?? null,
   };
 }
+/**
+ * Meta's temporary throttle («User request limit reached — Ad Account Has Too Many API Calls», #17 / #4 / #32 / #613 / #80004).
+ * It says NOTHING about the campaign itself — it must never be treated as a permanent «محجوبة» verdict. The reads that hit it are retried with a
+ * wait, and if Meta is still throttling the copy is kept (WARNING / FAILED-resumable) so the same batch can simply be resumed a few minutes later.
+ */
+const THROTTLE_RE = /request limit reached|rate limit|too many (api )?calls/i;
+export function isMetaThrottle(e) {
+  if (!e) return false;
+  return !!(e.isMetaRateLimit || [4, 17, 32, 613, 80004].includes(Number(e.graphCode)) || THROTTLE_RE.test(e.message || String(e)));
+}
+const throttleWaits = (waits) => { const o = Number(process.env.CLONE_THROTTLE_WAIT_MS); return Number.isFinite(o) && process.env.CLONE_THROTTLE_WAIT_MS !== undefined ? waits.map(() => o) : waits; };
+async function withThrottleRetry(fn, label, waitsMs = [20_000, 60_000, 120_000]) {
+  const waits = throttleWaits(waitsMs);
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e) {
+      if (!isMetaThrottle(e) || i >= waits.length) throw e;
+      logger.warn('AMB clone: Meta throttled a read — waiting then retrying', { label, attempt: i + 1, waitMs: waits[i] });
+      await new Promise((r) => setTimeout(r, waits[i]));
+    }
+  }
+}
+const SRC_READ_CHECK = 'قراءة الحملة المصدر';
+/** A job that was blocked ONLY because Meta throttled the source-campaign read (an old verdict, not a real problem) goes back to PENDING so a resume re-reads it. */
+async function rearmThrottleBlockedJobs(batchId) {
+  const blocked = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId, status: 'PREFLIGHT_BLOCKED' } });
+  let n = 0;
+  for (const jb of blocked) {
+    const pf = j(jb.preflight_json, {}) || {};
+    const bl = (pf.checks || []).filter((c) => c.status === 'BLOCK');
+    if (!bl.length || !bl.every((c) => c.name === SRC_READ_CHECK && THROTTLE_RE.test(c.detail || ''))) continue;
+    await prisma.ambCloneJob.update({ where: { id: jb.id }, data: { status: 'PENDING', preflight_status: 'WARNING', error: null } });
+    await audit(batchId, jb.id, 'JOB_REARMED', { detail: 'اتحجبت بسبب حد طلبات مؤقت من Meta أثناء قراءة الحملة — مش مشكلة في الحملة. هتتقرا تاني وتتنسخ.' });
+    n++;
+  }
+  return n;
+}
+export { rearmThrottleBlockedJobs };
+
 // Meta error subcodes that are PAYLOAD-STRUCTURE problems, not "asset not
 // usable" — re-uploading would not help, so the re-upload retry must NOT fire.
 const STRUCTURE_ERROR_SUBCODES = new Set([1443051, 1487472, 2446385, 1885183]);
@@ -351,11 +389,11 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
   const srcAssets = new Map();
   for (const cid of camps) {
     try {
-      const tree = await readCampaignTree(token, cid);
+      const tree = await withThrottleRetry(() => readCampaignTree(token, cid), 'preview:tree', [6_000, 15_000]);
       trees.set(cid, tree);
-      srcAssets.set(cid, await resolveSourceAssets(token, sourceAccountId, tree));
+      srcAssets.set(cid, await withThrottleRetry(() => resolveSourceAssets(token, sourceAccountId, tree), 'preview:assets', [6_000, 15_000]));
     } catch (e) {
-      trees.set(cid, { __error: e.message });
+      trees.set(cid, { __error: e.message, __throttled: isMetaThrottle(e) });
     }
   }
 
@@ -371,7 +409,7 @@ export async function buildPreview({ sourceAccountId, destinationAccountIds, cam
       const destAcct = acctById.get(d) || { id: d, name: d };
       const schedAt = nextLocalTimeInTz(scheduleTime, destAcct.timezoneName, new Date());
       if (tree?.__error) {
-        rows.push({ campaignId: cid, campaignName: campName, destinationAccountId: d, destinationAccountName: destAcct.name, destinationTimezone: destAcct.timezoneName || null, scheduledActivationAt: schedAt.toISOString(), status: 'BLOCKED', checks: [{ name: 'قراءة الحملة المصدر', status: 'BLOCK', detail: tree.__error }], required: {}, currencyMismatch: false });
+        rows.push({ campaignId: cid, campaignName: campName, destinationAccountId: d, destinationAccountName: destAcct.name, destinationTimezone: destAcct.timezoneName || null, scheduledActivationAt: schedAt.toISOString(), status: tree.__throttled ? 'WARNING' : 'BLOCKED', checks: [tree.__throttled ? { name: 'قراءة الحملة المصدر', status: 'WARN', detail: `Meta وصلت لحد الطلبات مؤقتًا أثناء قراءة الحملة (${tree.__error}) — مش مشكلة في الحملة، هتتقرا تاني تلقائيًا وقت النسخ.` } : { name: 'قراءة الحملة المصدر', status: 'BLOCK', detail: tree.__error }], required: {}, currencyMismatch: false });
         continue;
       }
       const libHints = new Map();
@@ -639,6 +677,7 @@ function kickRun(batchId) {
 }
 
 async function runBatch(batchId) {
+  await rearmThrottleBlockedJobs(batchId).catch((e) => logger.warn('AMB clone: re-arm of throttle-blocked jobs failed', { batchId, message: e.message }));
   const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, include: { jobs: true } });
   if (!batch || batch.status === 'CANCELLED') return;
   { const g = await checkGlobalMetaWrite({ source: 'clone:runBatch', detail: { batchId } }); if (!g.ok) { logger.warn('AMB clone run refused by the central write guard', { batchId, code: g.code }); await prisma.ambCloneBatch.update({ where: { batch_id: batchId }, data: { error: g.message } }).catch(() => {}); return; } } // nothing is created while Emergency Stop / the write-lock is on; the batch keeps its state and can be resumed later
@@ -745,9 +784,9 @@ async function cloneJob(jobId, token) {
   // also produces the `resolved` asset map — audience id remap + the source
   // image/video URLs needed for re-upload.
   const pf = j(job.preflight_json, {}) || {};
-  const tree = await readCampaignTree(token, job.source_campaign_id);
-  const sourceAssets = await resolveSourceAssets(token, src, tree);
-  const destAssets = await getAccountAssetsForClone(token, dest);
+  const tree = await withThrottleRetry(() => readCampaignTree(token, job.source_campaign_id), 'clone:tree');
+  const sourceAssets = await withThrottleRetry(() => resolveSourceAssets(token, src, tree), 'clone:assets');
+  const destAssets = await withThrottleRetry(() => getAccountAssetsForClone(token, dest), 'clone:destAssets');
   const libHints = new Map();
   for (const [crId, crNode] of tree.creatives) {
     if (!crNode || crNode.__error) continue;
