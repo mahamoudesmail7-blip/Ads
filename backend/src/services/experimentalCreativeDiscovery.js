@@ -37,6 +37,7 @@ import * as apifyProvider from './searchProviders/apifyMetaAdLibraryProvider.js'
 import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 import * as googleSearchProvider from './searchProviders/googleSearchProvider.js';
 import { identityToSearchProfile } from './productIdentityVision.js';
+import { judgeCandidates, judgeMaxCandidates, exactJudgeEnabled } from './exactProductJudge.js';
 import { analyzeProductImages, analyzeProductImagesAiIdentityFirst, compareVisualMatchMulti, buildReferenceEmbeddings, localVisionWorthTrying } from './vision/productVisionService.js';
 
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
@@ -876,6 +877,45 @@ async function runExperimentalSearchPipelineInner(searchId) {
           });
         }
         logger.info(`${LOG_PREFIX} VISUAL_VERIFICATION_DONE`, { searchId, compared: rescored.length, referenceImageCount: referenceImages.length, exactCount, reviewCount, rejectCount });
+      }
+
+      // --- «نفس المنتج بالظبط» — the strict vision-AI judge (exactProductJudge.js). The local embedding pass above only ever compared the first
+      // MAX_VISUAL_COMPARISONS results and could not tell the same product from a look-alike (no search ever reached EXACT). The judge looks at the
+      // owner's reference photo next to EVERY candidate that has a real thumbnail (up to EXACT_JUDGE_MAX) and decides EXACT / REVIEW / REJECT; its verdict
+      // OVERRIDES the local score for every candidate it judged. Candidates it could not judge stay UNVERIFIED (never promoted). Needs only the reference
+      // image, not the local vision worker, so it also runs when the local pass was skipped.
+      if (hasImage && !isCancelled(searchId) && exactJudgeEnabled()) {
+        const pool = await prisma.experimentalCreativeResult.findMany({
+          where: { search_id: searchId, thumbnail: { not: null } },
+          orderBy: [{ match_score: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }],
+          take: judgeMaxCandidates(),
+          select: { id: true, title: true, snippet: true, thumbnail: true, ai_reason: true },
+        });
+        logger.info(`${LOG_PREFIX} EXACT_JUDGE_START`, { searchId, candidates: pool.length, referenceImages: referenceInputImages.length });
+        const { judged, aborted, batches } = await judgeCandidates({
+          references: referenceInputImages,
+          candidates: pool.map((r) => ({ id: r.id, url: r.thumbnail, text: `${r.title || ''} ${r.snippet || ''}`.trim() })),
+          isCancelled: () => isCancelled(searchId),
+          onBatch: ({ done, total }) => updateSearch(searchId, { error: `[DEBUG] exact_judge ${done}/${total} @ ${new Date().toISOString()}` }),
+        });
+        const byId = new Map(pool.map((r) => [r.id, r]));
+        let exact = 0, review = 0, reject = 0, unverified = 0;
+        for (const v of judged) {
+          if (!v.decision) { unverified++; continue; }
+          const row = byId.get(v.id);
+          if (v.decision === 'EXACT') exact++; else if (v.decision === 'REVIEW') review++; else reject++;
+          await prisma.experimentalCreativeResult.update({
+            where: { id: v.id },
+            data: {
+              match_decision: v.decision,
+              exact_match_score: v.confidence,
+              ignored: v.decision === 'REJECT',
+              match_reasons: JSON.stringify([`🔍 تحقق بالذكاء الاصطناعي: ${v.decision === 'EXACT' ? 'نفس المنتج' : v.decision === 'REVIEW' ? 'غالبًا نفس المنتج' : 'مش نفس المنتج'} (${v.confidence}%)`, ...(v.reason ? [v.reason] : [])]),
+              ai_reason: v.reason ? `${row?.ai_reason ? row.ai_reason + ' | ' : ''}🔍 ${v.reason}` : row?.ai_reason,
+            },
+          });
+        }
+        logger.info(`${LOG_PREFIX} EXACT_JUDGE_DONE`, { searchId, candidates: pool.length, batches, exact, review, reject, unverified, aborted });
       }
     }
 
