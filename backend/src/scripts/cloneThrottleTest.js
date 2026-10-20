@@ -20,6 +20,7 @@ const mock = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x'); hits.push(u.pathname + '?' + u.searchParams.toString().slice(0, 60));
   const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   const ids = (u.searchParams.get('ids') || '').split(',').filter(Boolean);
+  if (mode === 'missing') return json(400, { error: { message: 'Unsupported get request. Object does not exist', code: 100, type: 'GraphMethodException' } });
   if (mode === 'throttle') return json(400, { error: { message: '(#17) User request limit reached', code: 17, type: 'OAuthException' } });
   if (ids.length) { if (ids.includes('999')) return json(400, { error: { message: 'Unsupported get request. Object with ID 999 does not exist', code: 100, type: 'GraphMethodException' } }); return json(200, Object.fromEntries(ids.map((i) => [i, { id: i, name: 'cr' + i }]))); }
   const one = u.pathname.split('/').pop(); if (one === '999') return json(400, { error: { message: 'Unsupported get request. Object with ID 999 does not exist', code: 100, type: 'GraphMethodException' } });
@@ -89,6 +90,15 @@ let n3 = 0; let e3 = null; try { await withThrottleRetry(async () => { n3++; thr
 ok('a real error (bad payload) is NEVER retried — one attempt, same error', n3 === 1 && /Invalid parameter/.test(e3?.message || ''));
 ok('every clone-engine Meta write goes through the throttle-aware wrapper (create campaign / ad set / creative / ad / image / video / status)', ['_createCampaign', '_createAdSet', '_createAdCreative', '_createAd', '_uploadAdImageFromUrl', '_uploadAdVideoFromUrl', '_setEntityStatus'].every((n) => src.includes('writeRetry(() => ' + n + '(')));
 ok('clone batches run one at a time (a single run chain) so two batches never hammer the same quota together', src.includes('let runChain = Promise.resolve()') && src.includes('runChain = runChain.then(async () => {'));
+console.log('\n6. A throttled live-state read is NEVER read as «the scheduled campaign is gone»');
+const { getCloneJobLiveState } = await imp('../services/metaGraphClient.js');
+mode = 'ok'; const live = await getCloneJobLiveState('tok', { campaignId: '555', adsetIds: ['6'], adIds: ['7'] });
+ok('a healthy read returns the live state', !!live && live.campaign.id === '555', JSON.stringify(live).slice(0, 120));
+mode = 'missing'; const gone = await getCloneJobLiveState('tok', { campaignId: '555' });
+ok('a campaign Meta really says does not exist → null (genuinely gone)', gone === null);
+mode = 'throttle'; let thr = null; try { await getCloneJobLiveState('tok', { campaignId: '555' }); } catch (e) { thr = e; }
+ok('a throttled read THROWS (tagged as a rate limit) instead of returning null', !!thr && thr.isMetaRateLimit === true && isMetaThrottle(thr));
+ok('the reconcile re-checks copies an old throttled read wrongly marked «not found», and the status panel reports a throttle as a throttle', src.includes("error: { startsWith: 'الحملة المجدولة غير موجودة' }") && src.includes('JOB_REARMED') && src.includes('throttled,'));
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

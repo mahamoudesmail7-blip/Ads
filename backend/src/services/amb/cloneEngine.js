@@ -1622,7 +1622,11 @@ export async function reconcileNativeScheduledJobs() {
 
   const jobs = await prisma.ambCloneJob.findMany({
     where: {
-      status: 'SCHEDULED_NATIVE',
+      OR: [
+        { status: 'SCHEDULED_NATIVE' },
+        // a throttled live-state read used to be read as «campaign not found» and flip a healthy scheduled copy to ACTIVATION_FAILED — re-check those on Meta (a throttle is now thrown, never read as «gone»)
+        { status: 'ACTIVATION_FAILED', destination_campaign_id: { not: null }, error: { startsWith: 'الحملة المجدولة غير موجودة' } },
+      ],
       batch: { status: { notIn: ['CANCELLED'] } },
     },
     take: 50,
@@ -1652,6 +1656,11 @@ export async function reconcileNativeScheduledJobs() {
       continue;
     }
 
+    if (job.status === 'ACTIVATION_FAILED') { // it IS on Meta — the earlier «not found» was a throttled read
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'SCHEDULED_NATIVE', error: null } });
+      await audit(job.batch_id, job.id, 'JOB_REARMED', { detail: 'الحملة المجدولة موجودة فعلًا على Meta — حكم «غير موجودة» القديم كان بسبب حد طلبات مؤقت، اتصحّح.' });
+      await recomputeBatchStatus(job.batch_id);
+    }
     // Meta rejected the ad(s) — surface it, do NOT recreate.
     if (state.reviewStatus === 'REJECTED') {
       const fb = state.rejectedFeedback ? JSON.stringify(state.rejectedFeedback).slice(0, 600) : 'بدون تفاصيل من Meta';
@@ -1703,12 +1712,16 @@ export async function getCloneJobMetaStatus(jobId) {
   if (!job) { const e = new Error('المهمة غير موجودة.'); e.status = 404; throw e; }
   const idMap = j(job.id_map_json, {}) || {};
   const { token } = await requireConnectedToken();
-  const state = await getCloneJobLiveState(token, {
-    campaignId: job.destination_campaign_id,
-    adsetIds: Object.values(idMap.adsets || {}),
-    adIds: Object.values(idMap.ads || {}),
-  });
+  let state = null; let throttled = false;
+  try {
+    state = await getCloneJobLiveState(token, {
+      campaignId: job.destination_campaign_id,
+      adsetIds: Object.values(idMap.adsets || {}),
+      adIds: Object.values(idMap.ads || {}),
+    });
+  } catch (e) { if (!isMetaThrottle(e)) throw e; throttled = true; }
   return {
+    throttled,
     jobId: job.id,
     jobStatus: job.status,
     destinationCampaignId: job.destination_campaign_id,

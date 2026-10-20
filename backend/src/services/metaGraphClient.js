@@ -645,9 +645,15 @@ export async function getEntityLive(token, entityId) {
  * native-scheduling reconciliation + the "حالة مراجعة Meta" UI panel. Never
  * writes. Returns null only if the campaign id itself can't be read.
  */
+// A Meta THROTTLE is not «the campaign is gone»: it is thrown (tagged isMetaRateLimit) so no caller can read a throttled answer as «deleted» and mark a healthy scheduled campaign failed.
+const liveRead = async (path, params, token) => {
+  const r = await graphGetProbe(path, params, token);
+  if (r.rateLimited) { const e = new Error('Meta rate limit while reading the live state (too many calls to this ad-account) — try again in a few minutes.'); e.isMetaRateLimit = true; e.graphCode = 80004; throw e; }
+  return r.ok ? r.data : null;
+};
 export async function getCloneJobLiveState(token, { campaignId, adsetIds = [], adIds = [] }) {
   if (!campaignId) return null;
-  const camp = await graphGetQuiet(`/${campaignId}`, { fields: 'id,name,status,effective_status,start_time,stop_time' }, token);
+  const camp = await liveRead(`/${campaignId}`, { fields: 'id,name,status,effective_status,start_time,stop_time' }, token);
   if (!camp || !camp.id) return null;
   const norm = (d) => ({
     id: d.id,
@@ -658,12 +664,12 @@ export async function getCloneJobLiveState(token, { campaignId, adsetIds = [], a
   });
   const adsets = [];
   for (const id of adsetIds) {
-    const d = await graphGetQuiet(`/${id}`, { fields: 'id,name,status,effective_status,start_time,end_time' }, token);
+    const d = await liveRead(`/${id}`, { fields: 'id,name,status,effective_status,start_time,end_time' }, token);
     if (d && d.id) adsets.push({ ...norm(d), name: d.name || null });
   }
   const ads = [];
   for (const id of adIds) {
-    const d = await graphGetQuiet(`/${id}`, { fields: 'id,name,status,effective_status,ad_review_feedback' }, token);
+    const d = await liveRead(`/${id}`, { fields: 'id,name,status,effective_status,ad_review_feedback' }, token);
     if (d && d.id) {
       ads.push({
         ...norm(d), name: d.name || null,
