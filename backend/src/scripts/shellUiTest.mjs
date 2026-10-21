@@ -34,7 +34,8 @@ const view = (width, height = 900) => send('Emulation.setDeviceMetricsOverride',
 const openShell = async (hash, { width = 1440, theme = null, collapsed = false } = {}) => {
   errors = []; await view(width);
   await send('Page.navigate', { url: 'about:blank' }); await sleep(100);
-  await send('Page.navigate', { url: `${BASE}/login.html` }); await waitFor(`document.readyState === 'complete'`, 15000);
+  // any same-origin document that does NOT redirect: login.html bounces a signed-in visitor to the shell root and could race the next navigation
+  await send('Page.navigate', { url: `${BASE}/css/embed.css` }); await waitFor(`document.readyState === 'complete'`, 15000);
   await js(`localStorage.removeItem('shGroupsClosed'); localStorage.setItem('shellCollapsed', ${collapsed ? "'1'" : "'0'"}); ${theme ? `localStorage.setItem('theme','${theme}')` : `localStorage.removeItem('theme')`}`);
   await send('Page.navigate', { url: `${BASE}/app.html${hash}` });
   return waitFor(`!!document.querySelector('.sh-group') && document.getElementById('shStage').classList.contains('ready')`, 45000);
@@ -81,6 +82,10 @@ try {
   ok('a deep link opens that page and its menu entry', await openShell('#/products.html') && (await frameInfo()).file === 'products.html' && await js(`document.querySelector('.sh-item.active')?.dataset.key === 'products'`));
   ok('a deep link to a section opens it and highlights the nested entry', await openShell('#/ai-media-buyer.html#launch') && await js(`document.querySelector('.sh-child.active')?.dataset.child === 'launch' && document.querySelector('.sh-children[data-kids="aimediabuyer"]').classList.contains('open')`));
   ok('an unknown / hostile route falls back to the home page (never loads it)', await openShell('#/https://evil.example/x.html') && (await frameInfo()).file === 'index.html');
+  await send('Page.navigate', { url: `${BASE}/products.html` });
+  ok('opening a plain page address (a bookmark / old link) lands INSIDE the shell, on that page', await waitFor(`location.pathname.endsWith('/app.html') && location.hash === '#/products.html' && document.querySelector('.sh-item.active')?.dataset.key === 'products'`, 30000));
+  await send('Page.navigate', { url: `${BASE}/products.html?standalone=1` });
+  ok('…unless it asks to stay standalone (?standalone=1) or carries its own query — those open as before', await waitFor(`location.pathname.endsWith('/products.html') && !!document.querySelector('.sidebar')`, 30000));
   await openShell('#/ai-media-buyer.html#plan'); const loadsBefore = await js(`window.__n = (window.__n || 0) + 1; document.getElementById('shFrame').contentWindow.__marker = 'same-document'; 1`);
   await js(`document.querySelector('.sh-child[data-child="clone"]').click()`);
   ok('moving between sub-sections does NOT reload the page (same document, only the section changes)', await waitFor(`document.getElementById('shFrame').contentWindow.location.hash === '#clone'`) && await js(`document.getElementById('shFrame').contentWindow.__marker === 'same-document'`) && await js(`location.hash === '#/ai-media-buyer.html#clone'`));

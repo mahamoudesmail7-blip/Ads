@@ -125,7 +125,7 @@ const drive = async () => {
 
 try {
   await send('Page.navigate', { url: `${BASE}/login.html` }); await sleep(1200);
-  const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
+  await js(`localStorage.setItem('noShell','1')`); const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
   if (login !== 200) { console.log('login failed (is the server running on the TEST database?) — stopping'); process.exit(2); }
 
   console.log('\n1. Step 1 · المنتج — product grid with search, filters and selection');

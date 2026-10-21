@@ -63,7 +63,7 @@ const shot = async (name) => { if (!CAPTURE) return; const r = await send('Page.
 
 try {
   await send('Page.navigate', { url: `${BASE}/login.html` }); await sleep(1200);
-  const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
+  await js(`localStorage.setItem('noShell','1')`); const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
   if (login !== 200) { console.log('login failed (is the server running on the TEST database?) — stopping'); process.exit(2); }
 
   console.log('\n1. The premium layout: every real control is still there (same ids), and the stepper is the premium one');

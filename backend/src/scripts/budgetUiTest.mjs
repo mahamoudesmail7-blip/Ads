@@ -46,7 +46,7 @@ const api = (m, p, b) => js(`fetch('${p}',{method:'${m}',headers:{'content-type'
 const click = (sel) => js(`document.querySelector('${sel}').click()`);
 try {
   await send('Page.navigate', { url: BASE + '/login.html' }); await sleep(1200);
-  const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
+  await js(`localStorage.setItem('noShell','1')`); const login = await js(`fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email:'test-owner@example.invalid',password:'Test-Owner-Only-2026!'})}).then(r=>r.status)`);
   if (login !== 200) { console.log('login failed — stopping'); process.exit(2); }
   await api('PUT', '/api/operator/mode', { mode: 'MANUAL' }); await api('PUT', '/api/operator/execution-permissions/budgetIncrease', { on: true, confirm: true }); await api('PUT', '/api/operator/execution-permissions/budgetDecrease', { on: true, confirm: true });
   console.log('\n1. «إدارة الميزانيات» shows the manual panel with CBO / ABO labels and one button per direction');
