@@ -122,6 +122,27 @@ const adWithBid = buildAdSetPayload({ ...asBase, bid_amount: 1500 }, { ...ctx, s
 ok('…but if the ad set has its own bid amount it is not forced to no-cap (stays consistent)', adWithBid.bid_strategy === undefined && adWithBid.bid_amount === 1500);
 const adNormal = buildAdSetPayload({ ...asBase, bid_strategy: 'COST_CAP', bid_amount: 2000 }, { ...ctx });
 ok('an ordinary ABO clone keeps its own ad-set strategy and bid (unchanged)', adNormal.bid_strategy === 'COST_CAP' && adNormal.bid_amount === 2000);
+
+console.log('\n8. The four combinations all build a valid payload: CBO or ABO source × CBO or ABO scale');
+const srcCbo = { daily_budget: '60000', bid_strategy: 'LOWEST_COST_WITHOUT_CAP' }; const srcAbo = { is_adset_budget_sharing_enabled: false };
+const adsetsCbo = [{ id: 'a', name: 'A', targeting: { geo_locations: { countries: ['EG'] } }, optimization_goal: 'OFFSITE_CONVERSIONS', billing_event: 'IMPRESSIONS', status: 'PAUSED' }];
+const adsetsAbo = [{ ...adsetsCbo[0], daily_budget: '30000', bid_strategy: 'LOWEST_COST_WITHOUT_CAP' }];
+const baseCtx = { newCampaignId: 'c1', resolved: { audienceRemap: {} }, pixelMap: {}, nativeStartTime: null };
+const combos = [
+  ['CBO source → CBO scale (owner budget 700)', srcCbo, adsetsCbo, { scaleBudgetEgp: 700 }, { cBudget: 70000, adBudget: undefined, strat: 'LOWEST_COST_WITHOUT_CAP' }],
+  ['ABO source → CBO scale (owner budget 700)', srcAbo, adsetsAbo, { scaleBudgetEgp: 700 }, { cBudget: 70000, adBudget: undefined, strat: 'LOWEST_COST_WITHOUT_CAP' }],
+  ['CBO source → ABO scale (per-slot 200)', srcCbo, adsetsCbo, { hasSlotPlan: true, slot: 20000 }, { cBudget: undefined, adBudget: 20000, strat: 'LOWEST_COST_WITHOUT_CAP' }],
+  ['ABO source → ABO scale (per-slot 200)', srcAbo, adsetsAbo, { hasSlotPlan: true, slot: 20000 }, { cBudget: undefined, adBudget: 20000, strat: 'LOWEST_COST_WITHOUT_CAP' }],
+];
+for (const [label, c, adsets, opt, want] of combos) {
+  const camp = applyCampaignBudget({ name: 'n' }, { c, tree: { adsets }, hasSlotPlan: !!opt.hasSlotPlan, scaleBudgetEgp: opt.scaleBudgetEgp || null });
+  const slotFromCbo = !!opt.hasSlotPlan && !!(c.daily_budget || c.lifetime_budget);
+  const ad = buildAdSetPayload({ ...adsets[0], ...(opt.slot ? { __slotDailyBudgetMinor: opt.slot } : {}) }, { ...baseCtx, campaignHasBudget: !!(opt.scaleBudgetEgp || opt.hasSlotPlan || c.daily_budget), scaleBudgetForced: !!opt.scaleBudgetEgp, slotFromCbo, campaignBidStrategy: c.bid_strategy || null });
+  const campOk = camp.daily_budget === want.cBudget && (want.cBudget ? camp.bid_strategy === want.strat : camp.bid_strategy === undefined);
+  const adOk = ad.daily_budget === want.adBudget && ad.bid_strategy === want.strat;
+  const assertionOk = !(opt.hasSlotPlan && (camp.daily_budget || camp.lifetime_budget)) && !(opt.scaleBudgetEgp && !camp.daily_budget) && !(opt.scaleBudgetEgp && (ad.daily_budget || ad.lifetime_budget));
+  ok(label + ': campaign + ad set payloads are consistent (budget on exactly one level, valid strategy) and pass the engine\'s own safety checks', campOk && adOk && assertionOk, JSON.stringify({ camp, ad: { daily_budget: ad.daily_budget, bid_strategy: ad.bid_strategy } }));
+}
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 300).unref?.();
