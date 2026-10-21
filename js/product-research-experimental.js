@@ -390,7 +390,8 @@ function renderProgress(data) {
   document.getElementById('icdProductMeta').innerHTML = [
     `<span>نوع البحث: <b>${data.mode === 'deep' ? 'عميق' : 'سريع'}</b></span>`,
     `<span>عدد المنصات: <b>${data.platforms.length}</b></span>`,
-    `<span>إجمالي النتائج: <b>${data.resultCount}</b></span>`,
+    `<span>${data.verification ? 'نتائج متحقق منها (نفس المنتج)' : 'إجمالي النتائج'}: <b>${data.verification?.pending ? '— جاري التحقق' : data.resultCount}</b></span>`,
+    data.verification ? `<span class="icd-mini-badge ${data.verification.state === 'DONE' ? 'green' : data.verification.pending ? 'yellow' : 'red'}" title="النتائج الشبيهة أو غير المتأكد منها مخفية">🔒 ${escapeHtml(data.verification.messageAr)}</span>` : '',
     `<span>الحالة: <b>${STATUS_LABEL_AR[data.status] || data.status}</b></span>`,
     data.productImages?.length ? `<span>🖼️ بحث بالصورة (${data.productImages.length} صور مرجعية)</span>` : '',
     // Step: honest AI-expansion status (Part 2/11) — never pretend Claude

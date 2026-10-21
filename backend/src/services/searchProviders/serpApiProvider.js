@@ -132,3 +132,41 @@ export async function searchAdLibrary({ query, resultsLimit = 10 }) {
     raw: item,
   }));
 }
+
+// ---- Reverse-image search (Google Lens engine) -----------------------------------------------------------------------------------------------------------
+// Test-only SerpApi mock: honoured ONLY when SERPAPI_MOCK=1 and the URL is loopback — production never sets these.
+const LENS_MOCK = process.env.SERPAPI_MOCK === '1' && /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}$/.test(process.env.SERPAPI_MOCK_URL || '') ? process.env.SERPAPI_MOCK_URL : null;
+
+/**
+ * Google Lens by image URL. type: 'exact_matches' | 'visual_matches' | 'products' | 'all'.
+ * @returns {Promise<{url:string, title:string|null, snippet:string|null, thumbnail:string|null, accountName:string|null, price:object|null, raw:object}[]>}
+ */
+export async function searchByImage({ imageUrl, type = 'visual_matches', country = 'eg', resultsLimit = 40 }) {
+  const apiKey = process.env.SERPAPI_API_KEY?.trim();
+  if (!apiKey) throw new Error('SerpApi Provider غير مربوط — SERPAPI_API_KEY مش متظبط.');
+  const url = new URL(LENS_MOCK ? `${LENS_MOCK}/search.json` : ENDPOINT);
+  url.searchParams.set('engine', 'google_lens');
+  url.searchParams.set('api_key', apiKey);
+  url.searchParams.set('url', imageUrl);
+  url.searchParams.set('type', type);
+  url.searchParams.set('hl', 'ar');
+  url.searchParams.set('country', String(country || 'eg').toLowerCase());
+  let res;
+  try { res = await fetch(url.toString(), { signal: AbortSignal.timeout(45000) }); } catch (err) { throw new Error(`مقدرش أوصل لـ SerpApi: ${err.message}`); }
+  const data = await res.json().catch(() => null);
+  if (res.ok && typeof data?.error === 'string' && /hasn't returned any results|returned any results/i.test(data.error)) return [];
+  if (!res.ok || data?.error) {
+    logger.error('SERPAPI_LENS_FAILED', { status: res.status, message: data?.error || res.status, type });
+    throw new Error(data?.error || `SerpApi error ${res.status}`);
+  }
+  const rows = type === 'exact_matches' ? (data.exact_matches || data.visual_matches || []) : (data.visual_matches || data.exact_matches || []);
+  return rows.slice(0, resultsLimit).map((m) => ({
+    url: m.link,
+    title: m.title || null,
+    snippet: m.source || null,
+    thumbnail: m.thumbnail || m.image || null,
+    accountName: m.source || null,
+    price: m.price ? { value: m.price.value ?? m.price.extracted_value ?? null, currency: m.price.currency || null } : null,
+    raw: m,
+  }));
+}

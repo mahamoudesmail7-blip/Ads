@@ -38,6 +38,7 @@ import { runStagedSearch } from './searchProviders/metaAdLibraryProvider.js';
 import * as googleSearchProvider from './searchProviders/googleSearchProvider.js';
 import { identityToSearchProfile } from './productIdentityVision.js';
 import { judgeCandidates, judgeMaxCandidates, exactJudgeEnabled } from './exactProductJudge.js';
+import { discoverByImage } from './reverseImageDiscovery.js';
 import { analyzeProductImages, analyzeProductImagesAiIdentityFirst, compareVisualMatchMulti, buildReferenceEmbeddings, localVisionWorthTrying } from './vision/productVisionService.js';
 
 const LOG_PREFIX = '[InternalCreativeDiscovery]';
@@ -554,6 +555,22 @@ async function runExperimentalSearchPipelineInner(searchId) {
     logger.info(`${LOG_PREFIX} STARTING_PLATFORM_DISCOVERY`, { searchId, platforms });
     const providerAnyConfigured = (await isAnyProviderConfigured()) || apifyHandlesAdLibrary || usesGoogle;
     const allNormalized = [];
+
+    // --- Reverse-image discovery (Google Lens): pages / ads / shops that SHOW the owner's product, found from the photo itself — text keywords alone mostly
+    // return look-alikes. Everything found here is still verified by the exact-product judge below; a skip / failure never stops the rest of the search. ---
+    if (hasImage && !isCancelled(searchId)) {
+      try {
+        const lens = await discoverByImage({ references: referenceInputImages, country: search.country });
+        if (lens.normalized.length > 0) {
+          allNormalized.push(...lens.normalized);
+          await saveIncrementalResults(searchId, lens.normalized);
+        }
+        await prisma.experimentalCreativeQuery.create({ data: { search_id: searchId, platform: 'google', query: 'reverse-image (Google Lens)', query_type: 'REVERSE_IMAGE', provider: 'serpapi_google_lens', status: lens.status === 'OK' ? 'COMPLETE' : lens.status.startsWith('SKIPPED') ? 'SKIPPED' : 'FAILED', result_count: lens.normalized.length, error: lens.error || (lens.status.startsWith('SKIPPED') ? lens.status : null) } }).catch(() => {});
+        logger.info(`${LOG_PREFIX} REVERSE_IMAGE_DONE`, { searchId, status: lens.status, found: lens.normalized.length, counts: lens.counts });
+      } catch (err) {
+        logger.error(`${LOG_PREFIX} REVERSE_IMAGE_FAILED`, { searchId, message: err.message });
+      }
+    }
 
     // --- Google first (Step 16's Stage B needs its evidence before the
     // remaining platforms' queries are generated from the enriched profile) ---

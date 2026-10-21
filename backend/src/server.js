@@ -25,6 +25,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 import healthRoutes from './routes/health.js';
+import researchReferenceRoutes from './routes/researchReference.js';
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
 import orderRoutes from './routes/orders.js';
@@ -96,6 +97,7 @@ app.use(express.json({ limit: '20mb' })); // 20mb: covers the IndexedDB export/i
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', { stream: { write: (msg) => logger.info(msg.trim()) } }));
 
 app.use('/health', healthRoutes);
+app.use('/api/research-ref', researchReferenceRoutes); // PUBLIC, token-gated 25-minute copy of a reference photo so Google Lens can fetch it (see services/researchReferenceHost.js)
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);

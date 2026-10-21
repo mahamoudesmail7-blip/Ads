@@ -12,6 +12,7 @@
 // this session cannot set on the user's behalf); set it to the literal
 // string "false" to hide the experimental section entirely without
 // touching any other code.
+import { visibilityFor, verificationInfo } from '../services/researchVisibility.js';
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
@@ -325,7 +326,10 @@ router.get(
     const search = await prisma.experimentalCreativeSearch.findUnique({ where: { id: Number(req.params.id) } });
     if (!search) return res.status(404).json({ error: 'NOT_FOUND', message: 'البحث التجريبي ده مش موجود.' });
 
-    const resultCount = await prisma.experimentalCreativeResult.count({ where: { search_id: search.id, ignored: false } });
+    // «راجع الداتا قبل ما تديني نتايج»: an image search shows nothing until it was checked against the photo, and then only verified results (researchVisibility.js).
+    const vis = visibilityFor(search);
+    const visibleWhere = { search_id: search.id, ignored: false, ...(vis.resultFilter || {}) };
+    const resultCount = vis.verificationPending ? 0 : await prisma.experimentalCreativeResult.count({ where: visibleWhere });
     const platforms = JSON.parse(search.platforms_json || '[]');
     const platformStatusMap = JSON.parse(search.platform_status_json || '{}');
     // Real per-platform 0-100 progress (Step: real Progress system) —
@@ -335,7 +339,7 @@ router.get(
     const platformProgressMap = JSON.parse(search.platform_progress_json || '{}');
 
     // Real per-platform collected/unique counts — never hardcoded demo numbers.
-    const rows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id, ignored: false }, select: { platform: true, classification: true } });
+    const rows = vis.verificationPending ? [] : await prisma.experimentalCreativeResult.findMany({ where: visibleWhere, select: { platform: true, classification: true } });
     const byPlatform = {};
     for (const p of platforms) byPlatform[p] = rows.filter((r) => r.platform === p).length;
 
@@ -370,7 +374,7 @@ router.get(
     // — see productVisionService.js's buildReferenceEmbeddings) — visual_
     // match_score is the real, direct signal that a comparison genuinely
     // ran, regardless of which path produced the reference embeddings.
-    const matchRows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id }, select: { match_decision: true, visual_match_score: true } });
+    const matchRows = await prisma.experimentalCreativeResult.findMany({ where: { search_id: search.id }, select: { match_decision: true, visual_match_score: true, ignored: true } });
     const visualMatchingActive = matchRows.some((r) => r.visual_match_score !== null);
     // "exact" mirrors the /results route's EXACT-tab filter exactly. When a
     // reference image was uploaded, a result that was never visually
@@ -385,8 +389,9 @@ router.get(
       exact: matchRows.filter((r) => r.match_decision === 'EXACT' || (!search.product_image && r.match_decision === null)).length,
       review: matchRows.filter((r) => r.match_decision === 'REVIEW').length,
       reject: matchRows.filter((r) => r.match_decision === 'REJECT').length,
-      unverified: search.product_image ? matchRows.filter((r) => r.match_decision === null).length : 0,
+      unverified: 0, // an image search never shows unverified results (see researchVisibility.js); how many were hidden is in `verification`
     };
+    const verification = verificationInfo(search, matchRows);
 
     res.json({
       id: search.id,
@@ -409,6 +414,7 @@ router.get(
       aiProfile: search.ai_profile_json ? JSON.parse(search.ai_profile_json) : null,
       error: search.error,
       resultCount,
+      verification, // null for a text-only search; {state, pending, exact, review, hiddenRejected, hiddenUnverified, messageAr} for an image search
       // Step: exact product matching — the honest signal for whether real
       // visual verification ran this search, independent of whether an
       // identity profile was generated (see comment above matchRows).
@@ -465,7 +471,11 @@ router.get(
     // first"; falls back to the text match_score for anything not
     // visually verified (beyond the comparison cap) or when no image was
     // ever uploaded for this search.
-    const searchHasImage = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId }, select: { product_image: true } }).then((s) => Boolean(s?.product_image));
+    const searchRow = await prisma.experimentalCreativeSearch.findUnique({ where: { id: searchId }, select: { product_image: true, status: true } });
+    const searchHasImage = Boolean(searchRow?.product_image);
+    const vis = visibilityFor(searchRow);
+    if (vis.resultFilter) where.AND = [...(where.AND || []), vis.resultFilter]; // an image search lists ONLY judge-verified results (EXACT / REVIEW), whatever tab or filter was asked for
+    if (vis.verificationPending || (searchHasImage && matchDecision === 'UNVERIFIED')) where.id = -1; // still being checked, or the (now removed) «unverified» group: nothing to show
 
     // Step: exact product matching — the explicit grouping tabs
     // ("مطابق للمنتج" / "محتاج مراجعة" / "لسه ما اتفحصش") filter on the
@@ -562,7 +572,8 @@ router.get(
 
     const [queries, results] = await Promise.all([
       prisma.experimentalCreativeQuery.findMany({ where: { search_id: searchId }, select: { platform: true, query: true, result_count: true, status: true } }),
-      prisma.experimentalCreativeResult.findMany({ where: { search_id: searchId }, select: { platform: true, match_decision: true, discovered_by_queries_json: true } }),
+      // an image search credits search terms only with results that were verified as the product (researchVisibility.js); nothing while it is still being checked
+      visibilityFor(search).verificationPending ? Promise.resolve([]) : prisma.experimentalCreativeResult.findMany({ where: { search_id: searchId, ...(visibilityFor(search).resultFilter || {}) }, select: { platform: true, match_decision: true, discovered_by_queries_json: true } }),
     ]);
 
     const counters = new Map(); // "platform|term" -> row
