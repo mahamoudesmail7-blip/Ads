@@ -928,25 +928,7 @@ async function cloneJob(jobId, token) {
         special_ad_categories: srcSac,
       };
       if (c.special_ad_category_country) payload.special_ad_category_country = c.special_ad_category_country;
-      if (c.bid_strategy) payload.bid_strategy = c.bid_strategy;
-      if (scaleBudgetEgp) {
-        // Owner-set scale budget wins — one campaign-level daily budget (CBO).
-        payload.daily_budget = Math.round(scaleBudgetEgp * 100);
-        // A CBO campaign REQUIRES a campaign-level bid_strategy. An ABO source
-        // has none, and Meta then defaults to LOWEST_COST_WITH_BID_CAP which
-        // demands a bid cap nothing supplies -> ad-set create fails "Bid Amount
-        // Required". Take the source ad sets' strategy when they all agree on
-        // one that needs no cap; otherwise LOWEST_COST_WITHOUT_CAP. No bidding
-        // change beyond what the ABO->CBO move forces.
-        const NO_CAP = new Set(['LOWEST_COST_WITHOUT_CAP']);
-        const srcStrats = [...new Set((tree.adsets || []).map((a) => a.bid_strategy).filter(Boolean))];
-        payload.bid_strategy = (c.bid_strategy && NO_CAP.has(c.bid_strategy)) ? c.bid_strategy
-          : (srcStrats.length === 1 && NO_CAP.has(srcStrats[0])) ? srcStrats[0]
-          : 'LOWEST_COST_WITHOUT_CAP';
-      } else {
-        if (c.daily_budget) payload.daily_budget = Number(c.daily_budget);
-        if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
-      }
+      applyCampaignBudget(payload, { c, tree, hasSlotPlan, scaleBudgetEgp });
       if (c.spend_cap && Number(c.spend_cap) > 0) payload.spend_cap = Number(c.spend_cap);
       if (c.pacing_type) payload.pacing_type = c.pacing_type;
       // ABO campaigns (no campaign-level budget): Meta requires this field
@@ -1098,7 +1080,7 @@ async function cloneJob(jobId, token) {
       idMap.adsets[as.id] = newAdsetId;
     } else {
       try {
-        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap, scaleBudgetForced, nativeStartTime });
+        const payload = buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved: R, pixelMap, scaleBudgetForced, nativeStartTime, slotFromCbo: hasSlotPlan && !!(tree.campaign.daily_budget || tree.campaign.lifetime_budget), campaignBidStrategy: tree.campaign.bid_strategy || null });
         // §12 assertion — ABO: this ad set MUST carry the owner's budget; CBO: it must NOT.
         if (hasSlotPlan && !(payload.daily_budget > 0)) throw new Error(`ABO scale: ad set "${as.name}" payload is missing daily_budget.`);
         if (scaleBudgetForced && (payload.daily_budget || payload.lifetime_budget)) throw new Error(`CBO scale: ad set "${as.name}" payload must not carry a budget.`);
@@ -1302,6 +1284,35 @@ async function cloneJob(jobId, token) {
 // ---- payload builders ----
 function deepClone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)); }
 
+/**
+ * The campaign-level budget / bid-strategy fields of a clone's campaign payload.
+ *   • CBO scale (owner-set campaign budget): one campaign daily_budget + a no-cap campaign bid_strategy.
+ *   • ABO slot plan (the owner's per-slot budgets live on the AD SETS): the campaign carries NO budget and NO campaign bid_strategy — even when the SOURCE
+ *     campaign was CBO (campaign budget + strategy). Copying the source's campaign budget there is exactly what failed «ABO scale: destination campaign payload
+ *     must not carry daily_budget/lifetime_budget» for a CBO source scaled as ABO.
+ *   • plain clone: copy the source's campaign budget + strategy as they are.
+ */
+export function applyCampaignBudget(payload, { c, tree, hasSlotPlan = false, scaleBudgetEgp = null }) {
+  const slotPlanAbo = hasSlotPlan && !scaleBudgetEgp;
+  if (c.bid_strategy && !slotPlanAbo) payload.bid_strategy = c.bid_strategy;
+  if (scaleBudgetEgp) {
+    // Owner-set scale budget wins — one campaign-level daily budget (CBO).
+    payload.daily_budget = Math.round(scaleBudgetEgp * 100);
+    // A CBO campaign REQUIRES a campaign-level bid_strategy. An ABO source has none, and Meta then defaults to LOWEST_COST_WITH_BID_CAP which demands a bid cap
+    // nothing supplies -> ad-set create fails "Bid Amount Required". Take the source ad sets' strategy when they all agree on one that needs no cap; otherwise
+    // LOWEST_COST_WITHOUT_CAP. No bidding change beyond what the ABO->CBO move forces.
+    const NO_CAP = new Set(['LOWEST_COST_WITHOUT_CAP']);
+    const srcStrats = [...new Set((tree.adsets || []).map((a) => a.bid_strategy).filter(Boolean))];
+    payload.bid_strategy = (c.bid_strategy && NO_CAP.has(c.bid_strategy)) ? c.bid_strategy
+      : (srcStrats.length === 1 && NO_CAP.has(srcStrats[0])) ? srcStrats[0]
+      : 'LOWEST_COST_WITHOUT_CAP';
+  } else if (!slotPlanAbo) {
+    if (c.daily_budget) payload.daily_budget = Number(c.daily_budget);
+    if (c.lifetime_budget) payload.lifetime_budget = Number(c.lifetime_budget);
+  }
+  return payload;
+}
+
 function transformTargeting(targeting, resolved) {
   const t = deepClone(targeting) || {};
   const remap = resolved?.audienceRemap || {};
@@ -1313,7 +1324,7 @@ function transformTargeting(targeting, resolved) {
   return t;
 }
 
-function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {}, scaleBudgetForced = false, nativeStartTime = null }) {
+export function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pixelMap = {}, scaleBudgetForced = false, nativeStartTime = null, slotFromCbo = false, campaignBidStrategy = null }) {
   const payload = {
     name: as.name,
     campaign_id: newCampaignId,
@@ -1338,6 +1349,10 @@ function buildAdSetPayload(as, { newCampaignId, campaignHasBudget, resolved, pix
   } else {
     if (as.bid_amount != null && Number(as.bid_amount) > 0) payload.bid_amount = Number(as.bid_amount);
     if (as.bid_strategy) payload.bid_strategy = as.bid_strategy;
+  }
+  if (slotFromCbo && !payload.bid_strategy) { // CBO source → ABO ad sets: the strategy lived on the campaign; without one Meta defaults to «bid cap» and demands a bid amount nobody supplied
+    const strat = campaignBidStrategy || (payload.bid_amount ? null : 'LOWEST_COST_WITHOUT_CAP');
+    if (strat) payload.bid_strategy = strat;
   }
   if (as.__slotDailyBudgetMinor > 0) {
     // ABO scale: the owner's per-slot daily budget lives HERE (campaign carries none).

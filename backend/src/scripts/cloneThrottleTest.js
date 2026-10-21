@@ -30,7 +30,7 @@ await new Promise((r) => mock.listen(0, '127.0.0.1', r));
 process.env.META_GRAPH_MOCK = '1'; process.env.META_GRAPH_MOCK_URL = 'http://127.0.0.1:' + mock.address().port;
 const { prisma } = await imp('../prisma.js');
 process.env.CLONE_THROTTLE_WAIT_MS = '0'; // no real waiting in tests
-const { isMetaThrottle, rearmThrottleBlockedJobs, withThrottleRetry } = await imp('../services/amb/cloneEngine.js');
+const { isMetaThrottle, rearmThrottleBlockedJobs, withThrottleRetry, applyCampaignBudget, buildAdSetPayload } = await imp('../services/amb/cloneEngine.js');
 
 console.log('\n1. Throttle classification');
 const err = (message, extra = {}) => Object.assign(new Error(message), extra);
@@ -99,6 +99,29 @@ ok('a campaign Meta really says does not exist → null (genuinely gone)', gone 
 mode = 'throttle'; let thr = null; try { await getCloneJobLiveState('tok', { campaignId: '555' }); } catch (e) { thr = e; }
 ok('a throttled read THROWS (tagged as a rate limit) instead of returning null', !!thr && thr.isMetaRateLimit === true && isMetaThrottle(thr));
 ok('the reconcile re-checks copies an old throttled read wrongly marked «not found», and the status panel reports a throttle as a throttle', src.includes("error: { startsWith: 'الحملة المجدولة غير موجودة' }") && src.includes('JOB_REARMED') && src.includes('throttled,'));
+
+console.log('\n7. Scale as ABO from a CBO campaign (the «ABO scale: destination campaign payload must not carry daily_budget» failure)');
+const cboSrc = { daily_budget: '60000', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', name: 'LumiMist _ scale 6' };
+const aboSrc = { name: 'LumiMist _ scale 5', is_adset_budget_sharing_enabled: false };
+const slotAbo = applyCampaignBudget({ name: 'x' }, { c: cboSrc, tree: { adsets: [] }, hasSlotPlan: true });
+ok('ABO slot plan from a CBO source: the new campaign carries NO budget and NO campaign bid strategy (the budgets live on the ad sets)', slotAbo.daily_budget === undefined && slotAbo.lifetime_budget === undefined && slotAbo.bid_strategy === undefined, JSON.stringify(slotAbo));
+ok('…also for a lifetime-budget CBO source', (() => { const p = applyCampaignBudget({}, { c: { lifetime_budget: '9000000', bid_strategy: 'LOWEST_COST_WITHOUT_CAP' }, tree: {}, hasSlotPlan: true }); return p.lifetime_budget === undefined && p.daily_budget === undefined; })());
+const plainCbo = applyCampaignBudget({}, { c: cboSrc, tree: { adsets: [] } });
+ok('a plain clone of a CBO campaign still copies its budget + strategy (unchanged)', plainCbo.daily_budget === 60000 && plainCbo.bid_strategy === 'LOWEST_COST_WITHOUT_CAP');
+const cboScale = applyCampaignBudget({}, { c: aboSrc, tree: { adsets: [{ bid_strategy: 'LOWEST_COST_WITHOUT_CAP' }] }, scaleBudgetEgp: 700 });
+ok('CBO scale (owner budget) still sets one campaign budget (70000) + a no-cap strategy (unchanged)', cboScale.daily_budget === 70000 && cboScale.bid_strategy === 'LOWEST_COST_WITHOUT_CAP');
+const aboPlain = applyCampaignBudget({}, { c: aboSrc, tree: {}, hasSlotPlan: true });
+ok('ABO slot plan from an ABO source: no campaign budget either (unchanged)', aboPlain.daily_budget === undefined && aboPlain.bid_strategy === undefined);
+const asBase = { id: 'as1', name: 'set 1', targeting: { geo_locations: { countries: ['EG'] } }, optimization_goal: 'OFFSITE_CONVERSIONS', billing_event: 'IMPRESSIONS', status: 'PAUSED', __slotDailyBudgetMinor: 20000 };
+const ctx = { newCampaignId: 'c1', campaignHasBudget: true, resolved: { audienceRemap: {} }, pixelMap: {}, scaleBudgetForced: false, nativeStartTime: null };
+let adPayload = null; let adErr = null; try { adPayload = buildAdSetPayload({ ...asBase }, { ...ctx, slotFromCbo: true, campaignBidStrategy: 'LOWEST_COST_WITHOUT_CAP' }); } catch (e) { adErr = e; }
+ok('the ad sets of that ABO copy carry the strategy the CBO campaign used to hold (so Meta does not default to «bid cap» → «Bid Amount Required») and the owner\'s per-slot budget', !adErr && adPayload.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' && adPayload.daily_budget === 20000, adErr ? adErr.message : JSON.stringify(adPayload).slice(0, 200));
+const adNoStrat = buildAdSetPayload({ ...asBase }, { ...ctx, slotFromCbo: true, campaignBidStrategy: null });
+ok('a CBO source with no explicit strategy → ad sets get LOWEST_COST_WITHOUT_CAP (never a bid cap nobody set)', adNoStrat.bid_strategy === 'LOWEST_COST_WITHOUT_CAP');
+const adWithBid = buildAdSetPayload({ ...asBase, bid_amount: 1500 }, { ...ctx, slotFromCbo: true, campaignBidStrategy: null });
+ok('…but if the ad set has its own bid amount it is not forced to no-cap (stays consistent)', adWithBid.bid_strategy === undefined && adWithBid.bid_amount === 1500);
+const adNormal = buildAdSetPayload({ ...asBase, bid_strategy: 'COST_CAP', bid_amount: 2000 }, { ...ctx });
+ok('an ordinary ABO clone keeps its own ad-set strategy and bid (unchanged)', adNormal.bid_strategy === 'COST_CAP' && adNormal.bid_amount === 2000);
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 300).unref?.();
