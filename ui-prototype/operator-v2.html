@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>نموذج AI Operator المبسّط</title>
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--ink:#16203a;--mut:#5b6785;--line:#e3e8f3;--brand:#4f46e5;--brand2:#eef0ff;--ok:#0f9d6b;--okbg:#e6f7f0;--warn:#b7791f;--warnbg:#fff6e0;--bad:#c53030;--badbg:#fdecec;--info:#2b6cb0;--infobg:#e8f1fb;--side:#14213d;--sideink:#dbe3f5;--r:14px}
+:root[data-theme=dark]{--bg:#0e1424;--card:#171f35;--ink:#e8edf9;--mut:#9aa7c6;--line:#27324f;--brand:#8b85ff;--brand2:#242b52;--okbg:#10382c;--warnbg:#3b2f10;--badbg:#3d1a1a;--infobg:#142a44;--side:#0a1020}
+*{box-sizing:border-box}html,body{overflow-x:hidden}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 "Segoe UI",Tahoma,Arial,sans-serif}
+button{font:inherit;cursor:pointer}a{color:inherit}
+.app{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+.side{background:var(--side);color:var(--sideink);padding:18px 14px;position:sticky;top:0;height:100vh;overflow:auto}
+.brand{display:flex;gap:10px;align-items:center;margin-bottom:18px}.logo{width:38px;height:38px;border-radius:11px;background:var(--brand);display:grid;place-items:center;color:#fff;font-weight:700}
+.brand b{display:block;font-size:16px}.brand small{opacity:.7;font-size:13px}
+.nav button{display:flex;gap:10px;align-items:center;width:100%;text-align:right;border:0;background:transparent;color:inherit;padding:11px 12px;border-radius:10px;font-size:15.5px}
+.nav button:hover{background:rgba(255,255,255,.07)}.nav button.on{background:var(--brand);color:#fff}
+.nav .sub{margin:2px 34px 8px 0;display:flex;flex-direction:column;gap:2px}.nav .sub button{font-size:14px;padding:6px 10px;opacity:.85}.nav .sub button.on{background:rgba(255,255,255,.14);opacity:1}
+.nav .badge{margin-right:auto;background:#f6ad55;color:#1a202c;border-radius:20px;padding:0 8px;font-size:13px;font-weight:700}
+.sidefoot{margin-top:18px;border-top:1px solid rgba(255,255,255,.12);padding-top:14px;font-size:14px;display:grid;gap:8px}
+.sidefoot select,.sidefoot button{width:100%;padding:8px;border-radius:9px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:inherit}
+main{padding:22px 26px;max-width:1280px;width:100%}
+.ribbon{background:var(--warnbg);color:var(--warn);border:1px dashed var(--warn);border-radius:10px;padding:8px 14px;font-size:14px;margin-bottom:16px}
+h1{font-size:25px;margin:0 0 4px}h2{font-size:19px;margin:0 0 10px}h3{font-size:16.5px;margin:0 0 6px}
+.lead{color:var(--mut);margin:0 0 18px;font-size:15.5px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;margin-bottom:16px}
+.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(4,1fr)}.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:repeat(2,1fr)}
+.kpi b{display:block;font-size:27px;line-height:1.2}.kpi span{color:var(--mut);font-size:14px}
+.pill{display:inline-flex;align-items:center;gap:5px;border-radius:20px;padding:2px 11px;font-size:13.5px;font-weight:600;white-space:nowrap}
+.ok{background:var(--okbg);color:var(--ok)}.warn{background:var(--warnbg);color:var(--warn)}.bad{background:var(--badbg);color:var(--bad)}.info{background:var(--infobg);color:var(--info)}.gray{background:var(--line);color:var(--mut)}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px;padding:8px 16px;font-weight:600}.btn.pri{background:var(--brand);border-color:var(--brand);color:#fff}.btn.sm{padding:4px 12px;font-size:14px}.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.three{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.layer{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--bg)}.layer small{display:block;color:var(--mut);font-size:13.5px}
+.layer .t{font-weight:700;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px}
+.verdict{border-radius:12px;padding:14px 16px;margin-top:12px;font-weight:600}
+.todo{list-style:none;margin:0;padding:0;counter-reset:s}.todo li{display:flex;gap:12px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}.todo li:last-child{border:0}
+.todo .n{counter-increment:s;width:30px;height:30px;border-radius:50%;background:var(--brand2);color:var(--brand);display:grid;place-items:center;font-weight:700;flex:none}.todo .n::before{content:counter(s)}
+.todo .tx{flex:1}.todo .tx small{display:block;color:var(--mut);font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14.5px}th,td{padding:10px 10px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}th{color:var(--mut);font-weight:600;background:var(--bg);position:sticky;top:0}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}.scroll{overflow:auto;border:1px solid var(--line);border-radius:12px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}.tabs button{border:1px solid var(--line);background:var(--card);padding:7px 16px;border-radius:20px;font-weight:600;color:var(--ink)}.tabs button.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+.pc{border:1px solid var(--line);border-radius:14px;padding:16px;background:var(--card)}.pc header{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin-bottom:8px}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed var(--line);font-size:14.5px}.kv span{color:var(--mut)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:12px;overflow:hidden}.seg button{border:0;background:var(--card);padding:9px 18px;font-weight:600;color:var(--ink)}.seg button.on{background:var(--brand);color:#fff}.seg button+button{border-right:1px solid var(--line)}
+.opt{border:2px solid var(--line);border-radius:14px;padding:14px;cursor:pointer;background:var(--card)}.opt.on{border-color:var(--brand);background:var(--brand2)}.opt b{display:block;font-size:16px}.opt small{color:var(--mut);display:block;margin-top:4px;font-size:14px}
+.drawer{position:fixed;inset:0 auto 0 0;width:min(480px,100%);background:var(--card);border-left:1px solid var(--line);box-shadow:8px 0 30px rgba(0,0,0,.2);padding:20px;overflow:auto;transform:translateX(-105%);transition:transform .2s;z-index:30}.drawer.open{transform:none}.drawer:not(.open){visibility:hidden}.side:not(.open){}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:20;display:none}.scrim.open{display:block}
+.gl dt{font-weight:700;margin-top:12px}.gl dd{margin:2px 0 0;color:var(--mut)}
+.diff{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}.diff div{border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:14px;background:var(--bg)}.diff b{display:block;color:var(--brand)}
+.empty{text-align:center;color:var(--mut);padding:30px}
+.note{font-size:14px;color:var(--mut)}
+.burger{display:none}
+@media(max-width:980px){.app{grid-template-columns:1fr}.side{position:fixed;inset:0 0 0 auto;width:280px;transform:translateX(105%);transition:.2s;z-index:25;height:100vh;visibility:hidden}.side.open{transform:none;visibility:visible}.burger{display:inline-block;margin-bottom:12px}.g4,.g3,.three,.diff{grid-template-columns:1fr 1fr}main{padding:16px}}
+@media(max-width:560px){.g4,.g3,.g2,.three,.diff{grid-template-columns:1fr}h1{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side">
+    <div class="brand"><div class="logo">AI</div><div><b>AI Operator</b><small>التحكم الذكي في الحملات</small></div></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidefoot">
+      <label>الدور (للتجربة فقط)<select id="role"><option value="EMPLOYEE">موظف</option><option value="MANAGER">مشرف</option><option value="ADMIN" selected>مسؤول</option></select></label>
+      <button id="theme">🌙 المظهر</button>
+      <button id="guideBtn">📘 دليل التشغيل</button>
+    </div>
+  </aside>
+  <main>
+    <button class="btn burger" id="burger">☰ القائمة</button>
+    <div class="ribbon">🧪 <b>نموذج تصميم محلي</b> — كل الأرقام والأسماء هنا <b>بيانات تجريبية</b> مش حقيقية، ومفيش اتصال بـ Meta أو بقاعدة البيانات.</div>
+    <div id="view"></div>
+  </main>
+</div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-label="دليل التشغيل"></aside>
+
+<script>
+/* ------- SAMPLE DATA (clearly fake) ------- */
+const S = {
+  section: 'home', tab: {}, role: 'ADMIN', adv: false,
+  mode: 'APPROVAL', lock: true, perms: { open: false, pause: false, inc: false, dec: false }, emergency: false,
+  pending: 2, alerts: 3,
+  today: { active: 27, orders: 14, spend: 2860, cpa: 204 },
+  meta: { ok: true, ageMin: 13 },
+  policies: { ready: 1, incomplete: 5 },
+  last: { what: 'فتح حملة «Sample-Campaign-A»', when: 'امبارح 00:00', res: 'اتأكد من Meta ✓' }
+};
+const CAMPS = [
+ {n:'Sample-A _ scale 2',st:'نشطة',b:300,sp:120,o:1,cpa:120,p:'منتج تجريبي 1',rules:['CPA 20–150'],rec:'استمرار',why:'CPA داخل النطاق',can:false,block:'قفل Meta + صلاحية الإيقاف'},
+ {n:'Sample-B _ scale 4',st:'نشطة',b:300,sp:260,o:0,cpa:null,p:'منتج تجريبي 2',rules:['صرف بدون أوردرات'],rec:'مراجعة يدوية',why:'صرف 260 > 150 بدون أوردرات وتصنيف Winner غير معروف',can:false,block:'قفل Meta + صلاحية الإيقاف'},
+ {n:'Sample-C _ test',st:'متوقفة',b:200,sp:0,o:0,cpa:null,p:'منتج تجريبي 3',rules:['CPA 20–150'],rec:'جاهزة للفتح',why:'CPA 3 أيام 118 على 12 أوردر',can:false,block:'قفل Meta + صلاحية الفتح'},
+ {n:'Sample-D _ scale 1',st:'نشطة',b:500,sp:410,o:5,cpa:82,p:'منتج تجريبي 1',rules:['Target 100'],rec:'زيادة ميزانية +20%',why:'CPA 82 أقل من Target 100',can:false,block:'قفل Meta + صلاحية رفع الميزانية'}
+];
+const PRODS = [
+ {n:'منتج تجريبي 1',t:100,r:150,h:200,min:200,max:600,zs:'أكبر من 150 · صفر أوردر',w:'Winner: مراجعة يدوية · UNKNOWN: مراجعة يدوية',camps:['Sample-A _ scale 2'],ap:'معتمدة v4',run:'محاكاة (SHADOW)'},
+ {n:'منتج تجريبي 2',t:null,r:null,h:null,min:null,max:null,zs:'غير مفعّلة',w:'الافتراضي',camps:[],ap:'مسودة v1 — غير معتمدة',run:'متوقف'}
+];
+const SECTIONS = [
+ {k:'home',i:'🏠',t:'الرئيسية',tabs:[]},
+ {k:'camps',i:'📣',t:'الحملات',tabs:[['all','كل الحملات'],['open','فتح'],['pause','إيقاف'],['budget','الميزانيات'],['manual','تشغيل يدوي']]},
+ {k:'auto',i:'⚙️',t:'الأتمتة والقواعد',tabs:[['prod','سياسات المنتجات'],['pol','سياسات الفتح والإيقاف'],['zero','الصرف بدون أوردرات'],['price','التسعير الذكي'],['link','ربط الحملات']]},
+ {k:'appr',i:'✅',t:'الموافقات',tabs:[['q','المنتظر'],['hist','سجل التنفيذ'],['alerts','التنبيهات']]},
+ {k:'set',i:'🛡️',t:'الإعدادات والأمان',tabs:[['mode','وضع التشغيل'],['gates','بوابات الأمان'],['limits','حدود الحساب'],['adv','أدوات متقدمة']]}
+];
+const roleRank = {EMPLOYEE:1, MANAGER:2, ADMIN:3};
+const can = (min) => roleRank[S.role] >= roleRank[min];
+const $ = (id) => document.getElementById(id);
+const pill = (t,c='gray') => `<span class="pill ${c}">${t}</span>`;
+const permsOn = () => Object.values(S.perms).filter(Boolean).length;
+const MODE_AR = {SHADOW:'مراقبة فقط',APPROVAL:'بموافقتي',AUTOPILOT:'تلقائي'};
+const willExecute = () => !S.emergency && S.mode!=='SHADOW' && !S.lock && permsOn()>0;
+const blockers = () => [S.emergency&&'Emergency Stop مفعّل', S.mode==='SHADOW'&&'الوضع «مراقبة فقط» — بيسجّل بس', S.lock&&'قفل Meta مقفول على مستوى النشر', permsOn()===0&&'صلاحيات التنفيذ الأربع كلها OFF'].filter(Boolean);
+
+/* ------- views ------- */
+function layers(){
+  const b = blockers();
+  return `<div class="three">
+   <div class="layer"><div class="t">① وضع التشغيل ${pill(MODE_AR[S.mode],'info')}</div><small>القرار: مين بيقرر؟ (مراقبة / أنا / النظام)</small></div>
+   <div class="layer"><div class="t">② قفل Meta ${pill(S.lock?'🔒 مقفول':'🔓 مفتوح',S.lock?'warn':'ok')}</div><small>مستوى النشر (Railway). للقراءة فقط هنا — مفيش زر يفتحه</small></div>
+   <div class="layer"><div class="t">③ صلاحيات التنفيذ ${pill(permsOn()+' من 4 مفتوحة',permsOn()?'ok':'warn')}</div><small>فتح · إيقاف · رفع ميزانية · خفض ميزانية</small></div>
+  </div>
+  <div class="verdict ${willExecute()?'bad':'ok'}" style="background:var(--${willExecute()?'badbg':'infobg'});color:var(--${willExecute()?'bad':'info'})">
+   ${willExecute()?'⚠️ التنفيذ الفعلي على Meta ممكن دلوقتي (بعد موافقتك أو تلقائيًا حسب الوضع).':'ℹ️ مفيش أي تنفيذ هيحصل على Meta دلوقتي. الأسباب: '+b.join(' · ')+'.'}
+  </div>`;
+}
+function steps(){
+  return [
+   ['اعتمد سياسة الإيقاف (النسخة v2 محفوظة وغير معتمدة)','auto','pol','مسؤول'],
+   ['اعتمد سياسات المنتجات (5 غير معتمدة)','auto','prod','مسؤول'],
+   ['حدّد حدود الحساب اليومية (كلها فاضية)','set','limits','مسؤول'],
+   ['فعّل قاعدة واحدة على الأقل (0 مفعّلة)','auto','prod','مسؤول'],
+   ['جرّب Emergency Stop مرة (تفعيل ثم إلغاء)','set','gates','مسؤول'],
+   ['أكّد الشروط الأربعة لبوابة التلقائي','set','gates','مسؤول'],
+   ['افتح صلاحيات التنفيذ اللازمة','set','gates','مسؤول'],
+   ['افتح قفل Meta (قرار نشر على السيرفر)','set','gates','مسؤول']
+  ];
+}
+function home(){
+  const st = steps(); const shown = st.slice(0,5);
+  return `<h1>الرئيسية</h1><p class="lead">صورة واحدة: النظام شغال ولا لأ، وإيه المطلوب منك دلوقتي.</p>
+  <div class="grid g4">
+   <div class="card kpi"><b>${S.today.active}</b><span>حملات نشطة</span></div>
+   <div class="card kpi"><b>${S.today.orders}</b><span>أوردرات اليوم</span></div>
+   <div class="card kpi"><b>${S.today.spend.toLocaleString('en-US')} ج.م</b><span>صرف اليوم</span></div>
+   <div class="card kpi"><b>${S.today.cpa} ج.م</b><span>CPA اليوم</span></div>
+  </div>
+  <div class="card"><h2>هل هينفّذ على Meta؟</h2>${layers()}</div>
+  <div class="grid g2">
+   <div class="card"><h2>ماذا أفعل الآن؟</h2>
+    <ol class="todo">${shown.map(s=>`<li><span class="n"></span><div class="tx">${s[0]}<small>يتطلب: ${s[3]}</small></div><button class="btn sm pri" data-go="${s[1]}|${s[2]}" ${can('ADMIN')?'':'disabled title="محتاج صلاحية مسؤول"'}>روح</button></li>`).join('')}</ol>
+    <p class="note">${st.length-shown.length} خطوات كمان بعدهم. <a href="#" data-go="set|gates">عرض الكل (${st.length})</a></p>
+   </div>
+   <div>
+    <div class="card"><h3>حالة الاتصال والبيانات</h3>
+     <div class="kv"><span>اتصال Meta</span>${pill(S.meta.ok?'متصل':'مقطوع',S.meta.ok?'ok':'bad')}</div>
+     <div class="kv"><span>حداثة البيانات</span><b>${S.meta.ageMin} دقيقة ${pill(S.meta.ageMin<=30?'حديثة':'قديمة',S.meta.ageMin<=30?'ok':'warn')}</b></div>
+     <div class="kv"><span>قرارات منتظرة</span><b>${S.pending} <a href="#" data-go="appr|q">افتح</a></b></div>
+     <div class="kv"><span>السياسات</span><b>${S.policies.ready} جاهزة · ${S.policies.incomplete} غير مكتملة</b></div></div>
+    <div class="card"><h3>آخر قرار اتنفّذ</h3><div>${S.last.what}</div><div class="note">${S.last.when} — ${S.last.res}</div></div>
+   </div>
+  </div>
+  <p class="note">«جاهزة» = معتمدة + مفعّلة. السياسة المحفوظة بس <b>لا تُحسب</b> جاهزة.</p>`;
+}
+function campsView(){
+  const t = S.tab.camps || 'all';
+  const rows = CAMPS.filter(c => t==='all' || (t==='open'&&c.st==='متوقفة') || (t==='pause'&&c.st==='نشطة') || (t==='budget'&&c.rec.includes('ميزانية')) );
+  const tabs = SECTIONS[1].tabs;
+  const body = t==='manual' ? `<div class="card"><h3>التشغيل اليدوي</h3><p>اختيار عملية على حملة واحدة مع معاينة قراءة فقط ثم تأكيد.</p><button class="btn" disabled>${S.lock?'مقفول: قفل Meta':'—'}</button></div>` : `
+   <div class="scroll"><table><thead><tr><th>الحملة</th><th>الحالة</th><th class="num">ميزانية اليوم</th><th class="num">الصرف</th><th class="num">أوردرات</th><th class="num">CPA</th><th>المنتج</th><th>القواعد</th><th>التوصية</th><th>السبب</th><th>التنفيذ</th></tr></thead><tbody>
+   ${rows.map(c=>`<tr><td><b>${c.n}</b></td><td>${pill(c.st,c.st==='نشطة'?'ok':'gray')}</td><td class="num">${c.b}</td><td class="num">${c.sp}</td><td class="num">${c.o}</td><td class="num">${c.cpa??'—'}</td><td>${c.p}</td><td>${c.rules.map(r=>pill(r,'info')).join(' ')}</td><td>${pill(c.rec,c.rec==='مراجعة يدوية'?'warn':'gray')}</td><td>${c.why}</td><td>${c.can?'<button class="btn sm pri">نفّذ</button>':pill('ممنوع: '+c.block,'warn')}</td></tr>`).join('') || '<tr><td colspan=11 class="empty">مفيش حملات في التبويب ده.</td></tr>'}
+   </tbody></table></div>`;
+  return `<h1>الحملات</h1><p class="lead">فتح وإيقاف وميزانيات في مكان واحد. كل حملة بتبيّن توصيتها وسببها وهل ينفع تتنفذ.</p>${tabsHtml('camps',tabs,t)}${body}`;
+}
+function autoView(){
+  const t = S.tab.auto || 'prod'; const tabs = SECTIONS[2].tabs;
+  let body='';
+  if(t==='prod'){
+    body = `<div class="seg" style="margin-bottom:12px"><button class="${S.adv?'':'on'}" data-adv="0">أساسي</button><button class="${S.adv?'on':''}" data-adv="1" ${can('ADMIN')?'':'disabled title="للمسؤول فقط"'}>متقدم</button></div>
+    <div class="grid g2">${PRODS.map(p=>`<div class="pc"><header><h3>${p.n}</h3><div>${pill(p.ap,p.ap.startsWith('معتمدة')?'ok':'warn')} ${pill(p.run,p.run==='متوقف'?'gray':'info')}</div></header>
+     <div class="kv"><span>Target CPA</span><b>${p.t??'غير محدد'}</b></div><div class="kv"><span>Reduce CPA</span><b>${p.r??'غير محدد'}</b></div><div class="kv"><span>Hard Stop CPA</span><b>${p.h??'غير محدد'}</b></div>
+     <div class="kv"><span>ميزانية (أدنى – أقصى)</span><b>${p.min??'—'} – ${p.max??'—'}</b></div>
+     <div class="kv"><span>الصرف بدون أوردرات</span><b>${p.zs}</b></div><div class="kv"><span>حماية Winner / UNKNOWN</span><b>${p.w}</b></div>
+     <div class="kv"><span>حملات مسموح لها بالأتمتة</span><b>${p.camps.length?p.camps.join('، '):'ولا حملة'}</b></div>
+     ${S.adv?'<div class="kv"><span>نسخة السياسة / الكولداون / سقف التغيير</span><b>v1 · 24 ساعة · ±20%</b></div>':''}
+     <div style="margin-top:10px;display:flex;gap:8px"><button class="btn sm" ${can('MANAGER')?'':'disabled'}>تعديل (حفظ كمسودة)</button><button class="btn sm pri" ${can('ADMIN')&&!p.ap.startsWith('معتمدة')?'':'disabled'}>اعتماد</button></div></div>`).join('')}</div>
+    <p class="note">«حفظ» ينشئ مسودة. «اعتماد» يجعلها صالحة. «تنفيذ» لا يحدث إلا بوضع وصلاحيات وقفل مفتوح — الثلاثة منفصلين.</p>`;
+  } else if(t==='zero') body = `<div class="card"><h3>سياسة الصرف بدون أوردرات</h3><p>فحص يومي 13:00 بتوقيت القاهرة: أوردرات = 0 وصرف أكبر من 150 ج.م.</p><div class="kv"><span>الحالة</span>${pill('محفوظة v1 — غير معتمدة','warn')}</div><div class="kv"><span>حملة Winner</span><b>مراجعة يدوية</b></div><div class="kv"><span>حملة UNKNOWN</span><b>مراجعة يدوية</b></div></div>`;
+  else body = `<div class="card empty">تبويب «${tabs.find(x=>x[0]===t)[1]}» — نفس الشاشة الحالية بتتنقل هنا كما هي (بدون حذف أي وظيفة).</div>`;
+  return `<h1>الأتمتة والقواعد</h1><p class="lead">كل منتج في بطاقة واحدة: أرقامه، سياسته، وهل هي معتمدة وشغّالة.</p>${tabsHtml('auto',tabs,t)}${body}`;
+}
+function apprView(){
+  const t = S.tab.appr || 'q'; const tabs = SECTIONS[3].tabs;
+  const body = t==='q' ? `<div class="card"><h3>خطة فتح اليوم #(تجريبي)</h3><p>3 حملات · ميزانية 900 ج.م</p>
+    <div class="verdict" style="background:var(--infobg);color:var(--info)">لو دوست «اعتماد وتنفيذ» دلوقتي: <b>مش هيتنفذ</b> — ${blockers().join(' · ')}. الخطة هتفضل جاهزة ومفيش حاجة هتتغير.</div>
+    <div style="margin-top:12px;display:flex;gap:8px"><button class="btn">معاينة (قراءة فقط)</button><button class="btn pri" ${can('ADMIN')?'':'disabled title="للمسؤول فقط"'} data-lockinfo="1">اعتماد وتنفيذ</button><button class="btn">رفض</button></div></div>`
+   : `<div class="card empty">تبويب «${tabs.find(x=>x[0]===t)[1]}» — نفس الشاشة الحالية.</div>`;
+  return `<h1>الموافقات</h1><p class="lead">كل اللي مستني قرارك. الموافقة = إذن بتنفيذ العملية دي بس.</p>${tabsHtml('appr',tabs,t)}${body}`;
+}
+function setView(){
+  const t = S.tab.set || 'mode'; const tabs = SECTIONS[4].tabs;
+  let body='';
+  if(t==='mode'){
+    const opts = [['SHADOW','مراقبة فقط','النظام بيحلل ويسجّل قرارات، ومفيش أي تنفيذ حتى لو كل الصلاحيات مفتوحة.'],['APPROVAL','بموافقتي','النظام بيجهّز القرار وانت اللي بتوافق عليه قبل التنفيذ.'],['AUTOPILOT','تلقائي','النظام بينفّذ لوحده داخل القواعد والحدود. بيحتاج بوابة أمان كاملة.']];
+    body = `<div class="three">${opts.map(o=>`<div class="opt ${S.mode===o[0]?'on':''}" data-mode="${o[0]}"><b>${o[1]}</b><small>${o[2]}</small></div>`).join('')}</div>
+    <div class="card" style="margin-top:14px"><h3>مش هو ده اللي بيفتح التنفيذ</h3>${layers()}</div>
+    <p class="note">ملحوظة تصميم: الأسماء الثلاثة بتقابل SHADOW / APPROVAL / AUTOPILOT في الـ Backend. الوضع القديم MANUAL (يدوي بدون أي تسجيل) هيفضل متاح تحت «أدوات متقدمة».</p>`;
+  } else if(t==='gates'){
+    const gate=(ok,l,h)=>`<tr><td>${l}</td><td>${pill(ok?'مفتوحة':'مقفولة',ok?'ok':'warn')}</td><td class="note">${ok?'—':h}</td></tr>`;
+    body = `<div class="scroll"><table><thead><tr><th>البوابة</th><th>الحالة</th><th>إزاي تتفتح</th></tr></thead><tbody>
+     ${gate(!S.emergency,'Emergency Stop','ألغِ إيقاف الطوارئ')}${gate(S.mode!=='SHADOW','وضع التشغيل يسمح بالتنفيذ','غيّر الوضع إلى «بموافقتي» أو «تلقائي»')}
+     ${gate(!S.lock,'قفل Meta (OPERATOR_ALLOW_META_WRITES)','قرار نشر على السيرفر فقط — مفيش زر هنا')}
+     ${[['open','صلاحية الفتح'],['pause','صلاحية الإيقاف'],['inc','صلاحية رفع الميزانية'],['dec','صلاحية خفض الميزانية']].map(p=>gate(S.perms[p[0]],p[1],'فعّلها من هنا (مسؤول + تأكيد)')).join('')}</tbody></table></div>`;
+  } else body = `<div class="card empty">تبويب «${tabs.find(x=>x[0]===t)[1]}» — نفس الشاشة الحالية${t==='adv'?' (مسؤول فقط: كل الأدوات القديمة)':''}.</div>`;
+  return `<h1>الإعدادات والأمان</h1><p class="lead">مصدر واحد لكل إعداد تشغيل. الصفحات التانية بتعرضه وبتفتح هنا للتعديل.</p>${tabsHtml('set',tabs,t)}${body}`;
+}
+const tabsHtml = (sec,tabs,cur) => `<div class="tabs">${tabs.map(x=>`<button class="${cur===x[0]?'on':''}" data-tab="${sec}|${x[0]}">${x[1]}</button>`).join('')}</div>`;
+
+/* ------- shell ------- */
+function nav(){
+  $('nav').innerHTML = SECTIONS.filter(s => s.k!=='set' || can('MANAGER')).map(s=>`<button class="${S.section===s.k?'on':''}" data-sec="${s.k}">${s.i} ${s.t}${s.k==='appr'&&S.pending?`<span class="badge">${S.pending}</span>`:''}</button>${S.section===s.k&&s.tabs.length?`<div class="sub">${s.tabs.map(x=>`<button class="${(S.tab[s.k==='camps'?'camps':s.k==='auto'?'auto':s.k==='appr'?'appr':'set']||s.tabs[0][0])===x[0]?'on':''}" data-tab="${s.k==='camps'?'camps':s.k==='auto'?'auto':s.k==='appr'?'appr':'set'}|${x[0]}">${x[1]}</button>`).join('')}</div>`:''}`).join('');
+}
+function render(){
+  const v = {home,camps:campsView,auto:autoView,appr:apprView,set:setView}[S.section];
+  $('view').innerHTML = v(); nav(); $('side').classList.remove('open');
+}
+function go(sec,tab){ S.section=sec; if(tab){ S.tab[sec]=tab; } render(); window.scrollTo(0,0); }
+document.addEventListener('click',e=>{
+  const g=e.target.closest('[data-go]'); if(g){ e.preventDefault(); const [s,t]=g.dataset.go.split('|'); return go(s,t); }
+  const sc=e.target.closest('[data-sec]'); if(sc) return go(sc.dataset.sec);
+  const tb=e.target.closest('[data-tab]'); if(tb){ const [s,t]=tb.dataset.tab.split('|'); S.tab[s]=t; S.section=s; return render(); }
+  const m=e.target.closest('[data-mode]'); if(m){ if(!can('ADMIN')){ alert('تغيير الوضع للمسؤول فقط'); return; } S.mode=m.dataset.mode; return render(); }
+  const a=e.target.closest('[data-adv]'); if(a){ S.adv=a.dataset.adv==='1'; return render(); }
+  if(e.target.closest('[data-lockinfo]')){ openDrawer('lock'); }
+});
+$('role').onchange=e=>{ S.role=e.target.value; if(S.section==='set'&&!can('MANAGER')) S.section='home'; render(); };
+$('theme').onclick=()=>{ const r=document.documentElement; r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'; };
+$('burger').onclick=()=>$('side').classList.toggle('open');
+$('guideBtn').onclick=()=>openDrawer('guide');
+$('scrim').onclick=closeDrawer;
+function closeDrawer(){ $('drawer').classList.remove('open'); $('scrim').classList.remove('open'); }
+function openDrawer(kind){
+  const d=$('drawer'); const x='<button class="btn sm" onclick="closeDrawer()" style="float:left">إغلاق ✕</button>';
+  if(kind==='lock') d.innerHTML=x+`<h2>التنفيذ الحقيقي مقفول — قفل أمان مقصود</h2><div class="verdict" style="background:var(--infobg);color:var(--info)">ده مش خطأ في السيستم. الخطة فضلت جاهزة ومفيش حاجة اتبعتت لـMeta.</div><ul>${blockers().map(b=>`<li>${b}</li>`).join('')}</ul><button class="btn pri" data-go="set|gates" onclick="closeDrawer()">روح لبوابات الأمان</button>`;
+  else d.innerHTML=x+`<h2>دليل التشغيل</h2>
+   <div class="seg" style="margin:6px 0 10px"><button class="on">للموظف</button><button>للمسؤول</button></div>
+   <p><b>أول استخدام:</b> ① افتح «الرئيسية» وشوف «ماذا أفعل الآن؟» ② اتبع الخطوات بالترتيب ③ مفيش حاجة بتتنفذ على Meta قبل ما تفتح الثلاث طبقات.</p>
+   <h3>الفرق بين الأزرار الخطرة</h3>
+   <div class="diff"><div><b>حفظ</b>بيخزّن مسودة. مفيش تأثير.</div><div><b>اعتماد</b>بيخلي السياسة/الخطة صالحة. لسه مفيش تنفيذ.</div><div><b>تنفيذ</b>بيبعت لـMeta فعلًا — لو الوضع والقفل والصلاحية مفتوحين.</div><div><b>إيقاف</b>Emergency Stop: يوقف كل كتابة فورًا.</div><div><b>تفعيل تلقائي</b>النظام ينفّذ لوحده داخل القواعد.</div></div>
+   <dl class="gl"><dt>وضع التشغيل</dt><dd>مين بيقرر: مراقبة فقط / بموافقتي / تلقائي.</dd><dt>قفل Meta</dt><dd>قفل على السيرفر لا يفتحه أي زر. بيتفتح بقرار نشر.</dd><dt>صلاحيات التنفيذ</dt><dd>أربعة مفاتيح: فتح، إيقاف، رفع ميزانية، خفض ميزانية.</dd><dt>CPA</dt><dd>تكلفة الأوردر الواحد من إعلانات Meta.</dd><dt>Winner</dt><dd>حملة ناجحة تاريخيًا بدليل (أوردرات 7 و30 يوم + حد الربحية). لو الدليل ناقص تبقى «غير معروف».</dd><dt>مراجعة يدوية</dt><dd>النظام مبيوقفش لوحده، وبيستنى قرارك.</dd></dl>`;
+  d.classList.add('open'); $('scrim').classList.add('open');
+}
+render();
+</script>
+</body>
+</html>

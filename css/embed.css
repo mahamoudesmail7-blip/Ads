@@ -1,0 +1,64 @@
+/* embed.css — how every page looks when it is hosted INSIDE the app shell (app.html): no own sidebar / mobile header / floating theme toggle (the shell owns
+   them), one calm content column with consistent padding, and a smooth first paint. Scoped entirely under `html.is-embedded` — a page opened on its own is unchanged. */
+html.is-embedded body { background: var(--bg, var(--amb-bg, #f5f7fd)); overflow-x: hidden; }
+
+/* the page's own navigation is replaced by the shell's */
+html.is-embedded .sidebar,
+html.is-embedded .amb-nav,
+html.is-embedded #ambNav,
+html.is-embedded #cfNav,
+html.is-embedded .cf-nav,
+html.is-embedded .mobile-header,
+html.is-embedded .mobile-bottom-nav,
+html.is-embedded #ambMobileHeader,
+html.is-embedded #ambNavOverlay,
+html.is-embedded .theme-toggle-fixed,
+html.is-embedded [data-shell-hide] { display: none !important; }
+
+/* one column, full width, consistent breathing room */
+html.is-embedded .app-shell,
+html.is-embedded .cf-app,
+html.is-embedded .pmc-shell { display: block; min-height: 0; }
+html.is-embedded .main { max-width: none; width: 100%; padding: 22px clamp(14px, 2.2vw, 32px) 56px; box-sizing: border-box; }
+html.is-embedded .amb-app .amb-main,
+html.is-embedded .amb-main { padding: 22px clamp(14px, 2.2vw, 32px) 48px !important; }
+html.is-embedded .cf-main { padding: 22px clamp(14px, 2.2vw, 32px) 48px; }
+html.is-embedded .amb-wrap { max-width: none; }
+html.is-embedded .page-header { margin-top: 0; }
+
+/* the floating AI assistant bubble keeps clear of the content edge */
+html.is-embedded .assistant-bubble { inset-inline-start: 18px; bottom: 18px; }
+
+/* first paint: no layout jump while styles/JS settle */
+html.is-embedded body { animation: embedIn .22s ease-out both; }
+@keyframes embedIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { html.is-embedded body { animation: none; } }
+
+/* the old mobile chrome (hamburger header, drawer, bottom bar) belongs to the standalone page — the shell has its own */
+html.is-embedded #mobileHeader,
+html.is-embedded #mobileNavOverlay,
+html.is-embedded #mobileBottomNav { display: none !important; }
+
+/* calm scrollbars + native form controls that follow the shell's light / dark theme (no white strip in dark mode) */
+html.is-embedded { color-scheme: light; scrollbar-width: thin; scrollbar-color: #c3cbe6 transparent; }
+html.is-embedded[data-theme="dark"] { color-scheme: dark; scrollbar-color: #3a4672 transparent; }
+@media (prefers-color-scheme: dark) { html.is-embedded:not([data-theme="light"]) { color-scheme: dark; scrollbar-color: #3a4672 transparent; } }
+html.is-embedded ::-webkit-scrollbar { width: 10px; height: 10px; }
+html.is-embedded ::-webkit-scrollbar-track { background: transparent; }
+html.is-embedded ::-webkit-scrollbar-thumb { background: #c3cbe6; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+html.is-embedded[data-theme="dark"] ::-webkit-scrollbar-thumb { background-color: #3a4672; }
+@media (prefers-color-scheme: dark) { html.is-embedded:not([data-theme="light"]) ::-webkit-scrollbar-thumb { background-color: #3a4672; } }
+
+/* the shell's top bar already shows the page title → drop the page's own big title (toolbars / subtitles stay). Product detail + greeting keep theirs: they are data. */
+html.is-embedded .page-header h1:not(#productName):not(#greetingTitle),
+html.is-embedded .amb-head-title h1,
+html.is-embedded .amb-head-icon,
+html.is-embedded .amb-head-title .sub { display: none; }
+html.is-embedded .amb-head { margin-top: 0; }
+html.is-embedded .page-header { align-items: center; }
+
+/* AI Operator workspace: on a narrow frame its own 2-column grid must collapse (its sidebar is already an off-canvas drawer there) — otherwise the page is 275px wider than the phone */
+@media (max-width: 900px) { html.is-embedded .opx { grid-template-columns: minmax(0, 1fr) !important; } }
+@media (max-width: 900px) { html.is-embedded .opx:not([data-mobile-open="1"]) .opx-side { display: none !important; } }
+html.is-embedded, html.is-embedded body { overflow-x: hidden; }
+@media (max-width: 960px) { html.is-embedded ::-webkit-scrollbar { width: 3px; height: 3px; } html.is-embedded { scrollbar-width: none; } }

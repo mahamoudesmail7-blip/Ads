@@ -1,0 +1,104 @@
+/* shell-fx.css — «ابرز الكلام + زود الأنيميشن والجرافيك»: layered ON TOP of shell.css. (1) Typography that stands out: bigger, bolder, higher contrast labels / titles / chips.
+   (2) Motion: staggered entrance, springy accordions, hover micro-interactions, a sliding glow on the active entry, animated route transitions.
+   (3) Graphics: aurora + grid backdrop in the sidebar, colour-coded sections (each group has its own accent that tints the icon, the active pill, the chips and the stage glow), glass panels.
+   Everything respects prefers-reduced-motion (the shell.css reduce rule + the explicit block at the end). */
+:root {
+  --sh-acc: #4f7cff;                       /* accent of the section you are in (set by shell.js) */
+  --sh-acc-soft: color-mix(in srgb, var(--sh-acc) 16%, transparent);
+  --sh-spring: cubic-bezier(.34, 1.56, .64, 1);
+}
+
+/* ================================================================ 1) TYPOGRAPHY — make the words stand out */
+.sh-brand-text b { font-size: 18px; font-weight: 800; letter-spacing: -.3px; background: linear-gradient(90deg, #fff 30%, #b9c8ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sh-brand-text small { font-size: 11px; color: #a9b8ee; font-weight: 600; }
+.sh-ghead { font-size: 12.5px; font-weight: 800; letter-spacing: .5px; color: #c7d3ff; padding: 11px 10px 8px; position: relative; }
+.sh-ghead::after { content: ''; position: absolute; inset-inline: 10px; bottom: 2px; height: 1px; background: linear-gradient(90deg, var(--acc, #4f7cff), transparent 70%); opacity: .55; }
+.sh-ghead .sh-gico { color: var(--acc, #8fa6ff); opacity: 1; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--acc, #4f7cff) 55%, transparent)); }
+.sh-item { font-size: 14.5px; font-weight: 700; color: #f1f4ff; padding: 10px 12px; }
+.sh-item svg { opacity: .95; color: color-mix(in srgb, var(--acc, #8fa6ff) 70%, #fff); }
+.sh-child { font-size: 13.5px; font-weight: 700; color: #cdd8ff; }
+.sh-child.active { color: #fff; font-weight: 800; }
+.sh-search input { font-size: 14px; font-weight: 700; }
+.sh-uinfo b { font-size: 14px; } .sh-uinfo small { font-size: 11.5px; color: #a9b8ee; }
+.sh-crumb { font-size: 14px; font-weight: 700; color: var(--sh-dim); }
+.sh-crumb b { font-size: 22px; font-weight: 800; letter-spacing: -.3px; position: relative; padding-bottom: 3px; }
+.sh-crumb b::after { content: ''; position: absolute; inset-inline: 0; bottom: -2px; height: 3px; border-radius: 3px; background: linear-gradient(90deg, var(--sh-acc), color-mix(in srgb, var(--sh-acc) 40%, #fff)); transform-origin: right; animation: shUnderline .55s var(--sh-ease) backwards; }
+.sh-chip { font-size: 13.8px; font-weight: 800; color: var(--sh-ink); padding: 9px 17px; }
+.sh-chip svg { color: var(--sh-acc); }
+.sh-chip.active svg { color: #fff; }
+
+/* ================================================================ 2) GRAPHICS */
+/* sections are colour-coded */
+.sh-group[data-group="home"] { --acc: #6d8cff; } .sh-group[data-group="orders"] { --acc: #2ec4e6; } .sh-group[data-group="catalog"] { --acc: #34d399; }
+.sh-group[data-group="ads"] { --acc: #a78bfa; } .sh-group[data-group="team"] { --acc: #fbbf24; } .sh-group[data-group="system"] { --acc: #fb7fa8; }
+
+/* the sidebar: aurora + dotted grid behind the menu */
+.sh-side { isolation: isolate; }
+.sh-side::before { content: ''; position: absolute; inset: -20% -40% auto -40%; height: 70%; z-index: -1; pointer-events: none; background: radial-gradient(40% 50% at 30% 40%, rgba(122, 77, 255, .38), transparent 70%), radial-gradient(38% 46% at 75% 30%, rgba(59, 108, 255, .42), transparent 70%), radial-gradient(34% 40% at 55% 80%, rgba(34, 211, 238, .22), transparent 70%); filter: blur(28px); animation: shAurora 16s ease-in-out infinite alternate; }
+.sh-side::after { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background-image: radial-gradient(rgba(170, 190, 255, .16) 1px, transparent 1px); background-size: 22px 22px; -webkit-mask-image: linear-gradient(180deg, #000, transparent 75%); mask-image: linear-gradient(180deg, #000, transparent 75%); opacity: .55; }
+.sh-logo { position: relative; animation: shFloat 5s ease-in-out infinite; }
+.sh-logo::after { content: ''; position: absolute; inset: -6px; border-radius: 18px; background: var(--sh-grad); filter: blur(14px); opacity: .55; z-index: -1; animation: shGlow 3.2s ease-in-out infinite; }
+
+/* active entry: gradient in the section's colour with a travelling shine */
+.sh-item.active { background: linear-gradient(135deg, color-mix(in srgb, var(--acc, #4f7cff) 88%, #3b6cff), #6a4dff); box-shadow: 0 12px 26px color-mix(in srgb, var(--acc, #4f7cff) 38%, transparent), inset 0 1px 0 rgba(255, 255, 255, .25); overflow: hidden; }
+.sh-item.active::after { content: ''; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, .28) 50%, transparent 65%); transform: translateX(-120%); animation: shShine 3.6s ease-in-out infinite; pointer-events: none; }
+.sh-item.active svg { color: #fff; }
+.sh-item:hover:not(.active) { background: rgba(255, 255, 255, .09); transform: translateX(-3px); }
+.sh-item:hover svg { transform: scale(1.14) rotate(-4deg); }
+.sh-item svg { transition: transform .25s var(--sh-spring), color .2s; }
+.sh-child:hover { transform: translateX(-3px); }
+.sh-badge { animation: shPulse 2s ease-in-out infinite; box-shadow: 0 0 0 0 rgba(255, 77, 109, .6); }
+
+/* top bar + stage get a soft coloured edge that follows the current section */
+.sh-top::after { content: ''; position: absolute; inset-inline: 0; bottom: -1px; height: 2px; background: linear-gradient(90deg, transparent, var(--sh-acc), transparent); opacity: .7; transition: background .4s; }
+.sh-crumb .ci { background: linear-gradient(135deg, color-mix(in srgb, var(--sh-acc) 22%, var(--sh-surface)), color-mix(in srgb, var(--sh-acc) 8%, var(--sh-surface))); color: var(--sh-acc); box-shadow: 0 6px 16px color-mix(in srgb, var(--sh-acc) 25%, transparent); animation: shPop .5s var(--sh-spring) backwards; }
+.sh-chip { box-shadow: 0 1px 2px rgba(20, 38, 100, .05); }
+.sh-chip.active { background: linear-gradient(135deg, var(--sh-acc), color-mix(in srgb, var(--sh-acc) 55%, #6a4dff)); box-shadow: 0 10px 22px color-mix(in srgb, var(--sh-acc) 38%, transparent); position: relative; overflow: hidden; }
+.sh-chip.active::after { content: ''; position: absolute; inset: 0; background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, .3) 50%, transparent 65%); transform: translateX(-120%); animation: shShine 4.2s ease-in-out infinite; pointer-events: none; }
+.sh-chip:hover:not(.active) { box-shadow: 0 8px 18px color-mix(in srgb, var(--sh-acc) 20%, transparent); }
+.sh-stage { box-shadow: 0 0 0 1px color-mix(in srgb, var(--sh-acc) 14%, var(--sh-line)), 0 18px 46px color-mix(in srgb, var(--sh-acc) 10%, transparent); transition: box-shadow .5s; }
+.sh-iconbtn { transition: transform .25s var(--sh-spring), color .15s, border-color .15s, background .15s, box-shadow .2s; }
+.sh-iconbtn:hover { transform: translateY(-2px); box-shadow: 0 8px 18px color-mix(in srgb, var(--sh-acc) 20%, transparent); }
+#shReload:active svg { animation: shSpin .6s ease; } #shTheme:hover svg { animation: shTilt .5s var(--sh-spring); }
+.sh-user { background: linear-gradient(135deg, rgba(255, 255, 255, .09), rgba(255, 255, 255, .03)); backdrop-filter: blur(8px); }
+.sh-avatar { box-shadow: 0 0 0 3px rgba(122, 140, 255, .28); }
+
+/* ================================================================ 3) MOTION */
+/* entrance: the menu staggers in once */
+.sh-brand, .sh-search, .sh-user { animation: shRise .55s var(--sh-ease) backwards; } .sh-search { animation-delay: .06s; } .sh-user { animation-delay: .3s; }
+.sh-group { animation: shSlideIn .5s var(--sh-ease) backwards; }
+.sh-group:nth-child(1) { animation-delay: .08s; } .sh-group:nth-child(2) { animation-delay: .15s; } .sh-group:nth-child(3) { animation-delay: .22s; }
+.sh-group:nth-child(4) { animation-delay: .29s; } .sh-group:nth-child(5) { animation-delay: .36s; } .sh-group:nth-child(6) { animation-delay: .43s; }
+.sh-top { animation: shDrop .5s var(--sh-ease) backwards; } .sh-slides { animation: shRise .55s .12s var(--sh-ease) backwards; }
+.sh-chip { animation: shChipIn .45s var(--sh-ease) backwards; animation-delay: calc(var(--i, 0) * 28ms); }
+/* accordion: springy chevron, children cascade */
+.sh-chev { transition: transform .3s var(--sh-spring); }
+.sh-children.open .sh-child { animation: shChild .35s var(--sh-ease) backwards; animation-delay: calc(var(--i, 0) * 22ms); }
+/* route change: the page slides in, the crumb swaps */
+.sh-stage.routing #shFrame { transform: translateY(8px) scale(.995); }
+#shFrame { transition: opacity .26s ease, transform .34s var(--sh-ease); transform: none; }
+.sh-stage.swap .sh-crumb-anim, .sh-crumb.swap > * { animation: shCrumb .4s var(--sh-ease) backwards; }
+.sh-bar { height: 4px; filter: drop-shadow(0 0 6px var(--sh-acc)); }
+
+@keyframes shAurora { 0% { transform: translate3d(-6%, -4%, 0) scale(1); } 100% { transform: translate3d(8%, 6%, 0) scale(1.18); } }
+@keyframes shFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes shGlow { 0%, 100% { opacity: .45; transform: scale(1); } 50% { opacity: .8; transform: scale(1.12); } }
+@keyframes shShine { 0%, 55% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+@keyframes shPulse { 0% { box-shadow: 0 0 0 0 rgba(255, 77, 109, .55); } 70%, 100% { box-shadow: 0 0 0 9px rgba(255, 77, 109, 0); } }
+@keyframes shRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes shDrop { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+@keyframes shSlideIn { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
+@keyframes shChipIn { from { opacity: 0; transform: translateY(8px) scale(.94); } to { opacity: 1; transform: none; } }
+@keyframes shChild { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
+@keyframes shUnderline { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes shCrumb { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes shPop { from { transform: scale(.5) rotate(-12deg); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes shSpin { to { transform: rotate(360deg); } }
+@keyframes shTilt { 0% { transform: rotate(0); } 40% { transform: rotate(-24deg) scale(1.15); } 100% { transform: none; } }
+
+/* the collapsed rail keeps the colour coding */
+.sh-collapsed .sh-item.active { border-radius: 14px; }
+@media (prefers-reduced-motion: reduce) {
+  .sh-side::before, .sh-logo, .sh-logo::after, .sh-item.active::after, .sh-chip.active::after, .sh-badge, .sh-crumb b::after { animation: none !important; }
+  .sh-group, .sh-brand, .sh-search, .sh-user, .sh-top, .sh-slides, .sh-chip, .sh-children.open .sh-child, .sh-crumb .ci { animation: none !important; }
+}

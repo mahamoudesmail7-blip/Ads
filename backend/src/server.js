@@ -151,6 +151,7 @@ app.use((req, res, next) => {
   res.set('Pragma', 'no-cache');
   next();
 });
+app.get('/', (req, res) => res.redirect(302, '/app.html')); // the app shell is the front door — every page opens inside it
 app.use(express.static(FRONTEND_ROOT, { extensions: ['html'], cacheControl: false }));
 
 app.use((req, res) => res.status(404).json({ error: 'NOT_FOUND' }));

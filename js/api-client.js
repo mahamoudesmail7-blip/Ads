@@ -20,8 +20,11 @@ async function request(method, path, body, opts) {
 
   if (res.status === 401) {
     if (!location.pathname.endsWith('/login.html')) {
-      const next = encodeURIComponent(location.pathname + location.search);
-      location.href = `login.html?next=${next}`;
+      if (window.self !== window.top) { try { window.top.location.href = 'login.html'; } catch { location.href = 'login.html'; } } // inside the app shell: leave the whole shell, not just the frame
+      else {
+        const next = encodeURIComponent(location.pathname + location.search + (location.pathname.endsWith('/app.html') ? location.hash : ''));
+        location.href = `login.html?next=${next}`;
+      }
     }
     // Never resolves normally on 401 — the redirect above is already underway.
     return new Promise(() => {});

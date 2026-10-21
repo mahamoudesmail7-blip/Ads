@@ -124,7 +124,7 @@ if (flag('ui') || (MODE === 'full' && !explicit.length && !flag('no-ui'))) {
     const seed3 = spawnSync(process.execPath, [path.join(here, 'seedUiFixtures.mjs')], { cwd: BACKEND, env: env3, encoding: 'utf8' });
     const server3 = spawn(process.execPath, [path.join(here, 'serveOnTestDb.js')], { cwd: BACKEND, env: env3, stdio: 'ignore', windowsHide: true });
     let up3 = false; for (let i = 0; i < 90 && !up3; i++) { try { up3 = (await fetch('http://localhost:4002/login.html')).ok; } catch { await sleep(500); } }
-    for (const [file, label] of [['launchWizardUiTest.mjs', 'launchWizardUiTest (9 premium steps, navigation, persistence, phone)'], ['launchGlobeUiTest.mjs', 'launchGlobeUiTest (real WebGL 3D globe, display-only, fallbacks)']]) {
+    for (const [file, label] of [['launchWizardUiTest.mjs', 'launchWizardUiTest (9 premium steps, navigation, persistence, phone)'], ['launchGlobeUiTest.mjs', 'launchGlobeUiTest (real WebGL 3D globe, display-only, fallbacks)'], ['shellUiTest.mjs', 'shellUiTest (app shell: grouped menu, every page embedded, slides, routing)']]) {
       const l0 = Date.now(); let o3 = ''; let c3 = -1;
       if (up3 && seed3.status === 0) { const r3 = spawnSync(process.execPath, [path.join(here, file)], { cwd: BACKEND, env: { ...env3, OPX_WAIT_MS: env3.OPX_WAIT_MS || '60000' }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 15 * 60_000 }); o3 = (r3.stdout || '') + (r3.stderr || ''); c3 = r3.status; } else o3 = `server did not start / seed failed (${seed3.status})`;
       const sum3 = [...o3.matchAll(/(\d+) passed, (\d+) failed/g)].pop(); const fl3 = o3.split('\n').filter((l) => /✗/.test(l)).slice(0, 8);

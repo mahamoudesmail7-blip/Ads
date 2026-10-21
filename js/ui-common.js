@@ -45,6 +45,9 @@ function navIcon(name) {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[name] || ''}</svg>`;
 }
 
+// Every page opens INSIDE the app shell (app.html), so a standalone page's own sidebar links go there too.
+export const shellHref = (href) => `app.html#/${href}`;
+
 export const NAV_ITEMS = [
   { key: 'dashboard', href: 'index.html', label: 'نظرة سريعة', icon: navIcon('dashboard') },
   { key: 'tasks', href: 'tasks.html', label: 'تاسكات اليوم', icon: navIcon('tasks') },
@@ -59,7 +62,7 @@ export const NAV_ITEMS = [
   { key: 'customers', href: 'customers.html', label: 'قاعدة العملاء', icon: navIcon('customers') },
   { key: 'aiintel', href: 'ai-intelligence.html', label: 'AI Intelligence', icon: navIcon('aiintel') },
   { key: 'aimediabuyer', href: 'ai-media-buyer.html', label: 'AI Media Buyer', icon: navIcon('aimediabuyer') },
-  { key: 'scalecenter', href: 'scale-center.html', label: '🚀 مركز التوسّع', icon: navIcon('ranking') },
+  { key: 'scalecenter', href: 'ai-media-buyer.html#scale', label: 'مركز التوسّع', icon: navIcon('ranking') }, // was a link to a page that does not exist (scale-center.html) — it is a section of AI Media Buyer
   { key: 'creativefactory', href: 'creative-factory.html', label: 'مصنع الكرياتيفات', icon: navIcon('aimediabuyer') },
   { key: 'productresearch', href: 'product-research.html', label: 'بحث المنتجات', icon: navIcon('productresearch') },
   { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },
@@ -108,7 +111,7 @@ const COLLAPSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 // mobile drawer (idSuffix === '--drawer') always shows fully when open, so
 // it's omitted there rather than rendering a control with no effect.
 function brandRowHtml(idSuffix) {
-  const brand = `<div class="brand">📈 <span>نظام مراقبة المنتجات</span><small>مركز التحكم بالتجارة الإلكترونية</small></div>`;
+  const brand = `<div class="brand"><span>AI Media Buyer</span><small>مركز التحكم بالتجارة الإلكترونية</small></div>`;
   if (idSuffix) return brand;
   return `<div class="brand-row">${brand}<button type="button" id="sidebarCollapseToggle" class="sidebar-collapse-btn" aria-label="طي/فتح القائمة الجانبية" title="طي/فتح القائمة الجانبية">${COLLAPSE_ICON}</button></div>`;
 }
@@ -117,7 +120,7 @@ function navBodyHtml(items, activeKey, user, idSuffix = '') {
   const navLinks = items
     .map(
       (i) =>
-        `<a href="${i.href}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} <span>${i.label}</span>${i.badgeId ? `<span class="nav-badge" data-badge-key="${i.badgeId}" style="display:none;"></span>` : ''}</a>`
+        `<a href="${shellHref(i.href)}" class="${i.key === activeKey ? 'active' : ''}">${i.icon} <span>${i.label}</span>${i.badgeId ? `<span class="nav-badge" data-badge-key="${i.badgeId}" style="display:none;"></span>` : ''}</a>`
     )
     .join('');
 
@@ -185,7 +188,7 @@ function mountMobileChrome(items, activeKey, user) {
     document.body.insertAdjacentHTML(
       'beforeend',
       `<div class="mobile-header" id="mobileHeader">
-        <div class="mobile-header-title">📈 نظام مراقبة المنتجات</div>
+        <div class="mobile-header-title">AI Media Buyer</div>
         <button type="button" class="mobile-hamburger-btn" id="mobileHamburgerBtn" aria-label="القائمة">${HAMBURGER_ICON}</button>
       </div>
       <div class="drawer-overlay" id="mobileNavOverlay">
@@ -217,7 +220,7 @@ function mountMobileChrome(items, activeKey, user) {
   const isOnBottomItem = bottomItems.some((i) => i.key === activeKey);
   document.getElementById('mobileBottomNav').innerHTML =
     bottomItems
-      .map((i) => `<a href="${i.href}" class="mobile-bottom-nav-item ${i.key === activeKey ? 'active' : ''}">${i.icon}<span>${BOTTOM_NAV_LABELS[i.key]}</span></a>`)
+      .map((i) => `<a href="${shellHref(i.href)}" class="mobile-bottom-nav-item ${i.key === activeKey ? 'active' : ''}">${i.icon}<span>${BOTTOM_NAV_LABELS[i.key]}</span></a>`)
       .join('') +
     `<button type="button" class="mobile-bottom-nav-item ${!isOnBottomItem ? 'active' : ''}" id="mobileMoreBtn">${MORE_ICON}<span>المزيد</span></button>`;
   document.getElementById('mobileMoreBtn').addEventListener('click', openMobileDrawer);

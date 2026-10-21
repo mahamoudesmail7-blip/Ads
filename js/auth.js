@@ -7,7 +7,17 @@
 import { mountThemeToggle } from './theme.js';
 
 const params = new URLSearchParams(location.search);
-const next = params.get('next') || 'index.html';
+// Everything now opens inside the app shell (app.html). A «next» that points at one of the pages goes to its shell route; anything that is not a plain
+// same-site page name is ignored (no open redirect) and the shell home is used.
+function safeNext(raw) {
+  const m = /^\/?([a-z0-9-]+\.html)(?:\?[^#]*)?(#.*)?$/i.exec(String(raw || ''));
+  if (!m) return 'app.html';
+  const file = m[1].toLowerCase();
+  if (file === 'login.html' || file === 'register.html') return 'app.html';
+  if (file === 'app.html') return m[2] && /^#\/[a-z0-9-]+\.html(#[a-z0-9_-]+)?$/i.test(m[2]) ? `app.html${m[2]}` : 'app.html'; // keep the shell route the session expired on
+  return `app.html#/${file}${m[2] || ''}`;
+}
+const next = safeNext(params.get('next'));
 
 async function init() {
   mountThemeToggle();

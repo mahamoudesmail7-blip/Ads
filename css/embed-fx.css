@@ -1,0 +1,56 @@
+/* embed-fx.css — the same «stand out + motion + graphics» treatment for the PAGES shown inside the shell (scoped under html.is-embedded; a page opened on its own is unchanged).
+   Typography with real contrast, cards that rise in and lift on hover, stat tiles with a coloured edge, tables with a hover row, buttons with a springy press. Pure CSS — no page code touched. */
+html.is-embedded {
+  --text-faint: #7b869e;                 /* the old #9ca3af was ~2.5:1 on white — unreadable; this is ~4.2:1 */
+  --text-dim: #566178;
+  --fx-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --fx-lift: 0 10px 28px rgba(35, 60, 150, .12);
+}
+html.is-embedded[data-theme="dark"] { --text-faint: #8f9bbd; --text-dim: #b4bedc; --fx-lift: 0 12px 30px rgba(0, 0, 0, .45); }
+@media (prefers-color-scheme: dark) { html.is-embedded:not([data-theme="light"]) { --text-faint: #8f9bbd; --text-dim: #b4bedc; --fx-lift: 0 12px 30px rgba(0, 0, 0, .45); } }
+
+/* ---------------------------------------------------------------- typography that stands out */
+html.is-embedded body { font-size: 14.5px; line-height: 1.65; }
+html.is-embedded .page-header .subtitle, html.is-embedded .page-header .faint { font-size: 13.5px; font-weight: 600; color: var(--text-dim); }
+html.is-embedded .section-title, html.is-embedded .card h2, html.is-embedded .card h3, html.is-embedded .amb-panel h2, html.is-embedded .amb-panel h3, html.is-embedded .amb-section-title { font-weight: 800; letter-spacing: -.2px; color: var(--text); }
+html.is-embedded .section-title { font-size: 17px; position: relative; padding-inline-start: 14px; }
+html.is-embedded .section-title::before { content: ''; position: absolute; inset-inline-start: 0; top: 50%; width: 5px; height: 1.1em; margin-top: -.55em; border-radius: 4px; background: linear-gradient(180deg, var(--accent, #ff7a1a), #7a4dff); }
+html.is-embedded label, html.is-embedded .field label { font-weight: 700; color: var(--text); }
+html.is-embedded th { font-weight: 800; font-size: 12.5px; letter-spacing: .2px; color: var(--text-dim); }
+html.is-embedded b, html.is-embedded strong { font-weight: 800; }
+html.is-embedded .muted, html.is-embedded .faint { color: var(--text-dim); }
+html.is-embedded .stat-tile .value, html.is-embedded .stat-tile-value, html.is-embedded .amb-kpi .v, html.is-embedded .amb-kpi-value { font-size: 28px; font-weight: 800; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+html.is-embedded .badge, html.is-embedded .amb-badge { font-weight: 800; }
+
+/* ---------------------------------------------------------------- graphics: depth, coloured edges */
+html.is-embedded .card, html.is-embedded .amb-panel { border-radius: 18px; box-shadow: 0 1px 2px rgba(20, 38, 100, .05), 0 10px 26px rgba(35, 60, 150, .06); transition: transform .3s var(--fx-spring), box-shadow .3s, border-color .25s; }
+html.is-embedded .card:hover, html.is-embedded .amb-panel:hover { transform: translateY(-2px); box-shadow: var(--fx-lift); border-color: color-mix(in srgb, var(--sh-acc, #4f7cff) 35%, var(--border, #e7eaf0)); }
+html.is-embedded .stat-tile, html.is-embedded .amb-kpi { position: relative; overflow: hidden; border-radius: 18px; transition: transform .3s var(--fx-spring), box-shadow .3s; }
+html.is-embedded .stat-tile::before, html.is-embedded .amb-kpi::before { content: ''; position: absolute; inset-inline: 0; top: 0; height: 3px; background: linear-gradient(90deg, var(--accent, #ff7a1a), #7a4dff); opacity: .85; }
+html.is-embedded .stat-tile:hover, html.is-embedded .amb-kpi:hover { transform: translateY(-3px); box-shadow: var(--fx-lift); }
+html.is-embedded .stat-tile-icon { transition: transform .35s var(--fx-spring); } html.is-embedded .stat-tile:hover .stat-tile-icon { transform: scale(1.18) rotate(-6deg); }
+html.is-embedded .table-wrap { border-radius: 18px; overflow: hidden; box-shadow: 0 1px 2px rgba(20, 38, 100, .05), 0 10px 26px rgba(35, 60, 150, .05); }
+html.is-embedded tbody tr { transition: background .15s, box-shadow .15s; }
+html.is-embedded tbody tr:hover { background: color-mix(in srgb, var(--sh-acc, #4f7cff) 7%, transparent); }
+html.is-embedded input:not([type="checkbox"]):not([type="radio"]), html.is-embedded select, html.is-embedded textarea { transition: border-color .15s, box-shadow .2s; }
+html.is-embedded input:focus:not([type="checkbox"]):not([type="radio"]), html.is-embedded select:focus, html.is-embedded textarea:focus { outline: none; border-color: var(--sh-acc, #4f7cff); box-shadow: 0 0 0 4px color-mix(in srgb, var(--sh-acc, #4f7cff) 20%, transparent); }
+
+/* ---------------------------------------------------------------- motion */
+html.is-embedded .btn, html.is-embedded .amb-btn { transition: transform .22s var(--fx-spring), box-shadow .2s, background .15s, border-color .15s; }
+html.is-embedded .btn:hover:not(:disabled), html.is-embedded .amb-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(35, 60, 150, .16); }
+html.is-embedded .btn:active:not(:disabled), html.is-embedded .amb-btn:active:not(:disabled) { transform: translateY(0) scale(.96); }
+html.is-embedded .btn:not(.secondary):not(.ghost):not(.danger):not(.small) { box-shadow: 0 8px 20px color-mix(in srgb, var(--accent, #ff7a1a) 30%, transparent); }
+/* cards / tiles / panels rise in, one after the other */
+html.is-embedded .card, html.is-embedded .stat-tile, html.is-embedded .amb-panel, html.is-embedded .amb-kpi, html.is-embedded .table-wrap { animation: fxRise .55s cubic-bezier(.2, .8, .2, 1) backwards; }
+html.is-embedded .main > :nth-child(2) { animation-delay: .04s; } html.is-embedded .main > :nth-child(3) { animation-delay: .09s; } html.is-embedded .main > :nth-child(4) { animation-delay: .14s; }
+html.is-embedded .main > :nth-child(5) { animation-delay: .19s; } html.is-embedded .main > :nth-child(n+6) { animation-delay: .24s; }
+html.is-embedded .stat-tile:nth-child(1), html.is-embedded .amb-kpi:nth-child(1) { animation-delay: .05s; } html.is-embedded .stat-tile:nth-child(2), html.is-embedded .amb-kpi:nth-child(2) { animation-delay: .1s; }
+html.is-embedded .stat-tile:nth-child(3), html.is-embedded .amb-kpi:nth-child(3) { animation-delay: .15s; } html.is-embedded .stat-tile:nth-child(4), html.is-embedded .amb-kpi:nth-child(4) { animation-delay: .2s; }
+html.is-embedded .stat-tile:nth-child(n+5), html.is-embedded .amb-kpi:nth-child(n+5) { animation-delay: .25s; }
+html.is-embedded .badge, html.is-embedded .amb-badge { animation: fxPop .4s var(--fx-spring) backwards; }
+@keyframes fxRise { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes fxPop { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  html.is-embedded .card, html.is-embedded .stat-tile, html.is-embedded .amb-panel, html.is-embedded .amb-kpi, html.is-embedded .table-wrap, html.is-embedded .badge, html.is-embedded .amb-badge { animation: none !important; }
+  html.is-embedded .card:hover, html.is-embedded .amb-panel:hover, html.is-embedded .stat-tile:hover, html.is-embedded .amb-kpi:hover, html.is-embedded .btn:hover, html.is-embedded .amb-btn:hover { transform: none; }
+}
