@@ -930,11 +930,12 @@ async function cloneJob(jobId, token) {
       if (c.special_ad_category_country) payload.special_ad_category_country = c.special_ad_category_country;
       applyCampaignBudget(payload, { c, tree, hasSlotPlan, scaleBudgetEgp });
       if (c.spend_cap && Number(c.spend_cap) > 0) payload.spend_cap = Number(c.spend_cap);
-      if (c.pacing_type) payload.pacing_type = c.pacing_type;
+      const cboBudget = !!(payload.daily_budget || payload.lifetime_budget);
+      // Meta rejects a pacing type on a campaign without its own budget («No Budget for Campaign»), e.g. an ABO scale cloned from a CBO source.
+      if (c.pacing_type && cboBudget) payload.pacing_type = c.pacing_type;
       // ABO campaigns (no campaign-level budget): Meta requires this field
       // explicitly on create. Copy the source value; default false (standard
       // ABO — no cross-ad-set budget sharing).
-      const cboBudget = !!(payload.daily_budget || payload.lifetime_budget);
       if (!cboBudget) payload.is_adset_budget_sharing_enabled = c.is_adset_budget_sharing_enabled === true;
       // §12 assertion — never send a budget on the wrong level.
       if (hasSlotPlan && cboBudget) throw new Error('ABO scale: destination campaign payload must not carry daily_budget/lifetime_budget.');

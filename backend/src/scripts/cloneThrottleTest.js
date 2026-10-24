@@ -112,6 +112,7 @@ const cboScale = applyCampaignBudget({}, { c: aboSrc, tree: { adsets: [{ bid_str
 ok('CBO scale (owner budget) still sets one campaign budget (70000) + a no-cap strategy (unchanged)', cboScale.daily_budget === 70000 && cboScale.bid_strategy === 'LOWEST_COST_WITHOUT_CAP');
 const aboPlain = applyCampaignBudget({}, { c: aboSrc, tree: {}, hasSlotPlan: true });
 ok('ABO slot plan from an ABO source: no campaign budget either (unchanged)', aboPlain.daily_budget === undefined && aboPlain.bid_strategy === undefined);
+ok('a campaign pacing type is only sent when the new campaign has its own budget (Meta: «No Budget for Campaign» on an ABO copy of a CBO source)', src.includes('if (c.pacing_type && cboBudget) payload.pacing_type = c.pacing_type;') && !src.includes('if (c.pacing_type) payload.pacing_type = c.pacing_type;'));
 const asBase = { id: 'as1', name: 'set 1', targeting: { geo_locations: { countries: ['EG'] } }, optimization_goal: 'OFFSITE_CONVERSIONS', billing_event: 'IMPRESSIONS', status: 'PAUSED', __slotDailyBudgetMinor: 20000 };
 const ctx = { newCampaignId: 'c1', campaignHasBudget: true, resolved: { audienceRemap: {} }, pixelMap: {}, scaleBudgetForced: false, nativeStartTime: null };
 let adPayload = null; let adErr = null; try { adPayload = buildAdSetPayload({ ...asBase }, { ...ctx, slotFromCbo: true, campaignBidStrategy: 'LOWEST_COST_WITHOUT_CAP' }); } catch (e) { adErr = e; }
