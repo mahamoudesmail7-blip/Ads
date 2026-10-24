@@ -9,7 +9,7 @@ import { prisma } from '../../prisma.js';
 import { getOperatorConfig, listExceptions } from './operatorStore.js';
 import { readinessList, mappingCenter } from './operatorReadiness.js';
 import { policyBook, policyKey, normalizePolicy, validatePolicy, overlayGlobal, mergeEffective, saveDraft, activatePolicy } from './productPolicy.js';
-import { evaluateReadiness } from './automationReadiness.js';
+import { evaluateReadiness, capsOrNull } from './automationReadiness.js';
 import { getPausePolicy } from './pausePolicy.js';
 import { getOpenCpaPolicy } from './openCpaPolicy.js';
 import { windowRange } from './operatorRules.js';
@@ -32,7 +32,7 @@ function wouldBePolicy(book, key) {
 
 /** Everything the owner needs in ONE table. deps (tests): rows, mapRows, world, exposure, pause, open, exceptions, book, config, openCandidates. */
 export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
-  const [rows, book, pause, open, config, exceptions] = await Promise.all([deps.rows || readinessList({}), deps.book || policyBook(), deps.pause || getPausePolicy(), deps.open !== undefined ? deps.open : getOpenCpaPolicy().catch(() => null), deps.config || getOperatorConfig(), deps.exceptions || listExceptions({}).catch(() => [])]);
+  const [rows, book, pause, open, config, exceptions, caps] = await Promise.all([deps.rows || readinessList({}), deps.book || policyBook(), deps.pause || getPausePolicy(), deps.open !== undefined ? deps.open : getOpenCpaPolicy().catch(() => null), deps.config || getOperatorConfig(), deps.exceptions || listExceptions({}).catch(() => []), deps.caps !== undefined ? deps.caps : capsOrNull()]);
   let world = deps.world; if (!world) { const { buildOperatorWorld } = await import('./operatorContext.js'); world = await buildOperatorWorld({ windowKeys: ['today', 'last3', 'last7', 'last30'], now }); }
   const mapRows = deps.mapRows || (world.adAccountId ? (await mappingCenter({ adAccountId: world.adAccountId, limit: 5000 })).rows : []);
   let exposureBy = deps.exposure; if (!exposureBy) { try { const { activeExposure } = await import('./automationScope.js'); exposureBy = (await activeExposure({ adAccountId: world.adAccountId, now })).byCampaign; } catch { exposureBy = new Map(); } }
@@ -52,7 +52,7 @@ export async function bulkOverview({ now = new Date(), deps = {} } = {}) {
     const m = (k) => mine.reduce((t, c) => { const w = win(k, c.campaignId); return { spend: t.spend + (w?.spend || 0), orders: t.orders + (w?.purchases || 0) }; }, { spend: 0, orders: 0 });
     const m0 = m('today'), m3 = m('last3'), m7 = m('last7'), m30 = m('last30'); const pf = (x) => ({ spend: round(x.spend), orders: x.orders, cpa: cpaOf(x.spend, x.orders) }); const active = mine.filter((c) => c.campaignStatus === 'ACTIVE');
     if (!mine.length && !(row.campaignsMapped > 0)) { /* no campaign at all: still listed so the owner sees it is BLOCKED, but only when it ever had orders */ if (!m7.orders && !m30.orders) continue; }
-    const wp = wouldBePolicy(book, key); const rd = evaluateReadiness({ row, policy: wp, pause, open, minStockRequired: open?.enabled ? open.minStock : null });
+    const wp = wouldBePolicy(book, key); const rd = evaluateReadiness({ row, policy: wp, pause, open, caps, minStockRequired: open?.enabled ? open.minStock : null });
     const toBeSet = new Set(['POLICY_ACTIVE', 'MODE_AUTOMATIC']); const missing = rd.missing.filter((x) => !toBeSet.has(x.key));
     const noAutoEx = noAuto.has(`PRODUCT:${row.productId}`) || noAuto.has(`STORE:${row.storeId}`);
     const blocked = !mine.length || noAutoEx; const state = blocked ? 'BLOCKED' : missing.length ? 'NEEDS_CONFIGURATION' : 'READY';

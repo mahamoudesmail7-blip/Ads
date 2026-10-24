@@ -27,7 +27,7 @@ try {
   console.log('\n2. An incomplete product: nothing is assumed');
   const A = await mk('incomplete'); const c0 = await card(A.p.id);
   ok('cost is «not entered» (not 0), economics incomplete, no margin, no profit, NO suggested CPA lines', c0.economics.cost.entered === false && c0.economics.cost.value === null && c0.economics.complete === false && c0.profit.unitMargin === null && c0.cpa.suggestion === null && c0.policy.status === 'NONE', JSON.stringify([c0.economics, c0.profit, c0.cpa.suggestion]));
-  ok('readiness is BLOCKED and lists what is missing (economics · spend limits · CPA limits …)', c0.readiness.ready === false && ['ECONOMICS', 'SPEND_LIMITS', 'CPA_LIMITS'].every((k) => c0.readiness.missing.some((m) => m.key === k)), JSON.stringify(c0.readiness.missing.map((m) => m.key)));
+  ok('readiness is BLOCKED and lists what is missing (economics · spend limits · CPA limits …)', c0.readiness.ready === false && ['SPEND_LIMITS', 'CPA_LIMITS'].every((k) => c0.readiness.missing.some((m) => m.key === k)) && !c0.readiness.missing.some((m) => m.key === 'ECONOMICS'), JSON.stringify(c0.readiness.missing.map((m) => m.key)));
   ok('the product is not locked (no active policy) and not a priority-six member', c0.locked === false && c0.isPriority === false);
 
   console.log('\n3. Validation: ONE wrong number → nothing is written');

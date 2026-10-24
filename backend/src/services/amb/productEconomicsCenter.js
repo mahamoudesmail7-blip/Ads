@@ -9,7 +9,7 @@ import { prisma } from '../../prisma.js';
 import { readinessList } from './operatorReadiness.js';
 import { listProductRules, getProductPolicy, saveDraft, previewPolicy, normalizePolicy, validatePolicy, overlayGlobal, getGlobalRules, loadActivePolicies } from './productPolicy.js';
 import { loadProductFactsBatch } from './productFactsBatch.js';
-import { productAutomationReadiness, evaluateReadiness } from './automationReadiness.js';
+import { productAutomationReadiness, evaluateReadiness, capsOrNull } from './automationReadiness.js';
 import { computeOperatorEconomics } from './operatorGuards.js';
 import { resolveSellingPrice, loadStoreCatalogIndex } from './productPriceResolver.js';
 import { getOperatorConfig, ownerPriceOf, upsertProductConfig } from './operatorStore.js';
@@ -61,7 +61,7 @@ export async function getProductEconomicsBoard({ scope = 'six', ids = null, now 
     const perf = perfOf(rule); const econ = computeOperatorEconomics({ product, ambProduct: amb, opCfg, observedCpa: perf.cpa30, priceResolution: priceRes });
     const pol = await getProductPolicy({ productId: id, storeId: product.store_id }); const locked = !!pol.active;
     const eff = pol.active ? pol.effective : pol.draft ? overlayGlobal(gl.active, pol.draft) : null;
-    const rd = evaluateReadiness({ row, policy: eff, pause, open, minStockRequired: open?.enabled ? open.minStock : null });
+    const rd = evaluateReadiness({ row, policy: eff, pause, open, caps: await capsOrNull(), minStockRequired: open?.enabled ? open.minStock : null });
     const fact = facts.get(id); const maxCpa = opCfg?.max_cpa ?? amb?.max_cpa ?? econ.calculatedMaxCpa ?? null;
     const inp = (v, entered) => ({ value: entered ? v : null, entered: !!entered });
     cards.push({

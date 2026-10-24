@@ -40,19 +40,19 @@ try {
   ov = await BK.bulkOverview({ deps: D0() }); const by = (p) => ov.products.find((x) => x.productId === p.id);
   ok('A (complete economics, stock known, mapped, pause policy approved) → READY on INHERITED limits', by(A).state === 'READY' && by(A).limits.hardStop === 200 && by(A).limits.dailyCap === 1500 && by(A).limits.maxChangesPerDay === 4);
   ok('B (stock UNKNOWN) → still READY: unknown stock is only a warning by the owner\'s decision', by(B).state === 'READY' && by(B).stockKnown === false);
-  ok('C (economics incomplete) → NEEDS_CONFIGURATION, naming ECONOMICS', by(C).state === 'NEEDS_CONFIGURATION' && by(C).missing.some((m) => m.key === 'ECONOMICS'));
+  ok('C (economics incomplete) → still READY: economics are optional (owner decision 2026-10-24), never listed as missing', by(C).state === 'READY' && !by(C).missing.some((m) => m.key === 'ECONOMICS'));
   ok('D (no verified campaign) → BLOCKED', by(D) === undefined || by(D).state === 'BLOCKED');
   ok('E (NO_AUTOMATION exception on the product) → BLOCKED with the reason', by(E).state === 'BLOCKED' && /NO_AUTOMATION/.test(by(E).blockedReason));
-  ok('totals add up and the table is ordered READY → NEEDS_CONFIGURATION → BLOCKED', ov.totals.READY === 3 && ov.totals.NEEDS_CONFIGURATION === 1 && ov.totals.BLOCKED >= 1 && ov.products[0].state === 'READY' && ov.products[ov.products.length - 1].state === 'BLOCKED');
+  ok('totals add up and the table is ordered READY → NEEDS_CONFIGURATION → BLOCKED', ov.totals.READY === 4 && ov.totals.NEEDS_CONFIGURATION === 0 && ov.totals.BLOCKED >= 1 && ov.products[0].state === 'READY' && ov.products[ov.products.length - 1].state === 'BLOCKED');
   ok('unconfirmed mappings (UNMAPPED / SUGGESTED) are EXCLUDED and listed with the reason; they never count as a product\'s campaign', ov.excluded.some((x) => x.campaignId === 'u1' && /مش مربوطة/.test(x.reason)) && ov.excluded.some((x) => x.campaignId === 's1' && /اقتراح/.test(x.reason)) && by(A).campaigns.ids.join() === 'a1,a2');
   ok('performance per product: 7-day orders + CPA 3/7/30 from its verified campaigns only', by(A).orders7 === 9 && by(A).cpa.d7 === 100 && by(A).cpa.d30 === 100 && by(A).runningBudget === 300);
 
   console.log('\n3. Preview is read-only and refuses to be approved without the exposure caps');
   let pv = await BK.bulkPreview({ deps: D0({ config: config(null) }) });
   ok('account daily exposure cap NOT set → ACCOUNT_CAP_MISSING blocks the approval', pv.canActivate === false && pv.blockers.some((b) => b.code === 'ACCOUNT_CAP_MISSING'));
-  pv = await BK.bulkPreview({ deps: D0({ config: config(700) }) }); ok('running exposure above the account cap → ACCOUNT_CAP_EXCEEDED', pv.blockers.some((b) => b.code === 'ACCOUNT_CAP_EXCEEDED') && pv.exposure.running === 800);
+  pv = await BK.bulkPreview({ deps: D0({ config: config(700) }) }); ok('running exposure above the account cap → ACCOUNT_CAP_EXCEEDED', pv.blockers.some((b) => b.code === 'ACCOUNT_CAP_EXCEEDED') && pv.exposure.running === 900);
   pv = await BK.bulkPreview({ deps: D0({ pause: { enabled: false, version: 0, approved: null } }) }); ok('pause policy not approved → every product drops to NEEDS_CONFIGURATION (nothing included)', pv.included.length === 0 && pv.blockers.some((b) => b.code === 'NO_READY_PRODUCT'));
-  pv = await BK.bulkPreview({ deps: D0() }); ok('all caps set and fitting: the preview lists ONLY the READY products with their campaigns and the exposure; others are listed as not included with why', pv.canActivate === true && pv.included.length === 3 && pv.notIncluded.every((n) => n.state !== 'READY') && pv.confirm.products === 3 && pv.confirm.runningExposure === 800 && pv.exposure.headroom === 4200);
+  pv = await BK.bulkPreview({ deps: D0() }); ok('all caps set and fitting: the preview lists ONLY the READY products with their campaigns and the exposure; others are listed as not included with why', pv.canActivate === true && pv.included.length === 4 && pv.notIncluded.every((n) => n.state !== 'READY') && pv.confirm.products === 4 && pv.confirm.runningExposure === 900 && pv.exposure.headroom === 4100);
   const pvOne = await BK.bulkPreview({ productKeys: [key(A)], deps: D0() }); ok('a selection restricts the scope; the confirmation hash differs from the full scope', pvOne.included.length === 1 && pvOne.confirm.hash !== pv.confirm.hash);
   ok('the preview wrote nothing: no policy was activated and no Meta action exists', (await PP.getProductPolicy({ productId: A.id, storeId: A.store_id })).status === 'NONE' && (await prisma.ambAction.count()) === actions0);
 
@@ -72,14 +72,14 @@ try {
   ok('a MANAGER cannot activate (403)', (await rej(() => BK.bulkActivate({ confirm: pv.confirm, confirmAutomatic: true, userId: 9999, deps: D0({ user: MGR }) })))?.status === 403);
   ok('caps missing → BULK_BLOCKED even with correct numbers', (await rej(() => BK.bulkActivate({ confirm: pv.confirm, confirmAutomatic: true, userId: 1, deps: D0({ config: config(null) }) })))?.code === 'BULK_BLOCKED');
   const res = await BK.bulkActivate({ confirm: pv.confirm, confirmAutomatic: true, userId: 1, deps: D0() });
-  ok('exact confirmation → the 3 READY products are activated as AUTOMATIC', res.activated.length === 3 && [A, B, F].every((p) => res.activated.includes(key(p))) && res.skipped.length === 0, JSON.stringify(res));
+  ok('exact confirmation → the 4 READY products (incl. C: economics are optional) are activated as AUTOMATIC', res.activated.length === 4 && [A, B, C, F].every((p) => res.activated.includes(key(p))) && res.skipped.length === 0, JSON.stringify(res));
   const st = async (p) => PP.getProductPolicy({ productId: p.id, storeId: p.store_id });
-  ok('A, B, F are ACTIVE with mode AUTOMATIC (inheriting the global limits); C (NEEDS_CONFIGURATION), D (BLOCKED) and E (BLOCKED) were NOT touched', (await st(A)).active?.mode === 'AUTOMATIC' && (await st(B)).active?.mode === 'AUTOMATIC' && (await st(F)).active?.mode === 'AUTOMATIC' && (await st(C)).status === 'NONE' && (await st(D)).status === 'NONE' && (await st(E)).status === 'NONE');
+  ok('A, B, C, F are ACTIVE with mode AUTOMATIC (inheriting the global limits); D (BLOCKED) and E (BLOCKED) were NOT touched', (await st(A)).active?.mode === 'AUTOMATIC' && (await st(B)).active?.mode === 'AUTOMATIC' && (await st(F)).active?.mode === 'AUTOMATIC' && (await st(C)).active?.mode === 'AUTOMATIC' && (await st(D)).status === 'NONE' && (await st(E)).status === 'NONE');
   ok('B kept its own Scale 90 and A\'s effective decrease is 15 (draft values), while the hard stop 200 is inherited from the global rules', (await st(B)).effective.cpa.scale === 90 && (await st(A)).effective.budget.decreasePct === 15 && (await st(A)).effective.cpa.hardStop === 200);
   const after = await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } });
   ok('activation changed NOTHING else: system mode, execution permissions, Emergency Stop and the write lock are exactly as before, and ZERO Meta actions exist', after.mode === cfgBefore.mode && after.emergency_stop === cfgBefore.emergency_stop && JSON.stringify(JSON.parse(after.limits_json || '{}').execPermissions) === JSON.stringify(JSON.parse(cfgBefore.limits_json || '{}').execPermissions) && (await prisma.ambAction.count()) === actions0);
   ok('the bulk activation is audited', (await prisma.ambOperatorEvent.count({ where: { kind: 'BULK_ACTIVATION' } })) === 1);
   const again = await BK.bulkActivate({ confirm: (await BK.bulkPreview({ deps: D0() })).confirm, confirmAutomatic: true, userId: 1, deps: D0() });
-  ok('running it again is idempotent: the already-AUTOMATIC products are skipped, nothing is activated twice', again.activated.length === 0 && again.skipped.length === 3 && again.skipped.every((x) => /بالفعل/.test(x.why)), JSON.stringify(again));
+  ok('running it again is idempotent: the already-AUTOMATIC products are skipped, nothing is activated twice', again.activated.length === 0 && again.skipped.length === 4 && again.skipped.every((x) => /بالفعل/.test(x.why)), JSON.stringify(again));
 } finally { try { await restore(); await prisma.product.deleteMany({ where: { id: { in: ids } } }); } catch (e) { console.log('cleanup failed', e.message); } }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

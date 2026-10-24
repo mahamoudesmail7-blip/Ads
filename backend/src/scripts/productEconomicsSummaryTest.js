@@ -18,7 +18,7 @@ try {
   const A = await mkProduct('a'); const FA = await mkProfile(A);
   const s1 = await LCS.getEconomicsSummary({ profileId: FA.id, storeId: ST });
   ok('linked + available; cost not entered → economics incomplete, NO margin, NO profit, NO max CPA (all null, never 0)', s1.linked && s1.available && s1.economicsComplete === false && s1.unitMargin === null && s1.profit30 === null && s1.profit7 === null && s1.cpa.max === null && s1.marginPct === null, JSON.stringify(s1));
-  ok('the readiness checklist is there: not ready, N/total, and the missing items are named (economics · spend limits · CPA limits)', s1.readiness.ready === false && s1.readiness.total >= 6 && s1.readiness.okCount < s1.readiness.total && ['ECONOMICS', 'SPEND_LIMITS', 'CPA_LIMITS'].every((k) => s1.readiness.missing.some((m) => m.key === k)), JSON.stringify(s1.readiness));
+  ok('the readiness checklist is there: not ready, N/total, and the missing items are named (economics · spend limits · CPA limits)', s1.readiness.ready === false && s1.readiness.total >= 6 && s1.readiness.okCount < s1.readiness.total && ['SPEND_LIMITS', 'CPA_LIMITS'].every((k) => s1.readiness.missing.some((m) => m.key === k)) && !s1.readiness.missing.some((m) => m.key === 'ECONOMICS'), JSON.stringify(s1.readiness));
   ok('it carries the link to the economics screen (V2, section «prod») and says the policy status', s1.screen.section === 'prod' && /ui=v2/.test(s1.screen.path) && s1.policy.status === 'NONE' && s1.locked === false);
 
   console.log('\n2. After the owner enters real numbers the page follows (same engine as the screen)');
@@ -26,7 +26,7 @@ try {
   const same = await LCS.getEconomicsSummaryByProductId({ productId: A.id }); ok('within the short cache window the page still shows the previous answer (it is cheap to re-open)', same.unitMargin === null);
   const s2 = await LCS.getEconomicsSummaryByProductId({ productId: A.id, now: later() });
   ok('real margin 1000 − (400+60+40) = 500 (50% of the price), economics complete, max CPA 200, stock 150 / min 30', s2.economicsComplete === true && s2.unitMargin === 500 && s2.marginPct === 50 && s2.breakEvenCpa === 500 && s2.cpa.max === 200 && s2.cpa.target === 120 && s2.cpa.hardStop === 220 && s2.stock.current === 150 && s2.stock.minimum === 30, JSON.stringify(s2));
-  ok('the checklist moved: economics ✓ and CPA limits ✗ is still reported honestly until a policy draft exists', s2.readiness.okCount > s1.readiness.okCount && s2.readiness.missing.every((m) => m.key !== 'ECONOMICS'), JSON.stringify(s2.readiness.missing.map((m) => m.key)));
+  ok('economics never appear as missing (optional) and CPA limits ✗ is still reported honestly until a policy draft exists', s2.readiness.okCount >= s1.readiness.okCount && s2.readiness.missing.every((m) => m.key !== 'ECONOMICS') && s2.readiness.missing.some((m) => m.key === 'CPA_LIMITS'), JSON.stringify(s2.readiness.missing.map((m) => m.key)));
 
   console.log('\n3. A product that already runs a policy is flagged LOCKED on the page too');
   const B = await mkProduct('b'); const FB = await mkProfile(B); const raw = JSON.parse((await prisma.ambOperatorConfig.findUnique({ where: { scope: 'GLOBAL' } })).limits_json || '{}');
