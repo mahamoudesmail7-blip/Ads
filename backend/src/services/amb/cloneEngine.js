@@ -130,7 +130,20 @@ async function rearmThrottleBlockedJobs(batchId) {
   }
   return n;
 }
-export { rearmThrottleBlockedJobs, withThrottleRetry };
+/**
+ * A job is flipped to ACTIVATION_PENDING right before its objects are set ACTIVE. If the server restarts in the middle (a deploy), nothing ever moves it again — and the
+ * scheduler only picks CLONED_PAUSED jobs. A stale one (untouched for 5+ minutes) goes back to CLONED_PAUSED on resume so the next tick activates it; setting an
+ * already-ACTIVE object ACTIVE again is harmless.
+ */
+async function rearmStuckActivations(batchId) {
+  const stale = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId, status: 'ACTIVATION_PENDING', updated_at: { lt: new Date(Date.now() - 5 * 60e3) } } });
+  for (const jb of stale) {
+    await prisma.ambCloneJob.update({ where: { id: jb.id }, data: { status: 'CLONED_PAUSED', error: null } });
+    await audit(batchId, jb.id, 'JOB_REARMED', { detail: 'التفعيل كان واقف في النص (السيرفر اتعمله restart) — اتعاد للتفعيل.' });
+  }
+  return stale.length;
+}
+export { rearmThrottleBlockedJobs, rearmStuckActivations, withThrottleRetry };
 
 // Meta error subcodes that are PAYLOAD-STRUCTURE problems, not "asset not
 // usable" — re-uploading would not help, so the re-upload retry must NOT fire.
@@ -621,6 +634,7 @@ export async function resumeBatch({ batchId, userId }) {
   // CREATED one.
   await assertMetaWritesAllowed({ source: 'clone:resumeBatch', userId, detail: { batchId } }); // same guard for a manual retry
   await audit(batchId, null, 'RETRY', { detail: 'إعادة تشغيل العناصر الفاشلة/الناقصة.', actorId: userId });
+  await rearmStuckActivations(batchId).catch((e) => logger.warn('AMB clone: re-arm of stuck activations failed', { batchId, message: e.message }));
   kickRun(batchId);
   return getBatch(batchId);
 }
