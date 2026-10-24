@@ -47,7 +47,7 @@ export const DEFAULT_POLICY = {
   accountWide: {
     requireVerifiedMapping: true,   // CONFLICT / UNMAPPED / SUGGESTED / EXTERNAL_STORE campaigns stay PROTECTED and never enter the optimizer
     economicsMissing: 'WARN',        // WARN | BLOCK — ECONOMICS_INCOMPLETE on a performance-only rule
-    stockUnknown: 'WARN',            // WARN | BLOCK — STOCK_UNKNOWN: a warning for pause / reduce / keep; an INCREASE with unknown stock additionally needs the owner's approval (never auto)
+    stockUnknown: 'WARN',            // WARN | BLOCK — STOCK_UNKNOWN: a warning for pause / reduce / keep AND increase (owner decision 2026-10-25: unknown stock never turns an increase into an approval)
     productZeroOrderOverride: true,  // a product's own confirmed zero-order stop (e.g. Hair Cap = 3 x Target CPA) replaces the account-wide 200 EGP for that product only
   },
 };
@@ -296,7 +296,7 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   const slim = (x) => (x ? { spend: round0(x.spend ?? 0), purchases: x.purchases ?? 0, cpa: x.cpa == null ? null : round0(x.cpa) } : null);
   const soften = (bk, action) => {
     if (bk.code === 'ECONOMICS_INCOMPLETE' && AW.economicsMissing === 'WARN') return { ...bk, severity: 'WARN' };
-    if (bk.code === 'STOCK_UNKNOWN' && AW.stockUnknown === 'WARN') return { ...bk, severity: action === 'SCALE_UP' ? 'DOWNGRADE' : 'WARN' }; // an increase with unknown stock never runs by itself
+    if (bk.code === 'STOCK_UNKNOWN' && AW.stockUnknown === 'WARN') return { ...bk, severity: 'WARN' }; // owner decision (2026-10-25): unknown stock is only a warning, also for an increase (a KNOWN zero stock still blocks; a product set to stockPolicy BLOCK still blocks)
     return bk;
   };
   const fmtGuard = (bk) => `${bk.code}[${bk.severity[0]}]${bk.detail ? ':' + String(bk.detail).slice(0, 40) : ''}`;

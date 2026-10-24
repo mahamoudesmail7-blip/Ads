@@ -175,7 +175,7 @@ try {
   // guards stay
   const gv = async (o) => (await BO.evaluateBudgetOptimization({ now: NOW, deps: { ...base, ...o } })).rows.find((x) => x.campaignId === `${T}cbo`);
   let row = await gv({ ctxFor: async (c) => mkCtx(c.id, { stock: { status: 'STOCK_UNKNOWN' } }) });
-  ok('ACCOUNT-WIDE: stock unknown is NOT a hard block any more — the increase stays WOULD_INCREASE but can never run by itself (STOCK_UNKNOWN[D] + approval)', row.decision === 'WOULD_INCREASE' && row.requiresApproval === true && row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[D]')), JSON.stringify(row.guards));
+  ok('ACCOUNT-WIDE: stock unknown is only a WARNING (owner decision 2026-10-25) — the increase stays WOULD_INCREASE and is NOT downgraded to approval (STOCK_UNKNOWN[W], no [D])', row.decision === 'WOULD_INCREASE' && row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[W]')) && !row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[D]')) && !row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[B]')), JSON.stringify(row.guards));
   row = await gv({ ctxFor: async (c) => mkCtx(c.id, { econ: { complete: false, profitState: 'UNKNOWN' } }) });
   ok('ACCOUNT-WIDE: economics incomplete is a WARNING on a performance-only rule (ECONOMICS_INCOMPLETE[W]) — not invented, not blocking', row.decision === 'WOULD_INCREASE' && row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[W]')) && !row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[B]')), JSON.stringify(row.guards));
   row = await gv({ ctxFor: async (c) => mkCtx(c.id, { product: { id: 7, ambProductId: 7, name: 'x', mappingVerified: false, mappingSource: 'SUGGESTED' } }) });
