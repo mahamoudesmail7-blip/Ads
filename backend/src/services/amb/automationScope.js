@@ -23,6 +23,12 @@ export function scopeVerdict(scope, { productId = null, storeId = null, campaign
   if ((s.includeProducts.length && !(p && s.includeProducts.includes(p))) || (s.includeStores.length && !(st && s.includeStores.includes(st))) || (s.includeCampaigns.length && !(c && s.includeCampaigns.includes(c)))) return 'OUT_OF_SCOPE';
   return null;
 }
+/** Auto-enrolment (owner decision 2026-10-25): a product whose ACTIVE policy is AUTOMATIC enters the policy's scope WITHOUT being typed into includeProducts — the product list is waived for it.
+ *  Everything else still applies: excludeProducts/Stores/Campaigns always win, and includeStores / includeCampaigns (when set) still have to match. autoEnroll=false (policy flag) restores the strict include list. Pure. */
+export function effectiveScope(scope, { autoEnroll = true, automatic = false } = {}) {
+  if (!autoEnroll || !automatic || !scope || !(scope.includeProducts || []).length) return scope;
+  return { ...scope, includeProducts: [] };
+}
 export const scopeIsEmpty = (scope) => !scope || Object.values(scope).every((l) => !l.length);
 export const weekdayAllowed = (days, weekday) => !days || !days.length || days.includes(weekday);
 export function describeScope(scope) {

@@ -341,7 +341,7 @@ export function confirmModal({ title = '', message = '', confirmLabel = 'تأك�
     overlay.innerHTML = `
       <div class="card confirm-modal-card">
         ${title ? `<div class="section-title" style="margin-top:0;">${escapeHtml(title)}</div>` : ''}
-        <p class="muted" style="margin:0 0 18px;">${escapeHtml(message)}</p>
+        <p class="muted" style="margin:0 0 18px;white-space:pre-line;">${escapeHtml(message)}</p>
         <div class="toolbar" style="justify-content:flex-end;">
           <button type="button" class="btn secondary" data-action="cancel">${escapeHtml(cancelLabel)}</button>
           <button type="button" class="btn ${danger ? 'danger' : ''}" data-action="confirm">${escapeHtml(confirmLabel)}</button>

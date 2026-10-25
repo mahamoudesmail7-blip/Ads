@@ -7,7 +7,7 @@
 import { prisma } from '../../prisma.js';
 import { getOperatorConfig } from './operatorStore.js';
 import { getPausePolicy, pausePolicyActive } from './pausePolicy.js';
-import { scopeVerdict, describeScope } from './automationScope.js';
+import { scopeVerdict, describeScope, effectiveScope } from './automationScope.js';
 import { limitUsage, DIFFERENCE_NOTE } from './dailyLimits.js';
 import { BLOCK_CODES } from './operatorGuards.js';
 import { autoActionsState, missingAutoToggles, AUTO_ACTIONS } from './operatorAutoActions.js';
@@ -73,7 +73,7 @@ export function gateChain({ config, settings, pause, product, usage = [], scope 
     const rows = []; const miss = missingAutoToggles(action, settings);
     rows.push(g('PERMISSION', 'صلاحية التنفيذ', perm[permKey[action]] === true, perm[permKey[action]] === true ? 'ON' : 'OFF'));
     rows.push(g('AUTO_SWITCH', 'مفتاح Auto', miss.length === 0, switchOf(action)));
-    if (action === 'PAUSE') { const sv = scope && pause ? scopeVerdict(pause.scope, scope) : null; const active = pausePolicyActive(pause); rows.push(g('PAUSE_POLICY', 'سياسة الإيقاف', active, active ? `معتمدة v${pause.version}` : 'غير مفعّلة/غير معتمدة')); rows.push(g('PAUSE_SCOPE', 'نطاق سياسة الإيقاف', !sv, sv ? `${sv === 'OUT_OF_SCOPE' ? 'المنتج خارج النطاق' : 'مستبعد'} — النطاق: ${describeScope(pause?.scope)}` : 'داخل النطاق')); }
+    if (action === 'PAUSE') { const sv = scope && pause ? scopeVerdict(effectiveScope(pause.scope, { autoEnroll: pause.autoEnrollAutomatic !== false, automatic: pm === 'AUTOMATIC' && String(ps).startsWith('ACTIVE') }), scope) : null; const active = pausePolicyActive(pause); rows.push(g('PAUSE_POLICY', 'سياسة الإيقاف', active, active ? `معتمدة v${pause.version}` : 'غير مفعّلة/غير معتمدة')); rows.push(g('PAUSE_SCOPE', 'نطاق سياسة الإيقاف', !sv, sv ? `${sv === 'OUT_OF_SCOPE' ? 'المنتج خارج النطاق' : 'مستبعد'} — النطاق: ${describeScope(pause?.scope)}` : 'داخل النطاق')); }
     const lim = (k) => usage.find((u) => u.key === k);
     if (action === 'SCALE_UP') { const a = lim('budgetIncrease'), e = lim('exposure'); rows.push(g('LIMIT_INCREASE', 'حد زيادة الميزانية (24س)', !a || a.state !== 'FULL', a?.limit == null ? 'مفيش حد' : `${a.used} من ${a.limit} (المتبقي ${a.remaining})`)); rows.push(g('LIMIT_EXPOSURE', 'حد التعرض المالي', !e || e.state !== 'FULL', e?.limit == null ? 'مفيش حد' : `${e.used} من ${e.limit} (المتبقي ${e.remaining})`)); }
     if (action === 'PAUSE') { const p = lim('pauses'); rows.push(g('LIMIT_PAUSES', 'حد الإيقاف (24س)', !p || p.state !== 'FULL', p?.limit == null ? 'مفيش حد' : `${p.used} من ${p.limit} (المتبقي ${p.remaining})`)); }
@@ -142,7 +142,7 @@ export async function automationDiagnostics({ now = new Date(), deps = {} } = {}
   // policies + scope gaps + sync
   const incomplete = productsOf(overview).filter((p) => ['AUTOMATIC', 'APPROVAL'].includes(p.policy?.mode) && p.state !== 'READY').map((p) => ({ key: p.key, name: p.name, state: p.state, mode: p.policy.mode, missing: (p.missing || []).map((m) => m.label), blockedReason: p.blockedReason }));
   const pauseActive = pausePolicyActive(pause);
-  const uncovered = productsOf(overview).filter((p) => p.policy?.mode === 'AUTOMATIC' && String(p.policy.status).startsWith('ACTIVE')).map((p) => ({ key: p.key, name: p.name, verdict: scopeVerdict(pause.scope, { productId: p.productId, storeId: p.storeId }) })).filter((x) => x.verdict);
+  const uncovered = productsOf(overview).filter((p) => p.policy?.mode === 'AUTOMATIC' && String(p.policy.status).startsWith('ACTIVE')).map((p) => ({ key: p.key, name: p.name, verdict: scopeVerdict(effectiveScope(pause.scope, { autoEnroll: pause.autoEnrollAutomatic !== false, automatic: true }), { productId: p.productId, storeId: p.storeId }) })).filter((x) => x.verdict);
   const sync = deps.sync || await (await import('./snapshotSync.js')).getSyncStatus().catch(() => null);
   const last = deps.lastRun !== undefined ? deps.lastRun : (await import('./automationEngine.js')).getAutomationStatus().lastRun;
   const lastAt = last?.at ? new Date(last.at) : null;

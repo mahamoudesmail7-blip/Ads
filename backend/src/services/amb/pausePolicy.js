@@ -6,7 +6,7 @@
 //   protections: winnerProtection + precedence — PROTECTION_WINS (a strong winner is not paused by ZERO_ORDER / HIGH_CPA; STOCK_OUT still pauses it) or RULE_WINS (a fired rule pauses even a winner)
 import { prisma } from '../../prisma.js';
 import { cairoDate } from './dailyPlanTime.js';
-import { emptyScope, normalizeScope, validateScope, normalizeDays, validDays, scopeVerdict, weekdayAllowed, describeScope } from './automationScope.js';
+import { emptyScope, normalizeScope, validateScope, normalizeDays, validDays, scopeVerdict, weekdayAllowed, describeScope, effectiveScope } from './automationScope.js';
 
 export const PRECEDENCE = ['PROTECTION_WINS', 'RULE_WINS'];
 export const PRECEDENCE_AR = { PROTECTION_WINS: 'حماية الـWinner أقوى من قواعد الإيقاف (ما عدا نفاد المخزون)', RULE_WINS: 'قاعدة الإيقاف أقوى حتى على الـWinner' };
@@ -19,6 +19,7 @@ export const DEFAULT_PAUSE = Object.freeze({
   stockOut: { enabled: true },
   protections: { winnerProtection: true, precedence: 'PROTECTION_WINS', recentImprovement: { enabled: true, minPurchases: 2 } }, // recentImprovement: TODAY already recovered (>= N orders at a CPA not above the HIGH_CPA limit) → the HIGH_CPA pause waits
   scope: emptyScope(), days: null,
+  autoEnrollAutomatic: true,                                                  // a product activated AUTOMATIC is inside the pause scope without being listed (excludes still win); false = strict include list
 });
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 const num = (v) => (v === undefined || v === null || (typeof v === 'string' && v.trim() === '') ? null : Number(v));
@@ -33,7 +34,7 @@ export function normalizePause(raw = {}) {
     highCpa: { enabled: bool(r.highCpa?.enabled, false), above: num(r.highCpa?.above), minPurchases: num(r.highCpa?.minPurchases) ?? D.highCpa.minPurchases, minSpend: num(r.highCpa?.minSpend) },
     stockOut: { enabled: bool(r.stockOut?.enabled, true) },
     protections: { winnerProtection: bool(r.protections?.winnerProtection, true), precedence: PRECEDENCE.includes(r.protections?.precedence) ? r.protections.precedence : 'PROTECTION_WINS', recentImprovement: { enabled: bool(r.protections?.recentImprovement?.enabled, true), minPurchases: num(r.protections?.recentImprovement?.minPurchases) ?? 2 } },
-    scope: normalizeScope(r.scope), days: normalizeDays(r.days) };
+    scope: normalizeScope(r.scope), days: normalizeDays(r.days), autoEnrollAutomatic: bool(r.autoEnrollAutomatic, true) };
 }
 export function validatePause(p, { requireTrigger = false } = {}) {
   const e = []; const pos = (path, v, min, max) => { if (v === null || v === undefined) return; if (!Number.isFinite(v) || v < min || v > max) e.push(`${path}: لازم بين ${min} و${max}.`); };
@@ -52,9 +53,9 @@ export function validatePause(p, { requireTrigger = false } = {}) {
  * input: { policy, campaignId, productId, storeId, optimizer: {action:'PAUSE'|…, zone, zeroLimit}|null, m3, stock: {status}|null, winner, weekday }
  * Returns { trigger: 'STOCK_OUT'|'ZERO_ORDER'|'HIGH_CPA'|null, skipped: [{trigger, code}], blockers: [codes] } — `blockers` = reasons the policy itself forbids a pause right now (scope / weekday / disabled).
  */
-export function decidePause({ policy, campaignId, productId = null, storeId = null, optimizer = null, m3 = null, mToday = null, productHighCpa = null, stock = null, winner = false, weekday = null }) {
+export function decidePause({ policy, campaignId, productId = null, storeId = null, optimizer = null, m3 = null, mToday = null, productHighCpa = null, stock = null, winner = false, weekday = null, automatic = false }) {
   const skipped = []; const blockers = [];
-  const sv = scopeVerdict(policy.scope, { productId, storeId, campaignId }); if (sv) blockers.push(sv);
+  const sv = scopeVerdict(effectiveScope(policy.scope, { autoEnroll: policy.autoEnrollAutomatic !== false, automatic }), { productId, storeId, campaignId }); if (sv) blockers.push(sv);
   if (weekday != null && !weekdayAllowed(policy.days, weekday)) blockers.push('DAY_NOT_ALLOWED');
   const fired = [];
   if (policy.stockOut.enabled && stock?.status === 'OUT_OF_STOCK') fired.push('STOCK_OUT');
@@ -89,7 +90,7 @@ async function write(raw, policy, userId) { await prisma.ambOperatorConfig.updat
 const audit = (userId, kind, input) => prisma.aiAuditLog.create({ data: { actor_id: userId ?? null, kind, action: 'EXECUTE', input_json: JSON.stringify(input).slice(0, 3500), success: true } }).catch(() => {});
 const event = (userId, kind, note, data = {}) => prisma.ambOperatorEvent.create({ data: { kind, actor: 'USER', actor_id: userId ?? null, note, data_json: JSON.stringify(data).slice(0, 3500) } }).catch(() => {});
 async function requireAdmin(userId, deps = {}) { const u = deps.user || await prisma.user.findUnique({ where: { id: Number(userId) }, select: { id: true, role: true, status: true } }); if (!u || u.role !== 'ADMIN' || u.status !== 'ACTIVE') throw fail(403, 'ده محتاج ADMIN.'); return u; }
-const KEYS = ['scheduledClose', 'zeroOrder', 'highCpa', 'stockOut', 'protections', 'scope', 'days'];
+const KEYS = ['scheduledClose', 'zeroOrder', 'highCpa', 'stockOut', 'protections', 'scope', 'days', 'autoEnrollAutomatic'];
 const snap = (p) => ({ version: p.version, enabled: p.enabled, ...Object.fromEntries(KEYS.map((k) => [k, p[k]])) });
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 

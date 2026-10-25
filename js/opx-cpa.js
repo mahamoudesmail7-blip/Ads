@@ -264,7 +264,8 @@ async function act(a) {
     else if (a === 'activate') {
       if (C.touched.size || !(C.scope === 'GLOBAL' ? C.gl.draft : C.pol?.draft)) await saveCurrent();
       const label = C.scope === 'GLOBAL' ? 'القواعد العامة لكل المنتجات المسجّلة' : `سياسة ${C.ov.products.find((p) => p.key === C.scope)?.name}`;
-      if (!(await confirmModal({ title: 'اعتماد القواعد', message: `هتعتمد ${label}. الاعتماد بيغيّر القيم اللي المنتجات بترثها — ومفيش تنفيذ على Meta من الخطوة دي. التنفيذ التلقائي لسه بيحتاج وضع AUTOMATIC وسياسة منتج AUTOMATIC جاهزة.` }))) return;
+      const pv = C.scope === 'GLOBAL' ? '' : await previewText(); // read-only preview of what activation could do (never blocks the approval if it cannot load)
+      if (!(await confirmModal({ title: 'اعتماد القواعد', message: `هتعتمد ${label}. الاعتماد بيغيّر القيم اللي المنتجات بترثها — ومفيش تنفيذ على Meta من الخطوة دي. التنفيذ التلقائي لسه بيحتاج وضع AUTOMATIC وسياسة منتج AUTOMATIC جاهزة.${pv}` }))) return;
       if (C.scope === 'GLOBAL') await api.post('/api/operator/automation/global-rules/activate', { confirm: true });
       else { const p = C.ov.products.find((x) => x.key === C.scope); const auto = (C.pol?.draft?.mode || C.pol?.active?.mode) === 'AUTOMATIC'; await api.post(`/api/operator/product-rules/${p.productId}/activate`, { storeId: p.storeId, confirm: true, confirmAutomatic: auto }); }
       toast('اتعتمدت'); await reload();
@@ -275,6 +276,20 @@ async function act(a) {
       const r = await api.post('/api/operator/automation/bulk/configure', { productKeys: [...C.sel], patch }); toast(`اتحفظ كمسودة: ${r.drafted.length}${r.skipped.length ? ` · اتخطّى ${r.skipped.length}` : ''}`); await reload();
     } else if (a === 'impact') await impact();
   } catch (e) { msg(e.message, true); toast(e.message, 'error'); }
+}
+// «معاينة قبل التفعيل»: which campaigns the pause / open policies could stop / open right after activation + the money picture. READ-ONLY (GET /automation/product-preview).
+async function previewText() {
+  try {
+    const p = C.ov.products.find((x) => x.key === C.scope); if (!p) return '';
+    const r = await api.get('/api/operator/automation/product-preview', { productId: p.productId, storeId: p.storeId }); if (!r || r.needsPolicy || !r.ok) return '';
+    const nm = (a) => a.slice(0, 4).map((x) => x.name).join('، ') + (a.length > 4 ? ` +${a.length - 4}` : ''); const m = r.money || {}; const L = ['', '— معاينة قبل التفعيل —'];
+    L.push(r.pause.eligibleNow.length ? `⛔ ممكن تتوقف فور التفعيل (${r.pause.eligibleNow.length}): ${nm(r.pause.eligibleNow)}` : `⛔ مفيش حملة مؤهلة للإيقاف دلوقتي (${r.pause.evaluated} حملة شغالة اتفحصت${r.pause.protected.length ? `، ${r.pause.protected.length} محمية` : ''})`);
+    L.push(r.open.candidates.length ? `▶️ ممكن تتفتح (${r.open.candidates.length}): ${nm(r.open.candidates)} — بتضيف حوالي ${num(r.open.addsBudget)} ج/يوم` : '▶️ مفيش حملة موقوفة مطابقة لسياسة الفتح دلوقتي');
+    L.push(`💰 الميزانية الشغالة للمنتج ${num(m.productActiveBudget)} ج · أسوأ يوم محتمل ${num(m.worstCaseProductDay)} ج${m.headroom?.openExposure != null ? ` · المتاح تحت سقف الفتح ${num(m.headroom.openExposure)} ج` : ''}`);
+    if (r.mapping?.excluded?.length) L.push(`⚠️ ${r.mapping.excluded.length} حملة ربطها غير مؤكد — مستبعدة ومش هتتلمس`);
+    for (const n of r.notes || []) L.push(`ℹ️ ${n}`);
+    return L.join('\n');
+  } catch { return ''; }
 }
 async function saveCurrent() {
   const pol = buildPolicy();

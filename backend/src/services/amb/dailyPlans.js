@@ -21,7 +21,7 @@ import { buildOpenCandidates, buildPauseCandidates } from './dailyPlanCandidates
 import { getOpenCpaPolicy, validateOpenCpa, evaluateCampaign, summarizeEvaluations, loadWindowMetrics, windowRangeFor, REASON_AR, applyCapToEvals, runtimeBlock } from './openCpaPolicy.js';
 import { recentContradiction } from './reopenProtection.js';
 import { recordAutomaticExecution } from './firstAutomatic.js';
-import { activeExposure, scopeVerdict, weekdayAllowed } from './automationScope.js';
+import { activeExposure, scopeVerdict, weekdayAllowed, effectiveScope } from './automationScope.js';
 import { getPausePolicy, pausePolicyActive } from './pausePolicy.js';
 import { SLOTS, TYPE_LABEL_AR, CAIRO_TZ, cairoDate, cairoParts, dueTypes, dueAt, dueAtTime, slotVariant, expiresAt, nextDue, planKey, clockNow, isTestClock } from './dailyPlanTime.js';
 
@@ -667,7 +667,7 @@ export async function runPauseAutomatic({ now = new Date(), deps = {} } = {}) {
     const fresh = await ensureFreshData({ now, deps }); if (fresh.state === 'STALE') { out.plans.push({ planId: p.id, skipped: 'STALE_DATA' }); continue; }
     if (!weekdayAllowed(pol.days, weekday)) { out.plans.push({ planId: p.id, skipped: 'DAY_NOT_ALLOWED' }); continue; }
     const notAuto = [];
-    const ok = p.items.filter((i) => { const ev = j(i.evidence_json, {}); if (!(i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && ev.policyPause && !ev.userDeselected && !ev.winner)) return false; const sv = scopeVerdict(pol.scope, { productId: i.product_id, storeId: i.store_id, campaignId: i.campaign_id }); if (sv) { notAuto.push({ campaignId: i.campaign_id, reason: sv }); return false; } const g = gate(i); if (!g.ok) { notAuto.push({ campaignId: i.campaign_id, reason: g.reason, detail: g.detail || null }); return false; } return true; });
+    const ok = p.items.filter((i) => { const ev = j(i.evidence_json, {}); if (!(i.selected && i.selectable && i.eligibility === 'ELIGIBLE' && ev.policyPause && !ev.userDeselected && !ev.winner)) return false; const sv = scopeVerdict(effectiveScope(pol.scope, { autoEnroll: pol.autoEnrollAutomatic !== false, automatic: true /* the per-product AUTOMATIC gate right below still decides */ }), { productId: i.product_id, storeId: i.store_id, campaignId: i.campaign_id }); if (sv) { notAuto.push({ campaignId: i.campaign_id, reason: sv }); return false; } const g = gate(i); if (!g.ok) { notAuto.push({ campaignId: i.campaign_id, reason: g.reason, detail: g.detail || null }); return false; } return true; });
     const drop = p.items.filter((i) => i.selected && !ok.includes(i)); for (const i of drop) await prisma.ambDailyPlanItem.update({ where: { id: i.id }, data: { selected: false, status_reason: (notAuto.find((n) => n.campaignId === i.campaign_id)?.reason || 'NOT_ELIGIBLE_FOR_AUTOMATIC').slice(0, 200) } });
     if (!ok.length) { out.plans.push({ planId: p.id, skipped: 'NOTHING_ELIGIBLE', dropped: drop.length }); continue; }
     const claim = await prisma.ambDailyPlan.updateMany({ where: { id: p.id, status: 'PREPARED' }, data: { status: 'APPROVED', approved_by_id: pol.approved.by, approved_at: now, approval_mode: 'AUTOPILOT', execution_mode: 'LIVE', data_as_of: fresh.asOf, data_state: fresh.state, dismissed_at: p.dismissed_at || now } }); if (claim.count !== 1) continue;

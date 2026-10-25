@@ -32,4 +32,15 @@ ok('without improvement the same campaign IS eligible (so the protection above i
 console.log('\n4. An unapproved newer version never acts (fail-closed)');
 ok('a saved-but-unapproved version is NOT active: auto-pause is OFF for every product (424 included) until the owner approves that exact version — it never falls back silently', pausePolicyActive({ ...wide, enabled: true, version: 4, approved: { version: 3 } }) === false && pausePolicyActive({ ...wide, enabled: true, version: 4, approved: { version: 4 } }) === true);
 
+console.log('\n5. Auto-enrolment: an AUTOMATIC product enters the scope without being listed (owner decision 2026-10-25)');
+const listed = normalizePause({ ...base, scope: { includeProducts: ['424'], excludeProducts: ['555'] } });
+const hi = { m3: { spend: 900, purchases: 5, cpa: 180 } };
+ok('default policy: autoEnrollAutomatic is ON', listed.autoEnrollAutomatic === true);
+ok('a NEW product (not in the list) that is AUTOMATIC → in scope, and HIGH_CPA fires as before', (() => { const r = d(listed, { productId: 8001, automatic: true, ...hi }); return !r.blockers.length && r.trigger === 'HIGH_CPA'; })());
+ok('the same product when it is NOT AUTOMATIC → still OUT_OF_SCOPE (nothing widens for APPROVAL / MANUAL products)', d(listed, { productId: 8001, automatic: false, ...hi }).blockers.includes('OUT_OF_SCOPE'));
+ok('an excluded product stays excluded even when AUTOMATIC (excludes always win)', d(listed, { productId: 555, automatic: true, ...hi }).blockers.includes('EXCLUDED_BY_POLICY'));
+ok('the opt-out (autoEnrollAutomatic:false) restores the strict list', d(normalizePause({ ...listed, autoEnrollAutomatic: false }), { productId: 8001, automatic: true, ...hi }).blockers.includes('OUT_OF_SCOPE'));
+ok('store / campaign include lists still apply to an enrolled product', d(normalizePause({ ...listed, scope: { ...listed.scope, includeStores: ['other-store'] } }), { productId: 8001, automatic: true, ...hi }).blockers.includes('OUT_OF_SCOPE'));
+ok('winner protection and recent improvement still apply to an enrolled product', d(listed, { productId: 8001, automatic: true, winner: true, ...hi }).trigger === null && d(listed, { productId: 8001, automatic: true, ...hi, mToday: { spend: 177, purchases: 2, cpa: 89 } }).trigger === null);
+
 console.log(`\n${fail ? '❌' : '✅'} pauseScopeFourProductsTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0;

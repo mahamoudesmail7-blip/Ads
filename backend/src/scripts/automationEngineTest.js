@@ -266,7 +266,7 @@ try {
   console.log('\n11. Scope consistency: evaluation, preview and execution apply the SAME approved pause scope (and budget operations are independent of it)');
   { const inP = `${T}sc_in`, outP = `${T}sc_out`, redP = `${T}sc_red`; for (const x of [inP, outP, redP]) setEntity(x, { daily_budget: '30000' });
     const hi = (id, p) => ({ id, pid: p, m3: m(1500, 4), m7: m(1500, 4), m30: m(1500, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE' } });
-    const scope = { includeProducts: [String(pid(95))] }; const sc = scenario([hi(inP, pid(95)), hi(outP, pid(96))], { pause: pausePol({ scope }) });
+    const scope = { includeProducts: [String(pid(95))] }; const sc = scenario([hi(inP, pid(95)), hi(outP, pid(96))], { pause: pausePol({ scope, autoEnrollAutomatic: false }) }); // strict include list = the explicit opt-out of auto-enrolment
     const e = await ev(sc); const cIn = e.candidates.find((c) => c.campaignId === inP), cOut = e.candidates.find((c) => c.campaignId === outP);
     ok('evaluation: the in-scope product gets the HIGH_CPA pause (AUTOMATIC); the out-of-scope one is BLOCKED with OUT_OF_SCOPE', cIn.kind === 'HIGH_CPA' && cIn.effective === 'AUTOMATIC' && cOut.kind === 'HIGH_CPA' && cOut.effective === 'BLOCKED' && cOut.blockers.some((b) => b.code === 'OUT_OF_SCOPE'));
     ok('…and the blocker explains the real scope and who decides (not a bare code)', /منتجات مضمّنة: 1/.test(cOut.blockers.find((b) => b.code === 'OUT_OF_SCOPE').message) && /قرارك|بنفسك/.test(cOut.blockers.find((b) => b.code === 'OUT_OF_SCOPE').message));
@@ -274,9 +274,22 @@ try {
     ok('execution: ONLY the in-scope campaign is paused on Meta; the out-of-scope one is persisted BLOCKED and is never sent', writes(inP).length === 1 && writes(outP).length === 0 && allWrites().length === w0 + 1 && (await dec(outP)).status === 'BLOCKED' && (await dec(inP)).status === 'VERIFIED', JSON.stringify(r.executed));
     const refused = await AE.executeAutoDecision({ decisionId: (await dec(outP)).id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config: cfg(ALL) } }) } });
     ok('forcing the BLOCKED out-of-scope decision (owner click) is refused, ZERO writes — the approved scope cannot be bypassed from the approval path', refused.executed !== true && writes(outP).length === 0, JSON.stringify(refused).slice(0, 200));
-    const scBud = scenario([{ id: redP, pid: pid(96), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }], { pause: pausePol({ scope }) }); await tick(scBud, cfg(ALL));
+    const scBud = scenario([{ id: redP, pid: pid(96), m3: m(900, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE', to: 240 } }], { pause: pausePol({ scope, autoEnrollAutomatic: false }) }); await tick(scBud, cfg(ALL));
     ok('the pause scope does NOT gate budget operations: a product outside the pause scope still gets its REDUCE (300 → 240) — each policy governs its own operation', writes(redP).length === 1 && world.entities.get(redP).daily_budget === '24000' && (await dec(redP)).status === 'VERIFIED');
     ok('the saved scope was never widened by any of this (still only product ' + pid(95) + ')', JSON.stringify(scope.includeProducts) === JSON.stringify([String(pid(95))])); }
+
+  console.log('\n11b. Auto-enrolment (default): an AUTOMATIC product enters the pause scope by itself — no list to edit, no approval per action');
+  { const inP = `${T}en_in`, newP = `${T}en_new`, exP = `${T}en_ex`; for (const x of [inP, newP, exP]) setEntity(x, { daily_budget: '30000' });
+    const hi = (id, p) => ({ id, pid: p, m3: m(1500, 4), m7: m(1500, 4), m30: m(1500, 4), row: { action: 'SCALE_DOWN', decision: 'WOULD_REDUCE' } });
+    const scope = { includeProducts: [String(pid(95))], excludeProducts: [String(pid(98))] }; const sc = scenario([hi(inP, pid(95)), hi(newP, pid(97)), hi(exP, pid(98))], { pause: pausePol({ scope }) });
+    const e = await ev(sc); const cIn = e.candidates.find((c) => c.campaignId === inP), cNew = e.candidates.find((c) => c.campaignId === newP), cEx = e.candidates.find((c) => c.campaignId === exP);
+    ok('a NEW AUTOMATIC product (not in the include list) is evaluated for the HIGH_CPA pause as AUTOMATIC — scope no longer blocks it', cNew.kind === 'HIGH_CPA' && cNew.effective === 'AUTOMATIC' && !cNew.blockers.some((b) => b.code === 'OUT_OF_SCOPE'), JSON.stringify([cNew.kind, cNew.effective, cNew.blockers]));
+    ok('an EXCLUDED product still wins over the enrolment (EXCLUDED_BY_POLICY → BLOCKED)', cEx.effective === 'BLOCKED' && cEx.blockers.some((b) => b.code === 'EXCLUDED_BY_POLICY'), JSON.stringify([cEx.effective, cEx.blockers.map((b) => b.code)]));
+    const w0 = allWrites().length; await tick(sc, cfg(ALL));
+    ok('execution on the Meta mock: the listed AND the new AUTOMATIC product are each paused with exactly ONE write; the excluded one is never sent', writes(inP).length === 1 && writes(newP).length === 1 && writes(exP).length === 0 && allWrites().length === w0 + 2 && (await dec(newP)).status === 'VERIFIED' && (await dec(exP)).status === 'BLOCKED');
+    ok('no approval was needed: the new product\'s decision was executed by the engine itself (rule AUTO:*), not by a user', (await dec(newP)).rule_name?.startsWith('AUTO:'));
+    const scAPPR = scenario([hi(`${T}en_appr`, pid(97))], { pause: pausePol({ scope }), mode: 'APPROVAL' }); const eA = await ev(scAPPR); const cA = eA.candidates.find((c) => c.campaignId === `${T}en_appr`);
+    ok('enrolment is ONLY for AUTOMATIC products: an APPROVAL-mode product that is not in the include list stays OUT_OF_SCOPE (behaviour unchanged for everything that is not AUTOMATIC)', cA?.effective === 'BLOCKED' && cA.blockers.some((x) => x.code === 'OUT_OF_SCOPE'), JSON.stringify([cA?.effective, cA?.blockers?.map((x) => x.code)])); }
 
   console.log('\n12. ABO and CBO: REDUCE / INCREASE / PAUSE through the real executor on the Meta mock (ad-set level writes), one real change = one count');
   { const asC = `${T}abo_c`, asS = `${T}abo_s`, cbo = `${T}cbo_c`; const adset = `${T}abo_adset`; setEntity(asC, { daily_budget: undefined }); setEntity(adset, { daily_budget: '30000' }); setEntity(cbo, { daily_budget: '30000' });

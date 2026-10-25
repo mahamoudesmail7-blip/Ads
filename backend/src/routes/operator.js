@@ -15,6 +15,7 @@ import { runInventoryReconcile } from '../services/amb/inventoryReconcile.js';
 import * as PP from '../services/amb/productPolicy.js';
 import * as ASHEET from '../services/amb/activationSheet.js';
 import * as BULK from '../services/amb/bulkActivation.js';
+import { productActivationPreview } from '../services/amb/productActivationPreview.js';
 import * as ZS from '../services/amb/zeroSpendCheck.js';
 import { campaignWindowMetrics, parseWindow, productImages } from '../services/amb/periodMetrics.js';
 import { listExecutionHistory, todaySummary } from '../services/amb/executionHistory.js';
@@ -424,6 +425,8 @@ router.post('/automation/global-rules/deactivate', ADMIN, asyncRoute(async (req,
 router.get('/product-rules/:productId/effective', asyncRoute(async (req, res) => res.json(await PP.effectivePolicyView({ productId: Number(req.params.productId), storeId: req.query.store || 'default', campaignId: req.query.campaignId || null }))));
 // ---- bulk: ONE table (READY / NEEDS_CONFIGURATION / BLOCKED), bulk drafts, bulk preview (read-only) and the gated bulk activation (exact confirmed numbers; no Meta write)
 router.get('/automation/overview', ADMIN, asyncRoute(async (req, res) => res.json(await BULK.bulkOverview({}))));
+// read-only «what would happen if I activate this product»: pause / open candidates + the money picture (never writes, never calls Meta)
+router.get('/automation/product-preview', ADMIN, asyncRoute(async (req, res) => { const productId = Number(req.query.productId); if (!Number.isInteger(productId)) { const e = new Error('productId مطلوب.'); e.status = 400; throw e; } res.json(await productActivationPreview({ productId, storeId: req.query.storeId ? String(req.query.storeId) : null })); }));
 // ---- «تشخيص AUTOMATIC»: why the engine did / did not execute — read-only (no Meta call, no setting changes)
 router.get('/automation/diagnostics', ADMIN, asyncRoute(async (req, res) => res.json(await (await import('../services/amb/automationDiagnostics.js')).automationDiagnostics({}))));
 router.get('/automation/diagnostics/product', ADMIN, asyncRoute(async (req, res) => res.json(await (await import('../services/amb/automationDiagnostics.js')).productDiagnosis({ key: String(req.query.key || '') }))));
