@@ -6,7 +6,7 @@ import { api } from './api-client.js';
 import { E, num, egp, pill, toast, confirmModal, openDrawer, closeDrawer } from './opx-ui.js';
 import { classifyCpa, validateRanges, describeZones, ZONE_META, performanceStatus } from './cpa-zones.js';
 
-const C = { open: new Set(), root: null, ctx: null, ov: null, gl: null, scope: 'GLOBAL', pol: null, eff: null, V: {}, base: {}, touched: new Set(), filter: { q: '', state: '', perf: '', mode: '', store: '' }, period: (() => { try { return localStorage.getItem('opx.cpa.period') || 'last3'; } catch { return 'last3'; } })(), sort: 'attention', sel: new Set(), test: '' };
+const C = { open: new Set(), root: null, ctx: null, ov: null, gl: null, scope: 'GLOBAL', pol: null, eff: null, V: {}, base: {}, touched: new Set(), filter: { q: '', state: '', perf: '', mode: '', store: '' }, period: (() => { try { return localStorage.getItem('opx.cpa.period.v2') || 'today'; } catch { return 'today'; } })(), sort: 'attention', sel: new Set(), test: '' };
 // form field → [group, key] in the policy
 const MAP = { bumpStart: ['cpa', 'scaleMin'], bumpEnd: ['cpa', 'scale'], reduceStart: ['cpa', 'reduce'], hardStop: ['cpa', 'hardStop'], incPct: ['budget', 'increasePct'], decPct: ['budget', 'decreasePct'], minOrders: ['budget', 'minPurchases'], cooldown: ['budget', 'cooldownHours'], maxChanges: ['budget', 'maxChangesPerDay'],
   zeroSpend: ['zeroOrder', 'spend'], minBudget: ['budget', 'minBudget'], maxBudget: ['budget', 'maxBudget'], dailyCap: ['budget', 'dailySpendCap'], window: ['zeroOrder', 'windowDays'], manualHours: [null, 'manualOverrideHours'] };
@@ -42,7 +42,18 @@ const srcKey = (k) => { const [g, f] = MAP[k]; return g ? `${g}.${f}` : f; };
 
 export async function mountCpaBoard(root, ctx) {
   C.root = root; C.ctx = ctx; root.innerHTML = '<div class="opx-card"><div class="opx-note">⏳ بيحمّل قواعد CPA…</div></div>';
-  try { await loadAll(); draw(); } catch (e) { root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message || 'تعذّر التحميل')}${isAdmin() ? '' : ' — الشاشة دي للـADMIN فقط.'}</div>`; }
+  try { await loadAll(); draw(); startAutoRefresh(); } catch (e) { root.innerHTML = `<div class="opx-card opx-empty">⚠️ ${E(e.message || 'تعذّر التحميل')}${isAdmin() ? '' : ' — الشاشة دي للـADMIN فقط.'}</div>`; }
+}
+// the performance board is a LIVE view: re-read the overview every 5 minutes (and when the tab comes back to the front after 3+ minutes) and redraw ONLY the list — never the policy form, so unsaved edits are safe
+let cpaTimer = null; let cpaLastLoad = Date.now(); let cpaBusy = false;
+async function refreshOverview() {
+  if (cpaBusy || !C.root?.isConnected || document.hidden) return; cpaBusy = true;
+  try { C.ov = await api.get('/api/operator/automation/overview'); cpaLastLoad = Date.now(); redrawList(); } catch { /* keep the last good data */ } finally { cpaBusy = false; }
+}
+function startAutoRefresh() {
+  clearInterval(cpaTimer); cpaLastLoad = Date.now();
+  cpaTimer = setInterval(() => { if (!C.root?.isConnected) { clearInterval(cpaTimer); return; } refreshOverview(); }, 5 * 60 * 1000);
+  if (!startAutoRefresh.wired) { startAutoRefresh.wired = true; document.addEventListener('visibilitychange', () => { if (!document.hidden && C.root?.isConnected && Date.now() - cpaLastLoad > 3 * 60 * 1000) refreshOverview(); }); }
 }
 async function loadAll() {
   const [ov, gl] = await Promise.all([api.get('/api/operator/automation/overview'), api.get('/api/operator/automation/global-rules')]);
@@ -195,7 +206,7 @@ function wireDash() {
   R.querySelector('#cpaQ').oninput = (e) => { C.filter.q = e.target.value; redrawList(); };
   set('#cpaFState', 'state'); set('#cpaFPerf', 'perf'); set('#cpaFMode', 'mode'); set('#cpaFStore', 'store');
   R.querySelector('#cpaSort').onchange = (e) => { C.sort = e.target.value; redrawList(); };
-  R.querySelectorAll('[data-period]').forEach((b) => { b.onclick = () => { C.period = b.dataset.period; try { localStorage.setItem('opx.cpa.period', C.period); } catch { /* private mode */ } redrawList(); }; });
+  R.querySelectorAll('[data-period]').forEach((b) => { b.onclick = () => { C.period = b.dataset.period; try { localStorage.setItem('opx.cpa.period.v2', C.period); } catch { /* private mode */ } redrawList(); }; });
   R.querySelector('#cpaReset').onclick = () => { C.filter = { q: '', state: '', perf: '', mode: '', store: '' }; C.sort = 'attention'; draw(); };
   R.querySelector('#cpaCount').textContent = `${dashRows().length} من ${C.ov.products.length} منتج`; wireSumChips();
 }
