@@ -353,14 +353,17 @@ export function evaluateGuards({ decision, ctx, config, settings = {}, counters 
 
   // ---- 9. ADVISOR (lowest precedence) — ONE strategy: the Operator converts the canonical Smart Advisor plan + deterministic rules into safe actions and never
   //      acts on a strategy the Advisor does not hold. A contradiction is SURFACED (downgrade to approval), never silently resolved.
-  const adv = ctx.advisor || null;
+  // OWNER DECISION (2026-10-25): the Smart Advisor is ADVISORY in every AUTOMATIC operation — the rule engine owns OPEN / PAUSE / INCREASE / DECREASE. A disagreement, a conflict or a missing plan is a WARNING (shown, logged),
+  // never a reason to hand the decision to the owner. What stays mandatory is everything ELSE in this chain (profit / Money Guard, CPA, cooldowns, manual override, recent purchase, caps, exceptions, data quality).
+  // The one advisor signal that IS a profitability verdict — «Money Guard blocked the scale» — keeps its downgrade.
+  const adv = ctx.advisor || null; const advWarn = (code, message, extra = {}) => add(code, { severity: 'WARN', message, ...extra });
   if (a === 'SCALE_UP') {
-    if (!adv) add('ADVISOR_PLAN_MISSING');
+    if (!adv) advWarn('ADVISOR_PLAN_MISSING', 'مفيش خطة من المستشار الذكي لهذا المنتج — تحذير فقط، قاعدة المنتج هي صاحبة القرار.');
     else if (adv.stage === 'INSUFFICIENT_DATA' || adv.dqBlocked) add('ADVISOR_DATA_GAP');
-    else if (!adv.scalePlanPresent) add('ADVISOR_DISAGREES', { detail: adv.primaryProblem || adv.stage || 'NO_SCALE_PLAN' });
+    else if (!adv.scalePlanPresent) advWarn('ADVISOR_DISAGREES', 'المستشار الذكي مش شايف المنتج جاهز للتوسع — تحذير فقط، القاعدة هي صاحبة القرار.', { detail: adv.primaryProblem || adv.stage || 'NO_SCALE_PLAN' });
     else if (adv.scaleMoneyGuard === 'BLOCKED') add('ADVISOR_DISAGREES', { detail: 'MONEY_GUARD' });
   } else if (a === 'OPEN' && !adv) add('ADVISOR_PLAN_MISSING_WARN');
-  else if (['PAUSE', 'SCALE_DOWN'].includes(a) && adv?.scalePlanPresent && !decision.severeOverride) add('ADVISOR_CONFLICT', { detail: adv.stage });
+  else if (['PAUSE', 'SCALE_DOWN'].includes(a) && adv?.scalePlanPresent && !decision.severeOverride) advWarn('ADVISOR_CONFLICT', 'المستشار الذكي شايف المنتج جاهز للتوسع لكن القاعدة عايزة تقلل/توقف — تحذير فقط، القاعدة هي صاحبة القرار.', { detail: adv.stage });
 
   out.sort((x, y) => (PRECEDENCE_RANK[x.group] ?? 99) - (PRECEDENCE_RANK[y.group] ?? 99) || (x.severity === 'BLOCK' ? -1 : 1));
   const downgrade = out.some((b) => b.severity === 'DOWNGRADE');

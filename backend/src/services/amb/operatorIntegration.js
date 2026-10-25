@@ -61,7 +61,7 @@ export function guardSelfCheck() {
     ['Price conflict blocks profit-dependent actions', has(run(dec(scale), ctx({ econ: { complete: false, priceStatus: 'CONFLICT', priceConflict: { a: 1 } } })), 'PRICE_CONFLICT')],
     ['Data-quality gate blocks', has(run(dec({ action: 'OPEN', needs: {} }), ctx({ campaign: { id: 'c', status: 'PAUSED', budget: 1 }, dq: { gate: 'DECISION_BLOCKED_DATA_QUALITY' } })), 'DATA_QUALITY_BLOCKED')],
     ['COD-dependent decision blocked while statuses untrusted', has(run(dec({ usesCod: true }), ctx({ dq: { gate: 'OK', overall: 'RECONCILED', statusTrust: { state: 'NO_STATUS_SIGNAL' } } })), 'COD_UNRELIABLE')],
-    ['Scale without an Advisor plan is blocked (one strategy)', has(run(dec(scale), ctx({ advisor: null })), 'ADVISOR_PLAN_MISSING')],
+    ['Scale without an Advisor plan is surfaced as a WARNING (advisory — the rule engine decides)', has(run(dec(scale), ctx({ advisor: null })), 'ADVISOR_PLAN_MISSING')],
     ['Exception always wins', has(run(dec(), ctx({ exceptions: [{ id: 1, types: ['NO_AUTO_STOP'] }] })), 'EXCEPTION_NO_AUTO_STOP')],
     ['Testing campaigns protected', has(run(dec(), ctx({ campaign: { id: 'c', status: 'ACTIVE', budget: 1, tag: 'TESTING', firstSeenAt: new Date(now.getTime() - 99 * 3_600_000).toISOString() } })), 'TESTING_PROTECTED')],
     ['Cooldown blocks repeats', has(run(dec(), ctx({ recent: { lastByAction: { PAUSE: new Date(now.getTime() - 3_600_000).toISOString() }, pausedBySystemAt: now.toISOString() } })), 'COOLDOWN_ACTIVE')],
