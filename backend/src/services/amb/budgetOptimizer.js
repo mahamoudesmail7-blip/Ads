@@ -297,6 +297,10 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   const soften = (bk, action) => {
     if (bk.code === 'ECONOMICS_INCOMPLETE' && AW.economicsMissing === 'WARN') return { ...bk, severity: 'WARN' };
     if (bk.code === 'STOCK_UNKNOWN' && AW.stockUnknown === 'WARN') return { ...bk, severity: 'WARN' }; // owner decision (2026-10-25): unknown stock is only a warning, also for an increase (a KNOWN zero stock still blocks; a product set to stockPolicy BLOCK still blocks)
+    // owner decision (2026-10-25, pending deploy): on a budget INCREASE the Smart Advisor is ADVISORY — a missing plan / «no scale plan yet» is shown as a warning, never a veto. Everything that protects money stays mandatory:
+    // the CPA zone, caps/limits, cooldown, live data + data quality, profit / Money Guard (ADVISOR_DISAGREES:MONEY_GUARD stays a downgrade) and a known-bad stock.
+    if (action === 'SCALE_UP' && bk.code === 'ADVISOR_PLAN_MISSING') return { ...bk, severity: 'WARN' };
+    if (action === 'SCALE_UP' && bk.code === 'ADVISOR_DISAGREES' && bk.detail !== 'MONEY_GUARD') return { ...bk, severity: 'WARN' };
     return bk;
   };
   const fmtGuard = (bk) => `${bk.code}[${bk.severity[0]}]${bk.detail ? ':' + String(bk.detail).slice(0, 40) : ''}`;
