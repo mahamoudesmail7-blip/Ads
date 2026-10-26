@@ -15,14 +15,14 @@ const world = { adAccountId: 'act_1', windows: win({
   last3: { good: mk(900, 10), bad: mk(900, 4), winner: mk(900, 5), recov: mk(900, 4), thin: mk(900, 2), zero: mk(400, 0) },
   last7: { winner: mk(900, 9), good: mk(1500, 16), bad: mk(1500, 8), recov: mk(1500, 8), thin: mk(900, 3), zero: mk(400, 0) },
   last30: { winner: mk(3000, 30), good: mk(4000, 40), bad: mk(3000, 15), recov: mk(3000, 15), thin: mk(900, 3), zero: mk(400, 0) },
-  today: { recov: mk(180, 2) } }) };
+  today: { good: mk(900, 10), bad: mk(900, 4), winner: mk(900, 5), recov: mk(180, 2), thin: mk(900, 2), zero: mk(400, 0) } }) }; // TODAY (the day-based rules read today, not the 3-day window)
 const camp = (id, name, status) => ({ id, name, status });
 const rules = [{ productId: PID, storeId: SID, name: 'منتج تجريبي', campaigns: [camp('good', 'Good', 'ACTIVE'), camp('bad', 'Bad CPA', 'ACTIVE'), camp('winner', 'Winner', 'ACTIVE'), camp('recov', 'Recovering', 'ACTIVE'), camp('thin', 'Thin sample', 'ACTIVE'), camp('zero', 'Zero orders', 'ACTIVE'), camp('p_ok', 'Paused good', 'PAUSED'), camp('p_hi', 'Paused high CPA', 'PAUSED'), camp('p_big', 'Paused big', 'PAUSED')] }];
 const policy = { active: { mode: 'AUTOMATIC', cpa: { scaleMin: 20, scale: 60, reduce: 110, hardStop: 150 }, budget: { dailySpendCap: 3000 }, schedule: {}, zeroOrder: {}, campaigns: {} }, draft: null };
 policy.effective = policy.active;
 const structure = new Map([['good', { campaign: { status: 'ACTIVE', daily_budget: '30000' } }], ['p_ok', { campaign: { status: 'PAUSED', daily_budget: '20000' } }], ['p_hi', { campaign: { status: 'PAUSED', daily_budget: '20000' } }], ['p_big', { campaign: { status: 'PAUSED', daily_budget: '90000' } }]]);
 const openMetrics = new Map([['p_ok', { spend: 600, purchases: 8 }], ['p_hi', { spend: 2000, purchases: 5 }], ['p_big', { spend: 1500, purchases: 15 }]]);
-const base = { world, rules, productPolicy: policy, globalRules: { active: null }, pause, open, config: { limits: { account: { maxEnablesPerDay: 10, maxBudgetIncreasePerDay: 1500, maxDailySpendUnderAi: 9000 } } }, caps: { account: 14000 }, mapRows: [{ campaignId: 'x1', campaignName: 'Unconfirmed', state: 'SUGGESTED', campaignStatus: 'ACTIVE', product: { productId: PID }, spend7d: 300 }], structure, budgetOf: (id) => ({ good: 300, p_ok: 200, p_hi: 200, p_big: 900 })[id] ?? null, exposure: { total: 10000 }, openMetrics, recent: new Map() };
+const base = { dayHours: 8, world, rules, productPolicy: policy, globalRules: { active: null }, pause, open, config: { limits: { account: { maxEnablesPerDay: 10, maxBudgetIncreasePerDay: 1500, maxDailySpendUnderAi: 9000 } } }, caps: { account: 14000 }, mapRows: [{ campaignId: 'x1', campaignName: 'Unconfirmed', state: 'SUGGESTED', campaignStatus: 'ACTIVE', product: { productId: PID }, spend7d: 300 }], structure, budgetOf: (id) => ({ good: 300, p_ok: 200, p_hi: 200, p_big: 900 })[id] ?? null, exposure: { total: 10000 }, openMetrics, recent: new Map() };
 
 const r = await productActivationPreview({ productId: PID, now: NOW, deps: base });
 console.log('\n1. Shape + read-only');
@@ -30,10 +30,14 @@ ok('returns ok, readOnly, the product name and its Hard Stop', r.ok && r.readOnl
 console.log('\n2. Pause: what would stop right after activation (a product NOT in the include list is auto-enrolled)');
 ok('auto-enrolment is reported ON and the pause policy is active', r.pause.autoEnrolled === true && r.pause.policyActive === true);
 const byName = (n) => r.pause.rows.find((x) => x.name === n);
-ok('«Bad CPA» (3-day CPA 225 > Hard Stop 150, 4 orders, 900 spend) is ELIGIBLE for HIGH_CPA', byName('Bad CPA').trigger === 'HIGH_CPA' && r.pause.eligibleNow.some((x) => x.name === 'Bad CPA'));
+ok('«Bad CPA» (TODAY CPA 225 > Hard Stop 150, 4 orders, 900 spend, 8 hours in) is ELIGIBLE for HIGH_CPA', byName('Bad CPA').trigger === 'HIGH_CPA' && r.pause.eligibleNow.some((x) => x.name === 'Bad CPA'));
 ok('«Zero orders» (400 spend, no orders) is ELIGIBLE for ZERO_ORDER', byName('Zero orders').trigger === 'ZERO_ORDER');
 ok('«Winner» is protected (WINNER_PROTECTED) and is NOT in the eligible list', byName('Winner').trigger === null && byName('Winner').skipped.includes('WINNER_PROTECTED') && !r.pause.eligibleNow.some((x) => x.name === 'Winner'));
-ok('«Recovering» (high 3-day CPA but today 2 orders at CPA 90) is held back by RECENT_IMPROVEMENT', byName('Recovering').trigger === null && byName('Recovering').skipped.includes('RECENT_IMPROVEMENT'));
+ok('«Recovering» (bad 3-day CPA but TODAY 2 orders at CPA 90) is NOT eligible: the 3-day CPA is analysis only', byName('Recovering').trigger === null);
+const early = await productActivationPreview({ productId: PID, now: NOW, deps: { ...base, dayHours: 1 } });
+ok('1 hour into the day nothing is eligible for a CPA pause (OBSERVATION) — the zero-order stop is the only urgent one left', early.pause.eligibleNow.every((x) => x.trigger === 'ZERO_ORDER') && early.pause.rows.find((x) => x.name === 'Bad CPA').skipped.includes('OBSERVATION'), JSON.stringify(early.pause.eligibleNow.map((x) => x.trigger)));
+const single = await productActivationPreview({ productId: PID, now: NOW, deps: { ...base, rules: [{ ...rules[0], campaigns: rules[0].campaigns.filter((c) => c.id === 'bad' || c.status !== 'ACTIVE') }] } });
+ok('the product\x27s LAST active campaign (CPA 225 = 1.5× the limit, 4 orders) is protected from a hurried pause (LAST_ACTIVE_CAMPAIGN) unless the breach is severe and well-sampled', single.pause.rows.find((x) => x.name === 'Bad CPA').skipped.includes('LAST_ACTIVE_CAMPAIGN') && !single.pause.eligibleNow.some((x) => x.name === 'Bad CPA'), JSON.stringify(single.pause.rows.map((x) => [x.name, x.skipped])));
 ok('«Thin sample» (2 orders < 3) and «Good» are not eligible', byName('Thin sample').trigger === null && byName('Good').trigger === null);
 ok('exactly two campaigns would be stopped right after activation', r.pause.eligibleNow.length === 2, JSON.stringify(r.pause.eligibleNow.map((x) => x.name)));
 console.log('\n3. Open: paused + confirmed campaigns the policy could open, under the exposure cap');

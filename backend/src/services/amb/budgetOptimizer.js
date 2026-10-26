@@ -23,6 +23,7 @@ import { evaluateGuards, decisionConfidence, resolveZeroOrderLimit } from './ope
 import { buildOperatorWorld, buildCampaignContext, ensureHeavy, loadRecentActions, loadCounters, computeLastPurchaseAt, computeVelocity } from './operatorContext.js';
 import { lossFor } from './operatorEngine.js';
 import { loadActivePolicies, applyToBudgetPolicy, policyKey, dayAllowed, weekdayOfCairoDate } from './productPolicy.js';
+import { evaluationStart, dayStartUtc, hoursSince, observationStatus, loadActivationTimes, OBSERVATION_DEFAULT } from './dayEvaluation.js';
 
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -34,7 +35,9 @@ const num = (v) => (v === null || v === undefined || v === '' ? null : Number.is
 // =====================================================================================================================
 export const DEFAULT_POLICY = {
   enabled: false, // the scheduler ignores the optimizer until the owner turns it on (and even then: SHADOW/APPROVAL follow the global mode, Meta stays locked)
-  window: 'last3',
+  window: 'last3', // the window of the URGENT zero-order stop only (and of the legacy mode when dayBased=false)
+  dayBased: true, // OWNER DECISION 2026-10-26: budget decisions stand on TODAY (Cairo 00:00, or the campaign's own opening time); 3 / 7 days are analysis + protections only
+  observation: { ...OBSERVATION_DEFAULT }, // until minHours + minSpend + the product's minPurchases are met a campaign is in OBSERVATION (no pause / reduce / increase)
   zeroOrders: { spend: 200, minAgeHours: 24 },
   scale: { minPurchases: 2, minSpend: 150, minCpa: null, maxCpa: 80, pct: 20, cooldownHours: 24, minAgeHours: 48 }, // never scale a very new campaign (age = since Meta first reported it)
   keep: { minCpa: 81, maxCpa: 149 },
@@ -64,7 +67,7 @@ export function validatePolicy(p) {
   pos('scale.minPurchases', p.scale.minPurchases, 1, 100); pos('scale.minSpend', p.scale.minSpend, 0); pos('scale.maxCpa', p.scale.maxCpa, 1); pos('scale.pct', p.scale.pct, 1, 100); pos('scale.cooldownHours', p.scale.cooldownHours, 1, 336); pos('scale.minAgeHours', p.scale.minAgeHours, 0, 720);
   pos('reduce.minPurchases', p.reduce.minPurchases, 1, 100); pos('reduce.minSpend', p.reduce.minSpend, 0); pos('reduce.minCpa', p.reduce.minCpa, 1); pos('reduce.maxCpa', p.reduce.maxCpa, 1); pos('reduce.min7dCpa', p.reduce.min7dCpa, 0); pos('reduce.pct', p.reduce.pct, 1, 90); pos('reduce.cooldownHours', p.reduce.cooldownHours, 1, 336);
   pos('highCpa.above', p.highCpa.above, 1); pos('highCpa.minPurchases', p.highCpa.minPurchases, 1, 100); pos('highCpa.minSpend', p.highCpa.minSpend, 0); pos('highCpa.pct', p.highCpa.pct, 1, 90);
-  pos('newEvidence.minSpend', p.newEvidence.minSpend, 0);
+  pos('newEvidence.minSpend', p.newEvidence.minSpend, 0); pos('observation.minHours', p.observation?.minHours ?? 0, 0, 24); pos('observation.minSpend', p.observation?.minSpend ?? 0, 0);
   if (p.scale.maxCpa >= p.reduce.minCpa) errors.push('حد الـScale لازم يكون أقل من بداية منطقة الـReduce.');
   if (p.scale.minCpa != null && !(Number(p.scale.minCpa) >= 1 && Number(p.scale.minCpa) < Number(p.scale.maxCpa))) errors.push('scale.minCpa: لازم يكون ≥ 1 وأقل من حد الـScale.');
   if (p.reduce.maxCpa > p.highCpa.above) errors.push('نهاية منطقة الـReduce لازم تكون ≤ بداية HIGH_CPA.');
@@ -235,7 +238,7 @@ const PROTECTED_CODES = new Set(['MAPPING_NOT_VERIFIED', 'EXTERNAL_STORE', 'TEST
  */
 export async function evaluateBudgetOptimization({ now = new Date(), persist = false, live = false, only = null, ruleMode = 'SHADOW', deps = {} } = {}) {
   const policy = deps.policy || await getBudgetPolicy();
-  const world = deps.world || await buildOperatorWorld({ windowKeys: ['last3', 'last7', 'last14'], now, only });
+  const world = deps.world || await buildOperatorWorld({ windowKeys: ['today', 'last3', 'last7', 'last14'], now, only });
   const { config, settings } = world;
   const campaigns = world.campaigns.filter((c) => ['ACTIVE', 'PAUSED'].includes(c.status));
   const active = campaigns.filter((c) => c.status === 'ACTIVE');
@@ -256,7 +259,7 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   // ---- ad-set level performance for ABO (campaign windows are already in the world)
   const adsetWin = deps.adsetWindows || await (async () => {
     const t = now.toISOString().slice(0, 10); const w = {};
-    for (const k of ['last3', 'last7']) { const r = windowRange(k, t); w[k] = await entityWindowMetrics({ level: 'adset', from: r.from, to: r.to, adAccountId: world.adAccountId }); }
+    for (const k of ['today', 'last3', 'last7']) { const r = windowRange(k, t); w[k] = await entityWindowMetrics({ level: 'adset', from: r.from, to: r.to, adAccountId: world.adAccountId }); }
     return w;
   })();
 
@@ -269,6 +272,7 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   }
   const entityIds = plan.flatMap((p) => p.discovery.entities.map((e) => e.id));
   const recentOpens = deps.recentOpens || await loadRecentDailyOpens({ campaignIds: activeIds, now }).catch(() => new Map());
+  const activations = deps.activations || await loadActivationTimes({ campaignIds: activeIds, now }).catch(() => new Map()); // when each campaign was last (re)opened TODAY — its evaluation starts there
   const lastChanges = deps.lastChanges || await loadLastBudgetChanges({ entityIds, campaignIds: activeIds });
 
   // ---- guards context (same building blocks the Operator engine uses)
@@ -305,6 +309,29 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
   };
   const fmtGuard = (bk) => `${bk.code}[${bk.severity[0]}]${bk.detail ? ':' + String(bk.detail).slice(0, 40) : ''}`;
 
+  // ---- DAY-BASED classification (owner decision 2026-10-26): the evidence is TODAY (from Cairo 00:00, or from the campaign's own opening / last budget change); 3 / 7 days only confirm or protect.
+  const INSUFFICIENT = new Set(['NO_ORDERS_YET', 'NO_DATA', 'SCALE_SAMPLE_INSUFFICIENT', 'REDUCE_SAMPLE_INSUFFICIENT', 'HIGH_CPA_SAMPLE_INSUFFICIENT']);
+  const dayClassify = async ({ ent, c, m7, lc, ageHours, rowPolicy, zeroLimit }) => {
+    const obs = { ...OBSERVATION_DEFAULT, ...(rowPolicy.observation || {}) }; const dayStart = dayStartUtc(now);
+    const start = evaluationStart({ now, activationAt: activations.get(c.id) || null }); const from = lc ? new Date(Math.max(lc.at.getTime(), start.getTime())) : start;
+    const sinceFn = (at) => (deps.since ? deps.since({ level: ent.level, id: ent.id, since: at }) : metricsSince({ level: ent.level, id: ent.id, since: at, now, adAccountId: world.adAccountId }));
+    let E = null, sinceM = null;
+    if (lc) { sinceM = await sinceFn(from); E = sinceM; } else if (start > dayStart) E = await sinceFn(start);
+    else { const t = ent.level === 'adset' ? adsetWin.today?.get(ent.id) : world.windows.today?.get(c.id); E = t ? { spend: t.spend ?? 0, purchases: t.purchases ?? 0, cpa: t.cpa ?? null } : null; }
+    const hours = hoursSince(from, now); const spend = E?.spend ?? 0, purchases = E?.purchases ?? 0;
+    const Pd = { ...rowPolicy, scale: { ...rowPolicy.scale, minSpend: obs.minSpend }, reduce: { ...rowPolicy.reduce, minSpend: obs.minSpend }, highCpa: { ...rowPolicy.highCpa, minSpend: obs.minSpend } }; // the sample gate of a DAY is the observation spend; orders stay the product's own minimum
+    let cl = classifyBudget({ m: lc ? null : E, m7, ageHours, lastChange: lc, since: sinceM, policy: Pd, now, zeroSpendLimit: zeroLimit });
+    const evidence = { kind: lc && from.getTime() > start.getTime() ? 'SINCE_LAST_CHANGE' : 'DAY', window: 'DAY', since: from.toISOString(), hours: Math.round(hours * 10) / 10 };
+    cl = { ...cl, evidence };
+    if (cl.action === 'PAUSE') cl = { zone: 'NO_ORDERS_YET', action: null, rule: 'DYN_KEEP', evidence, sample: cl.sample, reasons: [`مفيش أوردرات النهارده (صرف ${round0(spend)}) — الإيقاف بالصرف بدون أوردرات بيتحسب على نافذته الخاصة وبيشتغل كحماية عاجلة`] };
+    const os = observationStatus({ evidence: { spend, purchases, hours }, obs, minPurchases: rowPolicy.scale?.minPurchases ?? 2 });
+    if (INSUFFICIENT.has(cl.zone) || (cl.action && hours < obs.minHours)) {
+      const sample = cl.sample || { spend: E ? round0(spend) : null, purchases, cpa: E?.cpa == null ? null : round0(E.cpa), cpa7d: m7?.cpa == null ? null : round0(m7.cpa) };
+      cl = { zone: 'OBSERVATION', action: null, rule: 'DYN_OBSERVATION', evidence, sample, observation: { hours: Math.round(hours * 10) / 10, minHours: obs.minHours, spend: round0(spend), minSpend: obs.minSpend, purchases, minPurchases: os.need.purchases, missing: os.missing.map((x) => x.code) }, reasons: [`OBSERVATION — تقييم النهارده لسه ما اكتملش: ${os.missing.length ? os.missing.map((x) => x.ar).join(' · ') : 'العينة غير كافية للقرار'} — مفيش إيقاف/تقليل/زيادة قبل كده`] };
+    }
+    return { cl, day: { start: from.toISOString(), hours: Math.round(hours * 10) / 10, spend: round0(spend), purchases, cpa: E?.cpa == null ? null : round0(E.cpa) } };
+  };
+
   for (const { campaign: c, discovery } of plan) {
     const cx = ctxs.get(c.id);
     if (!deps.ctxFor) await ensureHeavy(cx); // product facts (economics / stock / data quality / advisor) — cached per product, read-only
@@ -330,8 +357,10 @@ export async function evaluateBudgetOptimization({ now = new Date(), persist = f
       const since = lc ? await (deps.since ? deps.since({ level: ent.level, id: ent.id, since: lc.at }) : metricsSince({ level: ent.level, id: ent.id, since: lc.at, now, adAccountId: world.adAccountId })) : null;
       const ageHours = c.firstSeenAt ? Math.floor((now.getTime() - new Date(c.firstSeenAt).getTime()) / MS_H) : null;
       const winRow = rowPolicy.window === 'last7' ? m7 : m;
-      const cl = classifyBudget({ m: winRow, m7, ageHours, lastChange: lc, since, policy: rowPolicy, now, zeroSpendLimit: zeroLimit });
-      const evid = { window: cl.evidence, spend: cl.sample?.spend ?? null, purchases: cl.sample?.purchases ?? null, cpa: cl.sample?.cpa ?? null, cpa7d: cl.sample?.cpa7d ?? null, lastChange: lc ? { at: lc.at.toISOString(), action: lc.action, from: lc.from, to: lc.to, source: lc.source } : null };
+      const legacyCl = classifyBudget({ m: winRow, m7, ageHours, lastChange: lc, since, policy: rowPolicy, now, zeroSpendLimit: zeroLimit });
+      let cl = legacyCl, dayInfo = null; // the URGENT zero-order stop keeps its own (window / since-change) evidence even when the day has just started
+      if (rowPolicy.dayBased !== false && legacyCl.zone !== 'ZERO_ORDERS') { const dd = await dayClassify({ ent, c, m7, lc, ageHours, rowPolicy, zeroLimit }); cl = dd.cl; dayInfo = dd.day; }
+      const evid = { window: cl.evidence, day: dayInfo, observation: cl.observation || null, spend: cl.sample?.spend ?? null, purchases: cl.sample?.purchases ?? null, cpa: cl.sample?.cpa ?? null, cpa7d: cl.sample?.cpa7d ?? null, lastChange: lc ? { at: lc.at.toISOString(), action: lc.action, from: lc.from, to: lc.to, source: lc.source } : null };
       const row = { ...base, entity: { level: ent.level, id: ent.id, name: ent.name, budget: ent.budget, budgetType: ent.budgetType }, zone: cl.zone, rule: cl.rule, evidence: evid, m3: slim(m), m7: slim(m7), ageHours, zeroLimit: cl.zeroLimit ?? zeroLimit, reason: cl.reasons.join(' · '), intended: null, guards: [], flagReview: !!cl.flagReview };
       const extra = (have) => warns.filter((w) => !have.some((g) => g.code === w.code)).map(fmtGuard);
       if (!cl.action) { row.decision = mapBlock ? 'PROTECTED' : (['COOLDOWN', 'NO_NEW_EVIDENCE'].includes(cl.zone) ? 'PROTECTED' : 'KEEP'); row.guards = [...(mapBlock ? [fmtGuard(mapBlock)] : []), ...extra([])]; rows_push(out, row); continue; }

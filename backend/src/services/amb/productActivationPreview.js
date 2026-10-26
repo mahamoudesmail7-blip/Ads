@@ -13,7 +13,8 @@ import { activeExposure } from './automationScope.js';
 import { mappingCenter } from './operatorReadiness.js';
 import { getOperatorConfig } from './operatorStore.js';
 import { getBudgetCaps } from './budgetCaps.js';
-import { loadBudgetStructureFromSnapshots, discoverBudgetEntities } from './budgetOptimizer.js';
+import { loadBudgetStructureFromSnapshots, discoverBudgetEntities, getBudgetPolicy } from './budgetOptimizer.js';
+import { dayStartUtc, hoursSince, OBSERVATION_DEFAULT } from './dayEvaluation.js';
 
 const round0 = (v) => Math.round(Number(v) || 0);
 const slim = (m) => (m ? { spend: round0(m.spend ?? 0), purchases: m.purchases ?? 0, cpa: m.cpa == null ? null : round0(m.cpa) } : { spend: 0, purchases: 0, cpa: null });
@@ -38,10 +39,12 @@ export async function productActivationPreview({ productId, storeId = null, now 
   // ---- 2. pause: what the policy (auto-enrolled for an AUTOMATIC product) would stop right after activation
   const win = (k, id) => slim(world.windows?.[k]?.get(id));
   const pauseActive = pausePolicyActive(pause); const pauseRows = [];
+  // DAY-BASED (owner decision 2026-10-26): the preview judges each campaign on TODAY (Cairo 00:00), exactly like the engine; 3-day numbers are shown for analysis only
+  const bp = deps.budgetPolicy || await getBudgetPolicy().catch(() => null); const obsMinHours = { ...OBSERVATION_DEFAULT, ...(bp?.observation || {}) }.minHours; const dayHours = deps.dayHours ?? hoursSince(dayStartUtc(now), now); const lastActive = active.length <= 1;
   for (const c of active) {
     const m3 = win('last3', c.id), m7 = win('last7', c.id), m30 = win('last30', c.id), mToday = win('today', c.id);
-    const dp = decidePause({ policy: pause, campaignId: c.id, productId, storeId: sid, optimizer: null, m3, mToday, productHighCpa: hardStop, stock: null, winner: isWinner({ m7, m30 }), weekday, automatic: true });
-    pauseRows.push({ campaignId: c.id, name: (c.name || '').trim(), m3, today: mToday, trigger: dp.trigger, triggerAr: dp.trigger ? TRIGGER_AR[dp.trigger] : null, skipped: dp.skipped.map((s) => s.code), blockers: dp.blockers, fired: dp.fired, threshold: dp.threshold });
+    const dp = decidePause({ policy: pause, campaignId: c.id, productId, storeId: sid, optimizer: null, m3, mToday, productHighCpa: hardStop, stock: null, winner: isWinner({ m7, m30 }), weekday, automatic: true, mDay: mToday, dayHours, obsMinHours, lastActive });
+    pauseRows.push({ campaignId: c.id, name: (c.name || '').trim(), m3, today: mToday, dayHours: Math.round(dayHours * 10) / 10, lastActive, trigger: dp.trigger, triggerAr: dp.trigger ? TRIGGER_AR[dp.trigger] : null, skipped: dp.skipped.map((s) => s.code), blockers: dp.blockers, fired: dp.fired, threshold: dp.threshold });
   }
   const pauseEligible = pauseRows.filter((r) => r.trigger && !r.blockers.length);
   const pauseProtected = pauseRows.filter((r) => !r.trigger && r.skipped.length);

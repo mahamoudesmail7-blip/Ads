@@ -6,6 +6,7 @@
 //   protections: winnerProtection + precedence — PROTECTION_WINS (a strong winner is not paused by ZERO_ORDER / HIGH_CPA; STOCK_OUT still pauses it) or RULE_WINS (a fired rule pauses even a winner)
 import { prisma } from '../../prisma.js';
 import { cairoDate } from './dailyPlanTime.js';
+import { LAST_ACTIVE_SEVERE_FACTOR, LAST_ACTIVE_SEVERE_SAMPLE_FACTOR } from './dayEvaluation.js';
 import { emptyScope, normalizeScope, validateScope, normalizeDays, validDays, scopeVerdict, weekdayAllowed, describeScope, effectiveScope } from './automationScope.js';
 
 export const PRECEDENCE = ['PROTECTION_WINS', 'RULE_WINS'];
@@ -53,7 +54,7 @@ export function validatePause(p, { requireTrigger = false } = {}) {
  * input: { policy, campaignId, productId, storeId, optimizer: {action:'PAUSE'|…, zone, zeroLimit}|null, m3, stock: {status}|null, winner, weekday }
  * Returns { trigger: 'STOCK_OUT'|'ZERO_ORDER'|'HIGH_CPA'|null, skipped: [{trigger, code}], blockers: [codes] } — `blockers` = reasons the policy itself forbids a pause right now (scope / weekday / disabled).
  */
-export function decidePause({ policy, campaignId, productId = null, storeId = null, optimizer = null, m3 = null, mToday = null, productHighCpa = null, stock = null, winner = false, weekday = null, automatic = false }) {
+export function decidePause({ policy, campaignId, productId = null, storeId = null, optimizer = null, m3 = null, mToday = null, productHighCpa = null, stock = null, winner = false, weekday = null, automatic = false, mDay, dayHours = null, obsMinHours = null, lastActive = false }) {
   const skipped = []; const blockers = [];
   const sv = scopeVerdict(effectiveScope(policy.scope, { autoEnroll: policy.autoEnrollAutomatic !== false, automatic }), { productId, storeId, campaignId }); if (sv) blockers.push(sv);
   if (weekday != null && !weekdayAllowed(policy.days, weekday)) blockers.push('DAY_NOT_ALLOWED');
@@ -64,11 +65,19 @@ export function decidePause({ policy, campaignId, productId = null, storeId = nu
     if (zero) fired.push('ZERO_ORDER');
   }
   const limit = productHighCpa ?? policy.highCpa.above; // the product's own Hard Stop CPA wins over the global figure
-  if (policy.highCpa.enabled && limit != null && m3?.cpa != null && m3.cpa > limit && (m3.purchases ?? 0) >= policy.highCpa.minPurchases && (m3.spend ?? 0) >= (policy.highCpa.minSpend ?? 0)) fired.push('HIGH_CPA');
+  // DAY-BASED (owner decision 2026-10-26): when the caller supplies `mDay` the HIGH_CPA trigger stands on TODAY's evidence (Cairo 00:00 or the campaign's own opening time), never on the 3-day CPA;
+  // until `obsMinHours` have passed the campaign is in OBSERVATION. Without `mDay` (legacy callers / tests) the 3-day numbers are used exactly as before.
+  const dayMode = mDay !== undefined; const cm = dayMode ? mDay : m3;
+  if (policy.highCpa.enabled && limit != null && cm?.cpa != null && cm.cpa > limit && (cm.purchases ?? 0) >= policy.highCpa.minPurchases && (cm.spend ?? 0) >= (policy.highCpa.minSpend ?? 0)) {
+    if (dayMode && obsMinHours != null && dayHours != null && dayHours < obsMinHours) skipped.push({ trigger: 'HIGH_CPA', code: 'OBSERVATION' }); else fired.push('HIGH_CPA');
+  }
   const protectedWinner = policy.protections.winnerProtection && winner && policy.protections.precedence === 'PROTECTION_WINS';
   let trigger = null;
   const ri = policy.protections.recentImprovement; const improving = !!(ri?.enabled && mToday && (mToday.purchases ?? 0) >= (ri.minPurchases ?? 2) && mToday.cpa != null && limit != null && mToday.cpa <= limit);
-  for (const t of ['STOCK_OUT', 'ZERO_ORDER', 'HIGH_CPA']) { if (!fired.includes(t)) continue; if (protectedWinner && t !== 'STOCK_OUT') { skipped.push({ trigger: t, code: 'WINNER_PROTECTED' }); continue; } if (improving && t === 'HIGH_CPA') { skipped.push({ trigger: t, code: 'RECENT_IMPROVEMENT' }); continue; } trigger = t; break; }
+  for (const t of ['STOCK_OUT', 'ZERO_ORDER', 'HIGH_CPA']) { if (!fired.includes(t)) continue; if (protectedWinner && t !== 'STOCK_OUT') { skipped.push({ trigger: t, code: 'WINNER_PROTECTED' }); continue; } if (improving && t === 'HIGH_CPA') { skipped.push({ trigger: t, code: 'RECENT_IMPROVEMENT' }); continue; }
+    // the LAST active campaign of a product is not stopped in a hurry on a high CPA: only a clearly severe, well-sampled breach (CPA ≥ 1.5× the limit with ≥ 2× the minimum orders) pauses it — otherwise the budget reduction path handles it
+    if (lastActive && t === 'HIGH_CPA' && !((cm?.cpa ?? 0) >= limit * LAST_ACTIVE_SEVERE_FACTOR && (cm?.purchases ?? 0) >= policy.highCpa.minPurchases * LAST_ACTIVE_SEVERE_SAMPLE_FACTOR)) { skipped.push({ trigger: t, code: 'LAST_ACTIVE_CAMPAIGN' }); continue; }
+    trigger = t; break; }
   return { trigger, skipped, blockers, fired, threshold: limit ?? null }; // the EFFECTIVE high-CPA line (the product's own Hard Stop wins) — the reason text must print this, never the empty global figure
 }
 

@@ -19,6 +19,8 @@ import { buildOperatorWorld, buildCampaignContext, ensureHeavy, loadRecentAction
 import { evaluateGuards } from './operatorGuards.js';
 import { loadActivePolicies, policyKey, mergeEffective } from './productPolicy.js';
 import { getPausePolicy, pausePolicyActive, decidePause, TRIGGER_AR, pauseBlockMessage } from './pausePolicy.js';
+import { evaluationStart, dayStartUtc, hoursSince, loadActivationTimes, OBSERVATION_DEFAULT } from './dayEvaluation.js';
+import { metricsSince } from './budgetOptimizer.js';
 import { automationReadinessMap } from './automationReadiness.js';
 import { isWinner } from './dailyPlanCandidates.js';
 import { checkBudgetCaps } from './budgetCaps.js';
@@ -84,6 +86,10 @@ export async function evaluateAutomation({ now = new Date(), live = false, only 
   const weekday = new Date(`${cairoDate(now)}T12:00:00Z`).getUTCDay();
   const recent = deps.recent || await loadRecentActions({ campaignIds: [...byCamp.keys()], now, pendingHours: config.limits.pendingEvaluationHours });
   const counters = deps.counters || await loadCounters({ now, campaigns: world.campaigns });
+  // DAY-BASED evaluation (owner decision 2026-10-26): each campaign is judged on TODAY from Cairo 00:00 (or from its own opening time); 3 / 7 / 30 days are analysis + Winner protection only
+  const activations = deps.activations || await loadActivationTimes({ campaignIds: [...byCamp.keys()], now }).catch(() => new Map());
+  const obsCfg = { ...OBSERVATION_DEFAULT, ...(budgetPolicy.observation || {}) };
+  const activeByProduct = new Map(); for (const x of world.campaigns.filter((z) => z.status === 'ACTIVE')) { const r1 = (byCamp.get(x.id) || [])[0]; if (r1?.productId == null) continue; const k1 = policyKey(r1.storeId, r1.productId); activeByProduct.set(k1, (activeByProduct.get(k1) || 0) + 1); }
   const globalMode = config.mode === 'AUTOPILOT' ? 'AUTOMATIC' : config.mode === 'APPROVAL' ? 'APPROVAL' : config.mode === 'SHADOW' ? 'SHADOW' : 'OFF';
   const perm = config.execPermissions || {};
 
@@ -112,7 +118,10 @@ export async function evaluateAutomation({ now = new Date(), live = false, only 
 
     // ---------------- pause ----------------
     const pauseRow = rows.find((x) => x.intended?.action === 'PAUSE') || null;
-    const dp = pauseOn ? decidePause({ policy: pause, campaignId: c.id, productId: r0.productId, storeId: r0.storeId, optimizer: pauseRow?.intended || null, m3, mToday: slim(world.windows.today?.get(c.id)), productHighCpa: mergeEffective(pol, c.id).cpa.hardStop ?? null, stock, winner: isWinner({ m7, m30 }), weekday, automatic: productMode === 'AUTOMATIC' }) : { trigger: null, skipped: [], blockers: ['PAUSE_POLICY_NOT_APPROVED'], fired: [] };
+    const startAt = deps.evalStartOf ? deps.evalStartOf(c.id) : evaluationStart({ now, activationAt: activations.get(c.id) || null }); const dayHours = hoursSince(startAt, now);
+    let mDay = slim(world.windows.today?.get(c.id)); if (!deps.evalStartOf && startAt > dayStartUtc(now)) mDay = slim(await metricsSince({ level: 'campaign', id: c.id, since: startAt, now, adAccountId: world.adAccountId }).catch(() => null)); // opened later today → only what it did since it was opened
+    const lastActive = deps.lastActiveOf ? !!deps.lastActiveOf(c.id) : (activeByProduct.get(pk) || 0) <= 1; // the product's only active campaign (deps.lastActiveOf = test seam)
+    const dp = pauseOn ? decidePause({ policy: pause, campaignId: c.id, productId: r0.productId, storeId: r0.storeId, optimizer: pauseRow?.intended || null, m3, mToday: slim(world.windows.today?.get(c.id)), productHighCpa: mergeEffective(pol, c.id).cpa.hardStop ?? null, stock, winner: isWinner({ m7, m30 }), weekday, automatic: productMode === 'AUTOMATIC', mDay, dayHours, obsMinHours: obsCfg.minHours, lastActive }) : { trigger: null, skipped: [], blockers: ['PAUSE_POLICY_NOT_APPROVED'], fired: [] };
     let chosen = null;
     if (dp.trigger) {
       const blockers = dp.blockers.map((code) => ({ code, message: pauseBlockMessage(code, pause) }));
@@ -123,7 +132,7 @@ export async function evaluateAutomation({ now = new Date(), live = false, only 
         blockers.push(...gb);
       }
       const entity = { level: 'campaign', id: c.id, budget: rows.reduce((t, x) => t + (Number(x.entity?.budget) || 0), 0) || null };
-      chosen = { ...base0, kind: dp.trigger, action: 'PAUSE', entity, fromBudget: null, toBudget: null, pct: null, reason: `${TRIGGER_AR[dp.trigger]}${dp.trigger === 'ZERO_ORDER' ? `: صرف ${m3.spend} بدون أوردرات (3 أيام)` : dp.trigger === 'HIGH_CPA' ? `: CPA ${m3.cpa} > ${dp.threshold ?? pause.highCpa.above ?? '—'} (حد المنتج) على ${m3.purchases} أوردر` : ''}`, evidence: { m3, m7, m30, stock, trigger: dp.trigger, fired: dp.fired, skippedTriggers: dp.skipped, optimizer: pauseRow ? { zone: pauseRow.zone, reason: pauseRow.reason } : null }, blockers: [...blockers, ...(dp.trigger === 'STOCK_OUT' ? [] : [])], pausePolicyVersion: pause.version };
+      chosen = { ...base0, kind: dp.trigger, action: 'PAUSE', entity, fromBudget: null, toBudget: null, pct: null, reason: `${TRIGGER_AR[dp.trigger]}${dp.trigger === 'ZERO_ORDER' ? `: صرف ${m3.spend} بدون أوردرات (3 أيام)` : dp.trigger === 'HIGH_CPA' ? `: CPA ${mDay.cpa} > ${dp.threshold ?? pause.highCpa.above ?? '—'} (حد المنتج) على ${mDay.purchases} أوردر (النهارده)` : ''}`, evidence: { mDay, dayHours: Math.round(dayHours * 10) / 10, dayStart: startAt.toISOString(), lastActive, m3, m7, m30, stock, trigger: dp.trigger, fired: dp.fired, skippedTriggers: dp.skipped, optimizer: pauseRow ? { zone: pauseRow.zone, reason: pauseRow.reason } : null }, blockers: [...blockers, ...(dp.trigger === 'STOCK_OUT' ? [] : [])], pausePolicyVersion: pause.version };
     } else if (dp.skipped.length) out.skipped.push({ campaignId: c.id, code: dp.skipped[0].code, detail: dp.skipped.map((s) => s.trigger).join(',') });
 
     // ---------------- budget (only if nothing is being paused) ----------------

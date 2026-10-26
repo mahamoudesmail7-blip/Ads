@@ -49,14 +49,16 @@ const READY = (pid) => ({ productId: pid, ready: true, missing: [], checks: [] }
 const m = (spend, purchases) => ({ spend, purchases, cpa: purchases ? spend / purchases : null });
 
 /** one active campaign `id` of product `pid` with the given optimizer row; returns the injected deps */
-function scenario(list, { mode = 'AUTOMATIC', ready = true, pause = pausePol(), stock = {}, guards = {} } = {}) {
+function scenario(list, { mode = 'AUTOMATIC', ready = true, pause = pausePol(), stock = {}, guards = {}, realLastActive = false } = {}) {
   const camps = list.map((c) => ({ id: c.id, name: c.id, status: 'ACTIVE', budget: c.budget ?? 300, firstSeenAt: new Date(NOW.getTime() - 10 * 86_400_000) }));
-  const win = (key) => new Map(list.map((c) => [c.id, c[key] || m(0, 0)]));
+  const win = (key) => new Map(list.map((c) => [c.id, c[key] || (key === 'today' ? c.m3 : null) || m(0, 0)])); // fixtures that only give a 3-day figure get the SAME figure for «today» (the day-based engine reads today)
   const w = { adAccountId: ACC, config: cfg(), settings, connected: true, metaStale: false, campaigns: camps, windows: { today: win('today'), last3: win('m3'), last7: win('m7'), last14: win('m14'), last30: win('m30') }, prodIndex: new Map(), tags: new Map(), exceptions: [], factsCache: new Map(), now: NOW };
   const rows = list.filter((c) => c.row).map((c) => ({ campaignId: c.id, product: 'fixture', productId: c.pid, storeId: ST, campaign: c.id, status: 'ACTIVE', entity: { level: 'campaign', id: c.id, budget: c.budget ?? 300, name: null }, decision: c.row.decision, zone: c.row.zone || 'X', rule: c.row.rule || 'X', reason: c.row.reason || 'fixture', guards: c.row.guards || [], evidence: c.row.evidence || {}, m3: c.m3 || null, m7: c.m7 || null, requiresApproval: !!c.row.requiresApproval, flagReview: false, primaryBlock: null,
     intended: { action: c.row.action, pct: c.row.pct ?? (c.row.action === 'SCALE_UP' ? 20 : c.row.action === 'SCALE_DOWN' ? 20 : null), fromBudget: c.row.action === 'PAUSE' ? null : (c.budget ?? 300), toBudget: c.row.action === 'PAUSE' ? null : (c.row.to ?? (c.row.action === 'SCALE_UP' ? Math.round((c.budget ?? 300) * 1.2) : Math.round((c.budget ?? 300) * 0.8))) } }));
   const pids = [...new Set(list.map((c) => c.pid))];
   return { world: w, opt: { structureSource: 'META_LIVE', adAccountId: ACC, rows }, policies: new Map(pids.map((p) => [pk(p), { mode }])), readiness: new Map(pids.map((p) => [pk(p), ready ? READY(p) : NOT_READY(p)])), pause, budgetPolicy: BP,
+    ...(realLastActive ? {} : { lastActiveOf: () => false }), // the older scenarios are single-campaign fixtures: they are NOT «the last active campaign» unless a scenario asks for the real count (section 14)
+    evalStartOf: (id) => new Date(NOW.getTime() - (list.find((c) => c.id === id)?.dayHours ?? 12) * 3_600_000), // hours observed today (default 12h = a fully observed day)
     stockOf: async (id) => stock[id] || { status: 'IN_STOCK', current: 50 }, guardsOf: async ({ campaignId }) => guards[campaignId] || [], recent: new Map(), counters: { actionsLastHour: 0, actionsToday: 0, byAction: {} } };
 }
 const ev = (sc, config = cfg()) => AE.evaluateAutomation({ now: NOW, deps: { ...sc, config } });
@@ -318,5 +320,41 @@ try {
     const t1 = tick(sc2, cfg(ALL)); const t2 = AE.runAutomationTick({ now: NOW, deps: { config: cfg(ALL), dcfg: { halted: false }, autopilotOk: true, noSleep: true, evalDeps: { ...sc2, config: cfg(ALL) } } });
     const [a, b] = await Promise.all([t1, t2]);
     ok('two overlapping ticks (two schedulers): the second is skipped (ALREADY_RUNNING) and the campaign is written exactly ONCE', (a.skipped === 'ALREADY_RUNNING' || b.skipped === 'ALREADY_RUNNING') && writes(c2).length === 1 && world.entities.get(c2).daily_budget === '24000', JSON.stringify([a.skipped, b.skipped, writes(c2).length])); }
+  console.log('\n14. DAY-BASED evaluation on the Meta mock: OBSERVATION, today\'s CPA, the last active campaign, stale decisions (owner decision 2026-10-26)');
+  { // the pause policy of this suite stops at CPA 300 (3 orders, 300 spend). m3 = 3-day CPA 375 → the OLD logic would pause on it; today decides now.
+    const KEEP = { decision: 'KEEP' }; const sel = (id, pid_, o = {}) => ({ id, pid: pid_, m3: m(1500, 4), m7: m(900, 4), m30: m(3000, 12), row: KEEP, ...o });
+    // (a) the 159 case: 12:15 AM, a high HISTORICAL CPA, no data today → NO pause (a second active campaign exists, so it is not the last one)
+    const a1 = `${T}dy_a1`, a2 = `${T}dy_a2`; for (const x of [a1, a2]) setEntity(x, { daily_budget: '30000' });
+    const scA = scenario([sel(a1, pid(110), { today: m(0, 0), dayHours: 0.25 }), sel(a2, pid(110), { today: m(300, 4), dayHours: 0.25, m3: m(300, 4) })], { realLastActive: true });
+    const eA = await ev(scA); const cA = eA.candidates.find((c) => c.campaignId === a1);
+    ok('00:15 AM, 3-day CPA 375 > the limit 300 on 4 orders, ZERO data today → NO HIGH_CPA pause candidate (the old logic paused here)', !cA, JSON.stringify(cA && [cA.kind, cA.effective]));
+    const wA = allWrites().length; await tick(scA, cfg(ALL));
+    ok('executing that tick sends NOTHING to Meta for the campaign', writes(a1).length === 0 && allWrites().length === wA, String(writes(a1).length));
+    // (b) the same campaign once TODAY has evidence: 6 hours, CPA 450 > 300, 3 orders, 1,350 spend → paused automatically
+    const b1 = `${T}dy_b1`, b2 = `${T}dy_b2`; for (const x of [b1, b2]) setEntity(x, { daily_budget: '30000' });
+    const scB = scenario([sel(b1, pid(111), { today: m(1350, 3), dayHours: 6 }), sel(b2, pid(111), { today: m(300, 4), dayHours: 6, m3: m(300, 4) })], { realLastActive: true });
+    const eB = await ev(scB); const cB = eB.candidates.find((c) => c.campaignId === b1);
+    ok('6 hours in, TODAY CPA 450 > 300 on 3 orders → HIGH_CPA is an AUTOMATIC pause candidate whose reason quotes TODAY\'s numbers', cB?.kind === 'HIGH_CPA' && cB.effective === 'AUTOMATIC' && /450/.test(cB.reason) && /النهارده/.test(cB.reason), JSON.stringify(cB && [cB.kind, cB.effective, cB.reason]));
+    await tick(scB, cfg(ALL));
+    ok('executed on the Meta mock with exactly ONE write for the bad campaign, none for its healthy sibling', writes(b1).length === 1 && writes(b2).length === 0 && (await dec(b1))?.status === 'VERIFIED');
+    // (c) a campaign that is fine TODAY is never paused for a terrible 3-day CPA
+    const c1 = `${T}dy_c1`, c2 = `${T}dy_c2`; for (const x of [c1, c2]) setEntity(x, { daily_budget: '30000' });
+    const scC = scenario([sel(c1, pid(112), { today: m(400, 4), dayHours: 8 }), sel(c2, pid(112), { today: m(300, 4), dayHours: 8, m3: m(300, 4) })], { realLastActive: true });
+    await tick(scC, cfg(ALL));
+    ok('3-day CPA 375 but TODAY CPA 100 (4 orders) → NOT paused: 3-day numbers are analysis, not a trigger', writes(c1).length === 0 && writes(c2).length === 0);
+    // (d) the LAST active campaign of a product
+    const d1 = `${T}dy_d1`; setEntity(d1, { daily_budget: '30000' });
+    const scD = scenario([sel(d1, pid(113), { today: m(1080, 3), dayHours: 6 })], { realLastActive: true }); const eD = await ev(scD);
+    ok('the only active campaign of its product + a moderate breach (CPA 360 on 3 orders) → NOT a pause candidate (LAST_ACTIVE_CAMPAIGN)', !eD.candidates.some((c) => c.campaignId === d1 && c.kind === 'HIGH_CPA') && eD.skipped.some((s) => s.campaignId === d1 && s.code === 'LAST_ACTIVE_CAMPAIGN'), JSON.stringify(eD.skipped.filter((s) => s.campaignId === d1)));
+    await tick(scD, cfg(ALL)); ok('…and nothing reaches Meta for it', writes(d1).length === 0);
+    const d2 = `${T}dy_d2`; setEntity(d2, { daily_budget: '30000' });
+    const scD2 = scenario([sel(d2, pid(114), { today: m(3000, 6), dayHours: 6 })], { realLastActive: true }); await tick(scD2, cfg(ALL));
+    ok('…but a SEVERE, well-sampled breach (CPA 500 ≥ 1.5× the limit on 6 orders) pauses even the last active campaign', writes(d2).length === 1 && (await dec(d2))?.status === 'VERIFIED');
+    // (e) stale decisions: a PREPARED HIGH_CPA row built from OLD 3-day numbers is re-evaluated LIVE and never executed on those numbers
+    const e1 = `${T}dy_e1`, e2 = `${T}dy_e2`; for (const x of [e1, e2]) setEntity(x, { daily_budget: '30000' });
+    const stale = await prisma.ambOperatorDecision.create({ data: { decision_key: `${T}dy_stale_${Date.now()}`, status: 'PREPARED', store_id: ST, product_id: pid(115), ad_account_id: ACC, campaign_id: e1, campaign_name: e1, action: 'PAUSE', rule_name: 'AUTO:HIGH_CPA', mode_at_decision: 'AUTOPILOT', confidence: 'HIGH', created_at: new Date(Date.now() - 2 * 86_400_000), params_json: JSON.stringify({ kind: 'HIGH_CPA', level: 'campaign', entityId: e1 }), evidence_json: JSON.stringify({ m3: { spend: 1500, purchases: 4, cpa: 375 } }) } });
+    const scE = scenario([sel(e1, pid(115), { today: m(0, 0), dayHours: 0.5 }), sel(e2, pid(115), { today: m(300, 4), dayHours: 0.5, m3: m(300, 4) })], { realLastActive: true });
+    const rs = await AE.executeAutoDecision({ decisionId: stale.id, source: 'USER', userId: 1, now: NOW, deps: { config: cfg(ALL), reevaluate: async () => AE.evaluateAutomation({ now: NOW, deps: { ...scE, config: cfg(ALL) } }) } });
+    ok('a 2-day-old PREPARED pause built on the 3-day CPA is re-evaluated live: today is only 30 minutes old → EXPIRED (DECISION_CHANGED), ZERO writes', rs.status === 'EXPIRED' && (rs.reasons || []).some((r) => r.code === 'DECISION_CHANGED') && writes(e1).length === 0, JSON.stringify(rs).slice(0, 260)); }
 } finally { try { await cleanup(); } catch (e) { console.log('cleanup failed', e.message); } server.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); await prisma.$disconnect(); process.exit(fail ? 1 : 0);

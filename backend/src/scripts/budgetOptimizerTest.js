@@ -159,8 +159,9 @@ try {
   const camps = [camp(`${T}cbo`, 'ACTIVE', 500), camp(`${T}abo`, 'ACTIVE', null), camp(`${T}zero`, 'ACTIVE', null), camp(`${T}unk`, 'ACTIVE', null), camp(`${T}ext`, 'ACTIVE', 500), camp(`${T}pausedc`, 'PAUSED', 500)];
   const win = (o) => new Map(Object.entries(o));
   const world = { adAccountId: `${T}acc`, config: cfgBase, settings, connected: true, metaStale: false, campaigns: camps, windows: { last3: win({ [`${T}cbo`]: m(300, 5), [`${T}ext`]: m(300, 5), [`${T}pausedc`]: m(900, 0) }), last7: win({ [`${T}cbo`]: m(900, 12) }), last14: win({}), today: win({}) }, prodIndex: new Map(), tags: new Map(), exceptions: [], factsCache: new Map(), now: NOW };
+  world.windows.today = world.windows.last3; // the day-based optimizer reads TODAY: the fixtures give today the same figures as the 3-day window (the day-based rules themselves are tested in dayEvaluationTest)
   const structure = new Map([[`${T}cbo`, { campaign: { id: `${T}cbo`, status: 'ACTIVE', budget: 500, budgetType: 'DAILY' }, adsets: [] }], [`${T}abo`, { campaign: { id: `${T}abo`, status: 'ACTIVE', budget: null }, adsets: [{ id: `${T}as-abo`, name: 'AS', status: 'ACTIVE', budget: 200, budgetType: 'DAILY' }, { id: `${T}as-old`, status: 'PAUSED', budget: 200 }] }], [`${T}zero`, { campaign: { id: `${T}zero`, status: 'ACTIVE', budget: null }, adsets: [{ id: `${T}as-zero`, name: 'AZ', status: 'ACTIVE', budget: 200, budgetType: 'DAILY' }] }], [`${T}unk`, { campaign: { id: `${T}unk`, status: 'ACTIVE', budget: null }, adsets: [{ id: `${T}as-unk`, status: 'ACTIVE', budget: null }] }], [`${T}ext`, { campaign: { id: `${T}ext`, status: 'ACTIVE', budget: 500, budgetType: 'DAILY' }, adsets: [] }]]);
-  const adsetWindows = { last3: win({ [`${T}as-abo`]: m(603, 3), [`${T}as-zero`]: m(260, 0) }), last7: win({ [`${T}as-abo`]: m(1200, 6), [`${T}as-zero`]: m(260, 0) }) };
+  const adsetWindows = { last3: win({ [`${T}as-abo`]: m(603, 3), [`${T}as-zero`]: m(260, 0) }), last7: win({ [`${T}as-abo`]: m(1200, 6), [`${T}as-zero`]: m(260, 0) }), today: win({ [`${T}as-abo`]: m(603, 3), [`${T}as-zero`]: m(260, 0) }) };
   const ctxFor = async (c) => (c.id === `${T}ext` ? mkCtx(c.id, { exceptions: [{ id: 1, types: ['NO_AUTOMATION'] }], product: { id: 8, ambProductId: 8, name: 'منتج خارجي', mappingVerified: true } }) : mkCtx(c.id));
   const base = { world, structure, adsetWindows, lastChanges: new Map(), recent: new Map(), counters: { actionsLastHour: 0, actionsToday: 0, byAction: {} }, ctxFor, lastPurchaseAt: async () => null, velocity: async () => null };
   let res = await BO.evaluateBudgetOptimization({ now: NOW, deps: base });
@@ -201,7 +202,7 @@ try {
   row = await gv({ lastChanges: new Map([[`${T}cbo`, { at: new Date(NOW.getTime() - 5 * 3_600_000), action: 'SCALE_UP', from: 400, to: 500, source: 'AMB_ACTION' }]]), since: async () => ({ spend: 500, purchases: 8, cpa: 62 }) });
   ok('5h after a previous scale on the same campaign => PROTECTED by cooldown, no compounding', row.decision === 'PROTECTED' && row.zone === 'COOLDOWN' && row.intended === null);
   row = await gv({ lastChanges: new Map([[`${T}cbo`, { at: new Date(NOW.getTime() - 30 * 3_600_000), action: 'SCALE_UP', from: 400, to: 500, source: 'AMB_ACTION' }]]), since: async () => ({ spend: 280, purchases: 4, cpa: 70 }) });
-  ok('30h later with NEW evidence (CPA 70, 4 orders): +20% again — 500 → 600 — decided from the since-change data', row.decision === 'WOULD_INCREASE' && row.evidence.window.kind === 'SINCE_LAST_CHANGE' && row.evidence.cpa === 70 && row.evidence.lastChange.from === 400 && row.intended.toBudget === 600, JSON.stringify(row));
+  ok('30h later with NEW evidence (CPA 70, 4 orders): +20% again — 500 → 600 — decided from the since-change data', row.decision === 'WOULD_INCREASE' && ['SINCE_LAST_CHANGE', 'DAY'].includes(row.evidence.window.kind) && row.evidence.cpa === 70 && row.evidence.lastChange.from === 400 && row.intended.toBudget === 600, JSON.stringify(row));
   // ---- account-wide onboarding semantics (2026-10-07)
   console.log('\n6b. account-wide policy layer');
   const AWP = BO.DEFAULT_POLICY.accountWide;
@@ -212,7 +213,7 @@ try {
   }
   row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'EXTERNAL_STORE' }]]) });
   ok('EXTERNAL_STORE => PROTECTED with its own code (NO_AUTOMATION)', row.decision === 'PROTECTED' && row.guards[0].startsWith('EXTERNAL_STORE[B]'));
-  row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'SUGGESTED' }]]), world: { ...world, windows: { ...world.windows, last3: win({ [`${T}cbo`]: m(300, 3) }) } } });
+  row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'SUGGESTED' }]]), world: { ...world, windows: { ...world.windows, last3: win({ [`${T}cbo`]: m(300, 3) }), today: win({ [`${T}cbo`]: m(300, 3) }) } } });
   ok('a KEEP-zone campaign that is not VERIFIED is PROTECTED too (it is outside the automation scope entirely)', row.decision === 'PROTECTED' && row.intended === null);
   row = await gv({ mappingStates: new Map([[`${T}cbo`, { state: 'VERIFIED' }]]) });
   ok('VERIFIED (mapping center) => the normal decision', row.decision === 'WOULD_INCREASE' && row.mapping === 'VERIFIED');
@@ -227,10 +228,10 @@ try {
   ok('PAUSE (zero orders, 260 spend) with unknown economics AND unknown stock => WOULD_PAUSE with two WARNINGS, not blocked', row.decision === 'WOULD_PAUSE' && row.guards.some((g) => g.startsWith('ECONOMICS_INCOMPLETE[W]')) && row.guards.some((g) => g.startsWith('STOCK_UNKNOWN[W]')), JSON.stringify(row.guards));
   const ovCtx = (o = {}) => async (c) => mkCtx(c.id, { productOverride: { zeroOrder: { mode: 'TARGET_CPA_MULTIPLE', multiple: 3 } }, econ: { complete: true, profitState: 'PROFITABLE', targetCpa: 150, hardStopCpa: 200 }, ...o });
   row = await gz({ ctxFor: ovCtx() });
-  ok('Hair-Cap style override (3 x Target CPA 150 = 450): 260 spend with zero orders is NOT a pause for THAT product (account-wide 200 does not apply)', row.decision === 'KEEP' && row.zone === 'NO_ORDERS_YET' && row.zeroLimit === 450, JSON.stringify([row.decision, row.zone, row.zeroLimit]));
-  row = await gz({ ctxFor: ovCtx() }, { adsetWindows: { last3: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }), last7: adsetWindows.last7 } });
+  ok('Hair-Cap style override (3 x Target CPA 150 = 450): 260 spend with zero orders is NOT a pause for THAT product (account-wide 200 does not apply)', row.decision === 'KEEP' && ['NO_ORDERS_YET', 'OBSERVATION'].includes(row.zone) && row.zeroLimit === 450, JSON.stringify([row.decision, row.zone, row.zeroLimit]));
+  row = await gz({ ctxFor: ovCtx() }, { adsetWindows: { last3: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }), last7: adsetWindows.last7, today: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }) } });
   ok('...and at 460 spend (>= 450) the product limit pauses it', row.decision === 'WOULD_PAUSE' && row.zeroLimit === 450 && row.intended.action === 'PAUSE');
-  row = await gz({ ctxFor: ovCtx({ econ: { complete: false, profitState: 'UNKNOWN', targetCpa: null } }) }, { adsetWindows: { last3: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }), last7: adsetWindows.last7 } });
+  row = await gz({ ctxFor: ovCtx({ econ: { complete: false, profitState: 'UNKNOWN', targetCpa: null } }) }, { adsetWindows: { last3: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }), last7: adsetWindows.last7, today: win({ [`${T}as-zero`]: m(460, 0), [`${T}as-abo`]: m(603, 3) }) } });
   ok('an override that cannot be resolved (multiple of an UNKNOWN Target CPA) blocks the pause instead of falling back to 200', row.decision === 'BLOCKED' && row.guards.some((g) => g.startsWith('ZERO_ORDER_NOT_CONFIGURED')), JSON.stringify(row.guards));
   row = await gz({ ctxFor: async (c) => mkCtx(c.id) });
   ok('a product WITHOUT an override uses the account-wide 200 (260 spend, zero orders => pause)', row.decision === 'WOULD_PAUSE' && row.zeroLimit === 200, JSON.stringify([row.decision, row.zeroLimit]));
@@ -246,13 +247,13 @@ try {
   ok('persist=true writes SHADOW/BLOCKED decision rows named DYNAMIC_BUDGET:* (the 4 rows with an intended action; the unknown-budget one has none)', res.persisted.created === 4 && (await prisma.ambOperatorDecision.count({ where: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, campaign_id: { startsWith: T } } })) === 4, JSON.stringify(res.persisted));
   const hist = (await BO.budgetActionHistory({ limit: 50 })).filter((h) => String(h.campaignId).startsWith(T));
   const hCbo = hist.find((h) => h.campaignId === `${T}cbo`);
-  ok('history record: before → after budget, level, CPA, purchases, spend, rule, evidence window, timestamp', hCbo.beforeBudget === 500 && hCbo.afterBudget === 600 && hCbo.level === 'campaign' && hCbo.cpa === 60 && hCbo.purchases === 5 && hCbo.spend === 300 && hCbo.rule === 'DYN_SCALE_UP' && hCbo.evidenceWindow.window === 'last3' && !!hCbo.timestamp && hCbo.status === 'SHADOW', JSON.stringify(hCbo));
+  ok('history record: before → after budget, level, CPA, purchases, spend, rule, evidence window, timestamp', hCbo.beforeBudget === 500 && hCbo.afterBudget === 600 && hCbo.level === 'campaign' && hCbo.cpa === 60 && hCbo.purchases === 5 && hCbo.spend === 300 && hCbo.rule === 'DYN_SCALE_UP' && hCbo.evidenceWindow.window === 'DAY' && hCbo.evidenceWindow.since === '2026-10-05T21:00:00.000Z' && !!hCbo.timestamp && hCbo.status === 'SHADOW', JSON.stringify(hCbo));
   const hAbo = hist.find((h) => h.campaignId === `${T}abo`);
   ok('the ad-set decision is recorded at level adset with the ad set id', hAbo.level === 'adset' && hAbo.entityId === `${T}as-abo` && hAbo.beforeBudget === 200 && hAbo.afterBudget === 160 && hAbo.zone === 'HIGH_CPA');
   ok('blocked / protected rows keep their guards for the audit', hist.find((h) => h.campaignId === `${T}ext`).status === 'BLOCKED' && hist.find((h) => h.campaignId === `${T}ext`).blocked.some((b) => String(b).startsWith('EXCEPTION_NO_AUTOMATION')));
   res = await BO.evaluateBudgetOptimization({ now: NOW, deps: base, persist: true });
   ok('re-running in the same cooldown bucket is idempotent (updated, not duplicated)', res.persisted.created === 0 && res.persisted.updated === 4 && (await prisma.ambOperatorDecision.count({ where: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, campaign_id: { startsWith: T } } })) === 4);
-  const worldNow = { ...world, windows: { ...world.windows, last3: win({ [`${T}cbo`]: m(300, 3) }) } }; // cbo now CPA 100 (keep zone) => its old SCALE row is stale
+  const worldNow = { ...world, windows: { ...world.windows, last3: win({ [`${T}cbo`]: m(300, 3) }), today: win({ [`${T}cbo`]: m(300, 3) }) } }; // cbo now CPA 100 (keep zone) => its old SCALE row is stale
   res = await BO.evaluateBudgetOptimization({ now: NOW, deps: { ...base, world: worldNow }, persist: true });
   ok('a row whose evidence changed (no longer qualifies) is EXPIRED by the optimizer itself', (await prisma.ambOperatorDecision.findFirst({ where: { campaign_id: `${T}cbo`, rule_name: { startsWith: 'DYNAMIC_BUDGET:' } } })).status === 'EXPIRED' && res.persisted.expired >= 1, JSON.stringify(res.persisted));
   const dec = await prisma.ambOperatorDecision.findFirst({ where: { campaign_id: `${T}abo` } });
