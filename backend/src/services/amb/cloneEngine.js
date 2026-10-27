@@ -1812,6 +1812,54 @@ export async function reconcileNativeScheduledJobs() {
   return { checked: jobs.length, delivering, rejected, fixed };
 }
 
+// ---------------------------------------------------------------------------
+// Automatic resume of an APPROVED batch that ended with failed copies.
+//
+// Every clone failure seen so far was a Meta hiccup (transient error, throttle, a shared asset not usable yet) that a plain «resume» fixes — the owner had to notice and press the button.
+// The resume is idempotent (the object map re-attempts only PENDING/FAILED objects and never re-creates a CREATED one), so the system now does it itself:
+//   · only an APPROVED batch the owner already launched, created in the last 24h, with at least one FAILED job
+//   · only once the batch has been quiet for 5 minutes (not mid-run), at most one attempt per 10 minutes, at most 3 attempts per batch
+//   · never after the copy's scheduled start has passed (a native start_time in the past would be refused by Meta anyway)
+//   · every attempt still goes through the central write guard (Emergency Stop / write lock) inside runBatch
+//   · after the last attempt the owner gets an alert instead of silence
+// ---------------------------------------------------------------------------
+export const AUTO_RESUME_MAX = 3;
+const AUTO_RESUME_QUIET_MS = 5 * 60e3;
+const AUTO_RESUME_GAP_MS = 10 * 60e3;
+export async function autoResumeFailedBatches({ now = new Date() } = {}) {
+  const settings = await getAmbSettings();
+  if (settings.ambExecutionMode === 'ADVISORY') return { resumed: 0, skipped: 'ADVISORY' };
+  const batches = await prisma.ambCloneBatch.findMany({
+    where: { status: { in: ['PARTIALLY_FAILED', 'FAILED'] }, approved_at: { not: null }, created_at: { gt: new Date(now.getTime() - 24 * 3600e3) } },
+    include: { jobs: true }, take: 20,
+  });
+  let resumed = 0; let exhausted = 0;
+  for (const b of batches) {
+    if (running.has(b.batch_id)) continue;
+    const failedJobs = b.jobs.filter((jb) => jb.status === 'FAILED' && jb.preflight_status !== 'BLOCKED');
+    if (!failedJobs.length) continue;
+    if (failedJobs.some((jb) => jb.scheduled_activation_at && new Date(jb.scheduled_activation_at).getTime() <= now.getTime())) continue; // the start already passed
+    const last = await prisma.ambCloneAudit.findFirst({ where: { batch_id: b.batch_id }, orderBy: { id: 'desc' } });
+    if (last && now.getTime() - new Date(last.created_at).getTime() < AUTO_RESUME_QUIET_MS) continue; // still active / just finished
+    const tries = await prisma.ambCloneAudit.findMany({ where: { batch_id: b.batch_id, event: 'AUTO_RESUME' }, orderBy: { id: 'desc' } });
+    if (tries.length >= AUTO_RESUME_MAX) {
+      if (!tries.some((t) => t.detail && t.detail.startsWith('EXHAUSTED'))) {
+        await audit(b.batch_id, null, 'AUTO_RESUME', { detail: `EXHAUSTED: ${AUTO_RESUME_MAX} محاولات استئناف تلقائي ما كمّلتش ${failedJobs.length} حملة.` });
+        await raiseAlert({ severity: 'WARNING', category: 'EXECUTION', title: 'استنساخ فشل بعد محاولات استئناف تلقائية', message: `${failedJobs.length} حملة في دفعة الاستنساخ فضلت فاشلة بعد ${AUTO_RESUME_MAX} محاولات تلقائية — راجع سبب الفشل في سجل الدفعة.`, dedupeKey: `clone-auto-resume-exhausted:${b.batch_id}` }).catch(() => {});
+        exhausted++;
+      }
+      continue;
+    }
+    if (tries[0] && now.getTime() - new Date(tries[0].created_at).getTime() < AUTO_RESUME_GAP_MS) continue;
+    await audit(b.batch_id, null, 'AUTO_RESUME', { detail: `محاولة استئناف تلقائي ${tries.length + 1}/${AUTO_RESUME_MAX} لـ ${failedJobs.length} حملة فاشلة (الخطأ غالبًا مؤقت من Meta).` });
+    await rearmStuckActivations(b.batch_id).catch(() => {});
+    kickRun(b.batch_id);
+    resumed++;
+  }
+  if (resumed || exhausted) logger.info('AMB clone auto-resume', { resumed, exhausted });
+  return { resumed, exhausted, checked: batches.length };
+}
+
 /** On-demand live Meta review + delivery picture for one cloned job — powers
  *  the "حالة مراجعة Meta" panel. Read-only. */
 export async function getCloneJobMetaStatus(jobId) {
