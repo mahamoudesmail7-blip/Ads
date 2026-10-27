@@ -1235,7 +1235,7 @@ async function cloneJob(jobId, token) {
       }
 
       const arow = await objRow(jobId, batchId, 'AD', ad.id, { source_name: ad.name, parent_source_id: as.id });
-      if (arow.status === 'CREATED') continue;
+      if (arow.status === 'CREATED') { if (arow.destination_id) idMap.ads[ad.id] = arow.destination_id; continue; } // a resume must carry the ads made EARLIER into the map — the native activation + the live-status panel walk idMap.ads (job 985 activated only the 5 new ads of 15)
       if (!newCreativeId) {
         if (creativeNeedsInput) {
           await markObj(arow.id, { status: 'NEEDS_INPUT', error: 'هذا الإعلان يحتاج رابط وجهة — أدخِله ثم استأنف. باقي الحملة تم نسخه.' });
@@ -1682,6 +1682,22 @@ export async function activateDueJobs() {
 // NEVER recreates anything and never re-publishes; a still-in-review ad is
 // left alone (Meta auto-delivers on approval).
 // ---------------------------------------------------------------------------
+/** The id map of a job is the list the native activation / the repair net / the status panel walk. Rebuild what is missing from the object rows (CREATED ad sets / ads); persist it when it grew. Returns the (possibly extended) map. */
+export async function completeIdMapFromObjects(job, idMap) {
+  const objs = await prisma.ambCloneObjectMap.findMany({ where: { job_id: job.id, status: 'CREATED', level: { in: ['ADSET', 'AD'] }, destination_id: { not: null } }, select: { level: true, source_id: true, destination_id: true } });
+  let added = 0;
+  idMap.adsets = idMap.adsets || {}; idMap.ads = idMap.ads || {};
+  for (const o of objs) {
+    const bucket = o.level === 'ADSET' ? idMap.adsets : idMap.ads;
+    if (!bucket[o.source_id]) { bucket[o.source_id] = o.destination_id; added++; }
+  }
+  if (added) {
+    await prisma.ambCloneJob.update({ where: { id: job.id }, data: { id_map_json: JSON.stringify(idMap) } });
+    await audit(job.batch_id, job.id, 'ID_MAP_COMPLETED', { detail: `أُضيف ${added} عنصر ناقص لخريطة الحملة (نسخ قديم قبل الاستئناف) — هيتفعّل مع باقي الحملة.` });
+  }
+  return idMap;
+}
+
 export async function reconcileNativeScheduledJobs() {
   const settings = await getAmbSettings();
   if (settings.ambExecutionMode === 'ADVISORY') return { checked: 0, skipped: 'ADVISORY' };
@@ -1708,7 +1724,8 @@ export async function reconcileNativeScheduledJobs() {
   const now = Date.now();
   let delivering = 0; let rejected = 0; let fixed = 0;
   for (const job of jobs) {
-    const idMap = j(job.id_map_json, {}) || {};
+    let idMap = j(job.id_map_json, {}) || {};
+    try { idMap = await completeIdMapFromObjects(job, idMap); } catch (err) { logger.warn('AMB native reconcile: id-map completion failed', { jobId: job.id, message: err.message }); }
     let state;
     try {
       state = await getCloneJobLiveState(token, {
