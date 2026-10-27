@@ -145,6 +145,22 @@ for (const [label, c, adsets, opt, want] of combos) {
   const assertionOk = !(opt.hasSlotPlan && (camp.daily_budget || camp.lifetime_budget)) && !(opt.scaleBudgetEgp && !camp.daily_budget) && !(opt.scaleBudgetEgp && (ad.daily_budget || ad.lifetime_budget));
   ok(label + ': campaign + ad set payloads are consistent (budget on exactly one level, valid strategy) and pass the engine\'s own safety checks', campOk && adOk && assertionOk, JSON.stringify({ camp, ad: { daily_budget: ad.daily_budget, bid_strategy: ad.bid_strategy } }));
 }
+console.log('\n9. Meta\'s transient «unexpected error, retry later» (code 2) no longer parks a copy as ACTIVATION_FAILED (NeckEase- Test, ad 4.1)');
+const { isMetaTransient, transientRetry } = await imp('../services/amb/cloneEngine.js');
+const T2 = err('An unexpected error has occurred. Please retry your request later. [code=2, type=OAuthException, fbtrace_id=AtSYW2SS4c0LP4NMhNh8gzv]', { graphCode: 2, graphType: 'OAuthException' });
+ok('the exact error from the owner\'s screenshot is transient (and NOT a throttle)', isMetaTransient(T2) && !isMetaThrottle(T2));
+ok('code 1, is_transient, HTTP 5xx and the «please retry» wording are transient', [err('x', { graphCode: 1 }), err('x', { graphTransient: true }), err('x', { graphStatus: 503 }), err('An unexpected error has occurred. Please retry your request later.')].every(isMetaTransient));
+ok('real problems and throttles are NOT transient (bad payload, permissions, auth, rate limit)', [err('Invalid parameter', { graphCode: 100, graphSubcode: 1487 }), err('(#200) Requires ads_management permission', { graphCode: 200 }), err('Invalid OAuth access token', { graphCode: 190 }), err('x', { graphCode: 17 }), null].every((e) => !isMetaTransient(e)));
+let t1 = 0; const rt1 = await transientRetry(async () => { t1++; if (t1 < 3) throw T2; return { success: true }; }, 't', [0, 0, 0]);
+ok('a status write that hits the transient error twice succeeds on the 3rd try — the ad is activated, the copy is NOT failed', rt1.success === true && t1 === 3, String(t1));
+let t2 = 0; let te2 = null; try { await transientRetry(async () => { t2++; throw T2; }, 't', [0, 0]); } catch (e) { te2 = e; }
+ok('if Meta stays broken it gives up after the waits and surfaces the real error (the reconcile then repairs it later)', t2 === 3 && /unexpected error/.test(te2?.message || ''), String(t2));
+let t3 = 0; try { await transientRetry(async () => { t3++; throw err('Invalid parameter', { graphCode: 100 }); }, 't', [0, 0, 0]); } catch { /* expected */ }
+ok('a real error is never retried (one attempt)', t3 === 1);
+ok('the clone engine\'s status write retries transient errors on top of the throttle wrapper (status flips only — creates are never re-sent on a transient error)', src.includes("transientRetry(() => writeRetry(() => _setEntityStatus(...a), 'write:status'), 'write:status')") && !/transientRetry\(\(\) => (writeRetry\(\(\) => )?_create/.test(src));
+ok('the graph client tags is_transient so the classification can use it', fs.readFileSync(join(__dirname, '../services/metaGraphClient.js'), 'utf8').includes('err.graphTransient = e.is_transient === true'));
+ok('the native-schedule reconcile now also picks up a PARTIALLY failed native activation, re-activates whatever is still PAUSED and re-arms the copy as SCHEDULED_NATIVE only when every repair succeeded', src.includes("error: { contains: PARTIAL_NATIVE_FAIL }") && src.includes('let repairFailed = 0;') && src.includes("if (job.status === 'ACTIVATION_FAILED' && !repairFailed)") && src.includes("data: { status: 'SCHEDULED_NATIVE', error: null }"));
+ok('the old «not found → re-arm» branch does not swallow the partial-failure case (that one must go through the repair)', src.includes("job.status === 'ACTIVATION_FAILED' && !String(job.error || '').includes(PARTIAL_NATIVE_FAIL)"));
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 300).unref?.();

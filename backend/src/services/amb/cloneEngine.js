@@ -114,8 +114,27 @@ const createAdCreative = (...a) => writeRetry(() => _createAdCreative(...a), 'wr
 const createAd = (...a) => writeRetry(() => _createAd(...a), 'write:ad');
 const uploadAdImageFromUrl = (...a) => writeRetry(() => _uploadAdImageFromUrl(...a), 'write:image');
 const uploadAdVideoFromUrl = (...a) => writeRetry(() => _uploadAdVideoFromUrl(...a), 'write:video');
-const setEntityStatus = (...a) => writeRetry(() => _setEntityStatus(...a), 'write:status');
+// Meta's «An unexpected error has occurred. Please retry your request later» (code 1 / 2, is_transient, 5xx) is NOT a verdict on the object — it is a hiccup on Meta's side. It hit the native-schedule activation
+// of ONE ad («Ad 4.1») and parked the whole copy as ACTIVATION_FAILED. A status flip (ACTIVE/PAUSED) is idempotent, so it is safe to re-send after a short wait (creates are NOT retried here: a create may have gone through).
+const TRANSIENT_RE = /unexpected error has occurred|please retry your request|temporarily unavailable|service unavailable|try again later/i;
+export function isMetaTransient(e) {
+  if (!e || isMetaThrottle(e)) return false;
+  return [1, 2].includes(Number(e.graphCode)) || e.graphTransient === true || Number(e.graphStatus) >= 500 || TRANSIENT_RE.test(e.message || String(e));
+}
+const TRANSIENT_WAITS_MS = [5_000, 15_000, 40_000];
+async function transientRetry(fn, label, waitsMs = TRANSIENT_WAITS_MS) {
+  const waits = throttleWaits(waitsMs);
+  for (let i = 0; ; i++) {
+    try { return await fn(); } catch (e) {
+      if (!isMetaTransient(e) || i >= waits.length) throw e;
+      logger.warn('AMB clone: Meta had a transient error — retrying the status write', { label, attempt: i + 1, waitMs: waits[i], message: e.message });
+      await new Promise((r) => setTimeout(r, waits[i]));
+    }
+  }
+}
+const setEntityStatus = (...a) => transientRetry(() => writeRetry(() => _setEntityStatus(...a), 'write:status'), 'write:status');
 const SRC_READ_CHECK = 'قراءة الحملة المصدر';
+const PARTIAL_NATIVE_FAIL = 'فشل تفعيل الجدولة الأصلية جزئيًا';
 /** A job that was blocked ONLY because Meta throttled the source-campaign read (an old verdict, not a real problem) goes back to PENDING so a resume re-reads it. */
 async function rearmThrottleBlockedJobs(batchId) {
   const blocked = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId, status: 'PREFLIGHT_BLOCKED' } });
@@ -143,7 +162,7 @@ async function rearmStuckActivations(batchId) {
   }
   return stale.length;
 }
-export { rearmThrottleBlockedJobs, rearmStuckActivations, withThrottleRetry };
+export { rearmThrottleBlockedJobs, rearmStuckActivations, withThrottleRetry, transientRetry };
 
 // Meta error subcodes that are PAYLOAD-STRUCTURE problems, not "asset not
 // usable" — re-uploading would not help, so the re-upload retry must NOT fire.
@@ -1265,7 +1284,7 @@ async function cloneJob(jobId, token) {
     }
     if (activateErrs.length) {
       status = 'ACTIVATION_FAILED';
-      nativeNote = ` — فشل تفعيل الجدولة الأصلية جزئيًا: ${activateErrs[0]}`;
+      nativeNote = ` — ${PARTIAL_NATIVE_FAIL}: ${activateErrs[0]}`;
       await audit(batchId, jobId, 'ACTIVATION_FAILED', { detail: `جدولة Meta الأصلية: ${activateErrs.join(' | ')}` });
     } else {
       status = 'SCHEDULED_NATIVE';
@@ -1656,6 +1675,8 @@ export async function reconcileNativeScheduledJobs() {
         { status: 'SCHEDULED_NATIVE' },
         // a throttled live-state read used to be read as «campaign not found» and flip a healthy scheduled copy to ACTIVATION_FAILED — re-check those on Meta (a throttle is now thrown, never read as «gone»)
         { status: 'ACTIVATION_FAILED', destination_campaign_id: { not: null }, error: { startsWith: 'الحملة المجدولة غير موجودة' } },
+        // a native activation that failed on a few objects (e.g. Meta's transient «unexpected error») — the copy IS on Meta; the safety net below re-activates what is still PAUSED and re-arms it
+        { status: 'ACTIVATION_FAILED', destination_campaign_id: { not: null }, error: { contains: PARTIAL_NATIVE_FAIL } },
       ],
       batch: { status: { notIn: ['CANCELLED'] } },
     },
@@ -1686,7 +1707,7 @@ export async function reconcileNativeScheduledJobs() {
       continue;
     }
 
-    if (job.status === 'ACTIVATION_FAILED') { // it IS on Meta — the earlier «not found» was a throttled read
+    if (job.status === 'ACTIVATION_FAILED' && !String(job.error || '').includes(PARTIAL_NATIVE_FAIL)) { // it IS on Meta — the earlier «not found» was a throttled read
       await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'SCHEDULED_NATIVE', error: null } });
       await audit(job.batch_id, job.id, 'JOB_REARMED', { detail: 'الحملة المجدولة موجودة فعلًا على Meta — حكم «غير موجودة» القديم كان بسبب حد طلبات مؤقت، اتصحّح.' });
       await recomputeBatchStatus(job.batch_id);
@@ -1712,12 +1733,18 @@ export async function reconcileNativeScheduledJobs() {
     // destination ids.
     const strays = [state.campaign, ...(state.adsets || []), ...(state.ads || [])]
       .filter((e) => e && (e.configuredStatus || '').toUpperCase() === 'PAUSED');
+    let repairFailed = 0;
     for (const e of strays) {
       try { await setEntityStatus(token, e.id, 'ACTIVE'); fixed++; }
-      catch (err) { logger.warn('AMB native reconcile re-activate failed', { id: e.id, message: err.message }); }
+      catch (err) { repairFailed++; logger.warn('AMB native reconcile re-activate failed', { id: e.id, message: err.message }); }
     }
     if (strays.length) {
-      await audit(job.batch_id, job.id, 'SCHEDULE_NATIVE_REPAIR', { detail: `أعدنا تفعيل ${strays.length} عنصر وجده Meta متوقفًا قبل الموعد.` });
+      await audit(job.batch_id, job.id, 'SCHEDULE_NATIVE_REPAIR', { detail: `أعدنا تفعيل ${strays.length - repairFailed}/${strays.length} عنصر وجده Meta متوقفًا قبل الموعد.` });
+    }
+    if (job.status === 'ACTIVATION_FAILED' && !repairFailed) { // the partial native activation is now complete: every object is ACTIVE on Meta with the future start_time → the copy is scheduled again
+      await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'SCHEDULED_NATIVE', error: null } });
+      await audit(job.batch_id, job.id, 'JOB_REARMED', { detail: 'التفعيل الجزئي اكتمل: كل عناصر الحملة ACTIVE على Meta مع موعد البداية — رجعت «مُجدوَلة».' });
+      await recomputeBatchStatus(job.batch_id);
     }
 
     // Past the start instant and actually delivering (or fully approved) → done.

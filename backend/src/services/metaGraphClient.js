@@ -50,6 +50,7 @@ function throwGraphOAuthError(data, res, context) {
   err.graphType = e.type ?? null;
   err.graphCode = e.code ?? null;
   err.graphSubcode = e.error_subcode ?? null;
+  err.graphTransient = e.is_transient === true; // Meta says the same request may succeed if simply re-sent
   // App/user throttle — "Application request limit reached (#4)" and friends.
   // Tagged so the asset cache can serve stale data + back off instead of retrying.
   if ([4, 17, 32, 613, 80004].includes(Number(e.code)) || /request limit reached|rate limit|too many calls/i.test(e.message || '')) {
