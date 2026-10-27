@@ -177,7 +177,7 @@ export { rearmThrottleBlockedJobs, rearmStuckActivations, withThrottleRetry, tra
 // usable" — re-uploading would not help, so the re-upload retry must NOT fire.
 const STRUCTURE_ERROR_SUBCODES = new Set([1443051, 1487472, 2446385, 1885183]);
 /** Does this Meta error look like "the referenced image/video/creative asset isn't usable in this account"? (⇒ try a re-upload fallback) */
-function isAssetRefError(e) {
+export function isAssetRefError(e) {
   if (!e) return false;
   if (e.graphSubcode && STRUCTURE_ERROR_SUBCODES.has(Number(e.graphSubcode))) return false;
   const msg = (e.message || '') + ' ' + (e.graphUserMsg || '') + ' ' + (e.graphUserTitle || '');
@@ -1186,7 +1186,23 @@ async function cloneJob(jobId, token) {
               await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `فشل مع asset_feed_spec مختصر (${metaErr(err1)}) — إعادة المحاولة بدونه`, data: { metaError: metaErrData(err1), droppedAssetFeedSpec: payload.asset_feed_spec } });
               const p2 = { ...payload }; delete p2.asset_feed_spec;
               try { res = await createAdCreative(token, dest, p2); payload = p2; }
-              catch (err2) { finalErr = err2; }
+              catch (err2) {
+                // The stub-less retry can ALSO hit «Image Not Found» / «video not usable» because the shared image_hash / video_id does not exist in the destination account (NeckEase / Smart-Bag copy: 7 of 15 creatives
+                // failed here and the re-upload fallback below the first branch never ran). Same remedy as the first branch: re-upload exactly the provisional assets, rebuild, drop the stub, retry once.
+                if (isAssetRefError(err2) && (provisionalV.length || provisionalI.length)) {
+                  await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `المرجع المشترك اترفض بعد حذف asset_feed_spec (${metaErr(err2)}) — إعادة رفع ${provisionalV.length} فيديو / ${provisionalI.length} صورة`, data: { metaError: metaErrData(err2), provisionalVideos: provisionalV, provisionalImages: provisionalI } });
+                  await dropProvisionalAssets();
+                  try {
+                    const p3 = await buildCreativePayload(srcCreative, {
+                      destImageHash: (h, hh, o) => destImageHash(h, hh, { ...o, forceReupload: true }),
+                      destVideoId: (v, hh, o) => destVideoId(v, hh, { ...o, forceReupload: true }),
+                      hints, pageId: destPageId, igId: destIgId, identityMap, allowPageOnlyIg, recreateBoosted, adUrlOverride,
+                    });
+                    if (p3.asset_feed_spec && p3.object_story_spec && isStubAssetFeedSpec(p3.asset_feed_spec)) delete p3.asset_feed_spec;
+                    res = await createAdCreative(token, dest, p3); payload = p3;
+                  } catch (err3) { finalErr = err3; }
+                } else { finalErr = err2; }
+              }
             } else {
               finalErr = err1;
             }

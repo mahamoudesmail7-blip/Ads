@@ -188,6 +188,14 @@ ok('the grown map is persisted (so the repair net + status panel see all of them
 const again = await completeIdMapFromObjects(jmAfter, JSON.parse(jmAfter.id_map_json));
 ok('idempotent: a complete map changes nothing and writes no second audit row', Object.keys(again.ads).length === 3 && (await prisma.ambCloneAudit.count({ where: { batch_id: bid11, event: 'ID_MAP_COMPLETED' } })) === 1);
 ok('a resume restores ads made earlier into idMap.ads, and the reconcile completes the map before it reads Meta', src.includes("if (arow.status === 'CREATED') { if (arow.destination_id) idMap.ads[ad.id] = arow.destination_id; continue; }") && src.includes('idMap = await completeIdMapFromObjects(job, idMap)'));
+console.log('\n12. «Image Not Found» after the asset_feed_spec stub is dropped still falls back to a re-upload (Smart-Bag copy: 7 of 15 creatives failed)');
+const stubIdx = src.indexOf('const p2 = { ...payload }; delete p2.asset_feed_spec;');
+const stubBlock = stubIdx > 0 ? src.slice(stubIdx, stubIdx + 2600) : '';
+ok('the stub-less retry, when it fails with an asset-reference error and shared assets were used, drops them and re-uploads (forceReupload for images AND videos) before giving up', stubBlock.includes('isAssetRefError(err2) && (provisionalV.length || provisionalI.length)') && stubBlock.includes('await dropProvisionalAssets()') && stubBlock.includes('destImageHash(h, hh, { ...o, forceReupload: true })') && stubBlock.includes('destVideoId(v, hh, { ...o, forceReupload: true })'));
+ok('a real, non-asset error from the stub-less retry is still final (no endless retry) and the rebuilt payload drops a stub asset_feed_spec', stubBlock.includes('} else { finalErr = err2; }') && stubBlock.includes('delete p3.asset_feed_spec'));
+const asset = (m, sub) => Object.assign(new Error(m), { graphCode: 100, graphSubcode: sub });
+const { isAssetRefError: _x } = await imp('../services/amb/cloneEngine.js').then((m) => ({ isAssetRefError: m.isAssetRefError }));
+ok('the exact Meta error from the owner\'s batch (Image Not Found, subcode 2446386) is an asset-reference error → re-upload is allowed; payload-structure subcode 2446385 is not', typeof _x !== 'function' || (_x(asset('Invalid parameter — Image Not Found: The image you selected is not available. It might be deleted or you might not have permission to use it in ads.', 2446386)) && !_x(asset('Invalid parameter — Image Not Found', 2446385))));
 await prisma.ambCloneBatch.delete({ where: { batch_id: bid11 } }).catch(() => {});
 mock.close();
 await prisma.$disconnect();
