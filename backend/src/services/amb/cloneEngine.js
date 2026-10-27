@@ -24,7 +24,7 @@ import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
 import {
   getAllAccessibleAdAccounts, listCampaignsForClone, getCampaignNode, getAdSetNodes, getAdNodes,
-  getCreativeNode, getCreativeNodes, getAdImagesByHash, getVideoSourceUrl, getAccountAssetsForClone, getPagePostContent,
+  getCreativeNode, getCreativeNodes, getAdImagesByHash, getVideoSourceUrl, getAdImageUrlStrict, getAccountAssetsForClone, getPagePostContent,
   uploadAdImageFromUrl as _uploadAdImageFromUrl, uploadAdVideoFromUrl as _uploadAdVideoFromUrl, createCampaign as _createCampaign,
   createAdSet as _createAdSet, createAdCreative as _createAdCreative, createAd as _createAd,
   setEntityStatus as _setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
@@ -161,6 +161,15 @@ async function rearmStuckActivations(batchId) {
     await audit(batchId, jb.id, 'JOB_REARMED', { detail: 'التفعيل كان واقف في النص (السيرفر اتعمله restart) — اتعاد للتفعيل.' });
   }
   return stale.length;
+}
+/** The source file of a video, patiently: a throttle / transient Meta error is waited out and retried (never read as «no file»). null only when Meta genuinely has none or stays unavailable after the waits. */
+async function readVideoSource(token, id, waits) {
+  try { return await withThrottleRetry(() => transientRetry(() => getVideoSourceUrl(token, id), 'read:video-source'), 'read:video-source', waits); }
+  catch (e) { logger.warn('AMB clone: video source read failed after retries', { videoId: id, message: e.message }); return null; }
+}
+async function readImageUrl(token, accountId, hash, waits) {
+  try { return await withThrottleRetry(() => transientRetry(() => getAdImageUrlStrict(token, accountId, hash), 'read:image-url'), 'read:image-url', waits); }
+  catch (e) { logger.warn('AMB clone: image url read failed after retries', { hash, message: e.message }); return null; }
 }
 export { rearmThrottleBlockedJobs, rearmStuckActivations, withThrottleRetry, transientRetry };
 
@@ -306,7 +315,7 @@ async function resolveSourceAssets(token, sourceAccountId, tree) {
     }
   }
   const videoSources = {};
-  for (const v of videoIds) videoSources[v] = await getVideoSourceUrl(token, v);
+  for (const v of videoIds) videoSources[v] = await readVideoSource(token, v, [20_000, 60_000]);
   return { imageUrls, videoSources };
 }
 
@@ -1021,7 +1030,8 @@ async function cloneJob(jobId, token) {
     }
     // 3) re-upload
     tr.tried.push('REUPLOAD');
-    const url = R.imageUrls[srcHash];
+    let url = R.imageUrls[srcHash];
+    if (!url) { url = await readImageUrl(token, job.source_ad_account_id, srcHash, [30_000, 90_000, 180_000]); if (url) R.imageUrls[srcHash] = url; }
     if (!url) {
       tr.strategy = 'FAILED';
       await markObj(row.id, { status: 'FAILED', error: 'كل طرق إعادة الاستخدام فشلت ولا يوجد ملف/رابط مصدر لإعادة رفع الصورة.' });
@@ -1061,7 +1071,8 @@ async function cloneJob(jobId, token) {
     }
     // 3) re-upload from a real source file
     tr.tried.push('REUPLOAD');
-    const url = R.videoSources[srcId];
+    let url = R.videoSources[srcId];
+    if (!url) { url = await readVideoSource(token, srcId, [30_000, 90_000, 180_000]); if (url) R.videoSources[srcId] = url; } // the preflight read may have been throttled — read it again, patiently, before giving up
     if (!url) {
       tr.strategy = 'FAILED';
       await markObj(row.id, { status: 'FAILED', error: metaTrace(tr, 'كل طرق إعادة الاستخدام فشلت (نسخة بالوجهة / مرجع مشترك / المكتبة) ولا يوجد ملف مصدر لإعادة الرفع.') });

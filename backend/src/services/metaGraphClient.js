@@ -1215,8 +1215,26 @@ export async function uploadAdVideoFromUrl(token, adAccountId, fileUrl, name) {
 
 /** Best-effort downloadable source URL for a video. Low-noise: Meta returns `source` only for videos the connected user/app owns — a null here is expected, not an error. */
 export async function getVideoSourceUrl(token, videoId) {
-  const v = await graphGetQuiet(`/${videoId}`, { fields: 'source,permalink_url,title' }, token);
-  return v?.source || null;
+  // A THROTTLE / transient Meta error is thrown (tagged), never read as «this video has no source file»: the quiet read used to turn «Application request limit reached (#4)» into null,
+  // and a copy then failed with «no source file to re-upload» although the file was perfectly readable a minute later (clone job 985, NeckEase Test 5).
+  try {
+    const v = await graphFetch(`/${videoId}`, { fields: 'source' }, token);
+    return v?.source || null;
+  } catch (e) {
+    if (e?.isMetaRateLimit || e?.graphTransient === true || [1, 2].includes(Number(e?.graphCode)) || Number(e?.graphStatus) >= 500) throw e;
+    return null; // a real answer (no permission / no such video) → genuinely no source
+  }
+}
+/** Strict single-image URL read (same rule as getVideoSourceUrl: a throttle is thrown, not turned into «no file»). */
+export async function getAdImageUrlStrict(token, adAccountId, hash) {
+  try {
+    const d = await graphFetch(`/${adAccountId}/adimages`, { fields: 'hash,url,permalink_url', hashes: [hash] }, token);
+    const r = (d?.data || []).find((x) => x.hash === hash) || (d?.data || [])[0];
+    return r?.url || r?.permalink_url || null;
+  } catch (e) {
+    if (e?.isMetaRateLimit || e?.graphTransient === true || [1, 2].includes(Number(e?.graphCode)) || Number(e?.graphStatus) >= 500) throw e;
+    return null;
+  }
 }
 
 /** CREATE (destination account only). Caller always passes status:'PAUSED'. */

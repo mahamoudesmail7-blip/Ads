@@ -21,6 +21,8 @@ const mock = http.createServer((req, res) => {
   const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   const ids = (u.searchParams.get('ids') || '').split(',').filter(Boolean);
   if (mode === 'missing') return json(400, { error: { message: 'Unsupported get request. Object does not exist', code: 100, type: 'GraphMethodException' } });
+  if (mode === 'transient') return json(500, { error: { message: 'An unexpected error has occurred. Please retry your request later.', code: 2, type: 'OAuthException', is_transient: true } });
+  if (mode === 'source') return json(200, { id: u.pathname.split('/').pop(), source: 'https://cdn.example/v.mp4', data: [{ hash: 'h1', url: 'https://cdn.example/i.jpg' }] });
   if (mode === 'throttle') return json(400, { error: { message: '(#17) User request limit reached', code: 17, type: 'OAuthException' } });
   if (ids.length) { if (ids.includes('999')) return json(400, { error: { message: 'Unsupported get request. Object with ID 999 does not exist', code: 100, type: 'GraphMethodException' } }); return json(200, Object.fromEntries(ids.map((i) => [i, { id: i, name: 'cr' + i }]))); }
   const one = u.pathname.split('/').pop(); if (one === '999') return json(400, { error: { message: 'Unsupported get request. Object with ID 999 does not exist', code: 100, type: 'GraphMethodException' } });
@@ -162,6 +164,18 @@ ok('the graph client tags is_transient so the classification can use it', fs.rea
 ok('the native-schedule reconcile now also picks up a PARTIALLY failed native activation, re-activates whatever is still PAUSED and re-arms the copy as SCHEDULED_NATIVE only when every repair succeeded', src.includes("error: { contains: PARTIAL_NATIVE_FAIL }") && src.includes('let repairFailed = 0;') && src.includes("if (job.status === 'ACTIVATION_FAILED' && !repairFailed)") && src.includes("data: { status: 'SCHEDULED_NATIVE', error: null }"));
 ok('the old «not found → re-arm» branch does not swallow the partial-failure case (that one must go through the repair)', src.includes("job.status === 'ACTIVATION_FAILED' && !String(job.error || '').includes(PARTIAL_NATIVE_FAIL)"));
 ok('a native activation that fails on any object raises an owner alert at once (deduped per job), not only an audit line', src.includes('clone-native-activate-fail:${jobId}') && /تفعيل جدولة Meta فشل جزئيًا/.test(src));
+console.log('\n10. A throttled / transient SOURCE read is never read as «the video has no source file» (clone job 985 — 5 videos failed for that)');
+const { getVideoSourceUrl, getAdImageUrlStrict } = await imp('../services/metaGraphClient.js');
+mode = 'source'; ok('a healthy read returns the video source URL', (await getVideoSourceUrl('tok', '111')) === 'https://cdn.example/v.mp4');
+mode = 'throttle'; let vt = null; try { await getVideoSourceUrl('tok', '111'); } catch (e) { vt = e; }
+ok('«Application request limit reached» THROWS (rate-limit tagged) instead of returning null', !!vt && isMetaThrottle(vt), vt && vt.message);
+mode = 'transient'; let vtr = null; try { await getVideoSourceUrl('tok', '111'); } catch (e) { vtr = e; }
+ok('Meta\'s transient «unexpected error» THROWS (retryable) instead of returning null', !!vtr && isMetaTransient(vtr), vtr && vtr.message);
+mode = 'missing'; ok('a real answer (the video does not exist / no access) is still null = genuinely no source', (await getVideoSourceUrl('tok', '111')) === null);
+mode = 'source'; ok('image URL read: healthy → URL', (await getAdImageUrlStrict('tok', 'act_1', 'h1')) === 'https://cdn.example/i.jpg');
+mode = 'throttle'; let it = null; try { await getAdImageUrlStrict('tok', 'act_1', 'h1'); } catch (e) { it = e; } ok('image URL read: a throttle throws, never «no file»', !!it && isMetaThrottle(it));
+ok('the re-upload path re-reads the source patiently before giving up (video + image), and the preflight read waits out a throttle', src.includes("url = await readVideoSource(token, srcId, [30_000, 90_000, 180_000])") && src.includes('url = await readImageUrl(token, job.source_ad_account_id, srcHash') && src.includes("readVideoSource(token, v, [20_000, 60_000])"));
+mode = 'ok';
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 300).unref?.();
