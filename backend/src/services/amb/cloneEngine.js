@@ -1286,6 +1286,12 @@ async function cloneJob(jobId, token) {
       status = 'ACTIVATION_FAILED';
       nativeNote = ` — ${PARTIAL_NATIVE_FAIL}: ${activateErrs[0]}`;
       await audit(batchId, jobId, 'ACTIVATION_FAILED', { detail: `جدولة Meta الأصلية: ${activateErrs.join(' | ')}` });
+      await raiseAlert({ // the owner learns about it NOW, not when the start time passes with a paused ad; the reconcile tick repairs it by itself within a minute
+        severity: 'WARNING', category: 'EXECUTION',
+        title: `تفعيل جدولة Meta فشل جزئيًا: ${job.source_campaign_name || job.source_campaign_id}`,
+        message: `${activateErrs.length} عنصر ما اتفعّلش (${activateErrs[0]}). النظام هيعيد تفعيلها تلقائيًا؛ لو فضلت فاشلة هتفضل «فشل التفعيل» ويتجدد التنبيه.`,
+        dedupeKey: `clone-native-activate-fail:${jobId}`,
+      }).catch(() => {});
     } else {
       status = 'SCHEDULED_NATIVE';
       nativeNote = ` — مُجدوَلة عبر Meta: تبدأ المراجعة الآن، والتشغيل ${nativeStartTime} بدون صرف قبله.`;

@@ -161,6 +161,7 @@ ok('the clone engine\'s status write retries transient errors on top of the thro
 ok('the graph client tags is_transient so the classification can use it', fs.readFileSync(join(__dirname, '../services/metaGraphClient.js'), 'utf8').includes('err.graphTransient = e.is_transient === true'));
 ok('the native-schedule reconcile now also picks up a PARTIALLY failed native activation, re-activates whatever is still PAUSED and re-arms the copy as SCHEDULED_NATIVE only when every repair succeeded', src.includes("error: { contains: PARTIAL_NATIVE_FAIL }") && src.includes('let repairFailed = 0;') && src.includes("if (job.status === 'ACTIVATION_FAILED' && !repairFailed)") && src.includes("data: { status: 'SCHEDULED_NATIVE', error: null }"));
 ok('the old «not found → re-arm» branch does not swallow the partial-failure case (that one must go through the repair)', src.includes("job.status === 'ACTIVATION_FAILED' && !String(job.error || '').includes(PARTIAL_NATIVE_FAIL)"));
+ok('a native activation that fails on any object raises an owner alert at once (deduped per job), not only an audit line', src.includes('clone-native-activate-fail:${jobId}') && /تفعيل جدولة Meta فشل جزئيًا/.test(src));
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 300).unref?.();
