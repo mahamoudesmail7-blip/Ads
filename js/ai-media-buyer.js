@@ -145,6 +145,8 @@ function setViewAccount(id) {
 const isViewOnly = () => !!state.account && !!state.viewAccounts && state.account !== state.viewAccounts.primaryId && state.viewAccounts.accounts.some((a) => a.id === state.account);
 /** "&account=…" / "?account=…" for a Home request — empty for the connected account. */
 const acctQS = (sep = '&') => (isViewOnly() ? `${sep}account=${encodeURIComponent(state.account)}` : '');
+/** `{ account }` for a POST that must act on the viewed account (generate / scale) — empty for the connected account. */
+const acctBody = () => (isViewOnly() ? { account: state.account } : {});
 const viewAcctName = () => state.viewAccounts?.accounts.find((a) => a.id === state.account)?.name || state.account;
 
 // ---------------------------------------------------------------------------
@@ -404,7 +406,6 @@ function scaleAboValid(s) {
 /** Why "موافق على الاسكيل" is (or isn't) clickable — drives the button + inline hint. */
 function scaleApproveState(card, s) {
   if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
-  if (isViewOnly()) return { ok: false, reason: `عرض فقط — تنفيذ الاسكيل متاح حاليًا للحساب الأساسي (${state.viewAccounts.accounts.find((a) => a.isPrimary)?.name || ''}) فقط.` };
   if (s.mode === 'SCHEDULE' && !cloneStartInFuture(s.date, s.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
   if (s.budgetMode === 'ABO') {
     const noBudget = s.abo.some((sl) => !(Number(sl.budget) > 0));
@@ -624,7 +625,7 @@ function wireScaleCards(root, data) {
       if (btn.dataset.scwAct === 'toggle' || btn.dataset.scwAct === 'cancel') { s.open = btn.dataset.scwAct === 'toggle' ? !s.open : false; rerender(); return; }
       if (btn.dataset.scwAct === 'reject') {
         if (!(await UI.confirmModal({ title: 'رفض الاسكيل', message: `مش هتظهر توصية اسكيل جديدة لـ «${E(card.displayName)}» تاني إلا لو ظهر أداء جديد مؤهل.`, confirmLabel: 'رفض', danger: true }))) return;
-        try { await api.post('/api/ai-media-buyer/scale/reject', { sourceCampaignId: card.sourceCampaignId, sourceCampaignName: card.sourceCampaignName, productName: card.productName, windowLabel: card.window.label }); UI.toast('تم الرفض'); scaleUi.delete(card.sourceCampaignId); rerender(); }
+        try { await api.post('/api/ai-media-buyer/scale/reject', { sourceCampaignId: card.sourceCampaignId, sourceCampaignName: card.sourceCampaignName, productName: card.productName, windowLabel: card.window.label, ...acctBody() }); UI.toast('تم الرفض'); scaleUi.delete(card.sourceCampaignId); rerender(); }
         catch (e) { UI.toast(e.message, 'error'); }
         return;
       }
@@ -647,15 +648,15 @@ function wireScaleCards(root, data) {
           summary = `CBO — ميزانية الحملة ${fmtEGP(Number(s.cboBudget))}/يوم، ${selectedAdIds.length} إعلان.`;
         }
         const ok = await UI.confirmModal({
-          title: 'تأكيد الاسكيل',
-          message: `هيتم إنشاء حملة <b>${E(card.proposedScaleCampaignName)}</b> (متوقفة) بنسخة مطابقة للمصدر.<br>${E(summary)}<br>${sched ? `التشغيل: ${fmtDMY(s.date)} — ${fmt12h(s.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال النسخ.'}<br>حملة المصدر مش هتتغير. متابعة؟`,
+          title: isViewOnly() ? `تأكيد الاسكيل — حساب ${E(viewAcctName())}` : 'تأكيد الاسكيل',
+          message: `${isViewOnly() ? `<b>الحساب: ${E(viewAcctName())}</b><br>` : ''}هيتم إنشاء حملة <b>${E(card.proposedScaleCampaignName)}</b> (متوقفة) بنسخة مطابقة للمصدر.<br>${E(summary)}<br>${sched ? `التشغيل: ${fmtDMY(s.date)} — ${fmt12h(s.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال النسخ.'}<br>حملة المصدر مش هتتغير. متابعة؟`,
           confirmLabel: sched ? 'موافق وجدولة' : 'موافق وتشغيل', danger: true,
         });
         if (!ok) return;
         // The backend BLOCKS until the clone tree is fully built (or fails).
         btn.disabled = true; btn.textContent = 'جاري إنشاء حملة الاسكيل...';
         try {
-          const r = await api.post('/api/ai-media-buyer/scale/execute', body);
+          const r = await api.post('/api/ai-media-buyer/scale/execute', { ...body, ...acctBody() });
           UI.toast(`✅ تم إنشاء حملة الاسكيل بنجاح — ${E(r.scaleCampaignName)} · ${E(r.budgetMode || '')} · ${fmtNum(r.adSetsCreated)} مجموعة · ${fmtNum(r.adsCreated)} إعلان (متوقفة)`);
           scaleUi.delete(card.sourceCampaignId);
           route();
@@ -723,7 +724,7 @@ function renderRecBatchNote(active, w) {
   $('ambRegenForWin').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = '… بيحلل الفترة';
     try {
-      const r = await api.post('/api/ai-media-buyer/recommendations/generate', { window: state.window });
+      const r = await api.post('/api/ai-media-buyer/recommendations/generate', { window: state.window, ...acctBody() });
       UI.toast(`✅ ${r.count} توصية على «${w.label}»`);
       route();
     } catch (err) { UI.toast(err.message, 'error'); e.target.disabled = false; e.target.textContent = `توليد على «${w.label}»`; }
@@ -735,7 +736,7 @@ function homeHeader(ov, meta) {
   const last = ov.syncStatus?.lastRun;
   const syncOk = last?.status === 'SUCCESS';
   const acctName = isViewOnly() ? viewAcctName() : (meta?.selectedAdAccount?.name || ov.syncStatus?.selectedAdAccount?.name || 'الحساب المتصل');
-  const viewBanner = isViewOnly() ? `<div class="amb-batchnote" style="margin:0 0 12px;"><span>👁️ بتعرض حساب «${E(acctName)}» — عرض فقط. الموافقة على التوصيات وتنفيذ (إيقاف / ميزانية / اسكيل) متاحين حاليًا للحساب الأساسي فقط.</span></div>` : '';
+  const viewBanner = isViewOnly() ? `<div class="amb-batchnote" style="margin:0 0 12px;"><span>👁️ بتعرض حساب «${E(acctName)}» — أي موافقة أو اسكيل من هنا بيتنفّذ على حساب «${E(acctName)}» نفسه (مش الحساب الأساسي).</span></div>` : '';
   return `
     <div class="amb-head">
       <div>
@@ -863,7 +864,13 @@ function renderRecList(active) {
   const list = filteredRecs(active);
   const el = $('ambRecList');
   if (!el) return;
-  el.innerHTML = list.length ? list.map(recCardV2).join('') : `<div class="amb-panel amb-empty">${isViewOnly() ? 'التوصيات التلقائية بتتولّد للحساب الأساسي فقط حاليًا — الأرقام والاسكيل تحت متاحين لهذا الحساب.' : 'مفيش توصيات في التصنيف ده دلوقتي.'}</div>`;
+  el.innerHTML = list.length ? list.map(recCardV2).join('') : `<div class="amb-panel amb-empty">${isViewOnly() && !active.length ? `مفيش توصيات لحساب «${E(viewAcctName())}» لسه.<br><button class="amb-btn primary sm" id="ambGenView" style="margin-top:10px;">توليد توصيات لـ «${E(viewAcctName())}»</button>` : 'مفيش توصيات في التصنيف ده دلوقتي.'}</div>`;
+  const gv = $('ambGenView');
+  if (gv) gv.onclick = async () => {
+    gv.disabled = true; gv.textContent = '… بيحلل الحساب';
+    try { const r = await api.post('/api/ai-media-buyer/recommendations/generate', { window: state.window, ...acctBody() }); UI.toast(`✅ ${r.count} توصية لـ «${viewAcctName()}»`); route(); }
+    catch (err) { UI.toast(err.message, 'error'); gv.disabled = false; gv.textContent = `توليد توصيات لـ «${viewAcctName()}»`; }
+  };
   el.querySelectorAll('[data-rec]').forEach((b) => {
     const id = Number(b.dataset.rec);
     const act = b.dataset.act;
@@ -938,7 +945,7 @@ function recCardV2(r) {
   const t = r.targetMetrics || {};
   const chip = CHIP[r.category] || CHIP.MONITOR;
   const conf = CONF_AR[r.confidence] || CONF_AR.LOW;
-  const canExec = r.executable && r.status === 'PENDING' && !isViewOnly();
+  const canExec = r.executable && r.status === 'PENDING';
   const paused = r.currentStatus && r.currentStatus !== 'ACTIVE';
 
   let primary = '';
@@ -974,7 +981,7 @@ function recCardV2(r) {
         ${r.currentStatus ? `<span class="amb-metabadge ${paused ? 'paused' : ''}">${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
         <div class="amb-r-actions">
           ${primary}
-          ${r.status === 'PENDING' && !isViewOnly() ? `<button class="amb-btn ghost" data-rec="${r.id}" data-act="reject">رفض</button>` : ''}
+          ${r.status === 'PENDING' ? `<button class="amb-btn ghost" data-rec="${r.id}" data-act="reject">رفض</button>` : ''}
           <button class="amb-btn ghost" data-rec="${r.id}" data-act="details">التفاصيل</button>
         </div>
       </div>
@@ -1080,7 +1087,7 @@ function donutSvg(counts, total) {
 async function approveRec(id, btn) {
   const ok = await UI.confirmModal({
     title: 'موافقة وتنفيذ على Meta',
-    message: 'هيتبعت أمر حقيقي لحساب Meta Ads بعد إعادة تحقّق من الأرقام الحالية. متابعة؟',
+    message: `هيتبعت أمر حقيقي لحساب Meta Ads${isViewOnly() ? ` «${E(viewAcctName())}»` : ''} بعد إعادة تحقّق من الأرقام الحالية. متابعة؟`,
     confirmLabel: 'نفّذ الآن', danger: true,
   });
   if (!ok) return;

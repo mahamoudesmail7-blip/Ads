@@ -152,12 +152,12 @@ function isNoOpGivenLiveState(cand, metaStatus) {
  * and window. Persists one batch of AmbRecommendation rows (supersedes the
  * previous still-PENDING batch for the same account). Returns the batch.
  */
-export async function generateRecommendations({ windowName = null, triggeredById = null } = {}) {
+export async function generateRecommendations({ windowName = null, triggeredById = null, adAccountId: viewAccountId = null } = {}) {
   const connection = await getConnection();
   if (!connection || connection.status !== 'CONNECTED' || !connection.selected_ad_account_id) {
     return { ok: false, error: 'NOT_CONNECTED' };
   }
-  const adAccountId = connection.selected_ad_account_id;
+  const adAccountId = viewAccountId || connection.selected_ad_account_id; // viewAccountId = another switchable account (validated by the route); its batch / supersede / alerts stay scoped to it
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName || (settings.ambAnalysisLookbackDays >= 7 ? 'last7' : 'last3'));
 
@@ -356,8 +356,7 @@ const RESOLVED_STATUSES = new Set(['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'
 export async function getCurrentRecommendations({ reconcile = true, adAccountId: viewAccountId = null } = {}) {
   const connection = await getConnection();
   if (!connection?.selected_ad_account_id) return { ok: false, error: 'NOT_CONNECTED' };
-  const adAccountId = viewAccountId || connection.selected_ad_account_id; // viewAccountId = a read-only VIEW account (validated by the route)
-  if (viewAccountId && viewAccountId !== connection.selected_ad_account_id) reconcile = false; // never touch Meta / supersede rows of an account the engine does not run for
+  const adAccountId = viewAccountId || connection.selected_ad_account_id; // viewAccountId = another switchable account (validated by the route)
 
   if (reconcile) {
     await reconcilePendingRecommendations({ adAccountId }).catch((err) => logger.warn('AMB reconcile in getCurrentRecommendations failed', { message: err.message }));

@@ -41,7 +41,7 @@ async function requireAdAccount() {
 /** Optional ?account= of a Home request → a validated read-only VIEW account id, or null for the connected account. */
 async function viewAccountFrom(req) {
   const { resolveViewAccountId } = await import('../services/amb/viewAccounts.js');
-  return resolveViewAccountId(req.query.account);
+  return resolveViewAccountId(req.query.account ?? req.body?.account);
 }
 function windowFrom(req) {
   return resolveWindow(String(req.query.window || 'today'));
@@ -408,7 +408,7 @@ router.get('/scale/winners', asyncRoute(async (req, res) => {
 router.post('/scale/reject', asyncRoute(async (req, res) => {
   const { rejectScaleWinner } = await import('../services/amb/scaleWinners.js');
   const { sourceCampaignId, sourceCampaignName, productName, windowLabel } = req.body || {};
-  res.json(await rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId: req.user.id }));
+  res.json(await rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId: req.user.id, adAccountId: await viewAccountFrom(req) }));
 }));
 
 // Executes a real (PAUSED) clone via the existing engine — ADMIN only, and
@@ -418,7 +418,7 @@ router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) 
   const { sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets, budgetEgp, startMode, startAt, window } = req.body || {};
   res.status(201).json(await executeScale({
     sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets, budgetEgp,
-    startMode, startAt, windowName: window || 'today', userId: req.user.id,
+    startMode, startAt, windowName: window || 'today', userId: req.user.id, adAccountId: await viewAccountFrom(req),
   }));
 }));
 
@@ -434,14 +434,15 @@ router.get('/recommendations', asyncRoute(async (req, res) => {
 // automatically after every sync). Resolves the ones already satisfied
 // out-of-band (e.g. an owner paused the campaign in Ads Manager).
 router.post('/recommendations/reconcile', asyncRoute(async (req, res) => {
-  const adAccountId = await requireAdAccount();
+  const connectedId = await requireAdAccount();
+  const adAccountId = (await viewAccountFrom(req)) || connectedId;
   const { reconcilePendingRecommendations } = await import('../services/amb/reconcile.js');
   res.json(await reconcilePendingRecommendations({ adAccountId }));
 }));
 
 router.post('/recommendations/generate', asyncRoute(async (req, res) => {
   await requireAdAccount();
-  const result = await generateRecommendations({ windowName: req.body?.window || null, triggeredById: req.user.id });
+  const result = await generateRecommendations({ windowName: req.body?.window || null, triggeredById: req.user.id, adAccountId: await viewAccountFrom(req) });
   if (!result.ok) return res.status(400).json({ error: 'GENERATE_FAILED', message: result.error === 'NOT_CONNECTED' ? 'مفيش اتصال Meta Ads.' : result.error });
   res.json(result);
 }));

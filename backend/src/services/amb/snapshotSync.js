@@ -421,6 +421,8 @@ export async function runViewAccountSync(adAccountId, { force = false, now = new
     const built = await buildCycleRows({ insightsByLevel, meta, adAccountId });
     if (built.rows.length) await prisma.metaPerformanceSnapshot.createMany({ data: built.rows.map((r) => ({ ...r, sync_run_id: syncRun.id })) });
     await prisma.ambSyncRun.update({ where: { id: syncRun.id }, data: { status: 'SUCCESS', finished_at: new Date(), snapshot_rows: built.rows.length, account_currency: currency } });
+    // keep this account's PENDING recommendations honest against what was just synced (same post-sync step the connected account gets; Meta reads + status updates only)
+    try { const { reconcilePendingRecommendations } = await import('./reconcile.js'); await reconcilePendingRecommendations({ adAccountId }); } catch (err) { logger.warn('AMB view-account reconcile (non-fatal) failed', { message: err.message }); }
     logger.info('AMB view-account sync OK', { adAccountId, snapshotRows: built.rows.length });
     return { ok: true, snapshotRows: built.rows.length };
   } catch (err) {

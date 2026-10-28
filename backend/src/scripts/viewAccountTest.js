@@ -71,6 +71,23 @@ try {
   const recs = await RE.getCurrentRecommendations({ adAccountId: HADY });
   ok('recommendations of a view account: ok, empty (none are generated for it), no Meta reconcile attempted', recs.ok === true && Array.isArray(recs.active) && recs.active.length === 0, JSON.stringify(recs).slice(0, 200));
 
+  console.log('\n4b. Recommendations + scale decisions of a switchable account stay scoped to THAT account');
+  const primaryRec = await prisma.ambRecommendation.create({ data: { batch_id: 'vt_batch_primary', ad_account_id: PRIMARY, level: 'campaign', entity_id: 'vt_primary_ent', entity_name: 'vt primary', decision: 'MONITOR', action_type: 'MONITOR', status: 'PENDING', executable: false, confidence: 'LOW', risk_level: 'LOW', data_sufficiency: 'LOW', priority: 'P3' } });
+  const gen = await RE.generateRecommendations({ windowName: 'today', adAccountId: HADY });
+  ok('generating for Hady works', gen.ok === true, JSON.stringify(gen).slice(0, 200));
+  const hadyRows = gen.ok ? await prisma.ambRecommendation.findMany({ where: { batch_id: gen.batchId } }) : [];
+  ok('every generated row belongs to Hady', hadyRows.every((r) => r.ad_account_id === HADY), JSON.stringify(hadyRows.map((r) => r.ad_account_id)));
+  ok("the connected account's PENDING recommendation is untouched (not superseded by Hady's batch)", (await prisma.ambRecommendation.findUnique({ where: { id: primaryRec.id } })).status === 'PENDING');
+  const hadyList = await RE.getCurrentRecommendations({ adAccountId: HADY });
+  ok("Hady's recommendation list returns its own batch", hadyList.ok === true && (!hadyRows.length || hadyList.batchId === gen.batchId), JSON.stringify({ b: hadyList.batchId, g: gen.batchId }));
+  await SW.rejectScaleWinner({ sourceCampaignId: 'vt_hady_1', sourceCampaignName: 'vt vt_hady_1', productName: null, windowLabel: 'اليوم', userId: null, adAccountId: HADY });
+  const dec = await prisma.ambScaleDecision.findFirst({ where: { source_campaign_id: 'vt_hady_1' } });
+  ok('a scale rejection made while viewing Hady is stored on Hady (not on the connected account)', dec?.ad_account_id === HADY && dec.status === 'REJECTED', JSON.stringify(dec));
+  const sw2 = await SW.listScaleWinners({ windowName: 'today', adAccountId: HADY });
+  ok('and that card no longer shows for Hady', !sw2.cards.some((c) => c.sourceCampaignId === 'vt_hady_1'));
+  await prisma.ambRecommendation.deleteMany({ where: { OR: [{ batch_id: 'vt_batch_primary' }, ...(gen.ok ? [{ batch_id: gen.batchId }] : [])] } });
+  await prisma.ambScaleDecision.deleteMany({ where: { source_campaign_id: 'vt_hady_1' } });
+
   console.log('\n5. The switcher list');
   const orig = V.listViewAccounts; // Graph is unreachable in the test db → names fall back, the list must still be built
   const list = await V.listViewAccounts();

@@ -241,13 +241,13 @@ function firstErr(job, failed, fallback) {
 }
 
 /** Mark a winner campaign's scale suggestion as REJECTED so it is not re-surfaced. */
-export async function rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId }) {
+export async function rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId, adAccountId: viewAccountId = null }) {
   const conn = await getConnection();
   if (!conn?.selected_ad_account_id) { const e = new Error('اربط حساب Meta Ads الأول.'); e.status = 400; throw e; }
   if (!sourceCampaignId) { const e = new Error('sourceCampaignId مطلوب.'); e.status = 400; throw e; }
   const row = await prisma.ambScaleDecision.create({
     data: {
-      ad_account_id: conn.selected_ad_account_id,
+      ad_account_id: viewAccountId || conn.selected_ad_account_id,
       source_campaign_id: String(sourceCampaignId),
       source_campaign_name: sourceCampaignName || null,
       product_name: productName || null,
@@ -276,10 +276,11 @@ export async function executeScale({
   sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets,
   budgetEgp, // legacy alias for campaignBudgetEgp
   startMode, startAt, windowName = 'today', userId,
+  adAccountId: viewAccountId = null, // another switchable account (validated by the route): the scale is built inside THAT account
 }) {
   const conn = await getConnection();
   if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) throw bad('اربط حساب Meta Ads الأول.');
-  const adAccountId = conn.selected_ad_account_id;
+  const adAccountId = viewAccountId || conn.selected_ad_account_id;
   const settings = await getAmbSettings();
 
   if (!sourceCampaignId) throw bad('sourceCampaignId مطلوب.');
