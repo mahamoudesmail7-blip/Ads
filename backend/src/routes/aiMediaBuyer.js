@@ -24,9 +24,11 @@ import { runOutcomeEvaluation } from '../services/amb/outcomeEval.js';
 import { listAlerts, markAlertsRead, markAllAlertsRead } from '../services/amb/alerts.js';
 import * as products from '../services/amb/ambProducts.js';
 import * as mapping from '../services/amb/mapping.js';
+import { ambAccountScope, currentScopedAccount } from '../services/amb/accountScopeMiddleware.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
+router.use(ambAccountScope); // a chosen switchable account (X-Amb-Account / ?account=) scopes the account-bound routes of THIS request only
 
 /** Resolves the selected ad account id, or throws a clean 400. */
 async function requireAdAccount() {
@@ -40,8 +42,7 @@ async function requireAdAccount() {
 }
 /** Optional ?account= of a Home request → a validated read-only VIEW account id, or null for the connected account. */
 async function viewAccountFrom(req) {
-  const { resolveViewAccountId } = await import('../services/amb/viewAccounts.js');
-  return resolveViewAccountId(req.query.account ?? req.body?.account);
+  return currentScopedAccount(); // set by ambAccountScope for the account-bound routes (null = the connected account)
 }
 function windowFrom(req) {
   return resolveWindow(String(req.query.window || 'today'));
@@ -69,7 +70,10 @@ router.post('/view-accounts/:id/sync', asyncRoute(async (req, res) => {
   res.json(await (await import('../services/amb/snapshotSync.js')).runViewAccountSync(viewId, { force: req.query.force === '1' }));
 }));
 
-router.get('/sync/status', asyncRoute(async (req, res) => res.json(await getSyncStatus())));
+router.get('/sync/status', asyncRoute(async (req, res) => {
+  const viewId = currentScopedAccount();
+  res.json(viewId ? await (await import('../services/amb/snapshotSync.js')).getAccountSyncInfo(viewId) : await getSyncStatus());
+}));
 
 // Internal diagnostics only (Phase 22 of the stabilization pass) — never a
 // customer-facing dashboard. Real counters for the exact class of incident
@@ -81,6 +85,8 @@ router.get('/diagnostics/easy-orders', requireRole('ADMIN'), asyncRoute(async (r
 }));
 
 router.post('/sync/run', asyncRoute(async (req, res) => {
+  const viewId = currentScopedAccount();
+  if (viewId) return res.json(await (await import('../services/amb/snapshotSync.js')).runViewAccountSync(viewId, { force: true })); // a chosen account: the read-only sync, never the full cycle of the connected one
   const result = await runSnapshotSync({ trigger: 'MANUAL' });
   res.json(result);
 }));

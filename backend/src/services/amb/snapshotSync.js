@@ -17,7 +17,7 @@
 // Everything is deterministic. No Claude call anywhere in this file.
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
-import { getConnection, getDecryptedToken } from '../metaAuth.js';
+import { getConnection, getConnectionUnscoped, getDecryptedToken, accountScope } from '../metaAuth.js';
 import { getAdAccountInfo, getInsightsByLevel, getEntitiesMeta } from '../metaGraphClient.js';
 import { extractResults, runSync } from '../metaSync.js';
 import { getAmbSettings } from './settings.js';
@@ -391,8 +391,8 @@ export async function getAccountSyncInfo(adAccountId) {
  * Read-only sync of ONE view account. `force` skips the staleness gate. Never writes to Meta. The first sync of an account pulls 7 days so "آخر 7 أيام" works at once.
  * @returns {{ok:true, skipped?:string, snapshotRows?:number}|{ok:false, error:string}}
  */
-export async function runViewAccountSync(adAccountId, { force = false, now = new Date() } = {}) {
-  const connection = await getConnection();
+export async function runViewAccountSync(adAccountId, { force = false, now = new Date(), extras = false } = {}) {
+  const connection = await getConnectionUnscoped();
   if (!connection || connection.status !== 'CONNECTED') return { ok: false, error: 'NOT_CONNECTED' };
   if (adAccountId === connection.selected_ad_account_id) return { ok: true, skipped: 'PRIMARY_ACCOUNT' }; // the connected account has its own full cycle
   if (!(await getViewAccountIds()).includes(adAccountId)) return { ok: false, error: 'NOT_A_VIEW_ACCOUNT' };
@@ -423,6 +423,7 @@ export async function runViewAccountSync(adAccountId, { force = false, now = new
     await prisma.ambSyncRun.update({ where: { id: syncRun.id }, data: { status: 'SUCCESS', finished_at: new Date(), snapshot_rows: built.rows.length, account_currency: currency } });
     // keep this account's PENDING recommendations honest against what was just synced (same post-sync step the connected account gets; Meta reads + status updates only)
     try { const { reconcilePendingRecommendations } = await import('./reconcile.js'); await reconcilePendingRecommendations({ adAccountId }); } catch (err) { logger.warn('AMB view-account reconcile (non-fatal) failed', { message: err.message }); }
+    if (extras) await runViewAccountExtras(adAccountId, token);
     logger.info('AMB view-account sync OK', { adAccountId, snapshotRows: built.rows.length });
     return { ok: true, snapshotRows: built.rows.length };
   } catch (err) {
@@ -434,19 +435,39 @@ export async function runViewAccountSync(adAccountId, { force = false, now = new
   }
 }
 
+/**
+ * Background-only extras for a view account (never on the interactive sync, which must stay fast): the same cache-first, bounded, non-fatal discovery the connected account gets —
+ * creative analysis (hooks / angles), media-library discovery (creative → landing URL), and STRONG campaign→product suggestions from that evidence (SUGGESTED rows only, never MAPPED).
+ */
+async function runViewAccountExtras(adAccountId, token) {
+  const settings = await getAmbSettings();
+  await accountScope.run({ adAccountId }, async () => { // services that read "the ad account" from the connection resolve to THIS account here
+    try { const { analyzeAccountCreatives } = await import('./creativeAnalysis.js'); await analyzeAccountCreatives({ maxNew: 8 }); } catch (err) { logger.warn('AMB view-account creative analysis (non-fatal) failed', { message: err.message }); }
+    if (settings.ambMediaLibraryAutoDiscover !== false) {
+      try { const { syncMediaLibraryForAccount } = await import('./mediaLibrary.js'); await syncMediaLibraryForAccount({ adAccountId, token, sinceDays: Number(settings.ambMediaLibraryScanDays) || 30, maxNew: 20 }); } catch (err) { logger.warn('AMB view-account media-library discovery (non-fatal) failed', { message: err.message }); }
+    }
+    try {
+      const rows = await prisma.$queryRawUnsafe("select distinct on (campaign_id) campaign_id as id, campaign_name as name from meta_performance_snapshots where level = 'campaign' and ad_account_id = $1 and snapshot_at > now() - interval '3 days' order by campaign_id, snapshot_at desc", adAccountId);
+      const { persistStrongSuggestions } = await import('./operatorMappingResolver.js');
+      const r = await persistStrongSuggestions({ adAccountId, campaigns: rows });
+      if (r.created || r.updated) logger.info('AMB view-account mapping suggestions', { adAccountId, ...r });
+    } catch (err) { logger.warn('AMB view-account mapping suggestions (non-fatal) failed', { message: err.message }); }
+  });
+}
+
 let viewTimer = null;
 /** Keeps the view accounts' snapshots warm in the background (same interval as the main sync); sequential, never throws. */
 export function startAmbViewSyncScheduler() {
   if (viewTimer) return;
   viewTimer = setInterval(async () => {
     try {
-      const connection = await getConnection();
+      const connection = await getConnectionUnscoped();
       if (!connection || connection.status !== 'CONNECTED') return;
       for (const id of await getViewAccountIds()) {
         if (id === connection.selected_ad_account_id) continue;
         const info = await getAccountSyncInfo(id);
         if (info.nextSyncAt && new Date(info.nextSyncAt).getTime() > Date.now()) continue;
-        await runViewAccountSync(id, { force: true });
+        await runViewAccountSync(id, { force: true, extras: true });
       }
     } catch (err) {
       logger.error('AMB view-account scheduler tick failed', { message: err.message });

@@ -3,7 +3,7 @@
 //
 // It is a VIEW only: the connected account (metaConnection.selected_ad_account_id) is untouched, so the executor, the AI Operator, every automation and every
 // Meta write keep running on exactly the account they ran on before. A view account is read through a read-only sync (snapshotSync.runViewAccountSync).
-import { getConnection, getDecryptedToken } from '../metaAuth.js';
+import { getConnectionUnscoped as getConnection, getDecryptedToken } from '../metaAuth.js'; // always the stored (connected) account, never a request scope
 import { getAdAccountInfo } from '../metaGraphClient.js';
 import { getViewAccountIds, getAccountSyncInfo } from './snapshotSync.js';
 

@@ -15,6 +15,8 @@ const OV = await imp('../services/amb/overview.js');
 const SW = await imp('../services/amb/scaleWinners.js');
 const RE = await imp('../services/amb/recommendationEngine.js');
 const settingsMod = await imp('../services/amb/settings.js');
+const MA = await imp('../services/metaAuth.js');
+const SC = await imp('../services/amb/accountScopeMiddleware.js');
 
 const PRIMARY = 'act_1518142859790043', HADY = 'act_877011384919552', YASSER = 'act_1370863561334304', STRANGER = 'act_999000111222333';
 let conn = null, prevAcc = null; const runIds = [];
@@ -87,6 +89,27 @@ try {
   ok('and that card no longer shows for Hady', !sw2.cards.some((c) => c.sourceCampaignId === 'vt_hady_1'));
   await prisma.ambRecommendation.deleteMany({ where: { OR: [{ batch_id: 'vt_batch_primary' }, ...(gen.ok ? [{ batch_id: gen.batchId }] : [])] } });
   await prisma.ambScaleDecision.deleteMany({ where: { source_campaign_id: 'vt_hady_1' } });
+
+  console.log('\n4c. Per-request account scope (AsyncLocalStorage) — the connected account is never changed');
+  ok('outside a scope getConnection() is the connected account', (await MA.getConnection()).selected_ad_account_id === PRIMARY);
+  await MA.accountScope.run({ adAccountId: HADY }, async () => {
+    const c = await MA.getConnection();
+    ok('inside a scope getConnection() answers with the chosen account (and says it is a view)', c.selected_ad_account_id === HADY && c.scopedView === true && c.primaryAdAccountId === PRIMARY, JSON.stringify([c.selected_ad_account_id, c.scopedView]));
+    ok('getConnectionUnscoped() inside a scope is still the connected account', (await MA.getConnectionUnscoped()).selected_ad_account_id === PRIMARY);
+    const r = await S.runViewAccountSync(HADY, { force: true }).catch((e) => ({ threw: e.message }));
+    ok('the read-only sync of the chosen account is NOT mistaken for the connected account while inside its scope', r.skipped !== 'PRIMARY_ACCOUNT', JSON.stringify(r));
+  });
+  ok('after the scope ends the connection is the connected account again', (await MA.getConnection()).selected_ad_account_id === PRIMARY && (await prisma.metaConnection.findFirst()).selected_ad_account_id === PRIMARY);
+  const routes = [['GET', '/overview', true], ['GET', '/hierarchy', true], ['POST', '/recommendations/generate', true], ['POST', '/recommendations/12/approve', true], ['POST', '/scale/execute', true], ['GET', '/mapping', true], ['POST', '/sync/run', true], ['GET', '/products', true], ['POST', '/products', false], ['GET', '/decision-center/x', false], ['POST', '/budget-bumps/x', false], ['GET', '/view-accounts', false], ['POST', '/view-accounts/act_1/sync', false], ['GET', '/product-decision', false], ['GET', '/autopilot-readiness', false]];
+  ok('only the account-bound routes follow the chosen account', routes.every(([m, pth, want]) => SC.isScopedRoute(m, pth) === want), JSON.stringify(routes.filter(([m, pth, want]) => SC.isScopedRoute(m, pth) !== want)));
+  const runMw = async (hdr, pth, method = 'GET', q = {}, body = {}) => { let seen = null, err = null; const req = { method, path: pth, query: q, body, get: (h) => (h.toLowerCase() === 'x-amb-account' ? hdr : undefined) }; await SC.ambAccountScope(req, {}, async (e) => { err = e || null; seen = (await MA.getConnection()).selected_ad_account_id; }); await new Promise((r) => setTimeout(r, 50)); return { seen, err }; };
+  const m1 = await runMw(HADY, '/overview'); ok('middleware: header + scoped route → the request sees Hady', m1.seen === HADY, JSON.stringify(m1));
+  const m2 = await runMw(HADY, '/decision-center/summary'); ok('middleware: header on a product-level route (Decision Center) is ignored → connected account', m2.seen === PRIMARY, JSON.stringify(m2));
+  const m3 = await runMw(undefined, '/overview'); ok('middleware: no header → connected account', m3.seen === PRIMARY);
+  const m4 = await runMw(STRANGER, '/overview'); ok('middleware: an account outside the list is refused (400), never a silent fallback', m4.err && m4.err.status === 400, JSON.stringify(m4.err?.status));
+  const m5 = await runMw(undefined, '/recommendations/generate', 'POST', {}, { account: YASSER }); ok('middleware: account in the POST body works too', m5.seen === YASSER);
+  { let seen = null; const req = { method: 'POST', path: '/bump-prepare', query: {}, body: {}, get: (h) => (h.toLowerCase() === 'x-amb-account' ? HADY : undefined) }; await SC.ambAccountScopeAll(req, {}, async () => { seen = (await MA.getConnection()).selected_ad_account_id; }); await new Promise((r) => setTimeout(r, 50)); ok('Scale Center (every route account-bound): the chosen account applies to the budget-bump routes too', seen === HADY, String(seen)); }
+  const m6 = await runMw(PRIMARY, '/overview'); ok('middleware: the connected account as header = no scope at all', m6.seen === PRIMARY);
 
   console.log('\n5. The switcher list');
   const orig = V.listViewAccounts; // Graph is unreachable in the test db → names fall back, the list must still be built

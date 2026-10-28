@@ -967,3 +967,7 @@ body { background: var(--amb-bg); }
 .ap-plan { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 8px 0; border-top: 1px dashed var(--amb-border); font-size: 13px; } .ap-btns { white-space: nowrap; display: flex; gap: 6px; }
 .brief-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 8px 0; } @media (max-width: 900px) { .brief-grid { grid-template-columns: 1fr; } }
 .brief-card { background: var(--amb-surface-2); border-radius: var(--amb-radius-sm); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; } .brief-k { font-size: 12px; color: var(--amb-text-dim); font-weight: 700; } .brief-v { font-size: 18px; } .brief-v ul { font-size: 12px; } .brief-card small { font-size: 10.5px; color: var(--amb-text-faint); line-height: 1.5; }
+.amb-nav-acct { padding: 8px 14px 4px; display: flex; flex-direction: column; gap: 4px; }
+.amb-nav-acct label { font-size: 11px; color: var(--amb-text-faint); font-weight: 700; }
+.amb-nav-acct .amb-select { width: 100%; border-radius: 10px; padding: 7px 10px; }
+.amb-nav.collapsed .amb-nav-acct { display: none; }

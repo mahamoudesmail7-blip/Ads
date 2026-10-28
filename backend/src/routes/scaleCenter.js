@@ -10,8 +10,10 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { listScaleCenterProducts, getScaleCenterProduct, getScaleCenterTotals, getScaleCenterProductAudience, previewBumpForAdSet, prepareBumpForAdSet } from '../services/amb/scaleCenter.js';
 
+import { ambAccountScopeAll } from '../services/amb/accountScopeMiddleware.js';
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
+router.use(ambAccountScopeAll); // budget bumps / scale of the account the owner chose (X-Amb-Account) — this request only, the connected account is untouched
 
 router.get('/products', asyncRoute(async (req, res) => {
   const { storeId, window, from, to, limit, offset } = req.query;

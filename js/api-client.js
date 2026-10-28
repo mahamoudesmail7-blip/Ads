@@ -9,11 +9,18 @@
 // login), so `credentials: 'include'` is what attaches it — there is no
 // token in JS memory or localStorage to leak.
 
+// AI Media Buyer: the ad account the screen is switched to (window.__ambAccount, set only by that page). The backend applies it to the account-bound routes of THAT request only.
+function withAccountHeader(path, headers) {
+  const acct = typeof window !== 'undefined' ? window.__ambAccount : '';
+  if (!acct || !(String(path).startsWith('/api/ai-media-buyer/') || String(path).startsWith('/api/scale-center/'))) return headers;
+  return { ...(headers || {}), 'X-Amb-Account': acct };
+}
+
 async function request(method, path, body, opts) {
   const res = await fetch(path, {
     method,
     credentials: 'include',
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers: withAccountHeader(path, body !== undefined ? { 'Content-Type': 'application/json' } : undefined),
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: opts?.signal, // optional: lets a screen cancel a superseded request (AbortController)
   });

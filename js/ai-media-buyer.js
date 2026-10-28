@@ -137,8 +137,18 @@ const state = {
 // ---- Home account switcher (VIEW only) ----
 const ACCT_KEY = 'ambHomeAccount';
 try { state.account = localStorage.getItem(ACCT_KEY) || null; } catch { /* storage blocked: the connected account is used */ }
+window.__ambAccount = ''; // only set once the choice is validated against the account list (init / renderHome) — never send a stale account
+async function loadViewAccounts() {
+  state.viewAccounts = await api.get('/api/ai-media-buyer/view-accounts').catch(() => state.viewAccounts);
+  if (state.account && !isViewOnly()) setViewAccount(null); // stale choice (removed / became the connected one)
+  window.__ambAccount = isViewOnly() ? state.account : '';
+}
+/** Tabs whose engines keep product-level state across accounts: they stay on the connected account (the screen says so). */
+const NOT_SCOPED_TABS = new Set(['decisions', 'operator', 'tasks']);
 function setViewAccount(id) {
   state.account = id && id !== state.viewAccounts?.primaryId ? id : null;
+  window.__ambAccount = state.account || ''; // api-client sends it as X-Amb-Account on every AI Media Buyer request
+  try { cloneState.sourceId = null; launchState.adAccountId = null; launchState.adAccountName = null; launchState.adAccountTimezoneName = null; } catch { /* wizards not initialised yet */ } // Clone / Launch default to the chosen account
   try { state.account ? localStorage.setItem(ACCT_KEY, state.account) : localStorage.removeItem(ACCT_KEY); } catch { /* ignore */ }
 }
 /** true while Home shows an account other than the connected one — read-only, no approve / execute. */
@@ -160,6 +170,7 @@ async function init() {
 
   $('ambDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'ambDrawerOverlay') closeDrawer(); });
   window.addEventListener('hashchange', route);
+  await loadViewAccounts();
   renderNav();
   UI.mountAmbMobileNav('AI Media Buyer');
   mountAmbBottomNav();
@@ -205,6 +216,7 @@ function renderNav() {
       <div class="amb-nav-brand-text"><div class="t">AI Media Buyer</div><div class="s">قرارات أذكى. ربح أعلى.</div></div>
       <button type="button" id="ambNavCollapseBtn" class="amb-nav-collapse-btn" aria-label="طي/فتح القائمة" title="طي/فتح القائمة">${ic('chevronLeft', 'ic')}</button>
     </div>
+    ${(state.viewAccounts?.accounts || []).length > 1 ? `<div class="amb-nav-acct"><label for="ambAcctSel">الحساب الإعلاني</label><select id="ambAcctSel" class="amb-select">${state.viewAccounts.accounts.map((a) => `<option value="${E(a.id)}" ${a.id === (isViewOnly() ? state.account : state.viewAccounts.primaryId) ? 'selected' : ''}>${E(a.name)}${a.isPrimary ? ' ★' : ''}</option>`).join('')}</select></div>` : ''}
     <div class="amb-nav-list" id="ambNavList">
       ${NAV.map((n) => `<button class="amb-nav-item ${n.key === state.tab ? 'active' : ''}" data-nav="${n.key}">
         ${ic(n.icon)}<span>${E(n.label)}</span>
@@ -225,6 +237,8 @@ function renderNav() {
   $('ambNavList').querySelectorAll('[data-nav]').forEach((b) => {
     b.onclick = () => { location.hash = b.dataset.nav; };
   });
+  const acctSel = $('ambAcctSel');
+  if (acctSel) acctSel.onchange = () => { setViewAccount(acctSel.value); state.filter = 'all'; state.search = ''; _scaleData = null; route(); };
   const navEl = $('ambNav');
   let navCollapsed = false;
   try { navCollapsed = localStorage.getItem(AMB_NAV_COLLAPSE_KEY) === '1'; } catch { /* private-browsing guard */ }
@@ -264,6 +278,7 @@ async function renderSection(view, key) {
       </div>
       <div class="amb-head-tools">${NO_WINDOW_SECTIONS.has(key) ? '' : windowChips()}</div>
     </div>
+    ${isViewOnly() && NOT_SCOPED_TABS.has(key) ? `<div class="amb-batchnote" style="margin:0 0 12px;"><span>ℹ️ القسم ده شغال على الحساب الأساسي (${E(state.viewAccounts.accounts.find((a) => a.isPrimary)?.name || '')}) فقط حاليًا — مش بيتبع الحساب المختار («${E(viewAcctName())}»).</span></div>` : ''}
     <div id="ambSecPanel"></div>`;
   if (!NO_WINDOW_SECTIONS.has(key)) wireWindowChips(() => route());
   await SECTIONS[key]($('ambSecPanel'));
@@ -300,8 +315,7 @@ function closeDrawer() { $('ambDrawerOverlay').classList.remove('open'); }
 async function renderHome(view) {
   const win = state.window;
   // the switchable accounts first (names + which one is connected); a view account then gets a fresh read-only sync (skipped by the server when < 10 min old)
-  state.viewAccounts = await api.get('/api/ai-media-buyer/view-accounts').catch(() => state.viewAccounts);
-  if (state.account && !isViewOnly()) setViewAccount(null); // stale choice (account removed / became the connected one)
+  await loadViewAccounts();
   if (isViewOnly()) {
     view.innerHTML = `<div class="amb-panel amb-empty">⏳ بيتم سحب بيانات «${E(viewAcctName())}» من Meta… (أول مرة ممكن تاخد دقيقة)</div>`;
     await api.post(`/api/ai-media-buyer/view-accounts/${encodeURIComponent(state.account)}/sync`, {}).catch(() => null);
@@ -3847,7 +3861,7 @@ async function renderCloneFrom(body) {
   if (!cloneState.accounts) {
     const r = await api.get('/api/ai-media-buyer/clone/accounts');
     cloneState.accounts = r.accounts || [];
-    if (!cloneState.sourceId && r.selectedAdAccountId) cloneState.sourceId = r.selectedAdAccountId;
+    if (!cloneState.sourceId && r.selectedAdAccountId) cloneState.sourceId = (isViewOnly() ? state.account : r.selectedAdAccountId);
   }
   const accts = (cloneState.accounts || []).filter((a) => cloneAcctInBiz(a, cloneState.srcBiz));
   body.innerHTML = `
@@ -5612,7 +5626,7 @@ async function renderLaunchAccount(body) {
   if (!launchState.accounts) {
     const r = await api.get('/api/ai-media-buyer/launch/discovery/ad-accounts');
     launchState.accounts = r.accounts || [];
-    if (!launchState.adAccountId && r.selectedAdAccountId) launchState.adAccountId = r.selectedAdAccountId;
+    if (!launchState.adAccountId && r.selectedAdAccountId) launchState.adAccountId = (isViewOnly() ? state.account : r.selectedAdAccountId);
   }
   const accts = launchState.accounts || [];
   const chosen = accts.find((a) => a.id === launchState.adAccountId);

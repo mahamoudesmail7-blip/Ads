@@ -5,6 +5,7 @@
 // re-encrypts immediately after storing a new one. No route ever returns a
 // raw token to the frontend.
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { prisma } from '../prisma.js';
 import { encrypt, decrypt } from './metaCrypto.js';
 import { exchangeCodeForToken, exchangeForLongLivedToken, getMe } from './metaGraphClient.js';
@@ -130,8 +131,24 @@ export function generateState() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-export async function getConnection() {
+/**
+ * Per-request ad-account scope (see services/amb/accountScopeMiddleware.js). Inside `accountScope.run({ adAccountId }, fn)` getConnection() answers with that account as
+ * `selected_ad_account_id`; everywhere else (schedulers, background jobs, unscoped routes) it is the stored connection, untouched.
+ */
+export const accountScope = new AsyncLocalStorage();
+
+/** The stored connection, never overridden by a request scope (use for "which account is the CONNECTED one"). */
+export async function getConnectionUnscoped() {
   return prisma.metaConnection.findUnique({ where: { id: 'default' } });
+}
+
+export async function getConnection() {
+  const c = await getConnectionUnscoped();
+  const s = accountScope.getStore();
+  if (c && s?.adAccountId && s.adAccountId !== c.selected_ad_account_id) {
+    return { ...c, selected_ad_account_id: s.adAccountId, selected_ad_account_name: s.adAccountName || s.adAccountId, scopedView: true, primaryAdAccountId: c.selected_ad_account_id };
+  }
+  return c;
 }
 
 /** Real, current connection status for the frontend — deliberately never includes the token itself. */
