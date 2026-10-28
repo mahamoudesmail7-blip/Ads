@@ -735,21 +735,23 @@ export async function setEntityBudget(token, entityId, { dailyBudgetMinor, lifet
 
 /** Every ad account the token can reach (personal + each business), de-duplicated, with currency + timezone + status. CACHED (5 min) + in-flight de-duplicated — pass {force:true} to refresh. */
 export async function getAllAccessibleAdAccounts(token, { force = false } = {}) {
-  return cachedMetaFetch(`adaccounts:${fingerprintToken(token)}`, () => _getAllAccessibleAdAccountsUncached(token), { ttlMs: ASSET_TTL_MS, force });
+  // a list built while Meta was throttling (a business we could not enumerate) is INCOMPLETE: it is never cached as the final answer — the last complete list is served instead, else it is kept for seconds only
+  return cachedMetaFetch(`adaccounts:${fingerprintToken(token)}`, () => _getAllAccessibleAdAccountsUncached(token), { ttlMs: ASSET_TTL_MS, force, cacheIf: (v) => !(v && v.__incomplete) });
 }
 async function _getAllAccessibleAdAccountsUncached(token) {
   const fields = 'id,account_id,name,currency,account_status,timezone_name,timezone_offset_hours_utc,business{id,name}';
   const byId = new Map();
   for (const a of (await graphFetch('/me/adaccounts', { fields, limit: 200 }, token)).data || []) byId.set(a.id, a);
   let businesses = [];
-  try { businesses = (await graphFetch('/me/businesses', { fields: 'id,name', limit: 100 }, token)).data || []; } catch { /* personal only */ }
+  let incomplete = false;
+  try { businesses = (await graphFetch('/me/businesses', { fields: 'id,name', limit: 100 }, token)).data || []; } catch (e) { if (e?.isMetaRateLimit) incomplete = true; /* else: personal only */ }
   for (const b of businesses) {
     try {
       for (const a of await graphList(`/${b.id}/owned_ad_accounts`, { fields }, token)) byId.set(a.id, a);
       for (const a of await graphList(`/${b.id}/client_ad_accounts`, { fields }, token)) byId.set(a.id, a);
-    } catch { /* skip a business we can't enumerate */ }
+    } catch (e) { if (e?.isMetaRateLimit) incomplete = true; /* else: skip a business we can't enumerate */ }
   }
-  return [...byId.values()].map((a) => ({
+  const list = [...byId.values()].map((a) => ({
     id: a.id,
     accountId: a.account_id,
     name: a.name || a.id,
@@ -760,6 +762,8 @@ async function _getAllAccessibleAdAccountsUncached(token) {
     businessId: a.business?.id || null,
     businessName: a.business?.name || null,
   }));
+  if (incomplete) Object.defineProperty(list, '__incomplete', { value: true, enumerable: false });
+  return list;
 }
 
 /** Campaigns of ONE ad account with the full transferable config + a live insights slice (spend/purchases/CPA) for the picker. */

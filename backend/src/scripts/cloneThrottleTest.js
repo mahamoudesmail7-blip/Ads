@@ -21,6 +21,7 @@ const mock = http.createServer((req, res) => {
   const json = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   const ids = (u.searchParams.get('ids') || '').split(',').filter(Boolean);
   if (mode === 'missing') return json(400, { error: { message: 'Unsupported get request. Object does not exist', code: 100, type: 'GraphMethodException' } });
+  if (mode === 'accts' || mode === 'acctsThrottled') { if (u.pathname.endsWith('/me/adaccounts')) return json(200, { data: [{ id: 'act_1', account_id: '1', name: 'A', account_status: 1 }] }); if (u.pathname.endsWith('/me/businesses')) return mode === 'acctsThrottled' ? json(403, { error: { message: '(#4) Application request limit reached', code: 4, type: 'OAuthException' } }) : json(200, { data: [] }); return json(200, { data: [] }); }
   if (mode === 'transient') return json(500, { error: { message: 'An unexpected error has occurred. Please retry your request later.', code: 2, type: 'OAuthException', is_transient: true } });
   if (mode === 'source') return json(200, { id: u.pathname.split('/').pop(), source: 'https://cdn.example/v.mp4', data: [{ hash: 'h1', url: 'https://cdn.example/i.jpg' }] });
   if (mode === 'throttle') return json(400, { error: { message: '(#17) User request limit reached', code: 17, type: 'OAuthException' } });
@@ -230,6 +231,18 @@ const schedSrc = fs.readFileSync(join(__dirname, '../services/amb/cloneScheduler
 ok('the 60-second clone scheduler runs it', schedSrc.includes('autoResumeFailedBatches') && schedSrc.includes('await autoResumeFailedBatches()'));
 for (const id of [bA, bB, bC, bD, bE]) await prisma.ambCloneBatch.delete({ where: { batch_id: id } }).catch(() => {});
 await prisma.ambCloneBatch.delete({ where: { batch_id: bid11 } }).catch(() => {});
+console.log('\n14. The ad-accounts list built while Meta throttles is INCOMPLETE and is never cached as the final answer');
+const { getAllAccessibleAdAccounts } = await imp('../services/metaGraphClient.js');
+mode = 'acctsThrottled'; const partial = await getAllAccessibleAdAccounts('tok-acc', { force: true });
+ok('a throttled /me/businesses marks the list incomplete (the accounts it did get are still returned)', partial.length === 1 && partial.__incomplete === true);
+await new Promise((r) => setTimeout(r, 2200)); // an incomplete answer is held for ~2 s only (no hammering), then Meta is asked again
+mode = 'accts'; const full = await getAllAccessibleAdAccounts('tok-acc');
+ok('after the ~2 s hold the next call re-reads Meta instead of serving the partial list for 5 minutes (complete list, not flagged)', full.length === 1 && !full.__incomplete);
+const acctAgain = await getAllAccessibleAdAccounts('tok-acc');
+ok('a COMPLETE list is cached normally', acctAgain === full);
+mode = 'acctsThrottled'; const stale = await getAllAccessibleAdAccounts('tok-acc', { force: true });
+ok('if Meta throttles again, the last COMPLETE list is served (stale) rather than a partial one', stale === full);
+mode = 'ok';
 mock.close();
 await prisma.$disconnect();
 console.log(`\n${fail ? '❌' : '✅'} cloneThrottleTest: ${pass} passed, ${fail} failed`); process.exitCode = fail ? 1 : 0; setTimeout(() => process.exit(process.exitCode), 300).unref?.();
