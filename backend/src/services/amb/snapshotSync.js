@@ -321,8 +321,8 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
 /** Last run + computed next-due time + status, for the Overview / Settings header. */
 export async function getSyncStatus() {
   const [last, lastSuccess, settings] = await Promise.all([
-    prisma.ambSyncRun.findFirst({ orderBy: { started_at: 'desc' } }),
-    prisma.ambSyncRun.findFirst({ where: { status: 'SUCCESS' }, orderBy: { started_at: 'desc' } }),
+    prisma.ambSyncRun.findFirst({ where: { trigger: { not: 'VIEW' } }, orderBy: { started_at: 'desc' } }),
+    prisma.ambSyncRun.findFirst({ where: { status: 'SUCCESS', trigger: { not: 'VIEW' } }, orderBy: { started_at: 'desc' } }),
     getAmbSettings(),
   ]);
   const intervalMs = Math.max(5, Number(settings.ambSyncIntervalMinutes) || 15) * 60 * 1000;
@@ -353,4 +353,102 @@ export function startAmbSnapshotScheduler() {
     }
   }, TICK_MS);
   logger.info('AMB snapshot scheduler started (60s tick, interval-gated)');
+}
+
+// =====================================================================================================================
+// VIEW-ONLY ACCOUNTS (2026-10-28). The Home dashboard can be switched to other ad accounts (Hady / Yasser …) without changing the connected account that the
+// executor, the AI Operator and every automation run on. A view account gets the SAME append-only snapshot rows (so the existing hierarchy / overview /
+// scale-winner readers work unchanged) but NOTHING else of a full cycle: no AdsDailyMetric piggy-back, no recommendation reconcile, no creative / media-library
+// discovery, no alert. Its sync-run rows carry trigger 'VIEW' and are excluded from getSyncStatus (the connected account's freshness is never confused with them).
+// =====================================================================================================================
+export const VIEW_SYNC_STALE_MINUTES = 10;
+const viewRunning = new Set();
+
+/** The accounts the Home dashboard may be switched to (settings.ambViewAccountIds). The caller decides which one is "connected". */
+export async function getViewAccountIds() {
+  const s = await getAmbSettings();
+  return (Array.isArray(s.ambViewAccountIds) ? s.ambViewAccountIds : []).map(String).filter((x) => /^act_\d+$/.test(x));
+}
+
+/** Last / next successful sync (any trigger) of one ad account. */
+export async function getAccountSyncInfo(adAccountId) {
+  const [last, lastOk, settings] = await Promise.all([
+    prisma.ambSyncRun.findFirst({ where: { ad_account_id: adAccountId }, orderBy: { started_at: 'desc' } }),
+    prisma.ambSyncRun.findFirst({ where: { ad_account_id: adAccountId, status: 'SUCCESS' }, orderBy: { started_at: 'desc' } }),
+    getAmbSettings(),
+  ]);
+  const intervalMs = Math.max(5, Number(settings.ambSyncIntervalMinutes) || 15) * 60 * 1000;
+  const base = lastOk?.finished_at || lastOk?.started_at || null;
+  return {
+    intervalMinutes: settings.ambSyncIntervalMinutes,
+    lastRun: last ? { at: last.started_at, status: last.status, trigger: last.trigger, snapshotRows: last.snapshot_rows, error: last.error } : null,
+    lastSuccessAt: base,
+    nextSyncAt: base ? new Date(new Date(base).getTime() + intervalMs) : null,
+  };
+}
+
+/**
+ * Read-only sync of ONE view account. `force` skips the staleness gate. Never writes to Meta. The first sync of an account pulls 7 days so "آخر 7 أيام" works at once.
+ * @returns {{ok:true, skipped?:string, snapshotRows?:number}|{ok:false, error:string}}
+ */
+export async function runViewAccountSync(adAccountId, { force = false, now = new Date() } = {}) {
+  const connection = await getConnection();
+  if (!connection || connection.status !== 'CONNECTED') return { ok: false, error: 'NOT_CONNECTED' };
+  if (adAccountId === connection.selected_ad_account_id) return { ok: true, skipped: 'PRIMARY_ACCOUNT' }; // the connected account has its own full cycle
+  if (!(await getViewAccountIds()).includes(adAccountId)) return { ok: false, error: 'NOT_A_VIEW_ACCOUNT' };
+  if (viewRunning.has(adAccountId)) return { ok: true, skipped: 'ALREADY_RUNNING' };
+
+  const info = await getAccountSyncInfo(adAccountId);
+  if (!force && info.lastSuccessAt && now.getTime() - new Date(info.lastSuccessAt).getTime() < VIEW_SYNC_STALE_MINUTES * 60_000) return { ok: true, skipped: 'FRESH', lastSuccessAt: info.lastSuccessAt };
+
+  viewRunning.add(adAccountId);
+  const syncRun = await prisma.ambSyncRun.create({ data: { trigger: 'VIEW', status: 'RUNNING', ad_account_id: adAccountId } });
+  try {
+    const token = await getDecryptedToken();
+    let currency = 'EGP';
+    try { currency = (await getAdAccountInfo(token, adAccountId))?.currency || 'EGP'; } catch { /* EGP assumed, same as the full cycle */ }
+    const dateTo = addDaysISO(todayISO(), 1); // +1: the account's own "today" can already be a day ahead of UTC
+    const dateFrom = addDaysISO(todayISO(), info.lastSuccessAt ? -1 : -7);
+
+    const [campMetaList, adsetMetaList, adMetaList] = await Promise.all([
+      getEntitiesMeta(token, adAccountId, 'campaign').catch(() => []),
+      getEntitiesMeta(token, adAccountId, 'adset').catch(() => []),
+      getEntitiesMeta(token, adAccountId, 'ad').catch(() => []),
+    ]);
+    const meta = { campaign: indexEntitiesMeta(campMetaList, 'campaign', currency), adset: indexEntitiesMeta(adsetMetaList, 'adset', currency), ad: indexEntitiesMeta(adMetaList, 'ad', currency) };
+    const insightsByLevel = {};
+    for (const level of LEVELS) insightsByLevel[level] = await getInsightsByLevel(token, adAccountId, level, dateFrom, dateTo);
+    const built = await buildCycleRows({ insightsByLevel, meta, adAccountId });
+    if (built.rows.length) await prisma.metaPerformanceSnapshot.createMany({ data: built.rows.map((r) => ({ ...r, sync_run_id: syncRun.id })) });
+    await prisma.ambSyncRun.update({ where: { id: syncRun.id }, data: { status: 'SUCCESS', finished_at: new Date(), snapshot_rows: built.rows.length, account_currency: currency } });
+    logger.info('AMB view-account sync OK', { adAccountId, snapshotRows: built.rows.length });
+    return { ok: true, snapshotRows: built.rows.length };
+  } catch (err) {
+    await prisma.ambSyncRun.update({ where: { id: syncRun.id }, data: { status: 'FAILED', finished_at: new Date(), error: err.message?.slice(0, 500) || String(err) } }).catch(() => {});
+    logger.warn('AMB view-account sync failed (view only, no alert)', { adAccountId, message: err.message });
+    return { ok: false, error: err.message };
+  } finally {
+    viewRunning.delete(adAccountId);
+  }
+}
+
+let viewTimer = null;
+/** Keeps the view accounts' snapshots warm in the background (same interval as the main sync); sequential, never throws. */
+export function startAmbViewSyncScheduler() {
+  if (viewTimer) return;
+  viewTimer = setInterval(async () => {
+    try {
+      const connection = await getConnection();
+      if (!connection || connection.status !== 'CONNECTED') return;
+      for (const id of await getViewAccountIds()) {
+        if (id === connection.selected_ad_account_id) continue;
+        const info = await getAccountSyncInfo(id);
+        if (info.nextSyncAt && new Date(info.nextSyncAt).getTime() > Date.now()) continue;
+        await runViewAccountSync(id, { force: true });
+      }
+    } catch (err) {
+      logger.error('AMB view-account scheduler tick failed', { message: err.message });
+    }
+  }, 2 * 60 * 1000);
+  logger.info('AMB view-account sync scheduler started (2 min tick, interval-gated)');
 }

@@ -32,15 +32,15 @@ function countByColor(tree) {
   return { all, actionable };
 }
 
-export async function getOverview({ windowName } = {}) {
+export async function getOverview({ windowName, adAccountId: viewAccountId = null, syncStatusOverride = null } = {}) {
   const connection = await getConnection();
   const settings = await getAmbSettings();
-  const syncStatus = await getSyncStatus();
+  const syncStatus = syncStatusOverride || await getSyncStatus();
 
   if (!connection || connection.status !== 'CONNECTED' || !connection.selected_ad_account_id) {
     return { connected: false, syncStatus, message: 'اربط حساب Meta Ads واختار Ad Account عشان تشغّل AI Media Buyer.' };
   }
-  const adAccountId = connection.selected_ad_account_id;
+  const adAccountId = viewAccountId || connection.selected_ad_account_id; // viewAccountId = a read-only VIEW account (already validated by the route)
   // Every KPI, count and net-profit figure below is computed for the SELECTED
   // period (windowName). resolveWindow already supports today | yesterday |
   // last7 — this just makes getOverview honour it end-to-end.

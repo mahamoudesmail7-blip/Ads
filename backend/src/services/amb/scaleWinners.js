@@ -53,12 +53,12 @@ function flattenAds(campNode) {
  * Winner cards for the selected ad account + window.
  * @returns {{ window, winnerCpaEgp, count, resolvedCount, cards: [...] }}
  */
-export async function listScaleWinners({ windowName = 'today', includeResolved = false } = {}) {
+export async function listScaleWinners({ windowName = 'today', includeResolved = false, adAccountId: viewAccountId = null } = {}) {
   const conn = await getConnection();
   if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) {
     return { connected: false, cards: [], count: 0, winnerCpaEgp: WINNER_CPA_EGP };
   }
-  const adAccountId = conn.selected_ad_account_id;
+  const adAccountId = viewAccountId || conn.selected_ad_account_id; // viewAccountId = a read-only VIEW account (validated by the route)
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName);
   const tree = await buildHierarchy({ adAccountId, window, settings });

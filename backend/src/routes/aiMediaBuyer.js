@@ -38,6 +38,11 @@ async function requireAdAccount() {
   }
   return c.selected_ad_account_id;
 }
+/** Optional ?account= of a Home request → a validated read-only VIEW account id, or null for the connected account. */
+async function viewAccountFrom(req) {
+  const { resolveViewAccountId } = await import('../services/amb/viewAccounts.js');
+  return resolveViewAccountId(req.query.account);
+}
 function windowFrom(req) {
   return resolveWindow(String(req.query.window || 'today'));
 }
@@ -47,7 +52,21 @@ function windowFrom(req) {
 // ---------------------------------------------------------------------------
 router.get('/overview', asyncRoute(async (req, res) => {
   const { getOverview } = await import('../services/amb/overview.js');
-  res.json(await getOverview({ windowName: req.query.window }));
+  const viewId = await viewAccountFrom(req);
+  if (!viewId) return res.json(await getOverview({ windowName: req.query.window }));
+  const { getAccountSyncInfo } = await import('../services/amb/snapshotSync.js');
+  res.json({ ...(await getOverview({ windowName: req.query.window, adAccountId: viewId, syncStatusOverride: await getAccountSyncInfo(viewId) })), viewAccountId: viewId, viewOnly: true });
+}));
+
+// Home account switcher (VIEW only — never changes the connected account the executor / Operator run on).
+router.get('/view-accounts', asyncRoute(async (req, res) => {
+  const { listViewAccounts } = await import('../services/amb/viewAccounts.js');
+  res.json(await listViewAccounts());
+}));
+router.post('/view-accounts/:id/sync', asyncRoute(async (req, res) => {
+  const viewId = await (await import('../services/amb/viewAccounts.js')).resolveViewAccountId(req.params.id);
+  if (!viewId) return res.json({ ok: true, skipped: 'PRIMARY_ACCOUNT' });
+  res.json(await (await import('../services/amb/snapshotSync.js')).runViewAccountSync(viewId, { force: req.query.force === '1' }));
 }));
 
 router.get('/sync/status', asyncRoute(async (req, res) => res.json(await getSyncStatus())));
@@ -366,7 +385,8 @@ router.delete('/mapping/:campaignId', asyncRoute(async (req, res) => {
 // Hierarchy (Campaign Analysis page) + Winners
 // ---------------------------------------------------------------------------
 router.get('/hierarchy', asyncRoute(async (req, res) => {
-  const adAccountId = await requireAdAccount();
+  const connectedId = await requireAdAccount();
+  const adAccountId = (await viewAccountFrom(req)) || connectedId;
   const settings = await getAmbSettings();
   res.json(await buildHierarchy({ adAccountId, window: windowFrom(req), settings }));
 }));
@@ -382,7 +402,7 @@ router.get('/winners', asyncRoute(async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/scale/winners', asyncRoute(async (req, res) => {
   const { listScaleWinners } = await import('../services/amb/scaleWinners.js');
-  res.json(await listScaleWinners({ windowName: String(req.query.window || 'today'), includeResolved: req.query.includeResolved === '1' }));
+  res.json(await listScaleWinners({ windowName: String(req.query.window || 'today'), includeResolved: req.query.includeResolved === '1', adAccountId: await viewAccountFrom(req) }));
 }));
 
 router.post('/scale/reject', asyncRoute(async (req, res) => {
@@ -405,7 +425,10 @@ router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) 
 // ---------------------------------------------------------------------------
 // AI Action Plan (recommendations)
 // ---------------------------------------------------------------------------
-router.get('/recommendations', asyncRoute(async (req, res) => res.json(await getCurrentRecommendations())));
+router.get('/recommendations', asyncRoute(async (req, res) => {
+  const viewId = await viewAccountFrom(req);
+  res.json(viewId ? { ...(await getCurrentRecommendations({ adAccountId: viewId })), viewAccountId: viewId, viewOnly: true } : await getCurrentRecommendations());
+}));
 
 // Reconcile PENDING recs against current Meta state on demand (also runs
 // automatically after every sync). Resolves the ones already satisfied

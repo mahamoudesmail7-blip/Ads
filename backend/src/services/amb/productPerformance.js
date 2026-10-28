@@ -158,7 +158,7 @@ async function buildMetaBlock(productId, window) {
   const resolvedVia = [...new Set(campaigns.map((c) => c.via))];
 
   const [lastRun] = await Promise.all([
-    prisma.ambSyncRun.findFirst({ where: { status: { in: ['SUCCESS', 'PARTIAL'] } }, orderBy: { finished_at: 'desc' }, select: { finished_at: true } }),
+    prisma.ambSyncRun.findFirst({ where: { status: { in: ['SUCCESS', 'PARTIAL'] }, trigger: { not: 'VIEW' } }, orderBy: { finished_at: 'desc' }, select: { finished_at: true } }),
   ]);
   const lastSyncAt = lastRun?.finished_at || null;
 

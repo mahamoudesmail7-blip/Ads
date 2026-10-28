@@ -351,6 +351,10 @@ body { background: var(--amb-bg); }
 .amb-acc-row .as.ok { background: var(--amb-green-bg); color: var(--amb-green); }
 .amb-acc-row .as.sync { background: var(--amb-blue-bg); color: var(--amb-blue); }
 .amb-acc-row .as.err { background: var(--amb-red-bg); color: var(--amb-red); }
+.amb-acc-row.amb-acc-pick { width: 100%; background: none; border: 0; border-radius: 10px; padding: 8px 6px; cursor: pointer; font-family: inherit; color: inherit; text-align: start; transition: background .15s; }
+.amb-acc-row.amb-acc-pick:hover { background: var(--amb-blue-bg); }
+.amb-acc-row.amb-acc-pick.cur { background: var(--amb-blue-bg); box-shadow: inset 0 0 0 1px var(--amb-blue); }
+.amb-acc-row.amb-acc-pick.cur .an { color: var(--amb-blue); }
 .amb-prod-row { display: flex; align-items: center; gap: 11px; padding: 9px 0; }
 .amb-prod-row + .amb-prod-row { border-top: 1px solid var(--amb-border); }
 .amb-prod-row .rk { width: 22px; height: 22px; border-radius: 7px; background: var(--amb-surface-2); font-size: 11px; font-weight: 800; color: var(--amb-text-dim); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }

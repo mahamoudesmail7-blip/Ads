@@ -130,7 +130,22 @@ const state = {
   search: '',
   pendingCount: 0,
   productImages: {}, // { [ambProductId]: {hasImage, source} } — preloaded once, no N+1
+  account: null,     // Home account being VIEWED (null = the connected account). View-only: never changes what the executor / Operator run on.
+  viewAccounts: null, // { primaryId, accounts: [{id, name, isPrimary, active, lastSuccessAt}] }
 };
+
+// ---- Home account switcher (VIEW only) ----
+const ACCT_KEY = 'ambHomeAccount';
+try { state.account = localStorage.getItem(ACCT_KEY) || null; } catch { /* storage blocked: the connected account is used */ }
+function setViewAccount(id) {
+  state.account = id && id !== state.viewAccounts?.primaryId ? id : null;
+  try { state.account ? localStorage.setItem(ACCT_KEY, state.account) : localStorage.removeItem(ACCT_KEY); } catch { /* ignore */ }
+}
+/** true while Home shows an account other than the connected one — read-only, no approve / execute. */
+const isViewOnly = () => !!state.account && !!state.viewAccounts && state.account !== state.viewAccounts.primaryId && state.viewAccounts.accounts.some((a) => a.id === state.account);
+/** "&account=…" / "?account=…" for a Home request — empty for the connected account. */
+const acctQS = (sep = '&') => (isViewOnly() ? `${sep}account=${encodeURIComponent(state.account)}` : '');
+const viewAcctName = () => state.viewAccounts?.accounts.find((a) => a.id === state.account)?.name || state.account;
 
 // ---------------------------------------------------------------------------
 // Shell
@@ -282,21 +297,28 @@ function closeDrawer() { $('ambDrawerOverlay').classList.remove('open'); }
 // ---------------------------------------------------------------------------
 async function renderHome(view) {
   const win = state.window;
+  // the switchable accounts first (names + which one is connected); a view account then gets a fresh read-only sync (skipped by the server when < 10 min old)
+  state.viewAccounts = await api.get('/api/ai-media-buyer/view-accounts').catch(() => state.viewAccounts);
+  if (state.account && !isViewOnly()) setViewAccount(null); // stale choice (account removed / became the connected one)
+  if (isViewOnly()) {
+    view.innerHTML = `<div class="amb-panel amb-empty">⏳ بيتم سحب بيانات «${E(viewAcctName())}» من Meta… (أول مرة ممكن تاخد دقيقة)</div>`;
+    await api.post(`/api/ai-media-buyer/view-accounts/${encodeURIComponent(state.account)}/sync`, {}).catch(() => null);
+  }
   const calls = [
-    api.get(`/api/ai-media-buyer/overview?window=${win}`),
-    api.get('/api/ai-media-buyer/recommendations'),
-    api.get(`/api/ai-media-buyer/hierarchy?window=${win}`).catch(() => null),
+    api.get(`/api/ai-media-buyer/overview?window=${win}${acctQS()}`),
+    api.get(`/api/ai-media-buyer/recommendations${acctQS('?')}`),
+    api.get(`/api/ai-media-buyer/hierarchy?window=${win}${acctQS()}`).catch(() => null),
     api.get('/api/meta/status').catch(() => null),
     api.get('/api/ai-media-buyer/product-images').catch(() => ({})),
     // Only "today" has a well-defined "previous period" (yesterday) for a trend.
-    win === 'today' ? api.get('/api/ai-media-buyer/hierarchy?window=yesterday').catch(() => null) : Promise.resolve(null),
+    win === 'today' ? api.get(`/api/ai-media-buyer/hierarchy?window=yesterday${acctQS()}`).catch(() => null) : Promise.resolve(null),
   ];
   const [ov, recs, hWin, meta, imgMap, hPrev] = await Promise.all(calls);
   state.productImages = imgMap || {};
 
   const active = recs.active || recs.items || [];
   const resolved = recs.resolved || [];
-  state.pendingCount = active.length;
+  if (!isViewOnly()) state.pendingCount = active.length; // the nav badge counts the connected account's decisions only
   state.home = { ov, active, resolved, hWin, meta };
   renderNav();
 
@@ -382,6 +404,7 @@ function scaleAboValid(s) {
 /** Why "موافق على الاسكيل" is (or isn't) clickable — drives the button + inline hint. */
 function scaleApproveState(card, s) {
   if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
+  if (isViewOnly()) return { ok: false, reason: `عرض فقط — تنفيذ الاسكيل متاح حاليًا للحساب الأساسي (${state.viewAccounts.accounts.find((a) => a.isPrimary)?.name || ''}) فقط.` };
   if (s.mode === 'SCHEDULE' && !cloneStartInFuture(s.date, s.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
   if (s.budgetMode === 'ABO') {
     const noBudget = s.abo.some((sl) => !(Number(sl.budget) > 0));
@@ -425,7 +448,7 @@ async function renderScaleWinners(cached) {
   if (!el) return;
   let data = cached || _scaleData;
   if (!cached) {
-    try { data = await api.get(`/api/ai-media-buyer/scale/winners?window=${state.window}`); }
+    try { data = await api.get(`/api/ai-media-buyer/scale/winners?window=${state.window}${acctQS()}`); }
     catch { el.innerHTML = ''; return; }
     _scaleData = data;
   }
@@ -711,7 +734,8 @@ function homeHeader(ov, meta) {
   const name = (state.me?.name || '').split(/\s+/)[0] || '';
   const last = ov.syncStatus?.lastRun;
   const syncOk = last?.status === 'SUCCESS';
-  const acctName = meta?.selectedAdAccount?.name || ov.syncStatus?.selectedAdAccount?.name || 'الحساب المتصل';
+  const acctName = isViewOnly() ? viewAcctName() : (meta?.selectedAdAccount?.name || ov.syncStatus?.selectedAdAccount?.name || 'الحساب المتصل');
+  const viewBanner = isViewOnly() ? `<div class="amb-batchnote" style="margin:0 0 12px;"><span>👁️ بتعرض حساب «${E(acctName)}» — عرض فقط. الموافقة على التوصيات وتنفيذ (إيقاف / ميزانية / اسكيل) متاحين حاليًا للحساب الأساسي فقط.</span></div>` : '';
   return `
     <div class="amb-head">
       <div>
@@ -723,7 +747,7 @@ function homeHeader(ov, meta) {
         <span class="amb-select" title="الحساب الإعلاني">${ic('meta', 'ic')} ${E(acctName)}</span>
         <button class="amb-iconbtn" id="ambSync" title="مزامنة الآن">${ic('refresh', 'ic')}</button>
       </div>
-    </div>`;
+    </div>${viewBanner}`;
 }
 
 /** Apple-style segmented period control + the real date/range under it. */
@@ -755,8 +779,9 @@ async function syncNow() {
   const b = $('ambSync');
   if (b) b.classList.add('busy');
   try {
-    const r = await api.post('/api/ai-media-buyer/sync/run', {});
-    if (r.skipped) UI.toast(`المزامنة اتخطت: ${r.skipped}`, 'error');
+    const r = isViewOnly() ? await api.post(`/api/ai-media-buyer/view-accounts/${encodeURIComponent(state.account)}/sync?force=1`, {}) : await api.post('/api/ai-media-buyer/sync/run', {});
+    if (r.ok === false) UI.toast(`المزامنة فشلت: ${r.error}`, 'error');
+    else if (r.skipped) UI.toast(`المزامنة اتخطت: ${r.skipped}`, 'error');
     else UI.toast(`✅ اتزامن ${r.snapshotRows} صف`);
   } catch (err) {
     UI.toast(err.message, 'error');
@@ -838,7 +863,7 @@ function renderRecList(active) {
   const list = filteredRecs(active);
   const el = $('ambRecList');
   if (!el) return;
-  el.innerHTML = list.length ? list.map(recCardV2).join('') : `<div class="amb-panel amb-empty">مفيش توصيات في التصنيف ده دلوقتي.</div>`;
+  el.innerHTML = list.length ? list.map(recCardV2).join('') : `<div class="amb-panel amb-empty">${isViewOnly() ? 'التوصيات التلقائية بتتولّد للحساب الأساسي فقط حاليًا — الأرقام والاسكيل تحت متاحين لهذا الحساب.' : 'مفيش توصيات في التصنيف ده دلوقتي.'}</div>`;
   el.querySelectorAll('[data-rec]').forEach((b) => {
     const id = Number(b.dataset.rec);
     const act = b.dataset.act;
@@ -913,7 +938,7 @@ function recCardV2(r) {
   const t = r.targetMetrics || {};
   const chip = CHIP[r.category] || CHIP.MONITOR;
   const conf = CONF_AR[r.confidence] || CONF_AR.LOW;
-  const canExec = r.executable && r.status === 'PENDING';
+  const canExec = r.executable && r.status === 'PENDING' && !isViewOnly();
   const paused = r.currentStatus && r.currentStatus !== 'ACTIVE';
 
   let primary = '';
@@ -949,7 +974,7 @@ function recCardV2(r) {
         ${r.currentStatus ? `<span class="amb-metabadge ${paused ? 'paused' : ''}">${E(META_STATUS_AR[r.currentStatus] || r.currentStatus)}</span>` : ''}
         <div class="amb-r-actions">
           ${primary}
-          ${r.status === 'PENDING' ? `<button class="amb-btn ghost" data-rec="${r.id}" data-act="reject">رفض</button>` : ''}
+          ${r.status === 'PENDING' && !isViewOnly() ? `<button class="amb-btn ghost" data-rec="${r.id}" data-act="reject">رفض</button>` : ''}
           <button class="amb-btn ghost" data-rec="${r.id}" data-act="details">التفاصيل</button>
         </div>
       </div>
@@ -971,9 +996,17 @@ function renderSide(ov, meta, hWin, active) {
     : last?.status === 'RUNNING' ? { c: 'sync', t: 'مزامنة' }
     : last?.status === 'FAILED' ? { c: 'err', t: 'خطأ' }
     : { c: 'ok', t: 'نشط' };
+  const accts = state.viewAccounts?.accounts || [];
+  const curId = isViewOnly() ? state.account : state.viewAccounts?.primaryId;
+  const acctRow = (a) => {
+    const cur = a.id === curId;
+    const chip = a.isPrimary ? `<span class="as ${cur ? st.c : 'ok'}">${cur ? st.t : 'الأساسي'}</span>`
+      : `<span class="as ${a.lastRunStatus === 'FAILED' ? 'err' : 'sync'}">${a.lastSuccessAt ? E(timeAgo(a.lastSuccessAt)) : 'عرض'}</span>`;
+    return `<button type="button" class="amb-acc-row amb-acc-pick ${cur ? 'cur' : ''}" data-acct="${E(a.id)}" title="${E(a.id)}"><span class="ai">${ic('meta', 'ic')}</span><span class="an">${E(a.name)}</span>${chip}</button>`;
+  };
   const acctBlock = `<div class="amb-panel">
     <h3>حالة الحسابات الإعلانية</h3>
-    ${connected ? `<div class="amb-acc-row"><span class="ai">${ic('meta', 'ic')}</span><span class="an">${E(acctName)}</span><span class="as ${st.c}">${st.t}</span></div>`
+    ${connected ? (accts.length > 1 ? accts.map(acctRow).join('') : `<div class="amb-acc-row"><span class="ai">${ic('meta', 'ic')}</span><span class="an">${E(acctName)}</span><span class="as ${st.c}">${st.t}</span></div>`)
       : `<div class="amb-empty" style="padding:8px 0;">اربط حساب Meta Ads من صفحة AI Intelligence.</div>`}
     ${last ? `<div class="faint" style="font-size:11px; margin-top:8px;">آخر مزامنة ${timeAgo(last.at)} · ${last.snapshotRows ?? 0} صف</div>` : ''}
   </div>`;
@@ -1010,6 +1043,14 @@ function renderSide(ov, meta, hWin, active) {
   </div>`;
 
   el.innerHTML = acctBlock + prodBlock + donutBlock;
+  el.querySelectorAll('[data-acct]').forEach((b) => {
+    b.onclick = () => {
+      if (b.dataset.acct === curId) return;
+      setViewAccount(b.dataset.acct);
+      state.filter = 'all'; state.search = ''; _scaleData = null;
+      route(); // re-fetches every Home panel for the chosen account
+    };
+  });
 }
 
 function donutSvg(counts, total) {

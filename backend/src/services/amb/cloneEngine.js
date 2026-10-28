@@ -399,7 +399,7 @@ export async function campaignMetaMatch({ accountId, campaignId, datePreset, sin
       purchases: days.reduce((a, s) => a + (s.meta_purchases || 0), 0),
       note: 'latest snapshot per day, summed across the range (never summed intra-day)',
     } : null;
-    const lastRun = await prisma.ambSyncRun.findFirst({ where: { status: { in: ['SUCCESS', 'PARTIAL'] } }, orderBy: { finished_at: 'desc' }, select: { finished_at: true } });
+    const lastRun = await prisma.ambSyncRun.findFirst({ where: { status: { in: ['SUCCESS', 'PARTIAL'] }, trigger: { not: 'VIEW' } }, orderBy: { finished_at: 'desc' }, select: { finished_at: true } });
     lastSyncAt = lastRun?.finished_at || null;
   } catch { /* snapshot store optional */ }
 

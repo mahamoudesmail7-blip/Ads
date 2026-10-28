@@ -353,10 +353,11 @@ const RESOLVED_STATUSES = new Set(['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'
  *              needs-reanalysis recs from the same batch (audit trail)
  * `items` (= active) is kept for backward compatibility.
  */
-export async function getCurrentRecommendations({ reconcile = true } = {}) {
+export async function getCurrentRecommendations({ reconcile = true, adAccountId: viewAccountId = null } = {}) {
   const connection = await getConnection();
   if (!connection?.selected_ad_account_id) return { ok: false, error: 'NOT_CONNECTED' };
-  const adAccountId = connection.selected_ad_account_id;
+  const adAccountId = viewAccountId || connection.selected_ad_account_id; // viewAccountId = a read-only VIEW account (validated by the route)
+  if (viewAccountId && viewAccountId !== connection.selected_ad_account_id) reconcile = false; // never touch Meta / supersede rows of an account the engine does not run for
 
   if (reconcile) {
     await reconcilePendingRecommendations({ adAccountId }).catch((err) => logger.warn('AMB reconcile in getCurrentRecommendations failed', { message: err.message }));

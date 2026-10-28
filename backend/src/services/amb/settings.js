@@ -11,6 +11,8 @@ import { prisma } from '../../prisma.js';
 export const AMB_DEFAULT_SETTINGS = {
   ambExecutionMode: 'APPROVAL',        // ADVISORY | APPROVAL | AUTOPILOT
   ambSyncIntervalMinutes: 15,
+  // Ad accounts the Home dashboard can be switched to (VIEW-ONLY: read-only Meta sync + analysis; every write still goes through the single connected account). Ahmed Samy / Hady / Yasser.
+  ambViewAccountIds: ['act_1518142859790043', 'act_877011384919552', 'act_1370863561334304'],
   ambAlsoRefreshAdsDailyMetric: true,  // piggy-back the existing metaSync.runSync so the current AI Intelligence page goes live too
   ambDefaultPricingMultiplier: 3,
   ambDefaultTargetCpa: 120,            // EGP

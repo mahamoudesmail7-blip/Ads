@@ -61,7 +61,7 @@ import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
 import winnerProductsRoutes from './routes/winnerProducts.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
-import { startAmbSnapshotScheduler } from './services/amb/snapshotSync.js';
+import { startAmbSnapshotScheduler, startAmbViewSyncScheduler } from './services/amb/snapshotSync.js';
 import { startAmbAudienceBreakdownScheduler } from './services/amb/audienceBreakdownSync.js';
 import { startLiveCampaignAlertsScheduler } from './services/amb/liveCampaignAlerts.js';
 import { startAdvisorEvaluatorScheduler } from './services/amb/advisorEvaluator.js';
@@ -168,6 +168,7 @@ startEasyOrdersReconciliation();
 // enabled in settings) and a 10-min outcome-evaluation pass for executed
 // actions. Both no-op cleanly when Meta isn't connected.
 startAmbSnapshotScheduler();
+startAmbViewSyncScheduler();
 startAmbAudienceBreakdownScheduler();
 startLiveCampaignAlertsScheduler();
 startAdvisorEvaluatorScheduler();

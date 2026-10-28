@@ -32,7 +32,7 @@ export function detectSmartAlerts({ now = new Date(), rows = [], zeroSpend = 200
 export async function runSmartAlerts({ now = new Date(), rows = [], policy = null, deps = {} } = {}) {
   const [{ getSyncStatus }, { getBudgetCaps, currentBudgetTotals }, { detectExternalSchedule }] = await Promise.all([import('./snapshotSync.js'), import('./budgetCaps.js'), import('./dailyPlans.js')]);
   const since = new Date(now.getTime() - 70 * 60_000);
-  const syncRuns = deps.syncRuns || await prisma.ambSyncRun.findMany({ orderBy: { id: 'desc' }, take: 3, select: { status: true, error: true } });
+  const syncRuns = deps.syncRuns || await prisma.ambSyncRun.findMany({ where: { trigger: { not: 'VIEW' } }, orderBy: { id: 'desc' }, take: 3, select: { status: true, error: true } });
   const syncStatus = deps.syncStatus || await getSyncStatus().catch(() => null);
   const manualBudgetEvents = deps.manualBudgetEvents || (await prisma.ambOperatorEvent.findMany({ where: { kind: 'MANUAL_OVERRIDE', created_at: { gte: since } }, select: { id: true, campaign_id: true, note: true, data_json: true } })).filter((e) => { try { return JSON.parse(e.data_json || '{}').field === 'budget'; } catch { return false; } }).map((e) => ({ id: e.id, campaignId: e.campaign_id, note: e.note }));
   const actionRows = deps.actions || (await prisma.ambAction.findMany({ where: { created_at: { gte: new Date(now.getTime() - 24 * 3_600_000) }, action_type: { in: ['RESUME', 'PAUSE', 'INCREASE_BUDGET', 'DECREASE_BUDGET'] }, NOT: { OR: [{ entity_id: { startsWith: '__optest_' } }, { ad_account_id: { startsWith: '__optest_' } }] } }, select: { id: true, action_type: true, execution_status: true, verify_json: true, entity_name: true, campaign_id: true } }))
