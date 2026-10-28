@@ -6,6 +6,7 @@ import { prisma } from '../../prisma.js';
 import { effectiveManualOverrideHours } from './productPolicy.js';
 import { logger } from '../../logger.js';
 import { getConnection } from '../metaAuth.js';
+import { acctWhere } from './acctFilter.js';
 import { getAmbSettings } from './settings.js';
 import { entityWindowMetrics } from './metricsEngine.js';
 import { COD_FIELDS } from './operatorRules.js';
@@ -158,11 +159,12 @@ export async function loadRecentActions({ campaignIds, now = new Date(), days = 
 }
 
 /** Global counters for the rate limits + loss limits (today). */
-export async function loadCounters({ now = new Date(), campaigns = [] }) {
+export async function loadCounters({ now = new Date(), campaigns = [], adAccountId = null }) {
   const hourAgo = new Date(now.getTime() - MS_H), dayAgo = new Date(now.getTime() - 24 * MS_H), weekAgo = new Date(now.getTime() - 7 * 86_400_000);
   const done = ['EXECUTING', 'EXECUTED', 'VERIFIED'];
-  const h = await prisma.ambOperatorDecision.count({ where: { status: { in: done }, executed_at: { gte: hourAgo } } });
-  const today = await prisma.ambOperatorDecision.findMany({ where: { status: { in: done }, executed_at: { gte: dayAgo } }, select: { action: true, store_id: true, params_json: true } });
+  const acct = adAccountId ? { ad_account_id: adAccountId } : await acctWhere(); // every daily limit is PER AD ACCOUNT: what the Operator did on another account never counts here
+  const h = await prisma.ambOperatorDecision.count({ where: { ...acct, status: { in: done }, executed_at: { gte: hourAgo } } });
+  const today = await prisma.ambOperatorDecision.findMany({ where: { ...acct, status: { in: done }, executed_at: { gte: dayAgo } }, select: { action: true, store_id: true, params_json: true } });
   const byAction = {}, byStoreAction = {}, budgetIncreaseByStore = {}; let budgetIncreaseToday = 0;
   for (const d of today) {
     byAction[d.action] = (byAction[d.action] || 0) + 1;
@@ -170,7 +172,7 @@ export async function loadCounters({ now = new Date(), campaigns = [] }) {
     if (d.action === 'SCALE_UP') { const pr = j(d.params_json, {}); const inc = Math.max(0, (pr.toBudget ?? 0) - (pr.fromBudget ?? 0)); budgetIncreaseToday += inc; budgetIncreaseByStore[d.store_id] = (budgetIncreaseByStore[d.store_id] || 0) + inc; }
   }
   // budget currently under AI control = ACTIVE campaigns the Operator opened/scaled in the last 7 days (sum of their current daily budgets)
-  const touched = await prisma.ambOperatorDecision.findMany({ where: { action: { in: ['OPEN', 'SCALE_UP'] }, status: { in: ['EXECUTED', 'VERIFIED'] }, executed_at: { gte: weekAgo } }, select: { campaign_id: true, store_id: true }, distinct: ['campaign_id'] });
+  const touched = await prisma.ambOperatorDecision.findMany({ where: { ...acct, action: { in: ['OPEN', 'SCALE_UP'] }, status: { in: ['EXECUTED', 'VERIFIED'] }, executed_at: { gte: weekAgo } }, select: { campaign_id: true, store_id: true }, distinct: ['campaign_id'] });
   const byId = new Map(campaigns.map((c) => [c.id, c]));
   let aiBudget = 0; const aiBudgetByStore = {};
   for (const t of touched) { const c = byId.get(t.campaign_id); if (c && c.status === 'ACTIVE' && c.budget) { aiBudget += c.budget; aiBudgetByStore[t.store_id] = (aiBudgetByStore[t.store_id] || 0) + c.budget; } }

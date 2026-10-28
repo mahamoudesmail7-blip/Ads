@@ -27,6 +27,7 @@ import { entityWindowMetrics } from './metricsEngine.js';
 import { windowRange } from './operatorRules.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { raiseAlert } from './alerts.js';
+import { acctWhere } from './acctFilter.js';
 import { GATE_PERMISSION } from './writeGate.js';
 
 export const KIND = 'DAILY_ZERO_SPEND';
@@ -208,7 +209,7 @@ async function conflictsFor(campaignIds, date, now, deps) {
 }
 async function executedTodayCount(date, deps) {
   if (deps.executedToday) return deps.executedToday(date);
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { rule_name: `AUTO:${KIND}`, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED'] }, created_at: { gte: new Date(Date.now() - 48 * 3_600_000) } }, select: { evidence_json: true } }).catch(() => []);
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(await acctWhere()), rule_name: `AUTO:${KIND}`, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED'] }, created_at: { gte: new Date(Date.now() - 48 * 3_600_000) } }, select: { evidence_json: true } }).catch(() => []);
   return rows.filter((d) => j(d.evidence_json, {})?.zeroSpend?.date === date).length;
 }
 export async function evaluateZeroSpendCheck({ now = new Date(), policy = null, deps = {} } = {}) {

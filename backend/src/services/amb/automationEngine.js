@@ -31,6 +31,7 @@ import { cairoDate } from './dailyPlanTime.js';
 import { cairoDayStart } from './executionHistory.js';
 import { defaultReadBack } from './budgetExecution.js';
 import { supersedeOlder, sweepStale, findAlreadyApplied } from './decisionHygiene.js';
+import { acctWhere } from './acctFilter.js';
 
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -313,10 +314,10 @@ export async function runAutomationTick({ now = new Date(), deps = {} } = {}) {
     for (const c of ev.candidates.filter((x) => x.productMode === 'AUTOMATIC' && x.autoBlockers.some((b) => b.code === 'NEEDS_CONFIGURATION'))) await raiseAlert({ severity: 'WARNING', category: 'OPERATOR', title: `AUTOMATIC متوقف على منتج ناقص: ${c.productName || c.productKey}`, message: c.autoBlockers.find((b) => b.code === 'NEEDS_CONFIGURATION').message.slice(0, 460), entityId: c.campaignId, dedupeKey: `automation:needs:${c.productKey}:${cairoDate(now)}` }).catch(() => {});
     const p = await persistCandidates(ev.candidates, { adAccountId: ev.adAccountId, mode: config.mode, now }); out.persisted = { created: p.created, updated: p.updated, superseded: p.superseded || 0 };
     if ((deps.sweepStale ?? !deps.evalDeps) && ev.adAccountId && !ev.skipped.some((x) => x.code === 'NO_ACTIVE_PRODUCT_POLICIES')) { // only after a FULL evaluation (a test that injects a partial world must opt in with deps.sweepStale)
-       try { const sw = await sweepStale({ seenKeys: new Set(ev.candidates.map((x) => x.key)), today: cairoDate(now) }); out.persisted.expiredStale = sw.expired; } catch (e) { logger.warn('[automation] stale sweep failed', { message: e.message }); } } // open AUTO decisions this full tick did not produce are closed, never left as «actionable»
+       try { const sw = await sweepStale({ seenKeys: new Set(ev.candidates.map((x) => x.key)), today: cairoDate(now), adAccountId: ev.adAccountId }); out.persisted.expiredStale = sw.expired; } catch (e) { logger.warn('[automation] stale sweep failed', { message: e.message }); } } // open AUTO decisions this full tick did not produce are closed, never left as «actionable»
     if (gate.length) { lastRun = out; return out; } // the owner still sees what WOULD run (PREPARED decisions), nothing executes
     const policies = deps.policies || await loadActivePolicies().catch(() => new Map()); const dayStart = cairoDayStart(now); const sentByProduct = new Map();
-    const changesToday = deps.changesToday || ((productId) => (productId == null ? 0 : prisma.ambOperatorDecision.count({ where: { product_id: productId, rule_name: { startsWith: AUTO_PREFIX }, NOT: { rule_name: { startsWith: `${AUTO_PREFIX}MANUAL` } }, action: { in: ['SCALE_UP', 'SCALE_DOWN'] }, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED', 'UNCERTAIN'] }, updated_at: { gte: dayStart } } })));
+    const changesToday = deps.changesToday || (async (productId) => (productId == null ? 0 : prisma.ambOperatorDecision.count({ where: { ...(await acctWhere()), product_id: productId, rule_name: { startsWith: AUTO_PREFIX }, NOT: { rule_name: { startsWith: `${AUTO_PREFIX}MANUAL` } }, action: { in: ['SCALE_UP', 'SCALE_DOWN'] }, status: { in: ['EXECUTING', 'EXECUTED', 'VERIFIED', 'UNCERTAIN'] }, updated_at: { gte: dayStart } } })));
     let sent = 0; const counters = deps.counters || await loadCounters({ now, campaigns: [] }).catch(() => ({ actionsLastHour: 0 })); const hourly = config.limits.maxActionsPerHour || null;
     for (const c of ev.candidates.filter((x) => x.canExecuteNow)) {
       if (sent >= S.maxActionsPerTick) { out.deferred.push({ campaignId: c.campaignId, code: 'MAX_ACTIONS_PER_TICK' }); continue; }

@@ -61,8 +61,10 @@ import * as AUTO from '../services/amb/automationEngine.js';
 import * as AREADY from '../services/amb/automationReadiness.js';
 import * as MANUAL from '../services/amb/manualOperations.js';
 
+import { ambAccountScopeAll } from '../services/amb/accountScopeMiddleware.js';
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
+router.use(ambAccountScopeAll); // the AI Operator screens follow the account the owner chose (X-Amb-Account) — this request only; rules / limits / policies are global and identical for every account
 const ADMIN = requireRole('ADMIN');
 
 async function adAccountId() {

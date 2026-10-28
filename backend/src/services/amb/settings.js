@@ -12,6 +12,8 @@ export const AMB_DEFAULT_SETTINGS = {
   ambExecutionMode: 'APPROVAL',        // ADVISORY | APPROVAL | AUTOPILOT
   ambSyncIntervalMinutes: 15,
   // Ad accounts the Home dashboard can be switched to (VIEW-ONLY: read-only Meta sync + analysis; every write still goes through the single connected account). Ahmed Samy / Hady / Yasser.
+  // AI Operator on every switchable account (see services/amb/operatorAccounts.js). OFF until the owner switches it on: the connected account is processed exactly as before.
+  ambOperatorAllAccounts: false,
   ambViewAccountIds: ['act_1518142859790043', 'act_877011384919552', 'act_1370863561334304'],
   ambAlsoRefreshAdsDailyMetric: true,  // piggy-back the existing metaSync.runSync so the current AI Intelligence page goes live too
   ambDefaultPricingMultiplier: 3,

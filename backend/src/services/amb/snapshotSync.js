@@ -189,6 +189,8 @@ let running = false;
  * @param {{trigger?: 'SCHEDULED'|'MANUAL'}} opts
  */
 export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
+  const scoped = await scopedViewAccount();
+  if (scoped) return runViewAccountSync(scoped, { force: trigger === 'MANUAL' }); // inside another account's scope a "sync" is that account's read-only sync — never the connected account's full cycle
   if (running) return { skipped: 'ALREADY_RUNNING' };
   running = true;
 
@@ -320,6 +322,8 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
 
 /** Last run + computed next-due time + status, for the Overview / Settings header. */
 export async function getSyncStatus() {
+  const scoped = await scopedViewAccount();
+  if (scoped) return getAccountSyncInfo(scoped); // freshness / staleness of the account the code is working for
   const [last, lastSuccess, settings] = await Promise.all([
     prisma.ambSyncRun.findFirst({ where: { trigger: { not: 'VIEW' } }, orderBy: { started_at: 'desc' } }),
     prisma.ambSyncRun.findFirst({ where: { status: 'SUCCESS', trigger: { not: 'VIEW' } }, orderBy: { started_at: 'desc' } }),
@@ -362,6 +366,13 @@ export function startAmbSnapshotScheduler() {
 // discovery, no alert. Its sync-run rows carry trigger 'VIEW' and are excluded from getSyncStatus (the connected account's freshness is never confused with them).
 // =====================================================================================================================
 export const VIEW_SYNC_STALE_MINUTES = 10;
+/** The scoped account id when it is NOT the connected one (null = no scope / the connected account). */
+async function scopedViewAccount() {
+  const id = accountScope.getStore()?.adAccountId;
+  if (!id) return null;
+  const conn = await getConnectionUnscoped();
+  return conn && id !== conn.selected_ad_account_id ? id : null;
+}
 const viewRunning = new Set();
 
 /** The accounts the Home dashboard may be switched to (settings.ambViewAccountIds). The caller decides which one is "connected". */

@@ -8,6 +8,7 @@
 // Idempotent by construction: decision_key = hash(rule|campaign|action|cooldown-bucket) is UNIQUE, execution claims a decision with a
 // conditional update, and the executor has its own duplicate window — retries can never pause/open/scale twice.
 import { permissionFor, PERMISSION_META } from './executionPermissions.js';
+import { acctWhere } from './acctFilter.js';
 import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
@@ -225,7 +226,7 @@ export async function evaluateOperator({ rules = null, persist = false, only = n
       if (res.executed) { run.counters.actionsLastHour++; run.counters.actionsToday++; run.autoExecuted++; run.counters.byAction[c.action] = (run.counters.byAction[c.action] || 0) + 1; }
     }
   }
-  if (!only) out.expired = await expireStale({ seen, now });
+  if (!only) out.expired = await expireStale({ seen, now, adAccountId: world.adAccountId });
   out.autoExecuted = run.autoExecuted;
   return out;
 }
@@ -280,8 +281,8 @@ async function persistCandidate(c, { adAccountId, mode, now }) {
   return existing; // APPROVED / EXECUTING / terminal: never rewritten by a re-evaluation (idempotent)
 }
 /** Pre-execution decisions that stopped being produced are EXPIRED (context changed) — never silently left as "actionable". */
-async function expireStale({ seen, now }) {
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] }, NOT: [{ rule_name: { startsWith: 'DYNAMIC_BUDGET:' } }, { rule_name: { startsWith: 'AUTO:' } }] }, select: { id: true, decision_key: true } }); // the Dynamic Budget Optimizer expires its own rows
+async function expireStale({ seen, now, adAccountId = null }) {
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(adAccountId ? { ad_account_id: adAccountId } : await acctWhere()), status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] }, NOT: [{ rule_name: { startsWith: 'DYNAMIC_BUDGET:' } }, { rule_name: { startsWith: 'AUTO:' } }] }, select: { id: true, decision_key: true } }); // the Dynamic Budget Optimizer expires its own rows
   const stale = rows.filter((r) => !seen.has(r.decision_key)).map((r) => r.id);
   if (!stale.length) return 0;
   const r = await prisma.ambOperatorDecision.updateMany({ where: { id: { in: stale }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, data: { status: 'EXPIRED', error: 'NO_LONGER_APPLICABLE' } });

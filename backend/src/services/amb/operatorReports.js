@@ -1,5 +1,6 @@
 // 🤖 AI Operator — READ MODELS: overview KPIs, decision list/shaping, Shadow performance report, Shadow outcome reconciliation. 2026-10-03.
 // Read-only except reconcileShadowOutcomes (writes only the shadow_json of Operator decisions). Nothing here touches Meta.
+import { dashAcctWhere, planAcctWhere } from './acctFilter.js';
 import { prisma } from '../../prisma.js';
 import { ACTION_LABEL_AR } from './operatorRules.js';
 import { getOperatorConfig, listRules, listExceptions } from './operatorStore.js';
@@ -44,7 +45,7 @@ export function shapeDecision(d) {
 }
 
 export async function listDecisions({ bucket = 'today', status = null, action = null, store = null, limit = 100, now = new Date() } = {}) {
-  const where = {};
+  const where = { ...(await dashAcctWhere()) };
   if (store) where.store_id = store;
   if (action) where.action = action;
   if (status) where.status = { in: String(status).split(',') };
@@ -71,10 +72,10 @@ export async function decisionEvents(decisionId) {
 /** Top-of-page KPIs (spec §5). Counts come from persisted decisions + the live exceptions list; `monitored` from the synced campaign list. */
 export async function operatorOverview({ now = new Date(), monitored = null } = {}) {
   const [config, rules, exceptions] = await Promise.all([getOperatorConfig(), listRules(), listExceptions({ now })]);
-  const open = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['SHADOW', 'PREPARED', 'BLOCKED', 'SNOOZED'] } }, select: { action: true, status: true, blocked_codes_json: true } });
+  const open = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: { in: ['SHADOW', 'PREPARED', 'BLOCKED', 'SNOOZED'] } }, select: { action: true, status: true, blocked_codes_json: true } });
   const dayAgo = new Date(now.getTime() - 24 * MS_H);
-  const executedToday = await prisma.ambOperatorDecision.count({ where: { status: { in: ['EXECUTED', 'VERIFIED'] }, executed_at: { gte: dayAgo } } });
-  const shadowToday = await prisma.ambOperatorDecision.count({ where: { created_at: { gte: dayAgo } } });
+  const executedToday = await prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: { in: ['EXECUTED', 'VERIFIED'] }, executed_at: { gte: dayAgo } } });
+  const shadowToday = await prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), created_at: { gte: dayAgo } } });
   const live = open.filter((d) => d.status !== 'BLOCKED');
   let protectedN = 0, blockedSafety = 0, blockedDq = 0;
   for (const d of open.filter((x) => x.status === 'BLOCKED')) {
@@ -102,7 +103,7 @@ export async function operatorOverview({ now = new Date(), monitored = null } = 
 // ---------------------------------------------------------------------------
 export async function shadowReport({ days = 7, now = new Date() } = {}) {
   const since = new Date(now.getTime() - days * 86_400_000);
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { created_at: { gte: since }, mode_at_decision: { in: ['SHADOW', 'APPROVAL', 'AUTOPILOT'] } }, select: { action: true, status: true, shadow_json: true, blocked_codes_json: true, mode_at_decision: true, created_at: true } });
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), created_at: { gte: since }, mode_at_decision: { in: ['SHADOW', 'APPROVAL', 'AUTOPILOT'] } }, select: { action: true, status: true, shadow_json: true, blocked_codes_json: true, mode_at_decision: true, created_at: true } });
   const by = { SHADOW: { PAUSE: 0, OPEN: 0, SCALE_UP: 0, SCALE_DOWN: 0 }, blocked: 0 };
   const hind = { evaluated: 0, wasteAvoided: 0, wasteAvoidedAmount: 0, laterPurchases: 0, userDidSame: 0, stillPending: 0 };
   for (const r of rows) {
@@ -130,7 +131,7 @@ export async function shadowReport({ days = 7, now = new Date() } = {}) {
  */
 export async function reconcileShadowOutcomes({ now = new Date(), minAgeHours = 2, limit = 80, deps = {} } = {}) {
   const cutoff = new Date(now.getTime() - minAgeHours * MS_H);
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: 'SHADOW', created_at: { lte: cutoff, gte: new Date(now.getTime() - 30 * 86_400_000) }, shadow_json: null }, orderBy: { created_at: 'asc' }, take: limit });
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: 'SHADOW', created_at: { lte: cutoff, gte: new Date(now.getTime() - 30 * 86_400_000) }, shadow_json: null }, orderBy: { created_at: 'asc' }, take: limit });
   let done = 0;
   for (const d of rows) {
     const before = j(d.before_json, {}), ev = j(d.evidence_json, {});

@@ -144,7 +144,7 @@ async function loadViewAccounts() {
   window.__ambAccount = isViewOnly() ? state.account : '';
 }
 /** Tabs whose engines keep product-level state across accounts: they stay on the connected account (the screen says so). */
-const NOT_SCOPED_TABS = new Set(['decisions', 'operator', 'tasks']);
+const NOT_SCOPED_TABS = new Set(['decisions', 'tasks']);
 function setViewAccount(id) {
   state.account = id && id !== state.viewAccounts?.primaryId ? id : null;
   window.__ambAccount = state.account || ''; // api-client sends it as X-Amb-Account on every AI Media Buyer request

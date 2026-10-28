@@ -31,14 +31,15 @@ export function getOperatorSchedulerStatus() {
 
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`operator tick timed out after ${ms}ms`)), ms).unref?.())]);
 
-export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
+export async function runOperatorTick({ now = new Date(), deps = {}, extraAccount = false } = {}) {
   const config = await getOperatorConfig();
+  if (extraAccount && config.mode === 'OFF') return { skipped: 'MODE_OFF' };
   // MANUAL (OFF): no rule evaluation, no advisor tick, no rollback preparation — only record what the OWNER changes by hand (Operator's own event rows, never Meta)
   if (config.mode === 'OFF') return { skipped: 'MODE_OFF', monitoringOnly: true, manualOverrides: await detectManualOverrides({ now }).catch((e) => ({ error: e.message })), manualChanges: await detectManualChanges({ now, throttleMin: 30 }).catch((e) => ({ error: e.message })) };
   const rules = (await listRules()).filter((r) => r.enabled);
   const out = { mode: config.mode, emergencyStop: config.emergency_stop, rules: rules.length };
   // one strategy: make sure every advertised product has a Smart Advisor plan before rules are judged against it (bounded: 3 products per tick)
-  if (rules.length) out.advisorPlans = await ensureAdvisorPlans({ max: 3, maxMs: 60_000 }).catch((e) => ({ error: e.message }));
+  if (rules.length && !extraAccount) out.advisorPlans = await ensureAdvisorPlans({ max: 3, maxMs: 60_000 }).catch((e) => ({ error: e.message })); // product-level plans: built once, from the connected account
   if (rules.length) {
     const res = await evaluateOperator({ persist: true, now, deps, autoExecute: config.mode === 'AUTOPILOT' });
     out.evaluated = res.campaignsEvaluated; out.candidates = res.candidates.length; out.autoExecuted = res.autoExecuted || 0; out.summary = res.summary; out.expired = res.expired || 0;
@@ -51,6 +52,7 @@ export async function runOperatorTick({ now = new Date(), deps = {} } = {}) {
   // Dynamic Budget Optimizer: OFF by default (policy.enabled=false). When the owner enables it, it records SHADOW/PREPARED decisions with their action history; it never writes to Meta from here.
   let optRows = [], optPolicy = null;
   try { const pol = await getBudgetPolicy(); optPolicy = pol; if (pol.enabled) { const r = await evaluateBudgetOptimization({ persist: true, now }); optRows = r.rows || []; out.budgetOptimizer = { counts: r.counts, persisted: r.persisted }; } } catch (e) { out.budgetOptimizer = { error: e.message }; }
+  if (extraAccount) return out; // the rest are product-level / cross-account monitoring jobs (they already see every account's decisions): they run once, in the connected account's pass
   out.smartAlerts = await (await import('./smartAlerts.js')).runSmartAlerts({ now, rows: optRows.map((r) => ({ ...r, adAccountId: r.adAccountId || null })), policy: optPolicy }).catch((e) => ({ error: e.message })); // 10 operational situations → AmbAlert (deduped); raises alerts only, executes nothing
   // monitoring-side jobs always run (they only write the Operator's own rows / prepare rollbacks, never execute)
   out.manualOverrides = await detectManualOverrides({ now }).catch((e) => ({ error: e.message }));
@@ -68,6 +70,10 @@ export function startOperatorScheduler() {
     running = true;
     try {
       lastRun = { at: new Date().toISOString(), result: await withTimeout(runOperatorTick(), TICK_TIMEOUT_MS) };
+      try { // one pass per other account when the owner switched "Operator on every account" on — each inside that account's scope and with its own timeout
+        const { forEachOperatorAccount } = await import('./operatorAccounts.js');
+        lastRun.otherAccounts = await forEachOperatorAccount((id) => withTimeout(runOperatorTick({ extraAccount: true }), TICK_TIMEOUT_MS));
+      } catch (e) { lastRun.otherAccounts = { error: e.message }; }
       consecutiveFailures = 0; nextRunAt = 0;
     } catch (err) {
       consecutiveFailures++;

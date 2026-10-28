@@ -1,6 +1,7 @@
 // AI Operator V2 — the Home screen payload (read-only). Composed ONLY from existing sources: the campaign query (period KPIs, view counts), the operator config (mode / lock / permissions), the policy stores,
 // the decision / plan tables and the autopilot gate. A policy counts as READY only when it is ENABLED and APPROVED at its current version — a saved draft is never «ready». Nothing is written.
 //   EMPLOYEE (read-only): period KPIs, view counts and data freshness only — no gates, policies, approvals or the to-do list.
+import { dashAcctWhere, planAcctWhere } from './acctFilter.js';
 import { prisma } from '../../prisma.js';
 import { queryCampaigns } from './campaignQuery.js';
 import { getOperatorConfig, autopilotGate } from './operatorStore.js';
@@ -29,7 +30,7 @@ export async function buildHome({ user, access, query = {}, now = new Date() }) 
   if (!access.capabilities.reviewActions) return out;
   const cfg = await getOperatorConfig();
   out.gates = { mode: cfg.mode, writesLocked: cfg.writesLocked !== false, emergencyStop: !!cfg.emergency_stop, permissions: cfg.execPermissions || {}, permissionsOn: Object.values(cfg.execPermissions || {}).filter((v) => v === true).length };
-  out.pending = { decisions: await prisma.ambOperatorDecision.count({ where: { status: 'PREPARED' } }), plans: await prisma.ambDailyPlan.count({ where: { status: 'PREPARED', simulated: false } }) };
+  out.pending = { decisions: await prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'PREPARED' } }), plans: await prisma.ambDailyPlan.count({ where: { AND: [await planAcctWhere()], status: 'PREPARED', simulated: false } }) };
   const last = await prisma.ambAction.findFirst({ where: { execution_status: { in: ['EXECUTED', 'VERIFIED', 'FAILED'] } }, orderBy: { id: 'desc' }, select: { id: true, action_type: true, entity_name: true, execution_status: true, executed_at: true, verified_at: true, ai_reason: true } });
   out.lastAction = last ? { id: last.id, action: last.action_type, campaign: last.entity_name, status: last.execution_status, verified: !!last.verified_at, at: (last.executed_at || null), reason: last.ai_reason || null } : null;
   out.policies = await policyStates();

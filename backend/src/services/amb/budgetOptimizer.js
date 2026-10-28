@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getOperatorConfig } from './operatorStore.js';
+import { acctWhere } from './acctFilter.js';
 import { windowRange } from './operatorRules.js';
 import { entityWindowMetrics } from './metricsEngine.js';
 import { evaluateGuards, decisionConfidence, resolveZeroOrderLimit } from './operatorGuards.js';
@@ -438,7 +439,7 @@ export async function persistBudgetDecisions(rows, { adAccountId, mode, now = ne
   }
   if (!expireStale) return { created, updated, expired: 0 }; // single-decision preparation (owner-approved execution) must never touch other decisions
   // this optimizer's own stale open rows (evidence changed / campaign no longer qualifies) expire here — the engine's expiry skips them
-  const open = await prisma.ambOperatorDecision.findMany({ where: { rule_name: { startsWith: RULE_PREFIX }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, select: { id: true, decision_key: true } });
+  const open = await prisma.ambOperatorDecision.findMany({ where: { ...(adAccountId ? { ad_account_id: adAccountId } : await acctWhere()), rule_name: { startsWith: RULE_PREFIX }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, select: { id: true, decision_key: true } }); // only THIS account's own rows
   const stale = open.filter((o) => !seen.has(o.decision_key)).map((o) => o.id);
   if (stale.length) await prisma.ambOperatorDecision.updateMany({ where: { id: { in: stale }, status: { in: ['SHADOW', 'BLOCKED', 'PREPARED'] } }, data: { status: 'EXPIRED', error: 'NO_LONGER_APPLICABLE' } });
   return { created, updated, expired: stale.length };

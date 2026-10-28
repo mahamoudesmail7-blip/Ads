@@ -3,6 +3,7 @@
 //   plans (daily / independent) that are prepared and not yet approved.
 // It only READS and shapes; approving/rejecting goes through the existing official routes (engine → bridge → executor). Bulk approval is limited to low-risk actions that passed every
 // check, needs the owner to confirm the exact campaign count and exposed budget, saves a snapshot, and every campaign is re-validated live at its own execution.
+import { dashAcctWhere, planAcctWhere } from './acctFilter.js';
 import { prisma } from '../../prisma.js';
 import { getOperatorConfig } from './operatorStore.js';
 import { listDecisions } from './operatorReports.js';
@@ -43,7 +44,7 @@ export function approvalRow(d, config) {
 export async function listApprovals({ now = new Date(), deps = {} } = {}) {
   const config = deps.config || await getOperatorConfig();
   const decisions = (deps.decisions || await listDecisions({ bucket: 'approval', limit: 150, now })).filter((d) => ['PREPARED', 'SNOOZED'].includes(d.status)).map((d) => approvalRow(d, config));
-  const plansRaw = deps.plans || await prisma.ambDailyPlan.findMany({ where: { status: 'PREPARED', simulated: false }, include: { items: { select: { selected: true, evidence_json: true, campaign_id: true, campaign_name: true, product_name: true, risk: true, eligibility: true } } }, orderBy: { id: 'desc' }, take: 10 });
+  const plansRaw = deps.plans || await prisma.ambDailyPlan.findMany({ where: { AND: [await planAcctWhere()], status: 'PREPARED', simulated: false }, include: { items: { select: { selected: true, evidence_json: true, campaign_id: true, campaign_name: true, product_name: true, risk: true, eligibility: true } } }, orderBy: { id: 'desc' }, take: 10 });
   const plans = plansRaw.map((p) => { const sel = p.items.filter((i) => i.selected); return { kind: 'PLAN', planId: p.id, key: p.plan_key, type: p.type, date: p.plan_date, independent: p.plan_key.includes('|T-'), selected: sel.length, total: p.items.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)), exposure: { count: sel.length, exposedBudget: Math.round(sel.reduce((t, i) => t + (Number(j(i.evidence_json, {}).budget) || 0), 0)), campaignIds: sel.map((i) => i.campaign_id).sort() }, policyVersion: j(p.evidence_json, {}).openCpa?.version ?? null, version: p.version, execution: gateOf(config, p.type === 'OPEN' ? 'OPEN' : 'PAUSE'), dataState: p.data_state,
       items: sel.map((i) => { const e = j(i.evidence_json, {}); return { campaignId: i.campaign_id, campaign: i.campaign_name, product: i.product_name, before: p.type === 'OPEN' ? 'PAUSED' : 'ACTIVE', after: p.type === 'OPEN' ? 'ACTIVE' : 'PAUSED', budget: e.budget ?? null, cpa: e.cpaPolicy?.cpa ?? e.m7?.cpa ?? null, orders: e.cpaPolicy?.purchases ?? e.m7?.purchases ?? null, risk: i.risk || null, stock: e.stock?.status || null, mapping: e.mapping || null }; }) }; });
   const decExposed = decisions.reduce((t, d) => t + (Number(d.exposedBudget) || 0), 0);
@@ -56,7 +57,7 @@ export async function bulkPreview({ ids, deps = {} }) {
   if (!list.length) return { ok: false, blockers: ['مفيش قرارات متحددة.'], items: [], count: 0, exposedBudget: 0 };
   if (list.length > BULK_MAX) blockers.push(`الموافقة الجماعية لحد ${BULK_MAX} قرارات.`);
   const config = deps.config || await getOperatorConfig();
-  const rows = deps.rows || await prisma.ambOperatorDecision.findMany({ where: { id: { in: list } } });
+  const rows = deps.rows || await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), id: { in: list } } });
   if (rows.length !== list.length) blockers.push('فيه قرار مش موجود.');
   const notReady = rows.filter((r) => r.status !== 'PREPARED'); if (notReady.length) blockers.push(`قرارات مش جاهزة: ${notReady.map((r) => `#${r.id}(${r.status})`).join(' ')}`);
   const actions = new Set(rows.map((r) => r.action)); const rules = new Set(rows.map((r) => r.rule_id ?? r.rule_name));
@@ -90,9 +91,9 @@ export async function activeCampaignCount(adAccountId, { now = new Date() } = {}
 export async function statusBar({ now = new Date(), deps = {} } = {}) {
   const today = now.toISOString().slice(0, 10);
   const [pendingDecisions, pendingPlans, scheduledPlans, importantAlerts] = await Promise.all([
-    prisma.ambOperatorDecision.count({ where: { status: 'PREPARED' } }),
-    prisma.ambDailyPlan.count({ where: { status: 'PREPARED', simulated: false } }),
-    prisma.ambDailyPlan.count({ where: { status: { in: ['PREPARED', 'APPROVED', 'RUNNING'] }, simulated: false, expires_at: { gt: now } } }),
+    prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'PREPARED' } }),
+    prisma.ambDailyPlan.count({ where: { AND: [await planAcctWhere()], status: 'PREPARED', simulated: false } }),
+    prisma.ambDailyPlan.count({ where: { AND: [await planAcctWhere()], status: { in: ['PREPARED', 'APPROVED', 'RUNNING'] }, simulated: false, expires_at: { gt: now } } }),
     prisma.ambAlert.count({ where: { read: false, severity: { in: ['CRITICAL', 'WARNING'] }, created_at: { gte: new Date(now.getTime() - 24 * 3_600_000) } } }),
   ]);
   let activeCampaigns = deps.activeCampaigns ?? null;

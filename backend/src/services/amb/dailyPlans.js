@@ -96,10 +96,24 @@ export function shapePlan(p, items = []) {
 }
 const latestVersion = (plan_key) => prisma.ambDailyPlan.findFirst({ where: { plan_key }, orderBy: { version: 'desc' }, include: { items: { orderBy: { rank: 'asc' } } } });
 
+// ---------------------------------------------------------------------------------------------------------------------
+// PER-ACCOUNT plans. The connected account's plans keep their historical keys (nothing changes for them); a plan of any OTHER account (running inside that account's scope, see metaAuth.accountScope)
+// carries a "|A-<account id>" suffix, so every account has its OWN OPEN / PAUSE plan per day. Every plan lookup below is filtered to the account being worked on.
+// ---------------------------------------------------------------------------------------------------------------------
+const acctTag = async () => { const c = await getConnection(); return c?.scopedView ? `|A-${c.selected_ad_account_id}` : ''; };
+const keyOf = async (type, date, simulated, variant) => planKey(type, date, simulated, variant) + (await acctTag());
+/** where-fragment (put it in an AND array) limiting plans to the account being worked on */
+const planAcctWhere = async () => { const t = await acctTag(); return t ? { plan_key: { endsWith: t } } : { NOT: { plan_key: { contains: '|A-' } } }; };
+/** a plan belongs to exactly one account — acting on it from another account's scope is refused (it would be judged against the wrong account's limits and exposure) */
+async function assertPlanInScope(plan) {
+  const own = plan.plan_key.includes('|A-') ? `|A-${plan.plan_key.split('|A-').pop()}` : ''; const here = await acctTag();
+  if (own !== here) { const e = new Error('الخطة دي تابعة لحساب إعلاني تاني — افتحها من الحساب بتاعها.'); e.status = 409; throw e; }
+}
+
 /** Builds + stores the plan of `type` for Cairo day `date`. Idempotent: an existing plan of that day/type is returned untouched (unique plan_key+version). */
 export async function preparePlan({ type, date, now = new Date(), simulated = isTestClock(), deps = {}, userId = null, variant = null, only = null, unselected = false, slotTime = null }) {
   if (!SLOTS[type]) { const e = new Error('نوع خطة غير معروف.'); e.status = 400; throw e; }
-  const key = planKey(type, date, simulated, variant); const exists = await latestVersion(key); if (exists) return { plan: exists, created: false };
+  const key = await keyOf(type, date, simulated, variant); const exists = await latestVersion(key); if (exists) return { plan: exists, created: false };
   const fresh = await ensureFreshData({ now, deps });
   const built = await (deps.build ? deps.build({ type, now }) : (type === 'OPEN' ? buildOpenCandidates({ now, slotTime: slotTime || SLOTS.OPEN, deps: deps.candidates || {} }) : buildPauseCandidates({ now, slotTime: slotTime || SLOTS.PAUSE, deps: deps.candidates || {} })));
   if (only) { const keep = new Set(only.map(String)); built.items = built.items.filter((i) => keep.has(String(i.campaignId))).map((i, n) => ({ ...i, rank: n + 1, selected: !!i.selectable })); if (!built.items.length) { const e = new Error('الحملة المطلوبة مش ضمن مرشحي الخطة (محمية/ممنوعة/مش متوقفة).'); e.status = 400; throw e; } }
@@ -137,6 +151,7 @@ export function startOneOffPlan({ type, only = null, userId, now = new Date(), d
 export async function previewExecution({ planId, now = new Date(), deps = {} }) {
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   if (!plan) { const e = new Error('الخطة غير موجودة.'); e.status = 404; throw e; }
+  await assertPlanInScope(plan);
   const config = await (deps.config ? deps.config() : getOperatorConfig()); const dcfg = deps.dcfg || await getDailyPlanConfig();
   const gate = executionGate({ config, dcfg, type: plan.type, simulatedPlan: plan.simulated });
   const sel = plan.items.filter((i) => i.selected).slice(0, 25); const rows = [];
@@ -157,7 +172,7 @@ async function alertMissedPlan(p) {
 export async function ensureDuePlans({ now = new Date(), simulated = isTestClock(), deps = {} } = {}) {
   const out = { prepared: [], missed: [] };
   for (const d of dueTypes(now)) {
-    const key = planKey(d.type, d.date, simulated); const ex = await latestVersion(key);
+    const key = await keyOf(d.type, d.date, simulated); const ex = await latestVersion(key);
     if (!ex) { const r = await preparePlan({ type: d.type, date: d.date, now, simulated, deps }); if (r.created) out.prepared.push({ type: d.type, date: d.date, planId: r.plan.id }); }
     else if (!ex.surfaced_at) { await prisma.ambDailyPlan.update({ where: { id: ex.id }, data: { surfaced_at: now } }); out.prepared.push({ type: d.type, date: d.date, planId: ex.id, surfacedOnly: true }); }
   }
@@ -175,7 +190,7 @@ export async function planAudit(planId, limit = 300) {
   return rows.map((e) => ({ id: e.id, kind: e.kind, actor: e.actor, actorId: e.actor_id, note: e.note, campaignId: e.campaign_id, data: j(e.data_json, {}), at: e.created_at }));
 }
 async function plansOfDay(date, simulated) {
-  const out = {}; for (const type of Object.keys(SLOTS)) { const p = await latestVersion(planKey(type, date, simulated)); out[type] = p ? shapePlan(p, p.items) : null; } return out;
+  const out = {}; for (const type of Object.keys(SLOTS)) { const p = await latestVersion(await keyOf(type, date, simulated)); out[type] = p ? shapePlan(p, p.items) : null; } return out;
 }
 /** Everything the tab needs: today's two plans, the dashboard numbers, the next due slot, the last plan, the external-schedule warning. */
 export async function getDailyOverview({ now = new Date(), simulated = isTestClock() } = {}) {
@@ -183,9 +198,9 @@ export async function getDailyOverview({ now = new Date(), simulated = isTestClo
   const next = Object.keys(SLOTS).map((t) => ({ type: t, ...nextDue(t, now) })).sort((a, b) => a.at - b.at)[0];
   const cur = Object.values(plans).filter(Boolean);
   const sumBudget = (p) => p.items.filter((i) => i.selected).reduce((t, i) => t + (Number(i.evidence?.budget) || 0), 0);
-  const last = await prisma.ambDailyPlan.findFirst({ where: { simulated, status: { in: ['COMPLETED', 'MISSED', 'CANCELLED'] } }, orderBy: { id: 'desc' } });
+  const last = await prisma.ambDailyPlan.findFirst({ where: { simulated, status: { in: ['COMPLETED', 'MISSED', 'CANCELLED'] }, AND: [await planAcctWhere()] }, orderBy: { id: 'desc' } });
   const external = await detectExternalSchedule({});
-  const oneOff = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, OR: [{ plan_key: { contains: '|T-' } }, { plan_key: { contains: '|P-' } }] }, orderBy: { id: 'desc' }, include: { items: { orderBy: { rank: 'asc' } } } });
+  const oneOff = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, OR: [{ plan_key: { contains: '|T-' } }, { plan_key: { contains: '|P-' } }], AND: [await planAcctWhere()] }, orderBy: { id: 'desc' }, include: { items: { orderBy: { rank: 'asc' } } } });
   const latestByKey = new Map(); for (const p of oneOff) if (!latestByKey.has(p.plan_key) || latestByKey.get(p.plan_key).version < p.version) latestByKey.set(p.plan_key, p);
   return {
     now, cairo: cairoParts(now), date, testClock: isTestClock(), plans, oneOffPlans: [...latestByKey.values()].filter((p) => !['SUPERSEDED'].includes(p.status)).map((p) => shapePlan(p, p.items)),
@@ -205,10 +220,10 @@ export async function getDailyOverview({ now = new Date(), simulated = isTestClo
 export async function getDuePopups({ now = new Date(), simulated = isTestClock() } = {}) {
   const date = cairoDate(now); const out = [];
   for (const d of dueTypes(now)) {
-    const p = await latestVersion(planKey(d.type, d.date, simulated)); if (!p) { out.push({ type: d.type, date: d.date, preparing: true }); continue; }
+    const p = await latestVersion(await keyOf(d.type, d.date, simulated)); if (!p) { out.push({ type: d.type, date: d.date, preparing: true }); continue; }
     if (['PREPARED', 'APPROVED', 'RUNNING'].includes(p.status) && !p.dismissed_at) out.push({ type: d.type, date, planId: p.id, status: p.status, plan: shapePlan(p, p.items) });
   }
-  const slotPlans = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, plan_key: { contains: '|P-' }, status: { in: ['PREPARED', 'APPROVED', 'RUNNING'] }, dismissed_at: null, scheduled_at: { lte: now } }, include: { items: { orderBy: { rank: 'asc' } } } });
+  const slotPlans = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, plan_key: { contains: '|P-' }, status: { in: ['PREPARED', 'APPROVED', 'RUNNING'] }, dismissed_at: null, scheduled_at: { lte: now }, AND: [await planAcctWhere()] }, include: { items: { orderBy: { rank: 'asc' } } } });
   for (const p of slotPlans) out.push({ type: p.type, date, planId: p.id, status: p.status, plan: shapePlan(p, p.items), productSlot: true });
   return out;
 }
@@ -249,6 +264,7 @@ const withDeselectMark = (ev, selected, userId, now) => { const e = { ...(ev || 
 export async function updateSelection({ planId, selections, special = [], userId, now = new Date(), deps = {} }) {
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   if (!plan) { const e = new Error('الخطة غير موجودة.'); e.status = 404; throw e; }
+  await assertPlanInScope(plan);
   const latest = await prisma.ambDailyPlan.findFirst({ where: { plan_key: plan.plan_key }, orderBy: { version: 'desc' } });
   if (latest.id !== plan.id) { const e = new Error('دي نسخة قديمة من الخطة — اشتغل على آخر نسخة.'); e.status = 409; throw e; }
   if (['RUNNING', 'COMPLETED', 'CANCELLED', 'SUPERSEDED', 'MISSED'].includes(plan.status)) { const e = new Error(`الخطة ${plan.status} — مش قابلة للتعديل.`); e.status = 409; throw e; }
@@ -288,6 +304,7 @@ export async function protectWinner({ campaignId, userId, label = null }) {
   return { ok: true };
 }
 export async function cancelPlan({ planId, userId, reason = null, now = new Date() }) {
+  { const p0 = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, select: { plan_key: true } }); if (p0) await assertPlanInScope(p0); }
   const r = await prisma.ambDailyPlan.updateMany({ where: { id: Number(planId), status: { in: ['PREPARED', 'APPROVED', 'RUNNING'] } }, data: { status: 'CANCELLED', finished_at: now, summary_json: JSON.stringify({ cancelled: true, reason: reason || 'ألغاها المستخدم' }) } });
   if (!r.count) { const e = new Error('الخطة مش قابلة للإلغاء.'); e.status = 409; throw e; }
   await audit({ planId, userId, note: `إلغاء الخطة${reason ? ': ' + reason : ''}`, data: { action: 'CANCELLED', reason } });
@@ -319,6 +336,7 @@ export async function approvePlan({ planId, userId, now = new Date(), deps = {},
   await requireAdmin(userId, deps);
   const plan = await prisma.ambDailyPlan.findUnique({ where: { id: Number(planId) }, include: { items: { orderBy: { rank: 'asc' } } } });
   if (!plan) { const e = new Error('الخطة غير موجودة.'); e.status = 404; throw e; }
+  await assertPlanInScope(plan);
   const latest = await prisma.ambDailyPlan.findFirst({ where: { plan_key: plan.plan_key }, orderBy: { version: 'desc' } });
   if (latest.id !== plan.id) { const e = new Error('دي نسخة قديمة — اعتمد آخر نسخة.'); e.status = 409; throw e; }
   if (plan.status !== 'PREPARED') return { ok: false, status: plan.status, message: `الخطة ${plan.status} — مش قابلة للاعتماد.` };
@@ -480,7 +498,7 @@ export async function ensureProductSlotPlans({ now = new Date(), simulated = isT
   const made = []; let rules = null;
   for (const [k, refs] of wanted) {
     const [type, hhmm] = k.split('|'); if (now < dueAtTime(date, hhmm)) continue;
-    const key = planKey(type, date, simulated, slotVariant(hhmm)); if (await latestVersion(key)) continue;
+    const key = await keyOf(type, date, simulated, slotVariant(hhmm)); if (await latestVersion(key)) continue;
     rules = rules || await (deps.listProductRules || listProductRules)({ now });
     const ids = new Set(); for (const r of refs) { if (r.campaign) ids.add(r.campaign); if (r.product) for (const pr of rules.filter((x) => x.key === r.product)) for (const c of pr.campaigns) ids.add(c.id); }
     if (!ids.size) continue;
@@ -494,7 +512,7 @@ export async function ensureProductSlotPlans({ now = new Date(), simulated = isT
 // =====================================================================================================================
 // «الفتح حسب تكلفة الأوردر CPA» — applies the saved, versioned policy to the OPEN plan. Nothing here executes: preparing only SELECTS; approval + live revalidation stay as they are.
 // =====================================================================================================================
-const todaysOpenPlans = async ({ now, simulated }) => { const date = cairoDate(now); const rows = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, type: 'OPEN' }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } }); const seen = new Set(); return rows.filter((p) => { if (seen.has(p.plan_key)) return false; seen.add(p.plan_key); return true; }); };
+const todaysOpenPlans = async ({ now, simulated }) => { const date = cairoDate(now); const rows = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, type: 'OPEN', AND: [await planAcctWhere()] }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } }); const seen = new Set(); return rows.filter((p) => { if (seen.has(p.plan_key)) return false; seen.add(p.plan_key); return true; }); };
 const dataAgeMinutes = (asOf) => (asOf ? Math.max(0, Math.round((Date.now() - new Date(asOf).getTime()) / MS_M)) : 1e9);
 async function evaluatePlan({ plan, policy, now, deps, dataAgeMin, reselect = [] }) {
   const metrics = await loadWindowMetrics({ policy, now, deps: { metrics: deps.openCpaMetrics } });
@@ -507,7 +525,7 @@ async function evaluatePlan({ plan, policy, now, deps, dataAgeMin, reselect = []
 const rowView = (r) => ({ campaignId: r.it.campaign_id, campaignName: r.it.campaign_name, productName: r.it.product_name, eligibility: r.it.eligibility, selected: r.it.selected, verdict: r.eval.verdict, matched: r.eval.matched, cpa: r.eval.cpa, spend: r.eval.spend, purchases: r.eval.purchases, codes: r.eval.codes, reasons: r.eval.reasons, guardCodes: r.eval.guardCodes, userDeselected: !!r.evd.userDeselected });
 /** The panel above the OPEN table: the saved policy, and a LIVE preview of how today's OPEN plan looks under it (persists nothing). */
 export async function getOpenCpaOverview({ now = new Date(), simulated = isTestClock(), deps = {} } = {}) {
-  const policy = await getOpenCpaPolicy(); const date = cairoDate(now); const plans = await todaysOpenPlans({ now, simulated }); const plan = plans.find((p) => p.plan_key === planKey('OPEN', date, simulated)) || plans[0] || null;
+  const policy = await getOpenCpaPolicy(); const date = cairoDate(now); const plans = await todaysOpenPlans({ now, simulated }); const openKey = await keyOf('OPEN', date, simulated); const plan = plans.find((p) => p.plan_key === openKey) || plans[0] || null;
   const complete = policy.minCpa != null && policy.maxCpa != null && validateOpenCpa(policy, { today: date, requireRange: true }).length === 0;
   // stale = prepared before the SAVED policy version; v0 means no policy was ever saved, so there is nothing to be older than (never warn)
   const out = { policy: { ...policy, history: policy.history.slice(-10).reverse() }, window: complete ? windowRangeFor(policy, date) : null, plan: plan ? { id: plan.id, key: plan.plan_key, version: plan.version, status: plan.status, policyVersion: j(plan.evidence_json, {}).openCpa?.version ?? null, stale: policy.version > 0 && (j(plan.evidence_json, {}).openCpa?.version ?? null) !== policy.version } : null, preview: null };
@@ -624,7 +642,7 @@ export async function runOpenCpaAutomatic({ now = new Date(), deps = {} } = {}) 
  *  that product → the approved version is SUPERSEDED and a NEW PREPARED version needs a fresh approval, those items un-ticked + flagged. RUNNING / finished plans are never touched. Nothing executes. */
 export async function reconcilePlansForProduct({ productId, storeId = null, kind = 'CHANGED', policyVersion = null, userId = null, now = new Date(), simulated = isTestClock() }) {
   const out = { flagged: [], superseded: [] }; const date = cairoDate(now); const mark = { at: now.toISOString(), kind, productPolicyVersion: policyVersion };
-  const rows = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, status: { in: ['PREPARED', 'APPROVED'] } }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } });
+  const rows = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated, status: { in: ['PREPARED', 'APPROVED'] }, AND: [await planAcctWhere()] }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } });
   const seen = new Set();
   for (const p of rows) {
     if (seen.has(p.plan_key)) continue; seen.add(p.plan_key);
@@ -660,7 +678,7 @@ export async function runPauseAutomatic({ now = new Date(), deps = {} } = {}) {
   if (why.length) return { ran: false, why };
   const gate0 = await (deps.autopilotGate ? deps.autopilotGate() : (await import('./operatorStore.js')).autopilotGate()); if (!gate0.ok) return { ran: false, why: ['AUTOPILOT_GATE_NOT_READY'] };
   const date = cairoDate(now); const weekday = new Date(`${date}T12:00:00Z`).getUTCDay(); const gate = await automaticProductGate(deps); const out = { ran: true, plans: [] };
-  const plans = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated: false, type: 'PAUSE', status: 'PREPARED', scheduled_at: { lte: now }, expires_at: { gt: now } }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } });
+  const plans = await prisma.ambDailyPlan.findMany({ where: { plan_date: date, simulated: false, type: 'PAUSE', status: 'PREPARED', scheduled_at: { lte: now }, expires_at: { gt: now }, AND: [await planAcctWhere()] }, orderBy: [{ plan_key: 'asc' }, { version: 'desc' }], include: { items: { orderBy: { rank: 'asc' } } } });
   const seen = new Set();
   for (const p of plans) {
     if (seen.has(p.plan_key)) continue; seen.add(p.plan_key);
@@ -678,17 +696,30 @@ export async function runPauseAutomatic({ now = new Date(), deps = {} } = {}) {
 }
 
 let ticking = false;
+/**
+ * One tick = the connected account's pass (exactly as before) + — only when the owner switched "AI Operator on every account" on (settings.ambOperatorAllAccounts) — one pass per other account INSIDE that account's scope
+ * (its own plans, its own limits, its own freshness). A failure in one account never stops another.
+ */
 export async function runDailyPlanTick({ now = clockNow(), deps = {} } = {}) {
+  const out = await runDailyPlanTickForScope({ now, deps });
+  if (out.skipped === 'ALREADY_TICKING' || isTestClock() || deps.noExtraAccounts) return out;
+  try {
+    const { forEachOperatorAccount } = await import('./operatorAccounts.js');
+    out.otherAccounts = await forEachOperatorAccount(async (adAccountId) => { const r = await runDailyPlanTickForScope({ now, deps, extraAccount: true }); return r; });
+  } catch (e) { logger.warn('[dailyPlans] extra-account passes failed', { message: e.message }); }
+  return out;
+}
+async function runDailyPlanTickForScope({ now = clockNow(), deps = {}, extraAccount = false } = {}) {
   if (ticking) return { skipped: 'ALREADY_TICKING' }; ticking = true;
   try {
     const sim = isTestClock(); const out = await ensureDuePlans({ now, simulated: sim, deps });
     out.productSlots = await ensureProductSlotPlans({ now, simulated: sim, deps }).catch((e) => { logger.warn('[dailyPlans] product slot plans failed', { message: e.message }); return []; });
     const dcfg = await getDailyPlanConfig();
-    if (!sim) out.recovery = await import('./executionRecovery.js').then((m) => m.recoverInterrupted({ now, deps })).catch((e) => ({ error: e.message })); // settle work a restart interrupted: read-back only, never a re-send
+    if (!sim && !extraAccount) out.recovery = await import('./executionRecovery.js').then((m) => m.recoverInterrupted({ now, deps })).catch((e) => ({ error: e.message })); // settle work a restart interrupted: read-back only, never a re-send
     if (!sim) out.openCpaAutomatic =await runOpenCpaAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] open-cpa automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
     if (!sim) out.pauseAutomatic = await runPauseAutomatic({ now, deps }).catch((e) => { logger.warn('[dailyPlans] pause automatic skipped', { message: e.message }); return { ran: false, why: ['ERROR'] }; });
     if (dcfg.scheduledExecution.enabled && !sim) { // unattended execution of plans approved ahead of time — only when explicitly enabled
-      const due = await prisma.ambDailyPlan.findMany({ where: { simulated: false, status: 'APPROVED', scheduled_at: { lte: now }, expires_at: { gt: now } } });
+      const due = await prisma.ambDailyPlan.findMany({ where: { simulated: false, status: 'APPROVED', scheduled_at: { lte: now }, expires_at: { gt: now }, AND: [await planAcctWhere()] } });
       out.executed = []; for (const p of due) { out.executed.push(await runPlanExecution({ planId: p.id, userId: p.approved_by_id, now, deps })); }
     }
     return out;

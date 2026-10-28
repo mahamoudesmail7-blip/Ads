@@ -7,6 +7,7 @@
 //   · findAlreadyApplied  the same change already executed by ANOTHER decision → the second one must not be sent (idempotency across duplicate rows and rule families).
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
+import { acctWhere } from './acctFilter.js';
 
 const MS_H = 3_600_000;
 const j = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -34,13 +35,14 @@ export async function supersedeOlder({ keepId, campaignId, action, ruleName }) {
  * After a FULL evaluation: `seenKeys` = the decision_key of every candidate this tick produced. Open engine decisions that were not produced are stale; open zero-spend decisions of an earlier Cairo day are stale.
  * `today` = the Cairo date (YYYY-MM-DD). Returns { expired, superseded }.
  */
-export async function sweepStale({ seenKeys, today }) {
+export async function sweepStale({ seenKeys, today, adAccountId = null }) {
   const seen = seenKeys instanceof Set ? seenKeys : new Set(seenKeys || []);
-  const engine = await prisma.ambOperatorDecision.findMany({ where: { status: { in: OPEN_STATUSES }, rule_name: { in: ENGINE_KINDS.map((k) => `AUTO:${k}`) } }, select: { id: true, status: true, decision_key: true, campaign_id: true } });
+  const acct = adAccountId ? { ad_account_id: adAccountId } : await acctWhere(); // a sweep after one account's full evaluation must not close another account's open decisions
+  const engine = await prisma.ambOperatorDecision.findMany({ where: { ...acct, status: { in: OPEN_STATUSES }, rule_name: { in: ENGINE_KINDS.map((k) => `AUTO:${k}`) } }, select: { id: true, status: true, decision_key: true, campaign_id: true } });
   const stale = engine.filter((r) => !seen.has(r.decision_key));
   let expired = await expireRows(stale, 'NO_LONGER_APPLICABLE', 'NO_LONGER_APPLICABLE');
   if (today) {
-    const zs = await prisma.ambOperatorDecision.findMany({ where: { status: { in: OPEN_STATUSES }, rule_name: 'AUTO:DAILY_ZERO_SPEND' }, select: { id: true, status: true, campaign_id: true, evidence_json: true } });
+    const zs = await prisma.ambOperatorDecision.findMany({ where: { ...acct, status: { in: OPEN_STATUSES }, rule_name: 'AUTO:DAILY_ZERO_SPEND' }, select: { id: true, status: true, campaign_id: true, evidence_json: true } });
     const past = zs.filter((r) => { const d = j(r.evidence_json, {})?.zeroSpend?.date; return d && d < today; });
     expired += await expireRows(past, 'DECISION_DAY_PASSED', 'DECISION_DAY_PASSED');
   }

@@ -1,6 +1,7 @@
 // 🤖 AI Operator — OPERATIONS read/aux layer: performance, outcome tracking, daily brief, health, rule/audit logs, "what will happen today",
 // bulk approval and the (deliberately sparse) notifications. 2026-10-03. Read-only except bulkApprove (goes through the normal approve path)
 // and notifications (alerts only).
+import { dashAcctWhere, planAcctWhere } from './acctFilter.js';
 import { prisma } from '../../prisma.js';
 import { raiseAlert } from './alerts.js';
 import { getSyncStatus } from './snapshotSync.js';
@@ -21,7 +22,7 @@ const R = (v, d = 0) => (v == null ? null : Math.round(v * 10 ** d) / 10 ** d);
 /** Counts only — NO success percentage unless there are enough evaluated outcomes (spec 97), and every verdict keeps its causal caveat. */
 export async function performanceReport({ days = 30, now = new Date() } = {}) {
   const since = new Date(now.getTime() - days * 86_400_000);
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { created_at: { gte: since } }, select: { action: true, status: true, outcome_json: true, executed_at: true, error_category: true, mode_at_decision: true } });
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), created_at: { gte: since } }, select: { action: true, status: true, outcome_json: true, executed_at: true, error_category: true, mode_at_decision: true } });
   const types = ['OPEN', 'PAUSE', 'SCALE_UP', 'SCALE_DOWN'];
   const byType = Object.fromEntries(types.map((t) => [t, { executed: 0, verified: 0, failed: 0, rolledBack: 0, blocked: 0, rejected: 0, expired: 0 }]));
   const totals = { executed: 0, verified: 0, failed: 0, rolledBack: 0, blocked: 0, rejected: 0, expired: 0, shadow: 0, prepared: 0 };
@@ -44,7 +45,7 @@ export async function performanceReport({ days = 30, now = new Date() } = {}) {
 /** Executed actions with their before → after (spec 99). Each one carries the honest verdict, including "not enough data yet". */
 export async function executedWithOutcomes({ days = 14, limit = 60 } = {}) {
   const since = new Date(Date.now() - days * 86_400_000);
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['EXECUTED', 'VERIFIED', 'ROLLED_BACK'] }, executed_at: { gte: since } }, orderBy: { executed_at: 'desc' }, take: limit });
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: { in: ['EXECUTED', 'VERIFIED', 'ROLLED_BACK'] }, executed_at: { gte: since } }, orderBy: { executed_at: 'desc' }, take: limit });
   return rows.map((r) => {
     const o = j(r.outcome_json, null), ev = j(r.evidence_json, {}), params = j(r.params_json, {});
     return { id: r.id, action: r.action, actionLabel: ACTION_LABEL_AR[r.action] || r.action, campaignId: r.campaign_id, campaignName: r.campaign_name, status: r.status, executedAt: r.executed_at, verified: r.status === 'VERIFIED',
@@ -61,11 +62,11 @@ export async function operatorHealth({ scheduler = null, now = new Date() } = {}
   const [cfg, sync, lastEval, lastWrite, failed, blocked, queue, executing] = await Promise.all([
     getOperatorConfig(), getSyncStatus().catch(() => null),
     prisma.ambOperatorDecision.findFirst({ orderBy: { updated_at: 'desc' }, select: { updated_at: true } }),
-    prisma.ambOperatorDecision.findFirst({ where: { status: { in: ['EXECUTED', 'VERIFIED'] } }, orderBy: { executed_at: 'desc' }, select: { executed_at: true, status: true } }),
-    prisma.ambOperatorDecision.count({ where: { status: 'FAILED', updated_at: { gte: dayAgo } } }),
-    prisma.ambOperatorDecision.count({ where: { status: 'BLOCKED' } }),
-    prisma.ambOperatorDecision.count({ where: { status: { in: ['PREPARED', 'SNOOZED'] } } }),
-    prisma.ambOperatorDecision.count({ where: { status: 'EXECUTING' } }),
+    prisma.ambOperatorDecision.findFirst({ where: { ...(await dashAcctWhere()), status: { in: ['EXECUTED', 'VERIFIED'] } }, orderBy: { executed_at: 'desc' }, select: { executed_at: true, status: true } }),
+    prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'FAILED', updated_at: { gte: dayAgo } } }),
+    prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'BLOCKED' } }),
+    prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: { in: ['PREPARED', 'SNOOZED'] } } }),
+    prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'EXECUTING' } }),
   ]);
   const syncAgeMin = sync?.lastSuccessAt ? Math.round((now.getTime() - new Date(sync.lastSuccessAt).getTime()) / 60_000) : null;
   return {
@@ -125,7 +126,7 @@ export async function bulkApprove({ decisionIds, confirmedIds, userId, deps = {}
   if (ids.length > BULK_MAX) { const e = new Error(`الموافقة الجماعية لحد ${BULK_MAX} قرارات.`); e.status = 400; throw e; }
   const conf = new Set((confirmedIds || []).map(Number));
   if (ids.some((i) => !conf.has(i))) { const e = new Error('لازم تراجع وتأكد كل حملة بنفسها قبل الموافقة الجماعية.'); e.status = 400; throw e; }
-  const rows = await prisma.ambOperatorDecision.findMany({ where: { id: { in: ids } } });
+  const rows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), id: { in: ids } } });
   if (rows.length !== ids.length) { const e = new Error('فيه قرار مش موجود.'); e.status = 404; throw e; }
   const bad = rows.filter((r) => r.status !== 'PREPARED');
   if (bad.length) { const e = new Error(`قرارات مش جاهزة للموافقة: ${bad.map((b) => `#${b.id}(${b.status})`).join(' ')}`); e.status = 409; throw e; }
@@ -151,13 +152,13 @@ export async function bulkApprove({ decisionIds, confirmedIds, userId, deps = {}
 export async function dailyBrief({ now = new Date(), adAccountId = null } = {}) {
   const dayAgo = new Date(now.getTime() - 24 * MS_H), weekAgo = new Date(now.getTime() - 7 * 86_400_000);
   const [executed, awaiting, blockedRows, outcomes, readiness, cfg, failed] = await Promise.all([
-    prisma.ambOperatorDecision.findMany({ where: { status: { in: ['EXECUTED', 'VERIFIED', 'ROLLED_BACK'] }, executed_at: { gte: dayAgo } }, orderBy: { executed_at: 'desc' }, take: 20 }),
-    prisma.ambOperatorDecision.findMany({ where: { status: 'PREPARED' }, orderBy: { updated_at: 'desc' }, take: 20 }),
-    prisma.ambOperatorDecision.findMany({ where: { status: 'BLOCKED', updated_at: { gte: dayAgo } }, select: { blocked_codes_json: true } }),
-    prisma.ambOperatorDecision.findMany({ where: { executed_at: { gte: weekAgo }, outcome_json: { not: null } }, select: { campaign_name: true, action: true, outcome_json: true } }),
+    prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: { in: ['EXECUTED', 'VERIFIED', 'ROLLED_BACK'] }, executed_at: { gte: dayAgo } }, orderBy: { executed_at: 'desc' }, take: 20 }),
+    prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: 'PREPARED' }, orderBy: { updated_at: 'desc' }, take: 20 }),
+    prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: 'BLOCKED', updated_at: { gte: dayAgo } }, select: { blocked_codes_json: true } }),
+    prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), executed_at: { gte: weekAgo }, outcome_json: { not: null } }, select: { campaign_name: true, action: true, outcome_json: true } }),
     globalReadiness({ heavy: false, adAccountId }),
     getOperatorConfig(),
-    prisma.ambOperatorDecision.count({ where: { status: 'FAILED', updated_at: { gte: dayAgo } } }),
+    prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'FAILED', updated_at: { gte: dayAgo } } }),
   ]);
   const reasons = {};
   for (const b of blockedRows) for (const x of (j(b.blocked_codes_json, []) || []).filter((c) => c.severity === 'BLOCK').slice(0, 1)) reasons[x.code] = (reasons[x.code] || 0) + 1;
@@ -184,15 +185,15 @@ export async function emitOperatorNotifications({ now = new Date(), result = nul
   const bucket = (h) => Math.floor(now.getTime() / (h * MS_H));
   const sent = [];
   const send = async (a) => { const r = await raiseAlert({ category: 'OPERATOR', ...a }); if (r) sent.push(a.dedupeKey); };
-  const prepared = await prisma.ambOperatorDecision.count({ where: { status: 'PREPARED' } });
+  const prepared = await prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'PREPARED' } });
   if (prepared > 0) await send({ severity: 'INFO', title: `AI Operator: ${prepared} قرار محتاج موافقتك`, message: 'افتح "قرارات اليوم" وراجع القرارات الجاهزة.', dedupeKey: `operator:needs-approval:${bucket(6)}` });
-  const dq = await prisma.ambOperatorDecision.count({ where: { status: 'BLOCKED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, blocked_codes_json: { contains: '"group":"DATA_QUALITY"' } } });
+  const dq = await prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'BLOCKED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, blocked_codes_json: { contains: '"group":"DATA_QUALITY"' } } });
   if (dq > 0) await send({ severity: 'WARNING', title: `AI Operator: جودة البيانات منعت ${dq} قرار`, message: 'القرارات المتوقفة بسبب جودة البيانات مش هتتنفذ لحد ما الجودة ترجع سليمة.', dedupeKey: `operator:dq-blocked:${bucket(24)}` });
   // daily limits: say WHICH limit, the value reached and whether the block is CURRENT (a decision the engine re-evaluated in the last 30 min) or OLD (nobody re-evaluated it since) — never "stopped until tomorrow" from a stale row
-  const limitRows = await prisma.ambOperatorDecision.findMany({ where: { status: { in: ['BLOCKED', 'PREPARED'] }, updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, OR: ['ACCOUNT_DAILY_LIMIT', 'STORE_DAILY_LIMIT', 'RATE_LIMIT_DAY', 'RATE_LIMIT_HOUR', 'CAMPAIGN_DAILY_LIMIT'].map((c) => ({ blocked_codes_json: { contains: c } })) }, select: { id: true, campaign_id: true, campaign_name: true, action: true, status: true, updated_at: true, blocked_codes_json: true }, orderBy: { id: 'desc' }, take: 60 });
+  const limitRows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: { in: ['BLOCKED', 'PREPARED'] }, updated_at: { gte: new Date(now.getTime() - 24 * MS_H) }, OR: ['ACCOUNT_DAILY_LIMIT', 'STORE_DAILY_LIMIT', 'RATE_LIMIT_DAY', 'RATE_LIMIT_HOUR', 'CAMPAIGN_DAILY_LIMIT'].map((c) => ({ blocked_codes_json: { contains: c } })) }, select: { id: true, campaign_id: true, campaign_name: true, action: true, status: true, updated_at: true, blocked_codes_json: true }, orderBy: { id: 'desc' }, take: 60 });
   const la = limitAlert(buildLimitReport({ rows: limitRows, now }));
   if (la) await send({ severity: la.severity, title: la.title, message: la.message, dedupeKey: `operator:daily-limit:${la.kind}:${bucket(la.kind === 'CURRENT' ? 3 : 24)}` });
-  const failedRows = await prisma.ambOperatorDecision.findMany({ where: { status: 'FAILED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) } }, select: { campaign_id: true, error_category: true } });
+  const failedRows = await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), status: 'FAILED', updated_at: { gte: new Date(now.getTime() - 24 * MS_H) } }, select: { campaign_id: true, error_category: true } });
   if (failedRows.length >= 3) await send({ severity: 'CRITICAL', title: `AI Operator: ${failedRows.length} تنفيذ فشل آخر 24 ساعة`, message: 'تكرار فشل في الكتابة على Meta — راجع سجل التنفيذ. مفيش إعادة محاولة تلقائية.', dedupeKey: `operator:repeated-failure:${bucket(24)}` });
   return { sent };
 }

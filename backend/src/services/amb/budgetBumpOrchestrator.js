@@ -169,7 +169,9 @@ export function startBudgetBumpScheduler() {
   if (timer) return;
   const EVERY_MS = 30 * 60 * 1000;
   timer = setInterval(() => {
-    runBudgetBumpAnalysis().catch((err) => logger.error('Budget bump scheduler tick failed', { message: err.message }));
+    runBudgetBumpAnalysis().catch((err) => logger.error('Budget bump scheduler tick failed', { message: err.message }))
+      .then(() => import('./operatorAccounts.js').then((m) => m.forEachOperatorAccount(() => runBudgetBumpAnalysis()))) // the other accounts, when the owner switched "Operator on every account" on
+      .catch((err) => logger.error('Budget bump scheduler (other accounts) failed', { message: err.message }));
   }, EVERY_MS);
   logger.info('Budget bump scheduler started (30m)');
 }

@@ -12,7 +12,7 @@
 // AI Media Buyer: the ad account the screen is switched to (window.__ambAccount, set only by that page). The backend applies it to the account-bound routes of THAT request only.
 function withAccountHeader(path, headers) {
   const acct = typeof window !== 'undefined' ? window.__ambAccount : '';
-  if (!acct || !(String(path).startsWith('/api/ai-media-buyer/') || String(path).startsWith('/api/scale-center/'))) return headers;
+  if (!acct || !(String(path).startsWith('/api/ai-media-buyer/') || String(path).startsWith('/api/scale-center/') || String(path).startsWith('/api/operator/'))) return headers;
   return { ...(headers || {}), 'X-Amb-Account': acct };
 }
 

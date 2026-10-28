@@ -1,5 +1,6 @@
 // 📰 Daily AI Brief — a short, honest daily report where EVERY number states where it comes from and which period it covers. Reuses what already exists (buildDailyBrief for the account KPIs,
 // the persisted optimizer decisions, the executed actions, the alert table); computes nothing a second way. Meta purchases are Pixel purchases — never presented as delivered orders.
+import { dashAcctWhere, planAcctWhere } from './acctFilter.js';
 import { prisma } from '../../prisma.js';
 import { entityWindowMetrics, resolveWindow } from './metricsEngine.js';
 
@@ -41,10 +42,10 @@ export async function buildOperatorBrief({ now = new Date(), deps = {}, force = 
   const m3 = deps.campaignsLast3 || (adAccountId ? await entityWindowMetrics({ level: 'campaign', from: w3.from, to: w3.to, adAccountId }, { minSpend: 0, minPurchases: 0 }).catch(() => new Map()) : new Map());
   const names = deps.names || new Map((await prisma.metaPerformanceSnapshot.findMany({ where: { level: 'campaign', ad_account_id: adAccountId || '' }, distinct: ['campaign_id'], orderBy: { snapshot_at: 'desc' }, select: { campaign_id: true, campaign_name: true }, take: 600 })).map((r) => [r.campaign_id, r.campaign_name]));
   const campaignsLast3 = deps.campaignsLast3Rows || [...m3.entries()].map(([id, m]) => ({ id, name: names.get(id) || id, spend: m.spend, purchases: m.purchases, cpa: m.cpa }));
-  const dec = deps.decisions || (await prisma.ambOperatorDecision.findMany({ where: { rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, status: { in: ['SHADOW', 'PREPARED'] } }, select: { action: true } }));
+  const dec = deps.decisions || (await prisma.ambOperatorDecision.findMany({ where: { ...(await dashAcctWhere()), rule_name: { startsWith: 'DYNAMIC_BUDGET:' }, status: { in: ['SHADOW', 'PREPARED'] } }, select: { action: true } }));
   const executedRows = deps.executed || (await prisma.ambAction.findMany({ where: { execution_status: 'EXECUTED', executed_at: { gte: new Date(now.getTime() - 24 * MS_H) }, action_type: { in: ['RESUME', 'PAUSE', 'INCREASE_BUDGET', 'DECREASE_BUDGET'] }, NOT: { OR: [{ entity_id: { startsWith: '__optest_' } }, { ad_account_id: { startsWith: '__optest_' } }] } }, select: { action_type: true, entity_name: true, executed_at: true, verify_json: true }, orderBy: { id: 'desc' }, take: 15 })).map((a) => ({ type: a.action_type, name: a.entity_name, at: a.executed_at, verified: j(a.verify_json, {})?.verified === true }));
-  const pendingDecisions = deps.pendingDecisions ?? await prisma.ambOperatorDecision.count({ where: { status: 'PREPARED' } });
-  const pendingPlans = deps.pendingPlans ?? await prisma.ambDailyPlan.count({ where: { status: 'PREPARED', simulated: false } });
+  const pendingDecisions = deps.pendingDecisions ?? await prisma.ambOperatorDecision.count({ where: { ...(await dashAcctWhere()), status: 'PREPARED' } });
+  const pendingPlans = deps.pendingPlans ?? await prisma.ambDailyPlan.count({ where: { AND: [await planAcctWhere()], status: 'PREPARED', simulated: false } });
   const alertRows = deps.alerts || (await prisma.ambAlert.findMany({ where: { read: false, severity: { in: ['CRITICAL', 'WARNING'] }, created_at: { gte: new Date(now.getTime() - 24 * MS_H) } }, orderBy: { created_at: 'desc' }, take: 6, select: { severity: true, title: true, created_at: true } })).map((a) => ({ severity: a.severity, title: a.title, at: a.created_at }));
   const activeCampaigns = deps.activeCampaigns ?? (adAccountId ? await (await import('./approvalCenter.js')).activeCampaignCount(adAccountId, { now }) : null);
   const v = composeBrief({ now, kpis: base?.ok === false ? null : base, freshness: base?.freshness, campaignsToday: null, campaignsLast3, decisions: dec, executed: executedRows, pendingDecisions, pendingPlans, alerts: alertRows, activeCampaigns, window: base?.window });
