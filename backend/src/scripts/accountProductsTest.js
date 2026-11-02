@@ -65,6 +65,20 @@ try {
   const none = await AP.getAccountProductsToday({ adAccountId: PRIMARY });
   ok('an account with nothing today → empty lists and null CPA, never a fabricated row', none.products.length === 0 && none.noOrders.length === 0 && none.totals.cpa === null);
   ok('a malformed date falls back to today', (await AP.getAccountProductsToday({ adAccountId: HADY, date: "2026-01-01';--" })).date === todayCairo);
+
+  console.log('\n3. Best products across every account (most orders, good cost per order)');
+  const TP = await imp('../services/amb/topProductsToday.js');
+  await snap(HADY, 'ap_p1', 'Pricey - Test', 900, 4); // 4 orders but cost per order 225: above the ceiling
+  const top = await TP.getTopProductsToday({});
+  ok('criteria default to cost per order <= 150 and at least 3 orders', top.criteria.maxCpa === 150 && top.criteria.minOrders === 3, JSON.stringify(top.criteria));
+  ok('ranked by orders: Soleva 7 (merged across two accounts), then the launch product 5, then Nail-clipper 4', JSON.stringify(top.products.map((p) => [p.name, p.orders])) === JSON.stringify([['Soleva', 7], ['AP Launch Product', 5], ['Nail-clipper', 4]]), JSON.stringify(top.products.map((p) => [p.name, p.orders, p.cpa])));
+  const sol = top.products[0];
+  ok('Soleva merged across accounts: 130 spend / 7 orders / CPA 18.57, with the per-account breakdown (Hady 6, Yasser 1)', sol.spend === 130 && Math.abs(sol.cpa - 130 / 7) < 0.01 && sol.accounts.length === 2 && sol.accounts[0].orders === 6 && sol.accounts[1].orders === 1, JSON.stringify(sol));
+  ok('a product above the CPA ceiling is not a "best product" (Pricey 225) and one below the minimum orders is not either (mapped product 2 orders)', !top.products.some((p) => p.name === 'Pricey') && !top.products.some((p) => p.name === 'AP Mapped Product'));
+  const strict = await TP.getTopProductsToday({ maxCpa: 50, minOrders: 5 });
+  ok('the ceiling / minimum are honoured when given (cost <= 50, >= 5 orders → Soleva and the launch product)', JSON.stringify(strict.products.map((p) => p.name)) === JSON.stringify(['Soleva', 'AP Launch Product']), JSON.stringify(strict.products.map((p) => p.name)));
+  ok('another day: only that day\'s rows, and nothing qualifies there (9 orders but CPA 55.5 → qualifies; yesterday Old - Test)', (await TP.getTopProductsToday({ date: yesterday })).products.length === 1);
+  ok('the list is capped by `limit`', (await TP.getTopProductsToday({ limit: 2 })).products.length === 2);
   await prisma.metaConnection.update({ where: { id: conn.id }, data: { status: prevStatus } });
 } finally {
   if (conn) await prisma.metaConnection.update({ where: { id: conn.id }, data: { selected_ad_account_id: prevAcc ?? null } }).catch(() => {});

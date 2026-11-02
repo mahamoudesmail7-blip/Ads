@@ -18,6 +18,9 @@ export const AMB_DEFAULT_SETTINGS = {
   ambLowFundsThreshold: 2000,
   // REPORT-ONLY accounts: switchable (switcher / «نظرة سريعة» card, snapshots synced read-only) but NO AI Operator pass and NO background extras (AI creative analysis, media-library scan). Added for accounts the owner only wants to watch.
   ambReportOnlyAccountIds: [],
+  // «نظرة سريعة» best-products block: a product qualifies with at least this many orders today and a cost per order at or below this ceiling (EGP). See services/amb/topProductsToday.js.
+  ambTopProductsMaxCpa: 150,
+  ambTopProductsMinOrders: 3,
   ambViewAccountIds: ['act_1518142859790043', 'act_877011384919552', 'act_1370863561334304'],
   ambAlsoRefreshAdsDailyMetric: true,  // piggy-back the existing metaSync.runSync so the current AI Intelligence page goes live too
   ambDefaultPricingMultiplier: 3,

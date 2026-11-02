@@ -105,7 +105,7 @@ async function init() {
     await refresh();
   };
 
-  document.getElementById('btnAccountsTodayRefresh').onclick = () => renderAccountsToday(true);
+  document.getElementById('btnAccountsTodayRefresh').onclick = () => { renderAccountsToday(true); renderTopProducts(); };
 
   await refresh();
 }
@@ -154,6 +154,7 @@ async function refresh() {
   document.getElementById('emptyDashboardBanner').style.display = items.length === 0 ? 'block' : 'none';
 
   renderAccountsToday(false); // not awaited: Meta being slow must never delay the rest of the page
+  renderTopProducts();
   // Owner 2026-11-03: the empty / all-zero / stale sections (quick stats, inventory, comparison, improved, declined, top 4, zero-order, needs-intervention, action plan, work teaser) are hidden in index.html (hidden) and no longer computed;
   // their render functions are kept so putting a card back is just removing its `hidden` and re-adding its render call here.
   if (document.getElementById('dailyReportCard').style.display !== 'none') renderDailyReport();
@@ -524,6 +525,77 @@ function atpWireSlider(root) {
     go(current() + ((rtl ? e.key === 'ArrowLeft' : e.key === 'ArrowRight') ? 1 : -1));
   });
   slides.length < 2 ? (root.querySelector('.atp-slider').classList.add('single'), root.querySelector('.atp-foot').style.display = 'none') : sync();
+}
+
+// ---------------------------------------------------------------------------
+// 🏆 أفضل المنتجات من كل الحسابات: الأكتر أوردرات بشرط الكوست كويس (<= سقف الكوست، وبحد أدنى من الأوردرات). أول 5، و«عرض المزيد» يفتح الباقي.
+// ---------------------------------------------------------------------------
+
+const TP_FIRST = 5;
+const TP_MAX = 15;
+let topProductsGen = 0;
+
+async function renderTopProducts() {
+  const gen = ++topProductsGen; // a slower, older response never overwrites a newer one
+  const body = document.getElementById('topProductsBody');
+  if (!body) return;
+  if (!body.querySelector('.tp')) body.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:120px"></div></div>';
+  let r;
+  try { r = await api.get('/api/ai-media-buyer/top-products-today', { date: state.asOfDate }); }
+  catch (e) { if (gen === topProductsGen) body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل أفضل المنتجات: ${UI.escapeHtml(e.message || '')}</span>`; return; }
+  if (gen !== topProductsGen || !r) return;
+
+  const c = r.criteria || { maxCpa: 150, minOrders: 3 };
+  const rule = `الأكتر أوردرات من ${r.accounts} حساب، بشرط الكوست ≤ ${UI.fmtNum(c.maxCpa)} ج وحد أدنى ${c.minOrders} أوردرات`;
+  if (!r.products.length) { body.innerHTML = `<div class="tp"><div class="tp-rule">${UI.escapeHtml(rule)}</div><div class="atp-empty">لا يوجد منتج حقق الشرط النهارده.</div></div>`; return; }
+
+  const money = (n) => `${UI.fmtNum(Math.round(n))}<small>ج</small>`;
+  const maxOrders = Math.max(1, ...r.products.map((p) => p.orders));
+  const medal = (i) => (i === 0 ? ' gold' : i === 1 ? ' silver' : i === 2 ? ' bronze' : '');
+  const rowHtml = (p, i, delay) => {
+    const chips = p.accounts.slice(0, 4).map((a) => `<span class="tp-acct">${UI.escapeHtml(a.name)} <b>${UI.fmtNum(a.orders)}</b></span>`).join('') + (p.accounts.length > 4 ? `<span class="tp-acct more">+${p.accounts.length - 4}</span>` : '');
+    return `
+    <div class="atp-row" style="--i:${delay}">
+      <div class="atp-rank${medal(i)}">${i + 1}</div>
+      <div class="atp-main">
+        <div class="atp-name">${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip" title="الحملات دي متجمّعة بالاسم المتشابه بس، مش مربوطة بمنتج في السيستم">بالاسم</span>' : ''}</div>
+        <div class="atp-sub">${p.campaigns} ${p.campaigns === 1 ? 'حملة' : 'حملات'} · ${p.accounts.length} ${p.accounts.length === 1 ? 'حساب' : 'حسابات'}</div>
+        <div class="tp-accts">${chips}</div>
+        <div class="atp-bar"><i data-w="${((p.orders / maxOrders) * 100).toFixed(1)}"></i></div>
+      </div>
+      <div class="atp-stat orders"><div class="l">الأوردرات</div><div class="v"><span data-to="${p.orders}" data-kind="int">0</span></div></div>
+      <div class="atp-stat"><div class="l">الصرف</div><div class="v"><span data-to="${p.spend}" data-kind="money">${money(0)}</span></div></div>
+      <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v"><span data-to="${p.cpa}" data-kind="money">${money(0)}</span></div></div>
+    </div>`;
+  };
+
+  const list = r.products.slice(0, TP_MAX);
+  const first = list.slice(0, TP_FIRST), more = list.slice(TP_FIRST);
+  body.innerHTML = `
+    <div class="tp" style="--acc:#ff7a1a">
+      <div class="tp-rule">${UI.escapeHtml(rule)}</div>
+      <div class="tp-list">${first.map((p, i) => rowHtml(p, i, i)).join('')}</div>
+      ${more.length ? `
+      <div class="tp-list tp-more" hidden>${more.map((p, i) => rowHtml(p, TP_FIRST + i, i)).join('')}</div>
+      <div class="tp-btnwrap"><button class="tp-btn" type="button" aria-expanded="false"><span class="t">عرض المزيد (${more.length})</span><span class="ar">⌄</span></button></div>` : ''}
+    </div>`;
+
+  const root = body.querySelector('.tp');
+  atdAnimate(root);
+  const btn = root.querySelector('.tp-btn');
+  if (btn) btn.onclick = () => {
+    const box = root.querySelector('.tp-more');
+    const open = box.hasAttribute('hidden');
+    if (open) {
+      box.querySelectorAll('.atp-bar > i').forEach((b) => { b.style.width = '0'; });
+      box.removeAttribute('hidden');
+      void box.offsetWidth; // restart the row / bar animations from zero
+      atdAnimate(box);
+    } else box.setAttribute('hidden', '');
+    btn.setAttribute('aria-expanded', String(open));
+    btn.querySelector('.t').textContent = open ? 'عرض أقل' : `عرض المزيد (${more.length})`;
+    btn.classList.toggle('open', open);
+  };
 }
 
 // ---------------------------------------------------------------------------

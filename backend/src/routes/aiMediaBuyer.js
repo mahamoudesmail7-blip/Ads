@@ -69,6 +69,11 @@ router.get('/accounts-today', asyncRoute(async (req, res) => {
   const { getAccountsToday } = await import('../services/amb/accountsToday.js');
   res.json(await getAccountsToday({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+// The best products of the day across EVERY account (most orders, cost per order within the "good" ceiling).
+router.get('/top-products-today', asyncRoute(async (req, res) => {
+  const { getTopProductsToday } = await import('../services/amb/topProductsToday.js');
+  res.json(await getTopProductsToday({ date: req.query.date || null }));
+}));
 // …and one account's products for the day (orders / spend / cost per order, best first). Works for every switchable account, the connected one included.
 router.get('/accounts-today/:id/products', asyncRoute(async (req, res) => {
   const id = String(req.params.id || '');

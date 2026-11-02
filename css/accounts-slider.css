@@ -153,5 +153,24 @@
   .atp-row:hover { transform: none; } .atp-bar > i, .atp-track { transition: none !important; scroll-behavior: auto; }
 }
 
+
+/* ---------------------------------------------------------------- 🏆 best products across every account */
+.tp { --acc: #ff7a1a; }
+.tp-rule { font-size: 12.5px; font-weight: 600; color: var(--text-dim, #566178); margin: -2px 0 12px; }
+.tp-list { display: grid; gap: 9px; }
+.tp-list.tp-more { margin-top: 9px; }
+.tp-list[hidden] { display: none; }
+.tp .atp-stat.cpa .v { color: var(--green, #16a34a); }
+.tp-accts { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 6px; }
+.tp-acct { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--acc) 11%, transparent); color: var(--text, #1f2937); white-space: nowrap; }
+.tp-acct b { color: var(--acc); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
+.tp-acct.more { color: var(--text-dim, #566178); background: var(--gray-bg, #eef0f4); }
+.tp-btnwrap { display: flex; justify-content: center; margin-top: 12px; }
+.tp-btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 22px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--acc) 45%, var(--border, #e7eaf0)); background: color-mix(in srgb, var(--acc) 9%, var(--bg-card, #fff)); color: var(--acc); font-weight: 800; font-size: 13px; cursor: pointer; transition: transform .22s var(--atd-spring, ease), background .2s, box-shadow .2s; }
+.tp-btn:hover { transform: translateY(-2px); background: var(--acc); color: #fff; box-shadow: 0 8px 18px color-mix(in srgb, var(--acc) 35%, transparent); }
+.tp-btn .ar { display: inline-block; transition: transform .3s var(--atd-spring, ease); font-size: 15px; line-height: 1; }
+.tp-btn.open .ar { transform: rotate(180deg); }
+@media (prefers-reduced-motion: reduce) { .tp-btn, .tp-btn .ar { transition: none !important; } .tp-btn:hover { transform: none; } }
+
 /* sections the owner removed from «نظرة سريعة» (kept in the HTML, hidden): putting one back = removing its `hidden` + data-legacy attributes */
 html [data-legacy="hidden"] { display: none !important; }
