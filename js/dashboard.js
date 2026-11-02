@@ -696,7 +696,10 @@ function pfRenderResult() {
   }[verdict];
 
   const beShare = calc.gross > 0 && t.orders > 0 ? t.spend / (t.orders * calc.gross) : null;
-  const beCpa = calc.contribution > 0 ? calc.contribution : null;
+  // per ORDER: what one order leaves before the ad, and after paying for it (the cost per order)
+  const perBefore = calc.contribution ?? null;
+  const perAfter = perBefore !== null && t.cpa !== null ? perBefore - t.cpa : null;
+  const signed = (n) => (n === null ? '—' : `<span class="sg">${n < 0 ? '−' : ''}</span>${cnt(Math.abs(n), 'money')}`);
   const w = d.window;
   const note = d.linkedCampaigns === 0 ? '<div class="pf-warn">⚠️ المنتج ده مالوش حملات مربوطة في السيستم، فمفيش أرقام. اربط حملاته الأول.</div>' : '';
   const hist = d.history || { historyDays: 0, incomplete: [] };
@@ -729,7 +732,8 @@ function pfRenderResult() {
       <div class="pf-kpi"><div class="l">الصرف</div><div class="v">${cnt(t.spend, 'money')}</div></div>
       <div class="pf-kpi"><div class="l">الأوردرات</div><div class="v">${cnt(t.orders, 'int')}</div></div>
       <div class="pf-kpi"><div class="l">الكوست</div><div class="v">${cnt(t.cpa, 'money')}</div></div>
-      <div class="pf-kpi"><div class="l">الكوست اللي بيعادل</div><div class="v">${beCpa === null ? '—' : cnt(beCpa, 'money')}</div></div>
+      <div class="pf-kpi" title="سعر البيع − تكلفة المنتج والشحن، مضروب في نسبة التسليم"><div class="l">ربح الأوردر قبل الإعلان</div><div class="v">${signed(perBefore)}</div></div>
+      <div class="pf-kpi ${perAfter === null ? '' : perAfter >= 0 ? 'win' : 'loss'}" title="ربح الأوردر قبل الإعلان − الكوست (تكلفة الإعلان لكل أوردر)"><div class="l">ربح الأوردر بعد الإعلان</div><div class="v">${signed(perAfter)}</div></div>
       <div class="pf-kpi ${V[0]}"><div class="l">صافي الربح / الخسارة</div><div class="v">${calc.profit === null ? '—' : `<span class="sg">${calc.profit < 0 ? '−' : '+'}</span>${cnt(Math.abs(calc.profit), 'money')}`}</div></div>
     </div>
     <div class="pf-calc">
