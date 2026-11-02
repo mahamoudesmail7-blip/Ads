@@ -154,16 +154,8 @@ async function refresh() {
   document.getElementById('emptyDashboardBanner').style.display = items.length === 0 ? 'block' : 'none';
 
   renderAccountsToday(false); // not awaited: Meta being slow must never delay the rest of the page
-  renderQuickStats();
-  renderComparison();
-  await renderInventoryKpis();
-  renderImproved();
-  renderDeclined();
-  renderTop4();
-  renderZeroOrder();
-  renderIntervention();
-  renderActionPlan();
-  await renderWorkTeaser();
+  // Owner 2026-11-03: the empty / all-zero / stale sections (quick stats, inventory, comparison, improved, declined, top 4, zero-order, needs-intervention, action plan, work teaser) are hidden in index.html (hidden) and no longer computed;
+  // their render functions are kept so putting a card back is just removing its `hidden` and re-adding its render call here.
   if (document.getElementById('dailyReportCard').style.display !== 'none') renderDailyReport();
 }
 

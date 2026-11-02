@@ -152,3 +152,6 @@
   .atp-overlay, .atp-modal, .atp-row { animation: none !important; }
   .atp-row:hover { transform: none; } .atp-bar > i, .atp-track { transition: none !important; scroll-behavior: auto; }
 }
+
+/* sections the owner removed from «نظرة سريعة» (kept in the HTML, hidden): putting one back = removing its `hidden` + data-legacy attributes */
+html [data-legacy="hidden"] { display: none !important; }
