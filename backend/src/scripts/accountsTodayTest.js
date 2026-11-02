@@ -48,6 +48,19 @@ try {
 
   console.log('\n3. Funds are separate: Graph is unreachable in the test db → funds say so, the numbers still show');
   ok('funds failure is isolated per account (error set, spend/orders intact)', r.accounts.every((a) => a.funds && (a.funds.error || a.funds.display !== undefined)) && by(HADY).spend === 310, JSON.stringify(by(HADY).funds));
+  console.log('\n3b. View sync safety: deadline + stale RUNNING cleanup');
+  const SS = await imp('../services/amb/snapshotSync.js');
+  let dl = null; try { await SS.withDeadline(new Promise(() => {}), 30, 'VIEW_SYNC_TIMEOUT'); } catch (e) { dl = e; }
+  ok('withDeadline rejects a hung promise with the given code', dl && dl.message === 'VIEW_SYNC_TIMEOUT');
+  ok('withDeadline passes a fast result through', (await SS.withDeadline(Promise.resolve(7), 1000)) === 7);
+  const stale = await prisma.ambSyncRun.create({ data: { trigger: 'VIEW', status: 'RUNNING', ad_account_id: HADY, started_at: new Date(Date.now() - 20 * 60_000) } }); runIds.push(stale.id);
+  const fresh = await prisma.ambSyncRun.create({ data: { trigger: 'VIEW', status: 'RUNNING', ad_account_id: YASSER, started_at: new Date(Date.now() - 2 * 60_000) } }); runIds.push(fresh.id);
+  await SS.runViewAccountSync(HADY, { force: true }).catch(() => {}); // the test db has no token → it fails after the cleanup, which is what is checked
+  await SS.runViewAccountSync(YASSER, { force: true }).catch(() => {});
+  const staleRow = await prisma.ambSyncRun.findUnique({ where: { id: stale.id } });
+  ok('a 20-min-old RUNNING row is closed as FAILED (STALE)', staleRow.status === 'FAILED' && /STALE/.test(staleRow.error || ''), JSON.stringify(staleRow));
+  ok('a 2-min-old RUNNING row is left alone', (await prisma.ambSyncRun.findUnique({ where: { id: fresh.id } })).status === 'RUNNING');
+
   console.log('\n4. Funds watch: balance parsing + the < threshold alert');
   ok('parses the prepaid line (English)', AT.parseAvailableBalance('Available Balance (EGP38,097.03)') === 38097.03);
   ok('parses the prepaid line (Arabic digits)', AT.parseAvailableBalance('الرصيد المتاح (EGP ١٬٤٥٠٫٧٥)') === 1450.75);

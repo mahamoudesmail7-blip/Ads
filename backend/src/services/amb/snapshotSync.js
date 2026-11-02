@@ -412,6 +412,11 @@ export async function runViewAccountSync(adAccountId, { force = false, now = new
   const info = await getAccountSyncInfo(adAccountId);
   if (!force && info.lastSuccessAt && now.getTime() - new Date(info.lastSuccessAt).getTime() < VIEW_SYNC_STALE_MINUTES * 60_000) return { ok: true, skipped: 'FRESH', lastSuccessAt: info.lastSuccessAt };
 
+  // a RUNNING row nothing is working on any more (restart / hang) must not stay RUNNING forever
+  await prisma.ambSyncRun.updateMany({ where: { ad_account_id: adAccountId, trigger: 'VIEW', status: 'RUNNING', started_at: { lt: new Date(now.getTime() - VIEW_STALE_RUN_MS) } }, data: { status: 'FAILED', finished_at: new Date(), error: 'STALE_RUNNING (cleaned up)' } }).catch(() => {});
+  // report-only accounts are read LIGHT: campaign-level insights only (what the «نظرة سريعة» card needs). Listing every ad / ad set / campaign an agency-size account ever had is what made them hang.
+  const lite = ((await getAmbSettings()).ambReportOnlyAccountIds || []).map(String).includes(adAccountId);
+
   viewRunning.add(adAccountId);
   const syncRun = await prisma.ambSyncRun.create({ data: { trigger: 'VIEW', status: 'RUNNING', ad_account_id: adAccountId } });
   try {
@@ -421,14 +426,21 @@ export async function runViewAccountSync(adAccountId, { force = false, now = new
     const dateTo = addDaysISO(todayISO(), 1); // +1: the account's own "today" can already be a day ahead of UTC
     const dateFrom = addDaysISO(todayISO(), info.lastSuccessAt ? -1 : -7);
 
-    const [campMetaList, adsetMetaList, adMetaList] = await Promise.all([
-      getEntitiesMeta(token, adAccountId, 'campaign').catch(() => []),
-      getEntitiesMeta(token, adAccountId, 'adset').catch(() => []),
-      getEntitiesMeta(token, adAccountId, 'ad').catch(() => []),
-    ]);
-    const meta = { campaign: indexEntitiesMeta(campMetaList, 'campaign', currency), adset: indexEntitiesMeta(adsetMetaList, 'adset', currency), ad: indexEntitiesMeta(adMetaList, 'ad', currency) };
-    const insightsByLevel = {};
-    for (const level of LEVELS) insightsByLevel[level] = await getInsightsByLevel(token, adAccountId, level, dateFrom, dateTo);
+    const { meta, insightsByLevel } = await withDeadline((async () => {
+      let m;
+      if (lite) m = { campaign: new Map(), adset: new Map(), ad: new Map() };
+      else {
+        const [campMetaList, adsetMetaList, adMetaList] = await Promise.all([
+          getEntitiesMeta(token, adAccountId, 'campaign').catch(() => []),
+          getEntitiesMeta(token, adAccountId, 'adset').catch(() => []),
+          getEntitiesMeta(token, adAccountId, 'ad').catch(() => []),
+        ]);
+        m = { campaign: indexEntitiesMeta(campMetaList, 'campaign', currency), adset: indexEntitiesMeta(adsetMetaList, 'adset', currency), ad: indexEntitiesMeta(adMetaList, 'ad', currency) };
+      }
+      const ins = {};
+      for (const level of (lite ? ['campaign'] : LEVELS)) ins[level] = await getInsightsByLevel(token, adAccountId, level, dateFrom, dateTo);
+      return { meta: m, insightsByLevel: ins };
+    })(), VIEW_SYNC_DEADLINE_MS, 'VIEW_SYNC_TIMEOUT');
     const built = await buildCycleRows({ insightsByLevel, meta, adAccountId });
     if (built.rows.length) await prisma.metaPerformanceSnapshot.createMany({ data: built.rows.map((r) => ({ ...r, sync_run_id: syncRun.id })) });
     await prisma.ambSyncRun.update({ where: { id: syncRun.id }, data: { status: 'SUCCESS', finished_at: new Date(), snapshot_rows: built.rows.length, account_currency: currency } });
@@ -467,6 +479,13 @@ async function runViewAccountExtras(adAccountId, token) {
 }
 
 const VIEW_SYNCS_PER_TICK = 4;
+const VIEW_SYNC_DEADLINE_MS = 8 * 60_000; // a view account whose Meta read hasn't finished by then is failed (and freed), never left RUNNING forever
+const VIEW_STALE_RUN_MS = 15 * 60_000;
+/** Races a promise against a deadline; the timer is always cleared. */
+export function withDeadline(p, ms, code = 'TIMEOUT') {
+  let t;
+  return Promise.race([p, new Promise((_, reject) => { t = setTimeout(() => reject(new Error(code)), ms); })]).finally(() => clearTimeout(t));
+}
 let viewTimer = null;
 /** Keeps the view accounts' snapshots warm in the background (same interval as the main sync); sequential, never throws. */
 export function startAmbViewSyncScheduler() {
