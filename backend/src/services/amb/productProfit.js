@@ -14,6 +14,19 @@ import { resolveProductCampaigns } from './productPerformance.js';
 import { effectiveSellingPrice, baseOperationalCost } from './productEconomics.js';
 import { getAmbSettings } from './settings.js';
 import { listViewAccounts } from './viewAccounts.js';
+import { getDecryptedToken } from '../metaAuth.js';
+import { getCampaignDailyInsights } from '../metaGraphClient.js';
+import { cachedMetaFetch } from '../metaAssetCache.js';
+
+// HISTORY: our own snapshots only start when each account was first synced (Ahmed Samy 18 Oct, the others later). For the days BEFORE that, the product's campaigns are read straight from Meta
+// (read only, filtered to the product's campaigns, cached 30 min, hard timeouts) and merged in — nothing is written to our tables, so no decision input of the Operator changes.
+const HISTORY_FLOOR = '2025-01-01';
+const HISTORY_TTL_MS = 30 * 60_000;
+async function defaultFetchHistory({ adAccountId, campaignIds, from, to }) {
+  const token = await getDecryptedToken();
+  const key = `prodHistory:${adAccountId}:${from}:${to}:${campaignIds.slice().sort().join(',')}`;
+  return cachedMetaFetch(key, () => getCampaignDailyInsights(token, adAccountId, campaignIds, from, to), { ttlMs: HISTORY_TTL_MS });
+}
 
 export const PROFIT_PERIODS = ['last3', 'last7', 'last30', 'all'];
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -74,7 +87,8 @@ export function verdictFor({ estimatedProfit, spend }) {
 /**
  * @param {{ productId: number, period?: 'last3'|'last7'|'last30'|'all' }} p
  */
-export async function getProductProfit({ productId, period = 'last7' }) {
+export async function getProductProfit({ productId, period = 'last7', deps = {} }) {
+  const fetchHistory = deps.fetchHistory || defaultFetchHistory;
   const pid = Number(productId);
   if (!Number.isInteger(pid) || pid <= 0) { const e = new Error('لازم تختار منتج.'); e.status = 400; throw e; }
   if (!PROFIT_PERIODS.includes(period)) { const e = new Error('الفترة لازم تكون آخر 3 أيام / 7 / 30 / كل الفترة.'); e.status = 400; throw e; }
@@ -96,7 +110,9 @@ export async function getProductProfit({ productId, period = 'last7' }) {
 
   const daily = new Map(); // date -> { spend, orders }
   const accounts = [];
-  let spend = 0, orders = 0;
+  const historyIncomplete = [];
+  let spend = 0, orders = 0, historyDays = 0, earliest = null;
+  const note = (d) => { if (!earliest || d < earliest) earliest = d; };
   for (const [adAccountId, set] of byAccount.entries()) {
     const rows = ids.size ? await loadSnapshots({ level: 'campaign', from: win.from, to: win.to, adAccountId }) : [];
     let aSpend = 0, aOrders = 0; const aCamps = new Set();
@@ -104,13 +120,31 @@ export async function getProductProfit({ productId, period = 'last7' }) {
       if (!set.has(r.campaign_id)) continue;
       const s = Number(r.spend) || 0, o = Number(r.meta_purchases) || 0;
       aSpend += s; aOrders += o; if (s > 0 || o > 0) aCamps.add(r.campaign_id);
-      const d = daily.get(r.date_start) || { spend: 0, orders: 0 }; d.spend += s; d.orders += o; daily.set(r.date_start, d);
+      const d = daily.get(r.date_start) || { spend: 0, orders: 0 }; d.spend += s; d.orders += o; daily.set(r.date_start, d); note(r.date_start);
+    }
+    // the days before this account's first snapshot: straight from Meta
+    const acctFirst = (await prisma.metaPerformanceSnapshot.aggregate({ _min: { date_start: true }, where: { level: 'campaign', ad_account_id: adAccountId } }))._min.date_start;
+    const histTo = acctFirst ? addDaysISO(acctFirst, -1) : win.to;
+    const histFrom = period === 'all' ? HISTORY_FLOOR : win.from;
+    const histEnd = histTo < win.to ? histTo : win.to;
+    if (histFrom <= histEnd) {
+      try {
+        const hist = await fetchHistory({ adAccountId, campaignIds: [...set], from: histFrom, to: histEnd });
+        for (const h of hist) {
+          if (!set.has(h.campaign_id) || h.date_start < histFrom || h.date_start > histEnd) continue;
+          const s = Number(h.spend) || 0, o = Number(h.purchases) || 0;
+          aSpend += s; aOrders += o; if (s > 0 || o > 0) aCamps.add(h.campaign_id);
+          const d = daily.get(h.date_start) || { spend: 0, orders: 0 }; d.spend += s; d.orders += o; daily.set(h.date_start, d); note(h.date_start); historyDays += 1;
+        }
+      } catch (err) { historyIncomplete.push(names.get(adAccountId) || adAccountId); }
     }
     spend += aSpend; orders += aOrders;
     if (aSpend > 0 || aOrders > 0) accounts.push({ id: adAccountId, name: names.get(adAccountId) || adAccountId, spend: r2(aSpend), orders: aOrders, cpa: aOrders > 0 ? r2(aSpend / aOrders) : null, campaigns: aCamps.size });
   }
   accounts.sort((a, b) => b.spend - a.spend);
 
+  // "all" = everything we now hold (history included): the window starts at the earliest day that has data
+  if (period === 'all' && earliest && earliest < win.from) win.from = earliest;
   // a day-by-day series with no holes (a day without data is a real zero only AFTER the first day we have data)
   const series = [];
   for (let d = win.from; d <= win.to; d = addDaysISO(d, 1)) {
@@ -131,7 +165,8 @@ export async function getProductProfit({ productId, period = 'last7' }) {
 
   return {
     productId: pid, name: product.product_name, period, window: { ...win, days: series.length },
-    dataStart: firstDate, linkedCampaigns: ids.size,
+    dataStart: earliest || firstDate, linkedCampaigns: ids.size,
+    history: { historyDays, incomplete: historyIncomplete },
     totals: { spend: r2(spend), orders, cpa },
     accounts, daily: series,
     economics,

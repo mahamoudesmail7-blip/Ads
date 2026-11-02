@@ -699,7 +699,10 @@ function pfRenderResult() {
   const beCpa = calc.contribution > 0 ? calc.contribution : null;
   const w = d.window;
   const note = d.linkedCampaigns === 0 ? '<div class="pf-warn">⚠️ المنتج ده مالوش حملات مربوطة في السيستم، فمفيش أرقام. اربط حملاته الأول.</div>' : '';
-  const dataNote = d.dataStart && w.from <= d.dataStart ? `<div class="pf-sub">البيانات متاحة من ${UI.escapeHtml(d.dataStart)} (أول مزامنة للحسابات)</div>` : '';
+  const hist = d.history || { historyDays: 0, incomplete: [] };
+  const dataNote = hist.incomplete.length
+    ? `<div class="pf-warn">⚠️ تعذّر تحميل التاريخ القديم من Meta لحسابات: ${UI.escapeHtml(hist.incomplete.join('، '))}. الأرقام ناقصة للأيام القديمة بتاعتهم، جرّب تاني بعد دقايق.</div>`
+    : (hist.historyDays > 0 ? '<div class="pf-sub">الأيام القديمة مقروءة مباشرة من Meta</div>' : '');
   const srcTxt = calc.source === 'SYSTEM'
     ? (d.economics.deliveredShareSource === 'ASSUMED_100' ? 'بافتراض إن كل أوردر اتسلّم (100%)' : 'بنسب التأكيد/التسليم المسجّلة للمنتج')
     : calc.source === 'MANUAL' ? 'بالأرقام اللي كتبتها (من غير تكلفة المرتجع)' : '';
@@ -733,9 +736,10 @@ function pfRenderResult() {
       <div class="pf-calc-t">🧮 احسب بأرقامك ${d.economics?.available ? '<small>(معبّاة من بيانات المنتج)</small>' : `<small>(${UI.escapeHtml(d.economics?.reason || 'مفيش سعر وتكلفة')})</small>`}</div>
       <div class="pf-fields">
         <label>سعر البيع للأوردر (ج)<input class="pf-in" data-k="price" type="number" min="0" step="1" value="${m.price === '' ? '' : m.price}"></label>
-        <label>تكلفة الأوردر (منتج + شحن + تغليف) (ج)<input class="pf-in" data-k="cost" type="number" min="0" step="1" value="${m.cost === '' ? '' : m.cost}"></label>
+        <label title="اللي بتدفعه عشان توصّل أوردر واحد للعميل من غير الإعلان: المنتج + الشحن + التغليف">تكلفة المنتج والشحن للأوردر — من غير الإعلان (ج)<input class="pf-in" data-k="cost" type="number" min="0" step="1" value="${m.cost === '' ? '' : m.cost}"></label>
         <label>نسبة اللي بيتسلّم (%)<input class="pf-in" data-k="share" type="number" min="1" max="100" step="1" value="${m.share}"></label>
       </div>
+      <div class="pf-help">مثال: المنتج 60 ج + الشحن 30 ج = 90 ج. ده مش تكلفة الإعلان (الكوست)، الإعلان بيتخصم لوحده من الصرف.</div>
       <div class="pf-be">${beShare === null ? 'اكتب السعر والتكلفة عشان نحسب النسبة اللي بيكسب عندها.' : beShare > 1 ? '⚠️ حتى لو كل الأوردرات اتسلّمت المنتج بيخسر بالصرف ده.' : `بيكسب طالما نسبة التسليم <b>${UI.fmtNum(Math.ceil(beShare * 100))}%</b> أو أكتر.`}</div>
     </div>
     ${d.daily.length ? `<div class="pf-chart-t">الصرف كل يوم <small>(الرقم فوق العمود = عدد الأوردرات${calc.contribution != null ? ' · أخضر = يوم كسبان، أحمر = يوم خسران' : ''})</small></div><div class="pf-chart" dir="ltr">${cols}</div>` : ''}

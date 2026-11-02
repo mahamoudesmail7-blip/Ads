@@ -1192,6 +1192,37 @@ export async function resolveImageUrlByHash(token, adAccountId, hash) {
   return r?.url || r?.permalink_url || null;
 }
 
+/**
+ * Daily campaign-level insights for a GIVEN set of campaign ids over a date range (READ ONLY) — used to read the HISTORY a product has before our own snapshots begin.
+ * Filters on the Meta side (campaign.id IN [...]) so only the product's campaigns come back; each request has a hard 30 s timeout (a hung read must never hang the screen).
+ * Purchases come from pickPurchases(), the app's one canonical purchase-action list. Returns [{ campaign_id, date_start, spend, purchases }].
+ */
+export async function getCampaignDailyInsights(token, adAccountId, campaignIds, dateFrom, dateTo) {
+  const out = [];
+  const ids = [...new Set((campaignIds || []).map(String))];
+  for (let i = 0; i < ids.length; i += 40) {
+    const chunk = ids.slice(i, i + 40);
+    const u = new URL(`${GRAPH_BASE}/${adAccountId}/insights`);
+    u.searchParams.set('level', 'campaign');
+    u.searchParams.set('time_increment', '1');
+    u.searchParams.set('time_range', JSON.stringify({ since: dateFrom, until: dateTo }));
+    u.searchParams.set('fields', 'campaign_id,spend,actions,date_start');
+    u.searchParams.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: chunk }]));
+    u.searchParams.set('limit', '500');
+    u.searchParams.set('access_token', token);
+    let next = u.toString();
+    let pages = 0;
+    while (next && pages++ < 40) {
+      const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.error) throwGraphOAuthError(data, res, 'campaign daily insights');
+      for (const r of data.data || []) out.push({ campaign_id: r.campaign_id, date_start: r.date_start, spend: Number(r.spend) || 0, purchases: pickPurchases(r.actions).value ?? 0 });
+      next = data.paging?.next || null;
+    }
+  }
+  return out;
+}
+
 /** Poll a video's processing status until READY (or timeout). Returns 'ready' | 'processing' | 'error' | 'unknown'. */
 export async function pollVideoReady(token, videoId, { tries = 12, intervalMs = 5000 } = {}) {
   for (let i = 0; i < tries; i++) {

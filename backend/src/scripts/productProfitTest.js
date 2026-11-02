@@ -61,6 +61,25 @@ try {
   ok('last 30 days: 13×120 − 2000 = −440 → LOSS', l30.profit.estimated === -440 && l30.profit.verdict === 'LOSS', JSON.stringify(l30.profit));
   ok('cost-per-order ceiling check present (CPA 100 <= 150 → ok)', l3.cpaCeiling.value === 150 && l3.cpaCeiling.ok === true && l30.cpaCeiling.ok === false, JSON.stringify([l3.cpaCeiling, l30.cpaCeiling]));
 
+  console.log('\n2b. History straight from Meta for the days before an account\'s first snapshot');
+  const calls = [];
+  const hist = async ({ adAccountId, campaignIds, from, to }) => {
+    calls.push({ adAccountId, campaignIds, from, to });
+    if (adAccountId === YASSER) return [{ campaign_id: 'pp_y1', date_start: cairo(3), spend: 80, purchases: 2 }, { campaign_id: 'not_linked', date_start: cairo(3), spend: 999, purchases: 9 }, { campaign_id: 'pp_y1', date_start: cairo(50), spend: 1, purchases: 1 }];
+    if (adAccountId === HADY) return [{ campaign_id: 'pp_h1', date_start: cairo(60), spend: 400, purchases: 5 }];
+    return [];
+  };
+  const h7 = await PP.getProductProfit({ productId: P.id, period: 'last7', deps: { fetchHistory: hist } });
+  ok('last 7 days: only Yasser (whose first snapshot is today) needs history; Hady already has snapshots that old → not asked', calls.length === 1 && calls[0].adAccountId === YASSER && calls[0].from === cairo(6) && calls[0].to === cairo(1) && JSON.stringify(calls[0].campaignIds) === JSON.stringify(['pp_y1']), JSON.stringify(calls));
+  ok('history merged: totals 1100 + 80 = 1180 spend, 10 + 2 = 12 orders; unlinked campaign and out-of-window rows ignored', h7.totals.spend === 1180 && h7.totals.orders === 12 && h7.history.historyDays === 1 && h7.history.incomplete.length === 0, JSON.stringify([h7.totals, h7.history]));
+  ok('history lands in the right day and account', h7.daily.find((d) => d.date === cairo(3)).spend === 80 && h7.accounts.find((a) => a.id === YASSER).orders === 3 && h7.accounts.find((a) => a.id === YASSER).spend === 180, JSON.stringify(h7.accounts));
+  calls.length = 0;
+  const hAll = await PP.getProductProfit({ productId: P.id, period: 'all', deps: { fetchHistory: hist } });
+  ok('all: asks every account for everything older than its first snapshot (from the 2025 floor)', calls.length === 2 && calls.every((c) => c.from === '2025-01-01') && calls.find((c) => c.adAccountId === HADY).to === cairo(41), JSON.stringify(calls));
+  ok('all: the window now starts at the earliest day we hold (60 days ago from Meta), totals 3000 + 400 + 80 + 1 (the 50-days-ago row) = 3481 / 13 + 5 + 2 + 1 = 21', hAll.window.from === cairo(60) && hAll.dataStart === cairo(60) && hAll.totals.spend === 3481 && hAll.totals.orders === 21 && hAll.daily.length === 61, JSON.stringify([hAll.window, hAll.totals, hAll.daily.length]));
+  const hFail = await PP.getProductProfit({ productId: P.id, period: 'last7', deps: { fetchHistory: async () => { throw new Error('boom'); } } });
+  ok('a failed history read never breaks the card: snapshot totals stay (1100 / 10) and the account is reported as incomplete', hFail.totals.spend === 1100 && hFail.totals.orders === 10 && hFail.history.incomplete.length === 1, JSON.stringify([hFail.totals, hFail.history]));
+
   console.log('\n3. Honest unknowns');
   const P2 = await prisma.product.create({ data: { product_name: 'PP No Costs' } }); made.products.push(P2.id);
   const A2 = await prisma.ambProduct.create({ data: { product_id: P2.id, product_name: 'PP No Costs' } }); made.amb.push(A2.id); // cost 0 = the unset default
