@@ -5,7 +5,8 @@ import { logger } from '../../logger.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { getAdAccountFunds } from '../metaGraphClient.js';
 import { cachedMetaFetch } from '../metaAssetCache.js';
-import { loadSnapshots, latestPerDayPerEntity, aggregateRows, todayISO } from './metricsEngine.js';
+import { prisma } from '../../prisma.js';
+import { loadSnapshots, latestPerDayPerEntity, aggregateRows, todayISO, addDaysISO } from './metricsEngine.js';
 import { currencyFactor } from './snapshotSync.js';
 import { listViewAccounts } from './viewAccounts.js';
 import { getAmbSettings } from './settings.js';
@@ -20,6 +21,21 @@ export function parseAvailableBalance(display) {
   const s = display.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))).replace(/٬/g, ',').replace(/٫/g, '.');
   const m = s.match(/(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/);
   return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+/** Has the account spent anything in the last 3 days (our synced snapshots)? An idle account with an empty balance is not a problem. */
+export async function spendingRecently(adAccountId, now = new Date()) {
+  const since = addDaysISO(todayISO(now), -3);
+  return !!(await prisma.metaPerformanceSnapshot.findFirst({ where: { ad_account_id: adAccountId, spend: { gt: 0 }, date_start: { gte: since } }, select: { id: true } }));
+}
+
+/**
+ * THE low-funds rule, shared by the funds watch (alerts) and the «نظرة سريعة» card so they can never disagree:
+ * UNKNOWN (no readable EGP prepaid balance) · IDLE (a report-only account that isn't spending) · LOW (< threshold) · OK.
+ */
+export function classifyFunds({ funds, threshold, watchedOnly = false, spendingRecently: spending = true }) {
+  if (!funds || funds.error || funds.available === null || funds.available === undefined || funds.currency !== 'EGP') return 'UNKNOWN';
+  if (watchedOnly && !spending) return 'IDLE';
+  return funds.available < threshold ? 'LOW' : 'OK';
 }
 const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
 
@@ -87,7 +103,11 @@ export async function getAccountsToday({ date = null, force = false } = {}) {
   let spend = 0, orders = 0;
   for (const a of out) { spend += a.spend || 0; orders += a.orders || 0; }
   const threshold = Number((await getAmbSettings()).ambLowFundsThreshold) || 2000;
-  for (const a of out) a.funds.low = a.funds.available !== null && a.funds.currency === 'EGP' && a.funds.available < threshold; // same rule the funds watch alerts on
+  const watched = new Set(((await getAmbSettings()).ambReportOnlyAccountIds || []).map(String));
+  for (const a of out) { // the SAME rule the funds watch alerts on (classifyFunds), so the card and the alert always agree
+    const w = watched.has(a.id);
+    a.funds.low = classifyFunds({ funds: a.funds, threshold, watchedOnly: w, spendingRecently: w ? await spendingRecently(a.id) : true }) === 'LOW';
+  }
   return {
     date: day,
     lowFundsThreshold: threshold,

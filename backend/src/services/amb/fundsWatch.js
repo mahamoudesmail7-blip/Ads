@@ -9,8 +9,7 @@ import { getDecryptedToken, getConnectionUnscoped } from '../metaAuth.js';
 import { raiseAlert } from './alerts.js';
 import { getAmbSettings } from './settings.js';
 import { listViewAccounts } from './viewAccounts.js';
-import { accountFunds } from './accountsToday.js';
-import { todayISO, addDaysISO } from './metricsEngine.js';
+import { accountFunds, classifyFunds, spendingRecently as spendingRecentlyDb } from './accountsToday.js';
 
 const REMIND_EVERY_MS = 6 * 3_600_000;
 const WATCH_EVERY_MS = 15 * 60_000;
@@ -25,8 +24,7 @@ export async function runFundsWatch({ now = new Date(), accounts = null, getFund
   const limit = threshold ?? (Number(settings.ambLowFundsThreshold) || 2000);
   // Report-only accounts are only alerted while they are actually spending (last 3 days): an idle watched account with an empty balance is not a problem.
   const watched = new Set((reportOnly ?? settings.ambReportOnlyAccountIds ?? []).map(String));
-  const since = addDaysISO(todayISO(now), -3);
-  const spendingRecently = recentSpend || (async (id) => !!(await prisma.metaPerformanceSnapshot.findFirst({ where: { ad_account_id: id, spend: { gt: 0 }, date_start: { gte: since } }, select: { id: true } })));
+  const spendingRecently = recentSpend || ((id) => spendingRecentlyDb(id, now));
   const list = accounts || (await listViewAccounts()).accounts;
   let fetchFunds = getFunds;
   if (!fetchFunds) {
@@ -38,12 +36,14 @@ export async function runFundsWatch({ now = new Date(), accounts = null, getFund
   for (const a of list) {
     const f = await fetchFunds(a.id).catch((err) => ({ available: null, currency: 'EGP', error: err.message }));
     const name = a.name || a.id;
-    if (!f || f.error || f.available === null || f.available === undefined || f.currency !== 'EGP') { checked.push({ id: a.id, name, state: 'UNKNOWN' }); continue; }
-    if (watched.has(a.id) && !(await spendingRecently(a.id))) { checked.push({ id: a.id, name, state: 'IDLE', available: f.available }); continue; }
+    const w = watched.has(a.id);
+    const cls = classifyFunds({ funds: f, threshold: limit, watchedOnly: w, spendingRecently: w ? await spendingRecently(a.id) : true }); // the same rule as the card
+    if (cls === 'UNKNOWN') { checked.push({ id: a.id, name, state: 'UNKNOWN' }); continue; }
+    if (cls === 'IDLE') { checked.push({ id: a.id, name, state: 'IDLE', available: f.available }); continue; }
     const key = `funds:low:${a.id}`;
     const existing = await prisma.ambAlert.findUnique({ where: { dedupe_key: key } });
 
-    if (f.available < limit) {
+    if (cls === 'LOW') {
       const recent = existing && now.getTime() - new Date(existing.created_at).getTime() < REMIND_EVERY_MS;
       if (!recent) {
         await raiseAlert({
