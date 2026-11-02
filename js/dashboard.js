@@ -320,6 +320,7 @@ async function renderAccountsToday(force) {
         <div class="atd-kpi"><div class="l">الكوست</div><div class="v">${num(a.cpa, 'money')}</div></div>
       </div>` : '<div class="atd-none">لا توجد بيانات صرف لليوم ده</div>'}
       <div class="atd-funds${a.funds?.low ? ' is-low' : ''}"><span class="ic">${a.funds?.low ? '⚠️' : '💳'}</span><span class="t">الفاند</span>${fundsHtml(a.funds)}</div>
+      <div class="atd-hint">📦 اضغط لعرض منتجات الحساب <span>›</span></div>
     </article>`;
   }).join('');
 
@@ -348,12 +349,17 @@ async function renderAccountsToday(force) {
   const root = body.querySelector('.atd');
   atdWireSlider(root);
   atdAnimate(root);
+  root.querySelectorAll('.atd-card').forEach((el, i) => {
+    el.tabIndex = 0;
+    el.onclick = () => openAccountProducts(r.accounts[i], i);
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAccountProducts(r.accounts[i], i); } };
+  });
 }
 
 /** Counts every [data-to] up from 0 (ease-out) and fills the share bars; with reduced motion the final values are written at once. */
 function atdAnimate(root) {
   const fmt = (v, kind) => (kind === 'money' ? `${UI.fmtNum(Math.round(v))}<small>ج</small>` : UI.fmtNum(Math.round(v)));
-  const bars = root.querySelectorAll('.atd-bar > i');
+  const bars = root.querySelectorAll('.atd-bar > i, .atp-bar > i');
   const nums = [...root.querySelectorAll('[data-to]')];
   if (ATD_REDUCED()) { nums.forEach((el) => { el.innerHTML = fmt(Number(el.dataset.to), el.dataset.kind); }); bars.forEach((b) => { b.style.width = `${b.dataset.w}%`; }); return; }
   requestAnimationFrame(() => bars.forEach((b) => { b.style.width = `${b.dataset.w}%`; })); // the CSS transition fills them
@@ -400,6 +406,132 @@ function atdWireSlider(root) {
     go(current() + (forward ? 1 : -1));
   });
   sync();
+}
+
+// ---------------------------------------------------------------------------
+// اضغط على أي حساب → منتجاته النهارده (أوردرات / صرف / كوست)، الأكتر أوردرات فوق، في سلايدر. نفس الشاشة لكل الحسابات.
+// ---------------------------------------------------------------------------
+
+const ATP_PER_PAGE = 5;
+let atpKeyHandler = null;
+let atpGen = 0;
+
+function closeAccountProducts() {
+  atpGen += 1;
+  document.getElementById('atpOverlay')?.remove();
+  if (atpKeyHandler) { document.removeEventListener('keydown', atpKeyHandler); atpKeyHandler = null; }
+}
+
+async function openAccountProducts(acc, colorIdx) {
+  closeAccountProducts();
+  const gen = atpGen;
+  const color = ATD_COLORS[colorIdx % ATD_COLORS.length];
+  const isToday = state.asOfDate === A.todayStr();
+  const dayLabel = isToday ? 'النهارده' : state.asOfDate;
+  const ov = document.createElement('div');
+  ov.className = 'atp-overlay';
+  ov.id = 'atpOverlay';
+  ov.innerHTML = `
+    <div class="atp-modal" role="dialog" aria-modal="true" style="--acc:${color}">
+      <div class="atp-head">
+        <div class="atd-avatar">${UI.escapeHtml((acc.name || '?').trim().charAt(0).toUpperCase())}</div>
+        <div class="atp-title"><b>${UI.escapeHtml((acc.name || acc.id).trim())}</b><span>📦 المنتجات اللي جابت أوردرات — ${UI.escapeHtml(dayLabel)}</span></div>
+        <button class="atp-x" type="button" aria-label="إغلاق">✕</button>
+      </div>
+      <div class="atp-body"><div class="atd-loading"><div class="atd-skel" style="height:240px"></div></div></div>
+    </div>`;
+  document.documentElement.appendChild(ov); // not <body>: the embedded page's body carries a transform, which would turn this "fixed" overlay into one as tall as the whole page
+  ov.addEventListener('click', (e) => { if (e.target === ov) closeAccountProducts(); });
+  ov.querySelector('.atp-x').onclick = closeAccountProducts;
+  atpKeyHandler = (e) => { if (e.key === 'Escape') closeAccountProducts(); };
+  document.addEventListener('keydown', atpKeyHandler);
+
+  const body = ov.querySelector('.atp-body');
+  let r;
+  try { r = await api.get(`/api/ai-media-buyer/accounts-today/${encodeURIComponent(acc.id)}/products`, { date: state.asOfDate }); }
+  catch (e) { if (gen === atpGen) body.innerHTML = `<div class="atd-err">⚠️ تعذّر تحميل منتجات الحساب: ${UI.escapeHtml(e.message || '')}</div>`; return; }
+  if (gen !== atpGen || !r) return;
+
+  const money = (n) => `${UI.fmtNum(Math.round(n))}<small>ج</small>`;
+  const num = (n, kind) => (n === null || n === undefined ? '—' : `<span data-to="${n}" data-kind="${kind}">${kind === 'money' ? money(0) : '0'}</span>`);
+  const maxOrders = Math.max(1, ...r.products.map((p) => p.orders));
+  const medal = (i) => (i === 0 ? ' gold' : i === 1 ? ' silver' : i === 2 ? ' bronze' : '');
+
+  const rowHtml = (p, i) => `
+    <div class="atp-row" style="--i:${i % ATP_PER_PAGE}">
+      <div class="atp-rank${medal(i)}">${i + 1}</div>
+      <div class="atp-main">
+        <div class="atp-name">${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip" title="الحملات دي متجمّعة بالاسم المتشابه بس، مش مربوطة بمنتج في السيستم">بالاسم</span>' : ''}</div>
+        <div class="atp-sub">${p.campaigns} ${p.campaigns === 1 ? 'حملة' : 'حملات'} · ${UI.fmtNum(Math.round(p.orderShare))}% من أوردرات الحساب</div>
+        <div class="atp-bar"><i data-w="${((p.orders / maxOrders) * 100).toFixed(1)}"></i></div>
+      </div>
+      <div class="atp-stat orders"><div class="l">الأوردرات</div><div class="v">${num(p.orders, 'int')}</div></div>
+      <div class="atp-stat"><div class="l">الصرف</div><div class="v">${num(p.spend, 'money')}</div></div>
+      <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${num(p.cpa, 'money')}</div></div>
+    </div>`;
+
+  const pages = [];
+  for (let i = 0; i < r.products.length; i += ATP_PER_PAGE) pages.push(r.products.slice(i, i + ATP_PER_PAGE).map((p, k) => rowHtml(p, i + k)).join(''));
+
+  const noOrdersSpend = r.noOrders.reduce((s, p) => s + p.spend, 0);
+  const noOrdersHtml = r.noOrders.length ? `
+    <details class="atp-noorders">
+      <summary>⚠️ صرف من غير أوردرات (${r.noOrders.length}) — ${UI.fmtNum(Math.round(noOrdersSpend))} ج</summary>
+      ${r.noOrders.map((p) => `<div class="atp-nrow"><span>${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip">بالاسم</span>' : ''} <small>· ${p.campaigns} ${p.campaigns === 1 ? 'حملة' : 'حملات'}</small></span><b>${UI.fmtNum(Math.round(p.spend))} ج</b></div>`).join('')}
+    </details>` : '';
+
+  const t = r.totals;
+  body.innerHTML = `
+    <div class="atp-sum">
+      <div class="s"><div class="l">منتجات جابت أوردرات</div><div class="v">${num(r.products.length, 'int')}</div></div>
+      <div class="s"><div class="l">إجمالي الأوردرات</div><div class="v">${num(t.orders, 'int')}</div></div>
+      <div class="s"><div class="l">إجمالي الصرف</div><div class="v">${num(t.spend, 'money')}</div></div>
+      <div class="s"><div class="l">الكوست أوفر رول</div><div class="v">${num(t.cpa, 'money')}</div></div>
+    </div>
+    ${pages.length ? `
+    <div class="atp-slider">
+      <button class="atd-nav atp-prev" type="button" aria-label="السابق">›</button>
+      <div class="atp-track" tabindex="0">${pages.map((h) => `<div class="atp-slide">${h}</div>`).join('')}</div>
+      <button class="atd-nav atp-next" type="button" aria-label="التالي">‹</button>
+    </div>
+    <div class="atp-foot"><div class="atd-dots">${pages.map((_, i) => `<button class="atd-dot${i === 0 ? ' on' : ''}" type="button" aria-label="صفحة ${i + 1}"></button>`).join('')}</div><span class="atp-page">صفحة <b>1</b> من ${pages.length}</span></div>`
+      : '<div class="atp-empty">لا توجد منتجات جابت أوردرات على الحساب ده في اليوم ده.</div>'}
+    ${noOrdersHtml}
+    <div class="atd-note">المنتجات بدون علامة مربوطة من الرفع أو الربط. علامة «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج في السيستم.</div>`;
+
+  if (pages.length) atpWireSlider(body);
+  atdAnimate(body);
+}
+
+/** Pages slider (one slide = ATP_PER_PAGE rows): arrows, dots and a page counter; direction-agnostic like the accounts slider. */
+function atpWireSlider(root) {
+  const track = root.querySelector('.atp-track');
+  const slides = [...track.querySelectorAll('.atp-slide')];
+  const dots = [...root.querySelectorAll('.atd-dot')];
+  const prev = root.querySelector('.atp-prev'), next = root.querySelector('.atp-next');
+  const pageEl = root.querySelector('.atp-page b');
+  const rtl = getComputedStyle(track).direction === 'rtl';
+  const edge = (el) => { const r = el.getBoundingClientRect(); return rtl ? r.right : r.left; };
+  const current = () => { const s = edge(track); let best = 0, bd = Infinity; slides.forEach((c, i) => { const d = Math.abs(edge(c) - s); if (d < bd) { bd = d; best = i; } }); return best; };
+  const go = (i) => slides[Math.max(0, Math.min(slides.length - 1, i))].scrollIntoView({ behavior: ATD_REDUCED() ? 'auto' : 'smooth', inline: 'start', block: 'nearest' });
+  const sync = () => {
+    const i = current();
+    dots.forEach((d, k) => d.classList.toggle('on', k === i));
+    if (pageEl) pageEl.textContent = String(i + 1);
+    prev.disabled = i <= 0;
+    next.disabled = i >= slides.length - 1;
+  };
+  let raf = 0;
+  track.addEventListener('scroll', () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(sync); }, { passive: true });
+  prev.onclick = () => go(current() - 1);
+  next.onclick = () => go(current() + 1);
+  dots.forEach((d, k) => { d.onclick = () => go(k); });
+  track.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    go(current() + ((rtl ? e.key === 'ArrowLeft' : e.key === 'ArrowRight') ? 1 : -1));
+  });
+  slides.length < 2 ? (root.querySelector('.atp-slider').classList.add('single'), root.querySelector('.atp-foot').style.display = 'none') : sync();
 }
 
 // ---------------------------------------------------------------------------

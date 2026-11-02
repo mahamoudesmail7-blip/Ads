@@ -69,6 +69,14 @@ router.get('/accounts-today', asyncRoute(async (req, res) => {
   const { getAccountsToday } = await import('../services/amb/accountsToday.js');
   res.json(await getAccountsToday({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+// …and one account's products for the day (orders / spend / cost per order, best first). Works for every switchable account, the connected one included.
+router.get('/accounts-today/:id/products', asyncRoute(async (req, res) => {
+  const id = String(req.params.id || '');
+  const known = (await (await import('../services/amb/viewAccounts.js')).listViewAccounts()).accounts.map((a) => a.id);
+  if (!known.includes(id)) return res.status(400).json({ error: 'REQUEST_ERROR', message: 'الحساب الإعلاني ده مش ضمن الحسابات المتاحة للعرض.' });
+  const { getAccountProductsToday } = await import('../services/amb/accountProductsToday.js');
+  res.json(await getAccountProductsToday({ adAccountId: id, date: req.query.date || null }));
+}));
 router.post('/view-accounts/:id/sync', asyncRoute(async (req, res) => {
   const viewId = await (await import('../services/amb/viewAccounts.js')).resolveViewAccountId(req.params.id);
   if (!viewId) return res.json({ ok: true, skipped: 'PRIMARY_ACCOUNT' });
