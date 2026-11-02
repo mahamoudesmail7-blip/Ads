@@ -26,6 +26,7 @@ try {
   ok('"Fawa7a - Mix - Carousel" → Fawa7a', fam('Fawa7a - Mix - Carousel') === 'Fawa7a');
   ok('"Massage-Roller- 7" → Massage-Roller (trailing number)', fam('Massage-Roller- 7') === 'Massage-Roller');
   ok('"Calm-Light- ph" → Calm-Light', fam('Calm-Light- ph') === 'Calm-Light');
+  ok('"Soleva - NewTest" and "Nail-clipper-NewTest4" belong to their family (NewTest is a marker, not part of the name)', fam('Soleva - NewTest') === 'Soleva' && fam('Nail-clipper-NewTest4') === 'Nail-clipper' && fam('Soleva - New Test 2') === 'Soleva' && AP.nameFamily('Soleva - NewTest').key === AP.nameFamily('Soleva - Test 3').key);
   ok('same family, different case / spacing → the SAME key', AP.nameFamily('Nail-clipper - Test 2').key === AP.nameFamily('nail-clipper-Test 4').key);
   ok('a name with no marker stays whole; Arabic untouched; empty is safe', fam('massge جهاز الضغط') === 'massge جهاز الضغط' && fam('') === '' && fam('New Media thing') === 'New Media thing');
 

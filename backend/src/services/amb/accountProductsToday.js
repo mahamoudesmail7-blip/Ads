@@ -9,7 +9,7 @@ import { prisma } from '../../prisma.js';
 import { loadSnapshots, latestPerDayPerEntity, aggregateRows, todayISO } from './metricsEngine.js';
 import { listViewAccounts } from './viewAccounts.js';
 
-const CUT = /(?:^|[\s_\-–—]+)(test|scale|talbq|talabq|talbaq|mix|carousel|ph|copy|new)(?![a-z])/i;
+const CUT = /(?:^|[\s_\-–—]+)(new[\s_-]*test|test|scale|talbq|talabq|talbaq|mix|carousel|ph|copy|new)(?![a-z])/i;
 
 /** The family a campaign name belongs to: the text before the first "test / scale / talbq …" marker, without trailing numbers / separators. Pure. */
 export function nameFamily(campaignName) {
