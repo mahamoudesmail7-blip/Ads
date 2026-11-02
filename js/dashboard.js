@@ -106,6 +106,7 @@ async function init() {
   };
 
   document.getElementById('btnAccountsTodayRefresh').onclick = () => { renderAccountsToday(true); renderTopProducts(); };
+  initProfitCard(); // the product profit card loads its own product list once; it is not part of refresh()
 
   await refresh();
 }
@@ -596,6 +597,162 @@ async function renderTopProducts() {
     btn.querySelector('.t').textContent = open ? 'عرض أقل' : `عرض المزيد (${more.length})`;
     btn.classList.toggle('open', open);
   };
+}
+
+// ---------------------------------------------------------------------------
+// 📈 كسبان ولا خسران؟ — منتج واحد × فترة (آخر 3 أيام / 7 / 30 / كل الفترة) على كل الحسابات: الصرف والأوردرات والكوست، وتقدير الربح.
+// الربح = أوردرات × نسبة التسليم × (سعر البيع − التكلفة) − الصرف. الأرقام الناقصة (سعر / تكلفة / نسبة تسليم) بتتكتب باليد، ومش بتتحفظ.
+// ---------------------------------------------------------------------------
+
+const PF_PERIODS = [['last3', 'آخر 3 أيام'], ['last7', 'آخر 7 أيام'], ['last30', 'آخر 30 يوم'], ['all', 'كل الفترة']];
+const pf = { products: null, productId: null, period: 'last7', data: null, gen: 0, manual: null };
+
+function pfStore(key, val) { try { if (val === undefined) return localStorage.getItem(key); localStorage.setItem(key, val); } catch { /* storage may be unavailable */ } return null; }
+
+async function initProfitCard() {
+  const body = document.getElementById('profitBody');
+  if (!body) return;
+  pf.period = PF_PERIODS.some(([k]) => k === pfStore('pfPeriod')) ? pfStore('pfPeriod') : 'last7';
+  const saved = Number(pfStore('pfProduct'));
+  pf.productId = Number.isInteger(saved) && saved > 0 ? saved : null;
+  body.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:90px"></div></div>';
+  try { pf.products = (await api.get('/api/ai-media-buyer/product-profit/products')).products || []; }
+  catch (e) { body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل قائمة المنتجات: ${UI.escapeHtml(e.message || '')}</span>`; return; }
+  if (pf.productId && !pf.products.some((p) => p.productId === pf.productId)) pf.productId = null;
+  pfRenderShell();
+  if (pf.productId) pfLoad();
+}
+
+function pfRenderShell() {
+  const body = document.getElementById('profitBody');
+  const opts = (pf.products || []).map((p) => `<option value="${p.productId}"${p.productId === pf.productId ? ' selected' : ''}>${UI.escapeHtml(p.name)}</option>`).join('');
+  body.innerHTML = `
+    <div class="pf">
+      <div class="pf-controls">
+        <div class="pf-pick">
+          <input class="pf-search" type="search" placeholder="🔎 دوّر على منتج…" aria-label="بحث عن منتج">
+          <select class="pf-select" aria-label="المنتج"><option value="">— اختار المنتج —</option>${opts}</select>
+        </div>
+        <div class="pf-periods" role="group" aria-label="الفترة">${PF_PERIODS.map(([k, l]) => `<button type="button" class="pf-chip${k === pf.period ? ' on' : ''}" data-p="${k}">${l}</button>`).join('')}</div>
+      </div>
+      <div class="pf-result"><div class="pf-hint">اختار منتج وفترة، وهتشوف صرفه وأوردراته وكوستُه وكسبان ولا خسران.</div></div>
+    </div>`;
+  const root = body.querySelector('.pf');
+  const sel = root.querySelector('.pf-select'), search = root.querySelector('.pf-search');
+  sel.onchange = () => { pf.productId = Number(sel.value) || null; pf.manual = null; pfStore('pfProduct', String(pf.productId || '')); if (pf.productId) pfLoad(); else root.querySelector('.pf-result').innerHTML = '<div class="pf-hint">اختار منتج وفترة.</div>'; };
+  search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    const keep = pf.productId;
+    sel.innerHTML = '<option value="">— اختار المنتج —</option>' + (pf.products || []).filter((p) => !q || p.name.toLowerCase().includes(q) || p.productId === keep).map((p) => `<option value="${p.productId}"${p.productId === keep ? ' selected' : ''}>${UI.escapeHtml(p.name)}</option>`).join('');
+  };
+  root.querySelectorAll('.pf-chip').forEach((b) => { b.onclick = () => { pf.period = b.dataset.p; pfStore('pfPeriod', pf.period); root.querySelectorAll('.pf-chip').forEach((x) => x.classList.toggle('on', x === b)); if (pf.productId) pfLoad(); }; });
+}
+
+async function pfLoad() {
+  const gen = ++pf.gen;
+  const res = document.querySelector('#profitBody .pf-result');
+  if (!res) return;
+  res.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:220px"></div></div>';
+  let d;
+  try { d = await api.get('/api/ai-media-buyer/product-profit', { productId: pf.productId, period: pf.period }); }
+  catch (e) { if (gen === pf.gen) res.innerHTML = `<span class="atd-err">⚠️ ${UI.escapeHtml(e.message || 'تعذّر الحساب')}</span>`; return; }
+  if (gen !== pf.gen || !d) return;
+  pf.data = d;
+  const ec = d.economics || {};
+  pf.manual = { price: ec.available ? ec.sellingPrice : '', cost: ec.available ? ec.unitCost : '', share: ec.available ? Math.round(ec.deliveredShare * 100) : 100, edited: false };
+  pfRenderResult();
+}
+
+/** The profit under the numbers currently typed in (or the server's own estimate while nothing was edited). */
+function pfCalc() {
+  const d = pf.data, m = pf.manual, t = d.totals;
+  if (!m.edited && d.economics?.available) return { profit: d.profit.estimated, source: 'SYSTEM', gross: d.economics.grossPerDelivered, share: d.economics.deliveredShare, contribution: d.economics.contributionPerOrder };
+  const price = Number(m.price), cost = Number(m.cost), share = Number(m.share) / 100;
+  if (!(price > 0) || !(cost >= 0) || m.cost === '' || !(share > 0 && share <= 1)) return { profit: null, source: 'NONE' };
+  const gross = price - cost, contribution = share * gross;
+  return { profit: Math.round((t.orders * contribution - t.spend) * 100) / 100, source: 'MANUAL', gross, share, contribution };
+}
+
+function pfVerdict(profit, spend, orders) {
+  if (!(spend > 0) && !(orders > 0)) return 'NO_DATA';
+  if (profit === null) return 'UNKNOWN';
+  const band = Math.max(50, 0.02 * spend);
+  return profit > band ? 'WIN' : profit < -band ? 'LOSS' : 'BREAKEVEN';
+}
+
+function pfRenderResult() {
+  const res = document.querySelector('#profitBody .pf-result');
+  const d = pf.data, t = d.totals, m = pf.manual;
+  const calc = pfCalc();
+  const verdict = pfVerdict(calc.profit, t.spend, t.orders);
+  const money = (n) => `${UI.fmtNum(Math.round(n))}<small>ج</small>`;
+  const cnt = (n, kind) => (n === null || n === undefined ? '—' : `<span data-to="${n}" data-kind="${kind}">${kind === 'money' ? money(0) : '0'}</span>`);
+  const V = {
+    WIN: ['win', '🟢 كسبان', `صافي ربح تقديري ${UI.fmtNum(Math.round(calc.profit || 0))} ج`],
+    LOSS: ['loss', '🔴 خسران', `صافي خسارة تقديرية ${UI.fmtNum(Math.round(Math.abs(calc.profit || 0)))} ج`],
+    BREAKEVEN: ['even', '🟡 تعادل تقريبًا', `الفرق ${UI.fmtNum(Math.round(calc.profit || 0))} ج`],
+    UNKNOWN: ['unk', '⚪ الربح غير محسوب', 'اكتب سعر البيع والتكلفة تحت وهيتحسب'],
+    NO_DATA: ['unk', '⚪ مفيش صرف في الفترة دي', 'جرّب فترة أطول'],
+  }[verdict];
+
+  const beShare = calc.gross > 0 && t.orders > 0 ? t.spend / (t.orders * calc.gross) : null;
+  const beCpa = calc.contribution > 0 ? calc.contribution : null;
+  const w = d.window;
+  const note = d.linkedCampaigns === 0 ? '<div class="pf-warn">⚠️ المنتج ده مالوش حملات مربوطة في السيستم، فمفيش أرقام. اربط حملاته الأول.</div>' : '';
+  const dataNote = d.dataStart && w.from <= d.dataStart ? `<div class="pf-sub">البيانات متاحة من ${UI.escapeHtml(d.dataStart)} (أول مزامنة للحسابات)</div>` : '';
+  const srcTxt = calc.source === 'SYSTEM'
+    ? (d.economics.deliveredShareSource === 'ASSUMED_100' ? 'بافتراض إن كل أوردر اتسلّم (100%)' : 'بنسب التأكيد/التسليم المسجّلة للمنتج')
+    : calc.source === 'MANUAL' ? 'بالأرقام اللي كتبتها (من غير تكلفة المرتجع)' : '';
+
+  const maxSpend = Math.max(1, ...d.daily.map((x) => x.spend));
+  const dayProfit = (x) => (calc.contribution != null ? x.orders * calc.contribution - x.spend : null);
+  const step = d.daily.length > 31 ? Math.ceil(d.daily.length / 20) : 1;
+  const cols = d.daily.map((x, i) => {
+    const p = dayProfit(x);
+    const cls = !x.hasData ? ' nodata' : p === null ? '' : p >= 0 ? ' up' : ' down';
+    const tip = `${x.date} · صرف ${UI.fmtNum(Math.round(x.spend))} ج · ${x.orders} أوردر${x.cpa !== null ? ` · كوست ${UI.fmtNum(Math.round(x.cpa))} ج` : ''}${p !== null && x.hasData ? ` · ${p >= 0 ? 'ربح' : 'خسارة'} ${UI.fmtNum(Math.round(Math.abs(p)))} ج` : ''}`;
+    return `<div class="pf-col${cls}" title="${UI.escapeHtml(tip)}" style="--i:${Math.min(i, 30)}"><div class="n">${x.orders || ''}</div><div class="bar"><i data-h="${((x.spend / maxSpend) * 100).toFixed(1)}"></i></div><div class="d">${i % step === 0 ? x.date.slice(8) : ''}</div></div>`;
+  }).join('');
+
+  const accts = d.accounts.map((a) => `<div class="pf-acct"><span class="nm">${UI.escapeHtml(a.name)}</span><span>${UI.fmtNum(a.orders)} أوردر</span><span>${UI.fmtNum(Math.round(a.spend))} ج</span><span class="cpa">${a.cpa === null ? '—' : UI.fmtNum(Math.round(a.cpa)) + ' ج'}</span></div>`).join('');
+
+  res.innerHTML = `
+    ${note}
+    <div class="pf-verdict ${V[0]}">
+      <div class="big">${V[1]}</div>
+      <div class="det"><b>${UI.escapeHtml(d.name)}</b><span>${V[2]}${srcTxt ? ' · ' + srcTxt : ''}</span><span class="pf-sub">من ${UI.escapeHtml(w.from)} إلى ${UI.escapeHtml(w.to)} (${w.days} يوم)</span>${dataNote}</div>
+    </div>
+    <div class="pf-kpis">
+      <div class="pf-kpi"><div class="l">الصرف</div><div class="v">${cnt(t.spend, 'money')}</div></div>
+      <div class="pf-kpi"><div class="l">الأوردرات</div><div class="v">${cnt(t.orders, 'int')}</div></div>
+      <div class="pf-kpi"><div class="l">الكوست</div><div class="v">${cnt(t.cpa, 'money')}</div></div>
+      <div class="pf-kpi"><div class="l">الكوست اللي بيعادل</div><div class="v">${beCpa === null ? '—' : cnt(beCpa, 'money')}</div></div>
+      <div class="pf-kpi ${V[0]}"><div class="l">صافي الربح / الخسارة</div><div class="v">${calc.profit === null ? '—' : `<span class="sg">${calc.profit < 0 ? '−' : '+'}</span>${cnt(Math.abs(calc.profit), 'money')}`}</div></div>
+    </div>
+    <div class="pf-calc">
+      <div class="pf-calc-t">🧮 احسب بأرقامك ${d.economics?.available ? '<small>(معبّاة من بيانات المنتج)</small>' : `<small>(${UI.escapeHtml(d.economics?.reason || 'مفيش سعر وتكلفة')})</small>`}</div>
+      <div class="pf-fields">
+        <label>سعر البيع للأوردر (ج)<input class="pf-in" data-k="price" type="number" min="0" step="1" value="${m.price === '' ? '' : m.price}"></label>
+        <label>تكلفة الأوردر (منتج + شحن + تغليف) (ج)<input class="pf-in" data-k="cost" type="number" min="0" step="1" value="${m.cost === '' ? '' : m.cost}"></label>
+        <label>نسبة اللي بيتسلّم (%)<input class="pf-in" data-k="share" type="number" min="1" max="100" step="1" value="${m.share}"></label>
+      </div>
+      <div class="pf-be">${beShare === null ? 'اكتب السعر والتكلفة عشان نحسب النسبة اللي بيكسب عندها.' : beShare > 1 ? '⚠️ حتى لو كل الأوردرات اتسلّمت المنتج بيخسر بالصرف ده.' : `بيكسب طالما نسبة التسليم <b>${UI.fmtNum(Math.ceil(beShare * 100))}%</b> أو أكتر.`}</div>
+    </div>
+    ${d.daily.length ? `<div class="pf-chart-t">الصرف كل يوم <small>(الرقم فوق العمود = عدد الأوردرات${calc.contribution != null ? ' · أخضر = يوم كسبان، أحمر = يوم خسران' : ''})</small></div><div class="pf-chart" dir="ltr">${cols}</div>` : ''}
+    ${accts ? `<div class="pf-accts"><div class="pf-chart-t">حسب الحساب</div>${accts}</div>` : ''}
+    <div class="atd-note">الأوردرات = مشتريات Meta (Website Purchases) وبتتحدّث كل 15 دقيقة تقريبًا. الربح تقدير، مش حسابات محاسبية.</div>`;
+
+  const root = res;
+  atdAnimate(root);
+  root.querySelectorAll('.pf-col .bar > i').forEach((b) => { b.style.height = ATD_REDUCED() ? `${b.dataset.h}%` : '0%'; });
+  if (!ATD_REDUCED()) requestAnimationFrame(() => requestAnimationFrame(() => root.querySelectorAll('.pf-col .bar > i').forEach((b) => { b.style.height = `${b.dataset.h}%`; })));
+  root.querySelectorAll('.pf-in').forEach((inp) => {
+    inp.oninput = () => {
+      pf.manual[inp.dataset.k] = inp.value === '' ? '' : Number(inp.value);
+      pf.manual.edited = true;
+      clearTimeout(pf.t); pf.t = setTimeout(() => { const k = inp.dataset.k; pfRenderResult(); const again = document.querySelector(`#profitBody .pf-in[data-k="${k}"]`); if (again) { again.focus(); const v = again.value; again.value = ''; again.value = v; } }, 450);
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

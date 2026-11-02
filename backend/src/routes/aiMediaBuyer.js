@@ -69,6 +69,15 @@ router.get('/accounts-today', asyncRoute(async (req, res) => {
   const { getAccountsToday } = await import('../services/amb/accountsToday.js');
   res.json(await getAccountsToday({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+// "كسبان ولا خسران؟": one product over a chosen period across every account (spend / orders / cost per order / estimated profit).
+router.get('/product-profit/products', asyncRoute(async (req, res) => {
+  const { listProfitProducts } = await import('../services/amb/productProfit.js');
+  res.json({ products: await listProfitProducts() });
+}));
+router.get('/product-profit', asyncRoute(async (req, res) => {
+  const { getProductProfit } = await import('../services/amb/productProfit.js');
+  res.json(await getProductProfit({ productId: req.query.productId, period: req.query.period || 'last7' }));
+}));
 // The best products of the day across EVERY account (most orders, cost per order within the "good" ceiling).
 router.get('/top-products-today', asyncRoute(async (req, res) => {
   const { getTopProductsToday } = await import('../services/amb/topProductsToday.js');
