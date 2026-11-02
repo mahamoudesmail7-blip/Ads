@@ -28,6 +28,14 @@ try {
   const V = PP.verdictFor;
   ok('verdict: +/- 2% of spend (min 50) is break-even; beyond it WIN / LOSS; null → UNKNOWN; nothing ran → NO_DATA', V({ estimatedProfit: 500, spend: 1000 }) === 'WIN' && V({ estimatedProfit: -500, spend: 1000 }) === 'LOSS' && V({ estimatedProfit: 10, spend: 1000 }) === 'BREAKEVEN' && V({ estimatedProfit: null, spend: 1000 }) === 'UNKNOWN' && V({ estimatedProfit: 0, spend: 0 }) === 'NO_DATA');
 
+  console.log('\n1b. Meta reads are bounded: date windows of at most 31 days');
+  const MG = await imp('../services/metaGraphClient.js');
+  ok('one window when the range fits', JSON.stringify(MG.dateWindows('2026-10-01', '2026-10-31', 31)) === JSON.stringify([{ since: '2026-10-01', until: '2026-10-31' }]));
+  ok('a longer range is split into consecutive windows with no gap and no overlap', JSON.stringify(MG.dateWindows('2026-10-01', '2026-11-15', 31)) === JSON.stringify([{ since: '2026-10-01', until: '2026-10-31' }, { since: '2026-11-01', until: '2026-11-15' }]));
+  const w60 = MG.dateWindows('2026-09-01', '2026-11-02', 31);
+  ok('63 days → 3 windows, contiguous, ending exactly on the last day', w60.length === 3 && w60[0].since === '2026-09-01' && w60[2].until === '2026-11-02' && w60[1].since === '2026-10-02' && w60[2].since === '2026-11-02', JSON.stringify(w60));
+  ok('a single day, and an empty range', MG.dateWindows('2026-11-02', '2026-11-02', 31).length === 1 && MG.dateWindows('2026-11-03', '2026-11-02', 31).length === 0);
+
   console.log('\n2. One product across accounts and periods');
   conn = await prisma.metaConnection.findFirst(); prevAcc = conn?.selected_ad_account_id; prevStatus = conn?.status;
   await prisma.metaConnection.update({ where: { id: conn.id }, data: { selected_ad_account_id: PRIMARY, status: 'CONNECTED' } });

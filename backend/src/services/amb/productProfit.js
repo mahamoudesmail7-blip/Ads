@@ -15,7 +15,7 @@ import { effectiveSellingPrice, baseOperationalCost } from './productEconomics.j
 import { getAmbSettings } from './settings.js';
 import { listViewAccounts } from './viewAccounts.js';
 import { getDecryptedToken } from '../metaAuth.js';
-import { getCampaignDailyInsights } from '../metaGraphClient.js';
+import { getCampaignDailyInsights, getCampaignFirstSpendDate } from '../metaGraphClient.js';
 import { cachedMetaFetch } from '../metaAssetCache.js';
 
 // HISTORY: our own snapshots only start when each account was first synced (Ahmed Samy 18 Oct, the others later). For the days BEFORE that, the product's campaigns are read straight from Meta
@@ -24,8 +24,15 @@ const HISTORY_FLOOR = '2025-01-01';
 const HISTORY_TTL_MS = 30 * 60_000;
 async function defaultFetchHistory({ adAccountId, campaignIds, from, to }) {
   const token = await getDecryptedToken();
-  const key = `prodHistory:${adAccountId}:${from}:${to}:${campaignIds.slice().sort().join(',')}`;
-  return cachedMetaFetch(key, () => getCampaignDailyInsights(token, adAccountId, campaignIds, from, to), { ttlMs: HISTORY_TTL_MS });
+  const ids = campaignIds.slice().sort();
+  let start = from;
+  if (from === HISTORY_FLOOR) { // "everything": find where the spend really starts instead of reading 20 months of nothing
+    const first = await cachedMetaFetch(`prodFirst:${adAccountId}:${from}:${to}:${ids.join(',')}`, () => getCampaignFirstSpendDate(token, adAccountId, ids, from, to), { ttlMs: HISTORY_TTL_MS });
+    if (!first) return [];
+    start = first < from ? from : first;
+  }
+  if (start > to) return [];
+  return cachedMetaFetch(`prodHistory:${adAccountId}:${start}:${to}:${ids.join(',')}`, () => getCampaignDailyInsights(token, adAccountId, ids, start, to), { ttlMs: HISTORY_TTL_MS });
 }
 
 export const PROFIT_PERIODS = ['last3', 'last7', 'last30', 'all'];

@@ -1192,35 +1192,66 @@ export async function resolveImageUrlByHash(token, adAccountId, hash) {
   return r?.url || r?.permalink_url || null;
 }
 
+/** [from, to] (YYYY-MM-DD, inclusive) split into consecutive windows of at most maxDays days. Pure. */
+export function dateWindows(from, to, maxDays = 31) {
+  const out = [];
+  const add = (d, n) => { const x = new Date(`${d}T00:00:00.000Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  for (let a = from; a <= to; a = add(a, maxDays)) { const b = add(a, maxDays - 1); out.push({ since: a, until: b < to ? b : to }); }
+  return out;
+}
+
+async function insightsPages(url, label) {
+  const rows = [];
+  let next = url, pages = 0;
+  while (next && pages++ < 40) {
+    const res = await fetch(next, { signal: AbortSignal.timeout(30_000) }); // a hung read must never hang the screen
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.error) throwGraphOAuthError(data, res, label);
+    rows.push(...(data.data || []));
+    next = data.paging?.next || null;
+  }
+  return rows;
+}
+
+function campaignInsightsUrl(token, adAccountId, ids, since, until, increment, fields) {
+  const u = new URL(`${GRAPH_BASE}/${adAccountId}/insights`);
+  u.searchParams.set('level', 'campaign');
+  u.searchParams.set('time_increment', String(increment));
+  u.searchParams.set('time_range', JSON.stringify({ since, until }));
+  u.searchParams.set('fields', fields);
+  u.searchParams.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: ids }]));
+  u.searchParams.set('limit', '500');
+  u.searchParams.set('access_token', token);
+  return u.toString();
+}
+
 /**
- * Daily campaign-level insights for a GIVEN set of campaign ids over a date range (READ ONLY) — used to read the HISTORY a product has before our own snapshots begin.
- * Filters on the Meta side (campaign.id IN [...]) so only the product's campaigns come back; each request has a hard 30 s timeout (a hung read must never hang the screen).
- * Purchases come from pickPurchases(), the app's one canonical purchase-action list. Returns [{ campaign_id, date_start, spend, purchases }].
+ * Daily campaign-level insights for a GIVEN set of campaign ids (READ ONLY) — the HISTORY a product has before our own snapshots begin.
+ * Meta filters on its side (campaign.id IN [...]); the range is read in windows of at most 31 days (a very long daily range made Meta return INCOMPLETE data on production — verified against Ads Manager),
+ * ids in chunks of 40, every request with a hard 30 s timeout. Purchases come from pickPurchases(), the app's one canonical purchase-action list.
+ * Returns [{ campaign_id, date_start, spend, purchases }].
  */
 export async function getCampaignDailyInsights(token, adAccountId, campaignIds, dateFrom, dateTo) {
   const out = [];
   const ids = [...new Set((campaignIds || []).map(String))];
-  for (let i = 0; i < ids.length; i += 40) {
-    const chunk = ids.slice(i, i + 40);
-    const u = new URL(`${GRAPH_BASE}/${adAccountId}/insights`);
-    u.searchParams.set('level', 'campaign');
-    u.searchParams.set('time_increment', '1');
-    u.searchParams.set('time_range', JSON.stringify({ since: dateFrom, until: dateTo }));
-    u.searchParams.set('fields', 'campaign_id,spend,actions,date_start');
-    u.searchParams.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: chunk }]));
-    u.searchParams.set('limit', '500');
-    u.searchParams.set('access_token', token);
-    let next = u.toString();
-    let pages = 0;
-    while (next && pages++ < 40) {
-      const res = await fetch(next, { signal: AbortSignal.timeout(30_000) });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || data?.error) throwGraphOAuthError(data, res, 'campaign daily insights');
-      for (const r of data.data || []) out.push({ campaign_id: r.campaign_id, date_start: r.date_start, spend: Number(r.spend) || 0, purchases: pickPurchases(r.actions).value ?? 0 });
-      next = data.paging?.next || null;
+  for (const w of dateWindows(dateFrom, dateTo, 31)) {
+    for (let i = 0; i < ids.length; i += 40) {
+      const rows = await insightsPages(campaignInsightsUrl(token, adAccountId, ids.slice(i, i + 40), w.since, w.until, 1, 'campaign_id,spend,actions,date_start'), 'campaign daily insights');
+      for (const r of rows) out.push({ campaign_id: r.campaign_id, date_start: r.date_start, spend: Number(r.spend) || 0, purchases: pickPurchases(r.actions).value ?? 0 });
     }
   }
   return out;
+}
+
+/** The first day those campaigns spent anything in [since, until], found with ONE cheap monthly read (null when they never spent). Lets a "since forever" ask start where the data really starts. */
+export async function getCampaignFirstSpendDate(token, adAccountId, campaignIds, since, until) {
+  const ids = [...new Set((campaignIds || []).map(String))];
+  let first = null;
+  for (let i = 0; i < ids.length; i += 40) {
+    const rows = await insightsPages(campaignInsightsUrl(token, adAccountId, ids.slice(i, i + 40), since, until, 'monthly', 'campaign_id,spend,date_start'), 'campaign first spend');
+    for (const r of rows) if ((Number(r.spend) || 0) > 0 && (!first || r.date_start < first)) first = r.date_start;
+  }
+  return first;
 }
 
 /** Poll a video's processing status until READY (or timeout). Returns 'ready' | 'processing' | 'error' | 'unknown'. */
