@@ -64,6 +64,11 @@ router.get('/view-accounts', asyncRoute(async (req, res) => {
   const { listViewAccounts } = await import('../services/amb/viewAccounts.js');
   res.json(await listViewAccounts());
 }));
+// "نظرة سريعة": every ad account for one day (spend / orders / CPA / funds) + the overall total. Read only, cross-account by design (not scoped to the chosen account).
+router.get('/accounts-today', asyncRoute(async (req, res) => {
+  const { getAccountsToday } = await import('../services/amb/accountsToday.js');
+  res.json(await getAccountsToday({ date: req.query.date || null, force: req.query.force === '1' }));
+}));
 router.post('/view-accounts/:id/sync', asyncRoute(async (req, res) => {
   const viewId = await (await import('../services/amb/viewAccounts.js')).resolveViewAccountId(req.params.id);
   if (!viewId) return res.json({ ok: true, skipped: 'PRIMARY_ACCOUNT' });

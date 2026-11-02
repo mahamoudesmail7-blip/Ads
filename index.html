@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/style.css" />
 <link rel="stylesheet" href="css/embed.css" />
 <link rel="stylesheet" href="css/embed-fx.css" />
+<link rel="stylesheet" href="css/accounts-slider.css" />
 </head>
 <body>
   <div class="app-shell">
@@ -39,6 +40,15 @@
           ثم سجّل أوردراتها اليومية من <a href="entry.html">صفحة إدخال الأوردرات</a> أو اضغط "🧪 إنشاء بيانات اختبار" أعلاه لتجربة النظام فورًا.
         </div>
         <a class="btn" href="products.html" style="font-size:15px; padding:12px 28px;">📦 اذهب إلى المنتجات</a>
+      </div>
+
+      <!-- 💳 كل الحسابات الإعلانية: صرف / أوردرات / كوست / فاند + الإجمالي -->
+      <div class="card" id="accountsTodayCard" style="margin-bottom:22px;">
+        <div class="page-header" style="border:none; padding:0; margin-bottom:10px;">
+          <div class="section-title" style="margin-top:0; font-size:14px;" id="accountsTodayTitle">💳 الحسابات الإعلانية — النهارده</div>
+          <button class="btn secondary small" id="btnAccountsTodayRefresh" title="يعيد قراءة الفاند من Meta">🔄 تحديث</button>
+        </div>
+        <div id="accountsTodayBody" style="font-size:13.5px;"><div class="atd-loading"><div class="atd-skel"></div><div class="atd-skel"></div><div class="atd-skel"></div></div></div>
       </div>
 
       <!-- أهم أرقام اليوم -->

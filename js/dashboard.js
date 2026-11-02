@@ -22,6 +22,7 @@ import { generateDemoTasks, resetDemoTasks } from './demo-tasks.js';
 import { loadDemoDay } from './demo-day-scenario.js';
 import { loadPerfTestScenario } from './perf-test-scenario.js';
 import { getWarehouseSummary, getReconciliation } from './inventory-store.js';
+import { api } from './api-client.js';
 
 const state = { asOfDate: A.todayStr() };
 
@@ -104,6 +105,8 @@ async function init() {
     await refresh();
   };
 
+  document.getElementById('btnAccountsTodayRefresh').onclick = () => renderAccountsToday(true);
+
   await refresh();
 }
 
@@ -150,6 +153,7 @@ async function refresh() {
   document.getElementById('dateLabel').textContent = `عرض بيانات بتاريخ ${state.asOfDate}`;
   document.getElementById('emptyDashboardBanner').style.display = items.length === 0 ? 'block' : 'none';
 
+  renderAccountsToday(false); // not awaited: Meta being slow must never delay the rest of the page
   renderQuickStats();
   renderComparison();
   await renderInventoryKpis();
@@ -261,6 +265,137 @@ function renderQuickStats() {
   document.getElementById('quickStatsBody').innerHTML = stats
     .map(([label, value]) => `<span>${label}: <b class="mono">${value}</b></span>`)
     .join('');
+}
+
+// ---------------------------------------------------------------------------
+// 💳 الحسابات الإعلانية — لكل حساب: صرف / أوردرات / كوست / فاند، وتحتها الإجمالي (أوفر رول).
+// الأوردرات = مشتريات Meta لكل حساب (Easy Orders مش بيعرف الأوردر جه من أنهي حساب).
+// ---------------------------------------------------------------------------
+
+const ATD_COLORS = ['#ff7a1a', '#7a4dff', '#2f80ed', '#16a34a', '#e11d74', '#0ea5a4'];
+const ATD_REDUCED = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let accountsTodayGen = 0;
+async function renderAccountsToday(force) {
+  const gen = ++accountsTodayGen; // a slower, older response never overwrites a newer one
+  const body = document.getElementById('accountsTodayBody');
+  const isToday = state.asOfDate === A.todayStr();
+  document.getElementById('accountsTodayTitle').textContent = isToday ? '💳 الحسابات الإعلانية — النهارده' : `💳 الحسابات الإعلانية — ${state.asOfDate}`;
+  if (!body.querySelector('.atd')) body.innerHTML = '<div class="atd-loading"><div class="atd-skel"></div><div class="atd-skel"></div><div class="atd-skel"></div></div>';
+  let r;
+  try { r = await api.get('/api/ai-media-buyer/accounts-today', { date: state.asOfDate, force: force ? '1' : '' }); }
+  catch (e) { if (gen === accountsTodayGen) body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل أرقام الحسابات: ${UI.escapeHtml(e.message || '')}</span>`; return; }
+  if (gen !== accountsTodayGen || !r) return;
+
+  const money = (n) => `${UI.fmtNum(Math.round(n))}<small>ج</small>`;
+  // a number that counts up from 0 (data-to / data-kind are read by atdCountUp); null stays a plain dash, never an animated 0
+  const num = (n, kind) => (n === null || n === undefined ? '—' : `<span data-to="${n}" data-kind="${kind}">${kind === 'money' ? money(0) : '0'}</span>`);
+  const fundsHtml = (f) => {
+    if (!f || f.error) return '<span class="x na">غير متاح من Meta</span>';
+    if (f.display) return `<span class="x">${UI.escapeHtml(f.display)}</span>`;
+    if (f.balance !== null) return `<span class="x">${f.isPrepay === false ? 'مستحق' : 'رصيد'}: ${UI.fmtNum(Math.round(f.balance))} ${UI.escapeHtml(f.currency)}</span>`;
+    return '<span class="x na">—</span>';
+  };
+
+  const total = r.total || { spend: 0, orders: 0, cpa: null };
+  const cards = r.accounts.map((a, i) => {
+    const share = total.spend > 0 && a.spend ? Math.min(100, (a.spend / total.spend) * 100) : 0;
+    const initial = UI.escapeHtml((a.name || '?').trim().charAt(0).toUpperCase());
+    return `
+    <article class="atd-card${a.hasData ? '' : ' is-empty'}" style="--acc:${ATD_COLORS[i % ATD_COLORS.length]}; --i:${i}">
+      <div class="atd-id">
+        <div class="atd-avatar">${initial}</div>
+        <div style="min-width:0;"><div class="atd-name">${UI.escapeHtml(a.name || a.id)}</div><div class="atd-sub">${a.activeCampaigns ? `${a.activeCampaigns} حملة بتصرف` : 'لا حملات بتصرف'}</div></div>
+        ${a.active === false ? '<span class="atd-chip off">غير نشط</span>' : a.isPrimary ? '<span class="atd-chip">★ الأساسي</span>' : ''}
+      </div>
+      ${a.hasData ? `
+      <div class="atd-share">
+        <div class="atd-share-row"><span>حصته من الصرف</span><b>${UI.fmtNum(Math.round(share))}%</b></div>
+        <div class="atd-bar"><i data-w="${share.toFixed(1)}"></i></div>
+      </div>
+      <div class="atd-kpis">
+        <div class="atd-kpi"><div class="l">الصرف</div><div class="v">${num(a.spend, 'money')}</div></div>
+        <div class="atd-kpi"><div class="l">الأوردرات</div><div class="v">${num(a.orders ?? 0, 'int')}</div></div>
+        <div class="atd-kpi"><div class="l">الكوست</div><div class="v">${num(a.cpa, 'money')}</div></div>
+      </div>` : '<div class="atd-none">لا توجد بيانات صرف لليوم ده</div>'}
+      <div class="atd-funds"><span class="ic">💳</span><span class="t">الفاند</span>${fundsHtml(a.funds)}</div>
+    </article>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="atd">
+      <div class="atd-wrap">
+        <button class="atd-nav atd-prev" type="button" aria-label="السابق">›</button>
+        <div class="atd-track" tabindex="0">${cards}</div>
+        <button class="atd-nav atd-next" type="button" aria-label="التالي">‹</button>
+      </div>
+      <div class="atd-dots">${r.accounts.map((_, i) => `<button class="atd-dot${i === 0 ? ' on' : ''}" type="button" aria-label="حساب ${i + 1}"></button>`).join('')}</div>
+      <section class="atd-total">
+        <div class="ttl">📊 الإجمالي <em>${r.accounts.length} حسابات</em></div>
+        <div class="stats">
+          <div class="s"><div class="l">إجمالي الصرف</div><div class="v">${num(total.spend, 'money')}</div></div>
+          <div class="s"><div class="l">إجمالي الأوردرات</div><div class="v">${num(total.orders, 'int')}</div></div>
+          <div class="s"><div class="l">الكوست أوفر رول</div><div class="v">${num(total.cpa, 'money')}</div></div>
+        </div>
+      </section>
+      <div class="atd-note">${UI.escapeHtml(r.note || '')}</div>
+    </div>`;
+
+  const root = body.querySelector('.atd');
+  atdWireSlider(root);
+  atdAnimate(root);
+}
+
+/** Counts every [data-to] up from 0 (ease-out) and fills the share bars; with reduced motion the final values are written at once. */
+function atdAnimate(root) {
+  const fmt = (v, kind) => (kind === 'money' ? `${UI.fmtNum(Math.round(v))}<small>ج</small>` : UI.fmtNum(Math.round(v)));
+  const bars = root.querySelectorAll('.atd-bar > i');
+  const nums = [...root.querySelectorAll('[data-to]')];
+  if (ATD_REDUCED()) { nums.forEach((el) => { el.innerHTML = fmt(Number(el.dataset.to), el.dataset.kind); }); bars.forEach((b) => { b.style.width = `${b.dataset.w}%`; }); return; }
+  requestAnimationFrame(() => bars.forEach((b) => { b.style.width = `${b.dataset.w}%`; })); // the CSS transition fills them
+  const DUR = 1000, t0 = performance.now();
+  const tick = (now) => {
+    if (!root.isConnected) return; // the card was re-rendered meanwhile
+    const p = Math.min(1, (now - t0) / DUR), e = 1 - Math.pow(1 - p, 3);
+    for (const el of nums) el.innerHTML = fmt(Number(el.dataset.to) * e, el.dataset.kind);
+    if (p < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/** Slider: scroll-snap track + arrows + dots. Direction-agnostic (RTL/LTR) because it only ever uses scrollIntoView on the target card. Arrows/dots hide when every card fits. */
+function atdWireSlider(root) {
+  const track = root.querySelector('.atd-track');
+  const cards = [...track.querySelectorAll('.atd-card')];
+  const dots = [...root.querySelectorAll('.atd-dot')];
+  const prev = root.querySelector('.atd-prev'), next = root.querySelector('.atd-next');
+  const rtl = getComputedStyle(track).direction === 'rtl';
+  const startEdge = (el) => { const r = el.getBoundingClientRect(); return rtl ? r.right : r.left; };
+  const current = () => { const s = startEdge(track); let best = 0, bd = Infinity; cards.forEach((c, i) => { const d = Math.abs(startEdge(c) - s); if (d < bd) { bd = d; best = i; } }); return best; };
+  const go = (i) => cards[Math.max(0, Math.min(cards.length - 1, i))].scrollIntoView({ behavior: ATD_REDUCED() ? 'auto' : 'smooth', inline: 'start', block: 'nearest' });
+  const sync = () => {
+    const fits = track.scrollWidth <= track.clientWidth + 2;
+    root.classList.toggle('atd-fit', fits);
+    const i = current();
+    const atEnd = Math.abs(track.scrollWidth - track.clientWidth - Math.abs(track.scrollLeft)) < 3; // the last card can't reach the start edge: treat the real end as "last"
+    const idx = atEnd ? cards.length - 1 : i;
+    dots.forEach((d, k) => d.classList.toggle('on', k === idx));
+    prev.disabled = idx <= 0 && Math.abs(track.scrollLeft) < 3;
+    next.disabled = atEnd;
+  };
+  let raf = 0;
+  track.addEventListener('scroll', () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(sync); }, { passive: true });
+  window.addEventListener('resize', () => { if (root.isConnected) sync(); });
+  prev.onclick = () => go(current() - 1);
+  next.onclick = () => go(current() + 1);
+  dots.forEach((d, k) => { d.onclick = () => go(k); });
+  track.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const forward = rtl ? e.key === 'ArrowLeft' : e.key === 'ArrowRight';
+    go(current() + (forward ? 1 : -1));
+  });
+  sync();
 }
 
 // ---------------------------------------------------------------------------

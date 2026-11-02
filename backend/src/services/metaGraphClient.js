@@ -379,6 +379,19 @@ export async function getAdAccountInfo(token, adAccountId) {
 }
 
 /**
+ * The account's funding picture (READ ONLY): `funding_source_details.display_string` is the line Ads Manager shows for the payment method (the prepaid "available balance" lives there),
+ * `balance` = the outstanding amount in minor units, `amount_spent` = lifetime spend in minor units. If Meta refuses the richer field list, a plainer one is retried.
+ */
+export async function getAdAccountFunds(token, adAccountId) {
+  try {
+    return await graphFetch(`/${adAccountId}`, { fields: 'id,currency,balance,amount_spent,spend_cap,is_prepay_account,funding_source_details' }, token);
+  } catch (e) {
+    if (e?.isMetaRateLimit) throw e;
+    return graphFetch(`/${adAccountId}`, { fields: 'id,currency,balance,amount_spent,spend_cap' }, token);
+  }
+}
+
+/**
  * Daily Insights at an explicit level (campaign | adset | ad) for a date
  * range — same field set + real pagination as getInsights(), plus the id/
  * name columns for every level so a snapshot row is self-describing.
