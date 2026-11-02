@@ -18,7 +18,8 @@ export async function operatorExtraAccounts() {
   if (settings.ambOperatorAllAccounts !== true) return [];
   const conn = await getConnectionUnscoped();
   if (!conn || conn.status !== 'CONNECTED') return [];
-  return (await getViewAccountIds()).filter((id) => id !== conn.selected_ad_account_id);
+  const reportOnly = new Set((settings.ambReportOnlyAccountIds || []).map(String)); // watched, never operated
+  return (await getViewAccountIds()).filter((id) => id !== conn.selected_ad_account_id && !reportOnly.has(id));
 }
 
 /** Runs `fn(adAccountId)` once per extra account, sequentially, each inside that account's scope; one account failing never stops the next. Returns { [accountId]: result | { error } }. */

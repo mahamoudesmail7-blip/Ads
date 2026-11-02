@@ -69,6 +69,10 @@ try {
   await settingsMod.saveAmbSettings({ ambOperatorAllAccounts: true });
   const extra = await OA.operatorExtraAccounts();
   ok('ON: Hady and Yasser (never the connected account)', extra.length === 2 && extra.includes(HADY) && extra.includes(YASSER) && !extra.includes(PRIMARY), extra.join(','));
+  await settingsMod.saveAmbSettings({ ambReportOnlyAccountIds: [YASSER] });
+  const ex2 = await OA.operatorExtraAccounts();
+  ok('a report-only account is never operated (Yasser dropped, Hady stays)', ex2.length === 1 && ex2[0] === HADY, ex2.join(','));
+  await settingsMod.saveAmbSettings({ ambReportOnlyAccountIds: [] });
   const scopes = {};
   const res = await OA.forEachOperatorAccount(async (id) => { scopes[id] = (await MA.getConnection()).selected_ad_account_id; if (id === YASSER) throw new Error('boom'); return { ran: true }; });
   ok('each pass runs inside its own account scope', scopes[HADY] === HADY && scopes[YASSER] === YASSER, JSON.stringify(scopes));

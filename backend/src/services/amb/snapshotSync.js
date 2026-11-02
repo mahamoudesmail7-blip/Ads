@@ -466,6 +466,7 @@ async function runViewAccountExtras(adAccountId, token) {
   });
 }
 
+const VIEW_SYNCS_PER_TICK = 4;
 let viewTimer = null;
 /** Keeps the view accounts' snapshots warm in the background (same interval as the main sync); sequential, never throws. */
 export function startAmbViewSyncScheduler() {
@@ -474,11 +475,15 @@ export function startAmbViewSyncScheduler() {
     try {
       const connection = await getConnectionUnscoped();
       if (!connection || connection.status !== 'CONNECTED') return;
+      const reportOnly = new Set(((await getAmbSettings()).ambReportOnlyAccountIds || []).map(String)); // watched accounts: snapshots only, no AI extras
+      let synced = 0;
       for (const id of await getViewAccountIds()) {
         if (id === connection.selected_ad_account_id) continue;
         const info = await getAccountSyncInfo(id);
         if (info.nextSyncAt && new Date(info.nextSyncAt).getTime() > Date.now()) continue;
-        await runViewAccountSync(id, { force: true, extras: true });
+        if (synced >= VIEW_SYNCS_PER_TICK) break; // many accounts are spread over several ticks (Meta rate limits); a processed account is not due again for a full interval, so none is starved
+        synced += 1;
+        await runViewAccountSync(id, { force: true, extras: !reportOnly.has(id) });
       }
     } catch (err) {
       logger.error('AMB view-account scheduler tick failed', { message: err.message });

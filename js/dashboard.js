@@ -292,7 +292,8 @@ async function renderAccountsToday(force) {
   const num = (n, kind) => (n === null || n === undefined ? '—' : `<span data-to="${n}" data-kind="${kind}">${kind === 'money' ? money(0) : '0'}</span>`);
   const fundsHtml = (f) => {
     if (!f || f.error) return '<span class="x na">غير متاح من Meta</span>';
-    if (f.display) return `<span class="x">${UI.escapeHtml(f.display)}</span>`;
+    if (f.available !== null && f.available !== undefined) return `<span class="x${f.low ? ' low' : ''}">رصيد متاح: ${UI.fmtNum(Math.round(f.available))} ج</span>`;
+    if (f.display) return `<span class="x${f.low ? ' low' : ''}">${UI.escapeHtml(f.display)}</span>`;
     if (f.balance !== null) return `<span class="x">${f.isPrepay === false ? 'مستحق' : 'رصيد'}: ${UI.fmtNum(Math.round(f.balance))} ${UI.escapeHtml(f.currency)}</span>`;
     return '<span class="x na">—</span>';
   };
@@ -302,11 +303,11 @@ async function renderAccountsToday(force) {
     const share = total.spend > 0 && a.spend ? Math.min(100, (a.spend / total.spend) * 100) : 0;
     const initial = UI.escapeHtml((a.name || '?').trim().charAt(0).toUpperCase());
     return `
-    <article class="atd-card${a.hasData ? '' : ' is-empty'}" style="--acc:${ATD_COLORS[i % ATD_COLORS.length]}; --i:${i}">
+    <article class="atd-card${a.hasData ? '' : ' is-empty'}${a.funds?.low ? ' is-low' : ''}" style="--acc:${ATD_COLORS[i % ATD_COLORS.length]}; --i:${i}">
       <div class="atd-id">
         <div class="atd-avatar">${initial}</div>
         <div style="min-width:0;"><div class="atd-name">${UI.escapeHtml(a.name || a.id)}</div><div class="atd-sub">${a.activeCampaigns ? `${a.activeCampaigns} حملة بتصرف` : 'لا حملات بتصرف'}</div></div>
-        ${a.active === false ? '<span class="atd-chip off">غير نشط</span>' : a.isPrimary ? '<span class="atd-chip">★ الأساسي</span>' : ''}
+        ${a.funds?.low ? '<span class="atd-chip warn">⚠️ فاند منخفض</span>' : a.active === false ? '<span class="atd-chip off">غير نشط</span>' : a.isPrimary ? '<span class="atd-chip">★ الأساسي</span>' : ''}
       </div>
       ${a.hasData ? `
       <div class="atd-share">
@@ -318,12 +319,15 @@ async function renderAccountsToday(force) {
         <div class="atd-kpi"><div class="l">الأوردرات</div><div class="v">${num(a.orders ?? 0, 'int')}</div></div>
         <div class="atd-kpi"><div class="l">الكوست</div><div class="v">${num(a.cpa, 'money')}</div></div>
       </div>` : '<div class="atd-none">لا توجد بيانات صرف لليوم ده</div>'}
-      <div class="atd-funds"><span class="ic">💳</span><span class="t">الفاند</span>${fundsHtml(a.funds)}</div>
+      <div class="atd-funds${a.funds?.low ? ' is-low' : ''}"><span class="ic">${a.funds?.low ? '⚠️' : '💳'}</span><span class="t">الفاند</span>${fundsHtml(a.funds)}</div>
     </article>`;
   }).join('');
 
+  const lowList = r.accounts.filter((a) => a.funds?.low);
+  const lowBanner = lowList.length ? `<div class="atd-alert" role="alert">${lowList.map((a) => `<div>⚠️ حساب <b>${UI.escapeHtml(a.name || a.id)}</b> رصيده المتاح <b>${UI.fmtNum(Math.round(a.funds.available))} ج</b> (أقل من ${UI.fmtNum(r.lowFundsThreshold || 2000)} ج) — ممكن يقف فاند، اشحنه.</div>`).join('')}</div>` : '';
   body.innerHTML = `
     <div class="atd">
+      ${lowBanner}
       <div class="atd-wrap">
         <button class="atd-nav atd-prev" type="button" aria-label="السابق">›</button>
         <div class="atd-track" tabindex="0">${cards}</div>

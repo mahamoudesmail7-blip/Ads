@@ -62,6 +62,7 @@ import productResearchExperimentalRoutes from './routes/productResearchExperimen
 import winnerProductsRoutes from './routes/winnerProducts.js';
 import { startEasyOrdersReconciliation } from './services/easyOrdersReconcile.js';
 import { startAmbSnapshotScheduler, startAmbViewSyncScheduler } from './services/amb/snapshotSync.js';
+import { startFundsWatch } from './services/amb/fundsWatch.js';
 import { startAmbAudienceBreakdownScheduler } from './services/amb/audienceBreakdownSync.js';
 import { startLiveCampaignAlertsScheduler } from './services/amb/liveCampaignAlerts.js';
 import { startAdvisorEvaluatorScheduler } from './services/amb/advisorEvaluator.js';
@@ -169,6 +170,7 @@ startEasyOrdersReconciliation();
 // actions. Both no-op cleanly when Meta isn't connected.
 startAmbSnapshotScheduler();
 startAmbViewSyncScheduler();
+startFundsWatch(); // low prepaid balance (< ambLowFundsThreshold, default 2,000 EGP) → CRITICAL alert, read only
 startAmbAudienceBreakdownScheduler();
 startLiveCampaignAlertsScheduler();
 startAdvisorEvaluatorScheduler();

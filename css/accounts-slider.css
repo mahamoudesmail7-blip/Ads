@@ -32,6 +32,7 @@
 .atd-sub { font-size: 11.5px; color: var(--text-dim, #566178); margin-top: 1px; }
 .atd-chip { margin-inline-start: auto; flex: none; font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: color-mix(in srgb, var(--acc) 14%, transparent); color: var(--acc); animation: atdPop .45s var(--atd-spring) backwards .35s; }
 .atd-chip.off { background: var(--gray-bg, #eef0f4); color: var(--gray, #6b7280); }
+.atd-chip.warn { background: var(--red-bg, #fde8e8); color: var(--red, #dc2626); animation: atdPop .45s var(--atd-spring) backwards .35s, atdBlink 1.6s ease-in-out infinite 1s; }
 
 .atd-share { position: relative; z-index: 1; margin-bottom: 12px; }
 .atd-share-row { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-dim, #566178); margin-bottom: 5px; }
@@ -49,6 +50,12 @@
 .atd-funds .ic { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--acc) 13%, transparent); }
 .atd-funds .t { color: var(--text-dim, #566178); font-weight: 700; flex: none; }
 .atd-funds .x { font-weight: 800; color: var(--text, #1f2937); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atd-funds.is-low { border-top-color: color-mix(in srgb, var(--red, #dc2626) 45%, transparent); }
+.atd-funds.is-low .ic { background: var(--red-bg, #fde8e8); animation: atdBlink 1.6s ease-in-out infinite; }
+.atd-funds .x.low { color: var(--red, #dc2626); }
+.atd-card.is-low { border-color: color-mix(in srgb, var(--red, #dc2626) 55%, var(--border, #e7eaf0)); box-shadow: 0 8px 26px color-mix(in srgb, var(--red, #dc2626) 16%, transparent); }
+.atd-card.is-low::before { background: linear-gradient(90deg, var(--red, #dc2626), color-mix(in srgb, var(--red, #dc2626) 50%, #ff7a1a)); }
+.atd-alert { display: grid; gap: 4px; margin-bottom: 12px; padding: 10px 14px; border-radius: 12px; font-size: 13px; font-weight: 600; background: var(--red-bg, #fde8e8); color: var(--red, #dc2626); border: 1px solid color-mix(in srgb, var(--red, #dc2626) 35%, transparent); animation: atdRise .5s var(--atd-ease) backwards; }
 .atd-funds .x.na { font-weight: 600; color: var(--text-faint, #7b869e); }
 
 /* arrows + dots */
@@ -81,10 +88,11 @@
 .atd-err { color: var(--text-dim, #566178); font-size: 13px; }
 
 @keyframes atdRise { from { opacity: 0; transform: translateY(16px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes atdBlink { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 @keyframes atdPop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
 @keyframes atdShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .atd-card, .atd-total, .atd-chip, .atd-skel { animation: none !important; }
+  .atd-card, .atd-total, .atd-chip, .atd-skel, .atd-alert, .atd-funds .ic { animation: none !important; }
   .atd-card:hover { transform: none; }
   .atd-bar > i, .atd-track { transition: none !important; scroll-behavior: auto; }
 }

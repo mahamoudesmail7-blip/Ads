@@ -14,6 +14,10 @@ export const AMB_DEFAULT_SETTINGS = {
   // Ad accounts the Home dashboard can be switched to (VIEW-ONLY: read-only Meta sync + analysis; every write still goes through the single connected account). Ahmed Samy / Hady / Yasser.
   // AI Operator on every switchable account (see services/amb/operatorAccounts.js). OFF until the owner switches it on: the connected account is processed exactly as before.
   ambOperatorAllAccounts: false,
+  // Funds watch: an ad account whose available prepaid balance falls below this (EGP) raises a CRITICAL alert ("may stop for lack of funds"). See services/amb/fundsWatch.js.
+  ambLowFundsThreshold: 2000,
+  // REPORT-ONLY accounts: switchable (switcher / «نظرة سريعة» card, snapshots synced read-only) but NO AI Operator pass and NO background extras (AI creative analysis, media-library scan). Added for accounts the owner only wants to watch.
+  ambReportOnlyAccountIds: [],
   ambViewAccountIds: ['act_1518142859790043', 'act_877011384919552', 'act_1370863561334304'],
   ambAlsoRefreshAdsDailyMetric: true,  // piggy-back the existing metaSync.runSync so the current AI Intelligence page goes live too
   ambDefaultPricingMultiplier: 3,

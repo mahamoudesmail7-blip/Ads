@@ -8,8 +8,19 @@ import { cachedMetaFetch } from '../metaAssetCache.js';
 import { loadSnapshots, latestPerDayPerEntity, aggregateRows, todayISO } from './metricsEngine.js';
 import { currencyFactor } from './snapshotSync.js';
 import { listViewAccounts } from './viewAccounts.js';
+import { getAmbSettings } from './settings.js';
 
 const FUNDS_TTL_MS = 5 * 60_000;
+/**
+ * The prepaid "available balance" out of the payment-method line Meta shows ("Available Balance (EGP38,097.03)" / the Arabic wording), in the account currency.
+ * null for anything that isn't such a line (a card, "Visa ••4242") — never a number guessed from an unrelated string.
+ */
+export function parseAvailableBalance(display) {
+  if (typeof display !== 'string' || !/(available|balance|رصيد)/i.test(display)) return null;
+  const s = display.replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d))).replace(/٬/g, ',').replace(/٫/g, '.');
+  const m = s.match(/(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
 const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
 
 /** One account's day from the snapshots: latest snapshot per campaign for that day, summed. Never a fabricated 0 for an account that has no rows (hasData=false). */
@@ -29,7 +40,7 @@ async function dayTotals(adAccountId, date) {
 }
 
 /** Funds of one account as the owner reads them: the payment-method line Meta shows (prepaid balance) when it gives one, else the outstanding balance. */
-async function accountFunds(token, adAccountId, force) {
+export async function accountFunds(token, adAccountId, force) {
   try {
     const f = await cachedMetaFetch(`accountFunds:${adAccountId}`, () => getAdAccountFunds(token, adAccountId), { ttlMs: FUNDS_TTL_MS, force });
     const factor = currencyFactor(f.currency);
@@ -38,6 +49,7 @@ async function accountFunds(token, adAccountId, force) {
     return {
       currency: f.currency || 'EGP',
       display: f.funding_source_details?.display_string || null, // e.g. the prepaid "available balance" line, exactly as Meta words it
+      available: parseAvailableBalance(f.funding_source_details?.display_string), // that line's number (EGP), null when it isn't a prepaid-balance line
       isPrepay: f.is_prepay_account === true ? true : f.is_prepay_account === false ? false : null,
       balance: balance === null ? null : balance / factor, // outstanding bills (postpaid) — NOT the prepaid available balance
       spendCap: spendCap && spendCap > 0 ? spendCap / factor : null,
@@ -45,7 +57,7 @@ async function accountFunds(token, adAccountId, force) {
     };
   } catch (err) {
     logger.warn('[accountsToday] funds read failed', { adAccountId, message: err.message });
-    return { currency: 'EGP', display: null, isPrepay: null, balance: null, spendCap: null, error: err.message };
+    return { currency: 'EGP', display: null, available: null, isPrepay: null, balance: null, spendCap: null, error: err.message };
   }
 }
 
@@ -61,7 +73,7 @@ export async function getAccountsToday({ date = null, force = false } = {}) {
   const out = await Promise.all(accounts.map(async (a) => {
     const [t, funds] = await Promise.all([
       dayTotals(a.id, day).catch((err) => { logger.warn('[accountsToday] totals failed', { adAccountId: a.id, message: err.message }); return null; }),
-      token ? accountFunds(token, a.id, force) : Promise.resolve({ currency: 'EGP', display: null, isPrepay: null, balance: null, spendCap: null, error: 'NO_TOKEN' }),
+      token ? accountFunds(token, a.id, force) : Promise.resolve({ currency: 'EGP', display: null, available: null, isPrepay: null, balance: null, spendCap: null, error: 'NO_TOKEN' }),
     ]);
     return {
       id: a.id, name: a.name, isPrimary: a.isPrimary, active: a.active,
@@ -74,8 +86,11 @@ export async function getAccountsToday({ date = null, force = false } = {}) {
 
   let spend = 0, orders = 0;
   for (const a of out) { spend += a.spend || 0; orders += a.orders || 0; }
+  const threshold = Number((await getAmbSettings()).ambLowFundsThreshold) || 2000;
+  for (const a of out) a.funds.low = a.funds.available !== null && a.funds.currency === 'EGP' && a.funds.available < threshold; // same rule the funds watch alerts on
   return {
     date: day,
+    lowFundsThreshold: threshold,
     accounts: out,
     total: { spend, orders, cpa: orders > 0 ? spend / orders : null },
     note: 'الأوردرات = مشتريات Meta (Purchases) لكل حساب، محسوبة من آخر مزامنة (كل 15 دقيقة).',
