@@ -6581,7 +6581,16 @@ async function renderLaunchVideos(body) {
     </section>
     ${launchNav(5, 'التالي: عدد الكامبينات', true)}`;
 
-  mountMediaTools($('ambMediaTools'), { toast: (m, t) => UI.toast(m, t) });
+  mountMediaTools($('ambMediaTools'), {
+    toast: (m, t) => UI.toast(m, t),
+    getJobId: () => launchState.jobId || null,
+    // a server-made asset is already a row on the job: pull it into the pool and repaint ONLY the list (the tools panel keeps its state)
+    onAdded: async () => {
+      await syncLaunchVideosFromBackend({ force: true });
+      const list = $('ambLaunchVideoList');
+      if (list) { list.innerHTML = launchState.videos.map(launchVideoCardHtml).join(''); for (const v of launchState.videos) wireLaunchVideoCard(v); updateLaunchProgressSummary(); }
+    },
+  });
   const drop = $('ambLaunchDrop');
   const input = $('ambLaunchFileInput');
   drop.onclick = () => input.click();
