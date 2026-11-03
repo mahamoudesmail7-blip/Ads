@@ -6584,6 +6584,7 @@ async function renderLaunchVideos(body) {
   mountMediaTools($('ambMediaTools'), {
     toast: (m, t) => UI.toast(m, t),
     getJobId: () => launchState.jobId || null,
+    ensureJob: async () => { await ensureLaunchJobStarted(); return launchState.jobStarted ? launchState.jobId : null; },
     // a server-made asset is already a row on the job: pull it into the pool and repaint ONLY the list (the tools panel keeps its state)
     onAdded: async () => {
       await syncLaunchVideosFromBackend({ force: true });
