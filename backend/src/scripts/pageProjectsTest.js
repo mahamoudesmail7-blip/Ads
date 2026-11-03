@@ -1,0 +1,187 @@
+// 🧪 AMB Media — product PAGE projects: CRUD, AI copy, designed-image batches (text read-back check), videos, ZIP export, per-project lock.
+// Every provider is injected — NO network, NO real OpenAI/fal call. Isolated test database only.
+//   node src/scripts/pageProjectsTest.js
+import './_testGuard.js';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const imp = (rel) => import(pathToFileURL(join(__dirname, rel)).href);
+let pass = 0, fail = 0;
+const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 220) : ''}`); } };
+const rejects = async (p) => { try { await p; return null; } catch (e) { return e; } };
+
+const { prisma } = await imp('../prisma.js');
+const PP = await imp('../services/amb/media/pageProjects.js');
+const TP = await imp('../services/amb/media/pageTemplates.js');
+const PV = await imp('../services/amb/media/pageVideos.js');
+const ctx = { progress: async () => {}, cost: () => {} };
+const made = [];
+const mk = async (o = {}) => { const p = await PP.createProject({ name: 'راديو كلاسيك', price: 999, oldPrice: 1999, facts: ['بلوتوث', 'FM/AM/SW', 'USB', 'بطارية قابلة للشحن'], ...o }); made.push(p.id); return p; };
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+const copyJson = { title: 'راديو بطابع الزمن الجميل', subtitle: 'كلاسيك في الشكل عصري في الإمكانيات', paragraphs: ['راديو خشبي بتصميم قديم وبلوتوث.', 'يشغّل USB وكارت.'], features: ['بلوتوث', 'FM AM SW', 'USB', 'كارت TF', 'بطارية', 'خشب'], steps: [{ title: 'شغّله', text: 'اضغط زرار التشغيل' }, { title: 'وصّل', text: 'بلوتوث أو USB' }, { title: 'استمتع', text: 'بالصوت' }], cta: 'اطلبه دلوقتي', headlines: { features_hero: { headline: 'كلاسيك في الشكل… عصري في الإمكانيات', subtitle: '' }, lifestyle_home: { headline: 'لحظات جميلة', subtitle: 'بصوت الزمن الجميل' } } };
+
+try {
+  console.log('\n[1] projects');
+  const p = await mk();
+  ok('created with a 12-hex id, clean fields', /^[0-9a-f]{12}$/.test(p.id) && p.price === 999 && p.facts.length === 4 && p.images.length === 0);
+  let e = await rejects(PP.createProject({ name: ' ' }));
+  ok('empty name rejected', e?.code === 'BAD_INPUT');
+  e = await rejects(PP.createProject({ name: 'منتج', price: -5 }));
+  ok('negative price rejected', e?.code === 'BAD_INPUT');
+  const up = await PP.updateProject(p.id, { name: 'راديو كلاسيك 2', price: '1099.505', facts: ['  بلوتوث  ', '', 'x'.repeat(500)] });
+  ok('update: name, rounded price, facts trimmed/capped', up.name === 'راديو كلاسيك 2' && up.price === 1099.51 && up.facts.length === 2 && up.facts[1].length === 200);
+  ok('list shows it with counts', (await PP.listProjects()).some((x) => x.id === p.id && x.images === 0 && x.hasCopy === false));
+  ok('bad ids never hit the DB', (await PP.getProject('../x')) === null && (await PP.getProject('zzzzzzzzzzzz')) === null && PP.validProjectId(p.id));
+  e = await rejects(PP.updateProject('aaaaaaaaaaaa', { name: 'x' }));
+  ok('update of a missing project → NOT_FOUND', e?.code === 'NOT_FOUND');
+
+  console.log('\n[2] reference photo + assets');
+  e = await rejects(PP.setReference(p.id, Buffer.alloc(0), 'image/png'));
+  ok('empty photo rejected', e?.code === 'BAD_INPUT');
+  e = await rejects(PP.setReference(p.id, PNG, 'application/pdf'));
+  ok('non-image rejected', e?.code === 'BAD_INPUT');
+  e = await rejects(PP.setReference(p.id, Buffer.alloc(9 * 1024 * 1024), 'image/png'));
+  ok('photo over 8 MB rejected', e?.code === 'BAD_INPUT');
+  await PP.setReference(p.id, PNG, 'image/png');
+  const ref = await PP.loadReference(p.id);
+  ok('reference stored and read back byte for byte', ref && ref.mime === 'image/png' && ref.buffer.equals(PNG));
+  ok('asset ids are validated (no path tricks)', (await PP.getAsset(p.id, '../ref')) === null && (await PP.getAsset(p.id, 'img_zz')) === null && (await PP.getAsset('nothere0000', 'ref')) === null);
+
+  console.log('\n[3] copy + claims');
+  const sc = PP.sanitizeCopy({ title: '  عنوان   كبير ', paragraphs: ['أ', '', 'ب'], features: ['١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'], cta: '', steps: [{ title: 'خطوة', text: 't' }, { title: '' }], headlines: { features_hero: { headline: 'عنوان', subtitle: 's' }, nope: { headline: 'x' } } }, p);
+  ok('sanitize: whitespace, empties, caps (8 features), default CTA, unknown template dropped', sc.title === 'عنوان كبير' && sc.paragraphs.length === 2 && sc.features.length === 8 && sc.cta === 'اطلبه دلوقتي' && sc.steps.length === 1 && !sc.headlines.nope && sc.headlines.features_hero.headline === 'عنوان');
+  const bad1 = PP.sanitizeCopy({ title: 'راديو نتيجة مضمونة', paragraphs: ['خصم 50% على كل حاجة'], features: [] }, p);
+  ok('claims scan flags a guaranteed-result claim and an unsupported percentage', bad1.claimIssues.length >= 2, JSON.stringify(bad1.claimIssues.map((i) => i.field)));
+  const okPct = PP.sanitizeCopy({ title: 'راديو', paragraphs: ['بطارية 80% في ساعة'], features: [] }, { facts: ['بطارية تشحن 80% في ساعة'] });
+  ok('a percentage that IS in the product facts is not flagged', okPct.claimIssues.length === 0);
+  const g = await PP.generateCopy(p.id, { deps: { ai: true, generate: async () => ({ text: JSON.stringify(copyJson) }) } });
+  ok('generateCopy saves sanitized copy on the project', g.title === copyJson.title && g.features.length === 6 && (await PP.getProject(p.id)).copy.cta === 'اطلبه دلوقتي');
+  e = await rejects(PP.generateCopy(p.id, { deps: { ai: false } }));
+  ok('no AI configured → NOT_CONFIGURED (nothing invented)', e?.code === 'NOT_CONFIGURED');
+  e = await rejects(PP.generateCopy(p.id, { deps: { ai: true, generate: async () => ({ text: 'not json' }) } }));
+  ok('garbage from the model → COPY_FAILED, project copy untouched', e?.code === 'COPY_FAILED' && (await PP.getProject(p.id)).copy.title === copyJson.title);
+  let sent = null;
+  await PP.generateCopy(p.id, { deps: { ai: true, generate: async (a) => { sent = a; return { text: JSON.stringify(copyJson) }; } } });
+  ok('the prompt carries the real facts + price and the reference photo', /بلوتوث/.test(sent.messages[0].content[0].text) && /999/.test(sent.messages[0].content[0].text) && sent.messages[0].content.some((c) => c.type === 'image') && /ممنوع/.test(sent.system));
+
+  console.log('\n[4] templates');
+  const ids = Object.keys(TP.PAGE_TEMPLATES);
+  ok(`${ids.length} templates, each builds a prompt with the quoted headline and the keep-the-product rule`, ids.length >= 10 && ids.every((id) => { const t = TP.buildTemplatePrompt(id, { name: 'راديو', headline: 'عنوان تجريبي', subtitle: 'عنوان فرعي', labels: ['أ', 'ب', 'ج', 'د', 'هـ', 'و', 'ز'], steps: [{ title: 'خ1', text: 'ن1' }, { title: 'خ2' }, { title: 'خ3' }], cta: 'اطلب' }); return t.includes('"عنوان تجريبي"') && /EXACTLY/.test(t); }));
+  const six = TP.buildTemplatePrompt('lifestyle_home', { name: 'x', headline: 'h', labels: ['1', '2', '3', '4', '5', '6', '7'] });
+  ok('labels are capped to the template maximum', (six.match(/"\d"/g) || []).length === 5);
+  const steps = TP.buildTemplatePrompt('how_to_steps', { name: 'x', headline: 'h', steps: [{ title: 'أول', text: 'شرح' }, { title: 'تاني', text: '' }, { title: 'تالت', text: '' }] });
+  ok('how-to: three numbered cards with each step text', /Card 1/.test(steps) && /Card 3/.test(steps) && steps.includes('"أول"'));
+  ok('quotes inside user text cannot break the quoted prompt', !TP.buildTemplatePrompt('offer_cta', { name: 'x', headline: 'قال "كده" وخلاص' }).includes('"قال "كده"'));
+  e = null; try { TP.buildTemplatePrompt('nope', {}); } catch (x) { e = x; }
+  ok('unknown template throws', !!e);
+  ok('templateList exposes label/fields for the UI', TP.templateList().every((t) => t.label && Array.isArray(t.fields)));
+
+  console.log('\n[5] image entries');
+  e = await rejects(PP.addImages(p.id, []));
+  ok('no items → error', e?.code === 'BAD_INPUT');
+  e = await rejects(PP.addImages(p.id, [{ template: 'nope' }]));
+  ok('unknown template → error', e?.code === 'BAD_INPUT');
+  const added = await PP.addImages(p.id, [{ template: 'features_hero', headline: 'عنوان 1', labels: ['أ', 'ب', 'ج', 'د', 'هـ', 'و', 'ز', 'ح'], quality: 'high' }, { template: 'lifestyle_home', quality: 'weird' }, { template: 'offer_cta', cta: 'اطلب الآن' }]);
+  ok('entries created QUEUED with ids, labels capped to the template max, quality validated', added.length === 3 && added.every((a) => a.status === 'QUEUED' && /^img_[0-9a-f]{8}$/.test(a.id)) && added[0].labels.length === 6 && added[0].quality === 'high' && added[1].quality === 'medium');
+  const upd = await PP.updateImage(p.id, added[1].id, { headline: 'لحظات حلوة', labels: ['x'] });
+  ok('image edit saved', upd.headline === 'لحظات حلوة' && upd.labels[0] === 'x');
+  const ord = await PP.reorderImages(p.id, [added[2].id, added[0].id]);
+  ok('reorder: listed ids first, the rest keep their order after', ord.join() === [added[2].id, added[0].id, added[1].id].join());
+  await PP.removeImage(p.id, added[2].id);
+  ok('remove drops the entry', (await PP.getProject(p.id)).images.length === 2);
+  const many = await mk({ name: 'منتج كتير' });
+  for (let i = 0; i < 3; i++) await PP.addImages(many.id, Array.from({ length: 8 }, () => ({ template: 'features_hero' })));
+  e = await rejects(PP.addImages(many.id, [{ template: 'features_hero' }]));
+  ok(`the page is capped at ${PP.MAX_IMAGES_PER_PROJECT} images`, e?.code === 'BAD_INPUT' && /الحد الأقصى/.test(e.message));
+  const conc = await mk({ name: 'تزامن' });
+  await Promise.all(Array.from({ length: 8 }, () => PP.addImages(conc.id, [{ template: 'offer_cta' }])));
+  ok('8 concurrent edits → no lost update (per-project lock)', (await PP.getProject(conc.id)).images.length === 8);
+
+  console.log('\n[6] text read-back');
+  ok('similarity: exact = 1, contained = 1, tashkeel/alef forms ignored', PP.textSimilarity('اطلبه دلوقتي', 'اطلبه دلوقتي') === 1 && PP.textSimilarity('لحظات أحلى', 'xx لحظات احلى yy') === 1 && PP.textSimilarity('إمكانيات', 'امكانيات') === 1);
+  ok('similarity: a slipped letter still scores high but not 1; unrelated text scores low', PP.textSimilarity('عصري في الإمكانيات', 'عصري في الامكانيت') < 1 && PP.textSimilarity('عصري في الإمكانيات', 'عصري في الامكانيت') > 0.8 && PP.textSimilarity('كلاسيك في الشكل', 'مرحبا بكم في المتجر') < 0.5);
+  ok('judge: headline must be (nearly) exact', PP.judgeText({ headline: 'كلاسيك في الشكل', others: [] }, 'كلاسيك في الشكل').ok && !PP.judgeText({ headline: 'كلاسيك في الشكل', others: [] }, 'كلاسك الشكل').ok);
+  ok('judge: empty read-back fails, nothing expected passes', !PP.judgeText({ headline: 'عنوان', others: ['أ'] }, '').ok && PP.judgeText({ headline: '', others: [] }, 'anything').ok);
+
+  console.log('\n[7] image batch');
+  const bp = await mk({ name: 'راديو الدفعة' });
+  await PP.setReference(bp.id, PNG, 'image/png');
+  await PP.updateProject(bp.id, { copy: copyJson });
+  const bi = await PP.addImages(bp.id, [{ template: 'features_hero' }, { template: 'lifestyle_home', headline: 'لحظات جميلة', subtitle: 'بصوت الزمن الجميل' }, { template: 'offer_cta' }]);
+  const prompts = []; let call = 0;
+  const provider = () => ({ name: 'openai', generate: async ({ prompt, referenceImages, quality, size }) => { call++; prompts.push({ prompt, quality, size, ref: referenceImages?.[0]?.b64 }); if (call === 3) { const x = new Error('rate'); x.httpStatus = 429; throw x; } return { images: [{ b64: Buffer.from('img' + call).toString('base64'), mime: 'image/png' }], model: 'gpt-image-x', durationMs: 3 }; } });
+  const seenFor = { 1: 'كلاسيك في الشكل… عصري في الإمكانيات\nبلوتوث\nFM AM SW\nUSB\nكارت TF\nبطارية\nخشب', 2: 'لحظات قبيحة بصوت الزمن الجميل\nبلوتوث FM AM SW USB كارت TF بطارية' };
+  const runDeps = { provider, checkBudget: async () => ({ blocked: false }), estimateCost: async () => 0.04, logUsage: async () => {}, generate: async () => ({ text: JSON.stringify({ text: seenFor[call] || '' }) }) };
+  const res = await PP.runImageBatch({ projectId: bp.id, imageIds: bi.map((x) => x.id), ctx, deps: runDeps });
+  const after = await PP.getProject(bp.id);
+  ok('first two images READY, the third (OpenAI 429) FAILED with the Arabic balance message', res.done.length === 2 && after.images[0].status === 'READY' && after.images[1].status === 'READY' && after.images[2].status === 'FAILED' && /الرصيد/.test(after.images[2].error), JSON.stringify(after.images.map((i) => i.status + (i.error || ''))));
+  ok('every call used the project photo as reference, square size, the entry quality', prompts.length === 3 && prompts.every((x) => x.ref === PNG.toString('base64') && x.size === '1024x1024' && x.quality === 'medium'));
+  ok('the AI headline + features from the copy are what the prompt contains', prompts[0].prompt.includes('كلاسيك في الشكل… عصري في الإمكانيات') && prompts[0].prompt.includes('بلوتوث') && prompts[1].prompt.includes('لحظات جميلة') && prompts[1].prompt.includes('بصوت الزمن الجميل'));
+  ok('an edited headline on the entry wins over the AI one', (await (async () => { await PP.updateImage(bp.id, bi[0].id, { headline: 'عنواني أنا' }); return true; })()));
+  const a1 = await PP.getAsset(bp.id, bi[0].id);
+  ok('the image bytes are stored and served', a1 && a1.data.toString() === 'img1' && a1.mime === 'image/png');
+  ok('text check: matching headline → ok; version bumped', after.images[0].textCheck?.ok === true && after.images[0].version === 1 && after.images[0].textCheck.headlineScore === 100);
+  ok('text check: a wrong headline word → READY but flagged for review (textCheck.ok = false)', after.images[1].status === 'READY' && after.images[1].textCheck.ok === false && after.images[1].textCheck.headlineScore < 85, JSON.stringify(after.images[1].textCheck));
+  e = await rejects(PP.runImageBatch({ projectId: bp.id, imageIds: [bi[0].id], ctx, deps: { ...runDeps, provider: () => ({ name: 'disabled' }) } }));
+  ok('no provider → NOT_CONFIGURED', e?.code === 'NOT_CONFIGURED');
+  const noref = await mk({ name: 'من غير صورة' }); const nr = await PP.addImages(noref.id, [{ template: 'offer_cta' }]);
+  e = await rejects(PP.runImageBatch({ projectId: noref.id, imageIds: [nr[0].id], ctx, deps: runDeps }));
+  ok('no reference photo → NO_PRODUCT_IMAGE', e?.code === 'NO_PRODUCT_IMAGE');
+  e = await rejects(PP.runImageBatch({ projectId: bp.id, imageIds: [bi[0].id], ctx, deps: { ...runDeps, checkBudget: async () => ({ blocked: true, spentUsd: 9, budgetUsd: 9 }) } }));
+  ok('monthly AI budget reached → BUDGET', e?.code === 'BUDGET');
+  call = 0; const wrongSeen = { text: 'xxxx' };
+  const rg = await PP.runImageBatch({ projectId: bp.id, imageIds: [bi[2].id], ctx, deps: { ...runDeps, generate: async () => ({ text: JSON.stringify(wrongSeen) }), provider: () => ({ name: 'openai', generate: async () => ({ images: [{ b64: 'QUJD', mime: 'image/png' }], model: 'm' }) }) } });
+  const reg = (await PP.getProject(bp.id)).images.find((x) => x.id === bi[2].id);
+  ok('regenerating a FAILED image works; a wrong read-back marks textCheck.ok = false', rg.done.length === 1 && reg.status === 'READY' && reg.textCheck.ok === false && reg.version === 1);
+  ok('no vision available → textCheck stays null (not "ok")', await (async () => { const r = await PP.runImageBatch({ projectId: bp.id, imageIds: [bi[2].id], ctx, deps: { ...runDeps, generate: async () => { throw new Error('vision down'); }, provider: () => ({ name: 'openai', generate: async () => ({ images: [{ b64: 'QUJD', mime: 'image/png' }], model: 'm' }) }) } }); return r.done.length === 1 && (await PP.getProject(bp.id)).images.find((x) => x.id === bi[2].id).textCheck === null; })());
+
+  console.log('\n[8] videos');
+  const vp = await mk({ name: 'فيديو' });
+  e = await rejects(PP.addVideoLink(vp.id, { url: 'http://x.com/v' }));
+  ok('video link must be https', e?.code === 'BAD_INPUT');
+  const l1 = await PP.addVideoLink(vp.id, { url: 'https://www.tiktok.com/@a/video/1', title: 'مراجعة', source: 'TIKTOK' });
+  e = await rejects(PP.addVideoLink(vp.id, { url: 'https://www.tiktok.com/@a/video/1' }));
+  ok('link saved; the same link twice is refused', l1.kind === 'LINK' && e?.code === 'BAD_INPUT');
+  e = await rejects(PV.runPageAiVideos({ projectId: vp.id, ctx, deps: { getKey: async () => null } }));
+  ok('AI video without fal → NOT_CONFIGURED', e?.code === 'NOT_CONFIGURED');
+  e = await rejects(PV.runPageAiVideos({ projectId: vp.id, ctx, deps: { getKey: async () => 'K' } }));
+  ok('AI video without a photo → NO_PRODUCT_IMAGE', e?.code === 'NO_PRODUCT_IMAGE');
+  await PP.setReference(vp.id, PNG, 'image/png');
+  const prm = [];
+  const av = await PV.runPageAiVideos({ projectId: vp.id, count: 2, seconds: 10, style: 'demo', ctx, deps: { getKey: async () => 'K', falVideo: async ({ prompt, seconds }) => { prm.push({ prompt, seconds }); return 'https://v3.fal.media/files/a.mp4'; }, fetchImpl: async () => ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer }) } });
+  const vproj = await PP.getProject(vp.id);
+  ok('2 AI clips stored in the project (10 s, demo style, product name in the prompt)', av.added.length === 2 && vproj.videos.filter((v) => v.kind === 'AI').length === 2 && prm[0].seconds === 10 && /فيديو|demo|product demo/i.test(prm[0].prompt) && prm[0].prompt.includes('فيديو'));
+  const vasset = await PP.getAsset(vp.id, av.added[0]);
+  ok('the clip bytes are stored as video/mp4', vasset && vasset.mime === 'video/mp4' && vasset.data.length === 4);
+  e = await rejects(PV.runPageAiVideos({ projectId: vp.id, count: 1, ctx, deps: { getKey: async () => 'K', falVideo: async () => { throw new (await imp('../services/amb/media/mediaJobs.js')).MediaError('fal.ai: الرصيد خلص', 'FAL_BALANCE'); } } }));
+  ok('fal balance error surfaces', e?.code === 'FAL_BALANCE');
+  let seenName = null, seenImg = null;
+  const fr = await PV.runPageVideoFinder({ projectId: vp.id, target: 3, ctx, deps: { ai: false, serpKey: null, apify: { searchTikTok: async (q) => { seenName = q[0]; return { videos: [{ url: 'https://www.tiktok.com/@a/video/8', directUrl: null, source: 'TIKTOK', author: 'a', caption: '', views: 5, likes: 1, durationSec: 10, thumbnail: null, adDays: null, adCount: null }], usd: 0 }; }, searchInstagramReels: async () => ({ videos: [], usd: 0 }), searchMetaAdLibrary: async () => { seenImg = true; return { videos: [], usd: 0 }; } } } });
+  ok('the finder runs on the PROJECT (its name drives the search, no launch job involved)', seenName === 'فيديو' && seenImg === true && fr.candidates.length === 1);
+  await PP.removeVideo(vp.id, av.added[0]);
+  ok('removing a video deletes its stored file', (await PP.getAsset(vp.id, av.added[0])) === null && (await PP.getProject(vp.id)).videos.length === 2);
+
+  console.log('\n[9] export');
+  ok('crc32 matches the standard check value', PP.crc32(Buffer.from('123456789')) === 0xcbf43926);
+  const zip = PP.buildZip([{ name: '01-a.png', data: Buffer.from('hello') }, { name: 'copy.txt', data: Buffer.from('مرحبا') }]);
+  const eocd = zip.length - 22; const total = zip.readUInt16LE(eocd + 10), cdOff = zip.readUInt32LE(eocd + 16);
+  let off = cdOff; const names = [];
+  for (let i = 0; i < total; i++) { const nl = zip.readUInt16LE(off + 28); const lo = zip.readUInt32LE(off + 42); const nm = zip.subarray(off + 46, off + 46 + nl).toString('utf8'); const size = zip.readUInt32LE(off + 20); const crc = zip.readUInt32LE(off + 16); const data = zip.subarray(lo + 30 + zip.readUInt16LE(lo + 26), lo + 30 + zip.readUInt16LE(lo + 26) + size); names.push([nm, PP.crc32(data) === crc]); off += 46 + nl; }
+  ok('zip: 2 entries, names + CRCs verify when parsed back', total === 2 && names[0][0] === '01-a.png' && names[0][1] && names[1][0] === 'copy.txt' && names[1][1], JSON.stringify(names));
+  const ex = await PP.exportZip(bp.id);
+  const eo = ex.zip.length - 22; const cnt = ex.zip.readUInt16LE(eo + 10);
+  ok('page export: the READY images in page order + copy.txt', ex.count === cnt && cnt === 4 && ex.name === `page-${bp.id}.zip`, `${cnt}`);
+  const txt = PP.exportCopyText(await PP.getProject(vp.id));
+  ok('copy text has title, price, and the video links', /راديو|فيديو/.test(txt) && /999/.test(txt) && /tiktok\.com/.test(txt));
+  e = await rejects(PP.exportZip(noref.id));
+  ok('nothing ready → EMPTY (no empty zip)', e?.code === 'EMPTY');
+
+  console.log('\n[10] delete');
+  await PP.deleteProject(bp.id);
+  ok('delete removes the project and ALL its stored files', (await PP.getProject(bp.id)) === null && (await prisma.cfBlob.count({ where: { key: { startsWith: `pp/${bp.id}/` } } })) === 0);
+} finally {
+  for (const id of made) { await prisma.cfBlob.deleteMany({ where: { key: { startsWith: `pp/${id}/` } } }).catch(() => {}); await prisma.settings.deleteMany({ where: { id: `pp:${id}` } }).catch(() => {}); }
+  await prisma.$disconnect();
+}
+console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

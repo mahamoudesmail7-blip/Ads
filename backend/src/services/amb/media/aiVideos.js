@@ -65,7 +65,7 @@ export async function falImageToVideo({ key, imageDataUri, prompt, seconds, fetc
   return url;
 }
 
-async function saveRemote(url, fetchImpl) {
+export async function saveRemote(url, fetchImpl) {
   const u = new URL(url);
   if (u.protocol !== 'https:' || !FAL_HOSTS.test(u.hostname)) throw new MediaError('رابط الفيديو الناتج مش من سيرفرات fal المعروفة.', 'BAD_URL');
   const res = await fetchImpl(u.toString(), { signal: AbortSignal.timeout(120_000) });

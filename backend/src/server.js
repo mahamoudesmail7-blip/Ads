@@ -55,6 +55,7 @@ import scaleCenterRoutes from './routes/scaleCenter.js';
 import assistantTasksRoutes from './routes/assistantTasks.js';
 import creativeFactoryRoutes from './routes/creativeFactory.js';
 import ambMediaRoutes from './routes/ambMedia.js';
+import ambPagesRoutes from './routes/ambPages.js';
 import productMarketingRoutes from './routes/productMarketing.js';
 import aiUsageRoutes from './routes/aiUsage.js';
 import backupStatusRoutes from './routes/backupStatus.js';
@@ -126,6 +127,7 @@ app.use('/api/operator-v2', operatorV2Routes); // 🧭 AI Operator V2 — read-o
 app.use('/api/operator', operatorRoutes); // 🤖 AI Operator — execution/automation layer INSIDE AI Media Buyer (SHADOW by default, see routes/operator.js)
 app.use('/api/scale-center', scaleCenterRoutes); // 🚀 مركز التوسّع — Scale/Bump execution only, deliberately separate from AI Media Buyer's Decision Center (see routes/scaleCenter.js)
 app.use('/api/assistant-tasks', assistantTasksRoutes); // 🤖 AI Media Buyer Operator — Task Engine (Phase 2 Slice 1, see routes/assistantTasks.js)
+app.use('/api/amb-media/pages', ambPagesRoutes); // product-page projects (copy + designed images + videos), mounted BEFORE the generic media router
 app.use('/api/amb-media', ambMediaRoutes); // AMB smart media tools for the launch wizard (provider keys now; finder/AI later)
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
 app.use('/api/product-marketing', productMarketingRoutes); // AI Product Marketing Center — "مركز التسويق الذكي للمنتج" (see routes/productMarketing.js)
