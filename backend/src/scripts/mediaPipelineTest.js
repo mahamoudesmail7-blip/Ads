@@ -213,6 +213,37 @@ try {
   e = await rejects(PI.runPageImages({ launchJobId: LJ, count: 1, ctx, deps: { resolveProduct: async () => ({ product: { id: 5, name: 'P' }, image: null }), provider: fakeProvider(async () => ({})), checkBudget: async () => ({ blocked: false }) } }));
   ok('product without a photo → NO_PRODUCT_IMAGE (never a stock image)', e?.code === 'NO_PRODUCT_IMAGE');
 
+  console.log('\n[6b] image model auto-discovery');
+  const RT = await imp('../services/aiGateway/router.js');
+  const IP = await imp('../services/creativeFactory/imageProvider.js');
+  ok('pickBest: highest gpt-image-N wins, full model before -mini, others ignored', RT.pickBestImageModel(['gpt-5.6-luna', 'gpt-image-1', 'gpt-image-2-mini', 'gpt-image-2', 'dall-e-3', 'gpt-image-1.5']) === 'gpt-image-2' && RT.pickBestImageModel(['gpt-image-1', 'gpt-image-1-mini']) === 'gpt-image-1' && RT.pickBestImageModel(['dall-e-3']) === null && RT.pickBestImageModel([]) === null);
+  const envSave = { key: process.env.OPENAI_API_KEY, a: process.env.AI_IMAGE_MODEL, c: process.env.CF_IMAGE_MODEL, p: process.env.CF_IMAGE_PROVIDER }; const realFetch = globalThis.fetch;
+  try {
+    process.env.OPENAI_API_KEY = 'sk-test-0000000000'; delete process.env.AI_IMAGE_MODEL; delete process.env.CF_IMAGE_MODEL; delete process.env.CF_IMAGE_PROVIDER; RT.setDiscoveredImageModel(null);
+    const seenModels = []; let listed = 0;
+    globalThis.fetch = async (url, init) => {
+      if (String(url).endsWith('/v1/models')) { listed++; return { ok: true, status: 200, json: async () => ({ data: [{ id: 'gpt-image-2' }, { id: 'gpt-5.6-luna' }] }) }; }
+      const m = init.body.get ? init.body.get('model') : JSON.parse(init.body).model; seenModels.push(m);
+      if (m === 'gpt-image-1') return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "The model 'gpt-image-1' does not exist." } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ b64_json: 'QUJD' }] }) };
+    };
+    const gen = await IP.getImageProvider().generate({ prompt: 'p', referenceImages: [{ b64: 'QUJD', mime: 'image/png' }] });
+    ok('default model rejected → the account is asked, the best model is used, ONE retry succeeds', seenModels.join(',') === 'gpt-image-1,gpt-image-2' && gen.images.length === 1 && gen.model === 'gpt-image-2' && listed === 1, seenModels.join(','));
+    seenModels.length = 0;
+    await IP.getImageProvider().generate({ prompt: 'p' });
+    ok('the discovered model is remembered (no second rejection, no second listing)', seenModels.join(',') === 'gpt-image-2' && listed === 1);
+    RT.setDiscoveredImageModel(null); process.env.AI_IMAGE_MODEL = 'gpt-image-1'; seenModels.length = 0; listed = 0;
+    e = await rejects(IP.getImageProvider().generate({ prompt: 'p' }));
+    ok('a model pinned by env is NEVER replaced (clear error, no listing)', e?.code === 'PROVIDER_HTTP_ERROR' && seenModels.join(',') === 'gpt-image-1' && listed === 0);
+    delete process.env.AI_IMAGE_MODEL; RT.setDiscoveredImageModel(null); seenModels.length = 0;
+    globalThis.fetch = async (url, init) => { if (String(url).endsWith('/v1/models')) return { ok: true, status: 200, json: async () => ({ data: [{ id: 'gpt-5.6-luna' }] }) }; seenModels.push(1); return { ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "The model 'gpt-image-1' does not exist." } }) }; };
+    e = await rejects(IP.getImageProvider().generate({ prompt: 'p' }));
+    ok('no image model available at all → the original error, only one attempt', e?.code === 'PROVIDER_HTTP_ERROR' && seenModels.length === 1);
+  } finally {
+    globalThis.fetch = realFetch; RT.setDiscoveredImageModel(null);
+    for (const [k, v] of [['OPENAI_API_KEY', envSave.key], ['AI_IMAGE_MODEL', envSave.a], ['CF_IMAGE_MODEL', envSave.c], ['CF_IMAGE_PROVIDER', envSave.p]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+
   console.log('\n[7] AI videos (fal)');
   ok('motion prompt keeps the product + vertical + no text', /exactly as in the image/i.test(AV.buildMotionPrompt({ name: 'P' })) && /9:16/.test(AV.buildMotionPrompt({ name: 'P', style: 'demo' })));
   const seq = []; let polls = 0;

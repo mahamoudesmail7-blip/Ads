@@ -24,8 +24,20 @@ export function modelForTier(tier) {
   return cleanEnvValue(process.env[ENV_VAR[t]]) || DEFAULTS[t];
 }
 
+/** True when the owner pinned the image model by env — then it is NEVER auto-replaced. */
+export function imageModelPinned() {
+  return !!(cleanEnvValue(process.env.AI_IMAGE_MODEL) || cleanEnvValue(process.env.CF_IMAGE_MODEL));
+}
+let discoveredImageModel = null; // set only after the account itself rejected the default id and listed a usable one
+export function setDiscoveredImageModel(id) { discoveredImageModel = id || null; }
 export function imageModel() {
-  return cleanEnvValue(process.env.AI_IMAGE_MODEL) || cleanEnvValue(process.env.CF_IMAGE_MODEL) || 'gpt-image-1';
+  return cleanEnvValue(process.env.AI_IMAGE_MODEL) || cleanEnvValue(process.env.CF_IMAGE_MODEL) || discoveredImageModel || 'gpt-image-1';
+}
+/** Pure: the best image model among the account's model ids — the highest gpt-image-N (full models before "-mini"), or null. */
+export function pickBestImageModel(ids) {
+  const parsed = (ids || []).map((id) => { const m = /^gpt-image-(\d+(?:\.\d+)?)(-mini)?$/.exec(String(id)); return m ? { id, v: Number(m[1]), mini: !!m[2] } : null; }).filter(Boolean);
+  parsed.sort((a, b) => b.v - a.v || Number(a.mini) - Number(b.mini));
+  return parsed[0]?.id || null;
 }
 
 /** Every configured text tier + the image model, for the admin health screen (§58/§59/§60) — never a paid call, just what's configured. */

@@ -11,6 +11,7 @@
 // inert until the key is set. The API key is read only here and never logged.
 import { logger } from '../../logger.js';
 import { openAiKey, imageModel, imageProviderName, imageQualityTier } from './config.js';
+import { imageModelPinned, setDiscoveredImageModel, pickBestImageModel } from '../aiGateway/router.js';
 
 const OPENAI_IMAGES_URL = 'https://api.openai.com/v1/images/generations';
 const OPENAI_EDITS_URL = 'https://api.openai.com/v1/images/edits';
@@ -62,6 +63,15 @@ function fileFromDataish(img, idx) {
   return { blob: new Blob([Buffer.from(b64, 'base64')], { type: mime }), filename: `reference_${idx}.${ext}` };
 }
 
+/** The best gpt-image-N this API key can use, or null (lists the account's models — free, no generation). */
+async function discoverImageModel(key) {
+  try {
+    const res = await fetch('https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    return pickBestImageModel(((await res.json()).data || []).map((m) => m.id));
+  } catch { return null; }
+}
+
 const openaiProvider = {
   name: 'openai',
   getCapabilities() {
@@ -74,7 +84,7 @@ const openaiProvider = {
       model: imageModel(),
     };
   },
-  async generate({ prompt, size = '1024x1024', n = 1, referenceImages = [], quality } = {}) {
+  async generate({ prompt, size = '1024x1024', n = 1, referenceImages = [], quality, _retried = false } = {}) {
     const key = openAiKey();
     if (!key) throw new CfProviderError('OPENAI_API_KEY مفقود.', 'PROVIDER_NOT_CONFIGURED');
     if (!prompt || !String(prompt).trim()) throw new CfProviderError('البرومبت فارغ.', 'EMPTY_PROMPT');
@@ -122,6 +132,16 @@ const openaiProvider = {
     if (!res.ok) {
       let msg = bodyText.slice(0, 300);
       try { msg = JSON.parse(bodyText)?.error?.message || msg; } catch { /* keep raw */ }
+      // The account does not know the default image model id (a different org/key often exposes a different generation, e.g. gpt-image-2):
+      // ask the account which image models it has, remember the best one, and retry ONCE. Never when the owner pinned a model by env.
+      if (!_retried && !imageModelPinned() && (res.status === 400 || res.status === 404) && /does not exist|model_not_found|not found/i.test(bodyText)) {
+        const alt = await discoverImageModel(key);
+        if (alt && alt !== model) {
+          logger.warn?.('CF_IMAGE_MODEL_AUTO_SWITCH', { from: model, to: alt });
+          setDiscoveredImageModel(alt);
+          return openaiProvider.generate({ prompt, size, n, referenceImages, quality, _retried: true });
+        }
+      }
       logger.error('CF_IMAGE_PROVIDER_HTTP_ERROR', { status: res.status, model, useEdit });
       throw new CfProviderError(`مزود إنشاء الصور رجّع خطأ ${res.status}: ${msg}`, 'PROVIDER_HTTP_ERROR', res.status);
     }
