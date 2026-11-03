@@ -8,6 +8,7 @@
 // main cards.
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
+import { mountMediaTools } from './amb-media-tools.js';
 import { lucide } from './launch-icons.js';
 import * as LG from './launch-globe.js';
 import { renderOperator, stopOperatorPolling } from './ai-operator.js';
@@ -6563,6 +6564,7 @@ async function renderLaunchVideos(body) {
   body.innerHTML = `
     ${launchStepper()}
     ${launchStepHead(6)}
+    <section class="lp-card amt-box" id="ambMediaTools"></section>
     <section class="lp-card">
       <div id="ambLaunchDrop" class="lp-drop" tabindex="0" role="button">
         <span class="lp-dropico">${lucide('upload', 30)}</span>
@@ -6579,6 +6581,7 @@ async function renderLaunchVideos(body) {
     </section>
     ${launchNav(5, 'التالي: عدد الكامبينات', true)}`;
 
+  mountMediaTools($('ambMediaTools'), { toast: (m, t) => UI.toast(m, t) });
   const drop = $('ambLaunchDrop');
   const input = $('ambLaunchFileInput');
   drop.onclick = () => input.click();

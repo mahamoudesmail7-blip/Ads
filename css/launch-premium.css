@@ -260,3 +260,20 @@
   .lp-numcard { flex-wrap: wrap; } .lp-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lp-nav { flex-wrap: wrap; gap: 8px; } .lp-nav .amb-btn { flex: 1 1 140px; justify-content: center; }
 }
+
+/* ---- AMB smart media tools panel (wizard step 6) ---- */
+.amt-box { margin-bottom: 14px; }
+.amt-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.amt-dim { color: var(--lp-dim, #566178); font-size: 12px; }
+.amt-rows { display: grid; gap: 8px; }
+.amt-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--lp-line, #e3e8f5); border-radius: 14px; background: #fff; }
+.amt-main { display: flex; flex-direction: column; gap: 2px; }
+.amt-side { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.amt-chip { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.amt-chip.on { background: #e5f7ec; color: #14783a; } .amt-chip.off { background: #f1f3f8; color: #566178; }
+.amt-edit { grid-column: 1 / -1; display: flex; gap: 8px; }
+.amt-edit[hidden] { display: none; } .amt-edit input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--lp-line, #e3e8f5); border-radius: 10px; direction: ltr; }
+.amt-msg { grid-column: 1 / -1; font-size: 12px; font-weight: 600; } .amt-msg:empty { display: none; } .amt-msg.good { color: #14783a; } .amt-msg.bad { color: #c0392b; }
+.amt-soon { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 10px; }
+.amt-soon-card { position: relative; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px dashed var(--lp-line, #cfd7ee); border-radius: 14px; opacity: .75; }
+.amt-soon-card small { color: var(--lp-dim, #566178); font-size: 11px; } .amt-soon-card em { position: absolute; top: 8px; inset-inline-end: 10px; font-style: normal; font-size: 10px; font-weight: 700; color: #8a6d00; background: #fff4cc; padding: 1px 7px; border-radius: 999px; }
