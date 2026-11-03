@@ -7,7 +7,7 @@ import { api } from './api-client.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ORDER = ['apify', 'openai', 'fal', 'serpapi'];
-const SRC = { TIKTOK: 'تيك توك', INSTAGRAM: 'ريلز', META_ADS: 'إعلان شغّال', MANUAL: 'لينك منك', YOUTUBE: 'يوتيوب' };
+const SRC = { LENS: 'من بحث الصورة', TIKTOK: 'تيك توك', INSTAGRAM: 'ريلز', META_ADS: 'إعلان شغّال', MANUAL: 'لينك منك', YOUTUBE: 'يوتيوب' };
 const nf = new Intl.NumberFormat('ar-EG', { notation: 'compact' });
 
 // jobId (launch job) → UI state kept across re-renders
@@ -59,7 +59,7 @@ function candidateCard(c, selected) {
     <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer" class="amt-open">فتح الأصل ↗</a></div></label>`;
 }
 
-export async function mountMediaTools(el, { toast = () => {}, getJobId = () => null, ensureJob = async () => null, onAdded = async () => {} } = {}) {
+export async function mountMediaTools(el, { toast = () => {}, getJobId = () => null, getProductId = () => null, ensureJob = async () => null, onAdded = async () => {} } = {}) {
   if (!el) return;
   el.innerHTML = '<div class="amt-dim">بيحمّل حالة الربط…</div>';
   let providers, caps;
@@ -74,6 +74,11 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
       <div class="amt-head"><b>🧰 أدوات الميديا الذكية</b><small class="amt-dim">اربط المزوّدين مرة واحدة، والأدوات بتضيف الفيديوهات والصور لنفس قائمة الرفع تحت</small></div>
       <details class="amt-keys"><summary>🔑 ربط المزوّدين (مفاتيح مشفّرة)</summary><div class="amt-rows">${ORDER.filter((id) => providers[id]).map((id) => keyRow(id, providers[id])).join('')}</div></details>
 
+      <div class="amt-tool" data-tool="photo">
+        <div class="amt-th"><b>📷 صورة المنتج</b><small class="amt-dim">كل الأدوات بتبدأ من صورة المنتج الحقيقية. لو السيستم مالقاش صورة، ارفع واحدة (JPG/PNG حتى 8MB)</small></div>
+        <div class="amt-ctl"><button type="button" class="amb-btn sm" data-amt-photo ${getProductId() ? '' : 'disabled'}>ارفع صورة المنتج</button><input type="file" accept="image/jpeg,image/png,image/webp" data-amt-photo-input hidden /></div>${note(s, 'photo')}
+      </div>
+
       <div class="amt-tool" data-tool="pi">
         <div class="amt-th"><b>🖼️ صور بالـ AI من صورة المنتج</b><small class="amt-dim">بتحافظ على شكل المنتج الحقيقي وبتترفع على حسابك الإعلاني</small></div>
         <div class="amt-ctl">
@@ -84,7 +89,7 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
       </div>
 
       <div class="amt-tool" data-tool="find">
-        <div class="amt-th"><b>🔎 دوّر على فيديوهات للمنتج</b><small class="amt-dim">تيك توك وريلز ومكتبة إعلانات ميتا — بترتّبهم بشبه الغلاف لصورة المنتج</small></div>
+        <div class="amt-th"><b>🔎 دوّر على فيديوهات للمنتج</b><small class="amt-dim">أول مرحلة: بحث بصورة المنتج (Google Lens)، وبعدها تيك توك وريلز ومكتبة إعلانات ميتا — وبيترتّبوا بشبه الغلاف لصورة المنتج</small></div>
         <textarea data-amt-links rows="2" placeholder="اختياري: الصق لينكات فيديوهات (تيك توك / انستجرام / يوتيوب) سطر لكل لينك">${esc(s.links)}</textarea>
         <div class="amt-ctl">
           <select data-amt-find-target>${[8, 12, 20].map((n) => `<option value="${n}" ${n === 12 ? 'selected' : ''}>${n} فيديو</option>`).join('')}</select>
@@ -145,6 +150,23 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
     el.querySelectorAll('[data-amt-test]').forEach((b) => { b.onclick = async () => { b.disabled = true; try { const t = await api.post(`/api/amb-media/keys/${b.dataset.amtTest}/test`, {}); msg(b.dataset.amtTest, t.message, !t.ok); } catch (e) { msg(b.dataset.amtTest, e.message, true); } b.disabled = false; }; });
     el.querySelectorAll('[data-amt-del]').forEach((b) => { b.onclick = async () => { if (!confirm('تمسح المفتاح المحفوظ؟')) return; try { providers[b.dataset.amtDel] = await api.delete(`/api/amb-media/keys/${b.dataset.amtDel}`); caps = await api.get('/api/amb-media/capabilities'); render(); el.querySelector('.amt-keys').open = true; } catch (e) { msg(b.dataset.amtDel, e.message, true); } }; });
 
+    const photoBtn = el.querySelector('[data-amt-photo]'), photoIn = el.querySelector('[data-amt-photo-input]');
+    if (photoBtn && photoIn) {
+      photoBtn.onclick = () => photoIn.click();
+      photoIn.onchange = async () => {
+        const file = photoIn.files?.[0]; const pid = getProductId(); if (!file || !pid) return;
+        if (!/^image\/(jpeg|png|webp)$/.test(file.type)) { s.msg.photo = { text: 'لازم تختار صورة JPG أو PNG أو WebP.', bad: true }; render(); return; }
+        if (file.size > 8 * 1024 * 1024) { s.msg.photo = { text: 'الصورة أكبر من 8MB.', bad: true }; render(); return; }
+        photoBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/ai-media-buyer/products/by-catalog/${pid}/manual-image`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': file.type }, body: file });
+          const j = await res.json().catch(() => null);
+          if (!res.ok) throw new Error(j?.message || `فشل رفع الصورة (HTTP ${res.status}).`);
+          s.msg.photo = { text: '✅ اتحفظت صورة المنتج — جرّب الأدوات دلوقتي.', bad: false };
+        } catch (e) { s.msg.photo = { text: e.message, bad: true }; }
+        render();
+      };
+    }
     const ta = el.querySelector('[data-amt-links]'); if (ta) ta.oninput = () => { s.links = ta.value; const go = el.querySelector('[data-amt-go="find"]'); if (go) go.disabled = s.busy.find || (!caps.finder.ready && !s.links.trim()); };
     el.querySelectorAll('[data-amt-pick]').forEach((cb) => { cb.onchange = () => { cb.checked ? s.selected.add(cb.dataset.amtPick) : s.selected.delete(cb.dataset.amtPick); cb.closest('.amt-cand').classList.toggle('on', cb.checked); const go = el.querySelector('[data-amt-go="imp"]'); if (go) { go.disabled = s.busy.imp || !s.selected.size; go.textContent = `استورد المختار (${s.selected.size})`; } }; });
     const val = (sel) => el.querySelector(sel)?.value;

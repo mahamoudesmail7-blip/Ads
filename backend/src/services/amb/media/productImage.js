@@ -33,7 +33,10 @@ export async function resolveJobProduct(launchJobId, { fetchImpl = fetch, baseUr
     try {
       const r = await resolveProductImage(amb.id);
       if (r.data) image = { buffer: r.data, mime: r.contentType || 'image/jpeg' };
-      else if (r.redirect) image = await fetchImageBytes(r.redirect, { fetchImpl, base: baseUrl });
+      else if (r.redirect) {
+        image = await fetchImageBytes(r.redirect, { fetchImpl, base: baseUrl });
+        if (image && /^https?:\/\//i.test(r.redirect)) image.url = r.redirect; // a PUBLIC url of the photo (CDN) — Google Lens can take it directly
+      }
     } catch { /* fall through to the manual image */ }
   }
   if (!image) {
@@ -44,6 +47,6 @@ export async function resolveJobProduct(launchJobId, { fetchImpl = fetch, baseUr
 }
 
 export function requireImage(ctx) {
-  if (!ctx.image) throw new MediaError('مفيش صورة للمنتج ده في السيستم — ارفع صورة المنتج الأول (من بيانات المنتج) وجرّب تاني.', 'NO_PRODUCT_IMAGE');
+  if (!ctx.image) throw new MediaError('مفيش صورة للمنتج ده في السيستم — اضغط «ارفع صورة المنتج» فوق وجرّب تاني.', 'NO_PRODUCT_IMAGE');
   return ctx.image;
 }

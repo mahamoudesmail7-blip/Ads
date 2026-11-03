@@ -29,7 +29,7 @@ router.get('/capabilities', asyncRoute(async (_req, res) => {
   const k = await getMediaKeysStatus();
   res.json({
     pageImages: { ready: k.openai.configured, reason: k.openai.configured ? null : 'مفتاح OpenAI مش متظبط على السيرفر', styles: Object.fromEntries(Object.entries(PAGE_IMAGE_STYLES).map(([id, s]) => [id, s.label])), max: MAX_PAGE_IMAGES },
-    finder: { ready: k.apify.configured, reason: k.apify.configured ? null : 'اربط Apify الأول', ranking: k.openai.configured, maxImport: MAX_IMPORT },
+    finder: { ready: k.apify.configured || k.serpapi.configured, reason: k.apify.configured || k.serpapi.configured ? null : 'اربط Apify أو SerpApi الأول', lens: k.serpapi.configured, ranking: k.openai.configured, maxImport: MAX_IMPORT },
     aiVideos: { ready: k.fal.configured, reason: k.fal.configured ? null : 'اربط fal.ai الأول', styles: Object.keys(AI_STYLES), max: MAX_AI_VIDEOS },
   });
 }));

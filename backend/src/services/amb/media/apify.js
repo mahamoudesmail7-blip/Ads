@@ -64,6 +64,13 @@ export async function searchTikTok(queries, { country = 'EG', limit = 20, fetchI
   const { items, usd } = await runActor('clockworks~tiktok-scraper', { searchQueries: queries.slice(0, 15), searchSection: '/video', resultsPerPage: Math.min(60, limit), shouldDownloadVideos: false, shouldDownloadCovers: false, shouldDownloadSubtitles: false, shouldDownloadSlideshowImages: false, proxyCountryCode: /^[A-Z]{2}$/.test(country) ? country : 'None' }, { fetchImpl, token });
   return { videos: items.map(normalizeTikTok).filter(Boolean), usd };
 }
+/** Latest videos of specific TikTok accounts (the accounts Lens found posting this product). */
+export async function tiktokProfiles(handles, { limit = 10, fetchImpl, token } = {}) {
+  const profiles = handles.map((h) => String(h).replace(/^@/, '')).filter((h) => /^[\w.]{1,40}$/.test(h)).slice(0, 5);
+  if (!profiles.length) return { videos: [], usd: 0 };
+  const { items, usd } = await runActor('clockworks~tiktok-scraper', { profiles, profileScrapeSections: ['videos'], profileSorting: 'latest', resultsPerPage: limit, shouldDownloadVideos: false, shouldDownloadCovers: false, shouldDownloadSubtitles: false, shouldDownloadSlideshowImages: false }, { fetchImpl, token });
+  return { videos: items.map(normalizeTikTok).filter(Boolean), usd };
+}
 export async function searchInstagramReels(hashtags, { limit = 10, fetchImpl, token } = {}) {
   const { items, usd } = await runActor('apify~instagram-hashtag-scraper', { hashtags: hashtags.map((h) => String(h).replace(/^#/, '')).slice(0, 5), resultsType: 'reels', resultsLimit: limit }, { fetchImpl, token });
   return { videos: items.map(normalizeReel).filter(Boolean), usd };

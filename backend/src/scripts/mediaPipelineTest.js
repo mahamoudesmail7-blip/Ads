@@ -137,6 +137,48 @@ try {
   e = await rejects(VF.runVideoFinder({ launchJobId: LJ, ctx, deps: { resolveProduct: async () => ({ product: { id: 1, name: 'Luma Force' }, image: null }), ai: false, apify: { searchTikTok: async () => { throw new J.MediaError('x1', 'A'); }, searchInstagramReels: async () => { throw new J.MediaError('x2', 'A'); }, searchMetaAdLibrary: async () => { throw new J.MediaError('x3', 'A'); } } } }));
   ok('all sources failing → ALL_SOURCES_FAILED with each reason', e?.code === 'ALL_SOURCES_FAILED' && /x1/.test(e.message) && /x3/.test(e.message));
 
+  console.log('\n[4b] search by the product photo (Lens)');
+  const LN = await imp('../services/amb/media/lens.js');
+  const lensJson = { visual_matches: [{ title: 'Luma Force Mini Massager Gun 2025', link: 'https://www.tiktok.com/@shop.eg/video/111' }, { title: 'short', link: 'x' }, { title: 'جهاز المساج المحمول Luma Force', link: 'https://www.instagram.com/reel/AbC_12/' }] };
+  const lensText = JSON.stringify(lensJson) + ' https://www.tiktok.com/@shop.eg https://www.tiktok.com/@other.user/video/222 https://youtu.be/zzz999 https://www.youtube.com/shorts/sh0rt1 https://evil.com/tiktok.com/@x/video/1';
+  const parsed = LN.parseLens(lensJson, lensText);
+  ok('lens parse: tiktok + instagram + youtube video links found', ['https://www.tiktok.com/@shop.eg/video/111', 'https://www.tiktok.com/@other.user/video/222', 'https://www.instagram.com/reel/AbC_12', 'https://youtu.be/zzz999', 'https://www.youtube.com/shorts/sh0rt1'].every((u) => parsed.videoUrls.includes(u)), JSON.stringify(parsed.videoUrls));
+  ok('lens parse: a TikTok ACCOUNT page is an account, not a video', parsed.accounts.includes('@shop.eg') && !parsed.videoUrls.includes('https://www.tiktok.com/@shop.eg'));
+  ok('lens parse: titles ≥ 12 chars only', parsed.titles.length === 2 && parsed.titles[0].startsWith('Luma Force'));
+  const lensCalls = [];
+  const lensFetch = async (url) => { lensCalls.push(url); return { ok: true, status: 200, text: async () => lensText, json: async () => ({}) }; };
+  const lr = await LN.lensSearch({ key: 'SK', imageUrl: 'https://cdn.shop/p.jpg', fetchImpl: lensFetch });
+  ok('lens: public photo URL → 2 searches (all + tiktok-biased) with engine=google_lens&url=', lr.searches === 2 && lensCalls.length === 2 && lensCalls.every((u) => /engine=google_lens/.test(u) && /url=https%3A%2F%2Fcdn.shop%2Fp.jpg/.test(u)) && /type=visual_matches/.test(lensCalls[1]), lensCalls.join(' | '));
+  ok('lens: results merged and deduplicated across both searches', new Set(lr.videoUrls).size === lr.videoUrls.length && lr.videoUrls.length >= 5);
+  e = await rejects(LN.lensSearch({ key: 'SK', image: { buffer: Buffer.alloc(600 * 1024), mime: 'image/jpeg' }, fetchImpl: lensFetch }));
+  ok('lens: no public URL and a photo over 480 KB → clear IMAGE_TOO_BIG (no upload attempted)', e?.code === 'IMAGE_TOO_BIG');
+  const upCalls = [];
+  const lr2 = await LN.lensSearch({ key: 'SK', image: { buffer: Buffer.alloc(1000), mime: 'image/jpeg' }, fetchImpl: async (url, init) => { upCalls.push(`${init?.method || 'GET'} ${url.slice(0, 40)}`); return url.includes('/image') ? { ok: true, status: 200, json: async () => ({ image_id: 'img123' }) } : { ok: true, status: 200, text: async () => lensText }; } });
+  ok('lens: small photo without a URL → uploaded first (POST /image), then both searches', upCalls[0].startsWith('POST https://serpapi.com/image') && lr2.searches === 2 && upCalls.length === 3, upCalls.join(' | '));
+  const idCalls = [];
+  await LN.lensSearch({ key: 'SK', image: { buffer: Buffer.alloc(1000), mime: 'image/jpeg' }, fetchImpl: async (url) => { idCalls.push(url); return url.includes('/image') ? { ok: true, status: 200, json: async () => ({ image_id: 'img123' }) } : { ok: true, status: 200, text: async () => lensText }; } });
+  ok('lens: the searches carry the uploaded image_id', idCalls.slice(1).every((u) => /image_id=img123/.test(u)));
+  e = await rejects(LN.lensSearch({ key: 'SK', imageUrl: 'https://cdn.shop/p.jpg', fetchImpl: async () => ({ ok: false, status: 429, text: async () => '{}' }) }));
+  ok('lens: 429 → SERPAPI_LIMIT', e?.code === 'SERPAPI_LIMIT');
+  e = await rejects(LN.lensSearch({ key: 'SK', imageUrl: 'https://cdn.shop/p.jpg', fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ error: 'Invalid API key' }) }) }));
+  ok('lens: an {error} body is surfaced', e?.code === 'SERPAPI_ERROR' && /Invalid API key/.test(e.message));
+  const oe = await LN.oembed('https://www.tiktok.com/@a/video/1', async () => ({ ok: true, json: async () => ({ title: 'T', author_name: 'A', thumbnail_url: 'https://t/x.jpg' }) }));
+  ok('oembed: title/author/thumbnail for TikTok; null for other hosts', oe.thumbnail === 'https://t/x.jpg' && (await LN.oembed('https://www.instagram.com/reel/x/', async () => { throw new Error('no'); })) === null);
+  const seenQ = []; let profilesFor = null;
+  const lf = await VF.runVideoFinder({
+    launchJobId: LJ, target: 3, ctx,
+    deps: { resolveProduct: async () => ({ product: { id: 1, name: 'Luma Force' }, image: { buffer: Buffer.from('p'), mime: 'image/png', url: 'https://cdn.shop/p.jpg' } }), ai: false, serpKey: 'SK',
+      lens: { lensSearch: async ({ imageUrl }) => ({ videoUrls: ['https://www.tiktok.com/@shop.eg/video/111', 'https://www.tiktok.com/@a/video/1'], accounts: ['@shop.eg'], titles: ['Luma Force Mini Massager Gun 2025'], searches: 2, imageUrl }), oembed: async (u) => (u.endsWith('/111') ? { title: 'مساج رائع', author: 'shop.eg', thumbnail: 'https://t/111.jpg' } : null) },
+      apify: { searchTikTok: async (q) => { seenQ.push(...q); return { videos: [v('https://www.tiktok.com/@a/video/1')], usd: 0 }; }, searchInstagramReels: async () => ({ videos: [], usd: 0 }), searchMetaAdLibrary: async () => ({ videos: [], usd: 0 }), tiktokProfiles: async (h) => { profilesFor = h; return { videos: [v('https://www.tiktok.com/@shop.eg/video/999')], usd: 0.01 }; } } },
+  });
+  ok('finder: stage 1 = photo search, reported as a source with its count', lf.sources[0].id === 'lens' && lf.sources[0].ok && lf.sources[0].count === 2);
+  ok('finder: Lens page titles are added to the keyword search', seenQ.includes('Luma Force Mini Massager Gun 2025') && lf.queries.includes('Luma Force Mini Massager Gun 2025'));
+  ok('finder: TikTok accounts found by the photo get their latest videos scraped', JSON.stringify(profilesFor) === '["@shop.eg"]' && lf.candidates.some((c) => c.url.endsWith('/999')));
+  ok('finder: a photo-search video outranks keyword results; same link from two sources appears once', lf.candidates[0].source === 'LENS' && lf.candidates.filter((c) => c.url.endsWith('@a/video/1')).length === 1, lf.candidates.map((c) => c.source + ':' + c.url.slice(-6)).join(','));
+  ok('finder: photo-search links are enriched (cover / title / author) from oEmbed', lf.candidates[0].thumbnail === 'https://t/111.jpg' && lf.candidates[0].caption === 'مساج رائع' && lf.lens.usedPublicUrl === true);
+  const nolens = await VF.runVideoFinder({ launchJobId: LJ, target: 3, ctx, deps: { resolveProduct: async () => ({ product: { id: 1, name: 'Luma Force' }, image: { buffer: Buffer.from('p'), mime: 'image/png' } }), ai: false, serpKey: null, apify: { searchTikTok: async () => ({ videos: [v('https://www.tiktok.com/@a/video/5')], usd: 0 }), searchInstagramReels: async () => ({ videos: [], usd: 0 }), searchMetaAdLibrary: async () => ({ videos: [], usd: 0 }) } } });
+  ok('finder: without SerpApi the search still works and says why Lens was skipped', nolens.candidates.length === 1 && nolens.sources[0].id === 'lens' && nolens.sources[0].ok === false && /SerpApi/.test(nolens.sources[0].error));
+
   console.log('\n[5] import');
   const fj = await J.createJob({ kind: 'VIDEO_FIND', launchJobId: LJ });
   await J.patchJob(fj.id, { status: 'SUCCEEDED', result: { candidates: [{ id: 'aaaaaaaaaaaa', url: 'https://www.tiktok.com/@a/video/1', directUrl: null, source: 'TIKTOK', durationSec: 20 }, { id: 'bbbbbbbbbbbb', url: 'https://www.instagram.com/reel/x/', directUrl: 'https://scontent.cdninstagram.com/v.mp4', source: 'INSTAGRAM', durationSec: 11 }, { id: 'cccccccccccc', url: 'https://www.tiktok.com/@a/video/3', directUrl: null, source: 'TIKTOK' }] } });
