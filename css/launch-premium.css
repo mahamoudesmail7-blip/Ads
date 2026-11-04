@@ -344,3 +344,5 @@
 
 .amt-fieldlbl { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--lp-dim, #566178); margin-top: 8px; } .amt-fieldlbl textarea { padding: 8px 10px; border: 1px solid var(--lp-line, #e3e8f5); border-radius: 10px; font: inherit; font-size: 13px; font-weight: 400; color: #222; }
 .amt-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+
+.pgp-pack { border: 2px solid #6a5cf7; border-radius: 16px; padding: 12px 14px; background: linear-gradient(180deg, #faf9ff, #fff); display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; } .pgp-pack b { font-size: 14px; } .pgp-pack small { line-height: 1.7; }

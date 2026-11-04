@@ -2,6 +2,8 @@
 // a real product photo as the reference, an Arabic headline rendered INSIDE the image, icon callouts / steps / before-after / CTA.
 // The text that must appear is passed in quotes and the model is told to render it exactly (right-to-left) and add nothing else; the page
 // project later reads the finished image back to check the text (pageProjects.checkImageText) because image models do slip on Arabic spelling.
+import { designSystemBlock } from './pageStyles.js';
+
 export const PAGE_IMAGE_SIZE = '1024x1024';
 
 const KEEP = 'Keep the product EXACTLY as in the reference photo (same shape, colors, buttons, proportions and any marking on it). Photorealistic, sharp, 1:1 square, high-end e-commerce advertising quality.';
@@ -61,6 +63,24 @@ export const PAGE_TEMPLATES = {
     label: 'صورة الطلب (زرار أحمر)', hint: 'المنتج وكام ميزة وزرار «اطلبه دلوقتي» أحمر', fields: ['headline', 'subtitle', 'labels', 'cta'], minLabels: 0, maxLabels: 3,
     build: ({ name, headline, subtitle, labels, cta }) => `Bright advertising image for "${name}": the product large and clear on the right side of a clean light-blue/white scene, headline top left in bold with the key words in blue: ${q(headline)}${subtitle ? `, thin subtitle under it: ${q(subtitle)}` : ''}. ${(labels || []).length ? `A row of ${labels.length} rounded benefit chips with icons: ${labelsLine(labels)}.` : ''} A big red rounded button at the bottom with a small arrow and the text ${q(cta || 'اطلبه دلوقتي')}. ${KEEP} ${TEXT}`,
   },
+
+  // ---- the 5-image PAGE PACK (hero → problem → problem+solution → demonstration → final CTA) ----
+  hero_hook: {
+    label: 'الصورة الرئيسية (هوك قوي)', hint: 'عنوان كبير وصورة المنتج وكام ميزة في كروت', fields: ['headline', 'subtitle', 'labels', 'cta'], minLabels: 3, maxLabels: 5,
+    build: ({ name, headline, subtitle, labels, cta }) => `The FIRST and strongest image of a product page for "${name}": a bright, clean scene with the product large, sharp and clearly the hero (a person using it naturally if that suits the product). Very large headline at the top in two lines with the key word highlighted in the accent color: ${q(headline)}${subtitle ? `, and under it a smaller supporting line: ${q(subtitle)}` : ''}. ${(labels || []).length ? `A column of ${labels.length} rounded benefit cards with small thin-outline icons, each with one short label: ${labelsLine(labels)}.` : ''} ${cta ? `A rounded call-to-action bar near the bottom with the text ${q(cta)}.` : ''} ${PEOPLE} ${KEEP} ${TEXT}`,
+  },
+  problem: {
+    label: 'المشكلة اللي بيحلها المنتج', hint: 'موقف حقيقي بيبيّن المشكلة وعنوان على شكل سؤال', fields: ['headline', 'subtitle', 'labels'], minLabels: 0, maxLabels: 4,
+    build: ({ name, headline, subtitle, labels }) => `Problem image of a product page for "${name}": a realistic everyday situation that clearly shows the CUSTOMER'S PROBLEM this product solves (difficulty, frustration, wasted effort), in the same visual family as the other images of the page. The product itself is NOT the focus here (it may appear small in a corner, or not at all). Large bold headline as a question at the top: ${q(headline)}${subtitle ? `, and a supporting sentence under it: ${q(subtitle)}` : ''}. ${(labels || []).length ? `${labels.length} short pain-point cards with small icons: ${labelsLine(labels)}.` : ''} ${PEOPLE} ${KEEP} ${TEXT}`,
+  },
+  demonstration: {
+    label: 'المنتج أثناء الاستخدام', hint: 'المنتج شغّال في الاستخدام وأرقام تشرح أجزاءه', fields: ['headline', 'subtitle', 'labels'], minLabels: 3, maxLabels: 4,
+    build: ({ name, headline, subtitle, labels }) => `How-it-works image of a product page for "${name}": the product shown IN USE in a realistic close-up, with small numbered circles (1, 2, 3…) pointing at its real key parts and one small circular detail inset. Headline at the top: ${q(headline)}${subtitle ? `, supporting line: ${q(subtitle)}` : ''}. ${(labels || []).length ? `${labels.length} rounded feature pills with icons explaining the numbered parts: ${labelsLine(labels)}.` : ''} ${PEOPLE} ${KEEP} ${TEXT}`,
+  },
+  final_cta: {
+    label: 'صورة ختامية للشراء', hint: 'السعر وعناصر الثقة وزرار الطلب', fields: ['headline', 'subtitle', 'labels', 'cta'], minLabels: 0, maxLabels: 3,
+    build: ({ name, headline, subtitle, labels, cta, priceText, oldPriceText }) => `Final conversion image of a product page for "${name}": the product large and appealing in the same visual family as the rest of the page. Headline at the top: ${q(headline)}${subtitle ? `, supporting line: ${q(subtitle)}` : ''}. ${priceText ? `ONE clear price card with the text ${q(priceText)}${oldPriceText ? ` and, crossed out beside it, ${q(oldPriceText)}` : ''} — use ONLY these exact prices, invent no other number or discount.` : 'Do not show any price.'} ${(labels || []).length ? `A row of ${labels.length} small trust chips with icons: ${labelsLine(labels)}.` : ''} A wide rounded call-to-action button at the bottom with the text ${q(cta || 'اطلبه دلوقتي')}. ${KEEP} ${TEXT}`,
+  },
 };
 
 export const templateList = () => Object.entries(PAGE_TEMPLATES).map(([id, t]) => ({ id, label: t.label, hint: t.hint, fields: t.fields, minLabels: t.minLabels ?? 0, maxLabels: t.maxLabels ?? 0 }));
@@ -69,5 +89,7 @@ export const templateList = () => Object.entries(PAGE_TEMPLATES).map(([id, t]) =
 export function buildTemplatePrompt(templateId, ctx) {
   const t = PAGE_TEMPLATES[templateId];
   if (!t) throw new Error(`قالب غير معروف: ${templateId}`);
-  return t.build({ ...ctx, labels: (ctx.labels || []).slice(0, t.maxLabels ?? 6), name: ctx.name || 'the product' });
+  const body = t.build({ ...ctx, labels: (ctx.labels || []).slice(0, t.maxLabels ?? 6), name: ctx.name || 'the product' });
+  // a page style (or 'auto') ties every image of the set to ONE design system and locks the product; without ctx.style the template is used as before
+  return ctx.style ? `${body} ${designSystemBlock(ctx.style, Number(ctx.styleRefCount) || 0)}` : body;
 }

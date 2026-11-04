@@ -13,12 +13,13 @@ const rejects = async (p) => { try { await p; return null; } catch (e) { return 
 const { prisma } = await imp('../prisma.js');
 const PP = await imp('../services/amb/media/pageProjects.js');
 const TP = await imp('../services/amb/media/pageTemplates.js');
+const ST = await imp('../services/amb/media/pageStyles.js');
 const PV = await imp('../services/amb/media/pageVideos.js');
 const ctx = { progress: async () => {}, cost: () => {} };
 const made = [];
 const mk = async (o = {}) => { const p = await PP.createProject({ name: 'راديو كلاسيك', price: 999, oldPrice: 1999, facts: ['بلوتوث', 'FM/AM/SW', 'USB', 'بطارية قابلة للشحن'], ...o }); made.push(p.id); return p; };
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
-const copyJson = { title: 'راديو بطابع الزمن الجميل', subtitle: 'كلاسيك في الشكل عصري في الإمكانيات', paragraphs: ['راديو خشبي بتصميم قديم وبلوتوث.', 'يشغّل USB وكارت.'], features: ['بلوتوث', 'FM AM SW', 'USB', 'كارت TF', 'بطارية', 'خشب'], steps: [{ title: 'شغّله', text: 'اضغط زرار التشغيل' }, { title: 'وصّل', text: 'بلوتوث أو USB' }, { title: 'استمتع', text: 'بالصوت' }], cta: 'اطلبه دلوقتي', headlines: { features_hero: { headline: 'كلاسيك في الشكل… عصري في الإمكانيات', subtitle: '' }, lifestyle_home: { headline: 'لحظات جميلة', subtitle: 'بصوت الزمن الجميل' } } };
+const copyJson = { title: 'راديو بطابع الزمن الجميل', subtitle: 'كلاسيك في الشكل عصري في الإمكانيات', paragraphs: ['راديو خشبي بتصميم قديم وبلوتوث.', 'يشغّل USB وكارت.'], features: ['بلوتوث', 'FM AM SW', 'USB', 'كارت TF', 'بطارية', 'خشب'], pains: ['صوت راديو قديم مش واضح', 'سلك وكهربا في كل مكان', 'مفيش تشغيل من الموبايل'], steps: [{ title: 'شغّله', text: 'اضغط زرار التشغيل' }, { title: 'وصّل', text: 'بلوتوث أو USB' }, { title: 'استمتع', text: 'بالصوت' }], cta: 'اطلبه دلوقتي', headlines: { features_hero: { headline: 'كلاسيك في الشكل… عصري في الإمكانيات', subtitle: '' }, lifestyle_home: { headline: 'لحظات جميلة', subtitle: 'بصوت الزمن الجميل' } } };
 
 try {
   console.log('\n[1] projects');
@@ -75,6 +76,51 @@ try {
   e = null; try { TP.buildTemplatePrompt('nope', {}); } catch (x) { e = x; }
   ok('unknown template throws', !!e);
   ok('templateList exposes label/fields for the UI', TP.templateList().every((t) => t.label && Array.isArray(t.fields)));
+
+
+  console.log('\n[4b] design systems + the 5-image pack');
+  ok('3 styles; the two built-in ones ship reference images for every role, auto ships none', Object.keys(ST.PAGE_STYLES).join() === 'clean_blue,cream_gold,auto' && ['clean_blue', 'cream_gold'].every((id) => ['hero', 'features', 'problem', 'problem_solution', 'demonstration', 'final_cta'].every((role) => (ST.PAGE_STYLES[id].refs[role] || []).length >= 1)) && Object.keys(ST.PAGE_STYLES.auto.refs).length === 0);
+  const refA = ST.styleRefsFor('clean_blue', 'hero_hook'), refB = ST.styleRefsFor('cream_gold', 'final_cta');
+  ok('style reference images are really on disk (JPEG, base64, small enough to send)', refA.length === 1 && refB.length === 1 && refA[0].mime === 'image/jpeg' && Buffer.from(refA[0].b64, 'base64').length > 20000 && Buffer.from(refA[0].b64, 'base64').length < 400000 && Buffer.from(refA[0].b64, 'base64').subarray(0, 2).toString('hex') === 'ffd8');
+  ok('every template of both styles resolves to a readable asset', ['clean_blue', 'cream_gold'].every((id) => Object.keys(TP.PAGE_TEMPLATES).every((t) => ST.styleRefsFor(id, t).length >= 1)));
+  ok('auto / unknown style / unknown template → no style references', ST.styleRefsFor('auto', 'hero_hook').length === 0 && ST.styleRefsFor('nope', 'hero_hook').length === 0 && ST.styleRefsFor('clean_blue', 'nope').length === 0);
+  ok('validStyle falls back to the default', ST.validStyle('cream_gold') === 'cream_gold' && ST.validStyle('x') === 'clean_blue' && ST.validStyle(undefined) === 'clean_blue');
+  const blk = ST.designSystemBlock('clean_blue', 1);
+  ok('design block: one system for the whole set + PRODUCT LOCK + style-only references', /EXACTLY the same/.test(blk) && /PRODUCT LOCK/.test(blk) && /FIRST attached image/.test(blk) && /NEVER copy their product/.test(blk) && /#0B2A5B/.test(blk));
+  ok('with no style references the block does not mention them', !/STYLE REFERENCES/.test(ST.designSystemBlock('auto', 0)) && /STYLE REFERENCES/.test(ST.designSystemBlock('cream_gold', 2)) && /second and third/.test(ST.designSystemBlock('cream_gold', 2)));
+  const withStyle = TP.buildTemplatePrompt('hero_hook', { name: 'x', headline: 'عنوان', labels: ['أ', 'ب', 'ج'], style: 'clean_blue', styleRefCount: 1 });
+  ok('buildTemplatePrompt appends the design system only when a style is given', /DESIGN SYSTEM/.test(withStyle) && !/DESIGN SYSTEM/.test(TP.buildTemplatePrompt('hero_hook', { name: 'x', headline: 'عنوان', labels: ['أ'] })));
+  const cta1 = TP.buildTemplatePrompt('final_cta', { name: 'x', headline: 'اطلبه', labels: ['الدفع عند الاستلام'], priceText: '999 جنيه', oldPriceText: '1999 جنيه' });
+  const cta0 = TP.buildTemplatePrompt('final_cta', { name: 'x', headline: 'اطلبه', labels: [] });
+  ok('final CTA: the price card uses ONLY the given prices; with no price it says to show none', cta1.includes('"999 جنيه"') && cta1.includes('"1999 جنيه"') && /invent no other number/.test(cta1) && /Do not show any price/.test(cta0));
+  ok('the pack is the 5 roles in page order, all with existing templates', ST.PAGE_PACK.map((x) => x.role).join() === 'hero,problem,problem_solution,demonstration,final_cta' && ST.PAGE_PACK.every((x) => TP.PAGE_TEMPLATES[x.template]));
+  const pk = await mk({ name: 'جهاز الحزمة', price: 999, oldPrice: 1999 });
+  ok('a new project defaults to the clean blue system; style is validated on update', pk.style === 'clean_blue' && (await PP.updateProject(pk.id, { style: 'nope' })).style === 'clean_blue' && (await PP.updateProject(pk.id, { style: 'auto' })).style === 'auto' && (await PP.updateProject(pk.id, { style: 'cream_gold' })).style === 'cream_gold');
+  await PP.setReference(pk.id, PNG, 'image/png');
+  await PP.updateProject(pk.id, { copy: copyJson });
+  await PP.updateProject(pk.id, { style: 'clean_blue' });
+  const pack = await PP.addPack(pk.id);
+  ok('addPack: 5 entries in the pack order, quality high by default', pack.length === 5 && pack.map((x) => x.template).join() === ST.PAGE_PACK.map((x) => x.template).join() && pack.every((x) => x.quality === 'high' && x.status === 'QUEUED'));
+  const seenGen = [];
+  const packProvider = () => ({ name: 'openai', generate: async ({ prompt, referenceImages, quality }) => { seenGen.push({ prompt, n: referenceImages.length, first: referenceImages[0].b64, quality }); return { images: [{ b64: Buffer.from('p' + seenGen.length).toString('base64'), mime: 'image/png' }], model: 'm', durationMs: 1 }; } });
+  const packDeps = { provider: packProvider, checkBudget: async () => ({ blocked: false }), estimateCost: async () => 0.05, logUsage: async () => {}, generate: async () => ({ text: JSON.stringify({ text: '' }) }) };
+  await PP.runImageBatch({ projectId: pk.id, imageIds: pack.map((x) => x.id), ctx, deps: packDeps });
+  ok('every image is generated with the PRODUCT photo first and one style reference after it', seenGen.length === 5 && seenGen.every((g) => g.n === 2 && g.first === PNG.toString('base64') && g.quality === 'high'));
+  ok('every prompt carries the design system, the product lock and the style-only rule', seenGen.every((g) => /DESIGN SYSTEM/.test(g.prompt) && /PRODUCT LOCK/.test(g.prompt) && /STYLE REFERENCES/.test(g.prompt)));
+  ok('all five prompts share the identical palette sentence', new Set(seenGen.map((g) => (g.prompt.match(/palette: [^.]*\./) || [''])[0])).size === 1 && /palette:/.test(seenGen[0].prompt));
+  ok('problem image: the pain points from the copy, not the features', seenGen[1].prompt.includes('صوت راديو قديم مش واضح') && !seenGen[1].prompt.includes('"بلوتوث"'));
+  ok('closing image: exact price + old price, default trust chips', seenGen[4].prompt.includes('"999 جنيه"') && seenGen[4].prompt.includes('"1999 جنيه"') && seenGen[4].prompt.includes('الدفع عند الاستلام'));
+  await PP.updateProject(pk.id, { style: 'auto' });
+  const autoImg = (await PP.addImages(pk.id, [{ template: 'offer_cta' }]))[0];
+  seenGen.length = 0;
+  await PP.runImageBatch({ projectId: pk.id, imageIds: [autoImg.id], ctx, deps: packDeps });
+  ok('style auto: only the product photo is sent, no style-reference sentence', seenGen[0].n === 1 && !/STYLE REFERENCES/.test(seenGen[0].prompt) && /PRODUCT LOCK/.test(seenGen[0].prompt));
+  await PP.updateProject(pk.id, { style: 'cream_gold' });
+  seenGen.length = 0;
+  const cg = (await PP.addImages(pk.id, [{ template: 'demonstration' }]))[0];
+  await PP.runImageBatch({ projectId: pk.id, imageIds: [cg.id], ctx, deps: { ...packDeps, styleRefs: () => [] } });
+  ok('a missing style asset never blocks generation (product photo only)', seenGen[0].n === 1 && !/STYLE REFERENCES/.test(seenGen[0].prompt));
+  ok('the AI copy keeps the customer pain points (max 4) after sanitizing', PP.sanitizeCopy({ title: 'ت', pains: ['أ', 'ب', 'ج', 'د', 'هـ'] }, pk).pains.length === 4);
 
   console.log('\n[5] image entries');
   e = await rejects(PP.addImages(p.id, []));

@@ -6,6 +6,7 @@ import { asyncRoute } from '../middleware/errorHandler.js';
 import { createJob, startJob } from '../services/amb/media/mediaJobs.js';
 import * as PP from '../services/amb/media/pageProjects.js';
 import { templateList } from '../services/amb/media/pageTemplates.js';
+import { PAGE_STYLES, PAGE_PACK } from '../services/amb/media/pageStyles.js';
 import { runPageAiVideos, runPageVideoFinder } from '../services/amb/media/pageVideos.js';
 import { MAX_AI_VIDEOS, AI_STYLES } from '../services/amb/media/aiVideos.js';
 import { runExplainerForPage, MAX_EXPLAINERS } from '../services/amb/media/explainerRuns.js';
@@ -28,7 +29,7 @@ async function startProjectJob(kind, projectId, userId, input, exec) {
 }
 
 // ---- reference data
-router.get('/templates', asyncRoute(async (_req, res) => res.json({ templates: templateList(), videoStyles: Object.keys(AI_STYLES), maxAiVideos: MAX_AI_VIDEOS })));
+router.get('/templates', asyncRoute(async (_req, res) => res.json({ templates: templateList(), styles: Object.entries(PAGE_STYLES).map(([id, st]) => ({ id, label: st.label, hint: st.hint, hasRefs: Object.keys(st.refs).length > 0 })), pack: PAGE_PACK.map(({ template, label }) => ({ template, label })), videoStyles: Object.keys(AI_STYLES), maxAiVideos: MAX_AI_VIDEOS })));
 
 router.get('/eo-products', asyncRoute(async (req, res) => {
   const q = String(req.query.q || '').trim().toLowerCase();
@@ -80,6 +81,15 @@ router.post('/:id/images', asyncRoute(async (req, res) => {
   const quality = ['low', 'medium', 'high'].includes(req.body?.quality) ? req.body.quality : 'medium';
   const added = await PP.addImages(id, (Array.isArray(req.body?.items) ? req.body.items : []).map((i) => ({ ...i, quality })));
   const job = await startProjectJob('PAGE_IMAGES', id, req.user?.id ?? null, { count: added.length }, (ctx) => PP.runImageBatch({ projectId: id, imageIds: added.map((a) => a.id), ctx }));
+  res.status(202).json({ job: publicJob(job), images: added });
+}));
+// the 5-image page pack: hero, problem, problem+solution, demonstration, final CTA — one design system, the product locked
+router.post('/:id/images/pack', asyncRoute(async (req, res) => {
+  const id = pid(req);
+  const quality = ['low', 'medium', 'high'].includes(req.body?.quality) ? req.body.quality : 'high';
+  if (req.body?.style) await PP.updateProject(id, { style: req.body.style });
+  const added = await PP.addPack(id, { quality });
+  const job = await startProjectJob('PAGE_IMAGES', id, req.user?.id ?? null, { count: added.length, pack: true }, (ctx) => PP.runImageBatch({ projectId: id, imageIds: added.map((a) => a.id), ctx }));
   res.status(202).json({ job: publicJob(job), images: added });
 }));
 router.post('/:id/images/:imgId/regenerate', asyncRoute(async (req, res) => {

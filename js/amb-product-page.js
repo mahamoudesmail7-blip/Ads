@@ -33,7 +33,7 @@ export async function mountProductPage(panel, opts = {}) {
   const bar = (k) => (S.busy[k] ? `<div class="amt-prog"><i style="width:${S.bar[k]?.pct || 3}%"></i></div><small class="amt-dim">${esc(S.bar[k]?.message || 'شغال…')}</small>` : '');
   const say = (k, text, bad = false) => { S.msg[k] = text ? { text, bad } : null; };
 
-  async function loadTemplates() { if (!S.tpl.length) S.tpl = (await api.get(`${B}/templates`)).templates; }
+  async function loadTemplates() { if (!S.tpl.length) { const r = await api.get(`${B}/templates`); S.tpl = r.templates; S.styles = r.styles || []; S.pack = r.pack || []; } }
   async function loadList() { S.list = (await api.get(B)).projects; }
   async function openProject(id) { S.cur = await api.get(`${B}/${id}`); S.view = 'project'; S.draft = []; S.find = null; S.picks.clear(); S.editing = null; render(); startWatch(); }
   async function refresh() { if (S.cur) { S.cur = await api.get(`${B}/${S.cur.id}`); } }
@@ -119,7 +119,12 @@ export async function mountProductPage(panel, opts = {}) {
   }
 
   function imagesSection(p) {
-    return `<div class="pgp-sub">اختار قوالب الصور اللي عايزها (تقدر تختار نفس القالب أكتر من مرة):</div>
+    const style = p.style || 'clean_blue';
+    const packBox = `<div class="pgp-pack"><div><b>⚡ حزمة الصفحة: 5 صور بنفس النظام</b><small class="amt-dim">بالترتيب: ${(S.pack || []).map((x, i) => `${i + 1}) ${esc(x.label)}`).join(' · ')}. نفس الألوان والخط والكروت، والمنتج ثابت من صورته.</small></div>
+      <label class="pgp-f"><span>أسلوب التصميم (بيتثبّت على كل صور الصفحة)</span><select data-pgp-style>${(S.styles || []).map((x) => `<option value="${esc(x.id)}" ${x.id === style ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select><small class="amt-dim">${esc((S.styles || []).find((x) => x.id === style)?.hint || '')}</small></label>
+      <div class="pgp-actions"><select data-pgp-pack-q><option value="high">جودة عالية (نص أدق — الأفضل للحزمة)</option><option value="medium">جودة عادية (أرخص)</option></select><button class="amb-btn primary" data-pgp-pack ${S.busy.imgs ? 'disabled' : ''}>⚡ جهّز الحزمة (5 صور)</button></div>
+      <small class="amt-dim">التكلفة التقريبية (تقدير): حوالي 1$ لـ 5 صور بجودة عالية، وحوالي 0.2$ بجودة عادية. اكتب المحتوى (القسم ②) الأول عشان العناوين تبقى من المنتج.</small></div>`;
+    return `${packBox}<div class="pgp-sub">أو اختار قوالب الصور اللي عايزها واحدة واحدة (تقدر تختار نفس القالب أكتر من مرة):</div>
       <div class="pgp-tpls">${S.tpl.map((t) => `<button type="button" class="pgp-tpl" data-pgp-addtpl="${t.id}"><b>${esc(t.label)}</b><small>${esc(t.hint)}</small></button>`).join('')}</div>
       ${S.draft.length ? `<div class="pgp-drafts">${S.draft.map(draftRow).join('')}</div>
         <div class="pgp-actions"><select data-pgp-quality><option value="medium">جودة عادية (أرخص)</option><option value="high">جودة عالية (نص أدق وأغلى)</option><option value="low">جودة منخفضة (تجريبي)</option></select>
@@ -260,6 +265,12 @@ export async function mountProductPage(panel, opts = {}) {
       syncDraft(); const items = S.draft.slice(); const quality = val('[data-pgp-quality]') || 'medium';
       const done = await runJob('imgs', async () => { const r = await api.post(`${B}/${p.id}/images`, { items, quality }); S.draft = []; await refresh(); return r; }, { label: 'بولّد الصور…', onDone: (r) => say('imgs', `✅ خلصت ${r.done.length} صورة${r.failed?.length ? ` (فشل ${r.failed.length})` : ''}.`) });
       void done;
+    });
+    const styleSel = root.querySelector('[data-pgp-style]'); if (styleSel) styleSel.onchange = async () => { try { S.cur = await api.put(`${B}/${p.id}`, { style: styleSel.value }); redrawImages(); } catch (e) { say('imgs', e.message, true); redrawImages(); } };
+    on('[data-pgp-pack]', async () => {
+      if (!p.copy && !confirm('لسه ما كتبتش المحتوى بالـ AI، فالعناوين هتبقى من اسم المنتج بس. تكمّل؟')) return;
+      const quality = val('[data-pgp-pack-q]') || 'high'; const style = val('[data-pgp-style]') || p.style;
+      await runJob('imgs', async () => { const r = await api.post(`${B}/${p.id}/images/pack`, { quality, style }); await refresh(); return r; }, { label: 'بجهّز حزمة الصفحة…', onDone: (r) => say('imgs', `✅ خلصت ${r.done.length} من 5 صور${r.failed?.length ? ` (فشل ${r.failed.length})` : ''}.`) });
     });
     wireGallery();
 

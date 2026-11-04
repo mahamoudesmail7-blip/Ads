@@ -395,6 +395,7 @@ async function paintCardSettings() {
         <span class="tick">✓</span>
       </button>`).join('')}
     </div>
+    ${ws.imageType === 'PRODUCT_PAGE' ? `<a class="cf-btn ghost sm" style="display:block;margin-top:10px;text-align:center;text-decoration:none;" href="app.html#/ai-media-buyer.html#pages" target="_top" title="تبويب صفحة المنتج داخل AI Media Buyer">🎨 عايز صور مصممة بعناوين عربي وكروت مميزات زي أمثلتك؟ افتح «صفحة المنتج» (حزمة 5 صور بنفس النظام)</a>` : ''}
 
     <div class="cf-sec-label">عدد الصور المطلوبة</div>
     <div class="cf-count-btns" id="cfCount">
