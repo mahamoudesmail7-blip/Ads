@@ -1,11 +1,14 @@
 // AI Creative Factory — shared vocab. Deterministic fallbacks + the option
 // lists the plan / UI both draw from, so nothing is invented ad-hoc.
 
+import { DESIGNED_PRESET_OPTIONS } from './designedMode.js';
+
 export const PROJECT_TYPES = ['PRODUCT_PAGE', 'META_ADS', 'SOCIAL', 'RETARGETING', 'VARIATIONS', 'CUSTOM'];
 
 export const PRODUCT_LOCK_MODES = ['STRICT', 'BALANCED', 'CREATIVE']; // صارم | متوازن | إبداعي
 
 export const STYLE_PRESETS = [
+  ...DESIGNED_PRESET_OPTIONS, // finished designed page images (Arabic text drawn by the model) — PRODUCT_PAGE projects only
   { key: 'APPLE_CLEAN', label: 'Apple Clean' },
   { key: 'PREMIUM_STUDIO', label: 'Premium Studio' },
   { key: 'EGY_ECOM', label: 'Egyptian E-commerce' },

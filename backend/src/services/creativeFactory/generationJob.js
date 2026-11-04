@@ -30,6 +30,7 @@ import { reviewImage, saveReview } from './imageQuality.js';
 import { buildCorrectiveNote } from './regeneration.js';
 import { validatePlanConcepts } from './creativeStrategy.js';
 import { composeText, textCompositorAvailable } from './textCompositor.js';
+import { designedStyleOf, designedTemplateFor, buildDesignedRequest, expectedTexts } from './designedMode.js';
 
 const running = new Set();     // job ids currently being processed in THIS process
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
@@ -293,14 +294,21 @@ async function generateItem({ item, project, product, dna, references, continuit
   const premium = project.generation_mode === 'PREMIUM' && th.allowPremiumMode;
   // best-of-N: PREMIUM + HERO only (spec §19 "not several candidates for every image")
   const wantCandidates = premium && isHero ? Math.max(2, th.premiumCandidates) : 1;
+  // DESIGNED page image (project style DESIGNED_*): the model draws the finished design incl. the Arabic text; one attempt, then a human decides
+  const designedStyle = project.project_type === 'PRODUCT_PAGE' ? designedStyleOf(project.style_preset) : null;
+  const designedTemplate = designedStyle ? designedTemplateFor(itemFull.angle || itemFull.marketing_angle) : null;
+  const designed = !!designedTemplate;
   const maxRetries = premium ? th.maxRetriesPremium : th.maxRetriesFast;
-  const maxAttempts = maxRetries + 1;
+  const maxAttempts = designed ? 1 : maxRetries + 1;
 
   // reference-aware selection for THIS shot (spec §3)
   const chosenRefs = selectReferencesForItem(references, itemFull, 4);
   const providerRefs = providerCaps.referenceImages
     ? chosenRefs.map((r) => ({ b64: r.buffer.toString('base64'), mime: r.mime }))
     : [];
+  const designedReq = designed
+    ? buildDesignedRequest({ templateId: designedTemplate, styleId: designedStyle, product, copy: copyObj, productRefs: providerRefs })
+    : null;
   const layout = itemFull.text_layout || direction.text_layout || 'HEADLINE_TOP';
 
   let corrective = null;
@@ -308,16 +316,18 @@ async function generateItem({ item, project, product, dna, references, continuit
   let bestReview = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const built = buildPrompt({
-      item: { ...itemFull, text_layout: layout }, copy: copyObj, direction, product, dna, project,
-      references: chosenRefs, lockMode: project.product_lock_mode, correctiveNote: corrective,
-      promptVersion: attempt, textOverlay: textEngine,
-    });
+    const built = designedReq
+      ? { prompt: designedReq.prompt, promptVersion: attempt, meta: { designed: designedTemplate, style: designedStyle, referencesUsed: designedReq.referenceImages.length } }
+      : buildPrompt({
+        item: { ...itemFull, text_layout: layout }, copy: copyObj, direction, product, dna, project,
+        references: chosenRefs, lockMode: project.product_lock_mode, correctiveNote: corrective,
+        promptVersion: attempt, textOverlay: textEngine,
+      });
     const attemptRow = await prisma.cfGenerationAttempt.create({
       data: {
         project_item_id: item.id, attempt_number: attempt, provider: provider.name, model: providerCaps.model || null,
         prompt: built.prompt, prompt_version: attempt, corrective_prompt: corrective,
-        provider_request_json: JSON.stringify({ size, n: wantCandidates, references: providerRefs.length, textLayout: layout, textEngine }),
+        provider_request_json: JSON.stringify({ size, n: wantCandidates, references: designedReq ? designedReq.referenceImages.length : providerRefs.length, textLayout: layout, textEngine: designed ? false : textEngine, designed: designed ? designedTemplate : null }),
         status: 'RUNNING', images_requested: wantCandidates, estimated_cost: estimateCostUsd(wantCandidates, size),
       },
     });
@@ -336,7 +346,7 @@ async function generateItem({ item, project, product, dna, references, continuit
     let gen;
     const genStartedAt = Date.now();
     try {
-      gen = await provider.generate({ prompt: built.prompt, size, n: wantCandidates, referenceImages: providerRefs, quality: undefined });
+      gen = await provider.generate({ prompt: built.prompt, size, n: wantCandidates, referenceImages: designedReq ? designedReq.referenceImages : providerRefs, quality: designed ? 'high' : undefined });
     } catch (err) {
       await prisma.cfGenerationAttempt.update({ where: { id: attemptRow.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 500) } });
       await logImageUsage({ feature: 'cf.image_generation', model: providerCaps.model || imageModelName, productId: product.id, generationType: attempt === 1 ? 'NEW' : 'RETRY', imageCount: wantCandidates, size, status: 'FAILED', error: err.message, durationMs: Date.now() - genStartedAt }).catch(() => {});
@@ -363,7 +373,7 @@ async function generateItem({ item, project, product, dna, references, continuit
       let finalBuf = rawBuf;
       let textApplied = false;
       let usedLayout = layout;
-      if (textEngine) {
+      if (textEngine && !designed) { // a designed image already carries its own text
         const comp = await composeText({ baseImageBuffer: rawBuf, copy: copyObj, layout, projectType: project.project_type, textDensity: project.text_density });
         finalBuf = comp.buffer; textApplied = comp.applied; usedLayout = comp.layout;
       }
@@ -377,7 +387,7 @@ async function generateItem({ item, project, product, dna, references, continuit
           generation_number: attempt,
         },
       });
-      const review = await reviewImage({ assetBuffer: finalBuf, assetMime: 'image/png', item: itemFull, copy: copyObj, product, dna, project, references: chosenRefs });
+      const review = await reviewImage({ assetBuffer: finalBuf, assetMime: 'image/png', item: itemFull, copy: copyObj, product, dna, project, references: chosenRefs, designed: designedReq ? { expected: expectedTexts(designedReq.ctx) } : null });
       review._textApplied = textApplied; review._textLayout = usedLayout;
       await saveReview(asset.id, review);
       const score = review.overall ?? -1;

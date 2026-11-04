@@ -27,6 +27,13 @@ const SYSTEM = `أنت Quality Controller صارم لكرياتيفات التج
 - كن ناقدًا لكن لا تعاقب على فروق جمالية بسيطة إذا المنتج مطابق والواقعية عالية.
 - النص العربي على الصورة يُضاف لاحقًا بمحرك خاص؛ قيّم فقط إن كانت هناك مساحة نص نظيفة (text_layout_ok) ولا تعاقب على غياب النص.`;
 
+// DESIGNED page images (see designedMode.js) are finished designs with Arabic text baked in, so the photo-realism gates do not apply to them.
+const SYSTEM_DESIGNED = `أنت Quality Controller صارم لصور صفحات المنتجات. الصورة المولّدة تصميم إعلاني كامل مقصود (عناوين عربي، كروت وأيقونات، سعر، زرار طلب) وليست صورة فوتوغرافية، فلا تعاقب على الطابع التصميمي ولا النص المدمج ولا الأيقونات.
+أولوية الحكم: (1) تطابق المنتج مع الصور المرجعية للمنتج (الشكل/اللون/الأزرار/الشاشة/الملحقات/النِسب/أي كتابة على المنتج نفسه). لو المنتج مختلف ⇒ identity_mismatch=true ودرجات تطابق وهوية منخفضة. (2) سلامة النص العربي الظاهر: اقرأ كل نص عربي في الصورة وقارنه بالنصوص المطلوبة في طلب المستخدم؛ أي حرف ناقص أو كلمة مشوّهة أو نص غير مطلوب ⇒ arabic_text_score أقل من 70. (3) عدم وجود تشوّه في الأيدي والوجوه وأجزاء المنتج (artifact_score). (4) التكوين ووضوح الرسالة.
+- أي رقم أو سعر أو ادعاء ظاهر وغير مطلوب في النصوص ⇒ claim_score منخفض.
+- لا تستخدم الواقعية للرفض: أعد realism_score=80 و looks_ai_generated=false و text_layout_ok=true.
+- صنّف السبب الأساسي للرسوب في failure_code من: ${FAILURE_CODES.join(', ')} (OK لو ناجحة).`;
+
 function neutralReview(reason) {
   const scores = Object.fromEntries(SCORE_KEYS.map((k) => [k, null]));
   return {
@@ -46,7 +53,7 @@ function neutralReview(reason) {
  * @param {object} p.project
  * @param {Array<{buffer,mime,label}>} [p.references]
  */
-export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, copy, product, dna, project, references = [] }) {
+export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, copy, product, dna, project, references = [], designed = null }) {
   if (!assetBuffer?.length) return neutralReview('لا توجد بيانات صورة للمراجعة.');
   const th = await getEffectiveThresholds();
 
@@ -56,8 +63,9 @@ export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, 
   ];
 
   const ai = await callAiJson({
-    system: SYSTEM,
-    user: `عنصر الخطة: ${JSON.stringify({ purpose: item?.purpose, angle: item?.marketing_angle || item?.angle, scene: item?.scene, camera: item?.camera_plan || item?.camera_angle, product_position: item?.product_position })}
+    system: designed ? SYSTEM_DESIGNED : SYSTEM,
+    user: `${designed ? `النصوص المطلوبة على الصورة بالظبط (غيرها ممنوع): ${JSON.stringify(designed.expected || [])}
+` : ''}عنصر الخطة: ${JSON.stringify({ purpose: item?.purpose, angle: item?.marketing_angle || item?.angle, scene: item?.scene, camera: item?.camera_plan || item?.camera_angle, product_position: item?.product_position })}
 هوية المنتج (DNA): ${JSON.stringify(dna?.data || dna || {}).slice(0, 1900)}
 المواصفات: ${(product?.specifications || '—').slice(0, 500)}
 الادعاءات المسموح بها: ${(product?.allowed_claims || '—').slice(0, 300)}
@@ -100,6 +108,16 @@ export async function reviewImage({ assetBuffer, assetMime = 'image/png', item, 
   const claimSoftOk = (scores.claim_score ?? 100) >= 88 && failureCode !== 'CLAIM_ISSUE';
 
   // ---- gate (spec §17) ----
+  // DESIGNED: product identity + the Arabic text + no artifacts + no stray claim (realism does not apply to a finished design)
+  if (designed) {
+    const passedD = overall !== null && productAcc >= th.productAccuracyThreshold && !identityMismatch && (scores.arabic_text_score ?? 100) >= 70 && (scores.claim_score ?? 100) >= 85 && (scores.artifact_score ?? 100) >= 60;
+    return {
+      scores, overall, realism, identity_mismatch: identityMismatch, looks_ai: false, text_layout_ok: true,
+      failure_code: passedD ? 'OK' : (failureCode === 'OK' ? 'BAD_COMPOSITION' : failureCode), passed: passedD, good_enough: false, designed: true,
+      failure_reasons: Array.isArray(ai.data.failure_reasons) ? ai.data.failure_reasons.slice(0, 8) : [],
+      recommendation: passedD ? 'APPROVE' : (ai.data.recommendation || 'NEEDS_HUMAN_REVIEW'), judge_model: 'anthropic',
+    };
+  }
   let passed =
     overall !== null &&
     productAcc >= th.productAccuracyThreshold &&

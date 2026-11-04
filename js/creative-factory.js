@@ -139,7 +139,7 @@ function newWs() {
       peopleRule: s.cfDefaultPeopleRule || 'NONE',
       hijabRequired: !!s.cfHijabRequiredDefault,
       market: s.cfDefaultMarket || 'EG', language: s.cfDefaultLanguage || 'ar', dialect: s.cfDefaultDialect || 'egyptian',
-      stylePreset: s.cfDefaultStylePreset || 'EGY_ECOM', aspectRatio: '1:1',
+      stylePreset: 'DESIGNED_CLEAN_BLUE', classicStyle: s.cfDefaultStylePreset || 'EGY_ECOM', aspectRatio: '1:1', // page images start in the DESIGNED look; other types use classicStyle
     },
     plan: null, jobId: null, savedAt: null, phase: 'setup', // setup | generating
   };
@@ -395,7 +395,7 @@ async function paintCardSettings() {
         <span class="tick">✓</span>
       </button>`).join('')}
     </div>
-    ${ws.imageType === 'PRODUCT_PAGE' ? `<a class="cf-btn ghost sm" style="display:block;margin-top:10px;text-align:center;text-decoration:none;" href="app.html#/ai-media-buyer.html#pages" target="_top" title="تبويب صفحة المنتج داخل AI Media Buyer">🎨 عايز صور مصممة بعناوين عربي وكروت مميزات زي أمثلتك؟ افتح «صفحة المنتج» (حزمة 5 صور بنفس النظام)</a>` : ''}
+    ${ws.imageType === 'PRODUCT_PAGE' && /^DESIGNED_/.test(ws.adv.stylePreset || '') ? `<div style="margin-top:10px;background:#f1f4ff;border:1px solid #d5dcf7;border-radius:12px;padding:10px 12px;font-size:12.5px;line-height:1.8;">🎨 <b>النمط المصمّم</b>: الـ AI بيرسم كل صورة كاملة (عنوان عربي كبير، كروت مميزات، سعر، زرار طلب) بنفس نظام الألوان، والمنتج ثابت من صورك المرجعية. غيّر النمط من «إعدادات متقدمة ← نمط أساسي». التكلفة التقريبية (تقدير): حوالي 0.2$ للصورة، وبيتولّد من أول محاولة وإنت اللي تراجع وتعيد التوليد.</div>` : ''}
 
     <div class="cf-sec-label">عدد الصور المطلوبة</div>
     <div class="cf-count-btns" id="cfCount">
@@ -414,6 +414,8 @@ async function paintCardSettings() {
 
   box.querySelectorAll('[data-type]').forEach((b) => b.onclick = () => {
     ws.imageType = b.dataset.type;
+    if (ws.imageType === 'PRODUCT_PAGE' && !/^DESIGNED_/.test(ws.adv.stylePreset || '')) ws.adv.stylePreset = 'DESIGNED_CLEAN_BLUE';
+    if (ws.imageType !== 'PRODUCT_PAGE' && /^DESIGNED_/.test(ws.adv.stylePreset || '')) ws.adv.stylePreset = ws.adv.classicStyle || 'EGY_ECOM';
     if (ws.imageType === 'PRODUCT_PAGE' && ws.countMode === 'MANUAL' && ![1, 2, 3, 4, 5, 10, 20, 50].includes(ws.count)) ws.count = 5;
     ws.plan = null;
     paintCardSettings(); paintPreview(); renderStepper(); scheduleSaveProject();
