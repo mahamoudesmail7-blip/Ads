@@ -76,7 +76,7 @@ export function designSystemBlock(styleId, styleRefCount = 0) {
   const st = PAGE_STYLES[styleId] || PAGE_STYLES[DEFAULT_STYLE];
   const lines = [
     `DESIGN SYSTEM — use EXACTLY the same system in every image of this product page so they look like one family: palette: ${st.palette}. Typography: ${st.type}. Cards and icons: ${st.cards}. Mood: ${st.mood}.`,
-    'PRODUCT LOCK — the FIRST attached image is the only source of truth for the product. The product must be IDENTICAL in every image of the set: same shape, colors, buttons, screen, ports, accessories, proportions and any printing or logo on it. Never redesign, restyle, recolor, add or remove parts, or turn it into a different model.',
+    'PRODUCT LOCK — the FIRST attached image is the only source of truth for the product (any further product photos show the same product from other angles). The product must be IDENTICAL in every image of the set: same shape, colors, buttons, screen, ports, accessories, proportions and any printing or logo on it. Never redesign, restyle, recolor, add or remove parts, or turn it into a different model. The product photos may already contain advertising text, icons, banners, colored backgrounds or other graphics: IGNORE all of that completely and take ONLY the physical product itself — never reuse their text, layout or background.',
   ];
   if (styleRefCount > 0) lines.push(`STYLE REFERENCES — the ${styleRefCount === 1 ? 'second' : 'second and third'} attached image${styleRefCount === 1 ? ' is' : 's are'} finished product-page images of OTHER products, given ONLY to show the visual style (layout language, colors, typography, card style). Copy that design language; NEVER copy their product, their text or their people.`);
   return lines.join(' ');
