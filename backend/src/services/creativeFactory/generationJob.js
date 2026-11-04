@@ -30,7 +30,7 @@ import { reviewImage, saveReview } from './imageQuality.js';
 import { buildCorrectiveNote } from './regeneration.js';
 import { validatePlanConcepts } from './creativeStrategy.js';
 import { composeText, textCompositorAvailable } from './textCompositor.js';
-import { designedStyleOf, designedTemplateFor, buildDesignedRequest, expectedTexts } from './designedMode.js';
+import { designedStyleOf, designedTemplateForItem, buildDesignedRequest, expectedTexts } from './designedMode.js';
 
 const running = new Set();     // job ids currently being processed in THIS process
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
@@ -170,7 +170,7 @@ async function runJob(jobId) {
     }
   }
 
-  const state = { completed: 0, failed: 0, providerDown: false };
+  const state = { completed: 0, failed: 0, providerDown: false, firstError: null };
   const queue = itemIds.slice();
   const concurrency = Math.max(1, Math.min(th.generationConcurrency, queue.length));
 
@@ -181,12 +181,13 @@ async function runJob(jobId) {
       const itemId = queue.shift();
       if (itemId == null) return;
       const item = await prisma.cfProjectItem.findUnique({ where: { id: itemId }, include: { copy: true } });
-      if (!item) { state.failed++; continue; }
+      if (!item) { state.failed++; state.firstError = state.firstError || 'عنصر الخطة اتغيّر أو اتمسح أثناء الإنشاء — ولّد الخطة تاني وابدأ من جديد.'; continue; }
       try {
         const outcome = await generateItem({ item, project, product, dna, references, continuity, provider, providerCaps, th, textEngine });
         if (outcome.status === 'COMPLETED') state.completed++; else state.failed++;
       } catch (err) {
         state.failed++;
+        state.firstError = state.firstError || String(err?.message || err).slice(0, 300);
         await prisma.cfProjectItem.update({ where: { id: item.id }, data: { status: 'FAILED' } }).catch(() => {});
         logger.error('CF_ITEM_FAILED', { itemId: item.id, message: err.message });
         if (err instanceof CfProviderError && err.code === 'PROVIDER_NOT_CONFIGURED') {
@@ -212,7 +213,7 @@ async function runJob(jobId) {
   const finalStatus = state.completed === itemIds.length ? 'COMPLETED' : state.completed > 0 ? 'PARTIAL_COMPLETE' : 'FAILED';
   await prisma.cfJob.update({
     where: { id: jobId },
-    data: { status: finalStatus, completed_items: state.completed, failed_items: state.failed, progress: 100, finished_at: new Date(), heartbeat_at: new Date() },
+    data: { status: finalStatus, completed_items: state.completed, failed_items: state.failed, progress: 100, finished_at: new Date(), heartbeat_at: new Date(), ...(state.failed && state.firstError ? { error: state.firstError } : {}) },
   });
   await syncProjectStatus(project.id);
 }
@@ -296,7 +297,8 @@ async function generateItem({ item, project, product, dna, references, continuit
   const wantCandidates = premium && isHero ? Math.max(2, th.premiumCandidates) : 1;
   // DESIGNED page image (project style DESIGNED_*): the model draws the finished design incl. the Arabic text; one attempt, then a human decides
   const designedStyle = project.project_type === 'PRODUCT_PAGE' ? designedStyleOf(project.style_preset) : null;
-  const designedTemplate = designedStyle ? designedTemplateFor(itemFull.angle || itemFull.marketing_angle) : null;
+  const designedTotal = designedStyle ? await prisma.cfProjectItem.count({ where: { project_id: project.id } }) : 0;
+  const designedTemplate = designedStyle ? designedTemplateForItem(itemFull, item.position, designedTotal) : null;
   const designed = !!designedTemplate;
   const maxRetries = premium ? th.maxRetriesPremium : th.maxRetriesFast;
   const maxAttempts = designed ? 1 : maxRetries + 1;

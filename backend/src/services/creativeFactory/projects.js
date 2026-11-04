@@ -386,10 +386,25 @@ export function serializePlanItem(it, reviewByAsset = new Map()) {
   };
 }
 
+const PLANNING = new Set(); // project ids whose plan is being generated right now (a double click / double POST must not run twice)
+
 export async function generatePlan(projectId, { count } = {}) {
+  if (PLANNING.has(projectId)) throw bad('الخطة بتتولّد دلوقتي — استنى لحظة.', 409);
+  PLANNING.add(projectId);
+  try { return await generatePlanInner(projectId, { count }); } finally { PLANNING.delete(projectId); }
+}
+
+async function assertPlanEditable(projectId) {
+  const p = await prisma.cfProject.findUnique({ where: { id: projectId }, select: { status: true } });
+  if (!p) throw bad('المشروع غير موجود.', 404);
+  const active = await prisma.cfJob.findFirst({ where: { project_id: projectId, status: { in: ['QUEUED', 'GENERATING', 'REVIEWING', 'REGENERATING'] } }, select: { id: true } });
+  if (active || ['GENERATING', 'QUEUED'].includes(p.status)) throw bad('فيه إنشاء صور شغال — لا يمكن إعادة توليد الخطة الآن.', 409);
+}
+
+async function generatePlanInner(projectId, { count } = {}) {
   const project = await prisma.cfProject.findUnique({ where: { id: projectId }, include: { product: true, items: true } });
   if (!project) throw bad('المشروع غير موجود.', 404);
-  if (['GENERATING', 'QUEUED'].includes(project.status)) throw bad('فيه إنشاء صور شغال — لا يمكن إعادة توليد الخطة الآن.', 409);
+  await assertPlanEditable(projectId);
 
   const dna = await getDna(project.product_id);
   const th = await getEffectiveThresholds();
@@ -397,6 +412,9 @@ export async function generatePlan(projectId, { count } = {}) {
   const feedbackHints = await getFeedbackHints(project.product?.category || null).catch(() => null);
   const { items, source } = await buildCreativePlan({ project, product: project.product, dna, count: n, feedbackHints });
 
+  // The AI call above takes seconds: a job may have been created meanwhile and captured the CURRENT item ids —
+  // replacing the items now would orphan it (every worker finds nothing and the job fails silently). Re-check right before the swap.
+  await assertPlanEditable(projectId);
   // Replace any existing plan items (only allowed pre-generation).
   await prisma.cfProjectItem.deleteMany({ where: { project_id: projectId } });
   for (const raw of items) {

@@ -137,6 +137,29 @@ try {
   await settle(aj.id, auto.id);
   ok('auto: only product photos, design-system sentence without style references', imageCalls.length === 1 && imageCalls[0].images.length === 3 && /DESIGN SYSTEM/.test(imageCalls[0].prompt) && !/STYLE REFERENCES/.test(imageCalls[0].prompt), imageCalls[0] && String(imageCalls[0].images.length));
   void ap;
+
+  console.log('\n[3] free-text plan angles + the plan/job race');
+  const ang = ['hero', 'feature', 'display', 'interface', 'design_detail'].map((x, i) => D.designedTemplateForItem({ angle: x, position: i + 1 }, i + 1, 5));
+  ok('the AI plan free-text angles ALL map to a real template (never classic)', ang.every((t) => PT.PAGE_TEMPLATES[t]) && ang[0] === 'hero_hook', ang.join());
+  ok('unknown angle → position fallback (first=hero, last of >2=final_cta, else features)', D.designedTemplateForItem({ angle: 'zzz' }, 1, 5) === 'hero_hook' && D.designedTemplateForItem({ angle: 'zzz' }, 5, 5) === 'final_cta' && D.designedTemplateForItem({ angle: 'zzz' }, 2, 5) === 'features_hero');
+  const race = await P.createProject({ productId, projectType: 'PRODUCT_PAGE', quantity: 2, stylePreset: 'DESIGNED_CLEAN_BLUE' }, null);
+  projects.push(race.id);
+  await P.generatePlan(race.id, { count: 2 });
+  const idsBefore = (await prisma.cfProjectItem.findMany({ where: { project_id: race.id }, orderBy: { position: 'asc' } })).map((i) => i.id);
+  const rj = await createGenerationJob({ projectId: race.id, userId: null });
+  let refused = null;
+  try { await P.generatePlan(race.id, { count: 2 }); } catch (e) { refused = e; }
+  ok('re-planning while a job is queued is refused (409) and keeps the items', refused && refused.status === 409 && (await prisma.cfProjectItem.findMany({ where: { project_id: race.id }, orderBy: { position: 'asc' } })).map((i) => i.id).join() === idsBefore.join());
+  // two plan requests at once → the second is refused, never interleaved
+  const race2 = await P.createProject({ productId, projectType: 'PRODUCT_PAGE', quantity: 1, stylePreset: 'DESIGNED_CLEAN_BLUE' }, null);
+  projects.push(race2.id);
+  const settled = await Promise.allSettled([P.generatePlan(race2.id, { count: 1 }), P.generatePlan(race2.id, { count: 1 })]);
+  ok('two simultaneous plan requests: exactly one runs, the other gets 409', settled.filter((r) => r.status === 'fulfilled').length === 1 && settled.some((r) => r.status === 'rejected' && r.reason?.status === 409));
+  // items deleted under a job → the job FAILS with a readable reason (not silently)
+  await prisma.cfProjectItem.deleteMany({ where: { project_id: race.id } });
+  await settle(rj.id, race.id);
+  const failedJob = await prisma.cfJob.findUnique({ where: { id: rj.id } });
+  ok('items vanished under a job → FAILED with a visible error', failedJob.status === 'FAILED' && /الخطة|اتغيّر|اتمسح/.test(failedJob.error || ''), JSON.stringify({ s: failedJob.status, e: failedJob.error }));
 } finally {
   globalThis.fetch = realFetch;
   for (const id of projects) { await prisma.cfProject.delete({ where: { id } }).catch(() => {}); }

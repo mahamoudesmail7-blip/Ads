@@ -29,6 +29,31 @@ export const ANGLE_TO_TEMPLATE = {
 };
 export const designedTemplateFor = (angle) => ANGLE_TO_TEMPLATE[String(angle || '').toUpperCase().trim()] || null;
 
+// The AI plan names angles in free text (hero, feature, display, interface, design_detail…), not the taxonomy keys. In designed mode EVERY image of
+// the page must be designed, so a free-text item is mapped by keyword, then by its place in the sequence (first = hero, last = closing CTA).
+const KEYWORDS = [
+  [/before.?after|قبل.*بعد/i, 'before_after'],
+  [/problem.?solution|مشكلة.*حل/i, 'problem_solution'],
+  [/problem|pain|objection|مشكل|اعتراض/i, 'problem'],
+  [/final|cta|closing|buy|order|offer|اشتر|اطلب|عرض/i, 'final_cta'],
+  [/hero|main|opening|رئيس/i, 'hero_hook'],
+  [/demo|use|usage|how|step|action|interface|display|screen|استخدام|شرح|واجه|شاشة/i, 'demonstration'],
+  [/detail|macro|part|close.?up|design|material|quality|تفصيل|خامة|جودة/i, 'parts_breakdown'],
+  [/lifestyle|home|family|scene|حياة|بيت/i, 'lifestyle_home'],
+  [/feature|benefit|spec|infograph|ميزة|مميزات|فوائد|مواصفات/i, 'features_hero'],
+];
+/** Always returns a template (never null): taxonomy key → keywords in angle/purpose → position in the sequence → features. */
+export function designedTemplateForItem(item = {}, position = null, total = null) {
+  const exact = designedTemplateFor(item.angle) || designedTemplateFor(item.marketing_angle);
+  if (exact) return exact;
+  const text = [item.angle, item.marketing_angle, item.purpose].filter(Boolean).join(' ');
+  for (const [re, tpl] of KEYWORDS) if (re.test(text)) return tpl;
+  const pos = Number(position ?? item.position) || 0; const n = Number(total) || 0;
+  if (pos === 1) return 'hero_hook';
+  if (n > 2 && pos === n) return 'final_cta';
+  return 'features_hero';
+}
+
 const clean = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 
 /**

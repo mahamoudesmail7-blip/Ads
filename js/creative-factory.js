@@ -618,8 +618,11 @@ function renderStepper() {
 }
 
 // ---- plan preview (real) ----------------------------------------
+let planInFlight = false; // a plan request is running — a second one (button + generate) would replace the items under a live job
 async function wsShowPlan() {
   const ws = state.ws;
+  if (planInFlight) return;
+  planInFlight = true;
   const btn = $('cfShowPlan'); if (btn) { btn.disabled = true; btn.textContent = '… جاري تصميم الخطة'; }
   try {
     await wsSaveProjectNow();
@@ -629,6 +632,7 @@ async function wsShowPlan() {
     markSaved();
     paintReco(); paintPreview(); renderStepper();
   } catch (e) { UI.toast(e.message, 'error'); if (btn) { btn.disabled = false; btn.textContent = 'عرض الخطة الفعلية'; } }
+  finally { planInFlight = false; }
 }
 
 // ---- GENERATE (full pipeline) ---------------------------------
@@ -640,8 +644,10 @@ async function wsGenerateNow() {
   if (refs < min) return UI.toast(`محتاج ${min} صور مرجعية على الأقل.`, 'error');
   if (!ws.specsText.trim()) return UI.toast('اكتب مواصفات المنتج.', 'error');
   if (!ws.imageType) return UI.toast('اختر نوع الصور.', 'error');
+  if (planInFlight) return UI.toast('الخطة لسه بتتجهّز — استنى لحظة وبعدين اضغط.', 'error');
 
   const btn = $('cfGenNow'); btn.disabled = true;
+  planInFlight = true; // released once the plan step is done (the generate call itself is guarded server-side by the active-job check)
   const setBtn = (t) => { btn.textContent = t; };
   try {
     setBtn('… جاري حفظ المشروع'); await wsSaveProductNow(); await wsSaveProjectNow(); await wsEnsureProject();
@@ -654,6 +660,7 @@ async function wsGenerateNow() {
       const res = await api.post(`/api/creative-factory/projects/${ws.projectId}/plan`, { count: ws.count });
       ws.plan = { items: res.items || [] };
     }
+    planInFlight = false;
     setBtn('… جاري تجهيز البرومبتات');
     await api.post(`/api/creative-factory/projects/${ws.projectId}/plan/approve`, {});
 
@@ -666,6 +673,7 @@ async function wsGenerateNow() {
     ws.jobId = job.id; ws.phase = 'generating'; markSaved();
     renderNew($('cfView'));
   } catch (e) {
+    planInFlight = false;
     UI.toast(`فشل بدء الإنشاء: ${e.message}`, 'error');
     btn.disabled = false; setBtn('⚡ إنشاء الصور الآن');
   }
