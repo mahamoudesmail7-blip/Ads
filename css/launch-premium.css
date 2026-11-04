@@ -334,3 +334,13 @@
 .pgp-phone { max-width: 340px; margin: 8px auto 0; border: 1px solid var(--lp-line, #e3e8f5); border-radius: 18px; padding: 12px; background: #fff; max-height: 640px; overflow: auto; text-align: start; }
 .pgp-phone img { width: 100%; display: block; margin-top: 6px; border-radius: 6px; } .pgp-phone p { font-size: 12.5px; line-height: 1.8; margin: 6px 0; }
 .pgp-ptitle { font-weight: 800; font-size: 15px; } .pgp-psub { font-size: 12px; color: var(--lp-dim, #566178); margin-top: 2px; } .pgp-pprice { margin: 6px 0; font-size: 14px; } .pgp-pprice s { color: #999; font-size: 12px; }
+
+/* ---- video viewer ("▶ شاهد") ---- */
+.amt-viewer { position: fixed; inset: 0; z-index: 99999; background: rgba(10, 12, 24, .78); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.amt-viewer-box { position: relative; max-width: min(92vw, 460px); max-height: 92vh; display: flex; flex-direction: column; gap: 8px; align-items: center; background: #0f1220; border-radius: 18px; padding: 12px; }
+.amt-viewer-box video { max-width: 100%; max-height: 76vh; border-radius: 12px; background: #000; }
+.amt-viewer-box small { color: #c9cfe8; font-size: 12px; text-align: center; }
+.amt-viewer-x { position: absolute; top: -12px; inset-inline-end: -12px; width: 32px; height: 32px; border-radius: 50%; border: 0; background: #fff; color: #111; font-size: 16px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+
+.amt-fieldlbl { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: var(--lp-dim, #566178); margin-top: 8px; } .amt-fieldlbl textarea { padding: 8px 10px; border: 1px solid var(--lp-line, #e3e8f5); border-radius: 10px; font: inherit; font-size: 13px; font-weight: 400; color: #222; }
+.amt-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }

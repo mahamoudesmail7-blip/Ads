@@ -8,6 +8,7 @@ import * as PP from '../services/amb/media/pageProjects.js';
 import { templateList } from '../services/amb/media/pageTemplates.js';
 import { runPageAiVideos, runPageVideoFinder } from '../services/amb/media/pageVideos.js';
 import { MAX_AI_VIDEOS, AI_STYLES } from '../services/amb/media/aiVideos.js';
+import { runExplainerForPage, MAX_EXPLAINERS } from '../services/amb/media/explainerRuns.js';
 import { isAllowedVideoUrl } from '../services/amb/media/ytdlp.js';
 import { fetchImageBytes } from '../services/amb/media/productImage.js';
 import { getEasyOrdersProducts } from '../services/amb/easyOrdersProducts.js';
@@ -95,8 +96,11 @@ router.delete('/:id/images/:imgId', asyncRoute(async (req, res) => res.json(awai
 // ---- videos
 router.post('/:id/videos/ai', asyncRoute(async (req, res) => {
   const id = pid(req);
-  const input = { count: Math.max(1, Math.min(MAX_AI_VIDEOS, Number(req.body?.count) || 1)), seconds: Number(req.body?.seconds) === 10 ? 10 : 5, style: AI_STYLES[req.body?.style] ? req.body.style : 'ugc' };
-  res.status(202).json(publicJob(await startProjectJob('PAGE_AI_VIDEOS', id, req.user?.id ?? null, input, (ctx) => runPageAiVideos({ projectId: id, ...input, ctx }))));
+  const explainer = req.body?.mode === 'explainer';
+  const input = { mode: explainer ? 'explainer' : 'clip', count: Math.max(1, Math.min(explainer ? MAX_EXPLAINERS : MAX_AI_VIDEOS, Number(req.body?.count) || 1)), scenes: Number(req.body?.scenes) === 4 ? 4 : 3, captions: req.body?.captions !== false, seconds: Number(req.body?.seconds) === 10 ? 10 : 5, style: AI_STYLES[req.body?.style] ? req.body.style : 'ugc' };
+  res.status(202).json(publicJob(await startProjectJob('PAGE_AI_VIDEOS', id, req.user?.id ?? null, input, (ctx) => (explainer
+    ? runExplainerForPage({ projectId: id, count: input.count, scenes: input.scenes, captions: input.captions, ctx })
+    : runPageAiVideos({ projectId: id, count: input.count, seconds: input.seconds, style: input.style, ctx })))));
 }));
 router.post('/:id/videos/find', asyncRoute(async (req, res) => {
   const id = pid(req);

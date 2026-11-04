@@ -10,7 +10,11 @@ import { runPageImages, PAGE_IMAGE_STYLES, MAX_PAGE_IMAGES } from '../services/a
 import { runVideoFinder } from '../services/amb/media/videoFinder.js';
 import { runImport, MAX_IMPORT } from '../services/amb/media/mediaImport.js';
 import { runAiVideos, AI_STYLES, MAX_AI_VIDEOS } from '../services/amb/media/aiVideos.js';
+import { runExplainerForPool, MAX_EXPLAINERS } from '../services/amb/media/explainerRuns.js';
 import { isAllowedVideoUrl } from '../services/amb/media/ytdlp.js';
+import { prisma } from '../prisma.js';
+import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from '../services/amb/launchVideoUpload.js';
+import { getVideoSourceUrl } from '../services/metaGraphClient.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN'));
@@ -58,8 +62,24 @@ router.post('/videos/import', launch('VIDEO_IMPORT', {
 }));
 
 router.post('/ai-videos', launch('AI_VIDEOS', {
-  input: (req) => ({ count: Math.max(1, Math.min(MAX_AI_VIDEOS, Number(req.body?.count) || 1)), seconds: Number(req.body?.seconds) === 10 ? 10 : 5, style: AI_STYLES[req.body?.style] ? req.body.style : 'ugc' }),
-  exec: ({ launchJobId, input, ctx }) => runAiVideos({ launchJobId, ...input, ctx }),
+  input: (req) => {
+    const explainer = req.body?.mode === 'explainer'; // a real explainer: usage scenes + Egyptian voice-over + Arabic captions (expensive — max 2 per run)
+    return { mode: explainer ? 'explainer' : 'clip', count: Math.max(1, Math.min(explainer ? MAX_EXPLAINERS : MAX_AI_VIDEOS, Number(req.body?.count) || 1)), scenes: Number(req.body?.scenes) === 4 ? 4 : 3, captions: req.body?.captions !== false, facts: (Array.isArray(req.body?.facts) ? req.body.facts : []).map((x) => String(x).slice(0, 200)).slice(0, 20), seconds: Number(req.body?.seconds) === 10 ? 10 : 5, style: AI_STYLES[req.body?.style] ? req.body.style : 'ugc' };
+  },
+  exec: ({ launchJobId, input, ctx }) => (input.mode === 'explainer'
+    ? runExplainerForPool({ launchJobId, count: input.count, scenes: input.scenes, facts: input.facts, captions: input.captions, ctx })
+    : runAiVideos({ launchJobId, count: input.count, seconds: input.seconds, style: input.style, ctx })),
+}));
+
+/** Playable preview of a video already in a launch job's pool: Meta's own copy (a signed CDN URL that expires) — read-only. */
+router.get('/video-preview', asyncRoute(async (req, res) => {
+  const jobId = String(req.query.launchJobId || ''), slotKey = String(req.query.slotKey || '');
+  if (!/^[a-z0-9_-]{8,80}$/i.test(jobId) || !/^C\d{1,4}$/.test(slotKey)) throw bad('بيانات الفيديو غير صالحة.');
+  const row = await prisma.ambLaunchVideoAsset.findUnique({ where: { job_id_slot_key: { job_id: jobId, slot_key: slotKey } }, select: { meta_video_id: true, status: true } });
+  if (!row?.meta_video_id) throw Object.assign(new Error('الفيديو لسه ما اترفعش على Meta.'), { status: 404 });
+  const token = await requireLaunchToken();
+  const [source, picture, status] = await Promise.all([getVideoSourceUrl(token, row.meta_video_id).catch(() => null), getMetaVideoThumbnailUrl(token, row.meta_video_id), getMetaVideoStatus(token, row.meta_video_id)]);
+  res.json({ source, picture, status });
 }));
 
 router.get('/jobs/:id', asyncRoute(async (req, res) => {

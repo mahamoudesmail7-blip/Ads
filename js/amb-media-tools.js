@@ -101,13 +101,28 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
       </div>
 
       <div class="amt-tool" data-tool="ai">
-        <div class="amt-th"><b>🎬 فيديو AI قصير من صورة المنتج</b><small class="amt-dim">مقطع عمودي 5 أو 10 ثواني بدون صوت أو ترجمة. التوليد بيخصم من رصيد fal.ai وبياخد دقايق</small></div>
+        <div class="amt-th"><b>🎬 فيديو AI من صورة المنتج</b><small class="amt-dim">التوليد بيخصم من رصيد fal.ai وOpenAI وبياخد عدة دقايق</small></div>
+        <div class="amt-ctl">
+          <select data-amt-ai-mode><option value="explainer" ${(s.aiMode || 'explainer') === 'explainer' ? 'selected' : ''}>فيديو شرح: مشاهد استخدام + تعليق صوتي بالمصري + ترجمة</option><option value="clip" ${s.aiMode === 'clip' ? 'selected' : ''}>مقطع قصير متحرك من الصورة (بدون شرح)</option></select>
+        </div>
+        ${(s.aiMode || 'explainer') === 'explainer' ? `
+        <label class="amt-fieldlbl">مميزات الجهاز الحقيقية (سطر لكل ميزة) — الشرح هيتكتب منها بس، فكل ما كانت أدق كان الفيديو أحسن
+          <textarea data-amt-ai-facts rows="3" placeholder="رشاش مدمج يرطّب الشعر&#10;بطارية قابلة للشحن&#10;رأس فرشاة واسع">${esc(s.aiFacts || '')}</textarea></label>
+        <div class="amt-ctl">
+          <select data-amt-ai-scenes><option value="3">3 مشاهد (حوالي 16 ثانية)</option><option value="4">4 مشاهد (حوالي 21 ثانية)</option></select>
+          <select data-amt-ai-count>${[1, 2].map((n) => `<option value="${n}">${n} فيديو</option>`).join('')}</select>
+          <label class="amt-check"><input type="checkbox" data-amt-ai-caps checked> ترجمة عربي على الشاشة</label>
+          <button type="button" class="amb-btn sm primary" data-amt-go="ai" ${s.busy.ai || !caps.aiVideos.ready ? 'disabled' : ''}>ولّد فيديو الشرح</button>
+        </div>
+        <small class="amt-dim">التكلفة التقريبية (تقدير): حوالي 1.3$ لفيديو بـ 3 مشاهد، و1.7$ لـ 4 مشاهد. التوليد بياخد من 5 لـ 12 دقيقة.</small>` : `
         <div class="amt-ctl">
           <select data-amt-ai-style>${(caps.aiVideos.styles || []).map((k) => `<option value="${k}">${{ ugc: 'UGC عفوي', demo: 'عرض المنتج', lifestyle: 'استخدام يومي' }[k] || k}</option>`).join('')}</select>
           <select data-amt-ai-secs><option value="5">5 ثواني</option><option value="10">10 ثواني</option></select>
           <select data-amt-ai-count>${[1, 2, 3].map((n) => `<option value="${n}">${n} فيديو</option>`).join('')}</select>
-          <button type="button" class="amb-btn sm primary" data-amt-go="ai" ${s.busy.ai || !caps.aiVideos.ready ? 'disabled' : ''}>ولّد الفيديو</button>
-        </div>${disabledWhy(caps.aiVideos)}${bar(s, 'ai')}${note(s, 'ai')}
+          <button type="button" class="amb-btn sm primary" data-amt-go="ai" ${s.busy.ai || !caps.aiVideos.ready ? 'disabled' : ''}>ولّد المقطع</button>
+        </div>
+        <small class="amt-dim">مقطع عمودي قصير بيحرّك صورة المنتج نفسها، من غير شرح. لو الصورة فيها كتابة أو تصميم إعلاني، الكتابة هتتحرك معاها.</small>`}
+        ${disabledWhy(caps.aiVideos)}${bar(s, 'ai')}${note(s, 'ai')}
       </div>
 `;
     wire();
@@ -174,7 +189,16 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
     if (go('pi')) go('pi').onclick = async () => { const d = await runTool('pi', '/api/amb-media/page-images', { count: Number(val('[data-amt-pi-count]')), style: val('[data-amt-pi-style]') }, { okText: (r) => `اتضافت ${r.added.length} صورة لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length})` : ''}.` }); if (d) { await onAdded(); render(); } };
     if (go('find')) go('find').onclick = async () => { s.find = null; s.selected.clear(); const manualUrls = s.links.split(/\s+/).filter(Boolean); const d = await runTool('find', '/api/amb-media/videos/find', { target: Number(val('[data-amt-find-target]')), manualUrls }, { okText: (r) => `لقيت ${r.candidates.length} فيديو — اختار اللي عايزه.` }); if (d) { s.find = { ...d.result, jobId: d.id }; render(); } };
     if (go('imp')) go('imp').onclick = async () => { const d = await runTool('imp', '/api/amb-media/videos/import', { findJobId: s.find.jobId, ids: [...s.selected] }, { okText: (r) => `اتضاف ${r.added.length} فيديو لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length}: ${r.failed[0].error})` : ''}.` }); if (d) { s.selected.clear(); await onAdded(); render(); } };
-    if (go('ai')) go('ai').onclick = async () => { const d = await runTool('ai', '/api/amb-media/ai-videos', { count: Number(val('[data-amt-ai-count]')), seconds: Number(val('[data-amt-ai-secs]')), style: val('[data-amt-ai-style]') }, { okText: (r) => `اتضاف ${r.added.length} فيديو AI لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length})` : ''}.` }); if (d) { await onAdded(); render(); } };
+    const modeSel = el.querySelector('[data-amt-ai-mode]'); if (modeSel) modeSel.onchange = () => { s.aiMode = modeSel.value; render(); };
+    const factsTa = el.querySelector('[data-amt-ai-facts]'); if (factsTa) factsTa.oninput = () => { s.aiFacts = factsTa.value; };
+    if (go('ai')) go('ai').onclick = async () => {
+      const explainer = (s.aiMode || 'explainer') === 'explainer';
+      const payload = explainer
+        ? { mode: 'explainer', count: Number(val('[data-amt-ai-count]')), scenes: Number(val('[data-amt-ai-scenes]')), captions: !!el.querySelector('[data-amt-ai-caps]')?.checked, facts: String(s.aiFacts || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean) }
+        : { mode: 'clip', count: Number(val('[data-amt-ai-count]')), seconds: Number(val('[data-amt-ai-secs]')), style: val('[data-amt-ai-style]') };
+      const d = await runTool('ai', '/api/amb-media/ai-videos', payload, { okText: (r) => `اتضاف ${r.added.length} ${explainer ? 'فيديو شرح' : 'مقطع'} لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length}: ${r.failed[0].error})` : ''}.` });
+      if (d) { await onAdded(); render(); }
+    };
   }
   render();
 }

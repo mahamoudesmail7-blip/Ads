@@ -156,8 +156,13 @@ export async function mountProductPage(panel, opts = {}) {
 
   function videosSection(p) {
     const cands = S.find?.candidates || [];
-    return `<div class="pgp-sub">فيديو AI قصير من صورة المنتج (5 أو 10 ثواني، من غير صوت):</div>
-      <div class="pgp-actions"><select data-pgp-v-style><option value="ugc">UGC عفوي</option><option value="demo">عرض المنتج</option><option value="lifestyle">استخدام يومي</option></select><select data-pgp-v-secs><option value="5">5 ثواني</option><option value="10">10 ثواني</option></select><select data-pgp-v-count><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button class="amb-btn primary" data-pgp-genvid ${S.busy.vid ? 'disabled' : ''}>🎬 ولّد</button></div>${bar('vid')}${note('vid')}
+    const explainer = (S.vidMode || 'explainer') === 'explainer';
+    return `<div class="pgp-sub">فيديو AI من صورة المنتج:</div>
+      <div class="pgp-actions"><select data-pgp-v-mode><option value="explainer" ${explainer ? 'selected' : ''}>فيديو شرح: مشاهد استخدام + تعليق صوتي بالمصري + ترجمة</option><option value="clip" ${explainer ? '' : 'selected'}>مقطع قصير متحرك من الصورة (بدون شرح)</option></select></div>
+      ${explainer ? `<small class="amt-dim">الشرح بيتكتب من «المعلومات والمميزات الحقيقية» في القسم الأول، فراجعها قبل ما تولّد. التكلفة التقريبية (تقدير): حوالي 1.3$ لفيديو بـ 3 مشاهد و1.7$ لـ 4. بياخد من 5 لـ 12 دقيقة.</small>
+      <div class="pgp-actions"><select data-pgp-v-scenes><option value="3">3 مشاهد (~16 ث)</option><option value="4">4 مشاهد (~21 ث)</option></select><select data-pgp-v-count><option value="1">1 فيديو</option><option value="2">2 فيديو</option></select><label class="amt-check"><input type="checkbox" data-pgp-v-caps checked> ترجمة عربي</label><button class="amb-btn primary" data-pgp-genvid ${S.busy.vid ? 'disabled' : ''}>🎬 ولّد فيديو الشرح</button></div>`
+      : `<small class="amt-dim">بيحرّك صورة المنتج نفسها من غير شرح. لو الصورة فيها كتابة أو تصميم إعلاني، الكتابة هتتحرك معاها.</small>
+      <div class="pgp-actions"><select data-pgp-v-style><option value="ugc">UGC عفوي</option><option value="demo">عرض المنتج</option><option value="lifestyle">استخدام يومي</option></select><select data-pgp-v-secs><option value="5">5 ثواني</option><option value="10">10 ثواني</option></select><select data-pgp-v-count><option value="1">1</option><option value="2">2</option><option value="3">3</option></select><button class="amb-btn primary" data-pgp-genvid ${S.busy.vid ? 'disabled' : ''}>🎬 ولّد المقطع</button></div>`}${bar('vid')}${note('vid')}
       <div class="pgp-sub">أو دوّر على فيديوهات موجودة للمنتج (تيك توك وريلز ومكتبة الإعلانات) وخزّن اللينكات:</div>
       <textarea data-pgp-v-links rows="2" placeholder="اختياري: الصق لينكات فيديوهات سطر لكل لينك">${esc(S.findLinks || '')}</textarea>
       <div class="pgp-actions"><button class="amb-btn" data-pgp-findvid ${S.busy.find ? 'disabled' : ''}>🔎 ابحث</button></div>${bar('find')}${note('find')}
@@ -260,7 +265,12 @@ export async function mountProductPage(panel, opts = {}) {
 
     // 4. videos
     const links = root.querySelector('[data-pgp-v-links]'); if (links) links.oninput = () => { S.findLinks = links.value; };
-    on('[data-pgp-genvid]', async () => { await runJob('vid', () => api.post(`${B}/${p.id}/videos/ai`, { count: Number(val('[data-pgp-v-count]')), seconds: Number(val('[data-pgp-v-secs]')), style: val('[data-pgp-v-style]') }), { label: 'بولّد الفيديو — بياخد دقايق…', onDone: (r) => say('vid', `✅ اتضاف ${r.added.length} فيديو.`) }); });
+    const vmode = root.querySelector('[data-pgp-v-mode]'); if (vmode) vmode.onchange = () => { S.vidMode = vmode.value; render(); const sec = root.querySelector('details[data-sec=vids]'); if (sec) sec.open = true; };
+    on('[data-pgp-genvid]', async () => {
+      const explainer = (S.vidMode || 'explainer') === 'explainer';
+      const payload = explainer ? { mode: 'explainer', count: Number(val('[data-pgp-v-count]')), scenes: Number(val('[data-pgp-v-scenes]')), captions: !!root.querySelector('[data-pgp-v-caps]')?.checked } : { mode: 'clip', count: Number(val('[data-pgp-v-count]')), seconds: Number(val('[data-pgp-v-secs]')), style: val('[data-pgp-v-style]') };
+      await runJob('vid', () => api.post(`${B}/${p.id}/videos/ai`, payload), { label: 'بولّد الفيديو — بياخد دقايق…', onDone: (r) => say('vid', `✅ اتضاف ${r.added.length} فيديو${r.failed?.length ? ` (فشل ${r.failed.length}: ${r.failed[0].error})` : ''}.`) });
+    });
     on('[data-pgp-findvid]', async () => { S.find = null; S.picks.clear(); await runJob('find', () => api.post(`${B}/${p.id}/videos/find`, { target: 12, manualUrls: lines(S.findLinks || '') }), { label: 'بدوّر…', onDone: (r) => { S.find = r; say('find', `✅ لقيت ${r.candidates.length} فيديو.`); } }); });
     root.querySelectorAll('[data-pgp-pick]').forEach((cb) => { cb.onchange = () => { cb.checked ? S.picks.add(cb.dataset.pgpPick) : S.picks.delete(cb.dataset.pgpPick); cb.closest('.pgp-cand').classList.toggle('on', cb.checked); const b = root.querySelector('[data-pgp-savepicks]'); if (b) { b.disabled = !S.picks.size; b.textContent = `أضف المختار للصفحة (${S.picks.size})`; } }; });
     on('[data-pgp-savepicks]', async () => {

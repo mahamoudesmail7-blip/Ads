@@ -49,10 +49,12 @@
     "prisma@5.22.0": true,
     "tesseract.js@7.0.0": true,
     "sharp@0.32.6": true,
-    "protobufjs@6.11.6": true
+    "protobufjs@6.11.6": true,
+    "ffmpeg-static@5.3.0": true
   },
   "optionalDependencies": {
+    "@expo-google-fonts/cairo": "^0.4.2",
     "@napi-rs/canvas": "^1.0.9",
-    "@expo-google-fonts/cairo": "^0.4.2"
+    "ffmpeg-static": "^5.3.0"
   }
 }

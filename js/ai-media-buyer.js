@@ -6269,6 +6269,7 @@ function launchVideoCardHtml(entry) {
     <div class="lp-mact">
       ${entry.status === 'FAILED' && entry.file ? `<button class="amb-btn ghost sm" data-vid-retry="${E(entry.slotKey)}">إعادة المحاولة</button>` : ''}
       ${entry.status === 'FAILED' && !entry.file ? `<button class="amb-btn ghost sm" data-vid-reselect="${E(entry.slotKey)}">🔁 اختر ${isImage ? 'الصورة' : 'الفيديو'} تاني</button><input type="file" data-vid-reselect-input="${E(entry.slotKey)}" accept="${isImage ? 'image/*' : 'video/*'}" style="display:none;" />` : ''}
+      ${!isImage && entry.status === 'UPLOADED' && entry.metaVideoId ? `<button class="amb-btn ghost sm" data-vid-watch="${E(entry.slotKey)}" title="شاهد الفيديو">▶ شاهد</button>` : ''}
       ${entry.status !== 'UPLOADING' ? `<button class="lp-xbtn static" data-vid-remove="${E(entry.slotKey)}" title="إزالة">${lucide('x', 14)}</button>` : ''}
     </div>
   </div>`;
@@ -6318,6 +6319,8 @@ function wireLaunchVideoCard(entry) {
     reselectBtn.onclick = () => reselectInput.click();
     reselectInput.onchange = () => { const f = reselectInput.files?.[0]; if (f) reselectLaunchVideoFile(entry, f); };
   }
+  const watch = el.querySelector('[data-vid-watch]');
+  if (watch) watch.onclick = () => launchWatchVideo(entry);
   const remove = el.querySelector('[data-vid-remove]');
   if (remove) remove.onclick = async () => {
     // Deletes the backend row FIRST (when one could exist) — otherwise the
@@ -6330,6 +6333,23 @@ function wireLaunchVideoCard(entry) {
     renderLaunchStep();
   };
 }
+/** «▶ شاهد»: plays Meta's own copy of an uploaded video in a viewer. Mounted on <html> (the page body has a transform, which would pin a fixed overlay mid-page). */
+async function launchWatchVideo(entry) {
+  try {
+    const r = await api.get(`/api/amb-media/video-preview?launchJobId=${encodeURIComponent(launchState.jobId)}&slotKey=${encodeURIComponent(entry.slotKey)}`);
+    if (!r.source) throw new Error(r.status && r.status !== 'ready' ? 'Meta لسه بتجهّز الفيديو — جرّب بعد دقيقة.' : 'Meta ما رجّعتش رابط معاينة للفيديو ده.');
+    const ov = document.createElement('div');
+    ov.className = 'amt-viewer';
+    ov.innerHTML = `<div class="amt-viewer-box"><button type="button" class="amt-viewer-x" aria-label="إغلاق">✕</button><video controls autoplay playsinline ${r.picture ? `poster="${E(r.picture)}"` : ''} src="${E(r.source)}"></video><small>${E(entry.name || entry.slotKey)} · نسخة المعاينة من Meta (جودتها أقل من الأصل)</small></div>`;
+    const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); };
+    ov.onclick = (e) => { if (e.target === ov) close(); };
+    ov.querySelector('.amt-viewer-x').onclick = close;
+    document.addEventListener('keydown', onKey);
+    document.documentElement.appendChild(ov);
+  } catch (e) { UI.toast(e.message || 'تعذّر فتح الفيديو.', 'error'); }
+}
+
 /** Updates just ONE card's DOM in place — keeps large (up to 300-video) lists smooth under frequent progress polling instead of re-rendering the whole list. */
 function renderLaunchVideoCard(entry) {
   const el = $(`ambLaunchVid-${entry.slotKey}`);
