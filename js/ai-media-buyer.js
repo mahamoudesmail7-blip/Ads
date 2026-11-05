@@ -9,6 +9,7 @@
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
 import { mountMediaTools, openImageViewer, imagePreviewUrl } from './amb-media-tools.js';
+import { mountMediaKeys } from './media-keys.js';
 import { mountProductPage } from './amb-product-page.js';
 import { lucide } from './launch-icons.js';
 import * as LG from './launch-globe.js';
@@ -4770,7 +4771,9 @@ async function renderSettings(panel) {
       <div class="toolbar" style="margin-top:16px;">
         ${state.isAdmin ? '<button class="amb-btn primary" id="ambSaveSettings">حفظ الإعدادات</button>' : '<span class="faint">الحفظ متاح للـ ADMIN فقط.</span>'}
       </div>
-    </div>`;
+    </div>
+    ${state.isAdmin ? '<div class="card" style="margin-top:16px;"><div class="section-title" style="margin-top:0;">🔑 مفاتيح مزوّدي الميديا</div><div class="faint" style="font-size:12px; margin-bottom:10px;">اربطهم مرة واحدة هنا، وأدوات «الفيديوهات والصور» في رفع الكامبين وتاب «صفحة المنتج» بتستخدمهم. المفاتيح بتتخزن مشفّرة ومبتظهرش تاني.</div><div id="ambMediaKeys"></div></div>' : ''}`;
+  if ($('ambMediaKeys')) mountMediaKeys($('ambMediaKeys'), { toast: (m, t) => UI.toast(m, t) });
   if ($('ambSaveSettings')) $('ambSaveSettings').onclick = async () => {
     const body = {};
     panel.querySelectorAll('[data-s]').forEach((el) => {
