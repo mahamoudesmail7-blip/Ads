@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/style.css" />
 <link rel="stylesheet" href="css/embed.css" />
 <link rel="stylesheet" href="css/embed-fx.css" />
+<link rel="stylesheet" href="css/alerts-center.css" />
 </head>
 <body>
   <div class="app-shell">
@@ -21,7 +22,15 @@
         </div>
       </div>
 
-      <div class="section-title" style="margin-top:0">🚨 المشاكل المهمة — الأكثر خطورة أولًا</div>
+      <div class="ac-head">
+        <div class="section-title" style="margin:0">🚨 مركز التنبيهات — اللي محتاج انتباهك دلوقتي</div>
+        <div class="ac-tools"><span id="acStamp" class="ac-stamp"></span><button class="btn secondary small" id="acRefresh" type="button">🔄 تحديث</button></div>
+      </div>
+      <div id="acSummary" class="ac-summary"></div>
+      <div id="acFilters" class="ac-filters"></div>
+      <div id="acList" class="ac-list"><div class="empty-state">⏳ بنفحص الأوردرات والحملات والمخزون والأرصدة…</div></div>
+
+      <div class="section-title" style="margin-top:28px">📊 تحليل اتجاه الأوردرات (من جدول الأوردرات اليومية)</div>
       <div id="attentionList"></div>
 
       <div class="section-title">📦 تنبيهات المخزون</div>

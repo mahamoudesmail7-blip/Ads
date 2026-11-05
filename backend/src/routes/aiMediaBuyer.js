@@ -69,6 +69,11 @@ router.get('/accounts-today', asyncRoute(async (req, res) => {
   const { getAccountsToday } = await import('../services/amb/accountsToday.js');
   res.json(await getAccountsToday({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+// مركز التنبيهات: كل اللي محتاج انتباه دلوقتي (أوردرات Easy Orders، مزامنة Meta، CPA، صرف بدون أوردر، مخزون، رصيد الحسابات). Read only.
+router.get('/alerts-center', asyncRoute(async (req, res) => {
+  const { getAlertsCenter } = await import('../services/amb/alertsCenter.js');
+  res.json(await getAlertsCenter({ force: req.query.force === '1' }));
+}));
 // "كل يوم جاب كام أوردر": one calendar month, day by day (Meta purchases of every account) + the products behind each day. Read only.
 router.get('/orders-by-day', asyncRoute(async (req, res) => {
   const { getMonthDailyOrders, validMonth } = await import('../services/amb/monthDailyOrders.js');

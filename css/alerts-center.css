@@ -1,0 +1,36 @@
+/* مركز التنبيهات — cards by severity, summary tiles, kind filters. Only the app's own tokens (with fallbacks): light / dark follow the theme. */
+.ac-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.ac-tools { margin-inline-start: auto; display: flex; align-items: center; gap: 10px; }
+.ac-stamp { font-size: 12px; color: var(--text-dim, #566178); }
+.ac-summary { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.ac-sum { flex: 1 1 130px; display: flex; align-items: baseline; gap: 8px; padding: 12px 16px; border-radius: 16px; background: var(--bg-card, #fff); border: 1px solid var(--border, #e7eaf0); border-inline-start: 5px solid var(--c); animation: acRise .5s ease backwards; }
+.ac-sum b { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--c); }
+.ac-sum span { font-size: 13px; font-weight: 700; color: var(--text-dim, #566178); }
+.ac-sum.crit { --c: #dc2626; } .ac-sum.warn { --c: #d97706; } .ac-sum.ok { --c: #16a34a; }
+.ac-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.ac-chip { border: 1px solid var(--border, #e7eaf0); background: var(--bg-card, #fff); color: var(--text, #1f2937); border-radius: 999px; padding: 5px 13px; font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; transition: background .2s, transform .2s; }
+.ac-chip b { margin-inline-start: 4px; color: var(--text-dim, #566178); }
+.ac-chip:hover { transform: translateY(-1px); } .ac-chip.on { background: #1f2937; color: #fff; border-color: #1f2937; } .ac-chip.on b { color: #cbd5e1; }
+.ac-list { display: flex; flex-direction: column; gap: 10px; }
+.ac-card { --c: #2f80ed; display: flex; gap: 14px; padding: 14px 16px; border-radius: 16px; background: var(--bg-card, #fff); border: 1px solid var(--border, #e7eaf0); border-inline-start: 5px solid var(--c); animation: acRise .5s ease backwards; animation-delay: calc(var(--i, 0) * 45ms); transition: transform .2s, box-shadow .2s; }
+.ac-card.crit { --c: #dc2626; background: color-mix(in srgb, #dc2626 5%, var(--bg-card, #fff)); } .ac-card.warn { --c: #d97706; } .ac-card.info { --c: #2f80ed; }
+.ac-card[data-goto]:hover { transform: translateY(-2px); box-shadow: 0 10px 24px color-mix(in srgb, var(--c) 18%, transparent); }
+.ac-ic { flex: 0 0 auto; width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; font-size: 21px; background: color-mix(in srgb, var(--c) 14%, transparent); }
+.ac-card.crit .ac-ic { animation: acPulse 2s ease-in-out infinite; }
+.ac-body { min-width: 0; flex: 1; }
+.ac-top { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.ac-sev { font-size: 11px; font-weight: 800; padding: 2px 9px; border-radius: 999px; color: #fff; background: var(--c); }
+.ac-sev.crit { background: #dc2626; } .ac-sev.warn { background: #d97706; } .ac-sev.info { background: #2f80ed; }
+.ac-kind { font-size: 11.5px; font-weight: 700; color: var(--text-dim, #566178); }
+.ac-title { font-size: 15px; font-weight: 800; color: var(--text, #1f2937); line-height: 1.5; }
+.ac-detail { font-size: 12.5px; color: var(--text-dim, #566178); margin-top: 2px; line-height: 1.6; }
+.ac-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+.ac-facts span { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: var(--bg-secondary, #f6f7fb); color: var(--text-dim, #566178); }
+.ac-facts em { font-style: normal; } .ac-facts b { color: var(--text, #1f2937); font-variant-numeric: tabular-nums; margin-inline-start: 3px; }
+.ac-action { margin-top: 8px; font-size: 12.5px; font-weight: 700; color: var(--c); }
+.ac-allgood { padding: 30px 16px; text-align: center; font-size: 16px; font-weight: 800; color: #16a34a; border-radius: 16px; background: color-mix(in srgb, #16a34a 7%, var(--bg-card, #fff)); border: 1px solid color-mix(in srgb, #16a34a 25%, var(--border, #e7eaf0)); }
+.ac-allgood small { display: block; margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--text-dim, #566178); }
+@keyframes acRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes acPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, #dc2626 35%, transparent); } 50% { box-shadow: 0 0 0 8px transparent; } }
+@media (prefers-reduced-motion: reduce) { .ac-sum, .ac-card, .ac-card .ac-ic { animation: none !important; } .ac-card, .ac-chip { transition: none; } }
+@media (max-width: 640px) { .ac-card { padding: 12px; gap: 10px; } .ac-ic { width: 36px; height: 36px; font-size: 18px; } .ac-title { font-size: 14px; } }

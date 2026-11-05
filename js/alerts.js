@@ -11,6 +11,7 @@ import { Products, DailyOrders, Settings } from './db.js';
 import * as A from './analytics.js';
 import * as UI from './ui-common.js';
 import { buildProductBundle } from './product-bundle.js';
+import { api } from './api-client.js';
 
 /** Pure function: given bundles, returns categorized alert lists. No DOM. */
 export function buildAlerts(bundles, settings) {
@@ -53,8 +54,64 @@ export function buildAlerts(bundles, settings) {
   return { positive, negative, continuousDecline, needsAttention, stockAlerts };
 }
 
+// ---------------------------------------------------------------------------
+// 🚨 مركز التنبيهات — live, from the real data (Easy Orders feed, Meta sync, campaign CPA, zero-order spend, stock, funds).
+// ---------------------------------------------------------------------------
+const AC_KINDS = { ORDERS_FEED: ['📦', 'أوردرات Easy Orders'], SYNC: ['🔄', 'مزامنة Meta'], CPA: ['🎯', 'CPA'], ZERO_ORDERS: ['💸', 'صرف بدون أوردر'], STOCK: ['📉', 'المخزون'], FUNDS: ['💳', 'رصيد الحساب'], SYSTEM: ['⚙️', 'النظام'] };
+const AC_SEV = { CRITICAL: ['حرج', 'crit'], WARNING: ['تحذير', 'warn'], INFO: ['معلومة', 'info'] };
+let acDoc = null; let acKind = 'all'; let acGen = 0;
+
+function acCard(a, i) {
+  const [icon, kindLabel] = AC_KINDS[a.kind] || ['•', a.kind];
+  const [sevLabel, sevCls] = AC_SEV[a.severity] || ['', 'info'];
+  const link = a.entity?.productId ? UI.productLink(a.entity.productId) : '';
+  return `
+  <article class="ac-card ${sevCls}" style="--i:${Math.min(i, 12)}" ${link ? `data-goto="${link}" tabindex="0"` : ''}>
+    <div class="ac-ic" aria-hidden="true">${icon}</div>
+    <div class="ac-body">
+      <div class="ac-top"><span class="ac-sev ${sevCls}">${sevLabel}</span><span class="ac-kind">${UI.escapeHtml(kindLabel)}</span></div>
+      <div class="ac-title">${UI.escapeHtml(a.title)}</div>
+      ${a.detail ? `<div class="ac-detail">${UI.escapeHtml(a.detail)}</div>` : ''}
+      ${a.facts?.length ? `<div class="ac-facts">${a.facts.map((f) => `<span><em>${UI.escapeHtml(f.l)}</em> <b>${UI.escapeHtml(f.v)}</b></span>`).join('')}</div>` : ''}
+      ${a.action ? `<div class="ac-action">👉 ${UI.escapeHtml(a.action)}</div>` : ''}
+    </div>
+  </article>`;
+}
+
+function acRender() {
+  const box = document.getElementById('acList'); if (!box || !acDoc) return;
+  const list = acDoc.alerts.filter((a) => acKind === 'all' || a.kind === acKind);
+  const sm = acDoc.summary;
+  document.getElementById('acSummary').innerHTML = `
+    <div class="ac-sum crit"><b>${sm.CRITICAL}</b><span>حرجة</span></div>
+    <div class="ac-sum warn"><b>${sm.WARNING}</b><span>تحذيرات</span></div>
+    <div class="ac-sum ok"><b>${acDoc.alerts.length === 0 ? '✓' : sm.total}</b><span>${acDoc.alerts.length === 0 ? 'كله تمام' : 'الإجمالي'}</span></div>`;
+  const kinds = Object.keys(sm.kinds || {});
+  document.getElementById('acFilters').innerHTML = kinds.length > 1 ? [['all', 'الكل', sm.total], ...kinds.map((k) => [k, (AC_KINDS[k] || ['', k])[1], sm.kinds[k]])].map(([k, l, n]) => `<button type="button" class="ac-chip${acKind === k ? ' on' : ''}" data-k="${k}">${UI.escapeHtml(l)} <b>${n}</b></button>`).join('') : '';
+  document.querySelectorAll('#acFilters [data-k]').forEach((b) => { b.onclick = () => { acKind = b.dataset.k; acRender(); }; });
+  box.innerHTML = list.length ? list.map(acCard).join('') : `<div class="ac-allgood">✅ مفيش حاجة محتاجة انتباه دلوقتي.<small>اتفحص: أوردرات Easy Orders · مزامنة Meta · CPA الحملات · صرف بدون أوردر · المخزون · أرصدة الحسابات</small></div>`;
+  box.querySelectorAll('[data-goto]').forEach((c) => { c.style.cursor = 'pointer'; c.onclick = () => (window.location.href = c.dataset.goto); });
+  const t = new Date(acDoc.generatedAt);
+  document.getElementById('acStamp').textContent = `آخر فحص ${t.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+async function acLoad(force) {
+  const gen = ++acGen; const btn = document.getElementById('acRefresh');
+  if (btn) btn.disabled = true;
+  try {
+    const d = await api.get('/api/ai-media-buyer/alerts-center', force ? { force: '1' } : {});
+    if (gen !== acGen) return;
+    acDoc = d; acRender();
+  } catch (e) {
+    if (gen === acGen) document.getElementById('acList').innerHTML = `<div class="empty-state">⚠️ تعذّر تحميل مركز التنبيهات: ${UI.escapeHtml(e.message || '')}</div>`;
+  } finally { if (btn) btn.disabled = false; }
+}
+
 async function init() {
   UI.renderSidebar('alerts');
+  acLoad(false);
+  document.getElementById('acRefresh').onclick = () => acLoad(true);
+  setInterval(() => { if (!document.hidden) acLoad(false); }, 60_000);
   const settings = await Settings.get();
   const products = (await Products.all()).filter((p) => !p.is_demo);
   // 🧪 Demo orders included on purpose (spec: dashboard/alerts should behave
@@ -74,7 +131,7 @@ async function init() {
 
   const { positive, negative, continuousDecline, needsAttention, stockAlerts } = buildAlerts(bundles, settings);
 
-  renderList('attentionList', needsAttention, (x, i) => attentionCard(x, i + 1), 'لا توجد منتجات تحتاج انتباهًا حاليًا. 👍');
+  renderList('attentionList', needsAttention.slice(0, 10), (x, i) => attentionCard(x, i + 1), 'لا توجد منتجات تحتاج انتباهًا حاليًا. 👍');
   renderList('stockList', stockAlerts, stockCard, 'لا توجد تنبيهات مخزون حاليًا. 👍');
   renderList('positiveList', positive, positiveCard, 'لا توجد تنبيهات إيجابية اليوم.');
   renderList('declineList', continuousDecline, declineCard, 'لا يوجد منتج في انخفاض مستمر حاليًا.');
