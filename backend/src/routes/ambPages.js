@@ -12,7 +12,7 @@ import { MAX_AI_VIDEOS, AI_STYLES } from '../services/amb/media/aiVideos.js';
 import { runExplainerForPage, MAX_EXPLAINERS } from '../services/amb/media/explainerRuns.js';
 import { isAllowedVideoUrl } from '../services/amb/media/ytdlp.js';
 import { fetchImageBytes } from '../services/amb/media/productImage.js';
-import { getEasyOrdersProducts } from '../services/amb/easyOrdersProducts.js';
+import { searchEasyOrdersProductsAllStores, getEasyOrdersProductDetail } from '../services/amb/easyOrdersProducts.js';
 
 const router = Router();
 router.use(requireAuth, requireRole('ADMIN'));
@@ -32,9 +32,12 @@ async function startProjectJob(kind, projectId, userId, input, exec) {
 router.get('/templates', asyncRoute(async (_req, res) => res.json({ templates: templateList(), styles: Object.entries(PAGE_STYLES).map(([id, st]) => ({ id, label: st.label, hint: st.hint, hasRefs: Object.keys(st.refs).length > 0 })), pack: PAGE_PACK.map(({ template, label }) => ({ template, label })), videoStyles: Object.keys(AI_STYLES), maxAiVideos: MAX_AI_VIDEOS })));
 
 router.get('/eo-products', asyncRoute(async (req, res) => {
-  const q = String(req.query.q || '').trim().toLowerCase();
-  const list = await getEasyOrdersProducts().catch(() => []);
-  res.json({ products: list.filter((p) => !q || `${p.name} ${p.slug}`.toLowerCase().includes(q)).slice(0, 40).map((p) => ({ id: p.id, name: p.name, slug: p.slug, price: p.price ?? null, thumb: p.thumb || null })) });
+  res.json({ products: await searchEasyOrdersProductsAllStores(req.query.q) });
+}));
+// everything Easy Orders knows about one product (description, every image, sale price, categories, stock) — used to pre-fill the new-page form
+router.get('/eo-products/:storeId/:productId', asyncRoute(async (req, res) => {
+  try { res.json(await getEasyOrdersProductDetail(String(req.params.storeId), String(req.params.productId))); }
+  catch (e) { throw bad(e.message, 502); }
 }));
 
 // ---- projects
@@ -42,16 +45,38 @@ router.get('/', asyncRoute(async (_req, res) => res.json({ projects: await PP.li
 
 router.post('/', asyncRoute(async (req, res) => {
   const b = req.body || {};
-  let eo = null, thumb = null, name = b.name, price = b.price;
-  if (b.eo?.id) { // the Easy Orders product is looked up on OUR side: the browser never supplies the image URL
-    const found = (await getEasyOrdersProducts().catch(() => [])).find((p) => String(p.id) === String(b.eo.id));
-    if (!found) throw bad('المنتج ده مش موجود في كتالوج إيزي أوردر.');
-    eo = { id: found.id, slug: found.slug, name: found.name }; thumb = found.thumb || null;
-    name = name || found.name; if (price === undefined || price === null || price === '') price = found.price ?? null;
+  let eo = null, name = b.name, price = b.price, oldPrice = b.oldPrice, facts = b.facts, cover = null;
+  if (b.eo?.id) { // the Easy Orders product is looked up on OUR side: the browser never supplies image URLs, prices or text for it
+    let d;
+    try { d = await getEasyOrdersProductDetail(String(b.eo.storeId || ''), String(b.eo.id)); } catch (e) { throw bad(e.message, 502); }
+    eo = { id: d.id, storeId: d.storeId, slug: d.slug, name: d.name, categories: d.categories, quantity: d.quantity, trackStock: d.trackStock, freeShipping: d.freeShipping, images: d.images };
+    name = name || d.name;
+    if (price === undefined || price === null || price === '') { price = d.price; if (oldPrice === undefined || oldPrice === null || oldPrice === '') oldPrice = d.oldPrice; }
+    if (!Array.isArray(facts) || !facts.length) facts = d.facts;
+    cover = d.thumb || d.images[0] || null;
   }
-  const project = await PP.createProject({ name, price, oldPrice: b.oldPrice, facts: b.facts, eo });
-  if (thumb) { const img = await fetchImageBytes(thumb).catch(() => null); if (img) await PP.setReference(project.id, img.buffer, img.mime).catch(() => {}); }
+  const project = await PP.createProject({ name, price, oldPrice, facts, eo });
+  if (cover) { const img = await fetchImageBytes(cover).catch(() => null); if (img) await PP.setReference(project.id, img.buffer, img.mime).catch(() => {}); }
   res.status(201).json(await PP.getProject(project.id));
+}));
+// re-read the linked product from Easy Orders (stock, categories, images…); with overwrite:true the name / price / facts are replaced too
+router.post('/:id/eo-sync', asyncRoute(async (req, res) => {
+  const id = pid(req); const p = await PP.getProject(id);
+  if (!p?.eo?.id) throw bad('الصفحة دي مش مربوطة بمنتج من Easy Orders.');
+  let d;
+  try { d = await getEasyOrdersProductDetail(String(p.eo.storeId || ''), String(p.eo.id)); } catch (e) { throw bad(e.message, 502); }
+  await PP.applyEoSync(id, d, { overwrite: !!(req.body && req.body.overwrite) });
+  res.json(await PP.getProject(id));
+}));
+// use one of the product's Easy Orders pictures as THE reference photo (the URL comes from our stored list, by index — never from the browser)
+router.post('/:id/reference-from-eo', asyncRoute(async (req, res) => {
+  const id = pid(req); const p = await PP.getProject(id);
+  const url = p?.eo?.images?.[Number(req.body?.index)];
+  if (!url) throw bad('الصورة دي مش موجودة في صور المنتج.');
+  const img = await fetchImageBytes(url).catch(() => null);
+  if (!img) throw bad('تعذّر تنزيل الصورة من Easy Orders.', 502);
+  await PP.setReference(id, img.buffer, img.mime);
+  res.json(await PP.getProject(id));
 }));
 
 router.get('/:id', asyncRoute(async (req, res) => { const p = await PP.getProject(pid(req)); if (!p) throw bad('المشروع مش موجود.', 404); res.json(p); }));

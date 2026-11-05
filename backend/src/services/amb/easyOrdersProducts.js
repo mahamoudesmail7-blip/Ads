@@ -12,7 +12,7 @@
 // outage and needs no further lookups.
 import { logger } from '../../logger.js';
 import { EASYORDERS_API_BASE } from '../easyOrders.js';
-import { getStoreApiKey, defaultStoreId } from '../easyOrdersStores.js';
+import { getStoreApiKey, defaultStoreId, listStores } from '../easyOrdersStores.js';
 
 // Multi-store (Product Marketing Center): both caches are now keyed by
 // store_id so two different stores' catalogues can never collide or
@@ -331,4 +331,74 @@ export async function easyOrdersImageFor({ ambProduct, catalogProduct, storeId =
     (ambName && list.find((p) => norm(p.slug) === ambName)) ||
     null;
   return hit ? { url: hit.thumb, eoName: hit.name, eoSlug: hit.slug } : null;
+}
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// «صفحة المنتج»: everything Easy Orders knows about ONE product (the list endpoint only has id / name / price / thumb; the single-product endpoint also
+// has the description, every image, the sale price, categories and stock). Read-only. Used to pre-fill a product page so nothing is typed twice.
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+const decodeEntities = (s) => String(s || '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+/** Pure: Easy Orders descriptions are HTML — keep the text and the line structure (<br>, </p>, <li>), drop everything else. */
+export function htmlToText(html) {
+  return decodeEntities(String(html || '')
+    .replace(/<\s*br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|h[1-6]|tr)>/gi, '\n').replace(/<li[^>]*>/gi, '- ')
+    .replace(/<[^>]+>/g, ' '))
+    .replace(/[ \t\u00a0]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+/** Pure: the description as a list of short factual lines (what the page copy is allowed to say). */
+export function factsFromDescription(text, { max = 12, maxLen = 160 } = {}) {
+  const seen = new Set(); const out = [];
+  for (const raw of String(text || '').split(/\n+/)) {
+    const line = raw.replace(/^[\s\-•*✔✅●▪️·]+/, '').trim();
+    if (line.length < 3 || line.length > maxLen) continue;
+    const k = line.replace(/\s+/g, ' ').toLowerCase();
+    if (seen.has(k)) continue; seen.add(k); out.push(line);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+const num = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : null);
+/** Pure: one Easy Orders product payload → what a product page needs. sale_price (when it is below price) is the selling price and price is the "before" price. */
+export function normalizeProductDetail(p, storeId = null) {
+  if (!p || typeof p !== 'object') return null;
+  const price = num(p.price), sale = num(p.sale_price);
+  const onSale = sale !== null && sale > 0 && price !== null && sale < price;
+  const images = [...new Set([p.thumb, ...(Array.isArray(p.images) ? p.images : [])].filter((u) => typeof u === 'string' && /^https:\/\//i.test(u)))].slice(0, 12);
+  const description = htmlToText(p.description);
+  return {
+    id: String(p.id || ''), storeId, name: String(p.name || '').trim(), slug: p.slug || '',
+    price: onSale ? sale : price, oldPrice: onSale ? price : null,
+    description, facts: factsFromDescription(description),
+    images, thumb: p.thumb || images[0] || null,
+    categories: [...new Set([...(Array.isArray(p.parsed_categories) ? p.parsed_categories : []), ...(Array.isArray(p.categories) ? p.categories.map((c) => c?.name) : [])].filter(Boolean).map(String))].slice(0, 6),
+    quantity: num(p.quantity), trackStock: p.track_stock === true, freeShipping: p.is_free_shipping === true, hidden: p.hidden === true, isDigital: p.is_digital === true,
+  };
+}
+/** The single-product endpoint of ONE store. Throws a short Arabic message (never a key, never a raw body). */
+export async function getEasyOrdersProductDetail(storeId, productId) {
+  const key = getStoreApiKey(storeId);
+  if (!key) throw new Error('المتجر ده مش مربوط بمفتاح Easy Orders.');
+  if (!/^[0-9a-f-]{8,64}$/i.test(String(productId))) throw new Error('معرّف المنتج غير صالح.');
+  const res = await fetch(`${EASYORDERS_API_BASE}/products/${encodeURIComponent(productId)}`, { headers: { 'Api-Key': key }, signal: AbortSignal.timeout(20_000) });
+  if (res.status === 404) throw new Error('المنتج مش موجود في Easy Orders.');
+  if (!res.ok) throw new Error(`Easy Orders رجّع خطأ (${res.status}).`);
+  const j = await res.json().catch(() => null);
+  const d = normalizeProductDetail(j?.data && !Array.isArray(j.data) ? j.data : j, storeId);
+  if (!d?.id) throw new Error('رد Easy Orders غير متوقع.');
+  return d;
+}
+/** Search the catalogues of EVERY configured store (a product belongs to one of them; the owner works with more than one). */
+export async function searchEasyOrdersProductsAllStores(q = '', { limit = 40 } = {}) {
+  const needle = String(q || '').trim().toLowerCase();
+  const stores = listStores().filter((s) => s.enabled !== false);
+  const out = [];
+  for (const s of stores) {
+    const list = await getEasyOrdersProducts(s.id).catch(() => []);
+    for (const p of list) {
+      if (needle && !`${p.name} ${p.slug}`.toLowerCase().includes(needle)) continue;
+      out.push({ id: p.id, storeId: s.id, storeName: s.name, name: p.name, slug: p.slug, price: p.price ?? null, thumb: p.thumb || null });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name)).slice(0, limit);
 }

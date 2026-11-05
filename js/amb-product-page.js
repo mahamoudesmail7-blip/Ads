@@ -54,13 +54,39 @@ export async function mountProductPage(panel, opts = {}) {
       ${S.list === null ? '<div class="amb-loading">جارِ التحميل…</div>' : S.list.length ? `<div class="pgp-list">${S.list.map((p) => `<button type="button" class="pgp-card" data-pgp-open="${p.id}"><b>${esc(p.name)}</b><small>${p.images} صورة · ${p.videos} فيديو · ${p.hasCopy ? 'فيه محتوى' : 'من غير محتوى'}</small><small class="amt-dim">${esc((p.updatedAt || '').slice(0, 10))}</small></button>`).join('')}</div>` : '<div class="pgp-empty">لسه ما عملتش أي صفحة. اضغط «صفحة جديدة».</div>'}`;
   }
 
+  /** What Easy Orders gave us for the picked product, before the page is even created. */
+  function eoSummary(d) {
+    const stock = d.trackStock ? (d.quantity > 0 ? `متاح ${d.quantity}` : '⛔ المخزون خلص') : 'المخزون مش متتبّع';
+    return `<div class="pgp-eosum"><div class="pgp-eosum-h"><b>✅ اتجاب من إيزي أوردر: ${esc(d.name)}</b><small class="amt-dim">راجع أو عدّل أي حاجة تحت قبل ما تنشئ الصفحة</small></div>
+      <div class="pgp-chips">${d.price != null ? `<span>💰 ${esc(d.price)} ج${d.oldPrice ? ` <s>${esc(d.oldPrice)}</s>` : ''}</span>` : ''}<span>📦 ${esc(stock)}</span>${d.freeShipping ? '<span>🚚 شحن مجاني</span>' : ''}${(d.categories || []).map((c) => `<span>🏷️ ${esc(c)}</span>`).join('')}<span>🖼️ ${d.images.length} صورة</span><span>📝 ${d.facts.length} معلومة من الوصف</span></div>
+      ${d.images.length ? `<div class="pgp-strip">${d.images.slice(0, 8).map((u) => `<img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer">`).join('')}</div>` : ''}</div>`;
+  }
+  /** The linked Easy Orders product on an existing page: stock / categories / pictures + the refresh buttons. */
+  function eoCard(p) {
+    const e = p.eo; if (!e) return '';
+    const stock = e.trackStock ? (e.quantity > 0 ? `متاح ${e.quantity}` : '⛔ المخزون خلص') : 'المخزون مش متتبّع';
+    return `<div class="pgp-eocard"><div class="pgp-eosum-h"><b>🔗 مربوط بمنتج إيزي أوردر: ${esc(e.name)}</b><small class="amt-dim">آخر تحديث ${esc(String(e.syncedAt || '').slice(0, 16).replace('T', ' '))}</small></div>
+      <div class="pgp-chips"><span>📦 ${esc(stock)}</span>${e.freeShipping ? '<span>🚚 شحن مجاني</span>' : ''}${(e.categories || []).map((c) => `<span>🏷️ ${esc(c)}</span>`).join('')}</div>
+      ${(e.images || []).length ? `<small class="amt-dim">صور المنتج في إيزي أوردر — اضغط على صورة تستخدمها كصورة المنتج للصفحة دي:</small><div class="pgp-strip">${e.images.map((u, i) => `<button type="button" class="pgp-eoimg" data-pgp-eo-img="${i}" title="استخدمها كصورة المنتج"><img src="${esc(u)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>`).join('')}</div>` : ''}
+      <div class="pgp-actions"><button class="amb-btn sm" data-pgp-eo-sync="info" ${S.busy.eosync ? 'disabled' : ''}>🔄 حدّث المخزون والتصنيف والصور</button><button class="amb-btn sm" data-pgp-eo-sync="all" ${S.busy.eosync ? 'disabled' : ''}>🔄 حدّث الاسم والسعر والمميزات كمان (بيستبدل اللي كتبته)</button></div>${note('eosync')}</div>`;
+  }
+  /** Ad captions written together with the page copy (same facts, same claims scan). */
+  function capsSection(p) {
+    const caps = p.copy?.captions || [];
+    if (!caps.length) return '<div class="pgp-empty">لسه مفيش كابشنات. اضغط «اكتب المحتوى بالـ AI» في القسم الأول — بيكتب 3 كابشنات إعلان مع المحتوى.</div>';
+    return `${caps.map((c, i) => `<div class="pgp-cap" data-pgp-cap="${i}"><label class="pgp-f"><span>كابشن ${i + 1}</span><textarea data-pgp-cap-p rows="4">${esc(c.primary)}</textarea></label>
+      <label class="pgp-f"><span>العنوان</span><input data-pgp-cap-h value="${esc(c.headline)}"></label>
+      <div class="pgp-actions"><button type="button" class="amb-btn sm" data-pgp-cap-copy="${i}">📋 انسخ</button></div></div>`).join('')}
+      <div class="pgp-actions"><button class="amb-btn primary" data-pgp-savecaps>حفظ الكابشنات</button></div>${note('savecaps')}`;
+  }
+
   function newView() {
     const f = S.form;
     return `<div class="pgp-head"><h3>➕ صفحة منتج جديدة</h3><button class="amb-btn ghost" data-pgp-back>رجوع</button></div>
       <section class="lp-card pgp-sec">
         <label class="pgp-f"><span>جيب من إيزي أوردر (اختياري)</span><input data-pgp-eo-q placeholder="ابحث باسم المنتج…" value="${esc(S.eo.q)}"></label>
-        ${S.eo.results ? `<div class="pgp-eo">${S.eo.results.length ? S.eo.results.map((p) => `<button type="button" class="pgp-eo-item ${f.eo?.id === p.id ? 'on' : ''}" data-pgp-eo-pick="${esc(p.id)}">${p.thumb ? `<img src="${esc(p.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<i>📦</i>'}<span>${esc(p.name)}</span><small>${p.price != null ? esc(p.price) + ' ج' : ''}</small></button>`).join('') : '<small class="amt-dim">مفيش منتجات مطابقة.</small>'}</div>` : ''}
-        ${f.eo ? `<div class="pgp-msg good">مربوط بمنتج إيزي أوردر: ${esc(f.eo.name)} — الاسم والسعر والصورة هتتجاب منه.</div>` : ''}
+        ${S.eo.results ? `<div class="pgp-eo">${S.eo.results.length ? S.eo.results.map((p) => `<button type="button" class="pgp-eo-item ${f.eo?.id === p.id ? 'on' : ''}" data-pgp-eo-pick="${esc(p.id)}">${p.thumb ? `<img src="${esc(p.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<i>📦</i>'}<span>${esc(p.name)}</span><small>${p.storeName ? esc(p.storeName) + ' · ' : ''}${p.price != null ? esc(p.price) + ' ج' : ''}</small></button>`).join('') : '<small class="amt-dim">مفيش منتجات مطابقة.</small>'}</div>` : ''}
+        ${f.eo ? (S.eoLoading ? '<div class="pgp-msg good">⏳ بجيب بيانات المنتج من إيزي أوردر…</div>' : f.eoDetail ? eoSummary(f.eoDetail) : '') : ''}
         <label class="pgp-f"><span>اسم المنتج</span><input data-pgp-name value="${esc(f.name)}"></label>
         <div class="pgp-row"><label class="pgp-f"><span>السعر (ج)</span><input data-pgp-price inputmode="decimal" value="${esc(f.price)}"></label><label class="pgp-f"><span>السعر قبل الخصم (ج)</span><input data-pgp-old inputmode="decimal" value="${esc(f.oldPrice)}"></label></div>
         <label class="pgp-f"><span>معلومات ومميزات حقيقية عن المنتج (سطر لكل معلومة) — الـ AI مش هيكتب غير اللي هنا</span><textarea data-pgp-facts rows="6" placeholder="بلوتوث&#10;راديو FM / AM / SW&#10;بطارية قابلة للشحن">${esc(f.facts)}</textarea></label>
@@ -78,8 +104,9 @@ export async function mountProductPage(panel, opts = {}) {
       <div class="pgp-main">
         ${det('data', true, '① بيانات المنتج وصورته', dataSection(p))}
         ${det('copy', !!p.copy, '② المحتوى (العنوان والوصف والمميزات)', copySection(p, c))}
-        ${det('imgs', true, '③ صور الصفحة', `<div data-pgp-imgsec>${imagesSection(p)}</div>`)}
-        ${det('vids', false, '④ الفيديوهات', videosSection(p))}
+        ${det('caps', !!p.copy?.captions?.length, '③ كابشنات الإعلان', capsSection(p))}
+        ${det('imgs', true, '④ صور الصفحة', `<div data-pgp-imgsec>${imagesSection(p)}</div>`)}
+        ${det('vids', false, '⑤ الفيديوهات', videosSection(p))}
       </div>
       <aside class="pgp-side"><div class="lp-card pgp-sec"><b>👁️ شكل الصفحة بالترتيب</b><div data-pgp-preview>${previewHtml()}</div>
         <div class="pgp-actions"><button class="amb-btn primary" data-pgp-zip>⬇️ نزّل الصفحة (ZIP)</button><button class="amb-btn" data-pgp-copytxt>📋 انسخ النص</button></div>${note('export')}</div></aside>
@@ -87,7 +114,7 @@ export async function mountProductPage(panel, opts = {}) {
   }
 
   function dataSection(p) {
-    return `<div class="pgp-row"><label class="pgp-f"><span>اسم المنتج</span><input data-pgp-pname value="${esc(p.name)}"></label><label class="pgp-f"><span>السعر</span><input data-pgp-pprice inputmode="decimal" value="${esc(p.price ?? '')}"></label><label class="pgp-f"><span>قبل الخصم</span><input data-pgp-pold inputmode="decimal" value="${esc(p.oldPrice ?? '')}"></label></div>
+    return `${eoCard(p)}<div class="pgp-row"><label class="pgp-f"><span>اسم المنتج</span><input data-pgp-pname value="${esc(p.name)}"></label><label class="pgp-f"><span>السعر</span><input data-pgp-pprice inputmode="decimal" value="${esc(p.price ?? '')}"></label><label class="pgp-f"><span>قبل الخصم</span><input data-pgp-pold inputmode="decimal" value="${esc(p.oldPrice ?? '')}"></label></div>
       <label class="pgp-f"><span>معلومات ومميزات حقيقية (سطر لكل معلومة)</span><textarea data-pgp-pfacts rows="5">${esc((p.facts || []).join('\n'))}</textarea></label>
       <div class="pgp-ref">${p.reference ? `<img src="${asset(p, 'ref', p.reference.at ? Date.parse(p.reference.at) : 0)}" alt="صورة المنتج">` : '<div class="pgp-noimg">مفيش صورة للمنتج</div>'}
         <div><b>صورة المنتج الحقيقية</b><small class="amt-dim">كل الصور والفيديوهات بتبدأ منها وبتحافظ على شكل المنتج. JPG أو PNG حتى 8MB.</small>
@@ -220,12 +247,20 @@ export async function mountProductPage(panel, opts = {}) {
     // new project form
     const eoq = root.querySelector('[data-pgp-eo-q]');
     if (eoq) { let tm = null; eoq.oninput = () => { S.eo.q = eoq.value; clearTimeout(tm); tm = setTimeout(async () => { try { S.eo.results = (await api.get(`${B}/eo-products?q=${encodeURIComponent(S.eo.q)}`)).products; } catch { S.eo.results = []; } const keep = S.eo.q; render(); const el = root.querySelector('[data-pgp-eo-q]'); if (el) { el.focus(); el.setSelectionRange(keep.length, keep.length); } }, 400); }; if (S.eo.results === null) { api.get(`${B}/eo-products`).then((r) => { S.eo.results = r.products; if (S.view === 'new') render(); }).catch(() => { S.eo.results = []; }); } }
-    on('[data-pgp-eo-pick]', (el) => { const p = (S.eo.results || []).find((x) => String(x.id) === el.dataset.pgpEoPick); if (p) { S.form.eo = p; S.form.name = S.form.name || p.name; S.form.price = S.form.price || (p.price ?? ''); render(); } });
+    on('[data-pgp-eo-pick]', async (el) => {
+      const p = (S.eo.results || []).find((x) => String(x.id) === el.dataset.pgpEoPick && (!el.dataset.pgpEoStore || x.storeId === el.dataset.pgpEoStore)); if (!p) return;
+      S.form.eo = p; S.form.eoDetail = null; S.eoLoading = true; say('create', null); render();
+      try {
+        const d = await api.get(`${B}/eo-products/${encodeURIComponent(p.storeId)}/${encodeURIComponent(p.id)}`);
+        S.form.eoDetail = d; S.form.name = d.name || p.name; S.form.price = d.price ?? ''; S.form.oldPrice = d.oldPrice ?? ''; S.form.facts = (d.facts || []).join('\n');
+      } catch (e) { say('create', e.message, true); S.form.price = S.form.price || (p.price ?? ''); S.form.name = S.form.name || p.name; }
+      S.eoLoading = false; render();
+    });
     const keepForm = () => { S.form.name = val('[data-pgp-name]'); S.form.price = val('[data-pgp-price]'); S.form.oldPrice = val('[data-pgp-old]'); S.form.facts = val('[data-pgp-facts]'); };
     root.querySelectorAll('[data-pgp-name],[data-pgp-price],[data-pgp-old],[data-pgp-facts]').forEach((el) => { el.oninput = keepForm; });
     on('[data-pgp-create]', async () => {
       keepForm(); S.busy.create = true; say('create', null); render();
-      try { const p = await api.post(B, { name: S.form.name, price: S.form.price, oldPrice: S.form.oldPrice, facts: lines(S.form.facts), eo: S.form.eo ? { id: S.form.eo.id } : undefined }); S.busy.create = false; await loadList(); S.cur = p; S.view = 'project'; render(); startWatch(); }
+      try { const p = await api.post(B, { name: S.form.name, price: S.form.price, oldPrice: S.form.oldPrice, facts: lines(S.form.facts), eo: S.form.eo ? { id: S.form.eo.id, storeId: S.form.eo.storeId } : undefined }); S.busy.create = false; await loadList(); S.cur = p; S.view = 'project'; render(); startWatch(); }
       catch (e) { S.busy.create = false; say('create', e.message, true); render(); }
     });
 
@@ -247,6 +282,31 @@ export async function mountProductPage(panel, opts = {}) {
       };
     }
     on('[data-pgp-gencopy]', async () => { await runJob('copy', () => api.post(`${B}/${p.id}/copy`, {}), { label: 'بكتب المحتوى…', onDone: () => say('copy', '✅ المحتوى اتكتب — راجعه في القسم التاني.') }); });
+
+    // linked Easy Orders product
+    on('[data-pgp-eo-sync]', async (el) => {
+      const all = el.dataset.pgpEoSync === 'all';
+      if (all && !confirm('ده هيستبدل الاسم والسعر والمميزات اللي كتبتها بالبيانات الحالية من إيزي أوردر. تكمّل؟')) return;
+      S.busy.eosync = true; say('eosync', null); render();
+      try { S.cur = await api.post(`${B}/${p.id}/eo-sync`, { overwrite: all }); say('eosync', all ? '✅ اتحدّثت كل البيانات من إيزي أوردر.' : '✅ اتحدّث المخزون والتصنيف والصور.'); } catch (e) { say('eosync', e.message, true); }
+      S.busy.eosync = false; render();
+    });
+    on('[data-pgp-eo-img]', async (el) => {
+      try { S.cur = await api.post(`${B}/${p.id}/reference-from-eo`, { index: Number(el.dataset.pgpEoImg) }); say('ref', '✅ اتغيّرت صورة المنتج.'); toast('اتغيّرت صورة المنتج.', 'success'); } catch (e) { say('ref', e.message, true); toast(e.message, 'error'); }
+      render();
+    });
+
+    // 2b. ad captions
+    on('[data-pgp-cap-copy]', async (el) => {
+      const box = root.querySelector(`[data-pgp-cap="${el.dataset.pgpCapCopy}"]`); if (!box) return;
+      const text = `${box.querySelector('[data-pgp-cap-h]').value}\n\n${box.querySelector('[data-pgp-cap-p]').value}`.trim();
+      try { await navigator.clipboard.writeText(text); toast('اتنسخ الكابشن.', 'success'); } catch { toast('المتصفح منع النسخ — حدّد النص وانسخه بإيدك.', 'error'); }
+    });
+    on('[data-pgp-savecaps]', async () => {
+      const captions = [...root.querySelectorAll('[data-pgp-cap]')].map((b) => ({ primary: b.querySelector('[data-pgp-cap-p]').value, headline: b.querySelector('[data-pgp-cap-h]').value }));
+      try { S.cur = await api.put(`${B}/${p.id}`, { copy: { captions } }); say('savecaps', '✅ اتحفظت الكابشنات.'); } catch (e) { say('savecaps', e.message, true); }
+      render();
+    });
 
     // 2. copy
     on('[data-pgp-savecopy]', async () => {

@@ -61,9 +61,29 @@ async function mutate(id, fn) {
 export async function createProject({ name, price = null, oldPrice = null, facts = [], eo = null, style = DEFAULT_STYLE }) {
   const n = str(name, 120);
   if (n.length < 2) throw bad('اكتب اسم المنتج.');
-  const p = { id: crypto.randomBytes(6).toString('hex'), name: n, price: numOrNull(price), oldPrice: numOrNull(oldPrice), facts: strList(facts, 20, 200), style: validStyle(style), eo: eo ? { id: str(eo.id, 80), slug: str(eo.slug, 120), name: str(eo.name, 160) } : null, reference: null, copy: null, images: [], videos: [], createdAt: now(), updatedAt: now() };
+  const p = { id: crypto.randomBytes(6).toString('hex'), name: n, price: numOrNull(price), oldPrice: numOrNull(oldPrice), facts: strList(facts, 20, 200), style: validStyle(style), eo: eo ? sanitizeEo(eo) : null, reference: null, copy: null, images: [], videos: [], createdAt: now(), updatedAt: now() };
   await write(p);
   return p;
+}
+/** What we keep of the linked Easy Orders product (read-only facts shown on the page; image URLs are public CDN links we re-download server-side, never trusted from the browser). */
+export function sanitizeEo(eo) {
+  const imgs = (Array.isArray(eo.images) ? eo.images : []).filter((u) => typeof u === 'string' && /^https:\/\//i.test(u)).slice(0, 12);
+  return { id: str(eo.id, 80), storeId: str(eo.storeId, 80) || null, slug: str(eo.slug, 120), name: str(eo.name, 160),
+    categories: strList(eo.categories, 6, 60), quantity: Number.isFinite(Number(eo.quantity)) ? Number(eo.quantity) : null, trackStock: eo.trackStock === true, freeShipping: eo.freeShipping === true,
+    images: imgs, syncedAt: eo.syncedAt || now() };
+}
+/** Refresh the linked-product info (and, when asked, the editable fields) from a fresh Easy Orders read. */
+export function applyEoSync(id, detail, { overwrite = false } = {}) {
+  return mutate(id, (p) => {
+    if (!p.eo) throw bad('الصفحة دي مش مربوطة بمنتج من Easy Orders.');
+    p.eo = sanitizeEo({ ...p.eo, ...detail, syncedAt: now() });
+    if (overwrite) {
+      if (detail.name) p.name = str(detail.name, 120);
+      p.price = numOrNull(detail.price); p.oldPrice = numOrNull(detail.oldPrice);
+      if (detail.facts?.length) p.facts = strList(detail.facts, 20, 200);
+    }
+    return { eo: p.eo, name: p.name, price: p.price, oldPrice: p.oldPrice, facts: p.facts };
+  });
 }
 function numOrNull(v) { if (v === '' || v === null || v === undefined) return null; const x = Number(v); if (!Number.isFinite(x) || x < 0) throw bad('السعر غير صالح.'); return Math.round(x * 100) / 100; }
 
@@ -101,13 +121,14 @@ export function sanitizeCopy(c, project) {
     title: str(c.title, 120), subtitle: str(c.subtitle, 160), paragraphs: strList(c.paragraphs, 4, 600), features: strList(c.features, 8, 40), pains: strList(c.pains, 4, 40), cta: str(c.cta, 40) || 'اطلبه دلوقتي',
     steps: (Array.isArray(c.steps) ? c.steps : []).map((s) => ({ title: str(s?.title, 40), text: str(s?.text, 80) })).filter((s) => s.title).slice(0, 3),
     headlines: {},
+    captions: (Array.isArray(c.captions) ? c.captions : []).map((x) => ({ primary: str(x?.primary, 420), headline: str(x?.headline, 60) })).filter((x) => x.primary).slice(0, 4),
   };
   for (const id of Object.keys(PAGE_TEMPLATES)) { const h = c.headlines?.[id]; if (h && (h.headline || h.subtitle)) out.headlines[id] = { headline: str(h.headline, 80), subtitle: str(h.subtitle, 100) }; }
   out.claimIssues = claimIssues(out, project);
   return out;
 }
 export function claimIssues(copy, project) {
-  const items = [{ field: 'title', text: copy.title }, { field: 'subtitle', text: copy.subtitle }, ...copy.paragraphs.map((t, i) => ({ field: `paragraph${i + 1}`, text: t })), ...copy.features.map((t, i) => ({ field: `feature${i + 1}`, text: t })), ...(copy.pains || []).map((t, i) => ({ field: `pain${i + 1}`, text: t })), ...Object.entries(copy.headlines || {}).flatMap(([k, h]) => [{ field: `${k}.headline`, text: h.headline }, { field: `${k}.subtitle`, text: h.subtitle }])];
+  const items = [{ field: 'title', text: copy.title }, { field: 'subtitle', text: copy.subtitle }, ...copy.paragraphs.map((t, i) => ({ field: `paragraph${i + 1}`, text: t })), ...copy.features.map((t, i) => ({ field: `feature${i + 1}`, text: t })), ...((copy.captions || []).map((x, i) => ({ field: `caption${i + 1}`, text: x.primary }))), ...(copy.pains || []).map((t, i) => ({ field: `pain${i + 1}`, text: t })), ...Object.entries(copy.headlines || {}).flatMap(([k, h]) => [{ field: `${k}.headline`, text: h.headline }, { field: `${k}.subtitle`, text: h.subtitle }])];
   return scanClaims({ items, product: { specifications: (project?.facts || []).join('\n'), benefits: (project?.facts || []).join('\n') } }).issues;
 }
 
@@ -192,7 +213,7 @@ export async function generateCopy(id, { deps = {} } = {}) {
   if (!(deps.ai ?? isAiConfigured())) throw new MediaError('الذكاء الاصطناعي مش متصل (مفتاح OpenAI).', 'NOT_CONFIGURED');
   const ref = await (deps.loadReference || loadReference)(id);
   const ids = Object.keys(PAGE_TEMPLATES);
-  const user = `المنتج: ${p.name}\nالسعر: ${p.price ?? 'غير محدد'}${p.oldPrice ? ` (بدل ${p.oldPrice})` : ''}\nمعلومات ومميزات حقيقية عن المنتج:\n${(p.facts.length ? p.facts : ['(لا توجد معلومات — اكتب فقط اللي ظاهر في الصورة)']).map((f) => `- ${f}`).join('\n')}\n\nرجّع JSON بالشكل: {"title": "اسم/عنوان الصفحة", "subtitle": "جملة قصيرة تحت العنوان", "paragraphs": ["فقرة وصف ١ (حتى ٢٢٠ حرف)", "فقرة وصف ٢"], "features": ["ميزة من ١ لـ ٣ كلمات" × ٦], "pains": ["مشكلة يومية قصيرة بيعاني منها العميل (٢ لـ ٥ كلمات)" × ٣], "steps": [{"title":"خطوة","text":"جملة قصيرة"} × ٣], "cta": "نص زرار الطلب", "headlines": { ${ids.map((t) => `"${t}": {"headline":"...","subtitle":"..."}`).join(', ')} }}`;
+  const user = `المنتج: ${p.name}\nالسعر: ${p.price ?? 'غير محدد'}${p.oldPrice ? ` (بدل ${p.oldPrice})` : ''}\nمعلومات ومميزات حقيقية عن المنتج:\n${(p.facts.length ? p.facts : ['(لا توجد معلومات — اكتب فقط اللي ظاهر في الصورة)']).map((f) => `- ${f}`).join('\n')}\n\nرجّع JSON بالشكل: {"captions":[{"primary":"كابشن إعلان (٢-٣ سطور حتى ٣٥٠ حرف، بيعرض المنتج بالمعلومات المعطاة بس، وينتهي بدعوة للطلب)","headline":"عنوان الإعلان حتى ٤٠ حرف"}] (٣ كابشنات مختلفة في الأسلوب), "title": "اسم/عنوان الصفحة", "subtitle": "جملة قصيرة تحت العنوان", "paragraphs": ["فقرة وصف ١ (حتى ٢٢٠ حرف)", "فقرة وصف ٢"], "features": ["ميزة من ١ لـ ٣ كلمات" × ٦], "pains": ["مشكلة يومية قصيرة بيعاني منها العميل (٢ لـ ٥ كلمات)" × ٣], "steps": [{"title":"خطوة","text":"جملة قصيرة"} × ٣], "cta": "نص زرار الطلب", "headlines": { ${ids.map((t) => `"${t}": {"headline":"...","subtitle":"..."}`).join(', ')} }}`;
   const content = [{ type: 'text', text: user }];
   if (ref) content.push({ type: 'image', source: { type: 'base64', media_type: ref.mime, data: ref.buffer.toString('base64') } });
   let j;

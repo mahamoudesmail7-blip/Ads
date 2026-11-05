@@ -22,6 +22,7 @@ export const AMB_SECTIONS = [
   { sub: 'medialib', label: 'مكتبة الكرياتيفات', icon: 'layers' },
   { sub: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
   { sub: 'launch', label: 'رفع الكامبين', icon: 'upload' },
+  { sub: 'pages', label: 'صفحة المنتج', icon: 'fileText' },
   { sub: 'tasks', label: 'مهام الإعلانات', icon: 'clipboard' },
   { sub: 'history', label: 'التقارير', icon: 'fileText' },
   { sub: 'settings', label: 'إعدادات الإعلانات', icon: 'sliders' },

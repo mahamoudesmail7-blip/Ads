@@ -225,6 +225,33 @@ try {
   console.log('\n[10] delete');
   await PP.deleteProject(bp.id);
   ok('delete removes the project and ALL its stored files', (await PP.getProject(bp.id)) === null && (await prisma.cfBlob.count({ where: { key: { startsWith: `pp/${bp.id}/` } } })) === 0);
+
+  console.log('\n[11] Easy Orders product → product page (pre-fill, linked info, sync, captions)');
+  const EOP = await imp('../services/amb/easyOrdersProducts.js');
+  const eoHtml = '<p>جهاز مساج <b>ذكي</b> بـ 6 سرعات</p><ul><li>بطارية تدوم 4 ساعات</li><li>خفيف الوزن</li></ul>شحن USB&nbsp;&amp; ضمان<br>';
+  const eoTxt = EOP.htmlToText(eoHtml);
+  ok('htmlToText keeps the text and the line structure, drops tags and entities', eoTxt === 'جهاز مساج ذكي بـ 6 سرعات\n- بطارية تدوم 4 ساعات\n- خفيف الوزن\nشحن USB & ضمان', JSON.stringify(eoTxt));
+  const eoLines = EOP.factsFromDescription(eoTxt + '\n- بطارية تدوم 4 ساعات\n' + 'س'.repeat(300) + '\nab');
+  ok('factsFromDescription: short factual eoLines, de-duplicated, bullets stripped, eoOver-long and tiny eoLines dropped', eoLines.length === 4 && eoLines[1] === 'بطارية تدوم 4 ساعات' && !eoLines.some((l) => l.length > 160), JSON.stringify(eoLines));
+  const eoDet = EOP.normalizeProductDetail({ id: 'eo1', name: ' جهاز مساج ', price: 500, sale_price: 399, slug: 'massager', thumb: 'https://cdn/1.png', images: ['https://cdn/1.png', 'https://cdn/2.png', 'http://insecure/3.png', 42], description: eoHtml, parsed_categories: ['مساج'], categories: [{ name: 'مساج' }, { name: 'صحة' }], quantity: 7, track_stock: true, is_free_shipping: true }, 'trendy-storeee');
+  ok('normalize: sale price becomes the selling price, price becomes the "before" price; images = unique https only; categories merged; stock and shipping carried', eoDet.price === 399 && eoDet.oldPrice === 500 && eoDet.images.join() === 'https://cdn/1.png,https://cdn/2.png' && eoDet.categories.join() === 'مساج,صحة' && eoDet.quantity === 7 && eoDet.trackStock && eoDet.freeShipping && eoDet.storeId === 'trendy-storeee', JSON.stringify(eoDet));
+  const eoNoSale = EOP.normalizeProductDetail({ id: 'eo2', name: 'X', price: 250, sale_price: 0 });
+  ok('no sale price (or one that is not lower) → price as is, no "before" price', eoNoSale.price === 250 && eoNoSale.oldPrice === null && EOP.normalizeProductDetail({ id: 'e', name: 'X', price: 250, sale_price: 300 }).oldPrice === null);
+  ok('garbage in → null, never a crash', EOP.normalizeProductDetail(null) === null && EOP.normalizeProductDetail('x') === null);
+
+  const eoLp = await PP.createProject({ name: eoDet.name, price: eoDet.price, oldPrice: eoDet.oldPrice, facts: eoDet.facts, eo: { id: eoDet.id, storeId: eoDet.storeId, slug: eoDet.slug, name: eoDet.name, categories: eoDet.categories, quantity: eoDet.quantity, trackStock: true, freeShipping: true, images: [...eoDet.images, 'javascript:alert(1)', 'http://x/y.png'] } });
+  made.push(eoLp.id);
+  ok('a project keeps the linked Easy Orders info (store, categories, stock, https image URLs only)', eoLp.eo.storeId === 'trendy-storeee' && eoLp.eo.categories[0] === 'مساج' && eoLp.eo.quantity === 7 && eoLp.eo.images.length === 2 && eoLp.eo.syncedAt, JSON.stringify(eoLp.eo));
+  const eoSynced = await PP.applyEoSync(eoLp.id, { quantity: 0, categories: ['مساج', 'جديد'], images: ['https://cdn/9.png'], name: 'اسم جديد', price: 350, oldPrice: 450, facts: ['ميزة جديدة'] });
+  ok('sync without overwrite refreshes the linked info only (stock 0, new categories / images) and keeps the owner\'s name, price and facts', eoSynced.eo.quantity === 0 && eoSynced.eo.categories.length === 2 && eoSynced.eo.images.length === 1 && eoSynced.name === eoDet.name && eoSynced.price === 399 && eoSynced.facts.length === 4, JSON.stringify(eoSynced));
+  const eoOver = await PP.applyEoSync(eoLp.id, { name: 'اسم جديد', price: 350, oldPrice: 450, facts: ['ميزة جديدة'] }, { overwrite: true });
+  ok('sync with overwrite replaces name / price / before-price / facts too', eoOver.name === 'اسم جديد' && eoOver.price === 350 && eoOver.oldPrice === 450 && eoOver.facts.join() === 'ميزة جديدة');
+  e = await rejects(PP.applyEoSync(made[0], { name: 'x' }));
+  ok('a page that is not linked to Easy Orders cannot be eoSynced', e?.status === 400 || /مربوطة/.test(e?.message || ''));
+
+  const eoCp = PP.sanitizeCopy({ title: 'عنوان', subtitle: 'جملة', paragraphs: ['فقرة'], features: ['ميزة'], captions: [{ primary: 'جهاز مساج خفيف بيشتغل ببطارية. اطلبه دلوقتي', headline: 'مساج في البيت' }, { primary: 'نتيجة مضمونة وخصم 50% النهارده', headline: 'علاج' }, { primary: '', headline: 'فاضي' }, { primary: 'ك'.repeat(900), headline: 'ع'.repeat(200) }, { primary: 'رابع' }, { primary: 'خامس' }] }, { facts: eoDet.facts });
+  ok('captions: empty ones dropped, max 4, lengths capped (420 / 60)', eoCp.captions.length === 4 && eoCp.captions[0].headline === 'مساج في البيت' && eoCp.captions[2].primary.length <= 420 && eoCp.captions[2].headline.length <= 60);
+  ok('captions go through the SAME claims scan (a medical / guarantee claim is flagged as caption2)', eoCp.claimIssues.some((i) => i.field === 'caption2'), JSON.stringify(eoCp.claimIssues.map((i) => i.field)));
 } finally {
   for (const id of made) { await prisma.cfBlob.deleteMany({ where: { key: { startsWith: `pp/${id}/` } } }).catch(() => {}); await prisma.settings.deleteMany({ where: { id: `pp:${id}` } }).catch(() => {}); }
   await prisma.$disconnect();
