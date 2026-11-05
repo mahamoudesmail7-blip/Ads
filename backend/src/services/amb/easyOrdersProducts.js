@@ -371,7 +371,7 @@ export function normalizeProductDetail(p, storeId = null) {
     price: onSale ? sale : price, oldPrice: onSale ? price : null,
     description, facts: factsFromDescription(description),
     images, thumb: p.thumb || images[0] || null,
-    categories: [...new Set([...(Array.isArray(p.parsed_categories) ? p.parsed_categories : []), ...(Array.isArray(p.categories) ? p.categories.map((c) => c?.name) : [])].filter(Boolean).map(String))].slice(0, 6),
+    categories: [...new Set([...(Array.isArray(p.parsed_categories) ? p.parsed_categories : []), ...(Array.isArray(p.categories) ? p.categories.map((c) => c?.name) : [])].filter(Boolean).map(String).filter((c) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(c)))].slice(0, 6), // Easy Orders sometimes lists a category by its id: not a name, dropped
     quantity: num(p.quantity), trackStock: p.track_stock === true, freeShipping: p.is_free_shipping === true, hidden: p.hidden === true, isDigital: p.is_digital === true,
   };
 }
