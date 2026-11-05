@@ -69,6 +69,12 @@ router.get('/accounts-today', asyncRoute(async (req, res) => {
   const { getAccountsToday } = await import('../services/amb/accountsToday.js');
   res.json(await getAccountsToday({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+// "كل يوم جاب كام أوردر": one calendar month, day by day (Meta purchases of every account) + the products behind each day. Read only.
+router.get('/orders-by-day', asyncRoute(async (req, res) => {
+  const { getMonthDailyOrders, validMonth } = await import('../services/amb/monthDailyOrders.js');
+  if (req.query.month && !validMonth(req.query.month)) return res.status(400).json({ error: 'REQUEST_ERROR', message: 'الشهر لازم يكون بصيغة YYYY-MM.' });
+  res.json(await getMonthDailyOrders({ month: req.query.month || null, force: req.query.force === '1' }));
+}));
 // "كسبان ولا خسران؟": one product over a chosen period across every account (spend / orders / cost per order / estimated profit).
 router.get('/product-profit/products', asyncRoute(async (req, res) => {
   const { listProfitProducts } = await import('../services/amb/productProfit.js');

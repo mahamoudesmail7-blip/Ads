@@ -22,6 +22,34 @@ export function nameFamily(campaignName) {
   return { key: s.toLowerCase().replace(/\s+/g, ' '), label: s };
 }
 
+
+/** campaignId -> { key, name, source } for the campaigns of ONE account that the system itself linked to a product (launch wizard wins over the owner/clone mapping). */
+export async function loadCampaignLinks(adAccountId, ids) {
+  const link = new Map();
+  if (!ids.length) return link;
+  const [launched, mapped] = await Promise.all([
+    prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { in: ids }, job: { product_id: { not: null }, ad_account_id: adAccountId } }, select: { meta_campaign_id: true, job: { select: { product_id: true, product: { select: { product_name: true } } } } } }),
+    prisma.ambProductCampaignMap.findMany({ where: { ad_account_id: adAccountId, campaign_id: { in: ids }, status: 'MAPPED' }, select: { campaign_id: true, amb_product: { select: { id: true, product_id: true, product_name: true, product: { select: { product_name: true } } } } } }),
+  ]);
+  for (const l of mapped) { const p = l.amb_product; link.set(l.campaign_id, { key: p.product_id ? `p:${p.product_id}` : `a:${p.id}`, name: p.product?.product_name || p.product_name, source: 'MAPPING' }); }
+  for (const l of launched) { const j = l.job; link.set(l.meta_campaign_id, { key: `p:${j.product_id}`, name: j.product?.product_name || `منتج ${j.product_id}`, source: 'LAUNCH' }); } // the launch wizard's own link wins
+  return link;
+}
+
+/** Campaigns ([{ campaignId, name, spend, orders }]) -> product groups (Map key -> { key, name, source, spend, orders, campaigns }). Pure; unlinked campaigns group by name family (display only). */
+export function groupCampaigns(camps, link) {
+  const groups = new Map();
+  for (const c of camps) {
+    let g = link.get(c.campaignId);
+    if (!g) { const f = nameFamily(c.name); g = { key: `n:${f.key || c.campaignId}`, name: f.label || c.name, source: 'NAME' }; }
+    const cur = groups.get(g.key) || { key: g.key, name: g.name, source: g.source, spend: 0, orders: 0, campaigns: 0, topSpend: -1 };
+    cur.spend += c.spend; cur.orders += c.orders; cur.campaigns += 1;
+    if (g.source === 'NAME' && c.spend > cur.topSpend) { cur.topSpend = c.spend; cur.name = g.name; } // the label of the biggest campaign of the family
+    groups.set(g.key, cur);
+  }
+  return groups;
+}
+
 const r2 = (n) => Math.round(n * 100) / 100;
 
 /**
@@ -41,25 +69,8 @@ export async function getAccountProductsToday({ adAccountId, date = null }) {
     if (spend <= 0 && orders <= 0) continue;
     camps.push({ campaignId, name: m.campaignName || m.name || campaignId, spend, orders });
   }
-  const ids = camps.map((c) => c.campaignId);
-
-  const [launched, mapped] = ids.length ? await Promise.all([
-    prisma.ambLaunchCampaign.findMany({ where: { meta_campaign_id: { in: ids }, job: { product_id: { not: null }, ad_account_id: adAccountId } }, select: { meta_campaign_id: true, job: { select: { product_id: true, product: { select: { product_name: true } } } } } }),
-    prisma.ambProductCampaignMap.findMany({ where: { ad_account_id: adAccountId, campaign_id: { in: ids }, status: 'MAPPED' }, select: { campaign_id: true, amb_product: { select: { id: true, product_id: true, product_name: true, product: { select: { product_name: true } } } } } }),
-  ]) : [[], []];
-  const link = new Map(); // campaignId -> { key, name, source }
-  for (const l of mapped) { const p = l.amb_product; link.set(l.campaign_id, { key: p.product_id ? `p:${p.product_id}` : `a:${p.id}`, name: p.product?.product_name || p.product_name, source: 'MAPPING' }); }
-  for (const l of launched) { const j = l.job; link.set(l.meta_campaign_id, { key: `p:${j.product_id}`, name: j.product?.product_name || `منتج ${j.product_id}`, source: 'LAUNCH' }); } // the launch wizard's own link wins
-
-  const groups = new Map();
-  for (const c of camps) {
-    let g = link.get(c.campaignId);
-    if (!g) { const f = nameFamily(c.name); g = { key: `n:${f.key || c.campaignId}`, name: f.label || c.name, source: 'NAME' }; }
-    const cur = groups.get(g.key) || { key: g.key, name: g.name, source: g.source, spend: 0, orders: 0, campaigns: 0, topSpend: -1 };
-    cur.spend += c.spend; cur.orders += c.orders; cur.campaigns += 1;
-    if (g.source === 'NAME' && c.spend > cur.topSpend) { cur.topSpend = c.spend; cur.name = g.name; } // the label of the biggest campaign of the family
-    groups.set(g.key, cur);
-  }
+  const link = await loadCampaignLinks(adAccountId, camps.map((c) => c.campaignId));
+  const groups = groupCampaigns(camps, link);
 
   let totalSpend = 0, totalOrders = 0;
   for (const g of groups.values()) { totalSpend += g.spend; totalOrders += g.orders; }

@@ -105,7 +105,7 @@ async function init() {
     await refresh();
   };
 
-  document.getElementById('btnAccountsTodayRefresh').onclick = () => { renderAccountsToday(true); renderTopProducts(); };
+  document.getElementById('btnAccountsTodayRefresh').onclick = () => { renderAccountsToday(true); renderMonthDays(true); renderTopProducts(); };
   initProfitCard(); // the product profit card loads its own product list once; it is not part of refresh()
 
   await refresh();
@@ -155,6 +155,8 @@ async function refresh() {
   document.getElementById('emptyDashboardBanner').style.display = items.length === 0 ? 'block' : 'none';
 
   renderAccountsToday(false); // not awaited: Meta being slow must never delay the rest of the page
+  { const anchor = String(state.asOfDate).slice(0, 7); if (anchor !== mdAnchor) { mdAnchor = anchor; mdMonth = null; } } // the dashboard date moved to another month → follow it
+  renderMonthDays(false);
   renderTopProducts();
   // Owner 2026-11-03: the empty / all-zero / stale sections (quick stats, inventory, comparison, improved, declined, top 4, zero-order, needs-intervention, action plan, work teaser) are hidden in index.html (hidden) and no longer computed;
   // their render functions are kept so putting a card back is just removing its `hidden` and re-adding its render call here.
@@ -1059,6 +1061,168 @@ function buildDailyReportText() {
 
 function renderDailyReport() {
   document.getElementById('dailyReportBody').textContent = buildDailyReportText();
+}
+
+// ---------------------------------------------------------------------------
+// 📅 كل يوم جاب كام أوردر — أعمدة اليوم بالنسبة للشهر كله (مشتريات Meta لكل الحسابات)، والضغط على عمود يفتح منتجات اليوم ده، وفيه سلايدر بين الأيام.
+// ---------------------------------------------------------------------------
+
+const MD_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+let mdMonth = null; // YYYY-MM currently shown (null = the month of the dashboard date)
+let mdAnchor = null;
+let mdGen = 0;
+let mdDoc = null;
+let mdKeyHandler = null;
+let mdOpenDay = null;
+
+const mdMonthLabel = (m) => `${MD_MONTHS[Number(m.slice(5, 7)) - 1]} ${m.slice(0, 4)}`;
+const mdShift = (m, delta) => { const d = new Date(Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)) - 1 + delta, 1)); return d.toISOString().slice(0, 7); };
+const mdMoney = (n) => `${UI.fmtNum(Math.round(n))}<small>ج</small>`;
+const mdNum = (n, kind) => (n === null || n === undefined ? '—' : `<span data-to="${n}" data-kind="${kind}">${kind === 'money' ? mdMoney(0) : '0'}</span>`);
+
+async function renderMonthDays(force) {
+  const body = document.getElementById('monthDaysBody');
+  if (!body) return;
+  const gen = ++mdGen; // a slower, older response never overwrites a newer one
+  const month = mdMonth || String(state.asOfDate || A.todayStr()).slice(0, 7);
+  mdMonth = month;
+  if (!body.querySelector('.md')) body.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:230px"></div></div>';
+  let r;
+  try { r = await api.get('/api/ai-media-buyer/orders-by-day', { month, force: force ? '1' : '' }); }
+  catch (e) { if (gen === mdGen) body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل أوردرات الأيام: ${UI.escapeHtml(e.message || '')}</span>`; return; }
+  if (gen !== mdGen || !r) return;
+  mdDoc = r;
+
+  const todayStr = A.todayStr();
+  const isCurrent = month === todayStr.slice(0, 7);
+  const maxOrders = Math.max(1, ...r.days.map((d) => d.orders));
+  const best = r.bestDay?.date || null;
+  const bars = r.days.map((d, i) => {
+    const h = d.hasData ? Math.max(4, Math.round((d.orders / maxOrders) * 100)) : 0;
+    const cls = ['md-col', d.future ? 'is-future' : '', !d.hasData ? 'is-empty' : '', d.date === todayStr ? 'is-today' : '', d.date === best ? 'is-best' : ''].filter(Boolean).join(' ');
+    const label = d.future ? '' : d.hasData ? UI.fmtNum(d.orders) : '—';
+    const title = d.future ? `${d.day} — لسه ما جاش` : d.hasData ? `يوم ${d.day}: ${d.orders} أوردر · صرف ${UI.fmtNum(Math.round(d.spend))} ج` : `يوم ${d.day}: مفيش بيانات`;
+    return `
+      <button type="button" class="${cls}" data-day="${d.date}" style="--i:${i}" ${d.future ? 'disabled' : ''} title="${UI.escapeHtml(title)}" aria-label="${UI.escapeHtml(title)}">
+        <span class="md-val">${d.date === best ? '<em aria-hidden="true">👑</em>' : ''}${label}</span>
+        <span class="md-bar"><i style="--h:${h}%"></i></span>
+        <span class="md-day">${d.day}</span>
+      </button>`;
+  }).join('');
+
+  body.innerHTML = `
+    <section class="md">
+      <div class="md-head">
+        <div class="md-title">📅 أوردرات كل يوم <em>${UI.escapeHtml(mdMonthLabel(month))}</em></div>
+        <div class="md-nav">
+          <button type="button" class="md-arrow" data-md="prev" aria-label="الشهر السابق">›</button>
+          <button type="button" class="md-arrow" data-md="next" aria-label="الشهر التالي" ${isCurrent ? 'disabled' : ''}>‹</button>
+        </div>
+      </div>
+      <div class="md-stats">
+        <div class="s"><div class="l">إجمالي الشهر</div><div class="v">${mdNum(r.total.orders, 'int')}</div></div>
+        <div class="s"><div class="l">متوسط اليوم</div><div class="v">${r.avgPerDay === null ? '—' : mdNum(Math.round(r.avgPerDay), 'int')}</div></div>
+        <div class="s"><div class="l">أفضل يوم</div><div class="v">${r.bestDay ? `${mdNum(r.bestDay.orders, 'int')} <small>(يوم ${r.bestDay.day})</small>` : '—'}</div></div>
+        <div class="s"><div class="l">الصرف</div><div class="v">${mdNum(r.total.spend, 'money')}</div></div>
+        <div class="s"><div class="l">الكوست</div><div class="v">${mdNum(r.total.cpa, 'money')}</div></div>
+      </div>
+      <div class="md-chart" dir="ltr" tabindex="0">${bars}</div>
+      <div class="atd-note">📦 اضغط على أي يوم يظهرلك الأوردرات اللي جت فيه من منتجات إيه. ${UI.escapeHtml(r.note || '')}</div>
+    </section>`;
+
+  const root = body.querySelector('.md');
+  atdAnimate(root);
+  root.querySelectorAll('[data-md]').forEach((b) => { b.onclick = () => { mdMonth = mdShift(month, b.dataset.md === 'prev' ? -1 : 1); renderMonthDays(false); }; });
+  root.querySelectorAll('.md-col:not([disabled])').forEach((c) => { c.onclick = () => openDayOrders(c.dataset.day); });
+  const chart = root.querySelector('.md-chart');
+  const cur = chart.querySelector('.is-today') || chart.querySelector('.md-col:last-child');
+  if (cur && chart.scrollWidth > chart.clientWidth) chart.scrollLeft = Math.max(0, cur.offsetLeft - chart.clientWidth / 2);
+}
+
+function closeDayOrders() {
+  document.getElementById('mdOverlay')?.remove();
+  mdOpenDay = null;
+  if (mdKeyHandler) { document.removeEventListener('keydown', mdKeyHandler); mdKeyHandler = null; }
+}
+
+/** The popup for one day: its products (orders / spend / cost per order, best first) with arrows + keyboard to slide to the previous / next day. */
+function openDayOrders(date) {
+  if (!mdDoc) return;
+  const days = mdDoc.days.filter((d) => !d.future);
+  const idx = days.findIndex((d) => d.date === date);
+  if (idx < 0) return;
+  let ov = document.getElementById('mdOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.className = 'atp-overlay';
+    ov.id = 'mdOverlay';
+    ov.innerHTML = '<div class="atp-modal md-modal" role="dialog" aria-modal="true" style="--acc:#ff7a1a"></div>';
+    document.documentElement.appendChild(ov); // not <body>: the embedded page's body carries a transform, which would turn this "fixed" overlay into one as tall as the whole page
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeDayOrders(); });
+    mdKeyHandler = (e) => {
+      if (e.key === 'Escape') return closeDayOrders();
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      // the page is RTL: "next day" sits on the left, like the accounts slider
+      showDay(mdOpenDay + (e.key === 'ArrowLeft' ? 1 : -1), e.key === 'ArrowLeft' ? 'next' : 'prev');
+    };
+    document.addEventListener('keydown', mdKeyHandler);
+  }
+  const modal = ov.querySelector('.md-modal');
+
+  function showDay(i, dir) {
+    if (i < 0 || i >= days.length) return;
+    mdOpenDay = i;
+    const d = days[i];
+    const maxOrders = Math.max(1, ...d.products.map((p) => p.orders));
+    const medal = (k) => (k === 0 ? ' gold' : k === 1 ? ' silver' : k === 2 ? ' bronze' : '');
+    const weekday = new Date(`${d.date}T12:00:00Z`).toLocaleDateString('ar-EG', { weekday: 'long', timeZone: 'UTC' });
+    const rows = d.products.map((p, k) => `
+      <div class="atp-row md-row" style="--i:${Math.min(k, 8)}">
+        <div class="atp-rank${medal(k)}">${k + 1}</div>
+        <div class="atp-main">
+          <div class="atp-name">${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip" title="الحملات دي متجمّعة بالاسم المتشابه بس، مش مربوطة بمنتج">بالاسم</span>' : ''}</div>
+          <div class="atp-sub">${p.campaigns} ${p.campaigns === 1 ? 'حملة' : 'حملات'} · ${UI.fmtNum(Math.round(p.orderShare))}% من أوردرات اليوم${p.accounts.length > 1 ? ` · ${p.accounts.map((a) => `${UI.escapeHtml(a.name)} ${a.orders}`).join(' / ')}` : p.accounts[0] ? ` · ${UI.escapeHtml(p.accounts[0].name)}` : ''}</div>
+          <div class="atp-bar"><i data-w="${((p.orders / maxOrders) * 100).toFixed(1)}"></i></div>
+        </div>
+        <div class="atp-stat orders"><div class="l">الأوردرات</div><div class="v">${mdNum(p.orders, 'int')}</div></div>
+        <div class="atp-stat"><div class="l">الصرف</div><div class="v">${mdNum(p.spend, 'money')}</div></div>
+        <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${mdNum(p.cpa, 'money')}</div></div>
+      </div>`).join('');
+    const noOrdersSpend = d.noOrders.reduce((s, p) => s + p.spend, 0);
+    const noOrdersHtml = d.noOrders.length ? `
+      <details class="atp-noorders">
+        <summary>⚠️ صرف من غير أوردرات (${d.noOrders.length}) — ${UI.fmtNum(Math.round(noOrdersSpend))} ج</summary>
+        ${d.noOrders.map((p) => `<div class="atp-nrow"><span>${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip">بالاسم</span>' : ''}</span><b>${UI.fmtNum(Math.round(p.spend))} ج</b></div>`).join('')}
+      </details>` : '';
+    modal.innerHTML = `
+      <div class="atp-head">
+        <div class="md-daybadge"><b>${d.day}</b><span>${UI.escapeHtml(MD_MONTHS[Number(d.date.slice(5, 7)) - 1])}</span></div>
+        <div class="atp-title"><b>أوردرات يوم ${d.day} — ${UI.escapeHtml(weekday)}</b><span>📦 المنتجات اللي جابت الأوردرات دي، من كل الحسابات</span></div>
+        <div class="md-pager">
+          <button type="button" class="atd-nav" data-go="prev" aria-label="اليوم السابق" ${i <= 0 ? 'disabled' : ''}>›</button>
+          <span class="md-pos"><b>${i + 1}</b> / ${days.length}</span>
+          <button type="button" class="atd-nav" data-go="next" aria-label="اليوم التالي" ${i >= days.length - 1 ? 'disabled' : ''}>‹</button>
+        </div>
+        <button class="atp-x" type="button" aria-label="إغلاق">✕</button>
+      </div>
+      <div class="atp-body md-body ${dir ? `md-slide-${dir}` : ''}">
+        <div class="atp-sum">
+          <div class="s"><div class="l">إجمالي الأوردرات</div><div class="v">${mdNum(d.orders, 'int')}</div></div>
+          <div class="s"><div class="l">منتجات جابت أوردرات</div><div class="v">${mdNum(d.products.length, 'int')}</div></div>
+          <div class="s"><div class="l">إجمالي الصرف</div><div class="v">${mdNum(d.spend, 'money')}</div></div>
+          <div class="s"><div class="l">الكوست أوفر رول</div><div class="v">${mdNum(d.cpa, 'money')}</div></div>
+        </div>
+        ${d.products.length ? `<div class="md-list">${rows}</div>` : `<div class="atp-empty">${d.hasData ? 'مفيش منتج جاب أوردرات في اليوم ده.' : 'مفيش بيانات مزامنة لليوم ده.'}</div>`}
+        ${noOrdersHtml}
+        <div class="atd-note">الأوردرات = مشتريات Meta. «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج.</div>
+      </div>`;
+    modal.querySelector('.atp-x').onclick = closeDayOrders;
+    modal.querySelector('[data-go="prev"]').onclick = () => showDay(mdOpenDay - 1, 'prev');
+    modal.querySelector('[data-go="next"]').onclick = () => showDay(mdOpenDay + 1, 'next');
+    atdAnimate(modal);
+  }
+  showDay(idx, null);
 }
 
 init();
