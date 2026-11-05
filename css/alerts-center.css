@@ -34,3 +34,6 @@
 @keyframes acPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, #dc2626 35%, transparent); } 50% { box-shadow: 0 0 0 8px transparent; } }
 @media (prefers-reduced-motion: reduce) { .ac-sum, .ac-card, .ac-card .ac-ic { animation: none !important; } .ac-card, .ac-chip { transition: none; } }
 @media (max-width: 640px) { .ac-card { padding: 12px; gap: 10px; } .ac-ic { width: 36px; height: 36px; font-size: 18px; } .ac-title { font-size: 14px; } }
+
+.ac-more { align-self: center; margin-top: 4px; padding: 9px 24px; border-radius: 999px; border: 1px solid var(--border, #e7eaf0); background: var(--bg-card, #fff); color: var(--text, #1f2937); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .2s, background .2s; }
+.ac-more:hover { transform: translateY(-1px); background: var(--bg-secondary, #f6f7fb); }

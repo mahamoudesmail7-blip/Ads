@@ -31,9 +31,20 @@ try {
   console.log('\n3. Campaign rules');
   const row = (o = {}) => ({ key: 'a:c1', campaignId: 'c1', adAccountId: 'a', name: 'Camp 1', status: 'ACTIVE', dataFresh: true, productId: 7, productName: 'Soleva', budget: 300, today: { spend: 200, orders: 2 }, period: { spend: 900, orders: 4, cpa: 225 }, limits: { target: 100, reduce: 150, hardStop: 220 }, cpaVsLimits: 'WITHIN_TARGET', stock: { status: 'SAFE', current: 40 }, ...o });
   ok('a healthy campaign raises nothing', A.evalCampaignAlerts([row()]).length === 0);
-  const hard = A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_HARDSTOP' })]);
-  ok('CPA above the hard stop → CRITICAL with the real numbers (225 vs 220, 900 spend)', hard.length === 1 && hard[0].severity === 'CRITICAL' && hard[0].kind === 'CPA' && hard[0].facts.some((f) => /225/.test(f.v)) && hard[0].facts.some((f) => /220/.test(f.v)), JSON.stringify(hard[0]));
-  ok('above the reduce limit only → WARNING', A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_REDUCE' })])[0]?.severity === 'WARNING');
+  const hard = A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_HARDSTOP', period: { spend: 900, orders: 3, cpa: 300 } })]);
+  ok('CPA well above the hard stop → CRITICAL with the real numbers (300 vs 220, 900 spend)', hard.length === 1 && hard[0].severity === 'CRITICAL' && hard[0].kind === 'CPA' && hard[0].facts.some((f) => /300/.test(f.v)) && hard[0].facts.some((f) => /220/.test(f.v)), JSON.stringify(hard[0]));
+  ok('201 vs a 200 limit is noise: under the 10% margin → no alert', A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_HARDSTOP', limits: { target: 100, reduce: 150, hardStop: 200 }, period: { spend: 900, orders: 4, cpa: 205 } })]).length === 0);
+  ok('above the reduce limit only (by 10%+) → WARNING', A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_REDUCE', period: { spend: 900, orders: 5, cpa: 180 } })])[0]?.severity === 'WARNING');
+  ok('a campaign that has not spent one full limit yet is not judged (150 spend vs a 200 limit)', A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_HARDSTOP', limits: { target: 100, reduce: 150, hardStop: 200 }, period: { spend: 150, orders: 0, cpa: 300 } })]).length === 0);
+  const grouped = A.evalCampaignAlerts([
+    row({ key: 'a:c1', campaignId: 'c1', name: 'Soleva - Test 1', cpaVsLimits: 'ABOVE_HARDSTOP', period: { spend: 900, orders: 3, cpa: 300 }, today: { spend: 100, orders: 1 } }),
+    row({ key: 'a:c2', campaignId: 'c2', name: 'Soleva - Scale 2', cpaVsLimits: 'ABOVE_REDUCE', period: { spend: 700, orders: 4, cpa: 175 }, today: { spend: 250, orders: 1 } }),
+    row({ key: 'a:c3', campaignId: 'c3', productId: null, productName: null, name: 'Fishingnet - Test 3', cpaVsLimits: 'ABOVE_HARDSTOP', period: { spend: 800, orders: 2, cpa: 400 }, today: { spend: 800, orders: 0 } }),
+    row({ key: 'a:c4', campaignId: 'c4', productId: null, productName: null, name: 'fishingnet-Test 4', cpaVsLimits: 'ABOVE_HARDSTOP', period: { spend: 500, orders: 1, cpa: 500 }, today: { spend: 500, orders: 0 } }),
+  ], { zeroLimit: 9999 }).filter((a) => a.kind === 'CPA');
+  ok('the CPA alerts group by product: Soleva (2 campaigns, CRITICAL via its worst one) and the Fishingnet name family (2) — 2 alerts, not 4', grouped.length === 2 && grouped.some((a) => a.id === 'cpa:p:7' && a.severity === 'CRITICAL' && /2 حملات/.test(a.title) && a.facts.some((f) => f.l === 'صرف النهارده' && f.v === '350 ج')) && grouped.some((a) => /fishingnet/i.test(a.title) && /2 حملات/.test(a.title)), JSON.stringify(grouped.map((a) => [a.id, a.title])));
+  const ordered = A.sortAlerts(grouped);
+  ok('inside a severity the biggest money today comes first (Fishingnet 1,300 before Soleva 350)', /fishingnet/i.test(ordered[0].title), ordered.map((a) => a.title).join(' | '));
   ok('too little spend to judge (< min) → no CPA alert; not spending today → no CPA alert', A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_HARDSTOP', period: { spend: 60, orders: 0, cpa: null } })]).filter((a) => a.kind === 'CPA').length === 0 && A.evalCampaignAlerts([row({ cpaVsLimits: 'ABOVE_HARDSTOP', today: { spend: 0, orders: 0 } })]).filter((a) => a.kind === 'CPA').length === 0);
   ok('unknown limits (UNKNOWN) never raise a CPA alert', A.evalCampaignAlerts([row({ cpaVsLimits: 'UNKNOWN', limits: null })]).length === 0);
   const zero = A.evalCampaignAlerts([row({ today: { spend: 320, orders: 0 } })], { zeroLimit: 150 });

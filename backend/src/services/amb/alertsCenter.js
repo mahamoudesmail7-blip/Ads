@@ -14,6 +14,7 @@ import { listViewAccounts } from './viewAccounts.js';
 import { buildRows, resolvePeriod } from './campaignQuery.js';
 import { getSyncStatus } from './snapshotSync.js';
 import { getAccountsToday } from './accountsToday.js';
+import { nameFamily } from './accountProductsToday.js';
 import { cairoDate } from './dailyPlanTime.js';
 
 export const SEVERITY_ORDER = { CRITICAL: 0, WARNING: 1, INFO: 2 };
@@ -61,28 +62,29 @@ export function evalSyncFreshness({ lastSuccessAt, intervalMinutes = 15, now = n
 /** 3-5. Campaign rows (campaignQuery.buildRows shape) → alerts. Only ACTIVE campaigns with fresh data; paused ones are not a live problem. */
 export function evalCampaignAlerts(rows, { zeroLimit = 150, minSpend = 150 } = {}) {
   const out = [];
-  const stockByProduct = new Map();
+  const stockByProduct = new Map(); const cpaGroups = new Map();
   for (const r of rows || []) {
     if (r.status !== 'ACTIVE' || !r.dataFresh) continue;
     const name = r.productName || r.name;
     const spendToday = Number(r.today?.spend) || 0;
     const ordersToday = r.today?.orders;
     const base = { entity: { campaignId: r.campaignId, adAccountId: r.adAccountId, productId: r.productId ?? null, productName: r.productName ?? null, campaignName: r.name } };
-    // 3. CPA above the product's limits — judged on the 3-day window (stable), and only when it has really spent
-    const spendP = Number(r.period?.spend) || 0;
-    if (r.cpaVsLimits === 'ABOVE_HARDSTOP' || r.cpaVsLimits === 'ABOVE_REDUCE') {
-      if (spendP >= minSpend && spendToday > 0) {
-        const hard = r.cpaVsLimits === 'ABOVE_HARDSTOP';
-        out.push({ id: `cpa:${r.key}`, kind: 'CPA', severity: hard ? 'CRITICAL' : 'WARNING', ...base,
-          title: `${name}: الـ CPA فوق ${hard ? 'حد الإيقاف' : 'حد التخفيض'} والحملة لسه شغالة`,
-          detail: `${r.name}`,
-          facts: [{ l: 'CPA آخر 3 أيام', v: `${fmt(r.period.cpa)} ج` }, { l: hard ? 'حد الإيقاف' : 'حد التخفيض', v: `${fmt(hard ? r.limits.hardStop : r.limits.reduce)} ج` }, { l: 'صرف 3 أيام', v: `${fmt(spendP)} ج` }, { l: 'صرف النهارده', v: `${fmt(spendToday)} ج` }],
-          action: hard ? 'اقفل الحملة أو قلّل الميزانية' : 'قلّل الميزانية وراقب' });
+    // 3. CPA above the product's limits — judged on the 3-day window (stable); a campaign must have spent at least one limit's worth and be over it by 10%+ (201 vs 200 is noise)
+    const spendP = Number(r.period?.spend) || 0; const cpaP = Number(r.period?.cpa) || 0;
+    if ((r.cpaVsLimits === 'ABOVE_HARDSTOP' || r.cpaVsLimits === 'ABOVE_REDUCE') && spendToday > 0 && spendP >= minSpend) {
+      const hard = r.cpaVsLimits === 'ABOVE_HARDSTOP';
+      const limit = Number(hard ? r.limits?.hardStop : r.limits?.reduce) || 0;
+      if (limit > 0 && spendP >= limit && cpaP >= limit * 1.1) {
+        const key = r.productId != null ? `p:${r.productId}` : `n:${nameFamily(r.name).key || r.campaignId}`;
+        const g = cpaGroups.get(key) || { key, name: r.productName || nameFamily(r.name).label || r.name, productId: r.productId ?? null, hard: false, campaigns: [], spendToday: 0, spend3: 0, worst: null };
+        g.hard = g.hard || hard; g.campaigns.push({ name: r.name, cpa: cpaP, limit, hard }); g.spendToday += spendToday; g.spend3 += spendP;
+        if (!g.worst || cpaP / limit > g.worst.cpa / g.worst.limit) g.worst = { cpa: cpaP, limit, hard };
+        cpaGroups.set(key, g);
       }
     }
     // 4. spent with no orders today
     if (ordersToday === 0 && spendToday > zeroLimit) {
-      out.push({ id: `zero:${r.key}`, kind: 'ZERO_ORDERS', severity: spendToday >= zeroLimit * 2 ? 'CRITICAL' : 'WARNING', ...base,
+      out.push({ id: `zero:${r.key}`, kind: 'ZERO_ORDERS', severity: spendToday >= zeroLimit * 2 ? 'CRITICAL' : 'WARNING', weight: spendToday, ...base,
         title: `${name}: صرفت ${fmt(spendToday)} ج النهارده من غير ولا أوردر`,
         detail: `${r.name}`, facts: [{ l: 'صرف النهارده', v: `${fmt(spendToday)} ج` }, { l: 'حد الصرف بدون أوردر', v: `${fmt(zeroLimit)} ج` }, ...(r.budget ? [{ l: 'الميزانية', v: `${fmt(r.budget)} ج` }] : [])],
         action: 'راجع الحملة أو أوقفها' });
@@ -94,9 +96,18 @@ export function evalCampaignAlerts(rows, { zeroLimit = 150, minSpend = 150 } = {
       cur.campaigns.push(r.name); cur.spend += spendToday; stockByProduct.set(r.productId, cur);
     }
   }
+  for (const g of cpaGroups.values()) {
+    const n = g.campaigns.length; const kindLabel = g.hard ? 'حد الإيقاف' : 'حد التخفيض';
+    out.push({ id: `cpa:${g.key}`, kind: 'CPA', severity: g.hard ? 'CRITICAL' : 'WARNING', weight: g.spendToday,
+      entity: { productId: g.productId, productName: g.productName ?? g.name },
+      title: n === 1 ? `${g.name}: الـ CPA فوق ${kindLabel} والحملة لسه شغالة` : `${g.name}: ${n} حملات الـ CPA بتاعها فوق الحد وشغالة`,
+      detail: g.campaigns.slice().sort((a, b) => b.cpa / b.limit - a.cpa / a.limit).slice(0, 3).map((c) => `${c.name} (${fmt(c.cpa)} ج)`).join(' · ') + (n > 3 ? ` · و${n - 3} كمان` : ''),
+      facts: [{ l: 'أسوأ CPA (3 أيام)', v: `${fmt(g.worst.cpa)} ج` }, { l: g.worst.hard ? 'حد الإيقاف' : 'حد التخفيض', v: `${fmt(g.worst.limit)} ج` }, { l: 'صرف 3 أيام', v: `${fmt(g.spend3)} ج` }, { l: 'صرف النهارده', v: `${fmt(g.spendToday)} ج` }],
+      action: g.hard ? 'اقفل الحملات دي أو قلّل الميزانية' : 'قلّل الميزانية وراقب' });
+  }
   for (const p of stockByProduct.values()) {
     const out0 = p.status === 'OUT_OF_STOCK';
-    out.push({ id: `stock:${p.productId}`, kind: 'STOCK', severity: out0 ? 'CRITICAL' : 'WARNING', entity: { productId: p.productId, productName: p.productName },
+    out.push({ id: `stock:${p.productId}`, kind: 'STOCK', severity: out0 ? 'CRITICAL' : 'WARNING', weight: p.spend, entity: { productId: p.productId, productName: p.productName },
       title: out0 ? `${p.productName}: المخزون خلص والإعلان شغال` : `${p.productName}: المخزون قرب يخلص`,
       detail: out0 ? 'كل أوردر جديد ممكن يتبعت ومفيش بضاعة. وقّف الحملات أو زوّد المخزون.' : 'راجع الكمية قبل ما تزوّد الميزانية.',
       facts: [{ l: 'المخزون', v: p.current == null ? '—' : String(p.current) }, { l: 'حملات شغالة', v: String(p.campaigns.length) }, { l: 'صرف النهارده', v: `${fmt(p.spend)} ج` }], action: out0 ? 'وقّف الحملات أو زوّد المخزون' : 'خطّط لإعادة الطلب' });
@@ -117,7 +128,7 @@ export function evalFunds(accounts, threshold = 2000) {
 }
 
 export function sortAlerts(list) {
-  return [...list].sort((a, b) => (SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]) || a.kind.localeCompare(b.kind) || a.title.localeCompare(b.title));
+  return [...list].sort((a, b) => (SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]) || ((b.weight || 0) - (a.weight || 0)) || a.kind.localeCompare(b.kind) || a.title.localeCompare(b.title));
 }
 
 export function summarize(list) {

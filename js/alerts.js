@@ -59,7 +59,8 @@ export function buildAlerts(bundles, settings) {
 // ---------------------------------------------------------------------------
 const AC_KINDS = { ORDERS_FEED: ['📦', 'أوردرات Easy Orders'], SYNC: ['🔄', 'مزامنة Meta'], CPA: ['🎯', 'CPA'], ZERO_ORDERS: ['💸', 'صرف بدون أوردر'], STOCK: ['📉', 'المخزون'], FUNDS: ['💳', 'رصيد الحساب'], SYSTEM: ['⚙️', 'النظام'] };
 const AC_SEV = { CRITICAL: ['حرج', 'crit'], WARNING: ['تحذير', 'warn'], INFO: ['معلومة', 'info'] };
-let acDoc = null; let acKind = 'all'; let acGen = 0;
+let acDoc = null; let acKind = 'all'; let acGen = 0; let acAll = false;
+const AC_LIMIT = 12; // the first screen shows the 12 that matter most (severity, then the money at stake); the rest is one click away
 
 function acCard(a, i) {
   const [icon, kindLabel] = AC_KINDS[a.kind] || ['•', a.kind];
@@ -88,8 +89,10 @@ function acRender() {
     <div class="ac-sum ok"><b>${acDoc.alerts.length === 0 ? '✓' : sm.total}</b><span>${acDoc.alerts.length === 0 ? 'كله تمام' : 'الإجمالي'}</span></div>`;
   const kinds = Object.keys(sm.kinds || {});
   document.getElementById('acFilters').innerHTML = kinds.length > 1 ? [['all', 'الكل', sm.total], ...kinds.map((k) => [k, (AC_KINDS[k] || ['', k])[1], sm.kinds[k]])].map(([k, l, n]) => `<button type="button" class="ac-chip${acKind === k ? ' on' : ''}" data-k="${k}">${UI.escapeHtml(l)} <b>${n}</b></button>`).join('') : '';
-  document.querySelectorAll('#acFilters [data-k]').forEach((b) => { b.onclick = () => { acKind = b.dataset.k; acRender(); }; });
-  box.innerHTML = list.length ? list.map(acCard).join('') : `<div class="ac-allgood">✅ مفيش حاجة محتاجة انتباه دلوقتي.<small>اتفحص: أوردرات Easy Orders · مزامنة Meta · CPA الحملات · صرف بدون أوردر · المخزون · أرصدة الحسابات</small></div>`;
+  document.querySelectorAll('#acFilters [data-k]').forEach((b) => { b.onclick = () => { acKind = b.dataset.k; acAll = false; acRender(); }; });
+  const shown = acAll ? list : list.slice(0, AC_LIMIT);
+  box.innerHTML = list.length ? shown.map(acCard).join('') + (list.length > shown.length ? `<button type="button" class="ac-more" id="acMore">عرض الباقي (${list.length - shown.length})</button>` : '') : `<div class="ac-allgood">✅ مفيش حاجة محتاجة انتباه دلوقتي.<small>اتفحص: أوردرات Easy Orders · مزامنة Meta · CPA الحملات · صرف بدون أوردر · المخزون · أرصدة الحسابات</small></div>`;
+  const more = document.getElementById('acMore'); if (more) more.onclick = () => { acAll = true; acRender(); };
   box.querySelectorAll('[data-goto]').forEach((c) => { c.style.cursor = 'pointer'; c.onclick = () => (window.location.href = c.dataset.goto); });
   const t = new Date(acDoc.generatedAt);
   document.getElementById('acStamp').textContent = `آخر فحص ${t.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}`;
