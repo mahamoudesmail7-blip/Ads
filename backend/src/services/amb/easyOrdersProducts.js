@@ -407,7 +407,7 @@ export async function searchEasyOrdersProductsAllStores(q = '', { limit = 40 } =
  * WRITE (Smart Campaign «النشر على المتجر», only after the owner's explicit confirmation): PATCH of the text fields of ONE product. Whitelisted fields only,
  * PATCH only (a PUT could blank everything we did not send). Throws a short Arabic message — never the key, never a raw body.
  */
-const WRITABLE = new Set(['name', 'description', 'price', 'sale_price']);
+const WRITABLE = new Set(['name', 'description', 'price', 'sale_price', 'is_one_page_checkout', 'is_skip_cart', 'is_fixed_bottom_buy', 'is_free_shipping', 'is_fake_visitors', 'buy_now_text']);
 export async function updateEasyOrdersProduct(storeId, productId, body) {
   const key = getStoreApiKey(storeId);
   if (!key) throw new Error('المتجر ده مش مربوط بمفتاح Easy Orders.');

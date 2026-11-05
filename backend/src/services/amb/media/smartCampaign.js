@@ -36,7 +36,7 @@ export async function runResearch(projectId, { deps = {} } = {}) {
   if (!(deps.ai ?? isAiConfigured())) throw new MediaError('الذكاء الاصطناعي مش متصل (مفتاح OpenAI).', 'NOT_CONFIGURED');
   if (!p.facts?.length) throw new MediaError('اكتب معلومات ومميزات حقيقية عن المنتج الأول (القسم 1) — البحث بيعتمد عليها.', 'NO_FACTS');
   const ref = await (deps.loadReference || loadReference)(projectId);
-  const user = `المنتج: ${p.name}\nالسعر: ${p.price ?? 'غير محدد'}${p.oldPrice ? ` (بدل ${p.oldPrice})` : ''}\nالتصنيف: ${(p.eo?.categories || []).join('، ') || 'غير محدد'}\nمعلومات حقيقية عن المنتج:\n${p.facts.map((f) => `- ${f}`).join('\n')}\n\nرجّع JSON بالشكل: {"summary":"جملتين عن المنتج وليه الناس هتشتريه","audience":{"gender":"ALL|MALE|FEMALE","ageMin":18-65,"ageMax":18-65,"interests":["Meta interest names بالإنجليزي"],"description":"مين الجمهور وليه"},"benefits":["فايدة بالمصري من المعلومات بس"],"painPoints":["مشكلة بيحلها"],"objections":["اعتراض ممكن يمنع الشراء"],"angles":[{"name":"اسم الزاوية","hook":"هوك إعلاني قصير"}],"policyCautions":["ادعاءات ممنوعة في ميتا للمنتج ده"],"keywords":{"videoSearch":["كلمات بحث فيديو"],"tiktok":["..."],"instagramHashtags":["بدون #"]}}`;
+  const user = `المنتج: ${p.name}\nالسعر: ${p.price ?? 'غير محدد'}${p.oldPrice ? ` (بدل ${p.oldPrice})` : ''}\nالتصنيف: ${(p.eo?.categories || []).join('، ') || 'غير محدد'}\n${p.supplierUrl ? `لينك المورد (مرجع): ${p.supplierUrl}\n` : ''}معلومات حقيقية عن المنتج:\n${p.facts.map((f) => `- ${f}`).join('\n')}\n\nرجّع JSON بالشكل: {"summary":"جملتين عن المنتج وليه الناس هتشتريه","audience":{"gender":"ALL|MALE|FEMALE","ageMin":18-65,"ageMax":18-65,"interests":["Meta interest names بالإنجليزي"],"description":"مين الجمهور وليه"},"benefits":["فايدة بالمصري من المعلومات بس"],"painPoints":["مشكلة بيحلها"],"objections":["اعتراض ممكن يمنع الشراء"],"angles":[{"name":"اسم الزاوية","hook":"هوك إعلاني قصير"}],"policyCautions":["ادعاءات ممنوعة في ميتا للمنتج ده"],"keywords":{"videoSearch":["كلمات بحث فيديو"],"tiktok":["..."],"instagramHashtags":["بدون #"]}}`;
   const content = [{ type: 'text', text: user }];
   if (ref) content.push({ type: 'image', source: { type: 'base64', media_type: ref.mime, data: ref.buffer.toString('base64') } });
   let j;
@@ -86,17 +86,22 @@ export function readiness(p) {
 
 /** The step bar: one state per journey step, from the same facts. */
 export function stepStates(p) {
-  const r = readiness(p); const by = Object.fromEntries(r.items.map((i) => [i.key, i.level]));
-  const st = (ok, fail) => (ok ? 'done' : fail ? 'fail' : 'todo');
-  const imgs = (p.images || []).filter((i) => i.status === 'READY').length;
+  const r = readiness(p);
+  const imgsReady = (p.images || []).filter((i) => i.status === 'READY').length;
+  const imgsTotal = (p.images || []).length;
+  const caps = (p.copy?.captions || []).length;
+  const vids = (p.videos || []).length;
+  const onStore = !!p.eo; // a product that already lives on the store has its page there: «صفحتك جاهزة»
+  const st = (done, fail) => (done ? 'done' : fail ? 'fail' : 'todo');
+  const published = !!p.smart?.publish?.at;
   return [
-    { key: 'product', n: 1, label: 'المنتج', state: by.stock === 'fail' ? 'fail' : st(!!p.eo || ((p.facts || []).length > 0 && !!p.reference)) },
-    { key: 'research', n: 2, label: 'البحث والجمهور', state: st(!!p.smart?.research) },
-    { key: 'images', n: 3, label: 'الصور', state: st(imgs >= 3) },
-    { key: 'captions', n: 4, label: 'الكابشنات', state: st((p.copy?.captions || []).length > 0) },
-    { key: 'videos', n: 5, label: 'الفيديوهات', state: st((p.videos || []).length > 0) },
-    { key: 'publish', n: 6, label: 'النشر على المتجر', state: p.smart?.publish?.at ? 'done' : 'todo' },
-    { key: 'review', n: 7, label: 'المراجعة', state: r.ready ? 'done' : 'todo' },
+    { key: 'info', n: 1, label: 'المعلومات', state: r.items.find((i) => i.key === 'stock')?.level === 'fail' ? 'fail' : st(!!p.eo || ((p.facts || []).length > 0 && !!p.reference)) },
+    { key: 'research', n: 2, label: 'البحث', state: st(!!p.smart?.research) },
+    { key: 'images', n: 3, label: 'صور الصفحة', sub: imgsTotal ? `${imgsReady}/${imgsTotal}` : '', state: imgsReady >= 3 && imgsReady === imgsTotal ? 'done' : imgsReady > 0 ? 'warn' : 'todo' },
+    { key: 'page', n: 4, label: 'صفحة المنتج', sub: onStore && !p.copy ? 'صفحتك جاهزة' : '', state: p.copy ? 'done' : onStore ? 'store' : 'todo' },
+    { key: 'publish', n: 5, label: 'النشر على المتجر', sub: onStore && !published ? 'صفحتك جاهزة' : '', state: published ? 'done' : onStore ? 'store' : 'todo' },
+    { key: 'captions', n: 6, label: 'الكابشن', sub: caps ? `${caps} كابشن` : '', state: st(caps > 0) },
+    { key: 'videos', n: 7, label: 'الفيديوهات', sub: vids ? `${vids} فيديو` : '', state: st(vids > 0) },
     { key: 'campaign', n: 8, label: 'الكامبين', state: p.smart?.launch?.status === 'COMPLETE' ? 'done' : p.smart?.launch?.jobId ? 'warn' : 'todo' },
   ];
 }

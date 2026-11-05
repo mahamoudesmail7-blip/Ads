@@ -21,7 +21,7 @@ export function buildDescriptionHtml(copy) {
 }
 
 /** Pure: which Easy Orders fields would change. Selling price = sale_price and the "before" price = price (Easy Orders' own meaning); with no "before" price the price fields are not touched. */
-export function buildUpdate(project, { name = false, description = true, prices = false } = {}) {
+export function buildUpdate(project, { name = false, description = true, prices = false, settings = false } = {}) {
   const body = {}; const notes = [];
   if (name) { if (!project.name) throw new MediaError('اسم المنتج فاضي.', 'BAD_INPUT'); body.name = project.name; }
   if (description) {
@@ -33,12 +33,17 @@ export function buildUpdate(project, { name = false, description = true, prices 
     if (project.price != null && project.oldPrice != null && project.oldPrice > project.price) { body.price = project.oldPrice; body.sale_price = project.price; }
     else notes.push('تحديث الأسعار اتخطّى: لازم يبقى فيه «سعر قبل الخصم» أعلى من سعر البيع.');
   }
+  if (settings) {
+    const s = project.smart?.pageSettings;
+    if (!s) notes.push('إعدادات الصفحة اتخطّت: لسه ما اتحفظتش في خطوة «صفحة المنتج».');
+    else Object.assign(body, { is_one_page_checkout: !!s.buyFromPage, is_skip_cart: !!s.skipCart, is_fixed_bottom_buy: !!s.fixedBuy, is_free_shipping: !!s.freeShipping, is_fake_visitors: !!s.visitors, buy_now_text: s.buyText || 'اضغط هنا للشراء' });
+  }
   if (!Object.keys(body).length) throw new MediaError('مفيش حاجة تتحدّث — اختار حقل واحد على الأقل.', 'NOTHING_TO_UPDATE');
   const hash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 24);
   return { body, hash, notes };
 }
 
-const rows = (body, current) => Object.keys(body).map((k) => ({ field: k, label: { name: 'الاسم', description: 'الوصف', price: 'السعر (قبل الخصم)', sale_price: 'سعر البيع' }[k] || k, before: k === 'description' ? String(current?.description ?? '').slice(0, 300) : current ? String(current[{ price: 'oldPrice', sale_price: 'price', name: 'name' }[k]] ?? '') : '', after: k === 'description' ? String(body[k]).slice(0, 300) : String(body[k]) }));
+const rows = (body, current) => Object.keys(body).map((k) => ({ field: k, label: { name: 'الاسم', description: 'الوصف', price: 'السعر (قبل الخصم)', sale_price: 'سعر البيع', is_one_page_checkout: 'الشراء من نفس الصفحة', is_skip_cart: 'تخطي السلة', is_fixed_bottom_buy: 'زرار شراء ثابت', is_free_shipping: 'شحن مجاني', is_fake_visitors: 'عداد الزوار', buy_now_text: 'نص زرار الشراء' }[k] || k, before: k === 'description' ? String(current?.description ?? '').slice(0, 300) : current && { price: 'oldPrice', sale_price: 'price', name: 'name' }[k] ? String(current[{ price: 'oldPrice', sale_price: 'price', name: 'name' }[k]] ?? '') : '', after: k === 'description' ? String(body[k]).slice(0, 300) : String(body[k]) }));
 
 export async function previewUpdate(projectId, options, { deps = {} } = {}) {
   const p = await getProject(projectId);

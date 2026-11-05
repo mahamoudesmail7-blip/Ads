@@ -63,8 +63,8 @@ try {
   ok('1-2 images warn, 0 images fail; link-only videos warn and say they need importing', SC.readiness(base({ images: img(2) })).items.find((i) => i.key === 'images').level === 'warn' && SC.readiness(base({ videos: [{ id: 'v', kind: 'LINK' }] })).items.find((i) => i.key === 'videos').detail.includes('استيراد'));
   ok('no reference photo is a blocker; an unlinked product is a warning only', SC.readiness(base({ reference: null })).blockers.includes('مفيش صورة للمنتج') && SC.readiness(base({ eo: null })).items.find((i) => i.key === 'product').level === 'warn');
   const steps = SC.stepStates(base({ images: img(3), copy: { captions: [{ primary: 'a' }] }, smart: { research: { audience: {} }, launch: { jobId: 'j1', status: 'DRAFT' } } }));
-  ok('step bar: 8 steps; research / images / captions done, campaign in progress (warn), publish still todo', steps.length === 8 && steps.find((s) => s.key === 'research').state === 'done' && steps.find((s) => s.key === 'images').state === 'done' && steps.find((s) => s.key === 'captions').state === 'done' && steps.find((s) => s.key === 'campaign').state === 'warn' && steps.find((s) => s.key === 'publish').state === 'todo', JSON.stringify(steps.map((s) => s.key + ':' + s.state)));
-  ok('step bar: a finished launch is done; an out-of-stock product marks step 1 failed', SC.stepStates(base({ smart: { launch: { status: 'COMPLETE' } } })).find((s) => s.key === 'campaign').state === 'done' && SC.stepStates(base({ eo: { id: 'e', name: 'x', trackStock: true, quantity: 0 } })).find((s) => s.key === 'product').state === 'fail');
+  ok('step bar (the reference UI order): info · research · images · page · publish · captions · videos · campaign; research / images / captions done, campaign in progress (warn)', steps.map((x) => x.key).join() === 'info,research,images,page,publish,captions,videos,campaign' && steps.find((x) => x.key === 'research').state === 'done' && steps.find((x) => x.key === 'images').state === 'done' && steps.find((x) => x.key === 'captions').state === 'done' && steps.find((x) => x.key === 'captions').sub === '1 كابشن' && steps.find((x) => x.key === 'campaign').state === 'warn', JSON.stringify(steps.map((x) => x.key + ':' + x.state)));
+  ok('a product that lives on the store: its page and publish steps read «صفحتك جاهزة» (store state) until the owner writes a page / publishes; a finished launch is done; an out-of-stock product marks step 1 failed', SC.stepStates(base()).find((x) => x.key === 'page').state === 'store' && SC.stepStates(base()).find((x) => x.key === 'publish').sub === 'صفحتك جاهزة' && SC.stepStates(base({ smart: { launch: { status: 'COMPLETE' } } })).find((x) => x.key === 'campaign').state === 'done' && SC.stepStates(base({ eo: { id: 'e', name: 'x', trackStock: true, quantity: 0 } })).find((x) => x.key === 'info').state === 'fail');
 
   console.log('\n4. launch bridge: context, asset registration, link');
   ok('landingGuess: store domain + slug (https, no double slash); no domain or no slug → empty (the owner types it)', SL.landingGuess({ domain: 'https://trendy.shop/', slug: 'neck-massager' }) === 'https://trendy.shop/products/neck-massager' && SL.landingGuess({ domain: '', slug: 'x' }) === '' && SL.landingGuess({ domain: 'a.b', slug: '' }) === '');
@@ -143,6 +143,25 @@ try {
   const e1 = await rejects(EOP.updateEasyOrdersProduct('no-such-store', 'abcdef12-3456', { name: 'x' }));
   const e2 = await rejects(EOP.updateEasyOrdersProduct('default', '../x', { name: 'x' }));
   ok('the real writer refuses a store without a key, and a malformed product id (no request is made)', /مفتاح/.test(e1?.message || '') && (/غير صالح/.test(e2?.message || '') || /مفتاح/.test(e2?.message || '')), (e1?.message || '') + ' | ' + (e2?.message || ''));
+
+  console.log('\n6. journey settings, supplier link / unit cost, list extras, page settings');
+  const ms = PP.mergeSmart({ research: { a: 1 } }, { selectedCaption: 9, imageCount: 0, pageSettings: { buyFromPage: true, skipCart: 'yes', buyText: 'x'.repeat(100) }, research: 'HACK' });
+  ok('mergeSmart: only the known keys are taken (clamped caption 0-3, image count 1-5), strict booleans, capped text, and the research block cannot be overwritten from the client', ms.selectedCaption === 3 && ms.imageCount === 1 && ms.pageSettings.buyFromPage === true && ms.pageSettings.skipCart === false && ms.pageSettings.buyText.length === 40 && ms.research.a === 1);
+  const sp = await PP.createProject({ name: 'منتج الإعدادات', facts: ['a'], eo: { id: 'eo-set-1', storeId: 'trendy-storeee', slug: 's' } }); made.push(sp.id);
+  await PP.updateProject(sp.id, { supplierUrl: 'https://www.aliexpress.com/item/1.html', unitCost: 120, smart: { selectedCaption: 1, imageCount: 3, pageSettings: { freeShipping: true, fixedBuy: true } } });
+  const sp2 = await PP.getProject(sp.id);
+  ok('supplier link (https only), unit cost and the journey settings are saved', sp2.supplierUrl.startsWith('https://') && sp2.unitCost === 120 && sp2.smart.selectedCaption === 1 && sp2.smart.imageCount === 3 && sp2.smart.pageSettings.freeShipping === true);
+  await PP.updateProject(sp.id, { smart: { landingUrl: 'https://trendy.shop/products/x' } });
+  ok('the landing page link (https only) is kept on the journey; a non-https one is dropped', (await PP.getProject(sp.id)).smart.landingUrl === 'https://trendy.shop/products/x' && PP.mergeSmart({}, { landingUrl: 'http://x.com' }).landingUrl === '');
+  await PP.updateProject(sp.id, { supplierUrl: 'javascript:alert(1)' });
+  ok('a non-http supplier link is dropped', (await PP.getProject(sp.id)).supplierUrl === '');
+  const lst = (await PP.listProjects()).find((x) => x.id === sp.id);
+  ok('the project list carries what the picker needs (reference photo?, linked?, store, published?)', lst.hasRef === false && lst.eo === true && lst.storeId === 'trendy-storeee' && lst.published === false);
+  await PP.updateProject(sp.id, { copy: { title: 'ع', paragraphs: ['ف'], features: [] } });
+  const pvs = await EP.previewUpdate(sp.id, { description: false, settings: true }, { deps: { getDetail: async () => null } });
+  ok('page settings can be previewed as a store update: Easy Orders field names, booleans, and the buy-button text', pvs.fields.some((x) => x.field === 'is_free_shipping' && x.after === 'true') && pvs.fields.some((x) => x.field === 'is_fixed_bottom_buy') && pvs.fields.some((x) => x.field === 'buy_now_text'), JSON.stringify(pvs.fields.map((x) => x.field)));
+  const nos = EP.buildUpdate({ name: 'x', copy: { title: 't' } }, { settings: true, description: true });
+  ok('no saved page settings → they are skipped with a reason, the rest still goes', !('is_free_shipping' in nos.body) && nos.notes.some((n) => /إعدادات الصفحة/.test(n)));
 } finally {
   for (const id of made) { await prisma.cfBlob.deleteMany({ where: { key: { startsWith: `pp/${id}/` } } }).catch(() => {}); await prisma.settings.deleteMany({ where: { id: `pp:${id}` } }).catch(() => {}); }
   await prisma.$disconnect();

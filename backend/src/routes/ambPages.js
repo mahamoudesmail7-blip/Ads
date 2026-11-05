@@ -67,7 +67,7 @@ router.post('/:id/launch-assets', asyncRoute(async (req, res) => {
 router.post('/:id/launch-link', asyncRoute(async (req, res) => { try { res.json(await SL.linkLaunch(pid(req), { jobId: req.body?.jobId, status: req.body?.status ? String(req.body.status).slice(0, 20) : null })); } catch (e) { throw bad(e.message, e.code === 'NOT_FOUND' ? 404 : 400); } }));
 
 // ---- Smart Campaign → «النشر على المتجر»: preview, then an explicit confirmed update of the linked Easy Orders product's TEXT (WRITES to the live store)
-const pubOpts = (src) => ({ name: src?.name === true || src?.name === '1', description: src?.description === undefined ? true : (src.description === true || src.description === '1'), prices: src?.prices === true || src?.prices === '1' });
+const pubOpts = (src) => ({ name: src?.name === true || src?.name === '1', description: src?.description === undefined ? true : (src.description === true || src.description === '1'), prices: src?.prices === true || src?.prices === '1', settings: src?.settings === true || src?.settings === '1' });
 const mediaErr = (e) => bad(e.message, e.code === 'NOT_FOUND' ? 404 : e.code === 'EO_REJECTED' ? 502 : e.code === 'STALE_PREVIEW' || e.code === 'NOT_CONFIRMED' ? 409 : 400);
 router.get('/:id/eo-publish/preview', asyncRoute(async (req, res) => { try { res.json(await EP.previewUpdate(pid(req), pubOpts(req.query))); } catch (e) { throw mediaErr(e); } }));
 router.post('/:id/eo-publish', asyncRoute(async (req, res) => { try { res.json(await EP.applyUpdate(pid(req), pubOpts(req.body?.options), { hash: String(req.body?.hash || ''), confirm: req.body?.confirm })); } catch (e) { throw mediaErr(e); } }));

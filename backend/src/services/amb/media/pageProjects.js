@@ -93,7 +93,7 @@ export const mutateProject = mutate;
 
 export async function listProjects() {
   const rows = await prisma.settings.findMany({ where: { id: { startsWith: PREFIX } } });
-  return rows.map((r) => parse(r.data)).filter((p) => p.id).map((p) => ({ id: p.id, name: p.name, images: (p.images || []).filter((i) => i.status === 'READY').length, videos: (p.videos || []).length, hasCopy: !!p.copy, updatedAt: p.updatedAt })).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  return rows.map((r) => parse(r.data)).filter((p) => p.id).map((p) => ({ id: p.id, name: p.name, images: (p.images || []).filter((i) => i.status === 'READY').length, videos: (p.videos || []).length, hasCopy: !!p.copy, hasRef: !!p.reference, eo: !!p.eo, storeId: p.eo?.storeId ?? null, published: !!p.smart?.publish, updatedAt: p.updatedAt })).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
 export async function deleteProject(id) {
@@ -112,9 +112,27 @@ export function updateProject(id, patch = {}) {
     if (patch.oldPrice !== undefined) p.oldPrice = numOrNull(patch.oldPrice);
     if (patch.facts !== undefined) p.facts = strList(patch.facts, 20, 200);
     if (patch.style !== undefined) p.style = validStyle(patch.style); // the design system the WHOLE page's images follow
+    if (patch.supplierUrl !== undefined) { const u = str(patch.supplierUrl, 400); p.supplierUrl = /^https?:\/\//i.test(u) ? u : ''; }
+    if (patch.unitCost !== undefined) p.unitCost = numOrNull(patch.unitCost);
+    if (patch.smart && typeof patch.smart === 'object') p.smart = mergeSmart(p.smart, patch.smart);
     if (patch.copy && typeof patch.copy === 'object') p.copy = sanitizeCopy({ ...(p.copy || {}), ...patch.copy }, p);
     return p;
   });
+}
+
+const bool = (v) => v === true;
+/** The page settings the journey keeps (applied to the store only when the owner confirms a store update). */
+export function sanitizePageSettings(s = {}) {
+  return { buyFromPage: bool(s.buyFromPage), skipCart: bool(s.skipCart), fixedBuy: bool(s.fixedBuy), freeShipping: bool(s.freeShipping), visitors: bool(s.visitors), buyText: str(s.buyText, 40) || 'اضغط هنا للشراء' };
+}
+/** The journey's own small settings: which caption goes to the campaign, how many page images, the page settings. Only these keys are ever taken from the client. */
+export function mergeSmart(cur, patch) {
+  const s = { ...(cur || {}) };
+  if (patch.selectedCaption !== undefined) { const n = Math.round(Number(patch.selectedCaption)); s.selectedCaption = Number.isFinite(n) ? Math.min(3, Math.max(0, n)) : 0; }
+  if (patch.imageCount !== undefined) { const n = Math.round(Number(patch.imageCount)); s.imageCount = Number.isFinite(n) ? Math.min(5, Math.max(1, n)) : 4; }
+  if (patch.pageSettings && typeof patch.pageSettings === 'object') s.pageSettings = sanitizePageSettings(patch.pageSettings);
+  if (patch.landingUrl !== undefined) { const u = str(patch.landingUrl, 400); s.landingUrl = /^https:\/\/[^\s]+$/i.test(u) ? u : ''; }
+  return s;
 }
 
 /** Normalises copy edits from the UI and re-runs the deterministic claims scan (never trusts the client's issue list). */
