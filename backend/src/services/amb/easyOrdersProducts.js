@@ -402,3 +402,23 @@ export async function searchEasyOrdersProductsAllStores(q = '', { limit = 40 } =
   }
   return out.sort((a, b) => a.name.localeCompare(b.name)).slice(0, limit);
 }
+
+/**
+ * WRITE (Smart Campaign «النشر على المتجر», only after the owner's explicit confirmation): PATCH of the text fields of ONE product. Whitelisted fields only,
+ * PATCH only (a PUT could blank everything we did not send). Throws a short Arabic message — never the key, never a raw body.
+ */
+const WRITABLE = new Set(['name', 'description', 'price', 'sale_price']);
+export async function updateEasyOrdersProduct(storeId, productId, body) {
+  const key = getStoreApiKey(storeId);
+  if (!key) throw new Error('المتجر ده مش مربوط بمفتاح Easy Orders.');
+  if (!/^[0-9a-f-]{8,64}$/i.test(String(productId))) throw new Error('معرّف المنتج غير صالح.');
+  const clean = {}; for (const [k, v] of Object.entries(body || {})) if (WRITABLE.has(k)) clean[k] = v;
+  if (!Object.keys(clean).length) throw new Error('مفيش حقول مسموح تتحدّث.');
+  const res = await fetch(`${EASYORDERS_API_BASE}/products/${encodeURIComponent(productId)}`, { method: 'PATCH', headers: { 'Api-Key': key, 'Content-Type': 'application/json' }, body: JSON.stringify(clean), signal: AbortSignal.timeout(25_000) });
+  if (res.status === 401 || res.status === 403) throw new Error('المفتاح ملوش صلاحية كتابة على المنتجات (products:update).');
+  if (res.status === 404) throw new Error('المنتج مش موجود في Easy Orders.');
+  if (res.status === 405) throw new Error('Easy Orders مش بيقبل التعديل بالطريقة دي (PATCH).');
+  if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`رد غير متوقع (${res.status}) ${t.replace(/\s+/g, ' ').slice(0, 120)}`); }
+  logger.info('EasyOrders product text updated', { storeId, productId, fields: Object.keys(clean) });
+  return true;
+}

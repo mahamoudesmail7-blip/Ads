@@ -8,6 +8,9 @@ import * as PP from '../services/amb/media/pageProjects.js';
 import { templateList } from '../services/amb/media/pageTemplates.js';
 import { PAGE_STYLES, PAGE_PACK } from '../services/amb/media/pageStyles.js';
 import { runPageAiVideos, runPageVideoFinder } from '../services/amb/media/pageVideos.js';
+import * as SC from '../services/amb/media/smartCampaign.js';
+import * as SL from '../services/amb/media/smartLaunch.js';
+import * as EP from '../services/amb/media/eoPublish.js';
 import { MAX_AI_VIDEOS, AI_STYLES } from '../services/amb/media/aiVideos.js';
 import { runExplainerForPage, MAX_EXPLAINERS } from '../services/amb/media/explainerRuns.js';
 import { isAllowedVideoUrl } from '../services/amb/media/ytdlp.js';
@@ -39,6 +42,35 @@ router.get('/eo-products/:storeId/:productId', asyncRoute(async (req, res) => {
   try { res.json(await getEasyOrdersProductDetail(String(req.params.storeId), String(req.params.productId))); }
   catch (e) { throw bad(e.message, 502); }
 }));
+
+// ---- Smart Campaign journey: research + readiness (the same project row, plus its `smart` section)
+router.post('/:id/research', asyncRoute(async (req, res) => {
+  const id = pid(req);
+  if (!(await PP.getProject(id))) throw bad('المشروع مش موجود.', 404);
+  const job = await startProjectJob('SMART_RESEARCH', id, req.user?.id ?? null, {}, async (ctx) => { await ctx.progress(10, 'بحلّل المنتج والجمهور'); const r = await SC.runResearch(id); await ctx.progress(100, 'خلص'); return { research: r }; });
+  res.status(202).json({ job: publicJob(job) });
+}));
+router.get('/:id/journey', asyncRoute(async (req, res) => {
+  const p = await PP.getProject(pid(req)); if (!p) throw bad('المشروع مش موجود.', 404);
+  res.json({ steps: SC.stepStates(p), readiness: SC.readiness(p), research: p.smart?.research || null, suggestedTargeting: SC.suggestTargeting(p.smart?.research), smart: { publish: p.smart?.publish || null, launch: p.smart?.launch || null } });
+}));
+
+// ---- Smart Campaign → campaign step (the launch engine itself stays under /api/ai-media-buyer/launch/*)
+router.get('/:id/launch-context', asyncRoute(async (req, res) => { try { res.json(await SL.launchContext(pid(req))); } catch (e) { throw bad(e.message, e.code === 'NOT_FOUND' ? 404 : 400); } }));
+router.post('/:id/launch-assets', asyncRoute(async (req, res) => {
+  const id = pid(req); const launchJobId = String(req.body?.launchJobId || '');
+  if (!/^[a-z0-9_-]{8,80}$/i.test(launchJobId)) throw bad('معرّف طلب الرفع غير صالح.');
+  if (!(await PP.getProject(id))) throw bad('المشروع مش موجود.', 404);
+  const job = await startProjectJob('SMART_LAUNCH_ASSETS', id, req.user?.id ?? null, { launchJobId }, (ctx) => SL.runRegisterAssets({ projectId: id, launchJobId, ctx }));
+  res.status(202).json(publicJob(job));
+}));
+router.post('/:id/launch-link', asyncRoute(async (req, res) => { try { res.json(await SL.linkLaunch(pid(req), { jobId: req.body?.jobId, status: req.body?.status ? String(req.body.status).slice(0, 20) : null })); } catch (e) { throw bad(e.message, e.code === 'NOT_FOUND' ? 404 : 400); } }));
+
+// ---- Smart Campaign → «النشر على المتجر»: preview, then an explicit confirmed update of the linked Easy Orders product's TEXT (WRITES to the live store)
+const pubOpts = (src) => ({ name: src?.name === true || src?.name === '1', description: src?.description === undefined ? true : (src.description === true || src.description === '1'), prices: src?.prices === true || src?.prices === '1' });
+const mediaErr = (e) => bad(e.message, e.code === 'NOT_FOUND' ? 404 : e.code === 'EO_REJECTED' ? 502 : e.code === 'STALE_PREVIEW' || e.code === 'NOT_CONFIRMED' ? 409 : 400);
+router.get('/:id/eo-publish/preview', asyncRoute(async (req, res) => { try { res.json(await EP.previewUpdate(pid(req), pubOpts(req.query))); } catch (e) { throw mediaErr(e); } }));
+router.post('/:id/eo-publish', asyncRoute(async (req, res) => { try { res.json(await EP.applyUpdate(pid(req), pubOpts(req.body?.options), { hash: String(req.body?.hash || ''), confirm: req.body?.confirm })); } catch (e) { throw mediaErr(e); } }));
 
 // ---- projects
 router.get('/', asyncRoute(async (_req, res) => res.json({ projects: await PP.listProjects() })));

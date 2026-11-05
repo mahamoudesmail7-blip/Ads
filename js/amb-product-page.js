@@ -26,6 +26,9 @@ async function pollJob(id, onTick) {
 
 export async function mountProductPage(panel, opts = {}) {
   const toast = toastOf(opts);
+  // embedded use (Smart Campaign): show only some sections of ONE project, without the page chrome; `start:'new'` opens the create form and reports the new project instead of opening it
+  S.only = Array.isArray(opts.sections) ? new Set(opts.sections) : null; S.embedded = !!opts.embedded; S.onCreated = typeof opts.onCreated === 'function' ? opts.onCreated : null;
+  if (opts.start === 'new') { S.view = 'new'; S.form = { name: '', price: '', oldPrice: '', facts: '', eo: null }; S.eo = { q: '', results: null }; } else if (opts.projectId) { S.view = 'project'; } else if (S.embedded) { S.view = 'list'; }
   const root = panel;
   if (S.poll) { clearInterval(S.poll); S.poll = null; }
 
@@ -99,6 +102,8 @@ export async function mountProductPage(panel, opts = {}) {
 
   function projectView() {
     const p = S.cur; const c = p.copy || {};
+    if (S.only) { const sec = { data: ['① بيانات المنتج وصورته', () => dataSection(p)], copy: ['المحتوى (العنوان والوصف والمميزات)', () => copySection(p, c)], caps: ['كابشنات الإعلان', () => capsSection(p)], imgs: ['صور الصفحة', () => `<div data-pgp-imgsec>${imagesSection(p)}</div>`], vids: ['الفيديوهات', () => videosSection(p)] };
+      return `<div class="pgp-main">${[...S.only].filter((k) => sec[k]).map((k) => det(k, true, sec[k][0], sec[k][1]())).join('')}</div>`; }
     return `<div class="pgp-head"><div><h3>🧾 ${esc(p.name)}</h3><small class="amt-dim">${p.eo ? 'مربوط بإيزي أوردر · ' : ''}الصفحة بالترتيب: المحتوى ثم الصور ثم الفيديوهات</small></div><div class="pgp-actions"><button class="amb-btn ghost" data-pgp-back>رجوع</button><button class="amb-btn ghost" data-pgp-del>مسح الصفحة</button></div></div>
     <div class="pgp-cols">
       <div class="pgp-main">
@@ -240,7 +245,7 @@ export async function mountProductPage(panel, opts = {}) {
 
   function wire() {
     const on = (sel, fn) => root.querySelectorAll(sel).forEach((el) => { el.onclick = (ev) => fn(el, ev); });
-    on('[data-pgp-back]', async () => { S.view = 'list'; S.cur = null; await loadList(); render(); });
+    on('[data-pgp-back]', async () => { if (S.embedded && typeof opts.onBack === 'function') return opts.onBack(); S.view = 'list'; S.cur = null; await loadList(); render(); });
     on('[data-pgp-new]', () => { S.view = 'new'; S.form = { name: '', price: '', oldPrice: '', facts: '', eo: null }; S.eo = { q: '', results: null }; render(); });
     on('[data-pgp-open]', (el) => openProject(el.dataset.pgpOpen).catch((e) => toast(e.message, 'error')));
 
@@ -260,7 +265,7 @@ export async function mountProductPage(panel, opts = {}) {
     root.querySelectorAll('[data-pgp-name],[data-pgp-price],[data-pgp-old],[data-pgp-facts]').forEach((el) => { el.oninput = keepForm; });
     on('[data-pgp-create]', async () => {
       keepForm(); S.busy.create = true; say('create', null); render();
-      try { const p = await api.post(B, { name: S.form.name, price: S.form.price, oldPrice: S.form.oldPrice, facts: lines(S.form.facts), eo: S.form.eo ? { id: S.form.eo.id, storeId: S.form.eo.storeId } : undefined }); S.busy.create = false; await loadList(); S.cur = p; S.view = 'project'; render(); startWatch(); }
+      try { const p = await api.post(B, { name: S.form.name, price: S.form.price, oldPrice: S.form.oldPrice, facts: lines(S.form.facts), eo: S.form.eo ? { id: S.form.eo.id, storeId: S.form.eo.storeId } : undefined }); S.busy.create = false; await loadList(); S.cur = p; if (S.onCreated) { S.onCreated(p); return; } S.view = 'project'; render(); startWatch(); }
       catch (e) { S.busy.create = false; say('create', e.message, true); render(); }
     });
 
@@ -373,6 +378,7 @@ export async function mountProductPage(panel, opts = {}) {
   // ---------------------------------------------------------------- boot
   root.innerHTML = '<div class="amb-loading">جارِ التحميل…</div>';
   try { await Promise.all([loadTemplates(), loadList()]); } catch (e) { root.innerHTML = `<div class="pgp-empty">تعذّر التحميل: ${esc(e.message)}</div>`; return; }
-  if (S.view === 'project' && S.cur) { try { await refresh(); startWatch(); } catch { S.view = 'list'; S.cur = null; } }
+  if (opts.projectId && (!S.cur || S.cur.id !== opts.projectId)) { try { S.cur = await api.get(`${B}/${opts.projectId}`); S.view = 'project'; S.draft = []; S.find = null; S.picks.clear(); S.editing = null; startWatch(); } catch { S.view = 'list'; S.cur = null; } }
+  else if (S.view === 'project' && S.cur) { try { await refresh(); startWatch(); } catch { S.view = 'list'; S.cur = null; } }
   render();
 }

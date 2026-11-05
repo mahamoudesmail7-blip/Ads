@@ -88,6 +88,8 @@ export function applyEoSync(id, detail, { overwrite = false } = {}) {
 function numOrNull(v) { if (v === '' || v === null || v === undefined) return null; const x = Number(v); if (!Number.isFinite(x) || x < 0) throw bad('السعر غير صالح.'); return Math.round(x * 100) / 100; }
 
 export async function getProject(id) { return read(id); }
+/** Read-modify-write of one project under its lock — for the Smart Campaign journey, which keeps its own `smart` section on the same row. */
+export const mutateProject = mutate;
 
 export async function listProjects() {
   const rows = await prisma.settings.findMany({ where: { id: { startsWith: PREFIX } } });
