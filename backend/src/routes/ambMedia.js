@@ -71,6 +71,14 @@ router.post('/ai-videos', launch('AI_VIDEOS', {
     : runAiVideos({ launchJobId, count: input.count, seconds: input.seconds, style: input.style, ctx })),
 }));
 
+/** The picture of a server-made image in a launch job's pool (a small JPEG kept when it was generated) — so the wizard can show it, enlarge it, and let the owner keep or drop it. */
+router.get('/image-preview', asyncRoute(async (req, res) => {
+  const { getPreview } = await import('../services/amb/media/launchAssets.js');
+  const p = await getPreview(String(req.query.launchJobId || ''), String(req.query.slotKey || ''));
+  if (!p) return res.status(404).json({ error: 'NOT_FOUND', message: 'مفيش معاينة محفوظة للصورة دي.' });
+  res.set('Content-Type', p.mime).set('Cache-Control', 'private, max-age=3600').send(p.data);
+}));
+
 /** Playable preview of a video already in a launch job's pool: Meta's own copy (a signed CDN URL that expires) — read-only. */
 router.get('/video-preview', asyncRoute(async (req, res) => {
   const jobId = String(req.query.launchJobId || ''), slotKey = String(req.query.slotKey || '');

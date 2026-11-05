@@ -39,9 +39,26 @@ async function getJson(url, fetchImpl) {
   return { json, text };
 }
 
+/** The upload step takes < 480 KB: a bigger photo is downscaled (max 900px side) and re-encoded as JPEG until it fits. null when it can't be decoded / won't fit. */
+export async function shrinkForLens(image) {
+  if (image.buffer.length <= MAX_UPLOAD_BYTES) return image;
+  try {
+    const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+    const img = await loadImage(image.buffer);
+    for (const side of [900, 700, 520]) {
+      const scale = Math.min(1, side / Math.max(img.width, img.height));
+      const c = createCanvas(Math.max(1, Math.round(img.width * scale)), Math.max(1, Math.round(img.height * scale))); const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+      for (const q of [82, 68, 52]) { const buf = c.toBuffer('image/jpeg', q); if (buf.length <= MAX_UPLOAD_BYTES) return { buffer: buf, mime: 'image/jpeg' }; }
+    }
+  } catch { /* not decodable */ }
+  return null;
+}
+
 /** Upload fallback from the spec: a photo under 480 KB → image_id (valid ~10 minutes). */
-async function uploadForLens({ key, image, fetchImpl }) {
-  if (image.buffer.length > MAX_UPLOAD_BYTES) throw new MediaError('صورة المنتج أكبر من 480KB ومفيش لها رابط عام — صغّرها وارفعها تاني عشان البحث بالصورة يشتغل.', 'IMAGE_TOO_BIG');
+async function uploadForLens({ key, image: original, fetchImpl }) {
+  const image = await shrinkForLens(original);
+  if (!image) throw new MediaError('صورة المنتج أكبر من 480KB ومفيش لها رابط عام — صغّرها وارفعها تاني عشان البحث بالصورة يشتغل.', 'IMAGE_TOO_BIG');
   const form = new FormData();
   form.append('image', new Blob([image.buffer], { type: image.mime || 'image/jpeg' }), 'product.jpg');
   form.append('api_key', key);

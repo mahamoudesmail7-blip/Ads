@@ -17,6 +17,7 @@ import { seedDecisionDemo } from './seed.js';
 import { activeOrdersProvider } from './orders-provider.js';
 import { exportAllDataForMigration, downloadAsFile } from './indexeddb-export.js';
 import { api } from './api-client.js';
+import { mountMediaKeys } from './media-keys.js';
 import { getEffectiveTheme, setTheme } from './theme.js';
 
 const ROLE_LABELS_AR = { ADMIN: 'مدير النظام', MANAGER: 'مدير', EMPLOYEE: 'موظف' };
@@ -45,6 +46,7 @@ const FIELD_MAP = {
 };
 
 async function init() {
+  mountMediaKeys(document.getElementById('mediaKeysBody'), { toast: (m, t) => UI.toast(m, t) });
   UI.renderSidebar('settings');
   document.getElementById('providerName').textContent = activeOrdersProvider.name;
   // Wrapped: this page is also opened on a legacy/no-backend origin purely

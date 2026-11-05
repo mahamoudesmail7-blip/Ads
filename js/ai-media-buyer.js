@@ -8,7 +8,7 @@
 // main cards.
 import * as UI from './ui-common.js';
 import { api } from './api-client.js';
-import { mountMediaTools } from './amb-media-tools.js';
+import { mountMediaTools, openImageViewer, imagePreviewUrl } from './amb-media-tools.js';
 import { mountProductPage } from './amb-product-page.js';
 import { lucide } from './launch-icons.js';
 import * as LG from './launch-globe.js';
@@ -6254,10 +6254,11 @@ function launchVideoCardHtml(entry) {
   const total = entry.progress?.total || entry.size || 0;
   const pct = entry.status === 'UPLOADED' ? 100 : (total ? Math.round((entry.progress.sent / total) * 100) : 0);
   const showBar = entry.status === 'UPLOADING' || entry.status === 'UPLOADED';
+  const serverImage = isImage && !entry.thumbnailUrl && !entry.file && launchState.jobId && (Number(String(entry.slotKey).slice(1)) || 0) >= 101; // made by the media tools: its picture lives on the server
   return `
   <div class="lp-mcard" id="ambLaunchVid-${E(entry.slotKey)}" data-kind="${isImage ? 'image' : 'video'}">
     <div class="lp-mthumb">
-      ${entry.thumbnailUrl ? `<img src="${entry.thumbnailUrl}" alt="" />` : lucide(isImage ? 'image' : 'video', 28)}
+      ${entry.thumbnailUrl ? `<img src="${entry.thumbnailUrl}" alt="" />` : serverImage ? `<img loading="lazy" src="${E(imagePreviewUrl(launchState.jobId, entry.slotKey))}" alt="" onerror="this.remove()" />` : lucide(isImage ? 'image' : 'video', 28)}
       <span class="lp-mkind">${lucide(isImage ? 'image' : 'video', 12)}</span>
     </div>
     <div class="lp-mbody">
@@ -6269,6 +6270,7 @@ function launchVideoCardHtml(entry) {
     <div class="lp-mact">
       ${entry.status === 'FAILED' && entry.file ? `<button class="amb-btn ghost sm" data-vid-retry="${E(entry.slotKey)}">إعادة المحاولة</button>` : ''}
       ${entry.status === 'FAILED' && !entry.file ? `<button class="amb-btn ghost sm" data-vid-reselect="${E(entry.slotKey)}">🔁 اختر ${isImage ? 'الصورة' : 'الفيديو'} تاني</button><input type="file" data-vid-reselect-input="${E(entry.slotKey)}" accept="${isImage ? 'image/*' : 'video/*'}" style="display:none;" />` : ''}
+      ${isImage && (entry.thumbnailUrl || serverImage) ? `<button class="amb-btn ghost sm" data-img-view="${E(entry.slotKey)}" title="معاينة بحجم كبير">🔍 معاينة</button>` : ''}
       ${!isImage && entry.status === 'UPLOADED' && entry.metaVideoId ? `<button class="amb-btn ghost sm" data-vid-watch="${E(entry.slotKey)}" title="شاهد الفيديو">▶ شاهد</button>` : ''}
       ${entry.status !== 'UPLOADING' ? `<button class="lp-xbtn static" data-vid-remove="${E(entry.slotKey)}" title="إزالة">${lucide('x', 14)}</button>` : ''}
     </div>
@@ -6321,6 +6323,10 @@ function wireLaunchVideoCard(entry) {
   }
   const watch = el.querySelector('[data-vid-watch]');
   if (watch) watch.onclick = () => launchWatchVideo(entry);
+  const imgView = el.querySelector('[data-img-view]');
+  if (imgView) imgView.onclick = () => openImageViewer(entry.thumbnailUrl || imagePreviewUrl(launchState.jobId, entry.slotKey), `${entry.slotKey} · ${entry.name || ''}`);
+  const thumbEl = el.querySelector('.lp-mthumb');
+  if (thumbEl && imgView) { thumbEl.style.cursor = 'zoom-in'; thumbEl.onclick = () => imgView.click(); }
   const remove = el.querySelector('[data-vid-remove]');
   if (remove) remove.onclick = async () => {
     // Deletes the backend row FIRST (when one could exist) — otherwise the
@@ -6609,6 +6615,11 @@ async function renderLaunchVideos(body) {
     getProductId: () => launchState.productId || null,
     ensureJob: async () => { await ensureLaunchJobStarted(); return launchState.jobStarted ? launchState.jobId : null; },
     // a server-made asset is already a row on the job: pull it into the pool and repaint ONLY the list (the tools panel keeps its state)
+    onRemove: (slotKey) => {
+      launchState.videos = launchState.videos.filter((v) => v.slotKey !== slotKey);
+      const list = $('ambLaunchVideoList');
+      if (list) { list.innerHTML = launchState.videos.map(launchVideoCardHtml).join(''); for (const v of launchState.videos) wireLaunchVideoCard(v); updateLaunchProgressSummary(); }
+    },
     onAdded: async () => {
       await syncLaunchVideosFromBackend({ force: true });
       const list = $('ambLaunchVideoList');

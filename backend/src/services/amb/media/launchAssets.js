@@ -12,6 +12,29 @@ import { MediaError } from './mediaJobs.js';
 
 export const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
+const previewKey = (jobId, slotKey) => `lp/${jobId}/${slotKey}`;
+/** A server-made image has no file in the owner's browser, so we keep a small JPEG copy (cf_blobs) the wizard can show and enlarge. Best effort: a failure only means "no preview". */
+export async function savePreview(jobId, slotKey, buffer, mime = 'image/png') {
+  try {
+    let data = buffer, type = mime;
+    try { // ~1 MB PNG → ~150 KB JPEG
+      const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+      const img = await loadImage(buffer);
+      const scale = Math.min(1, 1024 / Math.max(img.width, img.height));
+      const c = createCanvas(Math.round(img.width * scale), Math.round(img.height * scale)); const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+      data = c.toBuffer('image/jpeg', 85); type = 'image/jpeg';
+    } catch { /* keep the original bytes */ }
+    const key = previewKey(jobId, slotKey);
+    await prisma.cfBlob.upsert({ where: { key }, create: { key, data, mime: type, bytes: data.length }, update: { data, mime: type, bytes: data.length } });
+  } catch { /* no preview is not a failure of the upload */ }
+}
+export async function getPreview(jobId, slotKey) {
+  if (!/^[a-z0-9_-]{8,80}$/i.test(String(jobId)) || !/^I\d{1,4}$/.test(String(slotKey))) return null;
+  const row = await prisma.cfBlob.findUnique({ where: { key: previewKey(jobId, slotKey) } });
+  return row ? { data: Buffer.from(row.data), mime: row.mime } : null;
+}
+
 async function nextKey(launchJobId, kind) {
   const prefix = kind === 'image' ? 'I' : 'C';
   const rows = kind === 'image'
@@ -35,6 +58,7 @@ export async function addImageToPool({ launchJobId, buffer, filename, mime = 'im
     if (dup?.status === 'UPLOADED' && dup.meta_image_hash) { await launch.markImageResult({ jobId: launchJobId, slotKey, status: 'UPLOADED', metaImageHash: dup.meta_image_hash }); return { slotKey, imageHash: dup.meta_image_hash, deduped: true }; }
   }
   void row;
+  await savePreview(launchJobId, slotKey, buffer, mime);
   await launch.markImageResult({ jobId: launchJobId, slotKey, status: 'UPLOADING' }).catch(() => {});
   try {
     const { hash } = await (deps.uploadImage || uploadAdImageBuffer)(token, job.ad_account_id, buffer);

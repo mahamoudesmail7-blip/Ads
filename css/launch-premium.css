@@ -346,3 +346,16 @@
 .amt-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
 
 .pgp-pack { border: 2px solid #6a5cf7; border-radius: 16px; padding: 12px 14px; background: linear-gradient(180deg, #faf9ff, #fff); display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; } .pgp-pack b { font-size: 14px; } .pgp-pack small { line-height: 1.7; }
+
+/* media tools: key hint (the key panel moved to Settings), generated-images gallery, full-size image viewer */
+.amt-keyhint { margin: 0 0 10px; padding: 8px 12px; border-radius: 12px; background: #fff7e6; color: #8a5a00; font-size: 12.5px; border: 1px solid #f6d58a; } .amt-keyhint a { color: inherit; font-weight: 800; text-decoration: underline; }
+.amt-gal { margin-top: 10px; padding: 10px; border-radius: 14px; background: var(--lp-soft, #f6f8fe); border: 1px solid var(--lp-line, #e3e8f5); }
+.amt-galhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.amt-galgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 10px; }
+.amt-galitem { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.amt-galimg { padding: 0; border: 1px solid var(--lp-line, #e3e8f5); border-radius: 12px; overflow: hidden; background: #fff; cursor: zoom-in; aspect-ratio: 1 / 1; display: grid; place-items: center; transition: transform .2s, box-shadow .2s; }
+.amt-galimg:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(30, 40, 90, .18); } .amt-galimg img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.amt-galitem figcaption { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; font-weight: 700; color: var(--lp-dim, #566178); }
+.amt-galdel { border: 0; width: 22px; height: 22px; border-radius: 50%; background: #fde8e8; color: #c0392b; cursor: pointer; font-size: 12px; line-height: 1; } .amt-galdel:hover { background: #c0392b; color: #fff; }
+.amt-viewer.img .amt-viewer-box { max-width: min(94vw, 920px); } .amt-viewer-box img { max-width: 100%; max-height: 82vh; border-radius: 12px; background: #fff; display: block; }
+.lp-mthumb img { object-fit: cover; }

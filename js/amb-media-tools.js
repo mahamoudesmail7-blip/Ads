@@ -1,5 +1,5 @@
 // AMB smart media tools — the panel inside the launch wizard's «الفيديوهات والصور» step.
-//   0) provider keys (Apify / fal.ai / SerpApi; OpenAI shown read-only)      1) AI page images
+//   0) (the provider keys moved to Settings → «مفاتيح مزوّدي الميديا»; here only a hint when something isn't linked)   1) AI page images
 //   2) find existing product videos → pick → import into the creative pool   3) short AI videos from the product photo
 // Long work runs as a server job; this file starts it and polls. State lives at module level so the wizard re-rendering the step
 // (it does, on every upload) never loses the search result, the selection or a running job's progress bar.
@@ -26,23 +26,34 @@ async function pollJob(id, onTick, { everyMs = 2000, maxMs = 35 * 60_000 } = {})
   }
 }
 
-function keyRow(id, p) {
-  const chip = p.configured
-    ? `<span class="amt-chip on">✓ مربوط${p.source === 'ENV' ? ' (من إعدادات السيرفر)' : ''}${p.last4 ? ` · …${esc(p.last4)}` : ''}</span>`
-    : '<span class="amt-chip off">غير مربوط</span>';
-  const actions = p.envOnly ? ''
-    : `<button type="button" class="amb-btn sm" data-amt-edit="${id}">${p.configured ? 'تغيير' : 'ربط'}</button>
-       ${p.configured ? `<button type="button" class="amb-btn sm" data-amt-test="${id}">اختبار</button>` : ''}
-       ${p.source === 'SAVED' ? `<button type="button" class="amb-btn sm" data-amt-del="${id}">مسح</button>` : ''}`;
-  return `<div class="amt-row" data-amt-row="${id}">
-    <div class="amt-main"><b>${esc(p.label)}</b><small class="amt-dim">${esc(p.usedFor)}</small>${p.envOnly && !p.configured ? '<small class="amt-dim">بيتظبط من Railway (متغير OPENAI_API_KEY) وشحن الرصيد من platform.openai.com</small>' : ''}</div>
-    <div class="amt-side">${chip}${actions}</div>
-    <div class="amt-edit" data-amt-form="${id}" hidden>
-      <input type="password" autocomplete="off" spellcheck="false" placeholder="الصق المفتاح هنا" data-amt-input="${id}" />
-      <button type="button" class="amb-btn sm primary" data-amt-save="${id}">حفظ</button>
-    </div>
-    <div class="amt-msg" data-amt-msg="${id}"></div>
-  </div>`;
+/** One line instead of the old key panel: which providers still need linking, and a way to the Settings page. */
+function keysHint(providers) {
+  const missing = ORDER.filter((id) => providers[id] && !providers[id].configured).map((id) => providers[id].label);
+  if (!missing.length) return '';
+  return `<div class="amt-keyhint">⚙️ لسه مش مربوط: <b>${esc(missing.join('، '))}</b> — اربطه من <a href="#" data-amt-settings>الإعدادات ← مفاتيح مزوّدي الميديا</a></div>`;
+}
+
+/** Full-size look at a picture (mounted on <html>: the embedded page's body carries a transform, which would pin a fixed overlay mid-page). */
+export function openImageViewer(src, caption = '') {
+  document.querySelectorAll('.amt-viewer.img').forEach((x) => x.remove());
+  const ov = document.createElement('div');
+  ov.className = 'amt-viewer img';
+  ov.innerHTML = `<div class="amt-viewer-box"><button type="button" class="amt-viewer-x" aria-label="إغلاق">✕</button><img src="${esc(src)}" alt="" />${caption ? `<small>${esc(caption)}</small>` : ''}</div>`;
+  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  ov.onclick = (e) => { if (e.target === ov) close(); };
+  ov.querySelector('.amt-viewer-x').onclick = close;
+  document.addEventListener('keydown', onKey);
+  document.documentElement.appendChild(ov);
+}
+export const imagePreviewUrl = (jobId, slotKey) => `/api/amb-media/image-preview?launchJobId=${encodeURIComponent(jobId)}&slotKey=${encodeURIComponent(slotKey)}`;
+
+/** The pictures this tool just made: look at each (click = full size) and drop the ones you don't want. */
+function galleryHtml(s, jobId) {
+  const list = s.gallery || [];
+  if (!list.length || !jobId) return '';
+  return `<div class="amt-gal"><div class="amt-galhead"><b>الصور اللي اتولّدت (${list.length})</b><small class="amt-dim">اضغط على صورة تكبّرها · ✕ تستبعدها من قائمة الرفع</small></div>
+    <div class="amt-galgrid">${list.map((k) => `<figure class="amt-galitem"><button type="button" class="amt-galimg" data-amt-gview="${esc(k)}" title="تكبير"><img loading="lazy" src="${esc(imagePreviewUrl(jobId, k))}" alt="${esc(k)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'🖼️'}))"></button><figcaption>${esc(k)}<button type="button" class="amt-galdel" data-amt-gdel="${esc(k)}" title="استبعاد" aria-label="استبعاد ${esc(k)}">✕</button></figcaption></figure>`).join('')}</div></div>`;
 }
 
 const bar = (s, k) => (s.busy[k] ? `<div class="amt-prog"><i style="width:${s.bar[k]?.pct || 3}%"></i></div><small class="amt-dim">${esc(s.bar[k]?.message || 'شغال…')}</small>` : '');
@@ -59,7 +70,7 @@ function candidateCard(c, selected) {
     <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer" class="amt-open">فتح الأصل ↗</a></div></label>`;
 }
 
-export async function mountMediaTools(el, { toast = () => {}, getJobId = () => null, getProductId = () => null, ensureJob = async () => null, onAdded = async () => {} } = {}) {
+export async function mountMediaTools(el, { toast = () => {}, getJobId = () => null, getProductId = () => null, ensureJob = async () => null, onAdded = async () => {}, onRemove = () => {} } = {}) {
   if (!el) return;
   el.innerHTML = '<div class="amt-dim">بيحمّل حالة الربط…</div>';
   let providers, caps;
@@ -71,8 +82,8 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
     const J = jobId(); const s = st('w');
     const cands = s.find?.candidates || [];
     el.innerHTML = `
-      <div class="amt-head"><b>🧰 أدوات الميديا الذكية</b><small class="amt-dim">اربط المزوّدين مرة واحدة، والأدوات بتضيف الفيديوهات والصور لنفس قائمة الرفع تحت</small></div>
-      <details class="amt-keys"><summary>🔑 ربط المزوّدين (مفاتيح مشفّرة)</summary><div class="amt-rows">${ORDER.filter((id) => providers[id]).map((id) => keyRow(id, providers[id])).join('')}</div></details>
+      <div class="amt-head"><b>🧰 أدوات الميديا الذكية</b><small class="amt-dim">الأدوات بتضيف الفيديوهات والصور لنفس قائمة الرفع تحت (مفاتيح المزوّدين من الإعدادات)</small></div>
+      ${keysHint(providers)}
 
       <div class="amt-tool" data-tool="photo">
         <div class="amt-th"><b>📷 صورة المنتج</b><small class="amt-dim">كل الأدوات بتبدأ من صورة المنتج الحقيقية. لو السيستم مالقاش صورة، ارفع واحدة (JPG/PNG حتى 8MB)</small></div>
@@ -85,7 +96,7 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
           <select data-amt-pi-style>${Object.entries(caps.pageImages.styles || {}).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select>
           <select data-amt-pi-count>${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${n === 3 ? 'selected' : ''}>${n} صور</option>`).join('')}</select>
           <button type="button" class="amb-btn sm primary" data-amt-go="pi" ${s.busy.pi || !caps.pageImages.ready ? 'disabled' : ''}>ولّد الصور</button>
-        </div>${disabledWhy(caps.pageImages)}${bar(s, 'pi')}${note(s, 'pi')}
+        </div>${disabledWhy(caps.pageImages)}${bar(s, 'pi')}${note(s, 'pi')}${galleryHtml(s, J)}
       </div>
 
       <div class="amt-tool" data-tool="find">
@@ -151,20 +162,17 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
 
   function wire() {
     const J = jobId(); const s = st('w');
-    el.querySelectorAll('[data-amt-edit]').forEach((b) => { b.onclick = () => { const f = el.querySelector(`[data-amt-form="${b.dataset.amtEdit}"]`); f.hidden = !f.hidden; if (!f.hidden) f.querySelector('input').focus(); }; });
-    el.querySelectorAll('[data-amt-save]').forEach((b) => {
+    const toSettings = el.querySelector('[data-amt-settings]');
+    if (toSettings) toSettings.onclick = (e) => { e.preventDefault(); try { window.top.location.hash = '#/settings.html'; } catch { window.location.href = 'settings.html'; } };
+
+    el.querySelectorAll('[data-amt-gview]').forEach((b) => { b.onclick = () => openImageViewer(imagePreviewUrl(jobId(), b.dataset.amtGview), b.dataset.amtGview); });
+    el.querySelectorAll('[data-amt-gdel]').forEach((b) => {
       b.onclick = async () => {
-        const id = b.dataset.amtSave; const input = el.querySelector(`[data-amt-input="${id}"]`); b.disabled = true;
-        try {
-          providers[id] = await api.put(`/api/amb-media/keys/${id}`, { value: input.value }); input.value = '';
-          caps = await api.get('/api/amb-media/capabilities'); render(); el.querySelector('.amt-keys').open = true; toast('اتحفظ المفتاح (مشفّر).', 'success');
-          const t = await api.post(`/api/amb-media/keys/${id}/test`, {}); msg(id, t.message, !t.ok);
-        } catch (e) { msg(id, e.message, true); b.disabled = false; }
+        const k = b.dataset.amtGdel; const J2 = jobId(); if (!J2) return; b.disabled = true;
+        try { await api.delete(`/api/ai-media-buyer/launch/jobs/${J2}/images/${k}`); s.gallery = (s.gallery || []).filter((x) => x !== k); onRemove(k); render(); toast('اتشالت الصورة من قائمة الرفع.', 'success'); }
+        catch (e) { b.disabled = false; toast(e.message || 'تعذّر استبعاد الصورة.', 'error'); }
       };
     });
-    el.querySelectorAll('[data-amt-test]').forEach((b) => { b.onclick = async () => { b.disabled = true; try { const t = await api.post(`/api/amb-media/keys/${b.dataset.amtTest}/test`, {}); msg(b.dataset.amtTest, t.message, !t.ok); } catch (e) { msg(b.dataset.amtTest, e.message, true); } b.disabled = false; }; });
-    el.querySelectorAll('[data-amt-del]').forEach((b) => { b.onclick = async () => { if (!confirm('تمسح المفتاح المحفوظ؟')) return; try { providers[b.dataset.amtDel] = await api.delete(`/api/amb-media/keys/${b.dataset.amtDel}`); caps = await api.get('/api/amb-media/capabilities'); render(); el.querySelector('.amt-keys').open = true; } catch (e) { msg(b.dataset.amtDel, e.message, true); } }; });
-
     const photoBtn = el.querySelector('[data-amt-photo]'), photoIn = el.querySelector('[data-amt-photo-input]');
     if (photoBtn && photoIn) {
       photoBtn.onclick = () => photoIn.click();
@@ -186,8 +194,14 @@ export async function mountMediaTools(el, { toast = () => {}, getJobId = () => n
     el.querySelectorAll('[data-amt-pick]').forEach((cb) => { cb.onchange = () => { cb.checked ? s.selected.add(cb.dataset.amtPick) : s.selected.delete(cb.dataset.amtPick); cb.closest('.amt-cand').classList.toggle('on', cb.checked); const go = el.querySelector('[data-amt-go="imp"]'); if (go) { go.disabled = s.busy.imp || !s.selected.size; go.textContent = `استورد المختار (${s.selected.size})`; } }; });
     const val = (sel) => el.querySelector(sel)?.value;
     const go = (k) => el.querySelector(`[data-amt-go="${k}"]`);
-    if (go('pi')) go('pi').onclick = async () => { const d = await runTool('pi', '/api/amb-media/page-images', { count: Number(val('[data-amt-pi-count]')), style: val('[data-amt-pi-style]') }, { okText: (r) => `اتضافت ${r.added.length} صورة لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length})` : ''}.` }); if (d) { await onAdded(); render(); } };
-    if (go('find')) go('find').onclick = async () => { s.find = null; s.selected.clear(); const manualUrls = s.links.split(/\s+/).filter(Boolean); const d = await runTool('find', '/api/amb-media/videos/find', { target: Number(val('[data-amt-find-target]')), manualUrls }, { okText: (r) => `لقيت ${r.candidates.length} فيديو — اختار اللي عايزه.` }); if (d) { s.find = { ...d.result, jobId: d.id }; render(); } };
+    if (go('pi')) go('pi').onclick = async () => { const d = await runTool('pi', '/api/amb-media/page-images', { count: Number(val('[data-amt-pi-count]')), style: val('[data-amt-pi-style]') }, { okText: (r) => `اتضافت ${r.added.length} صورة لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length})` : ''} — شوفها تحت واستبعد اللي مش عاجبك.` }); if (d) { s.gallery = [...new Set([...(s.gallery || []), ...(d.result.added || [])])]; await onAdded(); render(); } };
+    if (go('find')) go('find').onclick = async () => { s.find = null; s.selected.clear(); const manualUrls = s.links.split(/\s+/).filter(Boolean); const d = await runTool('find', '/api/amb-media/videos/find', { target: Number(val('[data-amt-find-target]')), manualUrls }, { okText: (r) => (r.candidates.length ? `لقيت ${r.candidates.length} فيديو شبه المنتج — اختار اللي عايزه.${r.filteredOut ? ` (استبعدت ${r.filteredOut} فيديو مش شبهه.)` : ''}` : '') });
+      if (d) {
+        s.find = { ...d.result, jobId: d.id };
+        if (!d.result.candidates.length) s.msg.find = { bad: true, text: `مفيش فيديو مطابق للمنتج ظهر${d.result.filteredOut ? ` (استبعدت ${d.result.filteredOut} فيديو الغلاف بتاعهم مش بيبيّن المنتج)` : ''}. جرّب صورة منتج أوضح (الجهاز لوحده على خلفية بيضا)، أو الصق لينكات فيديوهات بنفسك.` };
+        render();
+      }
+    };
     if (go('imp')) go('imp').onclick = async () => { const d = await runTool('imp', '/api/amb-media/videos/import', { findJobId: s.find.jobId, ids: [...s.selected] }, { okText: (r) => `اتضاف ${r.added.length} فيديو لقائمة الرفع${r.failed?.length ? ` (فشل ${r.failed.length}: ${r.failed[0].error})` : ''}.` }); if (d) { s.selected.clear(); await onAdded(); render(); } };
     const modeSel = el.querySelector('[data-amt-ai-mode]'); if (modeSel) modeSel.onchange = () => { s.aiMode = modeSel.value; render(); };
     const factsTa = el.querySelector('[data-amt-ai-facts]'); if (factsTa) factsTa.oninput = () => { s.aiFacts = factsTa.value; };

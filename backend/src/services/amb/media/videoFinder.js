@@ -54,7 +54,7 @@ export async function scoreCovers({ name, image, candidates, fetchImpl = fetch, 
   for (let i = 0; i < candidates.length; i += COVER_BATCH) {
     const batch = candidates.slice(i, i + COVER_BATCH);
     const covers = await Promise.all(batch.map((c) => (c.thumbnail ? coverBytes(c.thumbnail, fetchImpl) : null)));
-    const content = [{ type: 'text', text: `The first image is the REAL product "${name}". Then ${covers.filter(Boolean).length} video covers, each preceded by its index. For each cover score 0-100 how likely the same exact product is visible (50 = product not visible, below 30 = other product). JSON only: {"results":[{"index":number,"score":number,"note":"short Arabic note"}]}` },
+    const content = [{ type: 'text', text: `The first image is the REAL product "${name}". Then ${covers.filter(Boolean).length} video covers, each preceded by its index. For each cover score 0-100 how sure you are that the SAME exact product (same shape, colors, parts) is clearly visible: 80-100 = clearly the same product; 50-79 = a very similar item or only partly visible; 20-49 = the product is NOT visible (a person, scenery, text, unrelated object); 0-19 = a different product. Be strict — a cover without the product must score under 50. JSON only: {"results":[{"index":number,"score":number,"note":"short Arabic note"}]}` },
       { type: 'image', source: { type: 'base64', media_type: image.mime, data: image.buffer.toString('base64') } }];
     covers.forEach((cv, k) => { if (cv) { content.push({ type: 'text', text: `index ${k}` }, { type: 'image', source: { type: 'base64', media_type: cv.mime, data: cv.buffer.toString('base64') } }); } });
     if (content.length <= 2) continue;
@@ -64,6 +64,19 @@ export async function scoreCovers({ name, image, candidates, fetchImpl = fetch, 
     } catch { /* this batch stays unscored */ }
   }
   return candidates;
+}
+
+/** A cover must really show the product. Photo-search (Lens) hits are visual matches already, so they pass at a lower score; everything else needs a clear match. */
+export const MIN_MATCH = { LENS: 40, DEFAULT: 65 };
+/** Pure: keeps pasted links, photo-search hits and covers that clearly show the product; drops the rest. Unscored non-Lens candidates can't be verified → dropped. */
+export function filterRelevant(list) {
+  const kept = []; let dropped = 0;
+  for (const c of list) {
+    if (c.source === 'MANUAL') { kept.push(c); continue; }
+    if (c.matchScore == null) { if (c.source === 'LENS') kept.push(c); else dropped++; continue; }
+    if (c.matchScore >= (MIN_MATCH[c.source] ?? MIN_MATCH.DEFAULT)) kept.push(c); else dropped++;
+  }
+  return { kept, dropped };
 }
 
 /** Pure ordering: pasted links first, then running Meta ads (longest/most-duplicated first), then by cover score, then by views. */
@@ -135,6 +148,7 @@ export async function runVideoFinder({ launchJobId, target = 12, manualUrls = []
   const scoreable = candidates.filter((c) => c.thumbnail).slice(0, Math.max(want * 3, 30));
   if (ai && pc.image && scoreable.length) { await ctx.progress(60, 'بقارن الأغلفة بصورة المنتج'); await scoreCovers({ name: pc.product.name, image: pc.image, candidates: scoreable, fetchImpl, ask: deps.ask }); }
 
-  candidates = sortCandidates(candidates).slice(0, want + 10);
-  return { product: pc.product.name, queries: allQueries, hashtags, sources, scored: !!(ai && pc.image), lens: lens ? { searches: lens.searches, accounts: lens.accounts, usedPublicUrl: !!pc.image.url } : null, candidates };
+  const { kept, dropped } = filterRelevant(candidates);
+  candidates = sortCandidates(kept).slice(0, want + 10);
+  return { product: pc.product.name, queries: allQueries, hashtags, sources, scored: !!(ai && pc.image), filteredOut: dropped, found: pool.length, lens: lens ? { searches: lens.searches, accounts: lens.accounts, usedPublicUrl: !!pc.image.url } : null, candidates };
 }

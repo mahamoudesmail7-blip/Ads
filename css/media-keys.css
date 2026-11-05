@@ -1,0 +1,10 @@
+/* مفاتيح مزوّدي الميديا (صفحة الإعدادات) */
+.mk-rows { display: grid; gap: 8px; }
+.mk-row { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border, #e7eaf0); border-radius: 14px; background: var(--bg-card, #fff); }
+.mk-main { display: flex; flex-direction: column; gap: 2px; } .mk-main b { font-size: 14px; } .mk-main small, .mk-dim { color: var(--text-dim, #566178); font-size: 12px; }
+.mk-side { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.mk-chip { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+.mk-chip.on { background: #e5f7ec; color: #14783a; } .mk-chip.off { background: #f1f3f8; color: #566178; }
+.mk-edit { grid-column: 1 / -1; display: flex; gap: 8px; } .mk-edit[hidden] { display: none; }
+.mk-edit input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border, #e7eaf0); border-radius: 10px; direction: ltr; background: var(--bg-card, #fff); color: var(--text, #1f2937); }
+.mk-msg { grid-column: 1 / -1; font-size: 12px; font-weight: 600; } .mk-msg:empty { display: none; } .mk-msg.good { color: #14783a; } .mk-msg.bad { color: #c0392b; }

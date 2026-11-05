@@ -203,7 +203,7 @@ try {
   ok('fal balance error surfaces', e?.code === 'FAL_BALANCE');
   let seenName = null, seenImg = null;
   const fr = await PV.runPageVideoFinder({ projectId: vp.id, target: 3, ctx, deps: { ai: false, serpKey: null, apify: { searchTikTok: async (q) => { seenName = q[0]; return { videos: [{ url: 'https://www.tiktok.com/@a/video/8', directUrl: null, source: 'TIKTOK', author: 'a', caption: '', views: 5, likes: 1, durationSec: 10, thumbnail: null, adDays: null, adCount: null }], usd: 0 }; }, searchInstagramReels: async () => ({ videos: [], usd: 0 }), searchMetaAdLibrary: async () => { seenImg = true; return { videos: [], usd: 0 }; } } } });
-  ok('the finder runs on the PROJECT (its name drives the search, no launch job involved)', seenName === 'فيديو' && seenImg === true && fr.candidates.length === 1);
+  ok('the finder runs on the PROJECT (its name drives the search, no launch job involved)', seenName === 'فيديو' && seenImg === true && fr.candidates.length === 0 && fr.filteredOut === 1); // unscored TikTok cover can't be verified → not shown
   await PP.removeVideo(vp.id, av.added[0]);
   ok('removing a video deletes its stored file', (await PP.getAsset(vp.id, av.added[0])) === null && (await PP.getProject(vp.id)).videos.length === 2);
 

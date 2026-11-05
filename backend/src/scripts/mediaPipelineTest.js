@@ -131,8 +131,18 @@ try {
       apify: { searchTikTok: async () => ({ videos: [v('https://www.tiktok.com/@a/video/1'), v('https://www.tiktok.com/@a/video/1'), v('https://www.tiktok.com/@a/video/2', { durationSec: 300 })], usd: 0.1 }), searchInstagramReels: async () => { throw new J.MediaError('Apify: الرصيد خلص.', 'APIFY_LIMIT'); }, searchMetaAdLibrary: async () => ({ videos: [v('https://www.facebook.com/ads/library/?id=5', { source: 'META_ADS', adDays: 9 })], usd: 0.2 }) } },
   });
   ok('finder: failing source reported, others kept', finder.sources.find((s) => s.id === 'instagram').ok === false && finder.sources.find((s) => s.id === 'tiktok').count === 3);
-  ok('finder: duplicates removed, >120 s videos dropped, bad manual URL ignored', finder.candidates.length === 3 && !finder.candidates.some((c) => c.url.includes('evil')) && !finder.candidates.some((c) => c.url.endsWith('/2')), finder.candidates.map((c) => c.url).join(','));
-  ok('finder: manual link first, then the Meta ad', finder.candidates[0].source === 'MANUAL' && finder.candidates[1].source === 'META_ADS');
+  ok('finder: with no way to verify the covers, only the pasted link survives; the unverifiable TikTok / ad results are dropped and counted (no unrelated videos shown)', finder.candidates.length === 1 && finder.candidates[0].source === 'MANUAL' && finder.filteredOut === 2 && !finder.candidates.some((c) => c.url.includes('evil')), JSON.stringify({ c: finder.candidates.map((x) => x.url), f: finder.filteredOut }));
+  const withCovers = (u, extra = {}) => v(u, { thumbnail: 'https://t/' + u.slice(-2) + '.jpg', ...extra });
+  const scored = await VF.runVideoFinder({
+    launchJobId: LJ, target: 5, ctx,
+    deps: { resolveProduct: async () => ({ product: { id: 1, name: 'Luma Force' }, image: { buffer: Buffer.from('p'), mime: 'image/png' } }), ai: true, serpKey: null,
+      fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer, headers: new Headers({ 'content-type': 'image/jpeg' }) }),
+      ask: async ({ content }) => ({ results: [{ index: 0, score: 92, note: 'نفس المنتج' }, { index: 1, score: 50, note: 'المنتج مش ظاهر' }, { index: 2, score: 64, note: 'شبه' }, { index: 3, score: 8, note: 'منتج تاني' }] }),
+      apify: { searchTikTok: async () => ({ videos: [withCovers('https://www.tiktok.com/@a/video/11'), withCovers('https://www.tiktok.com/@a/video/12'), withCovers('https://www.tiktok.com/@a/video/13'), withCovers('https://www.tiktok.com/@a/video/14')], usd: 0 }), searchInstagramReels: async () => ({ videos: [], usd: 0 }), searchMetaAdLibrary: async () => ({ videos: [], usd: 0 }) } },
+  });
+  ok('finder (scored): only the cover that clearly shows the product (92) is kept — 50 "not visible", 64 and 8 "other product" are dropped and counted', scored.candidates.length === 1 && scored.candidates[0].matchScore === 92 && scored.filteredOut === 3, JSON.stringify({ c: scored.candidates.map((x) => x.matchScore), f: scored.filteredOut }));
+  const rel = VF.filterRelevant([{ source: 'LENS', matchScore: 41 }, { source: 'LENS', matchScore: 39 }, { source: 'LENS', matchScore: null }, { source: 'TIKTOK', matchScore: 65 }, { source: 'TIKTOK', matchScore: 64 }, { source: 'META_ADS', matchScore: null }, { source: 'MANUAL', matchScore: 0 }]);
+  ok('filterRelevant: Lens hits pass from 40 (or unscored), others need 65, unscored non-Lens dropped, pasted links always kept', rel.kept.length === 4 && rel.dropped === 3, JSON.stringify(rel));
   ok('finder: candidates carry a stable id', finder.candidates.every((c) => /^[0-9a-f]{12}$/.test(c.id)) && finder.candidates[0].id === VF.candidateId(finder.candidates[0].url));
   e = await rejects(VF.runVideoFinder({ launchJobId: LJ, ctx, deps: { resolveProduct: async () => ({ product: { id: 1, name: 'Luma Force' }, image: null }), ai: false, apify: { searchTikTok: async () => { throw new J.MediaError('x1', 'A'); }, searchInstagramReels: async () => { throw new J.MediaError('x2', 'A'); }, searchMetaAdLibrary: async () => { throw new J.MediaError('x3', 'A'); } } } }));
   ok('all sources failing → ALL_SOURCES_FAILED with each reason', e?.code === 'ALL_SOURCES_FAILED' && /x1/.test(e.message) && /x3/.test(e.message));
@@ -151,6 +161,16 @@ try {
   ok('lens: public photo URL → 2 searches (all + tiktok-biased) with engine=google_lens&url=', lr.searches === 2 && lensCalls.length === 2 && lensCalls.every((u) => /engine=google_lens/.test(u) && /url=https%3A%2F%2Fcdn.shop%2Fp.jpg/.test(u)) && /type=visual_matches/.test(lensCalls[1]), lensCalls.join(' | '));
   ok('lens: results merged and deduplicated across both searches', new Set(lr.videoUrls).size === lr.videoUrls.length && lr.videoUrls.length >= 5);
   e = await rejects(LN.lensSearch({ key: 'SK', image: { buffer: Buffer.alloc(600 * 1024), mime: 'image/jpeg' }, fetchImpl: lensFetch }));
+  {
+    const { createCanvas } = await import('@napi-rs/canvas');
+    const c = createCanvas(2400, 2400); const g = c.getContext('2d');
+    const id = g.createImageData(2400, 2400); let seed = 12345; for (let i = 0; i < id.data.length; i += 4) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; id.data[i] = seed & 255; id.data[i + 1] = (seed >> 8) & 255; id.data[i + 2] = (seed >> 16) & 255; id.data[i + 3] = 255; } g.putImageData(id, 0, 0);
+    const big = { buffer: c.toBuffer('image/png'), mime: 'image/png' };
+    const L2 = await imp('../services/amb/media/lens.js');
+    const small = await L2.shrinkForLens(big);
+    ok('lens: a big photo is downscaled to a JPEG under 480 KB instead of giving up', big.buffer.length > 480 * 1024 && small && small.buffer.length <= 480 * 1024 && small.mime === 'image/jpeg', String(big.buffer.length) + ' → ' + small?.buffer?.length);
+    ok('lens: a small photo is passed through untouched; an undecodable big blob → null', (await L2.shrinkForLens({ buffer: Buffer.from('x'), mime: 'image/png' })).buffer.length === 1 && (await L2.shrinkForLens({ buffer: Buffer.alloc(500 * 1024, 7), mime: 'image/png' })) === null);
+  }
   ok('lens: no public URL and a photo over 480 KB → clear IMAGE_TOO_BIG (no upload attempted)', e?.code === 'IMAGE_TOO_BIG');
   const upCalls = [];
   const lr2 = await LN.lensSearch({ key: 'SK', image: { buffer: Buffer.alloc(1000), mime: 'image/jpeg' }, fetchImpl: async (url, init) => { upCalls.push(`${init?.method || 'GET'} ${url.slice(0, 40)}`); return url.includes('/image') ? { ok: true, status: 200, json: async () => ({ image_id: 'img123' }) } : { ok: true, status: 200, text: async () => lensText }; } });
@@ -173,11 +193,11 @@ try {
   });
   ok('finder: stage 1 = photo search, reported as a source with its count', lf.sources[0].id === 'lens' && lf.sources[0].ok && lf.sources[0].count === 2);
   ok('finder: Lens page titles are added to the keyword search', seenQ.includes('Luma Force Mini Massager Gun 2025') && lf.queries.includes('Luma Force Mini Massager Gun 2025'));
-  ok('finder: TikTok accounts found by the photo get their latest videos scraped', JSON.stringify(profilesFor) === '["@shop.eg"]' && lf.candidates.some((c) => c.url.endsWith('/999')));
+  ok('finder: TikTok accounts found by the photo are scraped, but their unverifiable (unscored) videos are not shown', JSON.stringify(profilesFor) === '["@shop.eg"]' && !lf.candidates.some((c) => c.url.endsWith('/999')) && lf.filteredOut >= 1);
   ok('finder: a photo-search video outranks keyword results; same link from two sources appears once', lf.candidates[0].source === 'LENS' && lf.candidates.filter((c) => c.url.endsWith('@a/video/1')).length === 1, lf.candidates.map((c) => c.source + ':' + c.url.slice(-6)).join(','));
   ok('finder: photo-search links are enriched (cover / title / author) from oEmbed', lf.candidates[0].thumbnail === 'https://t/111.jpg' && lf.candidates[0].caption === 'مساج رائع' && lf.lens.usedPublicUrl === true);
   const nolens = await VF.runVideoFinder({ launchJobId: LJ, target: 3, ctx, deps: { resolveProduct: async () => ({ product: { id: 1, name: 'Luma Force' }, image: { buffer: Buffer.from('p'), mime: 'image/png' } }), ai: false, serpKey: null, apify: { searchTikTok: async () => ({ videos: [v('https://www.tiktok.com/@a/video/5')], usd: 0 }), searchInstagramReels: async () => ({ videos: [], usd: 0 }), searchMetaAdLibrary: async () => ({ videos: [], usd: 0 }) } } });
-  ok('finder: without SerpApi the search still works and says why Lens was skipped', nolens.candidates.length === 1 && nolens.sources[0].id === 'lens' && nolens.sources[0].ok === false && /SerpApi/.test(nolens.sources[0].error));
+  ok('finder: without SerpApi the search says why Lens was skipped, and the unverifiable TikTok result is not shown', nolens.candidates.length === 0 && nolens.filteredOut === 1 && nolens.sources[0].id === 'lens' && nolens.sources[0].ok === false && /SerpApi/.test(nolens.sources[0].error));
 
   console.log('\n[5] import');
   const fj = await J.createJob({ kind: 'VIDEO_FIND', launchJobId: LJ });
@@ -284,6 +304,16 @@ try {
   e = await rejects(LA.addVideoFileToPool({ launchJobId: LJ, filePath: (await tmpFile('zzz differ')).f, filename: 'b.mp4', deps: { token: async () => 'tok', uploadVideo: async () => { const x = new Error('meta says no'); x.metaError = { message: 'Video too long' }; throw x; } } }));
   const failedRow = await prisma.ambLaunchVideoAsset.findFirst({ where: { job_id: LJ, status: 'FAILED' } });
   ok('Meta upload failure → FAILED row with the Meta message, error surfaced', e?.code === 'META_UPLOAD' && failedRow?.error === 'Video too long');
+  {
+    const { createCanvas } = await import('@napi-rs/canvas');
+    const cv = createCanvas(800, 800); const gg = cv.getContext('2d'); gg.fillStyle = '#2a78d6'; gg.fillRect(0, 0, 800, 800); gg.fillStyle = '#fff'; gg.fillRect(200, 200, 400, 400);
+    const pngBuf = cv.toBuffer('image/png');
+    const ai1 = await LA.addImageToPool({ launchJobId: LJ, buffer: pngBuf, filename: 'ai-page-1.png', mime: 'image/png', width: 800, height: 800, deps: { token: async () => 'tok', uploadImage: async () => ({ hash: 'imghash1' }) } });
+    const pv = await LA.getPreview(LJ, ai1.slotKey);
+    ok('a server-made image keeps a JPEG preview the wizard can show (and enlarge)', ai1.slotKey.startsWith('I') && pv && pv.mime === 'image/jpeg' && pv.data.length > 100 && pv.data[0] === 0xff && pv.data[1] === 0xd8, String(pv?.mime));
+    ok('the preview is served only for a valid job id + image slot (no path tricks, no video slots)', (await LA.getPreview(LJ, 'C101')) === null && (await LA.getPreview('../x', 'I101')) === null && (await LA.getPreview(LJ, 'I999')) === null);
+    await prisma.cfBlob.deleteMany({ where: { key: { startsWith: 'lp/' + LJ } } }).catch(() => {});
+  }
   e = await rejects(LA.addImageToPool({ launchJobId: 'no-such-job', buffer: Buffer.from('x'), filename: 'x.png', deps: { token: async () => 't' } }));
   ok('unknown launch job → NOT_FOUND', e?.code === 'NOT_FOUND');
   await fs.promises.rm(t.d, { recursive: true, force: true });
