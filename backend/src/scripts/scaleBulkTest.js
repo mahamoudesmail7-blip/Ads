@@ -87,5 +87,17 @@ ok('first done, the others canceled and never executed', done7.join() === '1' &&
 ok('unknown batch → 404', throws(() => SB.cancelBatch('nope'))?.status === 404);
 ok('latestBatch returns the most recent', SB.latestBatch()?.id === b7.id);
 
+console.log('\n8. a clone that finishes AFTER the wait gave up is settled correctly (no duplicate-scale card)');
+const SW = await import(pathToFileURL(join(__dirname, '../services/amb/scaleWinners.js')).href);
+const camp = { level: 'CAMPAIGN', status: 'CREATED', destination_id: '123' };
+ok('still cloning → PENDING (left alone)', SW.classifyScaleOutcome([{ status: 'CLONING' }], []).status === 'PENDING');
+ok('one job pending among terminal ones → PENDING', SW.classifyScaleOutcome([{ status: 'SCHEDULED_NATIVE' }, { status: 'PENDING' }], [camp]).status === 'PENDING');
+ok('scheduled-native + campaign created → EXECUTED', SW.classifyScaleOutcome([{ status: 'SCHEDULED_NATIVE' }], [camp]).status === 'EXECUTED');
+ok('cloned-paused + campaign created → EXECUTED', SW.classifyScaleOutcome([{ status: 'CLONED_PAUSED' }], [camp]).status === 'EXECUTED');
+ok('terminal OK but no campaign was created → FAILED', SW.classifyScaleOutcome([{ status: 'CLONED_PAUSED' }], []).status === 'FAILED');
+ok('a failed object → FAILED with its error', (() => { const r = SW.classifyScaleOutcome([{ status: 'SCHEDULED_NATIVE' }], [camp, { level: 'AD', status: 'FAILED', error: 'bad creative' }]); return r.status === 'FAILED' && r.error === 'bad creative'; })());
+ok('job FAILED → FAILED with the job error', (() => { const r = SW.classifyScaleOutcome([{ status: 'FAILED', error: 'Meta said no' }], []); return r.status === 'FAILED' && r.error === 'Meta said no'; })());
+ok('no job at all → FAILED', SW.classifyScaleOutcome([], []).status === 'FAILED');
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

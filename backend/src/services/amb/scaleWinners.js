@@ -59,6 +59,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
     return { connected: false, cards: [], count: 0, winnerCpaEgp: WINNER_CPA_EGP };
   }
   const adAccountId = viewAccountId || conn.selected_ad_account_id; // viewAccountId = a read-only VIEW account (validated by the route)
+  await reconcileScaleDecisions(adAccountId).catch(() => {}); // a clone that finished after the wait gave up must not leave its card on the screen to be scaled twice
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName);
   const tree = await buildHierarchy({ adAccountId, window, settings });
@@ -174,6 +175,35 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
 // a false FAILED on an already-successful native-scheduled scale.
 const JOB_TERMINAL = new Set(['CLONED_PAUSED', 'SCHEDULED_NATIVE', 'ACTIVATED', 'FAILED', 'ACTIVATION_FAILED', 'NEEDS_INPUT', 'NEEDS_DECISION', 'CANCELLED', 'PREFLIGHT_BLOCKED', 'CANNOT_COPY']);
 
+const SUCCESS_JOB = new Set(['CLONED_PAUSED', 'SCHEDULED_NATIVE', 'ACTIVATED']);
+/** Pure: what the REAL outcome of a scale decision is, from its clone job + object map. 'PENDING' = the clone is still running (leave it alone). */
+export function classifyScaleOutcome(jobs, objs) {
+  if (!jobs || !jobs.length) return { status: 'FAILED', error: 'لم يُنشأ أي job للاستنساخ.' };
+  if (!jobs.every((j) => JOB_TERMINAL.has(j.status))) return { status: 'PENDING' };
+  const job = jobs[0];
+  const failed = (objs || []).filter((o) => o.status === 'FAILED');
+  const camp = (objs || []).find((o) => o.level === 'CAMPAIGN' && o.status === 'CREATED' && o.destination_id);
+  if (SUCCESS_JOB.has(job.status) && camp && !failed.length) return { status: 'EXECUTED', error: null };
+  return { status: 'FAILED', error: String(failed.find((o) => o.error)?.error || job.error || `job status ${job.status}`).slice(0, 800) };
+}
+/** Settle decisions the wait gave up on (APPROVED, or FAILED only because of the wait timeout) once their clone really finished. Cheap: a few recent rows. */
+export async function reconcileScaleDecisions(adAccountId) {
+  const since = new Date(Date.now() - 3 * 86400000);
+  const rows = await prisma.ambScaleDecision.findMany({
+    where: { ad_account_id: adAccountId, clone_batch_id: { not: null }, created_at: { gte: since }, OR: [{ status: 'APPROVED' }, { status: 'FAILED', error: { contains: 'انتهت' } }] },
+    take: 40,
+  });
+  let changed = 0;
+  for (const d of rows) {
+    const jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: d.clone_batch_id } });
+    const objs = jobs.length ? await prisma.ambCloneObjectMap.findMany({ where: { job_id: { in: jobs.map((j) => j.id) } } }) : [];
+    const out = classifyScaleOutcome(jobs, objs);
+    const next = out.status === 'PENDING' ? 'APPROVED' : out.status;
+    if (next !== d.status) { await prisma.ambScaleDecision.update({ where: { id: d.id }, data: { status: next, error: out.error } }); changed++; }
+  }
+  return { checked: rows.length, changed };
+}
+
 /**
  * Wait for the clone worker to finish the batch, then PROVE the whole scale
  * tree was built (spec §6/§10): destination Campaign + one destination Ad Set
@@ -201,7 +231,7 @@ export async function waitAndVerifyScale({
   }
   const job = jobs[0];
   if (!job) return { ok: false, error: 'لم يُنشأ أي job للاستنساخ.', counts: { adSetsCreated: 0, adsCreated: 0 } };
-  if (!JOB_TERMINAL.has(job.status)) return { ok: false, error: `انتهت مهلة الانتظار والنسخ لسه شغال على ميتا (${job.status}) — ممكن يخلص لوحده، راجع «سجل المهام» قبل ما تعيد الاسكيل.`, counts: { adSetsCreated: 0, adsCreated: 0 } };
+  if (!JOB_TERMINAL.has(job.status)) return { ok: false, error: `انتهت مهلة الانتظار والنسخ لسه شغال على ميتا (${job.status}) — ممكن يخلص لوحده، راجع «سجل المهام» قبل ما تعيد الاسكيل.`, timedOut: true, counts: { adSetsCreated: 0, adsCreated: 0 } };
 
   const objs = await prisma.ambCloneObjectMap.findMany({ where: { job_id: job.id } });
   const created = (level) => objs.filter((o) => o.level === level && o.status === 'CREATED' && o.destination_id);
@@ -427,7 +457,7 @@ export async function executeScale({
 
     const verdict = await waitAndVerifyScale({ batchId, expectedAdSetSourceIds, expectedAdSourceIds, timeoutMs: waitTimeoutMs });
     if (!verdict.ok) {
-      await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: 'FAILED', error: verdict.error.slice(0, 800) } });
+      await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: verdict.timedOut ? 'APPROVED' : 'FAILED', error: verdict.error.slice(0, 800) } });
       const e = new Error(`فشل إنشاء حملة الاسكيل: ${verdict.error}`);
       e.status = 502; e.scale = { decisionId: decision.id, batchId, ...verdict.counts };
       throw e;
