@@ -474,13 +474,20 @@ async function renderScaleWinners(cached) {
     _scaleData = data;
   }
   const cards = (data.cards || []).filter((c) => c.decisionStatus === 'PENDING' || (scaleUi.get(c.sourceCampaignId)?.open));
-  if (!cards.length) { el.innerHTML = ''; return; }
+  if (!cards.length && !bulkRun) { el.innerHTML = ''; return; }
+  for (const id of [...bulkSel]) if (!cards.some((c) => c.sourceCampaignId === id)) bulkSel.delete(id);
+  if (!bulkSel.size) bulkUi.open = false;
   el.innerHTML = `
     <div class="amb-scale-wrap">
       <div class="amb-scale-h">🚀 جاهزة للاسكيل <span class="faint">— طلب ≥ 1 و CPA ≤ ${data.winnerCpaEgp} ج.م</span></div>
+      ${bulkProgressHtml()}
+      ${cards.length ? bulkBarHtml(cards) : ''}
+      ${bulkUi.open && bulkSel.size ? bulkPanelHtml() : ''}
       ${cards.map(scaleCardHtml).join('')}
     </div>`;
   wireScaleCards(el, data);
+  wireBulk(el);
+  if (!cached) resumeBulk();
 }
 const rerenderScale = () => renderScaleWinners(_scaleData);
 
@@ -488,6 +495,7 @@ function scaleCardHtml(card) {
   const s = scaleState(card);
   return `<div class="amb-scale-card ${s.open ? 'open' : ''}" data-scw="${E(card.sourceCampaignId)}">
     <div class="amb-scale-top">
+      ${state.isAdmin ? `<label class="amb-bulk-pick" title="حدّده للاسكيل المجمّع"><input type="checkbox" data-bulk-pick="${E(card.sourceCampaignId)}" ${bulkSel.has(card.sourceCampaignId) ? 'checked' : ''} /></label>` : ''}
       <div class="amb-scale-name">
         <div class="pn">${E(card.displayName)}</div>
         <div class="cn faint">${E(card.sourceCampaignName)}</div>
@@ -725,6 +733,245 @@ function wireScaleCards(root, data) {
   });
   root.querySelectorAll('[data-scw-date]').forEach((d) => { d.onchange = () => { const card = cardOf(d); if (card) { scaleState(card).date = d.value || cairoDateStr(1); rerenderScale(); } }; });
   root.querySelectorAll('[data-scw-time]').forEach((t) => { t.onchange = () => { const card = cardOf(t); if (card) { scaleState(card).time = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; rerenderScale(); } }; });
+}
+
+
+// ---------------------------------------------------------------------------
+// Bulk Scale (اسكيل مجمّع) — tick several «جاهزة للاسكيل» campaigns, enter the budget/details once, approve once. The server then scales them ONE BY ONE
+// (the first now, each next one `gap` later) through the SAME executeScale as the single flow. The single-campaign flow above is untouched.
+// ---------------------------------------------------------------------------
+const bulkSel = new Set(); // sourceCampaignIds ticked for the bulk scale
+const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 1, busy: false };
+let bulkRun = null;   // last /scale/bulk batch payload (while running or just finished)
+let bulkPoll = null;
+
+function bulkRow(card) {
+  let r = bulkUi.rows.get(card.sourceCampaignId);
+  if (!r) {
+    const best = card.bestWinnerAdId ? [card.bestWinnerAdId] : (card.defaults.selectedAdIds || []).slice(0, 1);
+    r = { budget: '', selCbo: new Set(card.defaults.selectedAdIds || []), selAbo: new Set(best), open: false };
+    bulkUi.rows.set(card.sourceCampaignId, r);
+  }
+  return r;
+}
+const bulkSelOf = (r) => (bulkUi.mode === 'ABO' ? r.selAbo : r.selCbo);
+function bulkCards() { return (_scaleData?.cards || []).filter((c) => bulkSel.has(c.sourceCampaignId)); }
+/** Why «موافق على الاسكيل المجمّع» is (or isn't) clickable. */
+function bulkApproveState(cards) {
+  if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
+  if (!cards.length) return { ok: false, reason: 'علّم على كامبين واحد على الأقل.' };
+  if (cards.length > 12) return { ok: false, reason: 'الحد الأقصى 12 كامبين في المرة.' };
+  const u = bulkUi;
+  if (!(u.gapMin >= 0.5 && u.gapMin <= 15)) return { ok: false, reason: 'الفاصل بين الكامبينات لازم بين نص دقيقة و 15 دقيقة.' };
+  if (u.startMode === 'SCHEDULE' && !cloneStartInFuture(u.date, u.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
+  for (const c of cards) {
+    const r = bulkRow(c);
+    if (!(Number(r.budget) > 0)) return { ok: false, reason: `أدخل ميزانية أكبر من صفر لـ «${c.displayName}».` };
+    if (bulkSelOf(r).size < 1) return { ok: false, reason: `اختر إعلانًا واحدًا على الأقل لـ «${c.displayName}».` };
+  }
+  return { ok: true, reason: '' };
+}
+function syncBulkApprove() {
+  const btn = document.querySelector('[data-bulk-act="approve"]'); if (!btn) return;
+  const { ok, reason } = bulkApproveState(bulkCards());
+  btn.disabled = !ok || bulkUi.busy;
+  const hint = document.querySelector('.amb-bulk-hint'); if (hint) { hint.textContent = ok ? '' : reason; hint.hidden = ok; }
+  const tot = document.querySelector('[data-bulk-total]'); if (tot) tot.textContent = bulkTotalText(bulkCards());
+  const gt = document.querySelector('[data-bulk-gaptxt]'); if (gt) gt.textContent = `${bulkUi.gapMin} دقيقة`;
+}
+function bulkTotalText(cards) {
+  const sum = cards.reduce((t, c) => { const r = bulkRow(c); const b = Number(r.budget) || 0; return t + b; }, 0);
+  return `${cards.length} كامبين · إجمالي ميزانية يومية ${fmtEGP(sum)}`;
+}
+const bulkBudgetLabel = () => (bulkUi.mode === 'ABO' ? 'ميزانية الـ Ad Set (ج.م/يوم)' : 'ميزانية الحملة (ج.م/يوم)');
+
+function bulkBarHtml(cards) {
+  if (!state.isAdmin) return '';
+  const n = bulkSel.size;
+  const allIds = cards.map((c) => c.sourceCampaignId);
+  const allOn = allIds.length > 0 && allIds.every((id) => bulkSel.has(id));
+  return `<div class="amb-bulk-bar">
+    <label class="amb-bulk-all"><input type="checkbox" data-bulk-all ${allOn ? 'checked' : ''} /> <span>تحديد الكل (${allIds.length})</span></label>
+    <span class="amb-bulk-n">${n ? `✓ اتحدد ${n} كامبين` : 'علّم على الكامبينات اللي عايز تسكيل فيها مرة واحدة'}</span>
+    <button class="amb-btn primary sm" data-bulk-act="${bulkUi.open ? 'close' : 'open'}" ${n || bulkUi.open ? '' : 'disabled'}>${bulkUi.open ? 'إغلاق' : '🚀 اسكيل مجمّع'}</button>
+  </div>`;
+}
+
+function bulkPanelHtml() {
+  const cards = bulkCards(); const u = bulkUi; const sched = u.startMode === 'SCHEDULE';
+  const ap = bulkApproveState(cards);
+  const gapOk = u.gapMin >= 0.5 && u.gapMin <= 15;
+  const futureOk = !sched || cloneStartInFuture(u.date, u.time);
+  return `<div class="amb-bulk-panel">
+    <div class="amb-scale-sec">
+      <div class="t">نوع توزيع الميزانية (لكل الكامبينات المحددة)</div>
+      <div class="amb-scale-seg">
+        <button class="${u.mode === 'CBO' ? 'on' : ''}" data-bulk-mode="CBO">CBO — ميزانية الحملة</button>
+        <button class="${u.mode === 'ABO' ? 'on' : ''}" data-bulk-mode="ABO">ABO — ميزانية مجموعة الإعلانات</button>
+      </div>
+      <div class="faint" style="font-size:11.5px; margin-top:4px;">${u.mode === 'ABO' ? 'كل منتج بيتعمله Ad Set واحد بالإعلانات اللي تحددها. لو عايز أكتر من Ad Set لمنتج، اسكيله لوحده.' : 'كل منتج بيتعمله حملة CBO بالإعلانات اللي تحددها.'}</div>
+    </div>
+    <div class="amb-scale-sec">
+      <div class="t">الميزانية</div>
+      <div class="amb-bulk-common">
+        <div class="field" style="max-width:200px;"><label>${bulkBudgetLabel()} — لكل المنتجات</label><input type="number" min="1" step="1" placeholder="مثال: 300" value="${E(u.common)}" data-bulk-common /></div>
+        <button class="amb-btn ghost sm" data-bulk-act="apply-common">طبّقها على الكل</button>
+        <span class="faint" style="font-size:11.5px;">تقدر تعدّل كل منتج لوحده تحت.</span>
+      </div>
+    </div>
+    <div class="amb-scale-sec">
+      <div class="t">المنتجات المحددة (${cards.length})</div>
+      ${cards.map((c) => bulkRowHtml(c)).join('')}
+    </div>
+    <div class="amb-scale-sec">
+      <div class="t">التشغيل</div>
+      <div class="amb-field-grid">
+        <label class="amb-radio-row ${!sched ? 'sel' : ''}" style="cursor:pointer;"><input type="radio" name="bulkmode" value="RUN_NOW" ${!sched ? 'checked' : ''} data-bulk-start /><span class="rr-main">تشغيل الآن — Run Now</span></label>
+        <label class="amb-radio-row ${sched ? 'sel' : ''}" style="cursor:pointer;"><input type="radio" name="bulkmode" value="SCHEDULE" ${sched ? 'checked' : ''} data-bulk-start /><span class="rr-main">جدولة البداية — Schedule Start</span></label>
+      </div>
+      ${sched ? `<div class="amb-field-grid" style="margin-top:6px;">
+        <div class="field" style="max-width:180px;"><label>Start Date</label><input type="date" value="${E(u.date)}" min="${E(cairoDateStr(0))}" data-bulk-date /></div>
+        <div class="field" style="max-width:150px;"><label>Start Time</label><input type="time" value="${E(u.time)}" data-bulk-time /></div>
+        <div class="field" style="max-width:160px;"><label>Timezone</label><input type="text" value="Africa/Cairo" disabled readonly /></div>
+      </div>${futureOk ? '' : `<div class="faint" style="font-size:12px; color:var(--amb-red); margin-top:4px;">The selected start date and time must be in the future.</div>`}` : ''}
+      <div class="field" style="max-width:230px; margin-top:10px;"><label>الفاصل بين كل كامبين والتاني (دقيقة)</label><input type="number" min="0.5" max="15" step="0.5" value="${E(u.gapMin)}" data-bulk-gap /></div>
+      ${gapOk ? '' : '<div class="faint" style="font-size:12px; color:var(--amb-red);">بين نص دقيقة و 15 دقيقة.</div>'}
+      <div class="faint" style="font-size:11.5px; margin-top:4px;">بيعمل الأول فورًا، وبعد الفاصل بيبدأ اللي بعده وهكذا. كل كامبين بيتعمل زي الاسكيل العادي بالظبط (نسخة متوقفة + تحقق).${sched ? ' وقت البداية واحد لكل الكامبينات.' : ''}</div>
+    </div>
+    <div class="amb-scale-sec summary">
+      <div class="t">الملخص النهائي</div>
+      <div class="amb-scale-sum">
+        <div><span>نوع الميزانية</span><b>${u.mode}</b></div>
+        <div><span>العدد</span><b data-bulk-total>${bulkTotalText(cards)}</b></div>
+        <div><span>التشغيل</span><b>${sched ? `${fmtDMY(u.date)} ${fmt12h(u.time)} — القاهرة` : 'الآن'}</b></div>
+        <div><span>الفاصل</span><b data-bulk-gaptxt>${E(u.gapMin)} دقيقة</b></div>
+      </div>
+    </div>
+    <div class="amb-scale-actions">
+      <button class="amb-btn primary" data-bulk-act="approve" ${ap.ok && !u.busy ? '' : 'disabled'}>${state.isAdmin ? 'موافق على الاسكيل المجمّع' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
+      <button class="amb-btn ghost" data-bulk-act="close">إلغاء</button>
+      <div class="amb-scale-hint amb-bulk-hint" ${ap.ok ? 'hidden' : ''}>${E(ap.reason)}</div>
+    </div>
+  </div>`;
+}
+
+function bulkRowHtml(card) {
+  const r = bulkRow(card); const sel = bulkSelOf(r); const cid = E(card.sourceCampaignId);
+  return `<div class="amb-bulk-row" data-bulk-row="${cid}">
+    <div class="amb-bulk-rowtop">
+      <div class="amb-scale-name"><div class="pn">${E(card.displayName)}</div><div class="cn faint">${E(card.sourceCampaignName)} · ${fmtNum(card.orders)} طلب · CPA ${fmtEGP(card.cpa)}</div></div>
+      <div class="field" style="max-width:170px;"><label>${bulkBudgetLabel()}</label><input type="number" min="1" step="1" value="${E(r.budget)}" data-bulk-budget="${cid}" /></div>
+      <button class="amb-btn ghost sm" data-bulk-ads="${cid}">الإعلانات (${sel.size}/${card.ads.length}) ${r.open ? '▴' : '▾'}</button>
+      <button class="amb-btn ghost sm" data-bulk-drop="${cid}" title="شيل من الاسكيل المجمّع">✕</button>
+    </div>
+    ${r.open ? `<div class="amb-bulk-ads">${card.ads.map((a) => scaleAdRow(a, sel.has(a.adId), `data-bulk-ad="${E(a.adId)}" data-bulk-card="${cid}"`)).join('')}</div>` : ''}
+  </div>`;
+}
+
+const BULK_ST = { QUEUED: ['في الانتظار', ''], RUNNING: ['جاري الإنشاء…', 'run'], DONE: ['تم ✓', 'ok'], FAILED: ['فشل', 'bad'], CANCELED: ['اتلغى', 'dim'] };
+function bulkProgressHtml() {
+  const b = bulkRun; if (!b) return '';
+  const running = b.status === 'RUNNING';
+  const nextIn = running && b.nextAt ? Math.max(0, Math.round((b.nextAt - Date.now()) / 1000)) : null;
+  const head = running ? `⏳ اسكيل مجمّع شغال — ${b.counts.done + b.counts.failed}/${b.counts.total}${nextIn != null ? ` · اللي بعده بعد ${nextIn} ثانية` : ''}`
+    : b.status === 'CANCELED' ? '⏹ اتوقف الاسكيل المجمّع' : `✅ خلص الاسكيل المجمّع — تم ${b.counts.done} · فشل ${b.counts.failed}`;
+  return `<div class="amb-bulk-progress ${running ? 'running' : ''}">
+    <div class="amb-bulk-ph"><b>${head}</b>
+      <span>${running ? '<button class="amb-btn ghost sm" data-bulk-act="cancel-run">إيقاف اللي لسه مابدأش</button>' : '<button class="amb-btn ghost sm" data-bulk-act="dismiss">إخفاء</button>'}</span></div>
+    ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
+    ${running ? '<div class="faint" style="font-size:11.5px; margin-top:6px;">تقدر تقفل الصفحة — الاسكيل بيكمل على السيرفر. (لو السيرفر اتعمله restart بيتوقف اللي لسه مابدأش.)</div>' : ''}
+  </div>`;
+}
+
+function stopBulkPolling() { if (bulkPoll) { clearInterval(bulkPoll); bulkPoll = null; } }
+function startBulkPolling(id) {
+  stopBulkPolling();
+  bulkPoll = setInterval(async () => {
+    try {
+      const b = await api.get(`/api/ai-media-buyer/scale/bulk/${id}`);
+      const wasRunning = bulkRun?.status === 'RUNNING';
+      bulkRun = b; rerenderScale();
+      if (b.status !== 'RUNNING') {
+        stopBulkPolling();
+        if (wasRunning) { UI.toast(`خلص الاسكيل المجمّع — تم ${b.counts.done}${b.counts.failed ? ` · فشل ${b.counts.failed}` : ''}`, b.counts.failed ? 'error' : 'success'); bulkSel.clear(); route(); }
+      }
+    } catch { stopBulkPolling(); }
+  }, 4000);
+}
+/** Page (re)load: if a bulk scale is still running on the server, show it again. */
+async function resumeBulk() {
+  if (bulkPoll || !state.isAdmin) return;
+  try {
+    const { batch } = await api.get('/api/ai-media-buyer/scale/bulk/latest');
+    if (batch && batch.status === 'RUNNING') { bulkRun = batch; rerenderScale(); startBulkPolling(batch.id); }
+  } catch { /* the bulk feature is optional on the page */ }
+}
+
+function wireBulk(root) {
+  const cards = _scaleData?.cards || [];
+  const byId = new Map(cards.map((c) => [c.sourceCampaignId, c]));
+  root.querySelectorAll('[data-bulk-pick]').forEach((cb) => {
+    cb.onclick = (ev) => { ev.stopPropagation(); const id = cb.dataset.bulkPick; if (cb.checked) bulkSel.add(id); else bulkSel.delete(id); if (!bulkSel.size) bulkUi.open = false; rerenderScale(); };
+  });
+  const all = root.querySelector('[data-bulk-all]');
+  if (all) all.onclick = () => {
+    const visible = [...root.querySelectorAll('[data-bulk-pick]')].map((x) => x.dataset.bulkPick);
+    if (all.checked) visible.forEach((id) => bulkSel.add(id)); else { visible.forEach((id) => bulkSel.delete(id)); bulkUi.open = false; }
+    rerenderScale();
+  };
+  root.querySelectorAll('[data-bulk-act]').forEach((btn) => {
+    btn.onclick = async () => {
+      const act = btn.dataset.bulkAct;
+      if (act === 'open') { if (!bulkUi.date) bulkUi.date = cairoDateStr(1); bulkUi.open = true; rerenderScale(); return; }
+      if (act === 'close') { bulkUi.open = false; rerenderScale(); return; }
+      if (act === 'dismiss') { bulkRun = null; rerenderScale(); return; }
+      if (act === 'apply-common') { const v = bulkUi.common; if (!(Number(v) > 0)) { UI.toast('اكتب الميزانية الأول.', 'error'); return; } bulkCards().forEach((c) => { bulkRow(c).budget = String(v); }); rerenderScale(); return; }
+      if (act === 'cancel-run') {
+        if (!bulkRun) return;
+        try { bulkRun = await api.post(`/api/ai-media-buyer/scale/bulk/${bulkRun.id}/cancel`, {}); rerenderScale(); UI.toast('اتبعت طلب الإيقاف — اللي اتعمل قبل كده فضل زي ما هو.'); } catch (e) { UI.toast(e.message, 'error'); }
+        return;
+      }
+      if (act === 'approve') {
+        const sel = bulkCards(); const ap = bulkApproveState(sel);
+        if (!ap.ok) { UI.toast(ap.reason, 'error'); return; }
+        const u = bulkUi; const sched = u.startMode === 'SCHEDULE';
+        const items = sel.map((c) => {
+          const r = bulkRow(c); const ids = c.ads.filter((a) => bulkSelOf(r).has(a.adId)).map((a) => a.adId);
+          const base = { sourceCampaignId: c.sourceCampaignId, label: c.displayName, budgetMode: u.mode };
+          return u.mode === 'ABO' ? { ...base, adSets: [{ dailyBudgetEgp: Number(r.budget), selectedAdIds: ids }] } : { ...base, selectedAdIds: ids, campaignBudgetEgp: Number(r.budget) };
+        });
+        const total = sel.reduce((t, c) => t + Number(bulkRow(c).budget), 0);
+        const lines = sel.map((c, i) => `${i + 1}. ${c.displayName} — ${fmtEGP(Number(bulkRow(c).budget))}/يوم`).join('\n');
+        const ok = await UI.confirmModal({
+          title: isViewOnly() ? `تأكيد الاسكيل المجمّع — حساب ${viewAcctName()}` : 'تأكيد الاسكيل المجمّع',
+          message: `${isViewOnly() ? `الحساب: ${viewAcctName()}\n` : ''}هيتم إنشاء ${sel.length} حملة اسكيل (${u.mode}) متوقفة بنسخة مطابقة للمصدر، واحدة ورا التانية بفاصل ${u.gapMin} دقيقة:\n${lines}\nإجمالي الميزانية اليومية ${fmtEGP(total)}.\n${sched ? `التشغيل: ${fmtDMY(u.date)} — ${fmt12h(u.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال كل نسخة.'}\nحملات المصدر مش هتتغير. متابعة؟`,
+          confirmLabel: sched ? 'موافق وجدولة' : 'موافق وتشغيل', danger: true,
+        });
+        if (!ok) return;
+        u.busy = true; syncBulkApprove();
+        try {
+          const b = await api.post('/api/ai-media-buyer/scale/bulk', { items, startMode: u.startMode, startAt: sched ? `${u.date}T${u.time}` : null, gapSeconds: Math.round(u.gapMin * 60), window: state.window, ...acctBody() });
+          bulkRun = b; u.open = false; u.busy = false; bulkSel.clear(); sel.forEach((c) => { scaleUi.delete(c.sourceCampaignId); bulkUi.rows.delete(c.sourceCampaignId); });
+          UI.toast(`بدأ الاسكيل المجمّع — ${b.counts.total} كامبين`); rerenderScale(); startBulkPolling(b.id);
+        } catch (e) { u.busy = false; UI.toast(`تعذّر بدء الاسكيل المجمّع: ${e.message}`, 'error'); syncBulkApprove(); }
+      }
+    };
+  });
+  root.querySelectorAll('[data-bulk-mode]').forEach((b) => { b.onclick = () => { bulkUi.mode = b.dataset.bulkMode === 'ABO' ? 'ABO' : 'CBO'; rerenderScale(); }; });
+  const common = root.querySelector('[data-bulk-common]');
+  if (common) common.oninput = () => { bulkUi.common = common.value; }; // no re-render on change: it would swallow the click on «طبّقها على الكل»
+  root.querySelectorAll('[data-bulk-budget]').forEach((inp) => {
+    inp.oninput = () => { const c = byId.get(inp.dataset.bulkBudget); if (c) { bulkRow(c).budget = inp.value; syncBulkApprove(); } };
+  });
+  root.querySelectorAll('[data-bulk-ads]').forEach((b) => { b.onclick = () => { const c = byId.get(b.dataset.bulkAds); if (c) { const r = bulkRow(c); r.open = !r.open; rerenderScale(); } }; });
+  root.querySelectorAll('[data-bulk-drop]').forEach((b) => { b.onclick = () => { bulkSel.delete(b.dataset.bulkDrop); if (!bulkSel.size) bulkUi.open = false; rerenderScale(); }; });
+  root.querySelectorAll('[data-bulk-ad]').forEach((cb) => {
+    cb.onclick = () => { const c = byId.get(cb.dataset.bulkCard); if (!c) return; const set = bulkSelOf(bulkRow(c)); if (cb.checked) set.add(cb.dataset.bulkAd); else set.delete(cb.dataset.bulkAd); rerenderScale(); };
+  });
+  root.querySelectorAll('[data-bulk-start]').forEach((r) => { r.onchange = () => { bulkUi.startMode = r.value === 'SCHEDULE' ? 'SCHEDULE' : 'RUN_NOW'; if (!bulkUi.date) bulkUi.date = cairoDateStr(1); rerenderScale(); }; });
+  const d = root.querySelector('[data-bulk-date]'); if (d) d.onchange = () => { bulkUi.date = d.value || cairoDateStr(1); syncBulkApprove(); };
+  const t = root.querySelector('[data-bulk-time]'); if (t) t.onchange = () => { bulkUi.time = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; syncBulkApprove(); };
+  const g = root.querySelector('[data-bulk-gap]'); if (g) { g.oninput = () => { bulkUi.gapMin = Number(g.value) || 0; syncBulkApprove(); }; }
 }
 
 /**

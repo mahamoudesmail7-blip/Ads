@@ -466,6 +466,33 @@ router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) 
   }));
 }));
 
+// Bulk scale: a sequencer around the SAME executeScale (one campaign at a time, `gapSeconds` apart). ADMIN only; the UI sends it only after one explicit approval.
+router.post('/scale/bulk', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { executeScale } = await import('../services/amb/scaleWinners.js');
+  const { startBulk } = await import('../services/amb/scaleBulk.js');
+  const { cairoLocalToUtc } = await import('../services/amb/cloneEngine.js');
+  const { items, startMode, startAt, gapSeconds, window } = req.body || {};
+  const adAccountId = await viewAccountFrom(req);
+  res.status(202).json(startBulk(
+    { items, startMode, startAt, gapSeconds, windowName: window || 'today', userId: req.user.id, adAccountId },
+    { exec: executeScale, toUtc: cairoLocalToUtc },
+  ));
+}));
+router.get('/scale/bulk/latest', asyncRoute(async (_req, res) => {
+  const { latestBatch } = await import('../services/amb/scaleBulk.js');
+  res.json({ batch: latestBatch() });
+}));
+router.get('/scale/bulk/:id', asyncRoute(async (req, res) => {
+  const { getBatch } = await import('../services/amb/scaleBulk.js');
+  const b = getBatch(req.params.id);
+  if (!b) return res.status(404).json({ error: 'NOT_FOUND', message: 'الطلب مش موجود (ممكن السيرفر اتعمله restart).' });
+  res.json(b);
+}));
+router.post('/scale/bulk/:id/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { cancelBatch } = await import('../services/amb/scaleBulk.js');
+  res.json(cancelBatch(req.params.id));
+}));
+
 // ---------------------------------------------------------------------------
 // AI Action Plan (recommendations)
 // ---------------------------------------------------------------------------

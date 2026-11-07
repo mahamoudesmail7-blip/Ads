@@ -971,3 +971,24 @@ body { background: var(--amb-bg); }
 .amb-nav-acct label { font-size: 11px; color: var(--amb-text-faint); font-weight: 700; }
 .amb-nav-acct .amb-select { width: 100%; border-radius: 10px; padding: 7px 10px; }
 .amb-nav.collapsed .amb-nav-acct { display: none; }
+
+/* ── Bulk Scale (اسكيل مجمّع) — additive; the single-scale card styles above are unchanged ── */
+.amb-bulk-pick { display: inline-flex; align-items: center; cursor: pointer; padding: 2px; }
+.amb-bulk-pick input { width: 18px; height: 18px; accent-color: var(--amb-green); cursor: pointer; }
+.amb-bulk-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 10px; background: var(--amb-surface); border: 1px dashed var(--amb-border-strong); border-radius: var(--amb-radius-sm); }
+.amb-bulk-all { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.amb-bulk-all input { width: 16px; height: 16px; accent-color: var(--amb-green); }
+.amb-bulk-n { font-size: 12.5px; color: var(--amb-text-dim); margin-inline-end: auto; }
+.amb-bulk-panel { background: var(--amb-surface-2); border: 1px solid var(--amb-green); border-radius: var(--amb-radius-sm); padding: 4px 16px 16px; margin-bottom: 12px; }
+.amb-bulk-common { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.amb-bulk-row { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.amb-bulk-rowtop { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.amb-bulk-rowtop .amb-scale-name { flex: 1 1 220px; }
+.amb-bulk-ads { margin-top: 10px; }
+.amb-bulk-progress { background: var(--amb-surface); border: 1px solid var(--amb-border); border-radius: var(--amb-radius-sm); padding: 12px 14px; margin-bottom: 10px; }
+.amb-bulk-progress.running { border-color: var(--amb-green); }
+.amb-bulk-ph { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; font-size: 13px; }
+.amb-bulk-pi { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; padding: 6px 0; border-top: 1px solid var(--amb-border); font-size: 12.5px; }
+.amb-bulk-pi .s { font-weight: 800; color: var(--amb-text-dim); }
+.amb-bulk-pi.ok .s { color: var(--amb-green); } .amb-bulk-pi.bad .s { color: var(--amb-red); } .amb-bulk-pi.run .s { color: var(--amb-amber, #b7791f); } .amb-bulk-pi.dim { opacity: .6; }
+.amb-bulk-pi .e { flex-basis: 100%; font-size: 11.5px; } .amb-bulk-pi.bad .e { color: var(--amb-red); }
