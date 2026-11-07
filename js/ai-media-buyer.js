@@ -473,7 +473,6 @@ async function renderScaleWinners(cached) {
     catch { el.innerHTML = ''; return; }
     _scaleData = data;
   }
-  if (data.reportOnly && !bulkRun) { el.innerHTML = `<div class="amb-scale-wrap"><div class="amb-scale-h">🚀 جاهزة للاسكيل</div><div class="amb-panel amb-empty" style="padding:14px;">${E(data.message || 'الحساب ده للمتابعة فقط — مفيش اسكيل منه.')}</div></div>`; return; }
   const cards = (data.cards || []).filter((c) => c.decisionStatus === 'PENDING' || c.decisionStatus === 'FAILED' || (scaleUi.get(c.sourceCampaignId)?.open));
   if (!cards.length && !bulkRun) { el.innerHTML = ''; return; }
   for (const id of [...bulkSel]) if (!cards.some((c) => c.sourceCampaignId === id)) bulkSel.delete(id);
@@ -500,6 +499,7 @@ function scaleCardHtml(card) {
       <div class="amb-scale-name">
         <div class="pn">${E(card.displayName)}</div>
         <div class="cn faint">${E(card.sourceCampaignName)}</div>
+        ${card.adsUnavailable ? `<div class="amb-scale-failed">⚠️ مقدرتش أقرأ إعلانات الحملة من ميتا دلوقتي (${E(card.adsUnavailable)}) — حدّث الصفحة بعد شوية.</div>` : ''}
         ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ آخر محاولة اسكيل فشلت: ${E(card.lastError || '')} — تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.</div>` : ''}
       </div>
       <div class="amb-scale-nums">

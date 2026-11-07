@@ -19,6 +19,7 @@ import { creativeLabelIndex } from './creativeAnalysis.js';
 import { createBatch, approveBatch, cairoLocalToUtc } from './cloneEngine.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { getAdSetNodes } from '../metaGraphClient.js';
+import { hydrateCampaigns } from './liveCampaignTree.js';
 
 // Bid strategies that REQUIRE a bid_amount / cost cap / ROAS target.
 const CAP_BID_STRATEGIES = new Set(['LOWEST_COST_WITH_BID_CAP', 'COST_CAP', 'LOWEST_COST_WITH_MIN_ROAS', 'TARGET_COST']);
@@ -53,9 +54,8 @@ function flattenAds(campNode) {
  * Winner cards for the selected ad account + window.
  * @returns {{ window, winnerCpaEgp, count, resolvedCount, cards: [...] }}
  */
-/** «للمتابعة فقط» accounts are watched, never operated, and synced LIGHT (campaign-level only — no ads). A scale needs the winning ads, so nothing can be scaled from them. */
+/** «للمتابعة فقط» accounts are synced LIGHT (campaign-level only — no ads). A scale needs the winning ads, so for those accounts the ads of the few WINNING campaigns are read live from Meta (liveCampaignTree.js). */
 export function isReportOnlyAccount(settings, adAccountId) { return ((settings && settings.ambReportOnlyAccountIds) || []).map(String).includes(String(adAccountId)); }
-export const REPORT_ONLY_MSG = 'الحساب ده «للمتابعة فقط» — بنسحب منه بيانات الحملات بس من غير الإعلانات، فمينفعش يتعمل منه اسكيل. اسكيل الحسابات اللي بتشتغل عليها بس.';
 
 export async function listScaleWinners({ windowName = 'today', includeResolved = false, adAccountId: viewAccountId = null } = {}) {
   const conn = await getConnection();
@@ -63,7 +63,6 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
     return { connected: false, cards: [], count: 0, winnerCpaEgp: WINNER_CPA_EGP };
   }
   const adAccountId = viewAccountId || conn.selected_ad_account_id; // viewAccountId = a read-only VIEW account (validated by the route)
-  if (isReportOnlyAccount(await getAmbSettings(), adAccountId)) return { connected: true, cards: [], count: 0, winnerCpaEgp: WINNER_CPA_EGP, reportOnly: true, message: REPORT_ONLY_MSG };
   await reconcileScaleDecisions(adAccountId).catch(() => {}); // a clone that finished after the wait gave up must not leave its card on the screen to be scaled twice
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName);
@@ -81,6 +80,12 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
   });
   const latestByCamp = new Map();
   for (const d of priorDecisions) if (!latestByCamp.has(d.source_campaign_id)) latestByCamp.set(d.source_campaign_id, d);
+
+  // Light (report-only) accounts carry no ads: read the ads of the winning, still-open campaigns live (bounded, cached, a failure only marks that card).
+  if (isReportOnlyAccount(settings, adAccountId)) {
+    const open = campEntries.map((e) => e.camp).filter((c) => { const mm = c.metrics || {}; const o = n(mm.purchases) || 0; const cp = n(mm.cpa); const pr = latestByCamp.get(c.id); return o >= 1 && cp != null && cp <= WINNER_CPA_EGP && !(pr && ['REJECTED', 'EXECUTED', 'APPROVED'].includes(pr.status)); }).slice(0, 15);
+    if (open.length) { const token = await getDecryptedToken().catch(() => null); if (token) await hydrateCampaigns({ token, camps: open, window }); }
+  }
 
   // Creative-type labels (best-effort; never invented).
   const allCreativeIds = [...new Set(campEntries.flatMap((e) => flattenAds(e.camp).map((a) => a.creativeId).filter(Boolean)))];
@@ -145,6 +150,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
       cpa: round1(cpa),
       spend: round1(n(m.spend) || 0),
       status: 'RECOMMENDED_FOR_SCALING',
+      adsUnavailable: camp.__adsError || null, // light account whose live ads could not be read (e.g. a Meta throttle) — the card says so instead of showing a fake «0»
       decisionStatus: prior?.status || 'PENDING',
       lastError: prior?.status === 'FAILED' ? String(prior.error || '').slice(0, 300) || 'فشل قبل كده.' : null, // a failed scale stays on screen (with its reason) so it is not silently forgotten
       decisionId: prior && !['REJECTED', 'EXECUTED', 'APPROVED'].includes(prior.status) ? prior.id : null,
@@ -319,7 +325,6 @@ export async function executeScale({
   if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) throw bad('اربط حساب Meta Ads الأول.');
   const adAccountId = viewAccountId || conn.selected_ad_account_id;
   const settings = await getAmbSettings();
-  if (isReportOnlyAccount(settings, adAccountId)) throw bad(REPORT_ONLY_MSG);
 
   if (!sourceCampaignId) throw bad('sourceCampaignId مطلوب.');
   // STAY_PAUSED: create every object PAUSED and never auto-activate anything
@@ -349,6 +354,11 @@ export async function executeScale({
   const entry = campEntries.find((e) => String(e.camp.id) === String(sourceCampaignId));
   if (!entry) throw bad('حملة المصدر مش موجودة في بيانات الحساب الحالية.', 404);
 
+  if (isReportOnlyAccount(settings, adAccountId)) { // a light account has no ads in the snapshot: read this campaign's ads live, and refuse (never guess) when Meta will not answer
+    const token = await getDecryptedToken();
+    await hydrateCampaigns({ token, camps: [entry.camp], window });
+    if (entry.camp.__adsError) throw bad(`تعذّر قراءة إعلانات الحملة من ميتا: ${entry.camp.__adsError}`, 502);
+  }
   const sourceAds = flattenAds(entry.camp);
   const adById = new Map(sourceAds.map((a) => [String(a.id), a]));
   const sourceAdSetIds = new Set(sourceAds.map((a) => String(a.adsetId)));

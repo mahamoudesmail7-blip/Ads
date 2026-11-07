@@ -473,7 +473,6 @@ router.post('/scale/bulk', requireRole('ADMIN'), asyncRoute(async (req, res) => 
   const { cairoLocalToUtc } = await import('../services/amb/cloneEngine.js');
   const { items, startMode, startAt, gapSeconds, window } = req.body || {};
   const adAccountId = await viewAccountFrom(req);
-  { const { isReportOnlyAccount, REPORT_ONLY_MSG } = await import('../services/amb/scaleWinners.js'); const conn = await getConnection(); const target = adAccountId || conn?.selected_ad_account_id; if (isReportOnlyAccount(await getAmbSettings(), target)) return res.status(400).json({ error: 'REPORT_ONLY_ACCOUNT', message: REPORT_ONLY_MSG }); }
   res.status(202).json(startBulk(
     { items, startMode, startAt, gapSeconds, windowName: window || 'today', userId: req.user.id, adAccountId },
     { exec: executeScale, toUtc: cairoLocalToUtc },

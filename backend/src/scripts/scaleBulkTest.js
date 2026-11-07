@@ -133,12 +133,36 @@ const CE = await import(pathToFileURL(join(__dirname, '../services/amb/cloneEngi
   ok('only the orphan among several is picked', sel([mk('a', 'CLONING', 'CLONING'), mk('b', 'CLONING', 'CLONING')], { running: ['a'], audit: { a: ago(30), b: ago(30) } }).join() === 'b');
 }
 
-console.log('\n10. «للمتابعة فقط» accounts cannot be scaled (they only carry campaign-level data → 0 winning creatives)');
+console.log('\n10. «للمتابعة فقط» accounts: the ads of the winning campaigns are read live (so a scale is possible there)');
+const LT = await import(pathToFileURL(join(__dirname, '../services/amb/liveCampaignTree.js')).href);
+{
+  const adsets = [{ id: 's1', name: 'Set 1' }, { id: 's2', name: 'Set 2' }];
+  const ads = [{ id: 'a1', name: 'Ad 1', adset_id: 's1', creative: { id: 'c1' } }, { id: 'a2', name: 'Ad 2', adset_id: 's1', creative: { id: 'c2' } }, { id: 'a3', name: 'Ad 3', adset_id: 's2' }];
+  const insights = [{ ad_id: 'a1', spend: '120', actions: [{ action_type: 'purchase', value: '3' }] }, { ad_id: 'a2', spend: '50', actions: [{ action_type: 'link_click', value: '9' }] }];
+  const tree = LT.buildLiveTree({ adsets, ads, insights });
+  ok('ads grouped under their ad sets with the creative id', tree.length === 2 && tree[0].children.length === 2 && tree[0].children[0].creativeId === 'c1' && tree[1].children[0].creativeId === null);
+  ok('purchases + CPA come from the per-ad insights (cpa = spend / purchases)', tree[0].children[0].metrics.purchases === 3 && tree[0].children[0].metrics.cpa === 40 && tree[0].children[0].metrics.spend === 120);
+  ok('an ad with spend but no purchase has 0 purchases and NO cpa (never a fake number)', tree[0].children[1].metrics.purchases === 0 && tree[0].children[1].metrics.cpa === null);
+  ok('an ad with no insight row at all → zero metrics', tree[1].children[0].metrics.purchases === 0 && tree[1].children[0].metrics.spend === 0);
+  ok('ad sets with no ads are dropped', LT.buildLiveTree({ adsets: [{ id: 'x', name: 'x' }], ads: [], insights: [] }).length === 0);
+}
+{
+  LT._cacheForTests.clear();
+  let reads = 0;
+  const reader = { adsets: async () => { reads++; return [{ id: 's1', name: 'S' }]; }, ads: async () => [{ id: 'a1', name: 'A', adset_id: 's1', creative: { id: 'c1' } }], insights: async () => [{ ad_id: 'a1', spend: '60', actions: [{ action_type: 'purchase', value: '2' }] }], node: async () => ({ daily_budget: '20000' }) };
+  const camps = [{ id: 'k1' }, { id: 'k2' }];
+  await LT.hydrateCampaigns({ token: 't', camps, window: { from: '2026-11-07', to: '2026-11-07' } }, { reader });
+  ok('campaigns get their ads, CPA and CBO budget (minor units → major)', camps.every((c) => c.__live && c.children[0].children[0].metrics.cpa === 30 && c.budget === 200));
+  await LT.hydrateCampaigns({ token: 't', camps: [{ id: 'k1' }], window: { from: '2026-11-07', to: '2026-11-07' } }, { reader });
+  ok('a second read inside 5 minutes is served from the cache (no extra Meta calls)', reads === 2);
+  const bad = [{ id: 'z' }, { id: 'y' }];
+  await LT.hydrateCampaigns({ token: 't', camps: bad, window: { from: 'a', to: 'b' } }, { reader: { adsets: async () => { throw new Error('(#17) User request limit reached'); }, ads: async () => [], insights: async () => [], node: async () => null } });
+  ok('a Meta error marks that campaign (__adsError) instead of failing the list', bad.every((c) => /limit reached/.test(c.__adsError) && !c.__live));
+}
 ok('a report-only account is recognised', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1', 'act_2'] }, 'act_2') === true);
 ok('an operated account is not', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1'] }, 'act_9') === false);
 ok('no setting → not report-only', SW.isReportOnlyAccount({}, 'act_1') === false && SW.isReportOnlyAccount(null, 'act_1') === false);
 ok('ids compare as strings', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: [123] }, '123') === true);
-ok('the explanation is shown to the owner', typeof SW.REPORT_ONLY_MSG === 'string' && SW.REPORT_ONLY_MSG.includes('للمتابعة فقط'));
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
