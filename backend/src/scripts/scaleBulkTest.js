@@ -55,7 +55,7 @@ const seen = [];
 const b4 = SB.startBulk({ items: [cbo('1', { campaignBudgetEgp: 450, selectedAdIds: ['x', 'x', 'y'] }), abo('2')], startMode: 'RUN_NOW', windowName: 'today', userId: 7, adAccountId: 'act_9' }, { exec: async (a) => { seen.push(a); return {}; }, sleep: async () => {} });
 await waitDone(b4.id);
 ok('CBO args', seen[0].budgetMode === 'CBO' && seen[0].campaignBudgetEgp === 450 && seen[0].selectedAdIds.join() === 'x,y' && seen[0].startMode === 'RUN_NOW' && seen[0].userId === 7 && seen[0].adAccountId === 'act_9');
-ok('every campaign waits for its clone for the long bulk timeout (not the 2-minute single default)', seen.every((a) => a.waitTimeoutMs === SB.WAIT_PER_CAMPAIGN_MS && a.waitTimeoutMs >= 600000));
+ok('every campaign waits for its clone for the long bulk timeout (not the 2-minute single default)', seen.every((a) => a.waitTimeoutMs === SB.WAIT_PER_CAMPAIGN_MS && a.waitTimeoutMs === 5 * 60_000 && a.waitTimeoutMs > 120000));
 ok('ABO args', seen[1].budgetMode === 'ABO' && seen[1].adSets[0].dailyBudgetEgp === 150 && seen[1].selectedAdIds === undefined);
 
 console.log('\n5. one failure never stops the rest');
@@ -96,9 +96,15 @@ ok('1 done, 2 failed by the throttle, 3 and 4 never started', ran7b.join() === '
 ok('the batch says why it stopped (rate limit) and the skipped ones carry the message', d7b.stopReason === 'RATE_LIMIT' && d7b.status === 'CANCELED' && d7b.items[2].error === SB.RATE_LIMIT_STOP_MSG);
 SB._resetForTests();
 const ran7c = [];
-const b7c = SB.startBulk({ items: [cbo('1'), cbo('2'), cbo('3')] }, { exec: async (a) => { ran7c.push(a.sourceCampaignId); if (a.sourceCampaignId === '1') throw new Error('انتهت مهلة الانتظار والنسخ لسه شغال'); return {}; }, sleep: async () => {} });
+const b7c = SB.startBulk({ items: [cbo('1'), cbo('2'), cbo('3')] }, { exec: async (a) => { ran7c.push(a.sourceCampaignId); if (a.sourceCampaignId === '1') throw new Error('Invalid creative'); return {}; }, sleep: async () => {} });
 const d7c = await waitDone(b7c.id);
-ok('a plain failure / timeout (not the throttle) does NOT stop the rest', ran7c.join() === '1,2,3' && d7c.stopReason === null && d7c.status === 'DONE');
+ok('an ordinary failure (not the throttle, not a wait timeout) does NOT stop the rest', ran7c.join() === '1,2,3' && d7c.stopReason === null && d7c.status === 'DONE');
+SB._resetForTests();
+const ran7d = [];
+const b7d = SB.startBulk({ items: [cbo('1'), cbo('2'), cbo('3')] }, { exec: async (a) => { ran7d.push(a.sourceCampaignId); if (a.sourceCampaignId === '1') throw new Error('انتهت مهلة الانتظار والنسخ لسه شغال على ميتا (CLONING)'); return {}; }, sleep: async () => {} });
+const d7d = await waitDone(b7d.id);
+ok('a clone still running after the wait (5 min) STOPS the bulk — the next one is not started behind it', ran7d.join() === '1' && d7d.stopReason === 'WAIT_TIMEOUT' && d7d.items[1].status === 'CANCELED' && d7d.items[1].error === SB.WAIT_STOP_MSG && d7d.status === 'CANCELED');
+ok('the timeout item gets the «resume, never re-scale» hint', d7d.items[0].hint?.kind === 'WAIT_TIMEOUT' && d7d.items[0].hint.retry === 'RESUME');
 ok('the throttle pattern matches Meta codes and messages, not ordinary errors', SB.META_THROTTLE_RE.test('(#17) User request limit reached') && SB.META_THROTTLE_RE.test('Too many calls') && !SB.META_THROTTLE_RE.test('Invalid creative'));
 
 console.log('\n8. a clone that finishes AFTER the wait gave up is settled correctly (no duplicate-scale card)');
