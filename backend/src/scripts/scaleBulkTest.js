@@ -87,6 +87,20 @@ ok('first done, the others canceled and never executed', done7.join() === '1' &&
 ok('unknown batch → 404', throws(() => SB.cancelBatch('nope'))?.status === 404);
 ok('latestBatch returns the most recent', SB.latestBatch()?.id === b7.id);
 
+console.log('\n7b. a Meta rate limit stops the whole bulk (nothing else is started)');
+SB._resetForTests();
+const ran7b = [];
+const b7b = SB.startBulk({ items: [cbo('1'), cbo('2'), cbo('3'), cbo('4')] }, { exec: async (a) => { ran7b.push(a.sourceCampaignId); if (a.sourceCampaignId === '2') throw new Error('فشل إنشاء حملة الاسكيل: User request limit reached — Ad Account Has Too Many API Calls'); return {}; }, sleep: async () => {} });
+const d7b = await waitDone(b7b.id);
+ok('1 done, 2 failed by the throttle, 3 and 4 never started', ran7b.join() === '1,2' && d7b.items[0].status === 'DONE' && d7b.items[1].status === 'FAILED' && d7b.items[2].status === 'CANCELED' && d7b.items[3].status === 'CANCELED');
+ok('the batch says why it stopped (rate limit) and the skipped ones carry the message', d7b.stopReason === 'RATE_LIMIT' && d7b.status === 'CANCELED' && d7b.items[2].error === SB.RATE_LIMIT_STOP_MSG);
+SB._resetForTests();
+const ran7c = [];
+const b7c = SB.startBulk({ items: [cbo('1'), cbo('2'), cbo('3')] }, { exec: async (a) => { ran7c.push(a.sourceCampaignId); if (a.sourceCampaignId === '1') throw new Error('انتهت مهلة الانتظار والنسخ لسه شغال'); return {}; }, sleep: async () => {} });
+const d7c = await waitDone(b7c.id);
+ok('a plain failure / timeout (not the throttle) does NOT stop the rest', ran7c.join() === '1,2,3' && d7c.stopReason === null && d7c.status === 'DONE');
+ok('the throttle pattern matches Meta codes and messages, not ordinary errors', SB.META_THROTTLE_RE.test('(#17) User request limit reached') && SB.META_THROTTLE_RE.test('Too many calls') && !SB.META_THROTTLE_RE.test('Invalid creative'));
+
 console.log('\n8. a clone that finishes AFTER the wait gave up is settled correctly (no duplicate-scale card)');
 const SW = await import(pathToFileURL(join(__dirname, '../services/amb/scaleWinners.js')).href);
 const camp = { level: 'CAMPAIGN', status: 'CREATED', destination_id: '123' };

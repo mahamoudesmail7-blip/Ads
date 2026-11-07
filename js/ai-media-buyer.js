@@ -874,6 +874,7 @@ function bulkProgressHtml() {
   const running = b.status === 'RUNNING';
   const nextIn = running && b.nextAt ? Math.max(0, Math.round((b.nextAt - Date.now()) / 1000)) : null;
   const head = running ? `⏳ اسكيل مجمّع شغال — ${b.counts.done + b.counts.failed}/${b.counts.total}${nextIn != null ? ` · اللي بعده بعد ${nextIn} ثانية` : ''}`
+    : b.stopReason === 'RATE_LIMIT' ? '⏹ اتوقف تلقائيًا — ميتا حاطّة حد مؤقت على الحساب'
     : b.status === 'CANCELED' ? '⏹ اتوقف الاسكيل المجمّع' : `✅ خلص الاسكيل المجمّع — تم ${b.counts.done} · فشل ${b.counts.failed}`;
   return `<div class="amb-bulk-progress ${running ? 'running' : ''}">
     <div class="amb-bulk-ph"><b>${head}</b>

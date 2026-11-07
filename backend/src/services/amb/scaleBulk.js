@@ -17,6 +17,9 @@ export const WAIT_PER_CAMPAIGN_MS = 15 * 60_000;
 const batches = new Map(); // id -> batch
 let activeId = null;
 
+/** Meta's temporary per-ad-account throttle (#4 / #17 / #32 / #613 / #80004 …). Once it is hit, every next campaign would hit it too — the bulk stops instead of hammering. */
+export const META_THROTTLE_RE = /request limit reached|rate limit|too many (api )?calls|\(#(?:4|17|32|613|80000|80003|80004)\)/i;
+export const RATE_LIMIT_STOP_MSG = 'اتوقف الاسكيل المجمّع تلقائيًا: ميتا حاطّة حد مؤقت على الحساب الإعلاني (طلبات كتير). استنى حوالي ساعة من غير كلونات وأعد اللي ماتعملش.';
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
 const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
 
@@ -65,7 +68,7 @@ export function validatePlan({ items, startMode, startAt, gapSeconds }, { now = 
 
 export function publicBatch(b) {
   return {
-    id: b.id, status: b.status, startedAt: b.startedAt, finishedAt: b.finishedAt, gapSeconds: b.gapSeconds, startMode: b.startMode, startAt: b.startAt,
+    id: b.id, status: b.status, stopReason: b.stopReason || null, startedAt: b.startedAt, finishedAt: b.finishedAt, gapSeconds: b.gapSeconds, startMode: b.startMode, startAt: b.startAt,
     nextAt: b.nextAt || null,
     items: b.items.map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, budgetMode: it.budgetMode, status: it.status, startedAt: it.startedAt || null, finishedAt: it.finishedAt || null, error: it.error || null, result: it.result || null })),
     counts: {
@@ -118,6 +121,7 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
         it.status = 'DONE'; it.result = { scaleCampaignName: r?.scaleCampaignName || null, adSetsCreated: r?.adSetsCreated ?? null, adsCreated: r?.adsCreated ?? null, decisionId: r?.decisionId ?? null };
       } catch (e) {
         it.status = 'FAILED'; it.error = String(e?.message || e).slice(0, 400);
+        if (META_THROTTLE_RE.test(it.error)) { b.stopReason = 'RATE_LIMIT'; b.cancel = true; } // the rest are not even started
       }
       it.finishedAt = now();
       if (i < b.items.length - 1 && !b.cancel) {
@@ -126,6 +130,7 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
         b.nextAt = null;
       }
     }
+    if (b.stopReason) for (const it of b.items) if (it.status === 'CANCELED') it.error = RATE_LIMIT_STOP_MSG;
     b.status = b.cancel ? 'CANCELED' : 'DONE'; b.finishedAt = now(); b.wake = null;
     if (activeId === id) activeId = null;
   })().catch((e) => { b.status = 'FAILED'; b.error = String(e?.message || e); b.finishedAt = now(); if (activeId === id) activeId = null; });
