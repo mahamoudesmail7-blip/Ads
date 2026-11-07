@@ -200,7 +200,33 @@ export function injectCreativeLink(payload, url) {
   if (p.asset_feed_spec && !(p.asset_feed_spec.link_urls || []).length) p.asset_feed_spec.link_urls = [{ website_url: url }];
   return p;
 }
-const jobLinks = new Map(); // jobId -> last URL a creative of this job was built with (the sibling fallback above)
+const jobLinks = new Map(); // jobId -> the product URL of this campaign (the sibling fallback above)
+/** URL out of a stored payload_json (it is cut at 6000 chars, so a plain regex is the fallback when it no longer parses). */
+export function linkFromPayloadJson(s) {
+  if (!s) return null;
+  try { const l = extractCreativeLink(JSON.parse(s)); if (l) return l; } catch { /* truncated */ }
+  const m = String(s).match(/"(?:link|website_url)"s*:s*"(https?:[^"]+)"/);
+  return m ? m[1] : null;
+}
+/** The campaign's product URL from the SOURCE creatives (same campaign = same product): first creative that carries one. */
+export function linkFromSourceCreatives(creatives) {
+  for (const cr of (creatives && typeof creatives.values === 'function' ? creatives.values() : [])) {
+    if (!cr || cr.__error) continue;
+    const l = extractCreativeLink(cr) || cr.link_url || null;
+    if (l && /^https?:/i.test(l)) return l;
+  }
+  return null;
+}
+/** Retry a creative Meta refused for a missing link, with the sibling URL. Returns { res, payload, finalErr } — finalErr.needsUserInput when there is no URL to use. */
+async function recoverMissingLink({ token, dest, payload, url, err, audit: auditFn }) {
+  if (!url || !payload) {
+    const ne = new Error('ميتا بتطلب رابط وجهة (حقل link) للإعلان ده ومقدرتش ألاقيه في الإعلان الأصلي ولا في باقي إعلانات الحملة — أدخله ثم استأنف. باقي الحملة تم نسخه.');
+    ne.needsUserInput = true; return { res: null, payload, finalErr: ne };
+  }
+  await auditFn(`ميتا طلبت حقل link (${metaErr(err)}) — إعادة المحاولة بنفس رابط المنتج من إعلان تاني في الحملة`);
+  try { const p2 = injectCreativeLink(payload, url); const res = await createAdCreative(token, dest, p2); return { res, payload: p2, finalErr: null }; }
+  catch (e2) { return { res: null, payload, finalErr: e2 }; }
+}
 
 export function isAssetRefError(e) {
   if (!e) return false;
@@ -1179,7 +1205,9 @@ async function cloneJob(jobId, token) {
         if (crow.status === 'CREATED' && crow.destination_id) {
           newCreativeId = crow.destination_id;
           idMap.creatives[srcCreative.id] = newCreativeId;
+          if (!jobLinks.get(jobId)) { const lk = linkFromPayloadJson(crow.payload_json); if (lk) jobLinks.set(jobId, lk); }
         } else {
+          if (!jobLinks.get(jobId)) { const lk = linkFromSourceCreatives(tree.creatives); if (lk) jobLinks.set(jobId, lk); }
           // Media Library: what does the destination account already have for this asset?
           const hints = await libraryDestHints(srcCreative, dest).catch(() => null);
           let payload = null; let res = null; let finalErr = null;
@@ -1226,16 +1254,14 @@ async function cloneJob(jobId, token) {
                     if (p3.asset_feed_spec && p3.object_story_spec && isStubAssetFeedSpec(p3.asset_feed_spec)) delete p3.asset_feed_spec;
                     res = await createAdCreative(token, dest, p3); payload = p3;
                   } catch (err3) { finalErr = err3; }
+                } else if (isLinkRequiredError(err2)) {
+                  const rr = await recoverMissingLink({ token, dest, payload: p2, url: adUrlOverride || jobLinks.get(jobId) || null, err: err2, audit: (detail) => audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail }) });
+                  res = rr.res; payload = rr.payload; finalErr = rr.finalErr;
                 } else { finalErr = err2; }
               }
             } else if (isLinkRequiredError(err1) && payload) {
-              const url = adUrlOverride || jobLinks.get(jobId) || null;
-              if (url) {
-                await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `ميتا طلبت حقل link (${metaErr(err1)}) — إعادة المحاولة بنفس رابط المنتج من إعلان تاني في الحملة` });
-                try { const p2 = injectCreativeLink(payload, url); res = await createAdCreative(token, dest, p2); payload = p2; } catch (err2) { finalErr = err2; }
-              } else {
-                const ne = new Error('ميتا بتطلب رابط وجهة (حقل link) للإعلان ده ومقدرتش ألاقيه في الإعلان الأصلي — أدخله ثم استأنف. باقي الحملة تم نسخه.'); ne.needsUserInput = true; finalErr = ne;
-              }
+              const rr = await recoverMissingLink({ token, dest, payload, url: adUrlOverride || jobLinks.get(jobId) || null, err: err1, audit: (detail) => audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail }) });
+              res = rr.res; payload = rr.payload; finalErr = rr.finalErr;
             } else {
               finalErr = err1;
             }

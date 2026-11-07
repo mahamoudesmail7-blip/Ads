@@ -183,12 +183,32 @@ console.log('\n11. a creative Meta rejects for a missing link: sibling URL fallb
   ok('the URL is set on link_data and its CTA; the original payload is untouched', fixed.object_story_spec.link_data.link === 'https://shop.example/p' && fixed.object_story_spec.link_data.call_to_action.value.link === 'https://shop.example/p' && base.object_story_spec.link_data.link === undefined);
   ok('an existing link is NEVER overwritten', CE.injectCreativeLink({ object_story_spec: { link_data: { link: 'https://keep.me' } } }, 'https://other').object_story_spec.link_data.link === 'https://keep.me');
   ok('video creatives get the CTA link', CE.injectCreativeLink({ object_story_spec: { video_data: { video_id: 'v', call_to_action: { type: 'SHOP_NOW' } } } }, 'https://u').object_story_spec.video_data.call_to_action.value.link === 'https://u');
+  ok('the sibling URL is recovered from a stored payload_json, even when it was cut at 6000 chars', CE.linkFromPayloadJson(JSON.stringify({ object_story_spec: { link_data: { link: 'https://p.example/x' } } })) === 'https://p.example/x' && CE.linkFromPayloadJson('{"object_story_spec":{"link_data":{"message":"cut here ... "link":"https://cut.example/y","name":"abc') === 'https://cut.example/y' && CE.linkFromPayloadJson('') === null && CE.linkFromPayloadJson('{"a":1}') === null);
+  ok('the campaign URL is read from the SOURCE creatives (first one that has one; errors skipped)', CE.linkFromSourceCreatives(new Map([['1', { __error: 'x' }], ['2', { object_story_spec: { link_data: {} } }], ['3', { object_story_spec: { video_data: { call_to_action: { value: { link: 'https://src.example/z' } } } } }]])) === 'https://src.example/z' && CE.linkFromSourceCreatives(new Map()) === null && CE.linkFromSourceCreatives(null) === null);
   ok('extract finds the URL in link_data / video CTA / feed', CE.extractCreativeLink({ object_story_spec: { link_data: { link: 'https://a' } } }) === 'https://a' && CE.extractCreativeLink({ object_story_spec: { video_data: { call_to_action: { value: { link: 'https://b' } } } } }) === 'https://b' && CE.extractCreativeLink({ asset_feed_spec: { link_urls: [{ website_url: 'https://c' }] } }) === 'https://c');
 }
 ok('a report-only account is recognised', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1', 'act_2'] }, 'act_2') === true);
 ok('an operated account is not', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1'] }, 'act_9') === false);
 ok('no setting → not report-only', SW.isReportOnlyAccount({}, 'act_1') === false && SW.isReportOnlyAccount(null, 'act_1') === false);
 ok('ids compare as strings', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: [123] }, '123') === true);
+
+console.log('\n12. every failure says what it means and what to do (no raw Meta text left alone)');
+{
+  const SE = await import(pathToFileURL(join(__dirname, '../services/amb/scaleErrors.js')).href);
+  const k = (m) => SE.classifyScaleError(m);
+  ok('Meta throttle → wait', k('فشل إنشاء حملة الاسكيل: User request limit reached — Ad Account Has Too Many API Calls').kind === 'THROTTLE' && k('(#17) x').retry === 'WAIT' && k(SB.RATE_LIMIT_STOP_MSG).kind === 'THROTTLE');
+  ok('wait timeout → resume, never re-scale', k('انتهت مهلة الانتظار والنسخ لسه شغال على ميتا (CLONING)').kind === 'WAIT_TIMEOUT' && k('انتهت المهلة والـ job لسه في حالة CLONING.').retry === 'RESUME');
+  ok('missing link → resume', k('Invalid parameter — Required Field Is Missing: The link field is required').kind === 'MISSING_LINK' && k('هذا الإعلان يحتاج رابط وجهة').retry === 'RESUME');
+  ok('no creative → resume', k('لا يوجد كرياتيف صالح للإعلان.').kind === 'NO_CREATIVE' && k('لا يوجد كرياتيف صالح للإعلان.').retry === 'RESUME');
+  ok('ads could not be read → nothing was written, safe to scale again', k('تعذّر قراءة إعلانات الحملة من ميتا: x').kind === 'ADS_UNREADABLE' && k('تعذّر قراءة إعلانات الحملة من ميتا: x').retry === 'RESCALE');
+  ok('permission errors are recognised', k('Error validating access token: Session has expired').kind === 'PERMISSION');
+  ok('anything else → a safe generic instruction (check the clone log first)', k('something odd').kind === 'UNKNOWN' && /استنساخ وجدولة/.test(k('something odd').action) && k('').kind === 'UNKNOWN');
+  ok('every rule has a title and an action in Arabic', ['User request limit reached', 'انتهت المهلة والـ job', 'link field is required', 'لا يوجد كرياتيف صالح', 'تعذّر قراءة إعلانات الحملة', 'Error validating access token', 'zzz'].every((m) => /[؀-ۿ]/.test(k(m).title) && /[؀-ۿ]/.test(k(m).action)));
+  SB._resetForTests();
+  const bh = SB.startBulk({ items: [cbo('1'), cbo('2')] }, { exec: async (a) => { if (a.sourceCampaignId === '1') throw new Error('لا يوجد كرياتيف صالح للإعلان.'); return {}; }, sleep: async () => {} });
+  const dh = await waitDone(bh.id);
+  ok('the bulk progress carries the hint for a failed item (and none for the others)', dh.items[0].hint?.kind === 'NO_CREATIVE' && dh.items[0].hint.retry === 'RESUME' && dh.items[1].hint === null);
+}
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

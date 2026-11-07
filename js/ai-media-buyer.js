@@ -500,7 +500,7 @@ function scaleCardHtml(card) {
         <div class="pn">${E(card.displayName)}</div>
         <div class="cn faint">${E(card.sourceCampaignName)}</div>
         ${card.adsUnavailable ? `<div class="amb-scale-failed">⚠️ ${E(card.adsUnavailable)}</div>` : ''}
-        ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ آخر محاولة اسكيل فشلت: ${E(card.lastError || '')} — تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.</div>` : ''}
+        ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ ${E(card.lastHint?.title || 'آخر محاولة اسكيل فشلت')}<br><span class="faint" style="font-weight:500;">${E(card.lastHint?.action || 'تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.')}</span>${card.lastBatchId && ['RESUME', 'FIX_INPUT'].includes(card.lastHint?.retry) && state.isAdmin ? `<br><button class="amb-btn sm ghost" data-scw-act="resume" data-scw="${E(card.sourceCampaignId)}">🔄 كمّل الناقص (من غير تكرار)</button>` : ''}</div>` : ''}
       </div>
       <div class="amb-scale-nums">
         <div class="nb"><b>${fmtNum(card.orders)}</b><span>طلب</span></div>
@@ -659,6 +659,13 @@ function wireScaleCards(root, data) {
         catch (e) { UI.toast(e.message, 'error'); }
         return;
       }
+      if (btn.dataset.scwAct === 'resume') {
+        if (!card.lastBatchId) return;
+        if (!(await UI.confirmModal({ title: 'كمّل الناقص', message: `هيتكمّل اللي ناقص في كامبين الاسكيل بتاع «${card.displayName}» من غير ما يتكرر أي حاجة اتعملت. متابعة؟`, confirmLabel: 'كمّل', danger: true }))) return;
+        btn.disabled = true;
+        try { await api.post(`/api/ai-media-buyer/clone/batches/${encodeURIComponent(card.lastBatchId)}/resume`, {}); UI.toast('اتبعت طلب الاستئناف — تابع «استنساخ وجدولة».'); } catch (e) { UI.toast(e.message, 'error'); btn.disabled = false; }
+        return;
+      }
       if (btn.dataset.scwAct === 'approve') {
         const sched = s.mode === 'SCHEDULE';
         if (sched && !cloneStartInFuture(s.date, s.time)) { UI.toast('The selected start date and time must be in the future.', 'error'); return; }
@@ -743,7 +750,7 @@ function wireScaleCards(root, data) {
 // (the first now, each next one `gap` later) through the SAME executeScale as the single flow. The single-campaign flow above is untouched.
 // ---------------------------------------------------------------------------
 const bulkSel = new Set(); // sourceCampaignIds ticked for the bulk scale
-const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 1, busy: false };
+const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 2, busy: false };
 let bulkRun = null;   // last /scale/bulk batch payload (while running or just finished)
 let bulkPoll = null;
 
@@ -805,6 +812,7 @@ function bulkPanelHtml() {
   const gapOk = u.gapMin >= 0.5 && u.gapMin <= 15;
   const futureOk = !sched || cloneStartInFuture(u.date, u.time);
   return `<div class="amb-bulk-panel">
+    ${cards.length > 5 ? `<div class="amb-scale-failed" style="margin:10px 0 0;">⚠️ اخترت ${cards.length} كامبين. الأنسب 5 في المرة لكل حساب (وبعدين 5 تانيين بعد 30–60 دقيقة) عشان ميتا ماتحطش حد طلبات. لو ميتا وقفتها السيستم بيوقف لوحده.</div>` : ''}
     <div class="amb-scale-sec">
       <div class="t">نوع توزيع الميزانية (لكل الكامبينات المحددة)</div>
       <div class="amb-scale-seg">
@@ -881,7 +889,7 @@ function bulkProgressHtml() {
   return `<div class="amb-bulk-progress ${running ? 'running' : ''}">
     <div class="amb-bulk-ph"><b>${head}</b>
       <span>${running ? '<button class="amb-btn ghost sm" data-bulk-act="cancel-run">إيقاف اللي لسه مابدأش</button>' : '<button class="amb-btn ghost sm" data-bulk-act="dismiss">إخفاء</button>'}</span></div>
-    ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
+    ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.status === 'FAILED' && it.hint ? `<div class="e"><b>${E(it.hint.title)}</b> — ${E(it.hint.action)}</div>` : it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
     ${running ? '<div class="faint" style="font-size:11.5px; margin-top:6px;">تقدر تقفل الصفحة — الاسكيل بيكمل على السيرفر. (لو السيرفر اتعمله restart بيتوقف اللي لسه مابدأش.)</div>' : ''}
   </div>`;
 }

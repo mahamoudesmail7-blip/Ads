@@ -6,6 +6,7 @@
 // The queue lives in server memory (a status poll survives closing the tab; a server restart drops the campaigns that have not started yet — the ones already
 // done are real and recorded in ambScaleDecision). A failure of one campaign never stops the others.
 import crypto from 'node:crypto';
+import { classifyScaleError } from './scaleErrors.js';
 
 export const MAX_ITEMS = 15;
 export const MIN_GAP_S = 30;
@@ -70,7 +71,7 @@ export function publicBatch(b) {
   return {
     id: b.id, status: b.status, stopReason: b.stopReason || null, startedAt: b.startedAt, finishedAt: b.finishedAt, gapSeconds: b.gapSeconds, startMode: b.startMode, startAt: b.startAt,
     nextAt: b.nextAt || null,
-    items: b.items.map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, budgetMode: it.budgetMode, status: it.status, startedAt: it.startedAt || null, finishedAt: it.finishedAt || null, error: it.error || null, result: it.result || null })),
+    items: b.items.map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, budgetMode: it.budgetMode, status: it.status, startedAt: it.startedAt || null, finishedAt: it.finishedAt || null, error: it.error || null, hint: it.status === 'FAILED' ? classifyScaleError(it.error) : null, result: it.result || null })),
     counts: {
       total: b.items.length,
       done: b.items.filter((x) => x.status === 'DONE').length,

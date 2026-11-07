@@ -20,6 +20,7 @@ import { createBatch, approveBatch, cairoLocalToUtc } from './cloneEngine.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { getAdSetNodes } from '../metaGraphClient.js';
 import { hydrateCampaigns } from './liveCampaignTree.js';
+import { classifyScaleError } from './scaleErrors.js';
 
 // Bid strategies that REQUIRE a bid_amount / cost cap / ROAS target.
 const CAP_BID_STRATEGIES = new Set(['LOWEST_COST_WITH_BID_CAP', 'COST_CAP', 'LOWEST_COST_WITH_MIN_ROAS', 'TARGET_COST']);
@@ -150,6 +151,8 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
       cpa: round1(cpa),
       spend: round1(n(m.spend) || 0),
       status: 'RECOMMENDED_FOR_SCALING',
+      lastBatchId: prior?.status === 'FAILED' ? prior.clone_batch_id || null : null, // lets the card offer «كمّل الناقص» (resume) instead of a duplicating re-scale
+      lastHint: prior?.status === 'FAILED' ? classifyScaleError(prior.error) : null,
       adsUnavailable: camp.__adsError || null, // light account whose live ads could not be read (e.g. a Meta throttle) — the card says so instead of showing a fake «0»
       decisionStatus: prior?.status || 'PENDING',
       lastError: prior?.status === 'FAILED' ? String(prior.error || '').slice(0, 300) || 'فشل قبل كده.' : null, // a failed scale stays on screen (with its reason) so it is not silently forgotten
@@ -202,7 +205,7 @@ export function classifyScaleOutcome(jobs, objs) {
 export async function reconcileScaleDecisions(adAccountId) {
   const since = new Date(Date.now() - 3 * 86400000);
   const rows = await prisma.ambScaleDecision.findMany({
-    where: { ad_account_id: adAccountId, clone_batch_id: { not: null }, created_at: { gte: since }, OR: [{ status: 'APPROVED' }, { status: 'FAILED', error: { contains: 'انتهت' } }] },
+    where: { ad_account_id: adAccountId, clone_batch_id: { not: null }, created_at: { gte: since }, OR: [{ status: 'APPROVED' }, { status: 'FAILED' }] }, // a FAILED label is re-checked against the real clone result (an auto-resume may have finished it since)
     take: 40,
   });
   let changed = 0;
