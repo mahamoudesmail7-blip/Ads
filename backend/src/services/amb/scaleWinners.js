@@ -84,7 +84,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
   // Light (report-only) accounts carry no ads: read the ads of the winning, still-open campaigns live (bounded, cached, a failure only marks that card).
   if (isReportOnlyAccount(settings, adAccountId)) {
     const open = campEntries.map((e) => e.camp).filter((c) => { const mm = c.metrics || {}; const o = n(mm.purchases) || 0; const cp = n(mm.cpa); const pr = latestByCamp.get(c.id); return o >= 1 && cp != null && cp <= WINNER_CPA_EGP && !(pr && ['REJECTED', 'EXECUTED', 'APPROVED'].includes(pr.status)); }).slice(0, 15);
-    if (open.length) { const token = await getDecryptedToken().catch(() => null); if (token) await hydrateCampaigns({ token, camps: open, window }); }
+    if (open.length) { const token = await getDecryptedToken().catch(() => null); if (token) await hydrateCampaigns({ token, camps: open, window, adAccountId }); }
   }
 
   // Creative-type labels (best-effort; never invented).
@@ -120,7 +120,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
         orders: o,
         cpa: round1(c),
         spend: round1(n(am.spend) || 0),
-        qualifies: o >= 1 && c != null && c <= WINNER_CPA_EGP,
+        qualifies: o >= 1 && c != null && c <= WINNER_CPA_EGP && !!a.creativeId, // an ad without a creative cannot be cloned — never offered as a winner
       };
     });
 
@@ -356,8 +356,8 @@ export async function executeScale({
 
   if (isReportOnlyAccount(settings, adAccountId)) { // a light account has no ads in the snapshot: read this campaign's ads live, and refuse (never guess) when Meta will not answer
     const token = await getDecryptedToken();
-    await hydrateCampaigns({ token, camps: [entry.camp], window });
-    if (entry.camp.__adsError) throw bad(`تعذّر قراءة إعلانات الحملة من ميتا: ${entry.camp.__adsError}`, 502);
+    await hydrateCampaigns({ token, camps: [entry.camp], window, adAccountId });
+    if (entry.camp.__adsError) throw bad(`تعذّر قراءة إعلانات الحملة من ميتا: ${entry.camp.__adsError}`, 502); // never a guess: no ads read → no write
   }
   const sourceAds = flattenAds(entry.camp);
   const adById = new Map(sourceAds.map((a) => [String(a.id), a]));

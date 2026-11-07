@@ -177,6 +177,31 @@ export { rearmThrottleBlockedJobs, rearmStuckActivations, withThrottleRetry, tra
 // usable" — re-uploading would not help, so the re-upload retry must NOT fire.
 const STRUCTURE_ERROR_SUBCODES = new Set([1443051, 1487472, 2446385, 1885183]);
 /** Does this Meta error look like "the referenced image/video/creative asset isn't usable in this account"? (⇒ try a re-upload fallback) */
+// Meta refuses a creative whose link is missing («Invalid parameter — Required Field Is Missing: The link field is required»). Seen on a real clone (El Nozha / insulin): the source
+// creative carried its URL somewhere the rebuild did not copy. Same campaign = same product, so a sibling ad's URL is the right fallback; with no sibling URL the ad is marked
+// NEEDS_INPUT (the owner types the URL once and resumes) instead of a dead-end FAILED.
+export function isLinkRequiredError(e) { return /link field is required|Required Field Is Missing[^]*link/i.test(String(e?.message || e || '')); }
+/** First destination URL found in a creative payload (link_data / video_data CTA / child attachments / asset feed), or null. */
+export function extractCreativeLink(payload) {
+  const oss = payload?.object_story_spec || {};
+  return oss.link_data?.link || oss.link_data?.call_to_action?.value?.link || oss.video_data?.call_to_action?.value?.link
+    || (oss.link_data?.child_attachments || []).find((c) => c.link)?.link || (payload?.asset_feed_spec?.link_urls || []).find((l) => l.website_url)?.website_url || null;
+}
+/** A copy of the payload with the URL set wherever Meta wants one and it is missing (never overwrites an existing link). */
+export function injectCreativeLink(payload, url) {
+  const p = JSON.parse(JSON.stringify(payload));
+  const oss = p.object_story_spec;
+  if (oss?.link_data) {
+    if (!oss.link_data.link) oss.link_data.link = url;
+    if (oss.link_data.call_to_action && !oss.link_data.call_to_action.value?.link) oss.link_data.call_to_action.value = { ...(oss.link_data.call_to_action.value || {}), link: url };
+    for (const ch of oss.link_data.child_attachments || []) if (!ch.link) ch.link = url;
+  }
+  if (oss?.video_data?.call_to_action && !oss.video_data.call_to_action.value?.link) oss.video_data.call_to_action.value = { ...(oss.video_data.call_to_action.value || {}), link: url };
+  if (p.asset_feed_spec && !(p.asset_feed_spec.link_urls || []).length) p.asset_feed_spec.link_urls = [{ website_url: url }];
+  return p;
+}
+const jobLinks = new Map(); // jobId -> last URL a creative of this job was built with (the sibling fallback above)
+
 export function isAssetRefError(e) {
   if (!e) return false;
   if (e.graphSubcode && STRUCTURE_ERROR_SUBCODES.has(Number(e.graphSubcode))) return false;
@@ -1203,6 +1228,14 @@ async function cloneJob(jobId, token) {
                   } catch (err3) { finalErr = err3; }
                 } else { finalErr = err2; }
               }
+            } else if (isLinkRequiredError(err1) && payload) {
+              const url = adUrlOverride || jobLinks.get(jobId) || null;
+              if (url) {
+                await audit(batchId, jobId, 'RETRY', { level: 'CREATIVE', source_id: srcCreative.id, detail: `ميتا طلبت حقل link (${metaErr(err1)}) — إعادة المحاولة بنفس رابط المنتج من إعلان تاني في الحملة` });
+                try { const p2 = injectCreativeLink(payload, url); res = await createAdCreative(token, dest, p2); payload = p2; } catch (err2) { finalErr = err2; }
+              } else {
+                const ne = new Error('ميتا بتطلب رابط وجهة (حقل link) للإعلان ده ومقدرتش ألاقيه في الإعلان الأصلي — أدخله ثم استأنف. باقي الحملة تم نسخه.'); ne.needsUserInput = true; finalErr = ne;
+              }
             } else {
               finalErr = err1;
             }
@@ -1212,6 +1245,7 @@ async function cloneJob(jobId, token) {
             newCreativeId = res.id;
             idMap.creatives[srcCreative.id] = newCreativeId;
             counts.creatives++;
+            { const lk = extractCreativeLink(payload); if (lk) jobLinks.set(jobId, lk); }
             await confirmProvisionalAssets();
             await markObj(crow.id, { status: 'CREATED', destination_id: newCreativeId, payload_json: JSON.stringify(payload).slice(0, 6000), error: null });
             await audit(batchId, jobId, 'OBJECT_CREATED', { level: 'CREATIVE', source_id: srcCreative.id, destination_id: newCreativeId, data: { assetTrace } });

@@ -136,28 +136,54 @@ const CE = await import(pathToFileURL(join(__dirname, '../services/amb/cloneEngi
 console.log('\n10. «للمتابعة فقط» accounts: the ads of the winning campaigns are read live (so a scale is possible there)');
 const LT = await import(pathToFileURL(join(__dirname, '../services/amb/liveCampaignTree.js')).href);
 {
-  const adsets = [{ id: 's1', name: 'Set 1' }, { id: 's2', name: 'Set 2' }];
-  const ads = [{ id: 'a1', name: 'Ad 1', adset_id: 's1', creative: { id: 'c1' } }, { id: 'a2', name: 'Ad 2', adset_id: 's1', creative: { id: 'c2' } }, { id: 'a3', name: 'Ad 3', adset_id: 's2' }];
+  const ads = [{ id: 'a1', name: 'Ad 1', adset_id: 's1', adset: { name: 'Set 1' }, creative: { id: 'c1' }, campaign: { daily_budget: '20000' } }, { id: 'a2', name: 'Ad 2', adset_id: 's1', adset: { name: 'Set 1' }, creative: { id: 'c2' } }, { id: 'a3', name: 'Ad 3', adset_id: 's2', adset: { name: 'Set 2' } }];
   const insights = [{ ad_id: 'a1', spend: '120', actions: [{ action_type: 'purchase', value: '3' }] }, { ad_id: 'a2', spend: '50', actions: [{ action_type: 'link_click', value: '9' }] }];
-  const tree = LT.buildLiveTree({ adsets, ads, insights });
-  ok('ads grouped under their ad sets with the creative id', tree.length === 2 && tree[0].children.length === 2 && tree[0].children[0].creativeId === 'c1' && tree[1].children[0].creativeId === null);
+  const tree = LT.buildLiveTree({ ads, insights });
+  ok('ads grouped under their ad sets (names come with the ads read) with the creative id', tree.length === 2 && tree[0].name === 'Set 1' && tree[0].children.length === 2 && tree[0].children[0].creativeId === 'c1' && tree[1].children[0].creativeId === null);
   ok('purchases + CPA come from the per-ad insights (cpa = spend / purchases)', tree[0].children[0].metrics.purchases === 3 && tree[0].children[0].metrics.cpa === 40 && tree[0].children[0].metrics.spend === 120);
   ok('an ad with spend but no purchase has 0 purchases and NO cpa (never a fake number)', tree[0].children[1].metrics.purchases === 0 && tree[0].children[1].metrics.cpa === null);
   ok('an ad with no insight row at all → zero metrics', tree[1].children[0].metrics.purchases === 0 && tree[1].children[0].metrics.spend === 0);
-  ok('ad sets with no ads are dropped', LT.buildLiveTree({ adsets: [{ id: 'x', name: 'x' }], ads: [], insights: [] }).length === 0);
+  ok('no ads → no ad sets', LT.buildLiveTree({ ads: [], insights: [] }).length === 0);
+  ok('CBO budget (minor → major) comes from the campaign expansion; no expansion budget → null (ABO)', LT.campaignBudgetFromAds(ads) === 200 && LT.campaignBudgetFromAds([{ id: 'x', campaign: {} }]) === null && LT.campaignBudgetFromAds([]) === null);
 }
 {
-  LT._cacheForTests.clear();
+  LT._cacheForTests.clear(); LT._cooldownForTests.clear();
+  const W = { from: '2026-11-07', to: '2026-11-07' };
   let reads = 0;
-  const reader = { adsets: async () => { reads++; return [{ id: 's1', name: 'S' }]; }, ads: async () => [{ id: 'a1', name: 'A', adset_id: 's1', creative: { id: 'c1' } }], insights: async () => [{ ad_id: 'a1', spend: '60', actions: [{ action_type: 'purchase', value: '2' }] }], node: async () => ({ daily_budget: '20000' }) };
+  const reader = { ads: async () => { reads++; return [{ id: 'a1', name: 'A', adset_id: 's1', adset: { name: 'S' }, creative: { id: 'c1' }, campaign: { daily_budget: '20000' } }]; }, insights: async () => [{ ad_id: 'a1', spend: '60', actions: [{ action_type: 'purchase', value: '2' }] }] };
   const camps = [{ id: 'k1' }, { id: 'k2' }];
-  await LT.hydrateCampaigns({ token: 't', camps, window: { from: '2026-11-07', to: '2026-11-07' } }, { reader });
-  ok('campaigns get their ads, CPA and CBO budget (minor units → major)', camps.every((c) => c.__live && c.children[0].children[0].metrics.cpa === 30 && c.budget === 200));
-  await LT.hydrateCampaigns({ token: 't', camps: [{ id: 'k1' }], window: { from: '2026-11-07', to: '2026-11-07' } }, { reader });
+  await LT.hydrateCampaigns({ token: 't', camps, window: W, adAccountId: 'act_1' }, { reader });
+  ok('campaigns get their ads, CPA and CBO budget', camps.every((c) => c.__live && c.children[0].children[0].metrics.cpa === 30 && c.budget === 200));
+  await LT.hydrateCampaigns({ token: 't', camps: [{ id: 'k1' }], window: W, adAccountId: 'act_1' }, { reader });
   ok('a second read inside 5 minutes is served from the cache (no extra Meta calls)', reads === 2);
-  const bad = [{ id: 'z' }, { id: 'y' }];
-  await LT.hydrateCampaigns({ token: 't', camps: bad, window: { from: 'a', to: 'b' } }, { reader: { adsets: async () => { throw new Error('(#17) User request limit reached'); }, ads: async () => [], insights: async () => [], node: async () => null } });
-  ok('a Meta error marks that campaign (__adsError) instead of failing the list', bad.every((c) => /limit reached/.test(c.__adsError) && !c.__live));
+  // throttle: the stale copy is served, the account cools down
+  const throttled = { ads: async () => { throw new Error('(#17) User request limit reached'); }, insights: async () => [] };
+  const again = [{ id: 'k1' }];
+  await LT.hydrateCampaigns({ token: 't', camps: again, window: W, adAccountId: 'act_1' }, { reader: throttled, now: () => LT._cacheForTests.get('k1|2026-11-07|2026-11-07').at + 6 * 60_000 });
+  ok('on a throttle the LAST GOOD copy (older than 5 min, younger than 1 h) is served instead of an empty card', again[0].__live === true && !again[0].__adsError);
+  ok('the throttled account is on cool-down', (LT._cooldownForTests.get('act_1') || 0) > 0);
+  const fresh = [{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }];
+  let calls = 0;
+  await LT.hydrateCampaigns({ token: 't', camps: fresh, window: W, adAccountId: 'act_2', concurrency: 1 }, { reader: { ads: async () => { calls++; throw new Error('Too many calls'); }, insights: async () => [] } });
+  ok('no copy at all → friendly message on every card; after the FIRST throttle nothing else is read', fresh.every((c) => c.__adsError === LT.THROTTLED_MSG && !c.__live) && calls === 1);
+  const cooled = [{ id: 'm1' }]; let c2 = 0;
+  await LT.hydrateCampaigns({ token: 't', camps: cooled, window: W, adAccountId: 'act_2' }, { reader: { ads: async () => { c2++; return []; }, insights: async () => [] } });
+  ok('while cooling down, Meta is not called at all', c2 === 0 && cooled[0].__adsError === LT.THROTTLED_MSG);
+  const other = [{ id: 'q1' }];
+  await LT.hydrateCampaigns({ token: 't', camps: other, window: W, adAccountId: 'act_3' }, { reader: { ads: async () => { throw new Error('Invalid parameter'); }, insights: async () => [] } });
+  ok('a NON-throttle error is shown as is and does NOT start a cool-down', other[0].__adsError === 'Invalid parameter' && !LT._cooldownForTests.has('act_3'));
+}
+
+console.log('\n11. a creative Meta rejects for a missing link: sibling URL fallback, else «needs input» (not a dead-end failure)');
+{
+  ok('the Meta message is recognised', CE.isLinkRequiredError(new Error('Invalid parameter — Required Field Is Missing: The link field is required')) === true && CE.isLinkRequiredError(new Error('Image Not Found')) === false);
+  const base = { name: 'c', object_story_spec: { page_id: '1', link_data: { message: 'm', image_hash: 'h', call_to_action: { type: 'SHOP_NOW', value: {} } } } };
+  ok('a creative with no link → extract gives null', CE.extractCreativeLink(base) === null);
+  const fixed = CE.injectCreativeLink(base, 'https://shop.example/p');
+  ok('the URL is set on link_data and its CTA; the original payload is untouched', fixed.object_story_spec.link_data.link === 'https://shop.example/p' && fixed.object_story_spec.link_data.call_to_action.value.link === 'https://shop.example/p' && base.object_story_spec.link_data.link === undefined);
+  ok('an existing link is NEVER overwritten', CE.injectCreativeLink({ object_story_spec: { link_data: { link: 'https://keep.me' } } }, 'https://other').object_story_spec.link_data.link === 'https://keep.me');
+  ok('video creatives get the CTA link', CE.injectCreativeLink({ object_story_spec: { video_data: { video_id: 'v', call_to_action: { type: 'SHOP_NOW' } } } }, 'https://u').object_story_spec.video_data.call_to_action.value.link === 'https://u');
+  ok('extract finds the URL in link_data / video CTA / feed', CE.extractCreativeLink({ object_story_spec: { link_data: { link: 'https://a' } } }) === 'https://a' && CE.extractCreativeLink({ object_story_spec: { video_data: { call_to_action: { value: { link: 'https://b' } } } } }) === 'https://b' && CE.extractCreativeLink({ asset_feed_spec: { link_urls: [{ website_url: 'https://c' }] } }) === 'https://c');
 }
 ok('a report-only account is recognised', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1', 'act_2'] }, 'act_2') === true);
 ok('an operated account is not', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1'] }, 'act_9') === false);

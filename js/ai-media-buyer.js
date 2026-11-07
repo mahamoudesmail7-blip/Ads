@@ -499,7 +499,7 @@ function scaleCardHtml(card) {
       <div class="amb-scale-name">
         <div class="pn">${E(card.displayName)}</div>
         <div class="cn faint">${E(card.sourceCampaignName)}</div>
-        ${card.adsUnavailable ? `<div class="amb-scale-failed">⚠️ مقدرتش أقرأ إعلانات الحملة من ميتا دلوقتي (${E(card.adsUnavailable)}) — حدّث الصفحة بعد شوية.</div>` : ''}
+        ${card.adsUnavailable ? `<div class="amb-scale-failed">⚠️ ${E(card.adsUnavailable)}</div>` : ''}
         ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ آخر محاولة اسكيل فشلت: ${E(card.lastError || '')} — تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.</div>` : ''}
       </div>
       <div class="amb-scale-nums">
