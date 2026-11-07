@@ -201,7 +201,7 @@ export async function waitAndVerifyScale({
   }
   const job = jobs[0];
   if (!job) return { ok: false, error: 'لم يُنشأ أي job للاستنساخ.', counts: { adSetsCreated: 0, adsCreated: 0 } };
-  if (!JOB_TERMINAL.has(job.status)) return { ok: false, error: `انتهت المهلة والـ job لسه في حالة ${job.status}.`, counts: { adSetsCreated: 0, adsCreated: 0 } };
+  if (!JOB_TERMINAL.has(job.status)) return { ok: false, error: `انتهت مهلة الانتظار والنسخ لسه شغال على ميتا (${job.status}) — ممكن يخلص لوحده، راجع «سجل المهام» قبل ما تعيد الاسكيل.`, counts: { adSetsCreated: 0, adsCreated: 0 } };
 
   const objs = await prisma.ambCloneObjectMap.findMany({ where: { job_id: job.id } });
   const created = (level) => objs.filter((o) => o.level === level && o.status === 'CREATED' && o.destination_id);
@@ -276,6 +276,7 @@ export async function executeScale({
   sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets,
   budgetEgp, // legacy alias for campaignBudgetEgp
   startMode, startAt, windowName = 'today', userId,
+  waitTimeoutMs = 120_000, // how long to wait for the clone worker (the bulk scale waits much longer: a big product clones for several minutes, paced by Meta's throttle)
   adAccountId: viewAccountId = null, // another switchable account (validated by the route): the scale is built inside THAT account
 }) {
   const conn = await getConnection();
@@ -424,7 +425,7 @@ export async function executeScale({
     await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { clone_batch_id: batchId } });
     await approveBatch({ batchId, userId }); // kicks the async clone worker
 
-    const verdict = await waitAndVerifyScale({ batchId, expectedAdSetSourceIds, expectedAdSourceIds });
+    const verdict = await waitAndVerifyScale({ batchId, expectedAdSetSourceIds, expectedAdSourceIds, timeoutMs: waitTimeoutMs });
     if (!verdict.ok) {
       await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: 'FAILED', error: verdict.error.slice(0, 800) } });
       const e = new Error(`فشل إنشاء حملة الاسكيل: ${verdict.error}`);

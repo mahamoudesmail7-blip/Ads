@@ -55,6 +55,7 @@ const seen = [];
 const b4 = SB.startBulk({ items: [cbo('1', { campaignBudgetEgp: 450, selectedAdIds: ['x', 'x', 'y'] }), abo('2')], startMode: 'RUN_NOW', windowName: 'today', userId: 7, adAccountId: 'act_9' }, { exec: async (a) => { seen.push(a); return {}; }, sleep: async () => {} });
 await waitDone(b4.id);
 ok('CBO args', seen[0].budgetMode === 'CBO' && seen[0].campaignBudgetEgp === 450 && seen[0].selectedAdIds.join() === 'x,y' && seen[0].startMode === 'RUN_NOW' && seen[0].userId === 7 && seen[0].adAccountId === 'act_9');
+ok('every campaign waits for its clone for the long bulk timeout (not the 2-minute single default)', seen.every((a) => a.waitTimeoutMs === SB.WAIT_PER_CAMPAIGN_MS && a.waitTimeoutMs >= 600000));
 ok('ABO args', seen[1].budgetMode === 'ABO' && seen[1].adSets[0].dailyBudgetEgp === 150 && seen[1].selectedAdIds === undefined);
 
 console.log('\n5. one failure never stops the rest');

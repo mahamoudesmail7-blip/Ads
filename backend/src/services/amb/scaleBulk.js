@@ -7,10 +7,12 @@
 // done are real and recorded in ambScaleDecision). A failure of one campaign never stops the others.
 import crypto from 'node:crypto';
 
-export const MAX_ITEMS = 12;
+export const MAX_ITEMS = 15;
 export const MIN_GAP_S = 30;
 export const DEFAULT_GAP_S = 60;
 export const MAX_GAP_S = 900;
+/** How long ONE campaign may take to clone before the bulk gives up waiting on it (the single scale waits 2 minutes — too short for a product with many ads / videos). */
+export const WAIT_PER_CAMPAIGN_MS = 15 * 60_000;
 
 const batches = new Map(); // id -> batch
 let activeId = null;
@@ -111,7 +113,7 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
       if (b.cancel) { it.status = 'CANCELED'; continue; }
       it.status = 'RUNNING'; it.startedAt = now();
       try {
-        const common = { sourceCampaignId: it.sourceCampaignId, budgetMode: it.budgetMode, startMode: b.startMode, startAt: b.startAt, windowName, userId, adAccountId };
+        const common = { sourceCampaignId: it.sourceCampaignId, budgetMode: it.budgetMode, startMode: b.startMode, startAt: b.startAt, windowName, userId, adAccountId, waitTimeoutMs: WAIT_PER_CAMPAIGN_MS };
         const r = await exec(it.budgetMode === 'ABO' ? { ...common, adSets: it.adSets } : { ...common, selectedAdIds: it.selectedAdIds, campaignBudgetEgp: it.campaignBudgetEgp });
         it.status = 'DONE'; it.result = { scaleCampaignName: r?.scaleCampaignName || null, adSetsCreated: r?.adSetsCreated ?? null, adsCreated: r?.adsCreated ?? null, decisionId: r?.decisionId ?? null };
       } catch (e) {

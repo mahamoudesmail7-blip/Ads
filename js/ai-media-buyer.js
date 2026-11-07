@@ -760,7 +760,7 @@ function bulkCards() { return (_scaleData?.cards || []).filter((c) => bulkSel.ha
 function bulkApproveState(cards) {
   if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
   if (!cards.length) return { ok: false, reason: 'علّم على كامبين واحد على الأقل.' };
-  if (cards.length > 12) return { ok: false, reason: 'الحد الأقصى 12 كامبين في المرة.' };
+  if (cards.length > 15) return { ok: false, reason: 'الحد الأقصى 15 كامبين في المرة.' };
   const u = bulkUi;
   if (!(u.gapMin >= 0.5 && u.gapMin <= 15)) return { ok: false, reason: 'الفاصل بين الكامبينات لازم بين نص دقيقة و 15 دقيقة.' };
   if (u.startMode === 'SCHEDULE' && !cloneStartInFuture(u.date, u.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
