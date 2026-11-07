@@ -1860,6 +1860,56 @@ export async function autoResumeFailedBatches({ now = new Date() } = {}) {
   return { resumed, exhausted, checked: batches.length };
 }
 
+// ---------------------------------------------------------------------------
+// Orphaned batches. A batch the owner approved that is still APPROVED / CLONING but has NO in-flight worker (the worker lives in this process — a deploy / restart
+// kills it) would sit there forever: nothing re-starts it, the owner sees «CLONING» for an hour. The resume is idempotent (a CREATED object is never re-created),
+// so the system re-kicks it itself — only once it has been quiet for 5 minutes, at most once per 10 minutes and 5 times per batch, never after the scheduled start
+// has passed, and always through the central write guard inside runBatch.
+// ---------------------------------------------------------------------------
+export const ORPHAN_QUIET_MS = 5 * 60e3;
+export const ORPHAN_GAP_MS = 10 * 60e3;
+export const ORPHAN_MAX = 5;
+/** Pure: which of these batches are orphans to re-kick right now. batches: [{ batch_id, status, jobs:[{status, scheduled_activation_at}] }]; lastAuditAt / tries are Maps keyed by batch_id. */
+export function selectOrphanedBatches({ batches, runningIds, lastAuditAt, tries, now = new Date() }) {
+  const out = [];
+  for (const b of batches) {
+    if (!['APPROVED', 'CLONING'].includes(b.status)) continue;
+    if (runningIds.has(b.batch_id)) continue; // a live worker owns it
+    const open = (b.jobs || []).filter((jb) => ['PENDING', 'CLONING'].includes(jb.status));
+    if (!open.length) continue;
+    if (open.some((jb) => jb.scheduled_activation_at && new Date(jb.scheduled_activation_at).getTime() <= now.getTime())) continue;
+    const last = lastAuditAt.get(b.batch_id);
+    if (last && now.getTime() - new Date(last).getTime() < ORPHAN_QUIET_MS) continue;
+    const t = tries.get(b.batch_id) || [];
+    if (t.length >= ORPHAN_MAX) continue;
+    if (t[0] && now.getTime() - new Date(t[0]).getTime() < ORPHAN_GAP_MS) continue;
+    out.push(b.batch_id);
+  }
+  return out;
+}
+export async function recoverOrphanedBatches({ now = new Date() } = {}) {
+  const settings = await getAmbSettings();
+  if (settings.ambExecutionMode === 'ADVISORY') return { recovered: 0, skipped: 'ADVISORY' };
+  const batches = await prisma.ambCloneBatch.findMany({
+    where: { status: { in: ['APPROVED', 'CLONING'] }, approved_at: { not: null }, created_at: { gt: new Date(now.getTime() - 24 * 3600e3) } },
+    include: { jobs: true }, take: 20,
+  });
+  const lastAuditAt = new Map(); const tries = new Map();
+  for (const b of batches) {
+    const last = await prisma.ambCloneAudit.findFirst({ where: { batch_id: b.batch_id }, orderBy: { id: 'desc' } });
+    if (last) lastAuditAt.set(b.batch_id, last.created_at);
+    const t = await prisma.ambCloneAudit.findMany({ where: { batch_id: b.batch_id, event: 'ORPHAN_RECOVER' }, orderBy: { id: 'desc' } });
+    tries.set(b.batch_id, t.map((x) => x.created_at));
+  }
+  const ids = selectOrphanedBatches({ batches, runningIds: running, lastAuditAt, tries, now });
+  for (const id of ids) {
+    await audit(id, null, 'ORPHAN_RECOVER', { detail: 'الدفعة كانت واقفة من غير worker شغال (غالبًا بعد restart للسيرفر) — اتعاد تشغيلها تلقائيًا من غير ما يتكرر أي حاجة اتعملت.' });
+    kickRun(id);
+  }
+  if (ids.length) logger.info('AMB clone orphan recovery', { recovered: ids.length });
+  return { recovered: ids.length, checked: batches.length };
+}
+
 /** On-demand live Meta review + delivery picture for one cloned job — powers
  *  the "حالة مراجعة Meta" panel. Read-only. */
 export async function getCloneJobMetaStatus(jobId) {

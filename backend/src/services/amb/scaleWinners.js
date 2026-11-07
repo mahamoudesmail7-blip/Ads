@@ -53,12 +53,17 @@ function flattenAds(campNode) {
  * Winner cards for the selected ad account + window.
  * @returns {{ window, winnerCpaEgp, count, resolvedCount, cards: [...] }}
  */
+/** «للمتابعة فقط» accounts are watched, never operated, and synced LIGHT (campaign-level only — no ads). A scale needs the winning ads, so nothing can be scaled from them. */
+export function isReportOnlyAccount(settings, adAccountId) { return ((settings && settings.ambReportOnlyAccountIds) || []).map(String).includes(String(adAccountId)); }
+export const REPORT_ONLY_MSG = 'الحساب ده «للمتابعة فقط» — بنسحب منه بيانات الحملات بس من غير الإعلانات، فمينفعش يتعمل منه اسكيل. اسكيل الحسابات اللي بتشتغل عليها بس.';
+
 export async function listScaleWinners({ windowName = 'today', includeResolved = false, adAccountId: viewAccountId = null } = {}) {
   const conn = await getConnection();
   if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) {
     return { connected: false, cards: [], count: 0, winnerCpaEgp: WINNER_CPA_EGP };
   }
   const adAccountId = viewAccountId || conn.selected_ad_account_id; // viewAccountId = a read-only VIEW account (validated by the route)
+  if (isReportOnlyAccount(await getAmbSettings(), adAccountId)) return { connected: true, cards: [], count: 0, winnerCpaEgp: WINNER_CPA_EGP, reportOnly: true, message: REPORT_ONLY_MSG };
   await reconcileScaleDecisions(adAccountId).catch(() => {}); // a clone that finished after the wait gave up must not leave its card on the screen to be scaled twice
   const settings = await getAmbSettings();
   const window = resolveWindow(windowName);
@@ -141,6 +146,7 @@ export async function listScaleWinners({ windowName = 'today', includeResolved =
       spend: round1(n(m.spend) || 0),
       status: 'RECOMMENDED_FOR_SCALING',
       decisionStatus: prior?.status || 'PENDING',
+      lastError: prior?.status === 'FAILED' ? String(prior.error || '').slice(0, 300) || 'فشل قبل كده.' : null, // a failed scale stays on screen (with its reason) so it is not silently forgotten
       decisionId: prior && !['REJECTED', 'EXECUTED', 'APPROVED'].includes(prior.status) ? prior.id : null,
       winningAdCount: eligible.length,
       winningCreativeCount,
@@ -313,6 +319,7 @@ export async function executeScale({
   if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) throw bad('اربط حساب Meta Ads الأول.');
   const adAccountId = viewAccountId || conn.selected_ad_account_id;
   const settings = await getAmbSettings();
+  if (isReportOnlyAccount(settings, adAccountId)) throw bad(REPORT_ONLY_MSG);
 
   if (!sourceCampaignId) throw bad('sourceCampaignId مطلوب.');
   // STAY_PAUSED: create every object PAUSED and never auto-activate anything

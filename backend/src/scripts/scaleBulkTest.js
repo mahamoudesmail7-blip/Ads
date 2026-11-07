@@ -113,5 +113,32 @@ ok('a failed object → FAILED with its error', (() => { const r = SW.classifySc
 ok('job FAILED → FAILED with the job error', (() => { const r = SW.classifyScaleOutcome([{ status: 'FAILED', error: 'Meta said no' }], []); return r.status === 'FAILED' && r.error === 'Meta said no'; })());
 ok('no job at all → FAILED', SW.classifyScaleOutcome([], []).status === 'FAILED');
 
+console.log('\n9. orphaned clone batches (a restart killed the worker) are re-kicked safely');
+const CE = await import(pathToFileURL(join(__dirname, '../services/amb/cloneEngine.js')).href);
+{
+  const now = new Date('2026-11-07T17:00:00Z');
+  const ago = (min) => new Date(now.getTime() - min * 60000);
+  const mk = (id, status, jobStatus, extra = {}) => ({ batch_id: id, status, jobs: [{ status: jobStatus, scheduled_activation_at: null, ...extra }] });
+  const sel = (batches, { running = [], audit = {}, tries = {} } = {}) => CE.selectOrphanedBatches({ batches, runningIds: new Set(running), lastAuditAt: new Map(Object.entries(audit)), tries: new Map(Object.entries(tries)), now });
+  ok('CLONING with no worker and 10 quiet minutes → recovered', sel([mk('a', 'CLONING', 'CLONING')], { audit: { a: ago(10) } }).join() === 'a');
+  ok('APPROVED + PENDING job with no worker → recovered', sel([mk('a', 'APPROVED', 'PENDING')], { audit: { a: ago(30) } }).join() === 'a');
+  ok('a batch with a live worker is NEVER touched', sel([mk('a', 'CLONING', 'CLONING')], { running: ['a'], audit: { a: ago(60) } }).length === 0);
+  ok('recent activity (< 5 min) → left alone', sel([mk('a', 'CLONING', 'CLONING')], { audit: { a: ago(2) } }).length === 0);
+  ok('finished jobs → nothing to recover', sel([mk('a', 'CLONING', 'SCHEDULED_NATIVE')], { audit: { a: ago(30) } }).length === 0);
+  ok('COMPLETED / FAILED batches are not this function’s business', sel([mk('a', 'COMPLETED', 'CLONING'), mk('b', 'FAILED', 'PENDING')], { audit: { a: ago(30), b: ago(30) } }).length === 0);
+  ok('scheduled start already passed → not recovered', sel([mk('a', 'CLONING', 'CLONING', { scheduled_activation_at: ago(5) })], { audit: { a: ago(30) } }).length === 0);
+  ok('at most once per 10 minutes', sel([mk('a', 'CLONING', 'CLONING')], { audit: { a: ago(30) }, tries: { a: [ago(4)] } }).length === 0);
+  ok('again after the gap', sel([mk('a', 'CLONING', 'CLONING')], { audit: { a: ago(30) }, tries: { a: [ago(12)] } }).join() === 'a');
+  ok('capped at 5 attempts per batch', sel([mk('a', 'CLONING', 'CLONING')], { audit: { a: ago(60) }, tries: { a: [ago(20), ago(30), ago(40), ago(50), ago(60)] } }).length === 0);
+  ok('only the orphan among several is picked', sel([mk('a', 'CLONING', 'CLONING'), mk('b', 'CLONING', 'CLONING')], { running: ['a'], audit: { a: ago(30), b: ago(30) } }).join() === 'b');
+}
+
+console.log('\n10. «للمتابعة فقط» accounts cannot be scaled (they only carry campaign-level data → 0 winning creatives)');
+ok('a report-only account is recognised', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1', 'act_2'] }, 'act_2') === true);
+ok('an operated account is not', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: ['act_1'] }, 'act_9') === false);
+ok('no setting → not report-only', SW.isReportOnlyAccount({}, 'act_1') === false && SW.isReportOnlyAccount(null, 'act_1') === false);
+ok('ids compare as strings', SW.isReportOnlyAccount({ ambReportOnlyAccountIds: [123] }, '123') === true);
+ok('the explanation is shown to the owner', typeof SW.REPORT_ONLY_MSG === 'string' && SW.REPORT_ONLY_MSG.includes('للمتابعة فقط'));
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -473,7 +473,8 @@ async function renderScaleWinners(cached) {
     catch { el.innerHTML = ''; return; }
     _scaleData = data;
   }
-  const cards = (data.cards || []).filter((c) => c.decisionStatus === 'PENDING' || (scaleUi.get(c.sourceCampaignId)?.open));
+  if (data.reportOnly && !bulkRun) { el.innerHTML = `<div class="amb-scale-wrap"><div class="amb-scale-h">🚀 جاهزة للاسكيل</div><div class="amb-panel amb-empty" style="padding:14px;">${E(data.message || 'الحساب ده للمتابعة فقط — مفيش اسكيل منه.')}</div></div>`; return; }
+  const cards = (data.cards || []).filter((c) => c.decisionStatus === 'PENDING' || c.decisionStatus === 'FAILED' || (scaleUi.get(c.sourceCampaignId)?.open));
   if (!cards.length && !bulkRun) { el.innerHTML = ''; return; }
   for (const id of [...bulkSel]) if (!cards.some((c) => c.sourceCampaignId === id)) bulkSel.delete(id);
   if (!bulkSel.size) bulkUi.open = false;
@@ -499,6 +500,7 @@ function scaleCardHtml(card) {
       <div class="amb-scale-name">
         <div class="pn">${E(card.displayName)}</div>
         <div class="cn faint">${E(card.sourceCampaignName)}</div>
+        ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ آخر محاولة اسكيل فشلت: ${E(card.lastError || '')} — تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.</div>` : ''}
       </div>
       <div class="amb-scale-nums">
         <div class="nb"><b>${fmtNum(card.orders)}</b><span>طلب</span></div>

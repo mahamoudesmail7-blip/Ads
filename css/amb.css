@@ -992,3 +992,4 @@ body { background: var(--amb-bg); }
 .amb-bulk-pi .s { font-weight: 800; color: var(--amb-text-dim); }
 .amb-bulk-pi.ok .s { color: var(--amb-green); } .amb-bulk-pi.bad .s { color: var(--amb-red); } .amb-bulk-pi.run .s { color: var(--amb-amber, #b7791f); } .amb-bulk-pi.dim { opacity: .6; }
 .amb-bulk-pi .e { flex-basis: 100%; font-size: 11.5px; } .amb-bulk-pi.bad .e { color: var(--amb-red); }
+.amb-scale-failed { margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--amb-red); max-width: 520px; }
