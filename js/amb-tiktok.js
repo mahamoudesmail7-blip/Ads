@@ -21,8 +21,11 @@ export async function mountTikTok(panel, opts = {}) {
 
   async function boot() {
     try { [S.opts, S.status] = await Promise.all([api.get(`${B}/options`), api.get(`${B}/status`)]); } catch (e) { root.innerHTML = `<div class="tk-card"><div class="tk-cbody"><div class="tk-msg bad">${esc(e.message)}</div></div></div>`; return; }
-    await loadAccount(); await loadDrafts(); S.view = S.status.mode === 'NONE' ? 'connect' : 'home'; render();
+    await loadAccount(); await loadDrafts(); await loadOauth();
+    try { const l = (await api.get(`${B}/oauth/last`)).last; if (l) { S.msg = l.ok ? { text: `✅ اتربط ${l.count} حساب إعلاني (${l.added} جديد، ${l.updated} اتحدّث).` } : { text: `ما اتربطش: ${l.message}`, bad: true }; S.view = 'connect'; await loadOauth(); S.status = await api.get(`${B}/status`); await loadAccount(); render(); return; } } catch { /* no callback result */ }
+    S.view = S.status.mode === 'NONE' ? 'connect' : 'home'; render();
   }
+  async function loadOauth() { try { S.oauth = await api.get(`${B}/oauth/info`); } catch { S.oauth = null; } }
   async function loadAccount() { try { S.account = await api.get(`${B}/account`); } catch { S.account = null; } }
   async function loadDrafts() { try { S.drafts = (await api.get(`${B}/drafts`)).drafts; } catch { S.drafts = []; } }
 
@@ -55,20 +58,50 @@ export async function mountTikTok(panel, opts = {}) {
   const field = (label, inner, hint = '') => `<label class="tk-f"><span>${label}</span>${inner}${hint ? `<small>${hint}</small>` : ''}</label>`;
 
   // ---------------------------------------------------------------- connect
+  function acctCards(accounts) {
+    if (!accounts.length) return '<div class="tk-empty"><small>لسه مفيش حسابات مربوطة.</small></div>';
+    const card = (a) => {
+      const exp = a.tokenExpired ? '⚠️ التوكن منتهي — أعد الربط' : a.tokenExpiresAt ? 'التوكن بيتجدّد تلقائيًا' : 'التوكن مفتوح المدة';
+      const act = a.active ? '' : '<button class="tk-btn sm primary" data-act="activate" data-id="' + esc(a.advertiserId) + '">اجعله النشط</button>';
+      return '<div class="tk-dcard"><div style="display:flex;justify-content:space-between;gap:8px;"><h3>' + esc(a.name) + '</h3>' + (a.active ? '<span class="tk-chip ok">النشط</span>' : '') + '</div>'
+        + '<small dir="ltr">' + esc(a.advertiserId) + ' · ' + esc(a.currency || '—') + '</small><small>' + exp + '</small>'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap;">' + act + '<button class="tk-btn sm" data-act="checkAcct" data-id="' + esc(a.advertiserId) + '">فحص الصلاحيات</button><button class="tk-btn sm" data-act="disconnectAcct" data-id="' + esc(a.advertiserId) + '">فصل</button></div>'
+        + '<div data-check="' + esc(a.advertiserId) + '"></div></div>';
+    };
+    return '<div class="tk-drafts">' + accounts.map(card).join('') + '</div>';
+  }
   function renderConnect() {
-    const st = S.status || {};
-    root.innerHTML = `${head('اربط حساب تيك توك مرة واحدة، وبعدها أي حد يعمل كامبين في دقايق.')}
+    const st = S.status || {}; const o = S.oauth || { app: {}, accounts: [], redirectUri: '', writesUnlocked: false };
+    const accounts = o.accounts || [];
+    root.innerHTML = `${head('اربط حسابات تيك توك الإعلانية بالتفويض الرسمي (OAuth) — مرة واحدة.')}
     ${msgBox()}
-    <div class="tk-card"><div class="tk-chead">ربط حساب الإعلانات ${st.mode === 'REAL' ? '<span class="tk-chip ok">مربوط</span>' : ''}</div><div class="tk-cbody">
+    <div class="tk-card"><div class="tk-chead">① تطبيق تيك توك (Developer App) ${o.app?.configured ? '<span class="tk-chip ok">متظبط</span>' : '<span class="tk-chip warn">لسه</span>'}</div><div class="tk-cbody">
+      <div class="tk-f"><span>Advertiser redirect URL — الصقه في TikTok Developers عند تسجيل التطبيق</span>
+        <div style="display:flex;gap:8px;"><input type="text" id="tkRedirect" readonly dir="ltr" value="${esc(o.redirectUri || '')}" style="flex:1"><button class="tk-btn" data-act="copyRedirect">📋 انسخ</button></div>
+        <small>الرابط ده ثابت. لازم يتطابق حرف بحرف مع اللي في تطبيقك على تيك توك.</small></div>
       <div class="tk-grid2">
-        ${field('Advertiser ID (رقم الحساب الإعلاني)', `<input type="text" inputmode="numeric" data-f="adv" dir="ltr" placeholder="مثال: 7000000000001" value="${esc(st.advertiserId || '')}">`, 'من TikTok Ads Manager → أعلى الشاشة بجانب اسم الحساب.')}
-        ${field('Access Token', `<input type="password" data-f="tok" dir="ltr" autocomplete="off" placeholder="${st.tokenSaved ? '•••• محفوظ (' + esc(st.last4 || 'ENV') + ') — سيبه فاضي لو مش هتغيّره' : 'الصق التوكن هنا'}">`, 'من TikTok for Business → Developers → تطبيقك → Access Token. بيتخزّن مشفّر ومبيظهرش تاني.')}
+        ${field('App ID', `<input type="text" inputmode="numeric" data-f="appId" dir="ltr" placeholder="بعد ما التطبيق يتوافق عليه" value="${esc(o.app?.appId || '')}">`, 'من My Apps → تطبيقك.')}
+        ${field('App Secret', `<input type="password" data-f="appSecret" dir="ltr" autocomplete="off" placeholder="${o.app?.secretSaved ? '•••• محفوظ (' + esc(o.app.last4 || 'ENV') + ') — سيبه فاضي لو مش هتغيّره' : 'الصق الـ Secret هنا'}">`, 'بيتخزّن مشفّر ومبيظهرش تاني. إنت اللي بتحطه، محدش تاني.')}
       </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="tk-btn primary" data-act="saveConn">ربط واختبار</button>${st.mode !== 'NONE' ? '<button class="tk-btn" data-act="home">رجوع</button>' : ''}${st.mode === 'REAL' ? '<button class="tk-btn" data-act="clearConn">فصل الربط</button>' : ''}</div>
-      <div class="tk-msg warn">التوكن بتحطه إنت بنفسك هنا — محدش تاني بيشوفه. لو مفيش عندك Developer App على تيك توك لسه، جرّب الوضع التجريبي تحت عشان تتعلم الشاشات.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="tk-btn primary" data-act="saveApp">حفظ بيانات التطبيق</button>${o.app?.configured && o.app?.source === 'SAVED' ? '<button class="tk-btn" data-act="clearApp">مسح</button>' : ''}</div>
+    </div></div>
+    <div class="tk-card"><div class="tk-chead">② الحسابات الإعلانية المربوطة (${accounts.length})</div><div class="tk-cbody">
+      <div><button class="tk-btn primary" data-act="startOauth" ${o.app?.configured ? '' : 'disabled'}>🔗 اربط حسابات تيك توك</button> <span class="tk-sub">${o.app?.configured ? 'هتروح لصفحة تيك توك وتختار الحسابات اللي توافق عليها.' : 'احفظ بيانات التطبيق الأول.'}</span></div>
+      ${acctCards(accounts)}
+    </div></div>
+    <div class="tk-card"><div class="tk-chead">③ الرفع الحقيقي على تيك توك ${o.writesUnlocked ? '<span class="tk-chip warn">مفتوح</span>' : '<span class="tk-chip ok">مقفول (أمان)</span>'}</div><div class="tk-cbody">
+      <p class="tk-sub">مقفول افتراضيًا: تقدر تربط وتراجع وتجهّز الكامبينات، بس مفيش حاجة بتتعمل على تيك توك الحقيقي لحد ما تفتحه بنفسك.</p>
+      <div><button class="tk-btn ${o.writesUnlocked ? '' : 'danger'}" data-act="toggleWrites">${o.writesUnlocked ? '🔒 اقفل الرفع الحقيقي' : '🔓 افتح الرفع الحقيقي'}</button></div>
     </div></div>
     <div class="tk-card"><div class="tk-chead">🧪 الوضع التجريبي</div><div class="tk-cbody"><p class="tk-sub">بيشغّل كل الشاشات بحساب تيك توك وهمي (من غير أي صرف ولا أي حاجة بتتعمل على تيك توك الحقيقي). مناسب للتعلّم وتدريب الفريق.</p>
-      <div><button class="tk-btn ${isDemo() ? 'danger' : ''}" data-act="toggleDemo">${isDemo() ? 'إيقاف الوضع التجريبي' : 'جرّب الوضع التجريبي'}</button></div></div></div>`;
+      <div style="display:flex;gap:8px;"><button class="tk-btn ${isDemo() ? 'danger' : ''}" data-act="toggleDemo">${isDemo() ? 'إيقاف الوضع التجريبي' : 'جرّب الوضع التجريبي'}</button>${st.mode !== 'NONE' ? '<button class="tk-btn" data-act="home">رجوع للكامبينات →</button>' : ''}</div></div></div>
+    <details class="tk-card"><summary class="tk-chead" style="cursor:pointer">ربط يدوي بالتوكن (متقدم)</summary><div class="tk-cbody">
+      <div class="tk-grid2">
+        ${field('Advertiser ID', `<input type="text" inputmode="numeric" data-f="adv" dir="ltr" placeholder="7000000000001" value="${esc(st.advertiserId || '')}">`)}
+        ${field('Access Token', `<input type="password" data-f="tok" dir="ltr" autocomplete="off" placeholder="${st.tokenSaved ? '•••• محفوظ (' + esc(st.last4 || 'ENV') + ')' : 'الصق التوكن هنا'}">`)}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="tk-btn" data-act="saveConn">ربط واختبار</button>${st.mode === 'REAL' && !st.oauth?.accounts ? '<button class="tk-btn" data-act="clearConn">فصل</button>' : ''}</div>
+    </div></details>`;
   }
 
   // ---------------------------------------------------------------- home
@@ -238,6 +271,14 @@ export async function mountTikTok(panel, opts = {}) {
         if (r.error) { S.msg = { text: `اتحفظ بس تيك توك مارضيتش: ${r.error.title} — ${r.error.action}`, bad: true }; return render(); }
         S.msg = { text: `✅ اتربط: ${r.account?.name || 'الحساب'} (${r.account?.currency || ''})` }; S.view = 'home'; await loadDrafts(); return render();
       }
+      if (a === 'copyRedirect') { const v = root.querySelector('#tkRedirect').value; try { await navigator.clipboard.writeText(v); toast('اتنسخ الرابط.', 'success'); } catch { root.querySelector('#tkRedirect').select(); toast('اضغط Ctrl+C لنسخ الرابط.'); } return; }
+      if (a === 'saveApp') { const appId = root.querySelector('[data-f="appId"]').value.trim(); const secret = root.querySelector('[data-f="appSecret"]').value.trim(); await api.put(`${B}/oauth/app`, { appId, secret }); await loadOauth(); S.msg = { text: '✅ اتحفظت بيانات التطبيق (الـ Secret مشفّر).' }; return render(); }
+      if (a === 'clearApp') { if (!(await UI.confirmModal({ title: 'مسح بيانات التطبيق', message: 'هيتمسح App ID والـ Secret من السيستم. الحسابات المربوطة هتفضل. متابعة؟', confirmLabel: 'امسح', danger: true }))) return; await api.delete(`${B}/oauth/app`); await loadOauth(); S.msg = null; return render(); }
+      if (a === 'startOauth') { const r = await api.post(`${B}/oauth/start`, {}); window.location.href = r.url; return; }
+      if (a === 'activate') { await api.post(`${B}/oauth/accounts/${id}/activate`, {}); S.status = await api.get(`${B}/status`); await loadOauth(); await loadAccount(); S.msg = { text: 'اتغيّر الحساب النشط.' }; return render(); }
+      if (a === 'disconnectAcct') { if (!(await UI.confirmModal({ title: 'فصل الحساب', message: 'هيتمسح التوكن بتاع الحساب ده من السيستم. الكامبينات اللي على تيك توك مش هتتأثر. متابعة؟', confirmLabel: 'فصل', danger: true }))) return; await api.delete(`${B}/oauth/accounts/${id}`); S.status = await api.get(`${B}/status`); await loadOauth(); await loadAccount(); return render(); }
+      if (a === 'checkAcct') { const box = root.querySelector(`[data-check="${id}"]`); if (box) box.innerHTML = '<span class="tk-spin"></span>'; const r = await api.get(`${B}/oauth/accounts/${id}/check`); if (box) box.innerHTML = `<div class="tk-list">${r.checks.map((c) => `<div class="tk-li ${c.status === 'OK' ? 'ok' : c.status === 'FAIL' ? 'bad' : c.status === 'WARN' ? 'warn' : ''}">${esc(c.name)}: ${esc(c.text)}</div>`).join('')}</div>`; return; }
+      if (a === 'toggleWrites') { const on = !(S.oauth?.writesUnlocked); if (on && !(await UI.confirmModal({ title: 'فتح الرفع الحقيقي', message: 'بعد الفتح أي كامبين تضغط «ارفع» عليه هيتعمل فعلًا على حساب تيك توك الحقيقي (موقوف، بس بيتسجّل عندهم). متأكد؟', confirmLabel: 'افتح', danger: true }))) return; await api.put(`${B}/oauth/writes`, { on, confirm: true }); await loadOauth(); S.status = await api.get(`${B}/status`); return render(); }
       if (a === 'clearConn') { if (!(await UI.confirmModal({ title: 'فصل الربط', message: 'هيتمسح التوكن من السيستم. الكامبينات اللي اتعملت على تيك توك مش هتتأثر. متابعة؟', confirmLabel: 'فصل', danger: true }))) return; S.status = await api.delete(`${B}/connect`); S.account = null; S.msg = null; S.view = 'connect'; return render(); }
       if (a === 'toggleDemo') { S.status = await api.post(`${B}/connect/mock`, { on: !isDemo() }); await loadAccount(); await loadDrafts(); S.msg = { text: isDemo() ? '🧪 الوضع التجريبي شغّال — كل حاجة وهمية.' : 'اتقفل الوضع التجريبي.' }; S.view = S.status.mode === 'NONE' ? 'connect' : 'home'; return render(); }
       if (a === 'newPreset') { S.d = await api.post(`${B}/drafts`, { preset: id || undefined }); S.visited = new Set(); S.step = 1; S.val = null; S.msg = null; S.view = 'wizard'; S.interests = null; scheduleVal(); return render(); }

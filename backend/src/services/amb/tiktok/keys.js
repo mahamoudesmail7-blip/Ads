@@ -4,6 +4,7 @@ import { prisma } from '../../../prisma.js';
 import { encrypt, decrypt } from '../../metaCrypto.js';
 import { createTikTokClient, httpTransport } from './client.js';
 import { createMockTikTok } from './mock.js';
+import * as OA from './oauth.js';
 
 const ROW = 'tiktok-keys';
 const clean = (v) => String(v ?? '').trim().replace(/^["']|["']$/g, '');
@@ -19,11 +20,14 @@ export const validToken = (v) => { const s = String(v || ''); return s.length >=
 /** { mode: 'REAL' | 'MOCK' | 'NONE', token?, advertiserId? } — server-side only. */
 export async function getConnection() {
   const row = await readRow();
+  if (row.mock) return { mode: 'MOCK', advertiserId: null, token: null };
+  // the official authorization (OAuth) comes first: the ACTIVE linked advertiser, with its own encrypted token (refreshed when it is about to expire)
+  const act = await OA.getActiveAccount().catch(() => null);
+  if (act) { const t = await OA.getTokenFor(act.advertiserId).catch(() => null); if (t?.token) return { mode: 'REAL', token: t.token, advertiserId: act.advertiserId, via: 'OAUTH' }; }
   let token = null;
   if (row.token?.enc) { try { token = decrypt(row.token.enc); } catch { /* encryption key changed */ } }
   token = token || clean(process.env.TIKTOK_ACCESS_TOKEN) || null;
   const advertiserId = clean(row.advertiserId) || clean(process.env.TIKTOK_ADVERTISER_ID) || null;
-  if (row.mock) return { mode: 'MOCK', advertiserId: null, token: null };
   if (token && validAdvertiserId(advertiserId)) return { mode: 'REAL', token, advertiserId };
   return { mode: 'NONE', token: null, advertiserId: null };
 }
@@ -32,7 +36,8 @@ export async function getConnection() {
 export async function getStatus() {
   const row = await readRow(); const c = await getConnection();
   const env = !row.token?.enc && !!clean(process.env.TIKTOK_ACCESS_TOKEN);
-  return { mode: c.mode, advertiserId: c.advertiserId || clean(row.advertiserId) || null, tokenSaved: !!row.token?.enc || env, tokenSource: row.token?.enc ? 'SAVED' : env ? 'ENV' : null, last4: row.token?.enc ? row.token.last4 || '' : '', updatedAt: row.updatedAt || null };
+  const oauth = { accounts: (await OA.listAccounts().catch(() => [])).length, app: await OA.appStatus().catch(() => ({ configured: false })), writesUnlocked: await OA.getWritesUnlocked().catch(() => false), via: c.via || null };
+  return { oauth, mode: c.mode, advertiserId: c.advertiserId || clean(row.advertiserId) || null, tokenSaved: !!row.token?.enc || env, tokenSource: row.token?.enc ? 'SAVED' : env ? 'ENV' : null, last4: row.token?.enc ? row.token.last4 || '' : '', updatedAt: row.updatedAt || null };
 }
 
 export async function saveCredentials({ token, advertiserId }) {

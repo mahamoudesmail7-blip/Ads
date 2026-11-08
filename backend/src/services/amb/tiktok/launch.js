@@ -9,6 +9,7 @@ import { validateConfig, buildCampaignPayload, buildAdGroupPayload, buildAdPaylo
 import { explainTikTokError, TikTokError } from './client.js';
 import { getDraft, saveDraftRow } from './drafts.js';
 import { getClient, getConnection } from './keys.js';
+import { getWritesUnlocked } from './oauth.js';
 
 const running = new Set();
 const STEPS = ['validate', 'identity', 'upload', 'campaign', 'adgroup', 'ads', 'enable'];
@@ -21,6 +22,11 @@ const mark = (d, key, status, extra = {}) => {
   d.progress.steps = STEPS.map((k) => steps.find((s) => s.key === k)).filter(Boolean);
 };
 const stepDone = (d, key) => d.progress.steps.find((s) => s.key === key)?.status === 'DONE';
+
+export async function assertWritesUnlocked(deps = {}) {
+  const on = deps.writesUnlocked ? await deps.writesUnlocked() : await getWritesUnlocked();
+  if (!on) throw bad('الرفع الحقيقي على تيك توك مقفول (أمان). افتحه من شاشة «الربط» بعد ما تتأكد من الحسابات.', 423, { code: 'TIKTOK_WRITES_LOCKED' });
+}
 
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const vKey = (v) => (v.videoId ? `id:${v.videoId}` : `url:${v.url}`);
@@ -40,6 +46,7 @@ async function launchInner(id, { userId = null, enable = false } = {}, deps = {}
   const conn = deps.connection ? await deps.connection() : await getConnection();
   if (conn.mode === 'NONE') throw bad('حساب تيك توك مش مربوط.', 409, { code: 'TIKTOK_NOT_CONNECTED' });
   if (d0.mode !== conn.mode) throw bad(d0.mode === 'MOCK' ? 'الكامبين ده اتعمل في الوضع التجريبي ومينفعش يتبعت لتيك توك الحقيقي. اعمل كامبين جديد.' : 'الربط الحالي تجريبي — الكامبين ده للحساب الحقيقي. اربط الحساب الحقيقي الأول.', 409);
+  if (conn.mode === 'REAL') await assertWritesUnlocked(deps); // the real-write lock (default LOCKED): the owner opens it explicitly in the TikTok screen
   if (conn.mode === 'REAL') { const g = deps.guard ? await deps.guard() : await (await import('../writeGate.js')).checkGlobalMetaWrite({ source: 'tiktok:launch', userId }); if (!g.ok) throw bad(g.message || 'الكتابة متوقفة (Emergency Stop).', 423); }
 
   const prevError = d0.error; // remembered: a create that died on the network is looked up by name instead of blindly repeated
@@ -143,6 +150,7 @@ export async function enableDraft(id, { userId = null } = {}, deps = {}) {
   if (d.progress.enabled) return d;
   const conn = deps.connection ? await deps.connection() : await getConnection();
   if (conn.mode !== d.mode) throw bad('نوع الربط الحالي مختلف عن نوع الكامبين.', 409);
+  if (conn.mode === 'REAL') await assertWritesUnlocked(deps); // the real-write lock (default LOCKED): the owner opens it explicitly in the TikTok screen
   if (conn.mode === 'REAL') { const g = deps.guard ? await deps.guard() : await (await import('../writeGate.js')).checkGlobalMetaWrite({ source: 'tiktok:enable', userId }); if (!g.ok) throw bad(g.message || 'الكتابة متوقفة (Emergency Stop).', 423); }
   const { client } = deps.client ? { client: deps.client } : await getClient();
   try { await enableDraftInner(d, client, save); } catch (e) { d.error = { step: 'enable', stepLabel: STEP_LABELS.enable, message: String(e.message || e).slice(0, 500), code: e.code ?? null, hint: explainTikTokError(e), at: new Date().toISOString() }; await save(d).catch(() => {}); throw e; }
@@ -153,6 +161,8 @@ export async function pauseDraft(id, { userId = null } = {}, deps = {}) {
   const get = deps.getDraft || getDraft; const save = deps.saveDraft || saveDraftRow;
   const d = await get(id); if (!d) throw bad('الكامبين مش موجود.', 404);
   if (!d.progress.campaignId) throw bad('الكامبين لسه ما اتعملش على تيك توك.', 409);
+  const connP = deps.connection ? await deps.connection() : await getConnection();
+  if (connP.mode === 'REAL') await assertWritesUnlocked(deps);
   const { client } = deps.client ? { client: deps.client } : await getClient();
   await client.setStatus('campaign', [d.progress.campaignId], 'DISABLE'); // pausing the campaign stops delivery for everything under it
   d.progress.enabled = false; d.status = 'LAUNCHED'; await save(d); return d;
