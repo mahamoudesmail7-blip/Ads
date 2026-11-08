@@ -23,6 +23,7 @@ export const AMB_SECTIONS = [
   { sub: 'clone', label: 'استنساخ وجدولة', icon: 'copy' },
   { sub: 'launch', label: 'رفع الكامبين', icon: 'upload' },
   { sub: 'smart', label: 'Smart Campaign', icon: 'sparkles' },
+  { sub: 'tiktok', label: 'تيك توك', icon: 'play' },
   { sub: 'pages', label: 'صفحة المنتج', icon: 'fileText' },
   { sub: 'tasks', label: 'مهام الإعلانات', icon: 'clipboard' },
   { sub: 'history', label: 'التقارير', icon: 'fileText' },
