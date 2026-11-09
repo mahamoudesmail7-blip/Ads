@@ -6,7 +6,7 @@ import * as UI from './ui-common.js';
 const $ = (id) => document.getElementById(id);
 const E = UI.escapeHtml;
 const API = '/api/daily-tasks';
-const S = { date: null, tab: 'day', view: null, me: null, mgr: false, filter: 'ALL', open: new Set(), foldDone: new Set(), range: 7, report: null, team: null, eod: null, tries: 0, timer: null };
+const S = { who: null, date: null, tab: 'day', view: null, me: null, mgr: false, filter: 'ALL', open: new Set(), foldDone: new Set(), range: 7, report: null, team: null, eod: null, tries: 0, timer: null };
 const COLORS = ['#5b5bf0', '#0ea5e9', '#14b86e', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6'];
 const PRI = { HIGH: 3, MED: 2, LOW: 1 };
 const PRI_AR = { HIGH: 'عاجل', MED: 'مهم', LOW: 'عادي' };
@@ -56,72 +56,97 @@ function paint() {
 }
 
 // ───────────── اليوم ─────────────
-function kpis(s) {
-  const k = (label, val, color) => `<div class="dtk-kpi" style="--k:${color}"><small>${label}</small><b>${val}</b></div>`;
-  return `<div class="dtk-kpis">${k('إجمالي المهام', s.total, '#5b5bf0')}${k('تمّت', s.done + s.autoResolved, '#14b86e')}${k('لسه', s.pending + s.inProgress, '#0ea5e9')}${k('ماتعملتش', s.notDone, '#ef4444')}
-    <div class="dtk-kpi rate" style="--k:#14b86e"><div class="dtk-ring" style="--p:${s.rate ?? 0}"></div><div><small>نسبة الإنجاز</small><b>${s.rate == null ? '—' : s.rate + '%'}</b></div></div></div>`;
+const BUCKETS = [
+  ['SCALE', '🚀', 'اسكيل المنتجات الرابحة', 'كل مهمة هنا منتج ماشي حلو — اعمل له الاسكيلات المكتوبة (ميزانية كل اسكيل مكتوبة جواها).'],
+  ['FIX', '🔧', 'حل مشاكل وتيست جديد', 'منتجات عندها كمية ومبتطلعش أوردرات، ومنتجات بتطلع وتستاهل تيست جديد.'],
+  ['MIX', '🧩', 'شغل متنوّع', 'قرارات مستنية، مخزون، رصيد، ودفعات واقفة، وأي مهمة بيضيفها المدير.'],
+];
+const catOf = (t) => t.category || (t.type === 'SCALE' ? 'SCALE' : ['ZERO_ORDERS', 'CPA', 'TEST'].includes(t.type) ? 'FIX' : 'MIX');
+
+function summaryBar(s) {
+  const i = (label, val, cls = '') => `<div class="dtk-sum ${cls}"><b>${val}</b><small>${label}</small></div>`;
+  return `<div class="dtk-sumbar">${i('مهام النهارده', s.total)}${i('تمّت', s.done + s.autoResolved, 'g')}${i('لسه', s.pending + s.inProgress, 'b')}${i('ماتعملتش', s.notDone, s.notDone ? 'r' : '')}<div class="dtk-sum rate"><div class="dtk-ring" style="--p:${s.rate ?? 0}"></div><div><b>${s.rate == null ? '—' : s.rate + '%'}</b><small>نسبة الإنجاز</small></div></div></div>`;
 }
 
 function passFilter(t) {
   const f = S.filter; const v = S.view;
   if (f === 'ALL') return true;
-  if (f === 'MINE') return t.assigneeId === v.mineId;
-  if (f === 'PROBLEMS') return PROBLEM_TYPES.includes(t.type);
-  if (f === 'GROW') return GROW_TYPES.includes(t.type);
+  if (f === 'HIGH') return t.priority === 'HIGH';
   if (f === 'LATE') return t.source === 'CARRIED';
-  if (f === 'OTHER') return ['MANUAL', 'ROUTINE'].includes(t.type);
   return true;
 }
-
 function sortTasks(a, b) { return (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || ((b.carryCount || 0) - (a.carryCount || 0)) || (PRI[b.priority] - PRI[a.priority]) || String(a.createdAt).localeCompare(String(b.createdAt)); }
 
-function taskHtml(t, v) {
+function planChips(t) { return (t.plan || []).length ? `<div class="dtk-plan">${t.plan.map((p, i) => `<span class="${p.mode}"><i>${i + 1}</i><b dir="ltr">${p.mode}</b><em>${p.budget.toLocaleString('en-US')} ج</em></span>`).join('')}</div>` : ''; }
+
+function taskHtml(t, v, { showWho = false } = {}) {
   const can = S.mgr || t.assigneeId === v.mineId; const closed = ['DONE', 'AUTO_RESOLVED', 'CANCELLED'].includes(t.status); const open = S.open.has(t.id);
   const late = t.originDate && t.originDate < S.date ? daysBetween(t.originDate, S.date) : 0; const ty = v.types[t.type] || { icon: '•', label: t.type };
+  const who = showWho ? v.team.find((m) => m.id === t.assigneeId) : null; const cat = catOf(t);
   const tags = [
-    `<span class="dtk-tag">${ty.icon} ${E(ty.label)}</span>`,
-    t.priority === 'HIGH' ? '<span class="dtk-tag late">عاجل</span>' : '',
-    late > 0 ? `<span class="dtk-tag late">متأخر ${late} ${late === 1 ? 'يوم' : 'أيام'}</span>` : '',
-    t.status === 'IN_PROGRESS' ? '<span class="dtk-tag prog">شغّال عليه</span>' : '',
-    t.status === 'DONE' ? `<span class="dtk-tag ok">تمّت${t.doneAt ? ' ' + hhmm(t.doneAt) : ''}</span>` : '',
+    late > 0 ? `<span class="dtk-tag late">⏰ متأخرة ${late} ${late === 1 ? 'يوم' : 'أيام'}</span>` : '',
+    t.priority === 'HIGH' && !closed ? '<span class="dtk-tag hot">عاجلة</span>' : '',
+    t.status === 'IN_PROGRESS' ? '<span class="dtk-tag prog">شغّال عليها</span>' : '',
+    t.status === 'DONE' ? `<span class="dtk-tag ok">✅ تمّت${t.doneAt ? ' ' + hhmm(t.doneAt) : ''}</span>` : '',
     t.status === 'AUTO_RESOLVED' ? '<span class="dtk-tag auto">🤖 اتحلّت لوحدها</span>' : '',
-    t.status === 'NOT_DONE' ? `<span class="dtk-tag late">ماتعملتش: ${E(v.reasons[t.reason] || '')}</span>` : '',
+    t.status === 'NOT_DONE' ? `<span class="dtk-tag late">❌ ماتعملتش: ${E(v.reasons[t.reason] || '')}</span>` : '',
     t.source === 'MANUAL' ? '<span class="dtk-tag">من المدير</span>' : '',
+    who ? `<span class="dtk-tag who" style="--pc:${colorOf(v, who.id)}">${E(who.name)}</span>` : '',
   ].join('');
-  const quick = can && !closed ? `<div class="dtk-quick">${t.status === 'PENDING' ? `<button class="dtk-q" data-a="start" data-id="${t.id}" title="ابدأ">▶</button>` : ''}<button class="dtk-q ok" data-a="done" data-id="${t.id}" title="خلّصتها">✅</button><button class="dtk-q" data-a="notdone" data-id="${t.id}" title="ماتعملتش">❌</button></div>` : '';
-  const more = open ? `<div class="dtk-more">${t.detail ? `<div>${E(t.detail)}</div>` : ''}${(t.facts || []).length ? `<div class="dtk-facts">${t.facts.map((f) => `<span>${E(f.l)}: ${E(f.v)}</span>`).join('')}</div>` : ''}
-      ${t.note ? `<div>📝 ${E(t.note)}</div>` : ''}${t.resolvedNote ? `<div>🤖 ${E(t.resolvedNote)}</div>` : ''}
-      <div class="btns">${t.link ? `<a class="dtk-btn sm" href="${UI.shellHref ? UI.shellHref(t.link.page) : t.link.page}">↗ ${E(t.link.label)}</a>` : ''}
-      ${S.mgr && !['CANCELLED'].includes(t.status) ? `<button class="dtk-btn sm" data-a="assign" data-id="${t.id}">👤 تحويل لشخص</button><button class="dtk-btn sm" data-a="priority" data-id="${t.id}">🚩 الأولوية</button>` : ''}
-      ${S.mgr && ['DONE', 'NOT_DONE'].includes(t.status) ? `<button class="dtk-btn sm" data-a="reopen" data-id="${t.id}">↩ فتح تاني</button>` : ''}
-      ${S.mgr && !closed ? `<button class="dtk-btn sm danger" data-a="cancel" data-id="${t.id}">🗑 إلغاء</button>` : ''}</div></div>` : '';
-  return `<div class="dtk-task ${t.status === 'DONE' || t.status === 'AUTO_RESOLVED' ? 'done' : ''} ${t.status === 'NOT_DONE' ? 'nd' : ''}"><div class="row" data-toggle="${t.id}"><span class="dtk-dot ${t.priority}" title="${PRI_AR[t.priority]}"></span><div class="dtk-tt">${E(t.title)}<div class="dtk-tags">${tags}</div></div>${quick}</div>${more}</div>`;
+  const why = t.why || t.detail || '';
+  const steps = (t.steps || []).length ? `<ol class="dtk-steps">${t.steps.map((s) => `<li>${E(s)}</li>`).join('')}</ol>` : '';
+  const actions = can && !closed
+    ? `<div class="dtk-acts"><button class="dtk-go" data-a="done" data-id="${t.id}">✅ خلّصتها</button>${t.status === 'PENDING' ? `<button class="dtk-sec" data-a="start" data-id="${t.id}">▶ بدأت</button>` : ''}<button class="dtk-sec" data-a="notdone" data-id="${t.id}">❌ مقدرتش</button>${t.link ? `<a class="dtk-lnk" href="${UI.shellHref ? UI.shellHref(t.link.page) : t.link.page}">↗ ${E(t.link.label)}</a>` : ''}</div>`
+    : (t.link && !closed ? `<div class="dtk-acts"><a class="dtk-lnk" href="${UI.shellHref ? UI.shellHref(t.link.page) : t.link.page}">↗ ${E(t.link.label)}</a></div>` : '');
+  const mgr = open && S.mgr && t.status !== 'CANCELLED' ? `<div class="dtk-mgr">${!closed ? `<button class="dtk-btn sm" data-a="assign" data-id="${t.id}">👤 حوّلها لشخص</button><button class="dtk-btn sm" data-a="priority" data-id="${t.id}">🚩 الأولوية</button>` : ''}${['DONE', 'NOT_DONE'].includes(t.status) ? `<button class="dtk-btn sm" data-a="reopen" data-id="${t.id}">↩ افتحها تاني</button>` : ''}${!closed ? `<button class="dtk-btn sm danger" data-a="cancel" data-id="${t.id}">🗑 إلغاء</button>` : ''}</div>` : '';
+  return `<article class="dtk-t b-${cat} ${closed ? 'closed' : ''} ${t.status === 'NOT_DONE' ? 'nd' : ''}">
+    <div class="dtk-t-hd"><span class="dtk-dot ${t.priority}" title="${PRI_AR[t.priority]}"></span><h4>${E(t.title)}</h4></div>
+    ${tags ? `<div class="dtk-tags">${tags}</div>` : ''}
+    ${why ? `<p class="dtk-why">${E(why)}</p>` : ''}
+    ${planChips(t)}
+    ${(t.facts || []).length ? `<div class="dtk-facts">${t.facts.map((f) => `<span><small>${E(f.l)}</small><b>${E(f.v)}</b></span>`).join('')}</div>` : ''}
+    ${steps || t.note || t.resolvedNote ? `<button class="dtk-steps-btn" data-toggle="${t.id}">${open ? '▾ إخفاء الخطوات' : `▸ الخطوات${(t.steps || []).length ? ` (${t.steps.length})` : ''}`}</button>` : ''}
+    ${open ? `${steps}${t.note ? `<div class="dtk-note">📝 ${E(t.note)}</div>` : ''}${t.resolvedNote ? `<div class="dtk-note">🤖 ${E(t.resolvedNote)}</div>` : ''}` : ''}
+    ${actions}${mgr}
+    ${S.mgr && !open && !closed ? `<button class="dtk-more-btn" data-toggle="${t.id}" title="خيارات المدير">⋯</button>` : ''}
+  </article>`;
 }
 
-function personCard(m, tasks, v) {
-  const mine = tasks.filter((t) => t.assigneeId === m.id && t.status !== 'CANCELLED').filter(passFilter).sort(sortTasks);
-  const all = v.tasks.filter((t) => t.assigneeId === m.id && t.status !== 'CANCELLED'); const done = all.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length;
-  const pct = all.length ? Math.round((done / all.length) * 100) : 0; const col = colorOf(v, m.id);
-  const act = mine.filter((t) => !['DONE', 'AUTO_RESOLVED'].includes(t.status)); const fin = mine.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)); const fold = S.foldDone.has(m.id);
-  return `<div class="dtk-person ${m.id === v.mineId ? 'mine' : ''}" style="--pc:${col}">
-    <div class="dtk-ph"><div class="dtk-av">${E([...m.name][0] || '?')}</div><div class="dtk-pn"><b>${E(m.name)}${m.off ? '<span class="dtk-off">إجازة</span>' : ''}${m.id === v.mineId ? '<span class="dtk-off" style="background:#5b5bf0">أنا</span>' : ''}</b><small>${all.length ? `${all.length - done} لسه · ${done} تمّت` : 'مفيش مهام'}</small></div><div class="dtk-count">${done}/${all.length}</div></div>
-    <div class="dtk-bar2"><i style="width:${pct}%"></i></div>
-    <div class="dtk-list">${act.map((t) => taskHtml(t, v)).join('') || (fin.length ? '<div class="dtk-none">✅ خلّص كل حاجة</div>' : '<div class="dtk-none">مفيش مهام مطابقة</div>')}
-      ${fin.length ? `<div class="dtk-fold" data-fold="${m.id}">${fold ? '▾ إخفاء' : '▸ عرض'} المنجز (${fin.length})</div>${fold ? fin.map((t) => taskHtml(t, v)).join('') : ''}` : ''}</div></div>`;
+function bucketSection(code, icon, title, hint, list, v, opts) {
+  const act = list.filter((t) => !['DONE', 'AUTO_RESOLVED'].includes(t.status)); const fin = list.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)); const key = `${S.who}:${code}`; const fold = S.foldDone.has(key);
+  const done = fin.length;
+  return `<section class="dtk-sec-b b-${code}"><header><div><h3>${icon} ${title}</h3><small>${hint}</small></div><span class="dtk-cnt">${done}/${list.length}</span></header>
+    ${act.map((t) => taskHtml(t, v, opts)).join('') || `<div class="dtk-none">${list.length ? '✅ خلّصت القسم ده' : 'مفيش مهام في القسم ده النهارده'}</div>`}
+    ${fin.length ? `<div class="dtk-fold" data-fold="${key}">${fold ? '▾ إخفاء' : '▸ عرض'} المنجز (${fin.length})</div>${fold ? fin.map((t) => taskHtml(t, v, opts)).join('') : ''}` : ''}</section>`;
+}
+
+function whoCards(v) {
+  const card = (id, name, color, tasks) => {
+    const live = tasks.filter((t) => t.status !== 'CANCELLED'); const done = live.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length; const pct = live.length ? Math.round((done / live.length) * 100) : 0;
+    const mini = BUCKETS.map(([c, icon]) => { const l = live.filter((t) => catOf(t) === c); return `<span title="${icon}">${icon} ${l.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length}/${l.length}</span>`; }).join('');
+    const m = v.team.find((x) => x.id === id);
+    return `<button class="dtk-who ${S.who === id ? 'on' : ''}" data-who="${id}" style="--pc:${color}"><div class="dtk-av">${id === 'ALL' ? '👥' : E([...name][0] || '?')}</div><div class="nm"><b>${E(name)}${m?.off ? '<span class="dtk-off">إجازة</span>' : ''}${id === v.mineId ? '<span class="dtk-off me">أنا</span>' : ''}</b><div class="mini">${mini}</div><div class="bar"><i style="width:${pct}%"></i></div></div><div class="cnt">${done}<small>/${live.length}</small></div></button>`;
+  };
+  const cards = v.team.filter((m) => m.active || v.tasks.some((t) => t.assigneeId === m.id)).map((m) => card(m.id, m.name, colorOf(v, m.id), v.tasks.filter((t) => t.assigneeId === m.id)));
+  const un = v.tasks.filter((t) => !t.assigneeId && ['PENDING', 'IN_PROGRESS', 'NOT_DONE'].includes(t.status));
+  return `<div class="dtk-whos">${card('ALL', 'الكل', '#64748b', v.tasks)}${cards.join('')}${un.length ? card('NONE', 'من غير مسؤول', '#94a3b8', un) : ''}</div>`;
 }
 
 function paintDay() {
   const v = S.view; const s = v.summary; const body = $('dtkBody');
-  if (v.building) { body.innerHTML = '<div class="dtk-empty">⏳ بجهّز مهام اليوم من بيانات الحملات… ثواني وتظهر لوحدها.</div><div class="dtk-skel" style="margin-top:14px"><div></div><div></div><div></div></div>'; return; }
+  if (v.building) { body.innerHTML = '<div class="dtk-empty">⏳ بجهّز مهام اليوم من بيانات الحملات… دقيقة وتظهر لوحدها.</div><div class="dtk-skel" style="margin-top:14px"><div></div><div></div><div></div></div>'; return; }
   if (!v.exists && S.date !== v.today) { body.innerHTML = `<div class="dtk-empty">مفيش مهام متسجّلة ليوم ${E(dateAr(S.date))}.${S.mgr ? '<br><br><button class="dtk-btn primary" id="dtkGen">جهّز اليوم ده</button>' : ''}</div>`; $('dtkGen')?.addEventListener('click', () => doRefresh()); return; }
-  const chips = [['ALL', 'الكل'], ...(v.mineId ? [['MINE', 'مهامي']] : []), ['PROBLEMS', '🔴 مشاكل'], ['GROW', '🚀 اسكيل وفتح'], ['LATE', '⏰ المتأخر'], ['OTHER', '✍️ يدوي وروتين']];
+  if (!S.who || (S.who !== 'ALL' && S.who !== 'NONE' && !v.team.some((m) => m.id === S.who))) S.who = v.mineId || 'ALL';
   const bad = Object.entries(v.notes?.generator || {}).filter(([, g]) => g && g.ok === false).map(([k]) => (v.types[k]?.label || k));
-  const unassigned = v.tasks.filter((t) => !t.assigneeId && ['PENDING', 'IN_PROGRESS', 'NOT_DONE'].includes(t.status));
-  const members = [...v.team].sort((a, b) => (b.id === v.mineId) - (a.id === v.mineId));
-  body.innerHTML = `${kpis(s)}
-    ${bad.length ? `<div class="dtk-card" style="border-color:var(--yellow);padding:10px 14px;font-size:13px">⚠️ مصدر مش متاح دلوقتي: ${E([...new Set(bad)].join('، '))} — المهام اللي منه مش هتتحدّث لحد المرة الجاية، ومفيش حاجة اتقفلت بسببه.</div>` : ''}
-    <div class="dtk-filters">${chips.map(([k, l]) => `<button class="dtk-chip ${S.filter === k ? 'on' : ''}" data-filter="${k}">${l}</button>`).join('')}${s.unassigned ? `<span class="dtk-tag late">${s.unassigned} مهمة من غير مسؤول</span>` : ''}</div>
-    ${v.tasks.length === 0 ? '<div class="dtk-empty">مفيش مهام النهارده 🎉<br><small>لو فيه مشاكل جديدة هتظهر هنا لوحدها.</small></div>' : `<div class="dtk-grid">${members.map((m) => personCard(m, v.tasks, v)).join('')}${unassigned.length ? personCard({ id: null, name: 'من غير مسؤول', off: false }, v.tasks, v) : ''}</div>`}`;
+  const mine = S.who === 'ALL' ? v.tasks : S.who === 'NONE' ? v.tasks.filter((t) => !t.assigneeId) : v.tasks.filter((t) => t.assigneeId === S.who);
+  const shown = mine.filter((t) => t.status !== 'CANCELLED').filter(passFilter).sort(sortTasks);
+  const person = v.team.find((m) => m.id === S.who); const live = mine.filter((t) => t.status !== 'CANCELLED'); const done = live.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length;
+  const headline = S.who === 'ALL' ? `كل مهام النهارده: ${live.length} — تمّت ${done}` : person ? `${person.id === v.mineId ? 'مهامك' : 'مهام ' + person.name} النهارده: ${live.length} — ${done ? 'خلّصت ' + done : 'لسه ماخلّصتش حاجة'}` : `مهام من غير مسؤول: ${live.length}`;
+  body.innerHTML = `${summaryBar(s)}
+    ${bad.length ? `<div class="dtk-warn">⚠️ مصدر مش متاح دلوقتي: ${E([...new Set(bad)].join('، '))} — مهامه مش هتتحدّث لحد المرة الجاية، ومفيش حاجة اتقفلت بسببه.</div>` : ''}
+    ${whoCards(v)}
+    <div class="dtk-listhd"><h2>${E(headline)}</h2><div class="dtk-filters">${[['ALL', 'الكل'], ['HIGH', '🔴 العاجلة'], ['LATE', '⏰ المتأخرة']].map(([k, l]) => `<button class="dtk-chip ${S.filter === k ? 'on' : ''}" data-filter="${k}">${l}</button>`).join('')}</div></div>
+    ${v.tasks.length === 0 ? '<div class="dtk-empty">مفيش مهام النهارده 🎉<br><small>لو فيه مشاكل أو فرص جديدة هتظهر هنا لوحدها.</small></div>' : BUCKETS.map(([c, i, t, h]) => bucketSection(c, i, t, h, shown.filter((x) => catOf(x) === c), v, { showWho: S.who === 'ALL' || S.who === 'NONE' })).join('')}`;
 }
 
 // ───────────── المتابعة ─────────────
@@ -159,16 +184,27 @@ async function paintTeam() {
 // ───────────── الإعدادات ─────────────
 async function paintSettings() {
   const body = $('dtkBody'); const o = S.view.options; const v = S.view;
-  const typeRows = [['ZERO_ORDERS', 'بيصرف ومبيجيبش أوردرات', 'حملات صرفت فوق الحد النهارده من غير ولا أوردر'], ['CPA', 'CPA فوق الحد', 'حملات شغالة وتكلفة الأوردر فوق حد التخفيض/الإيقاف'], ['STOCK', 'مخزون', 'منتج المخزون قليل أو خلص والإعلان شغال'], ['FUNDS', 'رصيد الحسابات', 'حساب إعلاني رصيده قليل'], ['SCALE', 'فرص الاسكيل', 'حملات رابحة جاهزة للتوسّع + اسكيل فشل ومحتاج تكملة'], ['CLONE', 'دفعات النسخ المتعطّلة', 'دفعة محتاجة بيانات (زي لينك الإعلان) أو فشلت'], ['OPEN_PLAN', 'خطة فتح الحملات', 'مهمة مراجعة خطة الفتح لما تتجهّز']];
+  const typeRows = [['ZERO_ORDERS', 'بيصرف ومبيجيبش أوردرات', 'حملات صرفت فوق الحد النهارده من غير ولا أوردر'], ['CPA', 'CPA فوق الحد', 'حملات شغالة وتكلفة الأوردر فوق حد التخفيض/الإيقاف'], ['TEST', 'تيست جديد للمنتجات اللي بتطلع', 'منتج بيجيب أوردرات وعنده مخزون كويس — يتعمله تيست جديد'], ['STOCK', 'مخزون', 'منتج المخزون قليل أو خلص والإعلان شغال'], ['DECISIONS', 'قرارات AI Operator المستنية', 'إيقاف / فتح / زيادة ميزانية مستنية موافقتك'], ['FUNDS', 'رصيد الحسابات', 'حساب إعلاني رصيده قليل'], ['SCALE', 'فرص الاسكيل', 'حملات رابحة جاهزة للتوسّع + اسكيل فشل ومحتاج تكملة'], ['CLONE', 'دفعات النسخ المتعطّلة', 'دفعة محتاجة بيانات (زي لينك الإعلان) أو فشلت'], ['OPEN_PLAN', 'خطة فتح الحملات', 'مهمة مراجعة خطة الفتح لما تتجهّز']];
   body.innerHTML = `<div class="dtk-card"><h3>⚙️ التوزيع الأوتوماتيك</h3>
       <div class="dtk-sw"><span>جهّز مهام كل يوم لوحده<small>عشان أي حد يفتح الشغل يلاقي مهامه جاهزة</small></span><input type="checkbox" id="oAuto" ${o.autoGenerate ? 'checked' : ''}></div>
       <div class="dtk-sw"><span>وقت تجهيز اليوم (بتوقيت القاهرة)</span><input type="time" id="oAt" value="${E(o.generateAt)}" style="width:auto;padding:6px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg-card);color:var(--text)"></div>
       <div class="dtk-sw"><span>يحدّث المهام كل (دقيقة)<small>بيضيف المشاكل الجديدة ويقفل اللي اتحلّت لوحدها</small></span><input type="number" id="oRef" min="15" max="720" value="${o.refreshMinutes}" style="width:90px;padding:6px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg-card);color:var(--text)"></div></div>
+    <div class="dtk-card"><h3>🚀 اسكيل المنتجات الرابحة</h3>
+      ${numRow('oScaleBudget', 'ميزانية كل اسكيل (ج)', 'أقل حاجة 500 — بتظهر جوه كل مهمة اسكيل', o.scaleBudget)}
+      ${numRow('oStrongCpa', 'تكلفة الأوردر اللي تعتبر «كوستة حلوة اوي» (ج)', 'لو تكلفة الأوردر ≤ الرقم ده → اسكيلات كتير', o.strongCpa)}
+      ${numRow('oStrongScales', 'عدد الاسكيلات للمنتج القوي', 'نص ABO ونص CBO', o.strongScales)}
+      ${numRow('oNormalScales', 'عدد الاسكيلات للمنتج العادي', 'ABO + CBO', o.normalScales)}</div>
+    <div class="dtk-card"><h3>🔧 المشاكل والتيست</h3>
+      ${numRow('oMinTestOrders', 'أقل عدد أوردرات (3 أيام) عشان المنتج يتعمله تيست', '', o.testMinOrders)}
+      ${numRow('oMinTestStock', 'أقل مخزون عشان نقترح تيست (قطعة)', '', o.minTestStock)}
+      ${numRow('oMaxTest', 'أقصى عدد مهام تيست في اليوم', '', o.maxTest)}
+      ${numRow('oMaxFix', 'أقصى عدد مهام مشاكل في اليوم', '', o.maxFix)}</div>
     <div class="dtk-card"><h3>🧲 مصادر المهام</h3>${typeRows.map(([k, l, d]) => `<div class="dtk-sw"><span>${l}<small>${d}</small></span><input type="checkbox" data-type="${k}" ${o.types[k] !== false ? 'checked' : ''}></div>`).join('')}</div>
     <div class="dtk-card"><h3><span>🔁 مهام روتينية يومية</span><button class="dtk-btn sm" id="oAddRoutine">➕ روتين</button></h3><div id="oRoutines">${routinesHtml(o.routines)}</div>
       <div style="color:var(--text-dim);font-size:12.5px;margin-top:8px">«لكل واحد» = كل شخص ياخد نسخة (زي: افحص رصيد حساباتك). «تتوزّع» = مهمة واحدة بتروح لشخص واحد.</div></div>
     <button class="dtk-btn primary" id="oSave">💾 احفظ الإعدادات</button>`;
 }
+function numRow(id, label, small, val) { return `<div class="dtk-sw"><span>${label}${small ? `<small>${small}</small>` : ''}</span><input type="number" id="${id}" value="${E(String(val ?? ''))}" style="width:96px;padding:6px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg-card);color:var(--text)"></div>`; }
 function routinesHtml(list) {
   return (list || []).map((r, i) => `<div class="dtk-form" data-r="${i}" style="border:1px solid var(--border);border-radius:14px;padding:12px;margin-bottom:8px">
     <input data-f="title" placeholder="عنوان الروتين" value="${E(r.title)}"><input data-f="detail" placeholder="تفاصيل (اختياري)" value="${E(r.detail || '')}">
@@ -214,13 +250,14 @@ function wire() {
   $('dtkRebalance').onclick = async () => { if (!confirm('هوزّع المهام اللي لسه ماتبدأتش بالتساوي من جديد. اللي بدأ أو خلّص مش هيتحرّك. أكمّل؟')) return; const r = await call(() => api.post(`${API}/rebalance`, { date: S.date }), 'اتوزّعت بالتساوي'); if (r) { S.view = r; paint(); } };
   $('dtkAdd').onclick = async () => {
     const team = S.view.team.filter((m) => m.active);
-    const res = await modal(`<h3>➕ مهمة جديدة</h3><div class="dtk-form"><div><label>العنوان</label><input id="mT" placeholder="مثلًا: راجع كرياتيف منتج كذا"></div><div><label>تفاصيل (اختياري)</label><textarea id="mD" rows="2"></textarea></div><div><label>المنتج (اختياري)</label><input id="mPr"></div><div style="display:flex;gap:8px"><div style="flex:1"><label>الأولوية</label><select id="mPi">${optionsHtml([['MED', 'مهم'], ['HIGH', 'عاجل'], ['LOW', 'عادي']], 'MED')}</select></div><div style="flex:1"><label>لمين</label><select id="mW">${optionsHtml([['', 'توزيع تلقائي (الأقل شغل)'], ...team.map((m) => [m.id, m.name])], '')}</select></div></div></div><div class="btns"><button class="dtk-btn" data-close>إلغاء</button><button class="dtk-btn primary" id="mOk">أضف</button></div>`, { onMount: (el, close) => { el.querySelector('#mOk').onclick = () => close({ title: el.querySelector('#mT').value, detail: el.querySelector('#mD').value, productName: el.querySelector('#mPr').value, priority: el.querySelector('#mPi').value, memberId: el.querySelector('#mW').value || null }); } });
+    const res = await modal(`<h3>➕ مهمة جديدة</h3><div class="dtk-form"><div><label>العنوان</label><input id="mT" placeholder="مثلًا: راجع كرياتيف منتج كذا"></div><div><label>تفاصيل (اختياري)</label><textarea id="mD" rows="2"></textarea></div><div><label>المنتج (اختياري)</label><input id="mPr"></div><div><label>القسم</label><select id="mC">${optionsHtml([['MIX', '🧩 شغل متنوّع'], ['SCALE', '🚀 اسكيل'], ['FIX', '🔧 مشاكل وتيست']], 'MIX')}</select></div><div style="display:flex;gap:8px"><div style="flex:1"><label>الأولوية</label><select id="mPi">${optionsHtml([['MED', 'مهم'], ['HIGH', 'عاجل'], ['LOW', 'عادي']], 'MED')}</select></div><div style="flex:1"><label>لمين</label><select id="mW">${optionsHtml([['', 'توزيع تلقائي (الأقل شغل)'], ...team.map((m) => [m.id, m.name])], '')}</select></div></div></div><div class="btns"><button class="dtk-btn" data-close>إلغاء</button><button class="dtk-btn primary" id="mOk">أضف</button></div>`, { onMount: (el, close) => { el.querySelector('#mOk').onclick = () => close({ title: el.querySelector('#mT').value, detail: el.querySelector('#mD').value, productName: el.querySelector('#mPr').value, priority: el.querySelector('#mPi').value, category: el.querySelector('#mC').value, memberId: el.querySelector('#mW').value || null }); } });
     if (!res) return; const r = await call(() => api.post(`${API}/tasks`, { date: S.date, ...res }), 'اتضافت المهمة'); if (r) { S.view = r; paint(); }
   };
   $('dtkBody').addEventListener('click', async (e) => {
     const q = e.target.closest('[data-a]'); if (q) { e.stopPropagation(); return act(q.dataset.a, q.dataset.id); }
     const tg = e.target.closest('[data-toggle]'); if (tg && !e.target.closest('a')) { const id = tg.dataset.toggle; S.open.has(id) ? S.open.delete(id) : S.open.add(id); return paint(); }
     const f = e.target.closest('[data-filter]'); if (f) { S.filter = f.dataset.filter; return paint(); }
+    const wh = e.target.closest('[data-who]'); if (wh) { S.who = wh.dataset.who; return paint(); }
     const fo = e.target.closest('[data-fold]'); if (fo) { const id = fo.dataset.fold; S.foldDone.has(id) ? S.foldDone.delete(id) : S.foldDone.add(id); return paint(); }
     const rg = e.target.closest('[data-range]'); if (rg) { S.range = +rg.dataset.range; return paint(); }
     if (e.target.closest('#dtkEod')) { const r = await call(() => api.get(`${API}/eod`, { date: S.date })); if (r) { $('dtkEodBox').innerHTML = `<pre class="dtk-eod">${E(r.text)}</pre><div style="margin:8px 0"><button class="dtk-btn sm" id="dtkCopy">نسخ</button></div>`; $('dtkCopy').onclick = async () => { try { await navigator.clipboard.writeText(r.text); UI.toast('اتنسخ'); } catch { UI.toast('مقدرتش أنسخ', 'error'); } }; } return; }
@@ -238,7 +275,7 @@ function wire() {
     const rd = e.target.closest('[data-rdel]'); if (rd) { const cur = readRoutines(); cur.splice(+rd.dataset.rdel, 1); S.view.options.routines = cur; $('oRoutines').innerHTML = routinesHtml(cur); return; }
     if (e.target.closest('#oSave')) {
       const types = {}; document.querySelectorAll('[data-type]').forEach((c) => { types[c.dataset.type] = c.checked; });
-      const r = await call(() => api.put(`${API}/options`, { autoGenerate: $('oAuto').checked, generateAt: $('oAt').value, refreshMinutes: +$('oRef').value, types, routines: readRoutines().filter((x) => x.title.trim()) }), 'اتحفظت الإعدادات'); if (r) { S.view.options = r; paint(); }
+      const r = await call(() => api.put(`${API}/options`, { autoGenerate: $('oAuto').checked, generateAt: $('oAt').value, refreshMinutes: +$('oRef').value, types, scaleBudget: $('oScaleBudget').value, strongCpa: $('oStrongCpa').value, strongScales: $('oStrongScales').value, normalScales: $('oNormalScales').value, testMinOrders: $('oMinTestOrders').value, minTestStock: $('oMinTestStock').value, maxTest: $('oMaxTest').value, maxFix: $('oMaxFix').value, routines: readRoutines().filter((x) => x.title.trim()) }), 'اتحفظت الإعدادات'); if (r) { S.view.options = r; paint(); }
     }
   });
   $('dtkBody').addEventListener('change', async (e) => { const l = e.target.closest('[data-link]'); if (l) { const r = await call(() => api.patch(`${API}/team/${l.dataset.link}`, { userId: l.value || null }), 'اتربط'); if (r) await load({ quiet: true }); } });

@@ -20,6 +20,9 @@ import { cairoDate } from './dailyPlanTime.js';
 export const SEVERITY_ORDER = { CRITICAL: 0, WARNING: 1, INFO: 2 };
 const CACHE_MS = 60_000;
 let CACHE = null;
+// the campaign rows of the last evaluation (read-only) — «تاسكات اليوم» builds its product-level tasks from the SAME rows instead of reading everything twice
+let LAST_ROWS = null;
+export const getLastCampaignRows = () => LAST_ROWS;
 const fmt = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
 const hoursText = (h) => (h < 1 ? `${Math.max(1, Math.round(h * 60))} دقيقة` : h < 48 ? `${Math.round(h * 10) / 10} ساعة`.replace('.0', '') : `${Math.round(h / 24)} يوم`);
 export const cairoHour = (d) => (new Date(d.getTime() + 3 * 3_600_000).getUTCHours());
@@ -163,6 +166,7 @@ export async function getAlertsCenter({ force = false, now = new Date() } = {}) 
       const today = cairoDate(now);
       const built = await buildRows({ accounts: accounts.map((a) => a.id), period: resolvePeriod({ key: 'last3' }, today), now });
       const zeroLimit = Number(built.zero?.limit) > 0 ? Number(built.zero.limit) : Number(settings.ambMinSpendBeforeDecision) || 150;
+      LAST_ROWS = { at: now.getTime(), rows: built.rows, zeroLimit, minSpend: Number(settings.ambMinSpendBeforeDecision) || 150 };
       alerts.push(...evalCampaignAlerts(built.rows, { zeroLimit, minSpend: Number(settings.ambMinSpendBeforeDecision) || 150 }));
     } catch (e) { logger.warn('[alertsCenter] campaigns', { message: e.message }); unavailable.push('الحملات'); }
     try {

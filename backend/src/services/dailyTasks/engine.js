@@ -68,6 +68,8 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
       carriedIn = r.carriedIn;
       if (r.marked.length) S.updateDay(C.addDays(date, -1), (p) => { for (const t of p.tasks) if (r.marked.includes(t.id)) { t.carried = true; t.carriedTo = date; } }).catch((e) => logger.warn('[dailyTasks] mark carried failed', { message: e.message }));
     }
+    // tasks written by the first (alert-level) version carry no `category`: while still untouched they are replaced by the product-level tasks below
+    for (const t of day.tasks) if (!t.category && t.status === 'PENDING' && t.source === 'AUTO') { t.status = 'CANCELLED'; t.resolvedNote = 'اتبدّلت بمهام المنتجات الجديدة'; }
     const fresh = C.dedupeCandidates([...gen.candidates, ...routines], [...day.tasks, ...carriedIn]).map((c) => C.makeTask(c, { date, source: c.type === 'ROUTINE' ? 'ROUTINE' : 'AUTO', now: stamp }));
     // auto-resolve (open AUTO/CARRIED tasks whose condition is gone — only for generators that ran fine)
     const live = gen.candidates.map((c) => c.key);
@@ -143,7 +145,7 @@ export async function addManualTask(date, body, user) {
   const cfg = await getConfig(); const title = String(body.title || '').trim(); if (!title) throw bad('اكتب عنوان المهمة.');
   const members = C.availableMembers(cfg.team, date);
   return S.updateDay(date, (day) => {
-    const t = C.makeTask({ type: 'MANUAL', key: null, title, detail: body.detail, priority: body.priority, product: body.productName ? { id: null, name: String(body.productName).slice(0, 80) } : null }, { date, source: 'MANUAL' });
+    const t = C.makeTask({ type: 'MANUAL', category: body.category, key: null, title, why: body.detail, priority: body.priority, product: body.productName ? { id: null, name: String(body.productName).slice(0, 80) } : null }, { date, source: 'MANUAL' });
     const pick = body.memberId && cfg.team.find((m) => m.id === body.memberId && m.active !== false);
     if (pick) t.assigneeId = pick.id; else C.distribute([t], { members, existing: day.tasks, date });
     day.tasks.push(t); S.logEntry(day, { action: 'CREATED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, actorName: user.name, actorId: user.id, text: `${user.name} أضاف المهمة وسلّمها لـ ${nameOf(cfg, t.assigneeId)}` });
@@ -177,6 +179,7 @@ export async function saveOptions(patch) {
     if (typeof patch.autoGenerate === 'boolean') o.autoGenerate = patch.autoGenerate;
     if (/^\d{2}:\d{2}$/.test(patch.generateAt || '')) o.generateAt = patch.generateAt;
     if (Number.isFinite(+patch.refreshMinutes) && +patch.refreshMinutes >= 15) o.refreshMinutes = Math.min(720, Math.round(+patch.refreshMinutes));
+    for (const [k, lo, hi] of [['scaleBudget', 100, 5000], ['strongCpa', 10, 500], ['strongScales', 1, 8], ['normalScales', 1, 8], ['testMinOrders', 1, 50], ['minTestStock', 0, 5000], ['testMaxCampaigns', 1, 20], ['maxTest', 0, 40], ['maxFix', 0, 60]]) if (Number.isFinite(+patch[k]) && patch[k] !== '' && patch[k] !== null) o[k] = Math.min(hi, Math.max(lo, Math.round(+patch[k])));
     if (patch.types && typeof patch.types === 'object') for (const k of Object.keys(C.DEFAULT_CONFIG.types)) if (typeof patch.types[k] === 'boolean') o.types[k] = patch.types[k];
     if (Array.isArray(patch.routines)) o.routines = patch.routines.slice(0, 20).map((r) => ({ id: r.id || C.newId('r'), title: String(r.title || '').trim().slice(0, 160), detail: String(r.detail || '').slice(0, 300), priority: C.PRIORITY_WEIGHT[r.priority] ? r.priority : 'LOW', days: Array.isArray(r.days) ? r.days.filter((d) => d >= 0 && d <= 6) : [], mode: r.mode === 'ALL' ? 'ALL' : 'SPREAD' })).filter((r) => r.title);
     return c;

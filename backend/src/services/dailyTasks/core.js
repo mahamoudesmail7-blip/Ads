@@ -13,6 +13,8 @@ export const TYPES = {
   FUNDS: { label: 'رصيد الحساب', icon: '💳' },
   SCALE: { label: 'فرصة اسكيل', icon: '🚀' },
   CLONE: { label: 'اسكيل/كلون محتاج تدخّل', icon: '🧩' },
+  TEST: { label: 'تيست جديد', icon: '🧪' },
+  DECISIONS: { label: 'قرارات AI Operator', icon: '🤖' },
   OPEN_PLAN: { label: 'خطة فتح الحملات', icon: '🟢' },
   ROUTINE: { label: 'روتين يومي', icon: '🔁' },
   MANUAL: { label: 'مهمة يدوية', icon: '✍️' },
@@ -24,10 +26,13 @@ export const NOT_DONE_REASONS = {
   NOT_RELEVANT: 'مش مناسب دلوقتي',
   OTHER: 'سبب تاني',
 };
+export const BUCKETS = ['SCALE', 'FIX', 'MIX'];
+export const categoryOf = (type) => (type === 'SCALE' ? 'SCALE' : ['ZERO_ORDERS', 'CPA', 'TEST'].includes(type) ? 'FIX' : 'MIX');
 export const MAX_CARRY = 3; // after this many roll-overs the task is flagged «متأخر جدًا» and bumped to HIGH
 export const DEFAULT_CONFIG = {
   autoGenerate: true, generateAt: '00:05', refreshMinutes: 60, maxPerPerson: 15,
-  types: { ZERO_ORDERS: true, CPA: true, STOCK: true, FUNDS: true, SCALE: true, CLONE: true, OPEN_PLAN: true },
+  types: { ZERO_ORDERS: true, CPA: true, TEST: true, STOCK: true, FUNDS: true, SCALE: true, CLONE: true, OPEN_PLAN: true, DECISIONS: true },
+  scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20,
   routines: [], // [{ id, title, detail, priority, days: [0..6] | [] (every day), mode: 'SPREAD' | 'ALL' }]
 };
 
@@ -41,8 +46,8 @@ export const dayOfWeek = (d) => new Date(`${d}T00:00:00Z`).getUTCDay();
 /** A task row from a generator candidate / manual entry. */
 export function makeTask(c, { date, source = 'AUTO', now = new Date().toISOString() } = {}) {
   return {
-    id: newId('t'), key: c.key || null, type: c.type || 'MANUAL', source, priority: PRIORITY_WEIGHT[c.priority] ? c.priority : 'MED',
-    title: String(c.title || '').trim().slice(0, 200), detail: String(c.detail || '').trim().slice(0, 600), facts: Array.isArray(c.facts) ? c.facts.slice(0, 6) : [],
+    id: newId('t'), key: c.key || null, type: c.type || 'MANUAL', category: BUCKETS.includes(c.category) ? c.category : categoryOf(c.type || 'MANUAL'), source, priority: PRIORITY_WEIGHT[c.priority] ? c.priority : 'MED',
+    title: String(c.title || '').trim().slice(0, 200), detail: String(c.detail || '').trim().slice(0, 600), why: String(c.why || '').trim().slice(0, 700), steps: Array.isArray(c.steps) ? c.steps.map((s) => String(s).slice(0, 300)).slice(0, 8) : [], plan: Array.isArray(c.plan) ? c.plan.slice(0, 8) : null, facts: Array.isArray(c.facts) ? c.facts.slice(0, 6) : [],
     product: c.product || null, accountId: c.accountId || null, campaignId: c.campaignId || null, link: c.link || null, action: c.action || null,
     assigneeId: c.assigneeId || null, status: 'PENDING', originDate: date, carryCount: 0, createdAt: now, startedAt: null, doneAt: null, doneBy: null, note: null, reason: null, resolvedNote: null, carried: false,
   };
@@ -55,8 +60,8 @@ export function availableMembers(team, date) {
 
 /** Current load of every member = weight of the open tasks they hold. */
 export function loadsOf(tasks, members) {
-  const load = new Map(members.map((m) => [m.id, { w: 0, n: 0 }]));
-  for (const t of tasks) { if (!isOpen(t) || !load.has(t.assigneeId)) continue; const l = load.get(t.assigneeId); l.w += weightOf(t); l.n += 1; }
+  const load = new Map(members.map((m) => [m.id, { w: 0, n: 0, cat: { SCALE: 0, FIX: 0, MIX: 0 } }]));
+  for (const t of tasks) { if (!isOpen(t) || !load.has(t.assigneeId)) continue; const l = load.get(t.assigneeId); l.w += weightOf(t); l.n += 1; l.cat[t.category || 'MIX'] = (l.cat[t.category || 'MIX'] || 0) + 1; }
   return load;
 }
 
@@ -73,14 +78,16 @@ export function distribute(toAssign, { members, existing = [], date = '', sticky
   const owner = new Map(); // product key -> member currently holding an open task of it
   for (const t of existing) { const pk = t.product?.id != null ? `p:${t.product.id}` : t.product?.name ? `n:${t.product.name}` : null; if (pk && isOpen(t) && load.has(t.assigneeId)) owner.set(pk, t.assigneeId); }
   const groups = new Map();
-  toAssign.forEach((t, i) => { const pk = t.product?.id != null ? `p:${t.product.id}` : t.product?.name ? `n:${t.product.name}` : `solo:${i}`; if (!groups.has(pk)) groups.set(pk, []); groups.get(pk).push(t); });
-  const list = [...groups.entries()].map(([pk, ts]) => ({ pk, ts, w: ts.reduce((a, t) => a + weightOf(t), 0) })).sort((a, b) => b.w - a.w || String(a.pk).localeCompare(String(b.pk)));
-  const lightest = () => [...members].sort((a, b) => load.get(a.id).w - load.get(b.id).w || load.get(a.id).n - load.get(b.id).n || order.get(a.id) - order.get(b.id))[0];
+  toAssign.forEach((t, i) => { const pk = t.product?.id != null ? `p:${t.product.id}` : t.product?.name ? `n:${t.product.name}` : `solo:${i}`; const gk = `${t.category || 'MIX'}|${pk}`; if (!groups.has(gk)) groups.set(gk, { pk, cat: t.category || 'MIX', ts: [] }); groups.get(gk).ts.push(t); });
+  const catRank = { SCALE: 0, FIX: 1, MIX: 2 };
+  const list = [...groups.values()].map((g) => ({ ...g, w: g.ts.reduce((a, t) => a + weightOf(t), 0) })).sort((a, b) => (catRank[a.cat] ?? 3) - (catRank[b.cat] ?? 3) || b.w - a.w || String(a.pk).localeCompare(String(b.pk)));
+  // each bucket is spread evenly first (so everyone gets a similar share of scale / fix / mix), then the total weight, then task count
+  const lightest = (cat) => [...members].sort((a, b) => (load.get(a.id).cat[cat] || 0) - (load.get(b.id).cat[cat] || 0) || load.get(a.id).w - load.get(b.id).w || load.get(a.id).n - load.get(b.id).n || order.get(a.id) - order.get(b.id))[0];
   for (const g of list) {
-    let pick = lightest(); const sticky = owner.get(g.pk);
-    if (sticky && load.has(sticky) && load.get(sticky).w - load.get(pick.id).w <= stickyGap) pick = members.find((m) => m.id === sticky) || pick;
+    let pick = lightest(g.cat); const sticky = owner.get(g.pk);
+    if (sticky && load.has(sticky) && (load.get(sticky).cat[g.cat] || 0) - (load.get(pick.id).cat[g.cat] || 0) <= (stickyGap > 0 ? 1 : 0) && load.get(sticky).w - load.get(pick.id).w <= stickyGap) pick = members.find((m) => m.id === sticky) || pick;
     for (const t of g.ts) t.assigneeId = pick.id;
-    const l = load.get(pick.id); l.w += g.w; l.n += g.ts.length; if (g.pk && !g.pk.startsWith('solo:')) owner.set(g.pk, pick.id);
+    const l = load.get(pick.id); l.w += g.w; l.n += g.ts.length; l.cat[g.cat] = (l.cat[g.cat] || 0) + g.ts.length; if (g.pk && !g.pk.startsWith('solo:')) owner.set(g.pk, pick.id);
   }
   return toAssign;
 }
@@ -114,7 +121,7 @@ export function dedupeCandidates(cands, existing) {
 /** Open AUTO tasks whose condition is gone (their key is no longer produced by a generator that ran fine) → resolved by the system. `okTypes` = types whose generator succeeded. */
 export function findAutoResolved(existing, liveKeys, okTypes) {
   const live = new Set(liveKeys); const ok = new Set(okTypes);
-  return (existing || []).filter((t) => isOpen(t) && t.key && (t.source === 'AUTO' || t.source === 'CARRIED') && ok.has(t.type) && !live.has(t.key)).map((t) => t.id);
+  return (existing || []).filter((t) => isOpen(t) && t.key && t.category && (t.source === 'AUTO' || t.source === 'CARRIED') && ok.has(t.type) && !live.has(t.key)).map((t) => t.id); // `category` = a task built by the product-level builder (older rows are never auto-judged)
 }
 
 /** Per-member numbers for a set of day docs (each { date, tasks }). A carried copy is counted on the day it was worked, the original on its own day as «ما اتعملش». */
@@ -143,7 +150,8 @@ export function daySummary(tasks) {
   const c = (f) => live.filter(f).length;
   const done = c((t) => t.status === 'DONE'); const auto = c((t) => t.status === 'AUTO_RESOLVED');
   const accountable = live.length - auto;
-  return { total: live.length, done, autoResolved: auto, pending: c((t) => t.status === 'PENDING'), inProgress: c((t) => t.status === 'IN_PROGRESS'), notDone: c((t) => t.status === 'NOT_DONE'), carried: c((t) => t.source === 'CARRIED'), unassigned: c((t) => !t.assigneeId && isOpen(t)), rate: accountable > 0 ? Math.round((done / accountable) * 100) : null };
+  const byCat = Object.fromEntries(BUCKETS.map((b) => [b, { total: live.filter((t) => (t.category || 'MIX') === b).length, done: live.filter((t) => (t.category || 'MIX') === b && ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length }]));
+  return { byCat, total: live.length, done, autoResolved: auto, pending: c((t) => t.status === 'PENDING'), inProgress: c((t) => t.status === 'IN_PROGRESS'), notDone: c((t) => t.status === 'NOT_DONE'), carried: c((t) => t.source === 'CARRIED'), unassigned: c((t) => !t.assigneeId && isOpen(t)), rate: accountable > 0 ? Math.round((done / accountable) * 100) : null };
 }
 
 /** A plain-Arabic end-of-day text (copy → WhatsApp). */
