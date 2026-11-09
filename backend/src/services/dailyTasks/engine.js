@@ -70,7 +70,7 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
       if (r.marked.length) S.updateDay(C.addDays(date, -1), (p) => { for (const t of p.tasks) if (r.marked.includes(t.id)) { t.carried = true; t.carriedTo = date; } }).catch((e) => logger.warn('[dailyTasks] mark carried failed', { message: e.message }));
     }
     // tasks written by the first (alert-level) version carry no `category`: while still untouched they are replaced by the product-level tasks below
-    for (const t of day.tasks) if (!t.category && t.status === 'PENDING' && t.source === 'AUTO') { t.status = 'CANCELLED'; t.resolvedNote = 'اتبدّلت بمهام المنتجات الجديدة'; }
+    for (const t of day.tasks) if ((!t.category || !t.meta) && t.status === 'PENDING' && t.source === 'AUTO') { t.status = 'CANCELLED'; t.resolvedNote = 'اتبدّلت بنسخة أدق (أرقام Meta بمصدرها ووقتها)'; } // untouched tasks written by an older version (no category, or no numbers-source) are replaced
     // numbers stay TRUE through the day: an open task whose condition is still alive gets its text / numbers / plan re-written from the latest data
     const liveBy = new Map(gen.candidates.map((c) => [c.key, c]));
     for (const t of [...day.tasks, ...carriedIn]) {

@@ -161,6 +161,8 @@ const now1 = new Date('2026-11-09T09:00:00Z'); const now2 = new Date('2026-11-10
   await E.updateDay ? 0 : 0;
   const S = await imp('../services/dailyTasks/store.js'); await S.updateDay(day1, (d) => { d.tasks.push({ ...C.makeTask({ type: 'ZERO_ORDERS', key: 'alert:old1', title: 'قديمة', priority: 'MED' }, { date: day1 }), category: undefined }, { ...C.makeTask({ type: 'ZERO_ORDERS', key: 'alert:old2', title: 'قديمة شغّالة', priority: 'MED' }, { date: day1 }), category: undefined, status: 'IN_PROGRESS' }); d.tasks.forEach((t) => { if (t.key.startsWith('alert:')) { delete t.category; t.assigneeId = d.tasks[0].assigneeId; } }); });
   const r4 = await E.generateDay(day1, { deps: dep(), now: now1 });
+  await S.updateDay(day1, (d) => { d.tasks.push({ ...C.makeTask({ type: 'REVIEW', key: 'review:n:old', title: 'قديمة من نسخة تانية', priority: 'LOW', category: 'MIX' }, { date: day1 }), assigneeId: d.tasks[0].assigneeId, filler: true, meta: null }); });
+  const r5 = await E.generateDay(day1, { deps: dep(), now: now1 }); ok('an untouched task written by an older numbers-format (no source line) is replaced too — no duplicate fillers', r5.tasks.find((x) => x.key === 'review:n:old').status === 'CANCELLED');
   ok('tasks from the first (alert-level) version: untouched ones are replaced, a started one is left alone', r4.tasks.find((t) => t.key === 'alert:old1').status === 'CANCELLED' && r4.tasks.find((t) => t.key === 'alert:old2').status === 'IN_PROGRESS');
 }
 
