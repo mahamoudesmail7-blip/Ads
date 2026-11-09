@@ -10,7 +10,9 @@ import { cairoDate } from '../services/amb/dailyPlanTime.js';
 
 const router = Router();
 router.use(requireAuth);
-const mgr = requireRole('ADMIN'); // only the admin manages and sees everyone; every other account sees its own tasks only
+// only the admin account that is NOT a media buyer manages and sees everyone; every other account (incl. an admin linked to a buyer, e.g. Hady) sees its own tasks only
+const fullAccess = asyncRoute(async (req, res, next) => { if (!C.seesAll(req.user, await E.getConfig())) return res.status(403).json({ error: 'FORBIDDEN', message: 'مفيش صلاحية كافية لعمل ده.' }); next(); });
+const mgr = [requireRole('ADMIN'), fullAccess];
 const building = new Map(); // dates whose first build is running in the background
 const dateOf = (req) => { const d = String(req.query.date || req.body?.date || cairoDate()); if (!C.validDate(d)) { const e = new Error('تاريخ غير صالح.'); e.status = 400; throw e; } return d; };
 

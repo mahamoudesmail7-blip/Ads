@@ -118,7 +118,7 @@ export async function rebalance(date, actor) {
 // ───────────── task actions ─────────────
 const findTask = (day, id) => { const t = day.tasks.find((x) => x.id === id); if (!t) throw bad('المهمة مش موجودة.', 404); return t; };
 function canAct(user, task, cfg) {
-  if (C.isAdminUser(user)) return true;
+  if (C.seesAll(user, cfg)) return true;
   const m = cfg.team.find((x) => x.userId === user.id); return !!m && m.id === task.assigneeId;
 }
 const nameOf = (cfg, id) => cfg.team.find((m) => m.id === id)?.name || '—';
@@ -127,7 +127,7 @@ export async function actOnTask(date, id, action, body, user) {
   const cfg = await getConfig();
   return S.updateDay(date, (day) => {
     const t = findTask(day, id); if (!canAct(user, t, cfg)) throw bad('المهمة دي مش بتاعتك.', 403);
-    const now = new Date().toISOString(); const isMgr = C.isAdminUser(user);
+    const now = new Date().toISOString(); const isMgr = C.seesAll(user, cfg);
     const log = (a, text) => S.logEntry(day, { action: a, taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, actorName: user.name, actorId: user.id, text });
     if (action === 'start') { if (t.status !== 'PENDING') throw bad('المهمة مش في حالة «مستني».'); t.status = 'IN_PROGRESS'; t.startedAt = now; log('STARTED', 'بدأ الشغل عليها'); }
     else if (action === 'done') { if (['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)) throw bad('المهمة اتقفلت قبل كده.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = user.name; t.note = String(body.note || '').slice(0, 400) || null; t.reason = null; log('DONE', t.note ? `خلّصها — ${t.note}` : 'خلّصها'); }
@@ -158,7 +158,7 @@ export async function addManualTask(date, body, user) {
 
 // ───────────── read models ─────────────
 export async function getDayView(date, user) {
-  const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.isAdminUser(user);
+  const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.seesAll(user, cfg);
   const me = cfg.team.find((m) => m.userId && user && m.userId === user.id) || null;
   const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
   const memberView = (m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length });
@@ -174,7 +174,7 @@ export async function getReport(from, to, user = null) {
   if (!C.validDate(from) || !C.validDate(to) || to < from) throw bad('نطاق تاريخ غير صالح.');
   if (Date.parse(to) - Date.parse(from) > 31 * 86_400_000) throw bad('أقصى نطاق 31 يوم.');
   const cfg = await getConfig(); let days = await S.loadRange(from, to); let team = cfg.team;
-  if (user && !C.isAdminUser(user)) { // a non-admin only ever gets their own numbers
+  if (user && !C.seesAll(user, cfg)) { // everyone except the full-access admin only ever gets their own numbers
     const me = cfg.team.find((m) => m.userId && m.userId === user.id); team = me ? [me] : [];
     days = days.map((d) => ({ ...d, tasks: me ? d.tasks.filter((t) => t.assigneeId === me.id) : [] }));
   }

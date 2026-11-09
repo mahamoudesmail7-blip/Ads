@@ -193,6 +193,15 @@ console.log('\n10. only the admin sees everything');
   ok('the activity log of a buyer holds only their own lines', va.log.every((l) => l.memberId === a.id));
   const rep = await E.getReport(day1, day2, userA); ok('the follow-up report of a buyer has only their own row', rep.perMember.length === 1 && rep.perMember[0].memberId === a.id && rep.team.length === 1);
   ok('a MANAGER cannot reassign / cancel / see others (admin only)', (await rejects(() => E.actOnTask(day2, full.tasks.find((t) => t.assigneeId === a.id && C.isOpen(t)).id, 'cancel', {}, userB)))?.status === 403);
+  { // an ADMIN account that is itself a media buyer (Hady) sees only his own tasks; the owner account (not a buyer) still sees everything
+    const cfg = await E.getConfig(); const h = cfg.team[3]; await E.updateMember(h.id, { userId: 1 });
+    const own = await E.getDayView(day2, admin); const all = await E.getDayView(day2, { id: 3, name: 'Owner', role: 'ADMIN', is_owner: true });
+    ok('an admin linked to a media buyer sees ONLY his own tasks (no team, no options, not the admin view)', own.admin === false && own.tasks.length > 0 && own.tasks.every((t) => t.assigneeId === h.id) && own.team.length === 1 && own.options === null);
+    ok('…while the owner account (not a buyer) still sees everyone', all.admin === true && all.team.length >= 4 && all.tasks.length > own.tasks.length);
+    const other = all.tasks.find((t) => t.assigneeId !== h.id && C.isOpen(t));
+    ok('…and cannot cancel / reassign other people’s tasks either', (await rejects(() => E.actOnTask(day2, other.id, 'cancel', {}, admin)))?.status === 403);
+    await E.updateMember(h.id, { userId: null });
+  }
 }
 
 console.log('\n11. top-up: at least N real tasks per person, in the 50 / 25 / 25 proportions');

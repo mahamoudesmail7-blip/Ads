@@ -40,7 +40,7 @@ async function load({ quiet = false } = {}) {
   if (!quiet && !S.view) $('dtkBody').innerHTML = '<div class="dtk-skel"><div></div><div></div><div></div></div>';
   const v = await call(() => api.get(`${API}/day`, S.date ? { date: S.date } : {}));
   if (!v) { $('dtkBody').innerHTML = '<div class="dtk-empty">مقدرتش أحمّل المهام. حدّث الصفحة وجرّب تاني.</div>'; return; }
-  S.view = v; S.date = v.date; S.tries = v.building ? S.tries + 1 : 0;
+  S.view = v; S.mgr = !!v.admin; S.date = v.date; S.tries = v.building ? S.tries + 1 : 0;
   if (v.building && S.tries < 40) S.timer = setTimeout(() => load({ quiet: true }), 3000);
   paint();
 }
@@ -300,7 +300,7 @@ function wire() {
 async function init() {
   UI.renderSidebar('tasks');
   try { S.me = await api.get('/api/auth/me'); } catch { S.me = null; }
-  const u = S.me?.user || S.me || {}; S.mgr = !!(u.is_owner || u.role === 'ADMIN'); // only the admin manages and sees everyone
+  const u = S.me?.user || S.me || {}; S.mgr = !!(u.is_owner || u.role === 'ADMIN'); // refined by the server's answer (view.admin) after load
   wire(); await load();
   if (S.view?.mineId && !S.mgr) S.filter = 'MINE';
   paint();
