@@ -82,6 +82,8 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
     const live = gen.candidates.map((c) => c.key);
     const resolved = C.findAutoResolved([...day.tasks, ...carriedIn], live, gen.okTypes);
     for (const t of [...day.tasks, ...carriedIn]) if (resolved.includes(t.id)) { t.status = 'AUTO_RESOLVED'; t.doneAt = stamp; t.resolvedNote = 'المشكلة اختفت (الحملة اتقفلت أو جابت أوردرات أو اتحلّت)'; S.logEntry(day, { action: 'AUTO_RESOLVED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: 'السيستم لقى إن المشكلة اتحلّت لوحدها' }); }
+    const liveSet = new Set(live); // a submitted task whose condition is gone (and whose source read fine) is verified by the system
+    for (const t of [...day.tasks, ...carriedIn]) if (t.status === 'NEEDS_REVIEW' && t.key && t.category && !t.filler && ['AUTO', 'CARRIED'].includes(t.source) && gen.okTypes.includes(t.type) && !liveSet.has(t.key)) { t.status = 'DONE'; t.doneAt = stamp; t.verifiedBy = 'SYSTEM'; t.doneBy = t.submittedBy || t.doneBy || null; S.logEntry(day, { action: 'VERIFIED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: 'السيستم اتأكد إن المشكلة اتحلّت واعتمد الإثبات' }); }
     day.tasks.push(...carriedIn);
     const existing = day.tasks;
     const autoDist = cfg.options.autoDistribute === true; // off by default: the day is built as a POOL and the admin hands it out with «توزيع بالتساوي»
@@ -109,10 +111,23 @@ export async function redistributeFrom(date, memberId, actor, why = '') {
 }
 
 /** Re-balance every not-yet-started task of the day between the available people (done / in-progress work stays where it is). */
+const movableOf = (tasks) => tasks.filter((t) => t.status === 'PENDING' && (t.source !== 'CARRIED' || !t.assigneeId)); // yesterday's unfinished work stays with the same person
+
+/** READ-ONLY: what «توزيع بالتساوي» WOULD do (same rule, same function, on a copy) — nothing is saved. */
+export async function previewRebalance(date) {
+  const cfg = await getConfig(); const members = C.availableMembers(cfg.team, date); const day = (await S.loadDay(date)) || S.emptyDay(date);
+  const tasks = JSON.parse(JSON.stringify(day.tasks)); const movable = movableOf(tasks); const before = new Map(movable.map((t) => [t.id, t.assigneeId]));
+  for (const t of movable) t.assigneeId = null;
+  C.distribute(movable, { members, existing: tasks.filter((t) => !movable.includes(t)), date, stickyGap: 0 });
+  const live = (t) => C.isOpen(t) || ['NEEDS_REVIEW', 'DONE'].includes(t.status);
+  const rows = cfg.team.filter((m) => m.active !== false).map((m) => { const was = day.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length; const now = tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)); const cat = (c) => now.filter((t) => (t.category || 'MIX') === c).length; return { id: m.id, name: m.name, off: (m.off || []).includes(date), before: was, after: now.length, added: movable.filter((t) => t.assigneeId === m.id && before.get(t.id) !== m.id).length, SCALE: cat('SCALE'), FIX: cat('FIX'), MIX: cat('MIX') }; });
+  return { date, moving: movable.length, fromPool: movable.filter((t) => !before.get(t.id)).length, moved: movable.filter((t) => before.get(t.id) && t.assigneeId !== before.get(t.id)).length, unplaced: movable.filter((t) => !t.assigneeId).length, members: rows, people: members.length, hasLive: tasks.some(live) };
+}
+
 export async function rebalance(date, actor) {
   const cfg = await getConfig(); const members = C.availableMembers(cfg.team, date);
   return S.updateDay(date, (day) => {
-    const movable = day.tasks.filter((t) => t.status === 'PENDING' && (t.source !== 'CARRIED' || !t.assigneeId)); // yesterday's unfinished work stays with the same person
+    const movable = movableOf(day.tasks);
     const before = new Map(movable.map((t) => [t.id, t.assigneeId]));
     for (const t of movable) t.assigneeId = null;
     C.distribute(movable, { members, existing: day.tasks.filter((t) => !movable.includes(t)), date, stickyGap: 0 });
@@ -137,7 +152,13 @@ export async function actOnTask(date, id, action, body, user) {
     const now = new Date().toISOString(); const isMgr = C.seesAll(user, cfg);
     const log = (a, text) => S.logEntry(day, { action: a, taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, actorName: user.name, actorId: user.id, text });
     if (action === 'start') { if (t.status !== 'PENDING') throw bad('المهمة مش في حالة «مستني».'); t.status = 'IN_PROGRESS'; t.startedAt = now; log('STARTED', 'بدأ الشغل عليها'); }
-    else if (action === 'done') { if (['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)) throw bad('المهمة اتقفلت قبل كده.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = user.name; t.note = String(body.note || '').slice(0, 400) || null; t.reason = null; log('DONE', t.note ? `خلّصها — ${t.note}` : 'خلّصها'); }
+    else if (action === 'submit') { // a task is NOT complete because a button was pressed: the buyer sends PROOF, the admin approves (or the system verifies it)
+      if (!['PENDING', 'IN_PROGRESS', 'NOT_DONE'].includes(t.status)) throw bad('المهمة مش في حالة تسمح بإرسال إثبات.');
+      const proof = String(body.proof || '').trim(); if (proof.length < 8) throw bad('اكتب إثبات التنفيذ: إيه اللي عملته بالظبط (جملة على الأقل).');
+      t.status = 'NEEDS_REVIEW'; t.proof = proof.slice(0, 600); t.proofLink = String(body.link || '').trim().slice(0, 300) || null; t.submittedAt = now; t.submittedBy = user.name; t.reviewNote = null; t.reason = null; log('SUBMITTED', `بعت إثبات التنفيذ — ${t.proof.slice(0, 140)}`); }
+    else if (action === 'approve') { if (!isMgr) throw bad('اعتماد الإثبات للمدير بس.', 403); if (t.status !== 'NEEDS_REVIEW') throw bad('المهمة مش مستنية مراجعة.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = t.submittedBy || user.name; t.reviewedBy = user.name; t.reviewNote = String(body.note || '').slice(0, 300) || null; log('APPROVED', 'اعتمد الإثبات واتقفلت المهمة'); }
+    else if (action === 'reject') { if (!isMgr) throw bad('رفض الإثبات للمدير بس.', 403); if (t.status !== 'NEEDS_REVIEW') throw bad('المهمة مش مستنية مراجعة.'); t.status = 'IN_PROGRESS'; t.reviewNote = String(body.note || '').trim().slice(0, 300) || 'الإثبات مش كفاية'; t.reviewedBy = user.name; log('REJECTED', `رجّع المهمة: ${t.reviewNote}`); }
+    else if (action === 'done') { if (!isMgr) throw bad('المهمة مبتتقفلش بزرار: ابعت إثبات التنفيذ وهيتراجع.', 403); if (['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)) throw bad('المهمة اتقفلت قبل كده.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = user.name; t.note = String(body.note || '').slice(0, 400) || null; t.reason = null; log('DONE', t.note ? `خلّصها — ${t.note}` : 'خلّصها'); }
     else if (action === 'notdone') { if (['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)) throw bad('المهمة اتقفلت قبل كده.'); const reason = C.NOT_DONE_REASONS[body.reason] ? body.reason : 'OTHER'; t.status = 'NOT_DONE'; t.reason = reason; t.note = String(body.note || '').slice(0, 400) || null; t.doneAt = null; log('NOT_DONE', `ماتعملتش: ${C.NOT_DONE_REASONS[reason]}${t.note ? ` — ${t.note}` : ''}`); }
     else if (action === 'reopen') { if (!isMgr && t.status !== 'DONE') throw bad('مينفعش.'); t.status = 'PENDING'; t.doneAt = null; t.doneBy = null; t.reason = null; log('REOPENED', 'اتفتحت تاني'); }
     else if (action === 'cancel') { if (!isMgr) throw bad('الإلغاء للمدير بس.', 403); t.status = 'CANCELLED'; t.note = String(body.note || '').slice(0, 400) || t.note; log('CANCELLED', `اتلغت${body.note ? ` — ${String(body.note).slice(0, 120)}` : ''}`); }

@@ -183,6 +183,22 @@ console.log('\n6b. numbers stay true through the day');
   ok('a day other than today is never built from today’s numbers', (await rejects(() => E.generateDay('2026-11-01', { deps: dep(), now: now1 })))?.status === 400 && (await rejects(() => E.generateDay('2026-11-30', { deps: dep(), now: now1 })))?.status === 400);
 }
 
+console.log('\n6c. the system verifies a submitted proof; the preview never writes');
+{
+  const v0 = await E.getDayView(day1, admin); const cpaT = v0.tasks.find((t) => t.key === 'fix:p:4' && t.status !== 'CANCELLED');
+  await E.updateMember(v0.team.find((m) => m.id === cpaT.assigneeId).id, { userId: 601 }); const buyer = { id: 601, name: 'Verifier', role: 'EMPLOYEE' };
+  await E.actOnTask(day1, cpaT.id, 'submit', { proof: 'وقّفت الحملة اللي فوق حد الإيقاف' }, buyer);
+  curRows = baseRows().map((r) => (r.campaignId === 'c4' ? { ...r, cpaVsLimits: 'WITHIN_TARGET', period: { spend: 600, orders: 12, cpa: 50 } } : r));
+  const after = await E.generateDay(day1, { deps: dep(), now: new Date('2026-11-09T15:00:00Z') }); const vt = after.tasks.find((t) => t.id === cpaT.id);
+  ok('a submitted task whose problem is really gone is VERIFIED by the system (no admin needed), and it is logged', vt.status === 'DONE' && vt.verifiedBy === 'SYSTEM' && after.log.some((l) => l.action === 'VERIFIED'));
+  curRows = baseRows();
+  const snapshot = JSON.stringify((await E.getDayView(day1, admin)).tasks.map((t) => [t.id, t.assigneeId, t.status])); const pv = await E.previewRebalance(day1);
+  ok('the distribution preview shows before / after per person and writes NOTHING', pv.members.length >= 4 && pv.members.every((m) => 'before' in m && 'after' in m && 'added' in m) && JSON.stringify((await E.getDayView(day1, admin)).tasks.map((t) => [t.id, t.assigneeId, t.status])) === snapshot);
+  const sumAfter = pv.members.reduce((a, m) => a + m.after, 0); const sumBefore = pv.members.reduce((a, m) => a + m.before, 0); ok('…and the preview adds up (every task from the pool is placed, none lost)', sumAfter === sumBefore + pv.fromPool - pv.unplaced, sumAfter + ' vs ' + sumBefore);
+  await E.rebalance(day1, admin); const realLoad = new Map((await E.getDayView(day1, admin)).team.map((m) => [m.id, m.load])); ok('the real distribution lands exactly where the preview said (same people, same counts)', pv.members.every((m) => realLoad.get(m.id) === m.after), JSON.stringify([...realLoad.values()]) + ' vs ' + JSON.stringify(pv.members.map((m) => m.after)));
+  await E.updateMember(v0.team.find((m) => m.id === cpaT.assigneeId).id, { userId: null });
+}
+
 console.log('\n7. people act on tasks');
 {
   const v = await E.getDayView(day1, admin); const mine = v.tasks.find((t) => t.key === 'scale:p:1'); const other = v.tasks.find((t) => t.assigneeId !== mine.assigneeId && C.isOpen(t) && t.category);
@@ -190,8 +206,15 @@ console.log('\n7. people act on tasks');
   await E.updateMember(owner.id, { userId: 77 }); const emp = { id: 77, name: 'Buyer', role: 'EMPLOYEE' }; const stranger = { id: 88, name: 'Other', role: 'EMPLOYEE' };
   ok('an employee cannot touch someone else’s task', (await rejects(() => E.actOnTask(day1, mine.id, 'done', {}, stranger)))?.status === 403);
   ok('…nor reassign / cancel (manager only)', (await rejects(() => E.actOnTask(day1, mine.id, 'cancel', {}, emp)))?.status === 403 && (await rejects(() => E.actOnTask(day1, mine.id, 'assign', { memberId: 'x' }, emp)))?.status === 403);
-  await E.actOnTask(day1, mine.id, 'start', {}, emp); let d = await E.actOnTask(day1, mine.id, 'done', { note: 'عملت 4 اسكيلات' }, emp);
-  const t = d.tasks.find((x) => x.id === mine.id); ok('start → done is recorded with who / when / note', t.status === 'DONE' && t.doneBy === 'Buyer' && t.note === 'عملت 4 اسكيلات' && !!t.startedAt && !!t.doneAt);
+  await E.actOnTask(day1, mine.id, 'start', {}, emp);
+  ok('a buyer cannot close a task with a button: «تمّت» needs PROOF (the old direct done is refused)', (await rejects(() => E.actOnTask(day1, mine.id, 'done', { note: 'x' }, emp)))?.status === 403);
+  ok('an empty / tiny proof is refused', (await rejects(() => E.actOnTask(day1, mine.id, 'submit', { proof: 'تم' }, emp)))?.status === 400);
+  let d = await E.actOnTask(day1, mine.id, 'submit', { proof: 'عملت 4 اسكيلات: 2 ABO و 2 CBO بـ500 ج', link: 'https://example.com/x' }, emp);
+  ok('proof → «تحتاج مراجعة» (not done yet), with who / when / what', d.tasks.find((x) => x.id === mine.id).status === 'NEEDS_REVIEW' && d.tasks.find((x) => x.id === mine.id).submittedBy === 'Buyer' && /4 اسكيلات/.test(d.tasks.find((x) => x.id === mine.id).proof) && C.daySummary(d.tasks).review === 1 && d.tasks.find((x) => x.id === mine.id).doneAt === null);
+  ok('only the admin can approve / reject a proof', (await rejects(() => E.actOnTask(day1, mine.id, 'approve', {}, emp)))?.status === 403 && (await rejects(() => E.actOnTask(day1, mine.id, 'reject', {}, emp)))?.status === 403);
+  d = await E.actOnTask(day1, mine.id, 'reject', { note: 'ماحددتش أنهي حملة' }, admin); ok('rejecting sends it back to «قيد التنفيذ» with the admin’s reason', d.tasks.find((x) => x.id === mine.id).status === 'IN_PROGRESS' && /ماحددتش/.test(d.tasks.find((x) => x.id === mine.id).reviewNote));
+  await E.actOnTask(day1, mine.id, 'submit', { proof: 'عملت 4 اسكيلات على حملة كاب الليزر - Test 1' }, emp); d = await E.actOnTask(day1, mine.id, 'approve', {}, admin);
+  const t = d.tasks.find((x) => x.id === mine.id); ok('approve → DONE, credited to the buyer who did it, with the time it was started / finished', t.status === 'DONE' && t.doneBy === 'Buyer' && t.reviewedBy === admin.name && !!t.startedAt && !!t.doneAt);
   d = await E.actOnTask(day1, other.id, 'notdone', { reason: 'NEEDS_APPROVAL', note: 'مستني المدير' }, admin);
   ok('«ماتعملش» keeps the reason', d.tasks.find((x) => x.id === other.id).status === 'NOT_DONE' && d.tasks.find((x) => x.id === other.id).reason === 'NEEDS_APPROVAL');
   const target = cfg.team.find((m) => m.id !== other.assigneeId);

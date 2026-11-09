@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 
 export const OPEN_STATUSES = ['PENDING', 'IN_PROGRESS'];
 export const DONE_STATUSES = ['DONE', 'AUTO_RESOLVED'];
-export const STATUS_LABEL = { PENDING: 'مستني', IN_PROGRESS: 'شغّال عليه', DONE: 'تم', NOT_DONE: 'ماتعملش', AUTO_RESOLVED: 'اتحل لوحده', CANCELLED: 'ملغي' };
+export const STATUS_LABEL = { PENDING: 'مستني', IN_PROGRESS: 'شغّال عليه', DONE: 'تم', NOT_DONE: 'ماتعملش', AUTO_RESOLVED: 'اتحل لوحده', NEEDS_REVIEW: 'تحتاج مراجعة', CANCELLED: 'ملغي' };
 export const PRIORITY_WEIGHT = { HIGH: 3, MED: 2, LOW: 1 };
 export const TYPES = {
   ZERO_ORDERS: { label: 'بيصرف ومبيجيبش أوردرات', icon: '🔴' },
@@ -131,13 +131,14 @@ export function findAutoResolved(existing, liveKeys, okTypes) {
 
 /** Per-member numbers for a set of day docs (each { date, tasks }). A carried copy is counted on the day it was worked, the original on its own day as «ما اتعملش». */
 export function memberStats(days, team) {
-  const rows = new Map((team || []).map((m) => [m.id, { memberId: m.id, name: m.name, assigned: 0, done: 0, notDone: 0, missed: 0, autoResolved: 0, open: 0, cancelled: 0, doneHours: [] }]));
+  const rows = new Map((team || []).map((m) => [m.id, { memberId: m.id, name: m.name, assigned: 0, done: 0, notDone: 0, missed: 0, autoResolved: 0, open: 0, review: 0, cancelled: 0, doneHours: [] }]));
   for (const d of days) for (const t of d.tasks || []) {
     const r = rows.get(t.assigneeId); if (!r) continue;
     if (t.status === 'CANCELLED') { r.cancelled++; continue; }
     r.assigned++;
     if (t.status === 'DONE') { r.done++; if (t.doneAt && t.createdAt) r.doneHours.push((Date.parse(t.doneAt) - Date.parse(t.createdAt)) / 3.6e6); }
     else if (t.status === 'AUTO_RESOLVED') r.autoResolved++;
+    else if (t.status === 'NEEDS_REVIEW') r.review++;
     else if (t.status === 'NOT_DONE') r.notDone++;
     else if (t.carried) r.missed++;
     else r.open++;
@@ -156,7 +157,7 @@ export function daySummary(tasks) {
   const done = c((t) => t.status === 'DONE'); const auto = c((t) => t.status === 'AUTO_RESOLVED');
   const accountable = live.length - auto;
   const byCat = Object.fromEntries(BUCKETS.map((b) => [b, { total: live.filter((t) => (t.category || 'MIX') === b).length, done: live.filter((t) => (t.category || 'MIX') === b && ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length }]));
-  return { byCat, total: live.length, done, autoResolved: auto, pending: c((t) => t.status === 'PENDING'), inProgress: c((t) => t.status === 'IN_PROGRESS'), notDone: c((t) => t.status === 'NOT_DONE'), carried: c((t) => t.source === 'CARRIED'), unassigned: c((t) => !t.assigneeId && isOpen(t)), rate: accountable > 0 ? Math.round((done / accountable) * 100) : null };
+  return { byCat, review: c((t) => t.status === 'NEEDS_REVIEW'), total: live.length, done, autoResolved: auto, pending: c((t) => t.status === 'PENDING'), inProgress: c((t) => t.status === 'IN_PROGRESS'), notDone: c((t) => t.status === 'NOT_DONE'), carried: c((t) => t.source === 'CARRIED'), unassigned: c((t) => !t.assigneeId && isOpen(t)), rate: accountable > 0 ? Math.round((done / accountable) * 100) : null };
 }
 
 /** A plain-Arabic end-of-day text (copy → WhatsApp). */

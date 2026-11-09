@@ -4,47 +4,50 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <script src="js/embed-boot.js"></script>
-<title>تاسكات اليوم — AI Media Buyer</title>
+<title>توزيع المهام — AI Media Buyer</title>
 <script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 <link rel="stylesheet" href="css/style.css" />
 <link rel="stylesheet" href="css/embed.css" />
 <link rel="stylesheet" href="css/embed-fx.css" />
 <link rel="stylesheet" href="css/daily-tasks.css" />
+<link rel="stylesheet" href="css/tasks-board.css" />
 </head>
 <body>
   <div class="app-shell">
     <div id="sidebar" class="sidebar"></div>
-    <div class="main dtk">
-      <div class="dtk-head">
-        <div class="dtk-title">
-          <h1>🎯 تاسكات اليوم</h1>
-          <div class="dtk-sub" id="dtkSub">—</div>
+    <div class="main dtk dx" id="dtkRoot" data-mgr="0">
+      <header class="dx-top">
+        <div class="dx-title">
+          <span class="dx-title-ico"></span>
+          <div><h1>توزيع المهام</h1><div class="dx-sub" id="dtkSub">—</div></div>
         </div>
-        <div class="dtk-datenav">
-          <button class="dtk-ib" id="dtkPrev" aria-label="اليوم اللي قبله">▶</button>
-          <input type="date" id="dtkDate" class="ltr" />
-          <button class="dtk-ib" id="dtkNext" aria-label="اليوم اللي بعده">◀</button>
-          <button class="dtk-btn" id="dtkToday">النهارده</button>
+        <div class="dx-datenav">
+          <button class="dx-ib" id="dtkPrev" aria-label="اليوم اللي قبله"></button>
+          <input type="date" id="dtkDate" class="ltr" aria-label="التاريخ" />
+          <button class="dx-ib" id="dtkNext" aria-label="اليوم اللي بعده"></button>
+          <button class="dx-chipbtn" id="dtkToday"></button>
         </div>
-      </div>
+      </header>
 
-      <div class="dtk-bar">
-        <div class="dtk-tabs" role="tablist" id="dtkTabs">
-          <button class="on" data-tab="day">📋 اليوم</button>
-          <button data-tab="follow">📊 المتابعة</button>
-          <button data-tab="team" data-mgr>👥 الفريق</button>
-          <button data-tab="settings" data-mgr>⚙️ الإعدادات</button>
-        </div>
-        <div class="dtk-actions" id="dtkActions" data-mgr>
-          <button class="dtk-btn" id="dtkAdd">➕ مهمة</button>
-          <button class="dtk-btn" id="dtkRefresh" title="يقرا الحملات دلوقتي ويضيف أي مشكلة جديدة ويقفل اللي اتحلّت">🔄 تحديث</button>
-          <button class="dtk-btn primary" id="dtkRebalance" title="يوزّع مهام النهارده على الفريق بالتساوي، وكل واحد يشوف مهامه بس">⚖️ توزيع بالتساوي</button>
+      <div class="dx-bar">
+        <nav class="dx-nav" role="tablist" id="dtkTabs">
+          <button class="on" data-tab="day"></button>
+          <button data-tab="follow"></button>
+          <button data-tab="team" data-mgr></button>
+          <button data-tab="settings" data-mgr></button>
+        </nav>
+        <div class="dx-actions" id="dtkActions" data-mgr>
+          <button class="dx-btn" id="dtkAdd"></button>
+          <button class="dx-btn" id="dtkRefresh" title="يقرا الحملات دلوقتي ويضيف أي مشكلة جديدة ويقفل اللي اتحلّت"></button>
+          <button class="dx-btn primary" id="dtkRebalance" title="معاينة التوزيع الأول، وبعدها تأكّد"></button>
         </div>
       </div>
 
       <div id="dtkBody"><div class="dtk-empty">بحمّل…</div></div>
     </div>
   </div>
+  <div class="dx-scrim" id="dxScrim" hidden></div>
+  <aside class="dx-drawer" id="dxDrawer" hidden role="dialog" aria-modal="true" aria-label="تفاصيل المهمة"></aside>
   <script type="module" src="js/daily-tasks.js"></script>
 </body>
 </html>

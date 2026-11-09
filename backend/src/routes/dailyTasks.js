@@ -27,6 +27,7 @@ router.get('/day', asyncRoute(async (req, res) => {
 }));
 
 router.post('/generate', mgr, asyncRoute(async (req, res) => { const date = dateOf(req); await E.generateDay(date, { actor: req.user }); res.json(await E.getDayView(date, req.user)); }));
+router.get('/rebalance/preview', mgr, asyncRoute(async (req, res) => res.json(await E.previewRebalance(dateOf(req)))));
 router.post('/rebalance', mgr, asyncRoute(async (req, res) => { const date = dateOf(req); await E.rebalance(date, req.user); res.json(await E.getDayView(date, req.user)); }));
 router.post('/tasks', mgr, asyncRoute(async (req, res) => { const date = dateOf(req); await E.addManualTask(date, req.body || {}, req.user); res.status(201).json(await E.getDayView(date, req.user)); }));
 router.post('/tasks/:id/:action', asyncRoute(async (req, res) => { const date = dateOf(req); await E.actOnTask(date, req.params.id, req.params.action, req.body || {}, req.user); res.json(await E.getDayView(date, req.user)); }));
