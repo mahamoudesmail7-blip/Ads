@@ -1,6 +1,7 @@
 /* تاسكات اليوم — compact, calm, one screen. Scoped under .dtk so nothing else changes. */
-.dtk { --d-card: var(--bg-card, #fff); --d-line: var(--border, #e7eaf0); --d-text: var(--text, #111827); --d-dim: var(--text-dim, #6b7280); --d-acc: #5b5bf0; --d-acc-soft: color-mix(in srgb, #5b5bf0 11%, transparent); --d-green: var(--green, #14b86e); --d-red: var(--red, #ef4444); --d-amber: var(--yellow, #f59e0b); }
-.dtk * { box-sizing: border-box; }
+.dtk, .dtk-modal { --d-card: var(--bg-card, #fff); --d-line: var(--border, #e7eaf0); --d-text: var(--text, #111827); --d-dim: var(--text-dim, #6b7280); --d-acc: #5b5bf0; --d-acc-soft: color-mix(in srgb, #5b5bf0 11%, transparent); --d-green: var(--green, #14b86e); --d-red: var(--red, #ef4444); --d-amber: var(--yellow, #f59e0b); }
+.dtk *, .dtk-modal * { box-sizing: border-box; }
+.dtk-modal { font-family: inherit; direction: rtl; }
 .dtk-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
 .dtk-title h1 { margin: 0; font-size: 26px; font-weight: 900; letter-spacing: -.4px; }
 .dtk-sub { color: var(--d-dim); font-size: 13.5px; margin-top: 2px; font-weight: 600; }
