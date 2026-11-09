@@ -4,6 +4,7 @@
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { buildSmartCandidates, SMART_DEFAULTS } from './smart.js';
+import { addDays } from './core.js';
 
 const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timeout`)), ms))]);
 
@@ -42,7 +43,7 @@ export async function runGenerators({ date, options, members, deps = {} }) {
     let last = deps.getRows ? await deps.getRows() : (await import('../amb/alertsCenter.js')).getLastCampaignRows();
     if (!last && !deps.getRows) { await (await import('../amb/alertsCenter.js')).getAlertsCenter({ force: true }); last = (await import('../amb/alertsCenter.js')).getLastCampaignRows(); }
     if (!last || !Array.isArray(last.rows)) throw new Error('صفوف الحملات مش متاحة');
-    src.rows = last.rows; src.zeroLimit = last.zeroLimit || 150; src.minSpend = last.minSpend || 150; src.funds = fundsFromAlerts(r.alerts);
+    src.rows = last.rows; src.asOf = last.rows.reduce((a, r) => { const t = r.lastSeenAt ? new Date(r.lastSeenAt).getTime() : 0; return t > a ? t : a; }, 0) || null; if (src.asOf) src.asOf = new Date(src.asOf).toISOString(); src.period = { from: addDays(date, -2), to: date }; src.zeroLimit = last.zeroLimit || 150; src.minSpend = last.minSpend || 150; src.funds = fundsFromAlerts(r.alerts);
     mark(ROW_TYPES, true);
   } catch (e) { logger.warn('[dailyTasks] rows source failed', { message: e.message }); mark(ROW_TYPES, false, { error: e.message }); }
 
@@ -59,7 +60,7 @@ export async function runGenerators({ date, options, members, deps = {} }) {
   } catch (e) { logger.warn('[dailyTasks] clone source failed', { message: e.message }); mark(['CLONE'], false, { error: e.message }); }
 
   try {
-    const getPlan = deps.getPlan || (async () => prisma.ambDailyPlan.findFirst({ where: { type: 'OPEN', plan_date: date, simulated: false, status: { in: ['PREPARED', 'APPROVED'] } }, include: { items: { select: { selected: true } } }, orderBy: { version: 'desc' } }));
+    const getPlan = deps.getPlan || (async () => prisma.ambDailyPlan.findFirst({ where: { type: 'OPEN', plan_date: date, simulated: false, status: 'PREPARED' }, include: { items: { select: { selected: true } } }, orderBy: { version: 'desc' } }));
     src.plan = await getPlan(); mark(['OPEN_PLAN'], true);
   } catch (e) { logger.warn('[dailyTasks] plan source failed', { message: e.message }); mark(['OPEN_PLAN'], false, { error: e.message }); }
 
@@ -68,5 +69,5 @@ export async function runGenerators({ date, options, members, deps = {} }) {
   // a type whose source failed produces nothing AND is never auto-resolved (okTypes excludes it)
   const candidates = built.candidates.filter((c) => on[c.type] !== false);
   for (const t of Object.keys(status)) if (status[t].ok) status[t].count = candidates.filter((c) => c.type === t).length;
-  return { candidates, okTypes: [...okTypes], status };
+  return { candidates, okTypes: [...okTypes], status, asOf: src.asOf || null, period: src.period || null };
 }

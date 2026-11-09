@@ -54,7 +54,7 @@ export function makeTask(c, { date, source = 'AUTO', now = new Date().toISOStrin
     id: newId('t'), key: c.key || null, type: c.type || 'MANUAL', category: BUCKETS.includes(c.category) ? c.category : categoryOf(c.type || 'MANUAL'), source, priority: PRIORITY_WEIGHT[c.priority] ? c.priority : 'MED',
     title: String(c.title || '').trim().slice(0, 200), detail: String(c.detail || '').trim().slice(0, 600), why: String(c.why || '').trim().slice(0, 700), steps: Array.isArray(c.steps) ? c.steps.map((s) => String(s).slice(0, 300)).slice(0, 8) : [], plan: Array.isArray(c.plan) ? c.plan.slice(0, 8) : null, facts: Array.isArray(c.facts) ? c.facts.slice(0, 6) : [],
     product: c.product || null, accountId: c.accountId || null, campaignId: c.campaignId || null, link: c.link || null, action: c.action || null,
-    assigneeId: c.assigneeId || null, status: 'PENDING', originDate: date, carryCount: 0, createdAt: now, startedAt: null, doneAt: null, doneBy: null, note: null, reason: null, resolvedNote: null, carried: false, filler: !!c.filler,
+    assigneeId: c.assigneeId || null, status: 'PENDING', originDate: date, carryCount: 0, createdAt: now, startedAt: null, doneAt: null, doneBy: null, note: null, reason: null, resolvedNote: null, carried: false, filler: !!c.filler, meta: c.meta || null, numbersAt: now, priorityLocked: false,
   };
 }
 

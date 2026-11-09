@@ -55,6 +55,7 @@ const cap = (n, label) => { if (n > 0) logger.info(`[dailyTasks] ${label}: ${n}`
 /** Build / refresh a day. First run for a date: roll over yesterday + generate + distribute. Later runs: only NEW problems are added, and problems that vanished are marked AUTO_RESOLVED. */
 export async function generateDay(date, { actor = null, deps = {}, now = new Date() } = {}) {
   if (!C.validDate(date)) throw bad('تاريخ غير صالح.');
+  if (date !== today(now)) throw bad('المهام بتتجهّز من أرقام Meta الحيّة، فينفع لليوم الحالي بس (مينفعش نبني يوم فات أو جاي من أرقام النهارده).');
   const cfg = await getConfig(); const members = C.availableMembers(cfg.team, date);
   const prev = date > today(now) ? null : await S.loadDay(C.addDays(date, -1));
   const gen = await runGenerators({ date, options: cfg.options, members, deps }); // slow reads happen OUTSIDE the lock
@@ -70,6 +71,12 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
     }
     // tasks written by the first (alert-level) version carry no `category`: while still untouched they are replaced by the product-level tasks below
     for (const t of day.tasks) if (!t.category && t.status === 'PENDING' && t.source === 'AUTO') { t.status = 'CANCELLED'; t.resolvedNote = 'اتبدّلت بمهام المنتجات الجديدة'; }
+    // numbers stay TRUE through the day: an open task whose condition is still alive gets its text / numbers / plan re-written from the latest data
+    const liveBy = new Map(gen.candidates.map((c) => [c.key, c]));
+    for (const t of [...day.tasks, ...carriedIn]) {
+      const c = t.key && t.category && C.isOpen(t) && ['AUTO', 'CARRIED'].includes(t.source) ? liveBy.get(t.key) : null; if (!c) continue;
+      t.title = c.title; t.why = c.why; t.steps = c.steps || t.steps; t.plan = c.plan || null; t.facts = c.facts || []; t.meta = c.meta || t.meta; if (!t.priorityLocked) t.priority = c.priority; t.numbersAt = stamp;
+    }
     const fresh = C.dedupeCandidates([...gen.candidates, ...routines], [...day.tasks, ...carriedIn]).map((c) => C.makeTask(c, { date, source: c.type === 'ROUTINE' ? 'ROUTINE' : 'AUTO', now: stamp }));
     // auto-resolve (open AUTO/CARRIED tasks whose condition is gone — only for generators that ran fine)
     const live = gen.candidates.map((c) => c.key);
@@ -84,7 +91,7 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
     for (const t of carriedIn) S.logEntry(day, { action: 'CARRIED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: `اتنقلت من ${t.carriedFromDate || 'إمبارح'} (مرة ${t.carryCount})` });
     for (const t of fresh) S.logEntry(day, { action: t.assigneeId ? 'ASSIGNED' : 'CREATED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: t.assigneeId ? 'اتوزّعت تلقائيًا' : 'اتجهّزت وبتستنى التوزيع' });
     day.generatedAt = day.generatedAt || stamp; day.refreshedAt = stamp;
-    day.notes = { carriedIn: (day.notes?.carriedIn || 0) + carriedIn.length, generator: gen.status, lastAdded: fresh.length, lastResolved: resolved.length };
+    day.notes = { asOf: gen.asOf || day.notes?.asOf || null, period: gen.period || day.notes?.period || null, carriedIn: (day.notes?.carriedIn || 0) + carriedIn.length, generator: gen.status, lastAdded: fresh.length, lastResolved: resolved.length };
     cap(fresh.length, `${date} new`); return day;
   });
 }
@@ -138,7 +145,7 @@ export async function actOnTask(date, id, action, body, user) {
       if (!isMgr) throw bad('تغيير الشخص للمدير بس.', 403); const m = cfg.team.find((x) => x.id === body.memberId && x.active !== false); if (!m) throw bad('الشخص مش موجود في الفريق.');
       const from = t.assigneeId; t.assigneeId = m.id; S.logEntry(day, { action: 'REASSIGNED', taskId: t.id, taskTitle: t.title, memberId: m.id, fromMemberId: from, actorName: user.name, actorId: user.id, text: `اتحوّلت من ${nameOf(cfg, from)} لـ ${m.name}` });
     }
-    else if (action === 'priority') { if (!isMgr) throw bad('للمدير بس.', 403); if (!C.PRIORITY_WEIGHT[body.priority]) throw bad('أولوية غير صالحة.'); t.priority = body.priority; log('PRIORITY', `الأولوية بقت ${body.priority}`); }
+    else if (action === 'priority') { if (!isMgr) throw bad('للمدير بس.', 403); if (!C.PRIORITY_WEIGHT[body.priority]) throw bad('أولوية غير صالحة.'); t.priority = body.priority; t.priorityLocked = true; log('PRIORITY', `الأولوية بقت ${body.priority}`); }
     else throw bad('إجراء غير معروف.');
     return day;
   });
@@ -160,7 +167,7 @@ export async function addManualTask(date, body, user) {
 export async function getDayView(date, user) {
   const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.seesAll(user, cfg);
   const me = cfg.team.find((m) => m.userId && user && m.userId === user.id) || null;
-  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
+  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, dataAsOf: d.notes?.asOf || null, period: d.notes?.period || null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
   const memberView = (m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length });
   if (!admin) { // everyone else sees ONLY their own tasks and numbers — never another person's
     const mine = me ? d.tasks.filter((t) => t.assigneeId === me.id) : [];

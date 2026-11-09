@@ -19,7 +19,7 @@ const members = (n) => Array.from({ length: n }, (_, i) => ({ id: `m${i}`, name:
 const task = (o = {}) => C.makeTask({ type: o.type || 'ZERO_ORDERS', category: o.category, key: o.key || `k${Math.random()}`, title: o.title || 't', priority: o.priority || 'MED', product: o.product || null }, { date: '2026-11-09' });
 
 // campaign-row factory (the shape campaignQuery.buildRows returns, only the fields the builder reads)
-const row = (o) => ({ campaignId: o.id, name: o.name || `${o.product} - Test`, productId: o.pid, productName: o.product, status: 'ACTIVE', dataFresh: true, today: { spend: o.spendToday ?? 0, orders: o.ordersToday ?? 0 }, period: { spend: o.spend3 ?? 0, orders: o.orders3 ?? 0 }, cpa: { d3: o.cpa ?? null, d7: o.cpa ?? null }, cpaVsLimits: o.vs || 'WITHIN_TARGET', limits: o.limits || {}, stock: o.stock === undefined ? { status: 'OK', current: 200 } : o.stock, winner: { status: o.winner ? 'WINNER' : 'UNKNOWN' }, pendingDecision: o.decision ? { action: o.decision, status: 'PREPARED' } : null });
+const row = (o) => { const spend3 = o.spend3 ?? 0; const orders3 = o.orders3 === undefined ? 0 : o.orders3; return { campaignId: o.id, name: o.name || `${o.product} - Test`, productId: o.pid === undefined ? null : o.pid, productName: o.pid === undefined || o.pid === null ? null : o.product, status: 'ACTIVE', dataFresh: true, lastSeenAt: '2026-11-09T10:00:00.000Z', today: { spend: o.spendToday ?? 0, orders: o.ordersToday === undefined ? 0 : o.ordersToday }, period: { spend: spend3, orders: orders3, cpa: orders3 > 0 ? Math.round(spend3 / orders3) : null }, cpa: { d3: o.cpa ?? null, d7: o.cpa ?? null }, cpaVsLimits: o.vs || 'WITHIN_TARGET', limits: o.limits || {}, stock: o.stock === undefined ? { status: 'OK', current: 200 } : o.stock, winner: { status: o.winner ? 'WINNER' : 'UNKNOWN' }, pendingDecision: o.decision ? { action: o.decision, status: o.decisionStatus || 'PREPARED' } : null }; };
 const baseRows = () => [
   row({ id: 'c1', pid: 1, product: 'كاب الليزر', winner: true, cpa: 38, spend3: 400, orders3: 10 }), row({ id: 'c1b', pid: 1, product: 'كاب الليزر', winner: true, cpa: 41, spend3: 200, orders3: 5 }),
   row({ id: 'c2', pid: 2, product: 'فرشاة', winner: true, cpa: 70, spend3: 350, orders3: 5 }),
@@ -43,7 +43,7 @@ console.log('\n1. SCALE — one task per working product, built from the product
   const t1 = tasks.find((t) => t.product.id === 1); const t2 = tasks.find((t) => t.product.id === 2);
   ok('the strong one says 4 scales × 500 and lists each scale as a step', /4 اسكيلات/.test(t1.title) && /500/.test(t1.title) && t1.steps.filter((s) => /^اعمل اسكيل/.test(s)).length === 4 && t1.priority === 'HIGH');
   ok('the normal one says ABO 500 + CBO 500 in a single task', /ABO بـ500 ج و CBO بـ500 ج/.test(t2.title) && t2.steps.filter((s) => /^اعمل اسكيل/.test(s)).length === 2);
-  ok('the reason is written for a person: numbers + why (orders, cost per order, strong → «نكبّر بقوة»)', /جاب 9 أوردر/.test(t1.why) && /38 ج/.test(t1.why) && /نكبّر بقوة/.test(t1.why));
+  ok('the reason is written for a person: numbers + why (orders, cost per order, strong → «نكبّر بقوة»)', /جابت 10 أوردر \(حسب Meta\)/.test(t1.why) && /40 ج/.test(t1.why) && /38 ج في آخر 7 أيام/.test(t1.why) && /نكبّر بقوة/.test(t1.why), t1.why);
   ok('a product with NO stock is never scaled (the stock task handles it)', !tasks.some((t) => t.product.id === 6));
   const cheap = SM.scaleTasks(groups, cards, { ...O, scaleBudget: 700 }).tasks[0]; ok('the budget per scale is a setting', cheap.plan.every((p) => p.budget === 700));
 }
@@ -52,14 +52,42 @@ console.log('\n2. FIX — products that HAVE stock but do not sell · TEST — p
 {
   const groups = SM.groupByProduct(baseRows()); const sc = SM.scaleTasks(groups, cards, O); const { fixes, tests } = SM.fixTasks(groups, sc.used, O, { zeroLimit: 150, minSpend: 150 });
   const f3 = fixes.find((t) => t.product.id === 3); const f4 = fixes.find((t) => t.product.id === 4);
-  ok('spend with no orders → a FIX task that says the stock is there («المشكلة مش في الكمية»)', f3 && f3.type === 'ZERO_ORDERS' && /صرف 400 ج النهارده من غير ولا أوردر/.test(f3.why) && /300 قطعة/.test(f3.why) && /مش في الكمية/.test(f3.why), f3 && f3.why);
+  ok('spend with no orders → a FIX task that says the stock is there («المشكلة مش في الكمية»)', f3 && f3.type === 'ZERO_ORDERS' && /صرف 400 ج النهارده من غير ولا أوردر \(حسب Meta\)/.test(f3.why) && /300 قطعة/.test(f3.why) && /مش في الكمية/.test(f3.why), f3 && f3.why);
   ok('CPA above the hard-stop limit → a FIX task with both numbers, HIGH', f4 && f4.type === 'CPA' && /150 ج/.test(f4.why) && /90 ج/.test(f4.why) && f4.priority === 'HIGH');
   ok('every fix has concrete steps (3-4) ending with «اكتب في الملاحظة»', fixes.every((t) => t.steps.length >= 3 && /الملاحظة/.test(t.steps[t.steps.length - 1])));
   ok('a product that is out of stock is NOT a fix (it is a stock job)', !fixes.some((t) => t.product.id === 6));
-  ok('a selling product with stock and few campaigns → a TEST task, with its numbers', tests.length === 1 && tests[0].product.id === 5 && /5 أوردر/.test(tests[0].why) && /120 قطعة/.test(tests[0].why));
+  ok('a selling product with stock and few campaigns → a TEST task, with its numbers', tests.length === 1 && tests[0].product.id === 5 && /5 أوردر \(حسب Meta\)/.test(tests[0].why) && /120 قطعة/.test(tests[0].why));
   ok('a product already being scaled or fixed is not also tested', !tests.some((t) => [1, 2, 3, 4].includes(t.product.id)));
   const many = []; for (let i = 0; i < 20; i++) many.push(row({ id: `t${i}`, pid: 100 + i, product: `منتج ${i}`, spend3: 200, orders3: 3 + i, cpa: 60 }));
   ok('tests are capped (maxTest) and the best sellers come first', SM.fixTasks(SM.groupByProduct(many), new Set(), { ...O, maxTest: 5 }, {}).tests.length === 5 && SM.fixTasks(SM.groupByProduct(many), new Set(), { ...O, maxTest: 5 }, {}).tests[0].product.name === 'منتج 19');
+}
+
+console.log('\n2b. accuracy — an unknown is never a zero, no guessing, no overstatement');
+{
+  const O2 = SM.SMART_DEFAULTS; const fixOf = (rows, cardsX = []) => { const g = SM.groupByProduct(rows); return SM.fixTasks(g, new Set(), O2, { zeroLimit: 150, minSpend: 150 }); };
+  const unknownOrders = [row({ id: 'u1', pid: 90, product: 'منتج X', spendToday: 400, ordersToday: null, spend3: 500, orders3: null })];
+  ok('orders MISSING (null) never become «بيصرف ومبيجيبش» — no claim without data', fixOf(unknownOrders).fixes.length === 0);
+  const partial = [row({ id: 'p1', pid: 91, product: 'منتج Y', spendToday: 300, ordersToday: 0, spend3: 300, orders3: 0 }), row({ id: 'p2', pid: 91, product: 'منتج Y', spendToday: 50, ordersToday: null, spend3: 50, orders3: null })];
+  ok('one campaign of the product with unknown orders blocks the zero-orders claim for the whole product', fixOf(partial).fixes.length === 0);
+  const noStock = fixOf([row({ id: 's1', pid: 92, product: 'منتج Z', spendToday: 400, ordersToday: 0, spend3: 500, orders3: 0, stock: { status: 'STOCK_UNKNOWN', current: null } })]).fixes[0];
+  ok('stock unknown → the task says so and does NOT claim «المشكلة مش في الكمية»', noStock && /مش معروف/.test(noStock.why) && !/مش في الكمية/.test(noStock.why) && noStock.facts.some((f) => f.l === 'المخزون' && f.v === 'غير معروف'));
+  const unl = SM.groupByProduct([row({ id: 'k1', pid: null, product: 'كاب', name: 'كاب الليزر - Test 1', spend3: 100, orders3: 2 }), row({ id: 'k2', pid: null, product: 'كاب', name: 'كاب الليزر - Test 2', spend3: 100, orders3: 2 })]);
+  ok('campaigns NOT linked to a product are never merged by name — each stays its own campaign, named exactly', unl.size === 2 && [...unl.values()].every((g) => g.linked === false && /^كاب الليزر - Test \d$/.test(g.name)));
+  const cpaRows = [row({ id: 'a1', pid: 93, product: 'منتج W', spend3: 600, orders3: 4, vs: 'ABOVE_HARDSTOP', limits: { hardStop: 90 }, cpa: 150 }), row({ id: 'a2', pid: 93, product: 'منتج W', spend3: 600, orders3: 12, cpa: 50 })];
+  const cp = fixOf(cpaRows).fixes[0];
+  ok('CPA task quotes the OFFENDING campaign’s own CPA (150), not an average with a healthy one (≈ 75)', cp && /150 ج/.test(cp.why) && !/75 ج/.test(cp.why) && /منتج W - Test/.test(cp.why));
+  const tiny = fixOf([row({ id: 'm1', pid: 94, product: 'منتج V', spend3: 100, orders3: 1, vs: 'ABOVE_HARDSTOP', limits: { hardStop: 90 }, cpa: 100 })]);
+  ok('a campaign that spent less than the minimum is not judged on its CPA (noise)', tiny.fixes.length === 0);
+  const groupsW = SM.groupByProduct([row({ id: 'w1', pid: 95, product: 'منتج Q', winner: true, spend3: 400, orders3: 8, cpa: 30 })]);
+  const flat = row({ id: 'w2', pid: 96, product: 'منتج R', winner: true, spend3: 600, orders3: 10 }); flat.cpa = { d3: 40, d7: 80 }; // flattering 3-day CPA, bad 7-day CPA
+  const sc2 = SM.scaleTasks(SM.groupByProduct([flat]), [], O2).tasks[0];
+  ok('the scale size is judged on the WORSE of the 3-day / 7-day CPA (never the flattering one), and both are shown', sc2.plan.length === 2 && /60 ج للأوردر/.test(sc2.why) && /80 ج في آخر 7 أيام/.test(sc2.why), sc2.why);
+  const dec = SM.mixTasks(SM.groupByProduct([row({ id: 'd1', pid: 97, product: 'منتج D', decision: 'PAUSE', decisionStatus: 'APPROVED' }), row({ id: 'd2', pid: 98, product: 'منتج E', decision: 'PAUSE', decisionStatus: 'BLOCKED' }), row({ id: 'd3', pid: 99, product: 'منتج F', decision: 'SCALE_UP', decisionStatus: 'PREPARED' })]), {});
+  ok('only decisions that really WAIT for a review (PREPARED) become «مستنية موافقتك» — approved / blocked ones do not', dec.length === 1 && dec[0].key === 'dec:SCALE_UP');
+  ok('an already APPROVED open plan is not a «review» task', SM.mixTasks(new Map(), { plan: { plan_date: 'x', status: 'APPROVED', items: [{ selected: true }] } }).length === 0 && SM.mixTasks(new Map(), { plan: { plan_date: 'x', status: 'PREPARED', items: [{ selected: true }] } }).length === 1);
+  const all = SM.buildSmartCandidates({ rows: baseRows(), cards, funds: [], batches: [], plan: null, period: { from: '2026-11-07', to: '2026-11-09' }, asOf: '2026-11-09T10:00:00.000Z' }, {});
+  ok('every task carries where its numbers come from (Meta purchases, the 3-day window, the data time)', all.candidates.every((t) => t.meta && t.meta.basis === 'مشتريات Meta' && t.meta.window.from === '2026-11-07' && t.meta.asOf === '2026-11-09T10:00:00.000Z'));
+  ok('no task text uses a bare «أوردر» for Meta numbers: every orders sentence says «حسب Meta»', all.candidates.filter((t) => /جاب\S* \d+ أوردر|من غير ولا أوردر/.test(t.why)).every((t) => /حسب Meta/.test(t.why)));
 }
 
 console.log('\n3. MIX — everything else the system knows');
@@ -134,6 +162,23 @@ const now1 = new Date('2026-11-09T09:00:00Z'); const now2 = new Date('2026-11-10
   const S = await imp('../services/dailyTasks/store.js'); await S.updateDay(day1, (d) => { d.tasks.push({ ...C.makeTask({ type: 'ZERO_ORDERS', key: 'alert:old1', title: 'قديمة', priority: 'MED' }, { date: day1 }), category: undefined }, { ...C.makeTask({ type: 'ZERO_ORDERS', key: 'alert:old2', title: 'قديمة شغّالة', priority: 'MED' }, { date: day1 }), category: undefined, status: 'IN_PROGRESS' }); d.tasks.forEach((t) => { if (t.key.startsWith('alert:')) { delete t.category; t.assigneeId = d.tasks[0].assigneeId; } }); });
   const r4 = await E.generateDay(day1, { deps: dep(), now: now1 });
   ok('tasks from the first (alert-level) version: untouched ones are replaced, a started one is left alone', r4.tasks.find((t) => t.key === 'alert:old1').status === 'CANCELLED' && r4.tasks.find((t) => t.key === 'alert:old2').status === 'IN_PROGRESS');
+}
+
+console.log('\n6b. numbers stay true through the day');
+{
+  const before = (await E.getDayView(day1, admin)).tasks.find((t) => t.key === 'fix:p:4'); curRows = baseRows().map((r) => (r.campaignId === 'c4' ? { ...r, period: { spend: 800, orders: 4, cpa: 200 } } : r));
+  await E.generateDay(day1, { deps: dep(), now: new Date('2026-11-09T12:00:00Z') });
+  const after = (await E.getDayView(day1, admin)).tasks.find((t) => t.key === 'fix:p:4');
+  ok('a still-open task is re-written from the latest numbers (CPA 150 → 200), same task, same owner', before && after.id === before.id && /200 ج/.test(after.why) && !/150 ج/.test(after.why) && after.assigneeId === before.assigneeId && after.numbersAt > before.numbersAt, after && after.why);
+  ok('…and shows the data time + window of its numbers', after.meta && after.meta.window && after.meta.window.to === day1 && after.meta.window.from === '2026-11-07' && after.meta.asOf === '2026-11-09T10:00:00.000Z' && (await E.getDayView(day1, admin)).dataAsOf === '2026-11-09T10:00:00.000Z');
+  const donePick = (await E.getDayView(day1, admin)).tasks.find((t) => t.key === 'test:p:5'); await E.actOnTask(day1, donePick.id, 'done', { note: 'ok' }, admin);
+  curRows = baseRows().map((r) => (r.campaignId === 'c5' ? { ...r, period: { spend: 999, orders: 1, cpa: 999 } } : r));
+  await E.generateDay(day1, { deps: dep(), now: new Date('2026-11-09T13:00:00Z') });
+  ok('a DONE task keeps the numbers it was done with (never rewritten afterwards)', (await E.getDayView(day1, admin)).tasks.find((t) => t.id === donePick.id).why === donePick.why);
+  const pr = (await E.getDayView(day1, admin)).tasks.find((t) => t.key === 'scale:p:2'); await E.actOnTask(day1, pr.id, 'priority', { priority: 'LOW' }, admin); await E.generateDay(day1, { deps: dep(), now: new Date('2026-11-09T14:00:00Z') });
+  ok('a priority the admin set by hand is not overwritten by a refresh', (await E.getDayView(day1, admin)).tasks.find((t) => t.id === pr.id).priority === 'LOW');
+  curRows = baseRows();
+  ok('a day other than today is never built from today’s numbers', (await rejects(() => E.generateDay('2026-11-01', { deps: dep(), now: now1 })))?.status === 400 && (await rejects(() => E.generateDay('2026-11-30', { deps: dep(), now: now1 })))?.status === 400);
 }
 
 console.log('\n7. people act on tasks');

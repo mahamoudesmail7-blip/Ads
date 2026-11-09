@@ -49,7 +49,7 @@ function paint() {
   const v = S.view; if (!v) return;
   $('dtkDate').value = S.date; document.querySelector('.dtk').dataset.mgr = S.mgr ? '1' : '0';
   const s = v.summary;
-  $('dtkSub').textContent = `${dateAr(S.date)}${S.date === v.today ? ' — النهارده' : ''}${v.generatedAt ? ` · اتجهّزت ${hhmm(v.generatedAt)}` : ''}${v.refreshedAt && v.refreshedAt !== v.generatedAt ? ` · آخر تحديث ${hhmm(v.refreshedAt)}` : ''}`;
+  $('dtkSub').textContent = `${dateAr(S.date)}${S.date === v.today ? ' — النهارده' : ''}${v.generatedAt ? ` · اتجهّزت ${hhmm(v.generatedAt)}` : ''}${v.refreshedAt && v.refreshedAt !== v.generatedAt ? ` · آخر تحديث ${hhmm(v.refreshedAt)}` : ''}${v.dataAsOf ? ` · أرقام Meta لحد ${hhmm(v.dataAsOf)}` : ''}`;
   document.querySelectorAll('#dtkTabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
   $('dtkActions').style.display = S.tab === 'day' && S.mgr ? '' : 'none';
   if (S.tab === 'day') paintDay(); else if (S.tab === 'follow') paintFollow(); else if (S.tab === 'team') paintTeam(); else paintSettings();
@@ -79,6 +79,10 @@ function sortTasks(a, b) { return (STATUS_ORDER[a.status] - STATUS_ORDER[b.statu
 
 function planChips(t) { return (t.plan || []).length ? `<div class="dtk-plan">${t.plan.map((p, i) => `<span class="${p.mode}"><i>${i + 1}</i><b dir="ltr">${p.mode}</b><em>${p.budget.toLocaleString('en-US')} ج</em></span>`).join('')}</div>` : ''; }
 
+const NUM_TYPES = ['SCALE', 'ZERO_ORDERS', 'CPA', 'TEST', 'REVIEW', 'STOCK'];
+const dm = (d) => { try { return new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${d}T00:00:00Z`)); } catch { return d; } };
+function srcLine(t) { const m = t.meta; if (!m || !NUM_TYPES.includes(t.type)) return ''; return `<div class="dtk-src">📊 الأرقام: ${E(m.basis || 'Meta')}${m.window ? ` من ${E(dm(m.window.from))} لـ ${E(dm(m.window.to))} (شامل النهارده)` : ''}${m.asOf ? ` · آخر مزامنة ${hhmm(m.asOf)}` : ''}${t.numbersAt ? ` · اتحدّثت ${hhmm(t.numbersAt)}` : ''}</div>`; }
+
 function taskHtml(t, v, { showWho = false } = {}) {
   const can = S.mgr || t.assigneeId === v.mineId; const closed = ['DONE', 'AUTO_RESOLVED', 'CANCELLED'].includes(t.status); const open = S.open.has(t.id);
   const late = t.originDate && t.originDate < S.date ? daysBetween(t.originDate, S.date) : 0; const ty = v.types[t.type] || { icon: '•', label: t.type };
@@ -105,6 +109,7 @@ function taskHtml(t, v, { showWho = false } = {}) {
     ${why ? `<p class="dtk-why">${E(why)}</p>` : ''}
     ${planChips(t)}
     ${(t.facts || []).length ? `<div class="dtk-facts">${t.facts.map((f) => `<span><small>${E(f.l)}</small><b>${E(f.v)}</b></span>`).join('')}</div>` : ''}
+    ${srcLine(t)}
     ${steps || t.note || t.resolvedNote ? `<button class="dtk-steps-btn" data-toggle="${t.id}">${open ? '▾ إخفاء الخطوات' : `▸ الخطوات${(t.steps || []).length ? ` (${t.steps.length})` : ''}`}</button>` : ''}
     ${open ? `${steps}${t.note ? `<div class="dtk-note">📝 ${E(t.note)}</div>` : ''}${t.resolvedNote ? `<div class="dtk-note">🤖 ${E(t.resolvedNote)}</div>` : ''}` : ''}
     ${actions}${mgr}
