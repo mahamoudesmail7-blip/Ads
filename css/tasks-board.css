@@ -78,6 +78,8 @@
 .dx-ring::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--x-card); }
 .dx-ring b { position: relative; font-size: 11px; font-weight: 900; font-variant-numeric: tabular-nums; }
 .dx-memrow { display: flex; align-items: stretch; gap: 6px; } .dx-memrow .dx-mem { flex: 1; min-width: 0; }
+.dx-memside { display: flex; flex-direction: column; gap: 4px; flex: none; } .dx-memside .dx-memadd { flex: 1; min-height: 34px; }
+.dx-memrm { width: 44px; height: 30px; border-radius: 12px; border: 1px solid var(--x-line); background: transparent; color: var(--x-dim); cursor: pointer; display: grid; place-items: center; flex: none; } .dx-memrm:hover { color: var(--x-red); border-color: var(--x-red); background: color-mix(in srgb, var(--x-red) 8%, transparent); }
 .dx-memadd { width: 44px; border-radius: 16px; border: 2px dashed color-mix(in srgb, var(--x-acc) 45%, transparent); background: transparent; color: var(--x-acc); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .15s; } .dx-memadd:hover { background: var(--x-soft); border-style: solid; }
 .dx-cta2 { width: 100%; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 12px; border-radius: 15px; border: 2px solid var(--x-acc); background: transparent; color: var(--x-acc); font-weight: 900; font-size: 14px; cursor: pointer; margin-top: 10px; } .dx-cta2:hover { background: var(--x-soft); }
 .dx-addmem { margin-top: 12px; width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; padding: 11px; border-radius: 14px; border: 2px dashed color-mix(in srgb, var(--x-acc) 45%, transparent); background: transparent; color: var(--x-acc); font-weight: 900; font-size: 13.5px; cursor: pointer; }

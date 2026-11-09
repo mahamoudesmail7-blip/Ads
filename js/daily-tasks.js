@@ -203,6 +203,20 @@ async function resetAll() {
   const r = await call(() => api.post(`${API}/reset`, { date: S.date }), 'اتصفّر اليوم — المهام جاهزة للتوزيع من جديد'); if (r) { S.view = r; S.f.who = 'NONE'; S.f.cat = 'ALL'; S.f.types.clear(); S.f.statuses.clear(); S.f.prios.clear(); S.f.q = ''; S.page = 1; S.drawer = null; paint(); }
 }
 
+/** Take a media buyer out of the team: his open tasks are handed to the others right away, his history (done work, numbers) stays. Needs a confirmation that says exactly what happens. */
+async function removeMember(id) {
+  const v = S.view; const m = v.team.find((x) => x.id === id); if (!m) return;
+  const mine = v.tasks.filter((t) => t.assigneeId === id && t.status !== 'CANCELLED'); const n = (f) => mine.filter(f).length;
+  const open = n((t) => ['PENDING', 'IN_PROGRESS'].includes(t.status)); const review = n((t) => t.status === 'NEEDS_REVIEW'); const done = n((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)); const others = v.team.filter((x) => x.active && x.id !== id).length;
+  if (!others) { UI.toast('مينفعش تشيل آخر ميديا باير في الفريق.', 'error'); return; }
+  const ok = await modal(`<h3>${X.ic('user-minus', 20)} شيل ${E(m.name)} من الفريق؟</h3>
+    <div class="dx-reset-box"><b>اللي هيحصل:</b><ul><li><b>${open}</b> مهمة مفتوحة معاه هتتوزّع على الـ ${others} الباقيين بالتساوي</li>${review ? `<li><b>${review}</b> مستنية مراجعة بتفضل باسمه لحد ما تراجعها</li>` : ''}<li><b>${done}</b> مكتملة بتفضل في سجله وأرقامه القديمة</li><li>مش هيظهر في التوزيع الجاي، وحسابه على السيستم مبيتمسحش</li></ul><small>تقدر ترجّعه بعدين من تبويب «الفريق».</small></div>
+    <div class="btns"><button class="dx-sec-btn" data-close>إلغاء</button><button class="dx-sec-btn danger" id="mOk">${X.ic('user-minus', 16)} شيله من الفريق</button></div>`, { onMount: (el, close) => { el.querySelector('#mOk').onclick = () => close(true); } });
+  if (!ok) return;
+  const r = await call(() => api.delete(`${API}/team/${id}`), `اتشال ${m.name} ومهامه اتوزّعت على الباقيين`); if (!r) return;
+  if (S.f.who === id) S.f.who = 'ALL'; await load({ quiet: true });
+}
+
 async function addMember() {
   const t = await call(() => api.get(`${API}/team`)); if (!t) return;
   const userOpts = [['', '— مش مربوط بحساب —'], ...t.users.map((u) => [String(u.id), `${u.name} (${u.role})`])];
@@ -254,6 +268,7 @@ function wire() {
       if (a === 'toggle-filters') { S.filtersOpen = !S.filtersOpen; return paintDay(); }
     }
     const af = t.closest('[data-addfor]'); if (af) return addTask(af.dataset.addfor);
+    const rm = t.closest('[data-rmmem]'); if (rm) return removeMember(rm.dataset.rmmem);
     const cat = t.closest('[data-cat]'); if (cat) { S.f.cat = cat.dataset.cat; S.page = 1; return paintDay(); }
     const wh = t.closest('[data-who]'); if (wh) { S.f.who = S.f.who === wh.dataset.who ? 'ALL' : wh.dataset.who; S.page = 1; return paintDay(); }
     const pg = t.closest('[data-page]'); if (pg && !pg.disabled) { S.page = Math.max(1, +pg.dataset.page); paintDay(); return document.querySelector('.dx-list')?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }

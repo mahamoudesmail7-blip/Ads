@@ -44,6 +44,7 @@ export async function setDayOff(memberId, date, off, actor) {
 }
 export async function removeMember(id, actor) {
   const cfg = await getConfig(); const m = cfg.team.find((x) => x.id === id); if (!m) throw bad('الشخص مش موجود.', 404);
+  if (!cfg.team.some((x) => x.id !== id && x.active !== false)) throw bad('مينفعش تشيل آخر ميديا باير في الفريق.', 400);
   await updateMember(id, { active: false });
   await redistributeFrom(today(), id, actor, `${m.name} اتشال من الفريق`);
   return { ok: true };

@@ -35,6 +35,7 @@ const P = {
   send: '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
   'check-check': '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   'rotate-ccw': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  'user-minus': '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="22" x2="16" y1="11" y2="11"/>',
   history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
   list: '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
   'bar-chart': '<path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>',
@@ -144,10 +145,10 @@ export function kpiStrip(S, v) {
 
 // ───────────── manager: team card ─────────────
 export function teamCard(S, v) {
-  const rows = v.team.filter((m) => m.active || v.tasks.some((t) => t.assigneeId === m.id)).map((m) => {
+  const rows = v.team.filter((m) => m.active).map((m) => {
     const mine = visibleTasks(v).filter((t) => t.assigneeId === m.id); const done = mine.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length; const pct = mine.length ? Math.round((done / mine.length) * 100) : 0;
     const late = mine.filter((t) => ['LATE', 'NOTDONE'].includes(statusKey(t, S.date))).length; const on = S.f.who === m.id;
-    return `<div class="dx-memrow"><button class="dx-mem ${on ? 'on' : ''}" data-who="${m.id}" title="اعرض مهامه بس">${avatar(v, m.id, m.name, 42)}<span class="nm"><b>${E(m.name)}${m.off ? '<i class="dx-off">إجازة</i>' : ''}</b><small>${done}/${mine.length} مهمة${late ? ` · <u>${late} متأخرة</u>` : ''}</small></span>${ring(mine.length ? pct : null)}</button><button class="dx-memadd" data-addfor="${m.id}" title="ادّي ${E(m.name)} مهمة بإيدك" aria-label="إضافة مهمة لـ ${E(m.name)}">${ic('plus', 18)}</button></div>`;
+    return `<div class="dx-memrow"><button class="dx-mem ${on ? 'on' : ''}" data-who="${m.id}" title="اعرض مهامه بس">${avatar(v, m.id, m.name, 42)}<span class="nm"><b>${E(m.name)}${m.off ? '<i class="dx-off">إجازة</i>' : ''}</b><small>${done}/${mine.length} مهمة${late ? ` · <u>${late} متأخرة</u>` : ''}</small></span>${ring(mine.length ? pct : null)}</button><span class="dx-memside"><button class="dx-memadd" data-addfor="${m.id}" title="ادّي ${E(m.name)} مهمة بإيدك" aria-label="إضافة مهمة لـ ${E(m.name)}">${ic('plus', 18)}</button><button class="dx-memrm" data-rmmem="${m.id}" title="شيل ${E(m.name)} من الفريق" aria-label="شيل ${E(m.name)} من الفريق">${ic('user-minus', 16)}</button></span></div>`;
   }).join('');
   const un = v.summary.unassigned;
   return `<section class="dx-card"><header><h3>${ic('users', 18)} فريق الميديا بايرز (${v.team.filter((m) => m.active).length})</h3>${S.f.who !== 'ALL' ? '<button class="dx-link" data-who="ALL">عرض الكل</button>' : ''}</header>
