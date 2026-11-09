@@ -108,7 +108,7 @@ console.log('\n5. roll-over, dedupe, auto-resolve (pure)');
 console.log('\n6. a full day through the engine');
 let curRows = baseRows();
 const dep = () => ({ getAlerts: async () => ({ unavailable: [], alerts: [] }), getRows: async () => ({ rows: curRows, zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards }), getBatches: async () => [{ batch_id: 'b1', status: 'NEEDS_INPUT', error: 'لينك ناقص', total_copies: 3, source_ad_account_name: 'El Nozha' }], getPlan: async () => ({ plan_date: '2026-11-09', items: [{ selected: true }] }) });
-const admin = { id: 1, name: 'Hady', role: 'ADMIN', is_owner: false }; const day1 = '2026-11-09'; const day2 = '2026-11-10';
+const OWNER = 'mahamoudesmail7@gmail.com'; const admin = { id: 1, name: 'Mahmoud', role: 'ADMIN', email: OWNER, is_owner: true }; const day1 = '2026-11-09'; const day2 = '2026-11-10';
 const now1 = new Date('2026-11-09T09:00:00Z'); const now2 = new Date('2026-11-10T09:00:00Z');
 {
   const cfg0 = await E.getConfig(); ok('first use seeds the 4 media buyers', cfg0.team.map((m) => m.name).join() === 'Ahmed Samy,Samy,Mohamed 3sam,Hady');
@@ -193,13 +193,15 @@ console.log('\n10. only the admin sees everything');
   ok('the activity log of a buyer holds only their own lines', va.log.every((l) => l.memberId === a.id));
   const rep = await E.getReport(day1, day2, userA); ok('the follow-up report of a buyer has only their own row', rep.perMember.length === 1 && rep.perMember[0].memberId === a.id && rep.team.length === 1);
   ok('a MANAGER cannot reassign / cancel / see others (admin only)', (await rejects(() => E.actOnTask(day2, full.tasks.find((t) => t.assigneeId === a.id && C.isOpen(t)).id, 'cancel', {}, userB)))?.status === 403);
-  { // an ADMIN account that is itself a media buyer (Hady) sees only his own tasks; the owner account (not a buyer) still sees everything
+  { // only the OWNER e-mail sees everything; any other account — even role ADMIN — sees its own tasks only
     const cfg = await E.getConfig(); const h = cfg.team[3]; await E.updateMember(h.id, { userId: 1 });
-    const own = await E.getDayView(day2, admin); const all = await E.getDayView(day2, { id: 3, name: 'Owner', role: 'ADMIN', is_owner: true });
-    ok('an admin linked to a media buyer sees ONLY his own tasks (no team, no options, not the admin view)', own.admin === false && own.tasks.length > 0 && own.tasks.every((t) => t.assigneeId === h.id) && own.team.length === 1 && own.options === null);
-    ok('…while the owner account (not a buyer) still sees everyone', all.admin === true && all.team.length >= 4 && all.tasks.length > own.tasks.length);
+    const hady = { id: 1, name: 'Hady', role: 'ADMIN', email: 'hady@example.com' };
+    const own = await E.getDayView(day2, hady); const all = await E.getDayView(day2, admin);
+    ok('an ADMIN-role account that is not the owner sees ONLY his own tasks (no team, no options, not the admin view)', own.admin === false && own.tasks.length > 0 && own.tasks.every((t) => t.assigneeId === h.id) && own.team.length === 1 && own.options === null);
+    ok('…while the owner account sees everyone', all.admin === true && all.team.length >= 4 && all.tasks.length > own.tasks.length);
     const other = all.tasks.find((t) => t.assigneeId !== h.id && C.isOpen(t));
-    ok('…and cannot cancel / reassign other people’s tasks either', (await rejects(() => E.actOnTask(day2, other.id, 'cancel', {}, admin)))?.status === 403);
+    ok('…and cannot cancel / reassign other people’s tasks (the owner can)', (await rejects(() => E.actOnTask(day2, other.id, 'cancel', {}, hady)))?.status === 403 && !(await rejects(() => E.actOnTask(day2, other.id, 'priority', { priority: 'LOW' }, admin))));
+    ok('the full-access rule is the e-mail (case-insensitive), nothing else', C.seesAll({ email: 'MahamoudEsmail7@Gmail.com' }) && !C.seesAll({ email: 'x@y.com', role: 'ADMIN', is_owner: true }) && !C.seesAll(null));
     await E.updateMember(h.id, { userId: null });
   }
 }

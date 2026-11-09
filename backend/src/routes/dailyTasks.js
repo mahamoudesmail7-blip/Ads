@@ -10,9 +10,8 @@ import { cairoDate } from '../services/amb/dailyPlanTime.js';
 
 const router = Router();
 router.use(requireAuth);
-// only the admin account that is NOT a media buyer manages and sees everyone; every other account (incl. an admin linked to a buyer, e.g. Hady) sees its own tasks only
-const fullAccess = asyncRoute(async (req, res, next) => { if (!C.seesAll(req.user, await E.getConfig())) return res.status(403).json({ error: 'FORBIDDEN', message: 'مفيش صلاحية كافية لعمل ده.' }); next(); });
-const mgr = [requireRole('ADMIN'), fullAccess];
+// only the owner account (Mahmoud Esmail) manages and sees everyone in «تاسكات اليوم»; every other account keeps its normal access to the rest of the app but sees only its OWN tasks here
+const mgr = (req, res, next) => (C.seesAll(req.user) ? next() : res.status(403).json({ error: 'FORBIDDEN', message: 'مفيش صلاحية كافية لعمل ده.' }));
 const building = new Map(); // dates whose first build is running in the background
 const dateOf = (req) => { const d = String(req.query.date || req.body?.date || cairoDate()); if (!C.validDate(d)) { const e = new Error('تاريخ غير صالح.'); e.status = 400; throw e; } return d; };
 

@@ -39,8 +39,9 @@ export const DEFAULT_CONFIG = {
 
 export const newId = (p = 't') => `${p}_${crypto.randomBytes(4).toString('hex')}`;
 export const isAdminUser = (u) => !!(u && (u.is_owner || u.role === 'ADMIN'));
-/** Full access (everyone's tasks, distribution, team, settings) = an admin account that is NOT itself a media buyer. An admin who IS linked to a media buyer (e.g. Hady) sees only his own tasks, like every buyer. */
-export const seesAll = (u, cfg) => isAdminUser(u) && !(cfg?.team || []).some((m) => m.active !== false && m.userId && m.userId === u.id);
+/** Full access to «تاسكات اليوم» (everyone's tasks, distribution, team, settings) = the owner account ONLY (matched by e-mail; override with DAILY_TASKS_ADMIN_EMAILS=a@x,b@y). Every other account — whatever its role in the rest of the app — sees only its own tasks here. */
+export const TASKS_ADMIN_EMAILS = String(process.env.DAILY_TASKS_ADMIN_EMAILS || 'mahamoudesmail7@gmail.com').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+export const seesAll = (u) => !!(u && u.email && TASKS_ADMIN_EMAILS.includes(String(u.email).trim().toLowerCase()));
 export const isOpen = (t) => OPEN_STATUSES.includes(t.status);
 export const weightOf = (t) => PRIORITY_WEIGHT[t.priority] || 2;
 export const validDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`));
