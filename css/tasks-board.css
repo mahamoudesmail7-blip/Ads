@@ -29,6 +29,9 @@
 .dx-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .dx-btn { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 13px; border: 1px solid var(--x-line); background: var(--x-card); color: var(--x-text); font-weight: 800; font-size: 13.5px; cursor: pointer; transition: transform .15s, border-color .15s; }
 .dx-btn:hover { border-color: var(--x-acc); transform: translateY(-1px); }
+.dx-btn.danger { color: var(--x-red); border-color: color-mix(in srgb, var(--x-red) 35%, var(--x-line)); } .dx-btn.danger:hover { border-color: var(--x-red); background: color-mix(in srgb, var(--x-red) 8%, transparent); }
+.dx-reset-box { background: color-mix(in srgb, var(--x-red) 8%, transparent); border: 1px solid color-mix(in srgb, var(--x-red) 30%, transparent); border-radius: 14px; padding: 12px 14px; margin: 6px 0 12px; } .dx-reset-box ul { margin: 6px 0 0; padding-inline-start: 20px; line-height: 2; font-weight: 700; font-size: 13.5px; } .dx-reset-box li b { font-variant-numeric: tabular-nums; }
+.dx-ack { display: flex; gap: 9px; align-items: flex-start; font-weight: 800; font-size: 13.5px; cursor: pointer; margin-bottom: 12px; line-height: 1.7; } .dx-ack input { margin-top: 5px; width: 18px; height: 18px; accent-color: var(--x-red); }
 .dx-btn.primary, .dx-cta { background: linear-gradient(135deg, var(--x-acc), var(--x-acc2)); color: #fff; border-color: transparent; box-shadow: 0 8px 20px rgba(109, 74, 255, .28); }
 .dx-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 .dx:not([data-mgr="1"]) [data-mgr] { display: none !important; }
@@ -74,6 +77,9 @@
 .dx-ring { --p: 0; display: grid; place-items: center; border-radius: 50%; flex: none; position: relative; background: conic-gradient(var(--x-green) calc(var(--p) * 1%), color-mix(in srgb, var(--x-dim) 20%, transparent) 0); }
 .dx-ring::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--x-card); }
 .dx-ring b { position: relative; font-size: 11px; font-weight: 900; font-variant-numeric: tabular-nums; }
+.dx-memrow { display: flex; align-items: stretch; gap: 6px; } .dx-memrow .dx-mem { flex: 1; min-width: 0; }
+.dx-memadd { width: 44px; border-radius: 16px; border: 2px dashed color-mix(in srgb, var(--x-acc) 45%, transparent); background: transparent; color: var(--x-acc); cursor: pointer; display: grid; place-items: center; flex: none; transition: background .15s; } .dx-memadd:hover { background: var(--x-soft); border-style: solid; }
+.dx-cta2 { width: 100%; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 12px; border-radius: 15px; border: 2px solid var(--x-acc); background: transparent; color: var(--x-acc); font-weight: 900; font-size: 14px; cursor: pointer; margin-top: 10px; } .dx-cta2:hover { background: var(--x-soft); }
 .dx-addmem { margin-top: 12px; width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; padding: 11px; border-radius: 14px; border: 2px dashed color-mix(in srgb, var(--x-acc) 45%, transparent); background: transparent; color: var(--x-acc); font-weight: 900; font-size: 13.5px; cursor: pointer; }
 .dx-addmem:hover { background: var(--x-soft); }
 
@@ -206,7 +212,7 @@ body.dx-lock { overflow: hidden; }
   .dx-side-l .dx-filters > header { width: auto; margin: 0; } .dx-side-l .dx-filters > header h3 { font-size: 14px; }
   .dx-side-l .dx-fg { margin: 0; display: flex; align-items: center; gap: 4px 12px; flex-wrap: wrap; }
   .dx-side-l .dx-fg > label:not(.dx-chk) { margin: 0; } .dx-side-l .dx-chk { padding: 2px 0; font-size: 13px; }
-  .dx-side-l .dx-filters > .dx-cta { display: none; }
+  .dx-side-l .dx-filters > .dx-cta, .dx-side-l .dx-filters > .dx-cta2 { display: none; }
   .dx-fbtn { display: none; }
 }
 @container dxbody (max-width: 899px) {

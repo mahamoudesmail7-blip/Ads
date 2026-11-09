@@ -124,6 +124,24 @@ export async function previewRebalance(date) {
   return { date, moving: movable.length, fromPool: movable.filter((t) => !before.get(t.id)).length, moved: movable.filter((t) => before.get(t.id) && t.assigneeId !== before.get(t.id)).length, unplaced: movable.filter((t) => !t.assigneeId).length, members: rows, people: members.length, hasLive: tasks.some(live) };
 }
 
+/**
+ * «ابدأ من جديد»: every task of TODAY that is still live (not removed by the admin, not auto-resolved by the system) goes back to the shared pool — nobody owns it, nothing is started / done / waiting for review,
+ * proofs are cleared — so every media buyer's numbers are zero and the admin can distribute again from scratch. The cancelled tasks stay cancelled; a snapshot of what was reset is kept on the day (audit).
+ */
+export async function resetDay(date, actor, { now = new Date() } = {}) {
+  if (date !== today(now)) throw bad('التصفير لليوم الحالي بس.');
+  return S.updateDay(date, (day) => {
+    const touched = day.tasks.filter((t) => !['CANCELLED', 'AUTO_RESOLVED'].includes(t.status));
+    const n = (st) => touched.filter((t) => t.status === st).length;
+    const before = { total: touched.length, assigned: touched.filter((t) => t.assigneeId).length, done: n('DONE'), review: n('NEEDS_REVIEW'), progress: n('IN_PROGRESS'), notDone: n('NOT_DONE') };
+    day.resets = [...(day.resets || []).slice(-4), { at: now.toISOString(), by: actor?.name || null, before, snapshot: touched.map((t) => ({ id: t.id, assigneeId: t.assigneeId, status: t.status })) }];
+    for (const t of touched) { t.assigneeId = null; t.status = 'PENDING'; t.startedAt = null; t.doneAt = null; t.doneBy = null; t.note = null; t.reason = null; t.proof = null; t.proofLink = null; t.submittedAt = null; t.submittedBy = null; t.reviewNote = null; t.reviewedBy = null; t.verifiedBy = null; }
+    for (const t of day.tasks) if (!touched.includes(t)) t.assigneeId = null; // removed / system-resolved tasks no longer count on anyone either
+    S.logEntry(day, { action: 'RESET', actorName: actor?.name || 'السيستم', text: `${actor?.name || 'الأدمن'} صفّر اليوم: ${touched.length} مهمة رجعت مجمّعة (كان فيه ${before.assigned} متوزّعة، ${before.done} مكتملة، ${before.review} مستنية مراجعة، ${before.progress} قيد التنفيذ)` });
+    return day;
+  });
+}
+
 export async function rebalance(date, actor) {
   const cfg = await getConfig(); const members = C.availableMembers(cfg.team, date);
   return S.updateDay(date, (day) => {
@@ -188,7 +206,7 @@ export async function addManualTask(date, body, user) {
 export async function getDayView(date, user) {
   const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.seesAll(user, cfg);
   const me = cfg.team.find((m) => m.userId && user && m.userId === user.id) || null;
-  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, dataAsOf: d.notes?.asOf || null, period: d.notes?.period || null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
+  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, dataAsOf: d.notes?.asOf || null, period: d.notes?.period || null, lastReset: d.resets?.length ? { at: d.resets[d.resets.length - 1].at, by: d.resets[d.resets.length - 1].by } : null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
   const memberView = (m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length });
   if (!admin) { // everyone else sees ONLY their own tasks and numbers — never another person's
     const mine = me ? d.tasks.filter((t) => t.assigneeId === me.id) : [];

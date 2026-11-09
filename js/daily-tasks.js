@@ -47,7 +47,7 @@ function paint() {
   const v = S.view; if (!v) return;
   const root = $('dtkRoot'); root.dataset.mgr = S.mgr ? '1' : '0';
   $('dtkDate').value = S.date;
-  $('dtkSub').textContent = `${dateAr(S.date)}${S.date === v.today ? ' — النهارده' : ''}${v.generatedAt ? ` · اتجهّزت ${hhmm(v.generatedAt)}` : ''}${v.dataAsOf ? ` · أرقام Meta لحد ${hhmm(v.dataAsOf)}` : ''}`;
+  $('dtkSub').textContent = `${dateAr(S.date)}${S.date === v.today ? ' — النهارده' : ''}${v.generatedAt ? ` · اتجهّزت ${hhmm(v.generatedAt)}` : ''}${v.dataAsOf ? ` · أرقام Meta لحد ${hhmm(v.dataAsOf)}` : ''}${v.lastReset && S.mgr ? ` · اتصفّر ${hhmm(v.lastReset.at)}` : ''}`;
   document.querySelector('.dx-title h1').textContent = S.mgr || S.tab !== 'day' ? 'توزيع المهام' : 'مهامي اليوم';
   document.querySelectorAll('#dtkTabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
   $('dtkActions').style.display = S.tab === 'day' && S.mgr ? '' : 'none';
@@ -190,6 +190,19 @@ async function distribute() {
   const r = await call(() => api.post(`${API}/rebalance`, { date: S.date }), 'اتوزّعت المهام بالتساوي'); if (r) { S.view = r; S.f.who = 'ALL'; S.page = 1; paint(); }
 }
 
+/** «ابدأ من جديد»: take every task off the media buyers and zero their numbers; the tasks stay ready in the pool for a fresh distribution. Needs an explicit, informed confirmation. */
+async function resetAll() {
+  const v = S.view; if (!v) return; if (S.date !== v.today) { UI.toast('التصفير لليوم الحالي بس.', 'error'); return; }
+  const live = v.tasks.filter((t) => !['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)); const n = (st) => live.filter((t) => t.status === st).length; const assigned = live.filter((t) => t.assigneeId).length;
+  const ok = await modal(`<h3>${X.ic('rotate-ccw', 20)} تصفير وبداية جديدة</h3>
+    <p class="dx-hint">هيتشال كل حاجة من على الميديا بايرز، وكل المهام ترجع <b>مجمّعة وجاهزة</b> عشان توزّعها من الأول بالتساوي.</p>
+    <div class="dx-reset-box"><b>اللي هيتصفّر دلوقتي:</b><ul><li><b>${assigned}</b> مهمة متوزّعة هتتشال من على أصحابها</li><li><b>${n('DONE')}</b> مكتملة هترجع جديدة</li><li><b>${n('NEEDS_REVIEW')}</b> مستنية مراجعة (الإثبات هيتمسح)</li><li><b>${n('IN_PROGRESS')}</b> قيد التنفيذ، و<b>${n('NOT_DONE')}</b> ماتعملتش</li></ul><small>المهام اللي شيلتها بإيدك بتفضل محذوفة، وأرقام كل ميديا باير بتبقى صفر.</small></div>
+    <label class="dx-ack"><input type="checkbox" id="mAck"> فاهم إن اللي اتعمل النهارده (مكتمل / إثبات / بداية) هيتمسح ومش هينفع أرجّعه</label>
+    <div class="btns"><button class="dx-sec-btn" data-close>إلغاء</button><button class="dx-sec-btn danger" id="mOk" disabled>${X.ic('rotate-ccw', 16)} صفّر دلوقتي</button></div>`, { onMount: (el, close) => { const b = el.querySelector('#mOk'); el.querySelector('#mAck').onchange = (e) => { b.disabled = !e.target.checked; }; b.onclick = () => close(true); } });
+  if (!ok) return;
+  const r = await call(() => api.post(`${API}/reset`, { date: S.date }), 'اتصفّر اليوم — المهام جاهزة للتوزيع من جديد'); if (r) { S.view = r; S.f.who = 'NONE'; S.f.cat = 'ALL'; S.f.types.clear(); S.f.statuses.clear(); S.f.prios.clear(); S.f.q = ''; S.page = 1; S.drawer = null; paint(); }
+}
+
 async function addMember() {
   const t = await call(() => api.get(`${API}/team`)); if (!t) return;
   const userOpts = [['', '— مش مربوط بحساب —'], ...t.users.map((u) => [String(u.id), `${u.name} (${u.role})`])];
@@ -207,7 +220,7 @@ async function addTask(pre = '') {
 function setHeaderIcons() {
   const set = (id, icon, label, size = 17) => { const b = $(id); if (b) b.innerHTML = `${X.ic(icon, size)}${label ? `<span>${label}</span>` : ''}`; };
   set('dtkPrev', 'chevron-right', '', 16); set('dtkNext', 'chevron-left', '', 16); set('dtkToday', 'calendar', 'النهارده');
-  set('dtkAdd', 'plus', 'إضافة مهمة'); set('dtkRefresh', 'refresh-cw', 'تحديث'); set('dtkRebalance', 'sparkles', 'توزيع المهام تلقائيًا');
+  set('dtkAdd', 'plus', 'إضافة مهمة'); set('dtkReset', 'rotate-ccw', 'تصفير وبداية جديدة'); set('dtkRefresh', 'refresh-cw', 'تحديث'); set('dtkRebalance', 'sparkles', 'توزيع المهام تلقائيًا');
   const tabs = { day: ['layers', 'التوزيع'], follow: ['bar-chart', 'المتابعة'], team: ['users', 'الفريق'], settings: ['settings', 'الإعدادات'] };
   document.querySelectorAll('#dtkTabs button').forEach((b) => { const [i, l] = tabs[b.dataset.tab]; b.innerHTML = `${X.ic(i, 16)}<span>${l}</span>`; });
   document.querySelector('.dx-title-ico').innerHTML = X.ic('layers', 24);
@@ -221,7 +234,7 @@ function wire() {
   $('dtkNext').onclick = () => { S.date = addDays(S.date, 1); S.view = null; S.drawer = null; S.page = 1; load(); };
   $('dtkToday').onclick = () => { S.date = null; S.view = null; S.drawer = null; S.page = 1; load(); };
   $('dtkDate').onchange = (e) => { if (e.target.value) { S.date = e.target.value; S.view = null; S.drawer = null; S.page = 1; load(); } };
-  $('dtkRefresh').onclick = doRefresh; $('dtkRebalance').onclick = distribute;
+  $('dtkRefresh').onclick = doRefresh; $('dtkRebalance').onclick = distribute; $('dtkReset').onclick = resetAll;
   $('dtkAdd').onclick = () => addTask(S.f.who && !['ALL', 'NONE'].includes(S.f.who) ? S.f.who : '');
   $('dxScrim').onclick = closeDrawer;
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.drawer && !document.querySelector('.dtk-modal')) closeDrawer(); });
@@ -235,10 +248,12 @@ function wire() {
       const a = act2.dataset.act;
       if (a === 'close-drawer') return closeDrawer();
       if (a === 'dist-preview') return distribute();
+      if (a === 'add-task') return addTask(S.f.who && !['ALL', 'NONE'].includes(S.f.who) ? S.f.who : '');
       if (a === 'add-member') return addMember();
       if (a === 'reset-filters') { S.f.who = 'ALL'; S.f.types.clear(); S.f.statuses.clear(); S.f.prios.clear(); S.f.q = ''; S.page = 1; return paint(); }
       if (a === 'toggle-filters') { S.filtersOpen = !S.filtersOpen; return paintDay(); }
     }
+    const af = t.closest('[data-addfor]'); if (af) return addTask(af.dataset.addfor);
     const cat = t.closest('[data-cat]'); if (cat) { S.f.cat = cat.dataset.cat; S.page = 1; return paintDay(); }
     const wh = t.closest('[data-who]'); if (wh) { S.f.who = S.f.who === wh.dataset.who ? 'ALL' : wh.dataset.who; S.page = 1; return paintDay(); }
     const pg = t.closest('[data-page]'); if (pg && !pg.disabled) { S.page = Math.max(1, +pg.dataset.page); paintDay(); return document.querySelector('.dx-list')?.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
