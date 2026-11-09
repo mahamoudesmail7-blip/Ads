@@ -112,7 +112,11 @@ const admin = { id: 1, name: 'Hady', role: 'ADMIN', is_owner: false }; const day
 const now1 = new Date('2026-11-09T09:00:00Z'); const now2 = new Date('2026-11-10T09:00:00Z');
 {
   const cfg0 = await E.getConfig(); ok('first use seeds the 4 media buyers', cfg0.team.map((m) => m.name).join() === 'Ahmed Samy,Samy,Mohamed 3sam,Hady');
+  ok('defaults: top-up target 15 per person, distribution waits for the admin', cfg0.options.perPersonTarget === 15 && cfg0.options.autoDistribute === false);
+  await E.saveOptions({ perPersonTarget: 0 }); // (the top-up has its own section below)
   await E.generateDay(day1, { deps: { ...dep(), getAlerts: async () => ({ unavailable: [], alerts: [{ id: 'funds:act_9', kind: 'FUNDS', title: 'حساب Ahmed Samy: الرصيد المتاح 800 ج بس', entity: { adAccountId: 'act_9' }, facts: [{ l: 'الرصيد المتاح', v: '800 ج' }] }] }) }, now: now1 });
+  const pool = await E.getDayView(day1, admin); ok('the day is built as a POOL: nothing is handed to anyone until the admin presses «توزيع بالتساوي»', pool.tasks.length > 0 && pool.tasks.every((t) => !t.assigneeId));
+  await E.rebalance(day1, admin);
   const v = await E.getDayView(day1, admin); const by = (c) => v.tasks.filter((t) => t.category === c).length;
   ok('the day: 2 scale + 3 fix/test + 5 mix (stock, decision, funds, batch, plan) + the failed scale = 11', by('SCALE') === 2 && by('FIX') === 3 && by('MIX') === 6, `${by('SCALE')}/${by('FIX')}/${by('MIX')}`);
   ok('every task has an owner, a reason and steps written out', v.tasks.every((t) => t.assigneeId && t.why && t.steps.length >= 2));
@@ -146,13 +150,15 @@ console.log('\n7. people act on tasks');
   const target = cfg.team.find((m) => m.id !== other.assigneeId);
   d = await E.actOnTask(day1, other.id, 'assign', { memberId: target.id }, admin); ok('manager reassigns (logged with from → to)', d.tasks.find((x) => x.id === other.id).assigneeId === target.id && d.log.some((l) => l.action === 'REASSIGNED' && /اتحوّلت/.test(l.text)));
   const mt = await E.addManualTask(day1, { title: 'راجع كرياتيف المنتج X', priority: 'HIGH', category: 'FIX' }, admin); ok('manual task is added to the chosen bucket and distributed', mt.tasks.some((x) => x.title === 'راجع كرياتيف المنتج X' && x.assigneeId && x.category === 'FIX'));
+  const mx = mt.tasks.find((x) => x.title === 'راجع كرياتيف المنتج X'); const cx = await E.actOnTask(day1, mx.id, 'cancel', { note: 'مش لازم' }, admin); ok('the admin can REMOVE a task from a person (logged, not counted any more)', cx.tasks.find((x) => x.id === mx.id).status === 'CANCELLED' && cx.log.some((l) => l.action === 'CANCELLED') && C.daySummary(cx.tasks).total === C.daySummary(mt.tasks).total - 1);
+  const mt2 = await E.addManualTask(day1, { title: 'مهمة يدوي لهادي', memberId: target.id, category: 'MIX' }, admin); ok('…and ADD a manual task straight to that person', mt2.tasks.find((x) => x.title === 'مهمة يدوي لهادي').assigneeId === target.id);
   ok('an empty manual task is refused', (await rejects(() => E.addManualTask(day1, { title: '  ' }, admin)))?.status === 400);
 }
 
 console.log('\n8. next day: what was not done is added (same person)');
 {
   const before = await E.getDayView(day1, admin); const open = before.tasks.filter((t) => (C.isOpen(t) || t.status === 'NOT_DONE') && !t.carried);
-  const next = await E.generateDay(day2, { deps: dep(), now: now2 });
+  await E.generateDay(day2, { deps: dep(), now: now2 }); const next = await E.rebalance(day2, admin);
   const carried = next.tasks.filter((t) => t.source === 'CARRIED'); ok('every unfinished task of yesterday is on today’s list', carried.length === open.length, `${carried.length} vs ${open.length}`);
   ok('each one is with the SAME person who did not do it', carried.every((c) => open.find((o) => o.id === c.carriedFromId)?.assigneeId === c.assigneeId), JSON.stringify(carried.filter((c) => open.find((o) => o.id === c.carriedFromId)?.assigneeId !== c.assigneeId).map((c) => [c.title, c.assigneeId, open.find((o) => o.id === c.carriedFromId)?.assigneeId, c.category])));
   const y = await E.getDayView(day1, admin); ok('yesterday keeps its own truth (still «not done», flagged as carried)', y.tasks.filter((t) => t.carried).length === open.length);
@@ -167,14 +173,57 @@ console.log('\n9. team + numbers');
   await E.rebalance(day2, admin); const v = await E.getDayView(day2, admin); ok('«توزيع بالتساوي» brings the new person in', v.tasks.some((t) => t.assigneeId === p.id));
   await E.setDayOff(p.id, day2, true, admin); ok('a day off moves that person’s open tasks to the others', (await E.getDayView(day2, admin)).tasks.filter((t) => t.assigneeId === p.id && C.isOpen(t)).length === 0);
   await E.setDayOff(p.id, day2, false, admin); await E.removeMember(p.id, admin); ok('removing deactivates (history stays) and nothing stays on them', !(await E.getConfig()).team.find((m) => m.id === p.id).active);
-  const rep = await E.getReport(day1, day2); ok('the report has a row per person (done / not done / missed / rate) and totals match', rep.perMember.every((r) => 'done' in r && 'notDone' in r && 'missed' in r && 'rate' in r) && rep.perMember.reduce((a, r) => a + r.assigned, 0) === rep.days.reduce((a, d) => a + d.total, 0));
+  const rep = await E.getReport(day1, day2); ok('the report has a row per person (done / not done / missed / rate) and totals match', rep.perMember.every((r) => 'done' in r && 'notDone' in r && 'missed' in r && 'rate' in r) && rep.perMember.reduce((a, r) => a + r.assigned, 0) + [day1, day2].reduce((a, d) => a + 0, 0) + (await Promise.all([day1, day2].map((d) => E.getDayView(d, admin)))).reduce((a, v) => a + v.tasks.filter((t) => !t.assigneeId && t.status !== 'CANCELLED').length, 0) === rep.days.reduce((a, d) => a + d.total, 0));
   ok('a bad range is refused', (await rejects(() => E.getReport('2026-12-01', '2026-11-01')))?.status === 400);
   const txt = await E.getEodText(day1); ok('the end-of-day text lists every person with ✅/❌', /تقرير تاسكات يوم 2026-11-09/.test(txt) && /✅/.test(txt) && /👤/.test(txt));
   const o = await E.saveOptions({ scaleBudget: 700, strongCpa: 45, maxTest: 3 }); ok('scale budget / strong-CPA / caps are settings (bounded)', o.scaleBudget === 700 && o.strongCpa === 45 && o.maxTest === 3 && (await E.saveOptions({ scaleBudget: 1 })).scaleBudget === 100);
   await E.saveOptions({ scaleBudget: 500, strongCpa: 50, maxTest: 8 });
 }
 
-console.log('\n10. scheduler');
+console.log('\n10. only the admin sees everything');
+{
+  const cfg = await E.getConfig(); const a = cfg.team[0]; const b = cfg.team[1]; await E.updateMember(a.id, { userId: 501 }); await E.updateMember(b.id, { userId: 502 });
+  const userA = { id: 501, name: 'A', role: 'EMPLOYEE' }; const userB = { id: 502, name: 'B', role: 'MANAGER' }; const nobody = { id: 999, name: 'N', role: 'EMPLOYEE' };
+  const full = await E.getDayView(day2, admin); const va = await E.getDayView(day2, userA); const vb = await E.getDayView(day2, userB); const vn = await E.getDayView(day2, nobody);
+  ok('the admin sees every task and every person', full.tasks.length > va.tasks.length && full.team.length >= 4 && full.admin === true && !!full.options);
+  ok('a buyer sees ONLY their own tasks — no other person’s task, name, number or setting', va.tasks.length > 0 && va.tasks.every((t) => t.assigneeId === a.id) && va.team.length === 1 && va.team[0].id === a.id && va.perMember.length === 1 && va.options === null && va.notes === null && va.admin === false);
+  ok('their summary counts only their own tasks', va.summary.total === va.tasks.filter((t) => t.status !== 'CANCELLED').length);
+  ok('a MANAGER-role account is not the admin either (own tasks only)', vb.tasks.every((t) => t.assigneeId === b.id) && vb.admin === false);
+  ok('an account not linked to a media buyer sees nothing (and is told so)', vn.tasks.length === 0 && vn.team.length === 0 && vn.linked === false);
+  ok('the activity log of a buyer holds only their own lines', va.log.every((l) => l.memberId === a.id));
+  const rep = await E.getReport(day1, day2, userA); ok('the follow-up report of a buyer has only their own row', rep.perMember.length === 1 && rep.perMember[0].memberId === a.id && rep.team.length === 1);
+  ok('a MANAGER cannot reassign / cancel / see others (admin only)', (await rejects(() => E.actOnTask(day2, full.tasks.find((t) => t.assigneeId === a.id && C.isOpen(t)).id, 'cancel', {}, userB)))?.status === 403);
+}
+
+console.log('\n11. top-up: at least N real tasks per person, in the 50 / 25 / 25 proportions');
+{
+  const many = []; let k = 0; const R = (o) => row({ id: `m${++k}`, ...o });
+  for (let i = 0; i < 6; i++) many.push(R({ pid: 200 + i, product: `رابح ${i}`, winner: true, cpa: 40, spend3: 300, orders3: 8 }));
+  for (let i = 0; i < 12; i++) many.push(R({ pid: 300 + i, product: `كويس ${i}`, cpa: 70, spend3: 280, orders3: 4 + (i % 3) }));
+  for (let i = 0; i < 12; i++) many.push(R({ pid: 400 + i, product: `بيبيع ${i}`, cpa: 130, spend3: 260, orders3: 2, vs: 'BETWEEN' }));
+  for (let i = 0; i < 20; i++) many.push(R({ pid: 500 + i, product: `عادي ${i}`, spend3: 150, orders3: 0 }));
+  const o = { ...O, types: {} }; const nat = SM.buildSmartCandidates({ rows: many, cards: [], funds: [], batches: [], plan: null }, o);
+  const filled = SM.buildSmartCandidates({ rows: many, cards: [], funds: [], batches: [], plan: null, }, { ...o, target: 40 });
+  ok('without a target there is no filler', nat.filler === 0);
+  ok('with a target the day is filled to exactly the target when the data allows it', filled.candidates.length === 40, filled.candidates.length);
+  const by = (c) => filled.candidates.filter((t) => t.category === c).length;
+  ok('in the owner’s proportions (≈ 50% scale, 25% fix/test, 25% mix)', by('SCALE') >= 18 && by('SCALE') <= 22 && by('FIX') >= 8 && by('FIX') <= 12 && by('MIX') >= 8 && by('MIX') <= 12, `${by('SCALE')}/${by('FIX')}/${by('MIX')}`);
+  ok('every filler task is real work about a real product: reason + steps, never two tasks of the same kind for one product', filled.candidates.filter((t) => t.filler).every((t) => t.why && t.steps.length >= 3 && t.product?.name) && new Set(filled.candidates.map((t) => t.category + '|' + t.key.slice(t.key.indexOf(':') + 1))).size === filled.candidates.length);
+  ok('a careful «اسكيل بحذر» is a single ABO 500, labelled as not-yet-proven', filled.candidates.find((t) => t.key.startsWith('scalelite:')).plan.length === 1 && /لسه مش رابح مؤكد/.test(filled.candidates.find((t) => t.key.startsWith('scalelite:')).why));
+  const tiny = SM.buildSmartCandidates({ rows: many.slice(0, 3), cards: [], funds: [], batches: [], plan: null }, { ...o, target: 60 }); ok('when the data cannot fill the target the day stays honestly shorter', tiny.candidates.length < 60);
+  // through the engine: target = perPersonTarget × people, filler never auto-resolves
+  await E.saveOptions({ perPersonTarget: 6 }); mem.delete('dtk:day:2026-11-20');
+  const d3 = await E.generateDay('2026-11-20', { deps: { ...dep(), getRows: async () => ({ rows: many, zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards: [] }), getBatches: async () => [], getPlan: async () => null }, now: new Date('2026-11-20T09:00:00Z') });
+  const live = d3.tasks.filter((t) => t.status !== 'CANCELLED').length; ok('the engine builds it for the active team (6 × 4 = 24)', live === 24, live);
+  const d3b = await E.generateDay('2026-11-20', { deps: { ...dep(), getRows: async () => ({ rows: many.slice(0, 5), zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards: [] }), getBatches: async () => [], getPlan: async () => null }, now: new Date('2026-11-20T09:00:00Z') });
+  ok('a filler task is never marked «اتحل لوحده» just because the fill set changed', d3b.tasks.filter((t) => t.filler).every((t) => t.status === 'PENDING'));
+  await E.saveOptions({ perPersonTarget: 0, autoDistribute: true }); mem.delete('dtk:day:2026-11-21');
+  const d4 = await E.generateDay('2026-11-21', { deps: dep(), now: new Date('2026-11-21T09:00:00Z') }); ok('autoDistribute ON hands the tasks out at build time (the old behaviour, optional)', d4.tasks.length > 0 && d4.tasks.every((t) => t.assigneeId));
+  await E.saveOptions({ autoDistribute: false });
+  ok('settings are bounded (target ≤ 60)', (await E.saveOptions({ perPersonTarget: 999 })).perPersonTarget === 60 && (await E.saveOptions({ perPersonTarget: 15 })).perPersonTarget === 15);
+}
+
+console.log('\n12. scheduler');
 {
   mem.clear(); const calls = [];
   const gen = async (d) => { calls.push(d); await E.generateDay(d, { deps: dep(), now: new Date('2026-11-12T10:00:00Z') }); };

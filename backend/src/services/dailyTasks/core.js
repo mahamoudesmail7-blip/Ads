@@ -14,6 +14,7 @@ export const TYPES = {
   SCALE: { label: 'فرصة اسكيل', icon: '🚀' },
   CLONE: { label: 'اسكيل/كلون محتاج تدخّل', icon: '🧩' },
   TEST: { label: 'تيست جديد', icon: '🧪' },
+  REVIEW: { label: 'مراجعة منتج', icon: '🔍' },
   DECISIONS: { label: 'قرارات AI Operator', icon: '🤖' },
   OPEN_PLAN: { label: 'خطة فتح الحملات', icon: '🟢' },
   ROUTINE: { label: 'روتين يومي', icon: '🔁' },
@@ -31,12 +32,13 @@ export const categoryOf = (type) => (type === 'SCALE' ? 'SCALE' : ['ZERO_ORDERS'
 export const MAX_CARRY = 3; // after this many roll-overs the task is flagged «متأخر جدًا» and bumped to HIGH
 export const DEFAULT_CONFIG = {
   autoGenerate: true, generateAt: '00:05', refreshMinutes: 60, maxPerPerson: 15,
-  types: { ZERO_ORDERS: true, CPA: true, TEST: true, STOCK: true, FUNDS: true, SCALE: true, CLONE: true, OPEN_PLAN: true, DECISIONS: true },
-  scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20,
+  types: { ZERO_ORDERS: true, CPA: true, TEST: true, REVIEW: true, STOCK: true, FUNDS: true, SCALE: true, CLONE: true, OPEN_PLAN: true, DECISIONS: true },
+  scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20, liteCpa: 100, perPersonTarget: 15, autoDistribute: false,
   routines: [], // [{ id, title, detail, priority, days: [0..6] | [] (every day), mode: 'SPREAD' | 'ALL' }]
 };
 
 export const newId = (p = 't') => `${p}_${crypto.randomBytes(4).toString('hex')}`;
+export const isAdminUser = (u) => !!(u && (u.is_owner || u.role === 'ADMIN'));
 export const isOpen = (t) => OPEN_STATUSES.includes(t.status);
 export const weightOf = (t) => PRIORITY_WEIGHT[t.priority] || 2;
 export const validDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`));
@@ -49,7 +51,7 @@ export function makeTask(c, { date, source = 'AUTO', now = new Date().toISOStrin
     id: newId('t'), key: c.key || null, type: c.type || 'MANUAL', category: BUCKETS.includes(c.category) ? c.category : categoryOf(c.type || 'MANUAL'), source, priority: PRIORITY_WEIGHT[c.priority] ? c.priority : 'MED',
     title: String(c.title || '').trim().slice(0, 200), detail: String(c.detail || '').trim().slice(0, 600), why: String(c.why || '').trim().slice(0, 700), steps: Array.isArray(c.steps) ? c.steps.map((s) => String(s).slice(0, 300)).slice(0, 8) : [], plan: Array.isArray(c.plan) ? c.plan.slice(0, 8) : null, facts: Array.isArray(c.facts) ? c.facts.slice(0, 6) : [],
     product: c.product || null, accountId: c.accountId || null, campaignId: c.campaignId || null, link: c.link || null, action: c.action || null,
-    assigneeId: c.assigneeId || null, status: 'PENDING', originDate: date, carryCount: 0, createdAt: now, startedAt: null, doneAt: null, doneBy: null, note: null, reason: null, resolvedNote: null, carried: false,
+    assigneeId: c.assigneeId || null, status: 'PENDING', originDate: date, carryCount: 0, createdAt: now, startedAt: null, doneAt: null, doneBy: null, note: null, reason: null, resolvedNote: null, carried: false, filler: !!c.filler,
   };
 }
 
@@ -121,7 +123,7 @@ export function dedupeCandidates(cands, existing) {
 /** Open AUTO tasks whose condition is gone (their key is no longer produced by a generator that ran fine) → resolved by the system. `okTypes` = types whose generator succeeded. */
 export function findAutoResolved(existing, liveKeys, okTypes) {
   const live = new Set(liveKeys); const ok = new Set(okTypes);
-  return (existing || []).filter((t) => isOpen(t) && t.key && t.category && (t.source === 'AUTO' || t.source === 'CARRIED') && ok.has(t.type) && !live.has(t.key)).map((t) => t.id); // `category` = a task built by the product-level builder (older rows are never auto-judged)
+  return (existing || []).filter((t) => isOpen(t) && t.key && t.category && !t.filler && (t.source === 'AUTO' || t.source === 'CARRIED') && ok.has(t.type) && !live.has(t.key)).map((t) => t.id); // `category` = a task built by the product-level builder (older rows are never auto-judged)
 }
 
 /** Per-member numbers for a set of day docs (each { date, tasks }). A carried copy is counted on the day it was worked, the original on its own day as «ما اتعملش». */

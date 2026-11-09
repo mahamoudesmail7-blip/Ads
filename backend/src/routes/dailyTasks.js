@@ -10,7 +10,7 @@ import { cairoDate } from '../services/amb/dailyPlanTime.js';
 
 const router = Router();
 router.use(requireAuth);
-const mgr = requireRole('ADMIN', 'MANAGER');
+const mgr = requireRole('ADMIN'); // only the admin manages and sees everyone; every other account sees its own tasks only
 const building = new Map(); // dates whose first build is running in the background
 const dateOf = (req) => { const d = String(req.query.date || req.body?.date || cairoDate()); if (!C.validDate(d)) { const e = new Error('تاريخ غير صالح.'); e.status = 400; throw e; } return d; };
 
@@ -30,10 +30,10 @@ router.post('/rebalance', mgr, asyncRoute(async (req, res) => { const date = dat
 router.post('/tasks', mgr, asyncRoute(async (req, res) => { const date = dateOf(req); await E.addManualTask(date, req.body || {}, req.user); res.status(201).json(await E.getDayView(date, req.user)); }));
 router.post('/tasks/:id/:action', asyncRoute(async (req, res) => { const date = dateOf(req); await E.actOnTask(date, req.params.id, req.params.action, req.body || {}, req.user); res.json(await E.getDayView(date, req.user)); }));
 
-router.get('/report', asyncRoute(async (req, res) => { const to = String(req.query.to || cairoDate()); const from = String(req.query.from || C.addDays(to, -6)); res.json(await E.getReport(from, to)); }));
-router.get('/eod', asyncRoute(async (req, res) => res.json({ text: await E.getEodText(dateOf(req)) })));
+router.get('/report', asyncRoute(async (req, res) => { const to = String(req.query.to || cairoDate()); const from = String(req.query.from || C.addDays(to, -6)); res.json(await E.getReport(from, to, req.user)); }));
+router.get('/eod', mgr, asyncRoute(async (req, res) => res.json({ text: await E.getEodText(dateOf(req)) })));
 
-router.get('/team', asyncRoute(async (req, res) => {
+router.get('/team', mgr, asyncRoute(async (req, res) => {
   const cfg = await E.getConfig();
   const users = await prisma.user.findMany({ where: { status: 'ACTIVE' }, select: { id: true, name: true, role: true }, orderBy: { name: 'asc' } });
   res.json({ team: cfg.team, users, options: cfg.options });

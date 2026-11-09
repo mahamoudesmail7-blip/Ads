@@ -8,7 +8,7 @@ import { nameFamily } from '../amb/accountProductsToday.js';
 
 export const BUCKET_LABEL = { SCALE: 'اسكيل المنتجات الرابحة', FIX: 'حل مشاكل وتيست جديد', MIX: 'شغل متنوّع' };
 export const BUCKET_ICON = { SCALE: '🚀', FIX: '🔧', MIX: '🧩' };
-export const SMART_DEFAULTS = { scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20 };
+export const SMART_DEFAULTS = { scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20, liteCpa: 100 };
 
 const n0 = (v) => Math.round(Number(v) || 0);
 const egp = (v) => `${n0(v).toLocaleString('en-US')} ج`;
@@ -38,6 +38,7 @@ export function groupByProduct(rows) {
     cur.spendToday += Number(r.today?.spend) || 0; cur.ordersToday += Number(r.today?.orders) || 0;
     cur.spend3 += Number(r.period?.spend) || 0; cur.orders3 += Number(r.period?.orders) || 0;
     if (r.stock && (!cur.stock || cur.stock.status === 'STOCK_UNKNOWN')) cur.stock = r.stock;
+    const rl = Number(r.limits?.reduce) || Number(r.limits?.hardStop) || 0; if (rl) cur.reduceLimit = cur.reduceLimit ? Math.min(cur.reduceLimit, rl) : rl;
     if (r.winner?.status === 'WINNER') cur.winner = true;
     if (isActive && r.cpaVsLimits === 'ABOVE_HARDSTOP') { cur.hard = true; cur.limit = Math.max(cur.limit || 0, Number(r.limits?.hardStop) || 0) || cur.limit; }
     else if (isActive && r.cpaVsLimits === 'ABOVE_REDUCE') { cur.reduce = true; cur.limit = Math.max(cur.limit || 0, Number(r.limits?.reduce) || 0) || cur.limit; }
@@ -187,5 +188,57 @@ export function buildSmartCandidates(src, options = {}) {
   const fx = fixTasks(groups, sc.used, o, { zeroLimit: src.zeroLimit || 150, minSpend: src.minSpend || 150 });
   const mix = mixTasks(groups, { funds: src.funds, batches: on.CLONE === false ? [] : src.batches, plan: on.OPEN_PLAN === false ? null : src.plan, failedScales: on.CLONE === false ? [] : (src.cards || []).filter((c) => c.decisionStatus === 'FAILED') });
   const all = [...sc.tasks, ...fx.fixes.filter((t) => on[t.type] !== false), ...(on.TEST === false ? [] : fx.tests), ...mix.filter((t) => on[t.type] !== false)];
-  return { candidates: all, groups: groups.size };
+  const filler = topUp(groups, all, o, Number(options.target) || 0).filter((t) => on[t.type] !== false);
+  return { candidates: [...all, ...filler], groups: groups.size, natural: all.length, filler: filler.length };
+}
+
+
+// ───────────── top-up: reach «at least N tasks per person» with REAL work, never invented tasks ─────────────
+// After the natural tasks, the day is filled — in the owner's proportions (50% scale / 25% fix+test / 25% mix) — with: a careful single scale for products that sell at a good cost but are not
+// proven winners yet · a new test for any selling product with stock · a quick daily review of every other active product. If the data cannot fill it, the day simply stays shorter.
+const pkeyOf = (t) => (/^(scale|fix|test|stock|scalelite|review):/.test(t.key || '') ? t.key.slice(t.key.indexOf(':') + 1) : null);
+
+export function topUp(groups, natural, o, target) {
+  if (!(target > 0)) return [];
+  const have = (c) => natural.filter((t) => t.category === c).length; const total = natural.length; if (total >= target) return [];
+  const scaleQ = Math.ceil(target * 0.5); const fixQ = Math.round(target * 0.25); const mixQ = Math.max(0, target - scaleQ - fixQ);
+  const taken = new Set(natural.map(pkeyOf).filter(Boolean)); const keys = new Set(natural.map((t) => t.key));
+  const takenForScale = new Set(natural.filter((t) => !String(t.key).startsWith('test:')).map(pkeyOf).filter(Boolean)); // a product that already has a natural TEST can still get a careful scale
+  const eligible = [...groups.values()].filter((g) => !taken.has(g.key) && g.active > 0);
+  const eligibleScale = [...groups.values()].filter((g) => !takenForScale.has(g.key) && g.active > 0);
+  const okStock = (g) => stockKnownOk(g.stock, o.minTestStock); const bad = (g) => g.hard || g.reduce;
+  const pools = {
+    SCALE: eligibleScale.filter((g) => okStock(g) && !bad(g) && g.orders3 >= 3 && g.cpa3 != null && g.cpa3 <= (g.reduceLimit || o.liteCpa)).sort((a, b) => b.orders3 - a.orders3).map((g) => liteScale(g, o)),
+    FIX: eligible.filter((g) => okStock(g) && !bad(g) && g.orders3 >= 1).sort((a, b) => b.orders3 - a.orders3).map((g) => liteTest(g, o)),
+    MIX: eligible.filter((g) => g.spend3 > 0 || g.orders3 > 0).sort((a, b) => b.spend3 - a.spend3).map((g) => reviewTask(g)),
+  };
+  const out = []; const usedProducts = new Set(); let need = target - total;
+  const take = (bucket, n) => { let k = 0; for (const t of pools[bucket]) { if (k >= n || need <= 0) break; const pk = pkeyOf(t); if (usedProducts.has(pk) || keys.has(t.key)) continue; usedProducts.add(pk); out.push({ ...t, filler: true }); k++; need--; } };
+  take('SCALE', Math.max(0, scaleQ - have('SCALE'))); take('FIX', Math.max(0, fixQ - have('FIX'))); take('MIX', Math.max(0, mixQ - have('MIX')));
+  for (const b of ['FIX', 'MIX', 'SCALE']) take(b, need); // still short → whatever real work is left, in this order
+  return out;
+}
+
+function liteScale(g, o) {
+  const name = clean(g.name); const plan = [{ mode: 'ABO', budget: o.scaleBudget }];
+  return { key: `scalelite:${g.key}`, type: 'SCALE', category: 'SCALE', priority: 'MED', title: `اسكيل بحذر «${name}» — ABO بـ${n0(o.scaleBudget)} ج`,
+    why: `«${name}» جاب ${g.orders3} أوردر في آخر 3 أيام بتكلفة ${n0(g.cpa3)} ج للأوردر. التكلفة كويسة، بس لسه مش رابح مؤكد، فنجرّب اسكيل واحد بحذر ونشوف.`,
+    steps: ['افتح «مركز التوسّع» وخد أحسن حملة للمنتج كأساس.', `اعمل اسكيل واحد ABO بميزانية ${n0(o.scaleBudget)} ج.`, 'راقبه 48 ساعة قبل أي زيادة.', 'اكتب في الملاحظة اللي عملته.'],
+    plan, facts: [{ l: 'أوردرات آخر 3 أيام', v: String(g.orders3) }, { l: 'تكلفة الأوردر', v: egp(g.cpa3) }, ...(stockPhrase(g.stock) ? [{ l: 'المخزون', v: stockPhrase(g.stock).replace(' في المخزون', '') }] : [])],
+    product: { id: g.productId, name }, link: { page: 'ai-media-buyer.html#scale', label: 'افتح مركز التوسّع' }, action: 'اسكيل بحذر' };
+}
+function liteTest(g, o) {
+  const name = clean(g.name); const stock = stockPhrase(g.stock);
+  return { key: `test:${g.key}`, type: 'TEST', category: 'FIX', priority: 'LOW', title: `«${name}» — اعمله تيست جديد`,
+    why: `«${name}» جاب ${g.orders3} ${g.orders3 === 1 ? 'أوردر' : 'أوردر'} في آخر 3 أيام${g.cpa3 != null ? ` بتكلفة ${n0(g.cpa3)} ج` : ''}${stock ? `، وعنده ${stock.replace(' في المخزون', '')} في المخزون` : ''}. فيه مجال نزوّد أوردراته بكرياتيف جديد.`,
+    steps: ['اعمل تيست جديد بكرياتيف مختلف (زاوية أو فيديو جديد) وسيب القديم شغّال.', `ابدأ بميزانية صغيرة (حوالي ${egp(200)}) وراقبه 48 ساعة.`, 'اكتب في الملاحظة إيه الكرياتيف الجديد.'],
+    facts: [{ l: 'أوردرات آخر 3 أيام', v: String(g.orders3) }, ...(g.cpa3 != null ? [{ l: 'التكلفة', v: egp(g.cpa3) }] : []), ...(stock ? [{ l: 'المخزون', v: stock.replace(' في المخزون', '') }] : [])],
+    product: { id: g.productId, name }, link: { page: 'creative-factory.html', label: 'افتح مصنع الكرياتيفات' }, action: 'تيست جديد' };
+}
+function reviewTask(g) {
+  const name = clean(g.name);
+  return { key: `review:${g.key}`, type: 'REVIEW', category: 'MIX', priority: 'LOW', title: `راجع أداء «${name}» النهارده`,
+    why: `«${name}» صرف ${egp(g.spend3)} في آخر 3 أيام وجاب ${g.orders3} ${g.orders3 === 1 ? 'أوردر' : 'أوردر'}${g.cpa3 != null ? ` بتكلفة ${n0(g.cpa3)} ج` : ''}. فحص سريع كل يوم عشان نمسك أي مشكلة بدري.`,
+    steps: ['قارن صرف وأوردرات النهارده بإمبارح.', 'لو الـ Frequency عالي أو الـ CTR نازل، جهّز كرياتيف جديد.', 'لو كل حاجة تمام سيبه واكتب في الملاحظة «تمام».'],
+    facts: [{ l: 'صرف آخر 3 أيام', v: egp(g.spend3) }, { l: 'أوردرات', v: String(g.orders3) }], product: { id: g.productId, name }, link: { page: 'ai-media-buyer.html', label: 'افتح AI Media Buyer' }, action: 'فحص سريع' };
 }

@@ -33,7 +33,7 @@ export async function runGenerators({ date, options, members, deps = {} }) {
   const on = options.types || {};
   const status = {}; const okTypes = new Set(); const src = { rows: null, cards: [], funds: [], batches: [], plan: null, zeroLimit: 150, minSpend: 150 };
   const mark = (types, ok, extra = {}) => { for (const t of types) { status[t] = ok ? { ok: true, ...extra } : { ok: false, ...extra }; if (ok) okTypes.add(t); } };
-  const ROW_TYPES = ['ZERO_ORDERS', 'CPA', 'TEST', 'STOCK', 'FUNDS', 'DECISIONS'];
+  const ROW_TYPES = ['ZERO_ORDERS', 'CPA', 'TEST', 'REVIEW', 'STOCK', 'FUNDS', 'DECISIONS'];
 
   try {
     const getAlerts = deps.getAlerts || (async () => (await import('../amb/alertsCenter.js')).getAlertsCenter({ force: false }));
@@ -63,7 +63,7 @@ export async function runGenerators({ date, options, members, deps = {} }) {
     src.plan = await getPlan(); mark(['OPEN_PLAN'], true);
   } catch (e) { logger.warn('[dailyTasks] plan source failed', { message: e.message }); mark(['OPEN_PLAN'], false, { error: e.message }); }
 
-  const smartOpts = { ...SMART_DEFAULTS, ...Object.fromEntries(Object.keys(SMART_DEFAULTS).filter((k) => Number.isFinite(Number(options[k]))).map((k) => [k, Number(options[k])])), types: on };
+  const smartOpts = { ...SMART_DEFAULTS, ...Object.fromEntries(Object.keys(SMART_DEFAULTS).filter((k) => Number.isFinite(Number(options[k]))).map((k) => [k, Number(options[k])])), types: on, target: (Number(options.perPersonTarget) || 0) * members.length };
   const built = buildSmartCandidates({ ...src, rows: src.rows || [] }, smartOpts);
   // a type whose source failed produces nothing AND is never auto-resolved (okTypes excludes it)
   const candidates = built.candidates.filter((c) => on[c.type] !== false);

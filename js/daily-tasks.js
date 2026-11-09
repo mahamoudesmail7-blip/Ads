@@ -6,7 +6,7 @@ import * as UI from './ui-common.js';
 const $ = (id) => document.getElementById(id);
 const E = UI.escapeHtml;
 const API = '/api/daily-tasks';
-const S = { who: null, date: null, tab: 'day', view: null, me: null, mgr: false, filter: 'ALL', open: new Set(), foldDone: new Set(), range: 7, report: null, team: null, eod: null, tries: 0, timer: null };
+const S = { more: new Set(), who: null, date: null, tab: 'day', view: null, me: null, mgr: false, filter: 'ALL', open: new Set(), foldDone: new Set(), range: 7, report: null, team: null, eod: null, tries: 0, timer: null };
 const COLORS = ['#5b5bf0', '#0ea5e9', '#14b86e', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6'];
 const PRI = { HIGH: 3, MED: 2, LOW: 1 };
 const PRI_AR = { HIGH: 'عاجل', MED: 'مهم', LOW: 'عادي' };
@@ -98,7 +98,7 @@ function taskHtml(t, v, { showWho = false } = {}) {
   const actions = can && !closed
     ? `<div class="dtk-acts"><button class="dtk-go" data-a="done" data-id="${t.id}">✅ خلّصتها</button>${t.status === 'PENDING' ? `<button class="dtk-sec" data-a="start" data-id="${t.id}">▶ بدأت</button>` : ''}<button class="dtk-sec" data-a="notdone" data-id="${t.id}">❌ مقدرتش</button>${t.link ? `<a class="dtk-lnk" href="${UI.shellHref ? UI.shellHref(t.link.page) : t.link.page}">↗ ${E(t.link.label)}</a>` : ''}</div>`
     : (t.link && !closed ? `<div class="dtk-acts"><a class="dtk-lnk" href="${UI.shellHref ? UI.shellHref(t.link.page) : t.link.page}">↗ ${E(t.link.label)}</a></div>` : '');
-  const mgr = open && S.mgr && t.status !== 'CANCELLED' ? `<div class="dtk-mgr">${!closed ? `<button class="dtk-btn sm" data-a="assign" data-id="${t.id}">👤 حوّلها لشخص</button><button class="dtk-btn sm" data-a="priority" data-id="${t.id}">🚩 الأولوية</button>` : ''}${['DONE', 'NOT_DONE'].includes(t.status) ? `<button class="dtk-btn sm" data-a="reopen" data-id="${t.id}">↩ افتحها تاني</button>` : ''}${!closed ? `<button class="dtk-btn sm danger" data-a="cancel" data-id="${t.id}">🗑 إلغاء</button>` : ''}</div>` : '';
+  const mgr = open && S.mgr && t.status !== 'CANCELLED' ? `<div class="dtk-mgr">${!closed ? `<button class="dtk-btn sm" data-a="assign" data-id="${t.id}">👤 حوّلها لشخص</button><button class="dtk-btn sm" data-a="priority" data-id="${t.id}">🚩 الأولوية</button>` : ''}${['DONE', 'NOT_DONE'].includes(t.status) ? `<button class="dtk-btn sm" data-a="reopen" data-id="${t.id}">↩ افتحها تاني</button>` : ''}${!closed ? `<button class="dtk-btn sm danger" data-a="cancel" data-id="${t.id}">🗑 شيل المهمة</button>` : ''}</div>` : '';
   return `<article class="dtk-t b-${cat} ${closed ? 'closed' : ''} ${t.status === 'NOT_DONE' ? 'nd' : ''}">
     <div class="dtk-t-hd"><span class="dtk-dot ${t.priority}" title="${PRI_AR[t.priority]}"></span><h4>${E(t.title)}</h4></div>
     ${tags ? `<div class="dtk-tags">${tags}</div>` : ''}
@@ -114,9 +114,10 @@ function taskHtml(t, v, { showWho = false } = {}) {
 
 function bucketSection(code, icon, title, hint, list, v, opts) {
   const act = list.filter((t) => !['DONE', 'AUTO_RESOLVED'].includes(t.status)); const fin = list.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)); const key = `${S.who}:${code}`; const fold = S.foldDone.has(key);
-  const done = fin.length;
+  const done = fin.length; const SHOW = 2; const expanded = S.more.has(key); const head = expanded ? act : act.slice(0, SHOW); const rest = act.length - SHOW;
   return `<section class="dtk-sec-b b-${code}"><header><div><h3>${icon} ${title}</h3><small>${hint}</small></div><span class="dtk-cnt">${done}/${list.length}</span></header>
-    ${act.map((t) => taskHtml(t, v, opts)).join('') || `<div class="dtk-none">${list.length ? '✅ خلّصت القسم ده' : 'مفيش مهام في القسم ده النهارده'}</div>`}
+    ${head.map((t) => taskHtml(t, v, opts)).join('') || `<div class="dtk-none">${list.length ? '✅ خلّصت القسم ده' : 'مفيش مهام في القسم ده النهارده'}</div>`}
+    ${rest > 0 ? `<button class="dtk-morebar" data-more="${key}">${expanded ? '▴ إخفاء' : `▾ عرض المزيد (${rest})`}</button>` : ''}
     ${fin.length ? `<div class="dtk-fold" data-fold="${key}">${fold ? '▾ إخفاء' : '▸ عرض'} المنجز (${fin.length})</div>${fold ? fin.map((t) => taskHtml(t, v, opts)).join('') : ''}` : ''}</section>`;
 }
 
@@ -132,20 +133,28 @@ function whoCards(v) {
   return `<div class="dtk-whos">${card('ALL', 'الكل', '#64748b', v.tasks)}${cards.join('')}${un.length ? card('NONE', 'من غير مسؤول', '#94a3b8', un) : ''}</div>`;
 }
 
+function poolBanner(v) {
+  const n = v.summary.unassigned; const target = v.options?.perPersonTarget;
+  return n > 0 ? `<div class="dtk-pool"><div><b>📥 ${n} مهمة جاهزة ومحدّش استلمها لسه</b><small>اضغط «⚖️ توزيع بالتساوي» وهتروح لكل ميديا باير مهامه${target ? ` (الهدف ${target} لكل واحد)` : ''}. كل واحد هيشوف مهامه هو بس.</small></div><button class="dtk-btn primary" data-dist>⚖️ وزّع دلوقتي</button></div>` : '';
+}
+
 function paintDay() {
   const v = S.view; const s = v.summary; const body = $('dtkBody');
   if (v.building) { body.innerHTML = '<div class="dtk-empty">⏳ بجهّز مهام اليوم من بيانات الحملات… دقيقة وتظهر لوحدها.</div><div class="dtk-skel" style="margin-top:14px"><div></div><div></div><div></div></div>'; return; }
   if (!v.exists && S.date !== v.today) { body.innerHTML = `<div class="dtk-empty">مفيش مهام متسجّلة ليوم ${E(dateAr(S.date))}.${S.mgr ? '<br><br><button class="dtk-btn primary" id="dtkGen">جهّز اليوم ده</button>' : ''}</div>`; $('dtkGen')?.addEventListener('click', () => doRefresh()); return; }
-  if (!S.who || (S.who !== 'ALL' && S.who !== 'NONE' && !v.team.some((m) => m.id === S.who))) S.who = v.mineId || 'ALL';
+  if (!S.mgr) { // a buyer sees only their own day — no other person, no other numbers
+    if (!v.linked) { body.innerHTML = '<div class="dtk-empty">حسابك لسه مش مربوط بميديا باير.<br><small>كلّم المدير يربطه من تبويب «الفريق» وهتلاقي مهامك هنا.</small></div>'; return; }
+    S.who = v.mineId;
+  } else if (!S.who || (S.who !== 'ALL' && S.who !== 'NONE' && !v.team.some((m) => m.id === S.who))) S.who = v.unassignedFirst || (v.summary.unassigned ? 'NONE' : (v.mineId || 'ALL'));
   const bad = Object.entries(v.notes?.generator || {}).filter(([, g]) => g && g.ok === false).map(([k]) => (v.types[k]?.label || k));
   const mine = S.who === 'ALL' ? v.tasks : S.who === 'NONE' ? v.tasks.filter((t) => !t.assigneeId) : v.tasks.filter((t) => t.assigneeId === S.who);
   const shown = mine.filter((t) => t.status !== 'CANCELLED').filter(passFilter).sort(sortTasks);
   const person = v.team.find((m) => m.id === S.who); const live = mine.filter((t) => t.status !== 'CANCELLED'); const done = live.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length;
-  const headline = S.who === 'ALL' ? `كل مهام النهارده: ${live.length} — تمّت ${done}` : person ? `${person.id === v.mineId ? 'مهامك' : 'مهام ' + person.name} النهارده: ${live.length} — ${done ? 'خلّصت ' + done : 'لسه ماخلّصتش حاجة'}` : `مهام من غير مسؤول: ${live.length}`;
+  const headline = !S.mgr ? `مهامك النهارده: ${live.length} — ${done ? 'خلّصت ' + done : 'لسه ماخلّصتش حاجة'}` : S.who === 'ALL' ? `كل مهام النهارده: ${live.length} — تمّت ${done}` : person ? `${person.id === v.mineId ? 'مهامك' : 'مهام ' + person.name} النهارده: ${live.length} — ${done ? 'خلّصت ' + done : 'لسه ماخلّصتش حاجة'}` : `مهام من غير مسؤول: ${live.length}`;
   body.innerHTML = `${summaryBar(s)}
     ${bad.length ? `<div class="dtk-warn">⚠️ مصدر مش متاح دلوقتي: ${E([...new Set(bad)].join('، '))} — مهامه مش هتتحدّث لحد المرة الجاية، ومفيش حاجة اتقفلت بسببه.</div>` : ''}
-    ${whoCards(v)}
-    <div class="dtk-listhd"><h2>${E(headline)}</h2><div class="dtk-filters">${[['ALL', 'الكل'], ['HIGH', '🔴 العاجلة'], ['LATE', '⏰ المتأخرة']].map(([k, l]) => `<button class="dtk-chip ${S.filter === k ? 'on' : ''}" data-filter="${k}">${l}</button>`).join('')}</div></div>
+    ${S.mgr ? poolBanner(v) + whoCards(v) : ''}
+    <div class="dtk-listhd"><h2>${E(headline)}</h2><div class="dtk-filters">${S.mgr && person ? `<button class="dtk-btn sm primary" data-addfor="${person.id}">➕ ضيف مهمة لـ ${E(person.name)}</button>` : ''}${[['ALL', 'الكل'], ['HIGH', '🔴 العاجلة'], ['LATE', '⏰ المتأخرة']].map(([k, l]) => `<button class="dtk-chip ${S.filter === k ? 'on' : ''}" data-filter="${k}">${l}</button>`).join('')}</div></div>
     ${v.tasks.length === 0 ? '<div class="dtk-empty">مفيش مهام النهارده 🎉<br><small>لو فيه مشاكل أو فرص جديدة هتظهر هنا لوحدها.</small></div>' : BUCKETS.map(([c, i, t, h]) => bucketSection(c, i, t, h, shown.filter((x) => catOf(x) === c), v, { showWho: S.who === 'ALL' || S.who === 'NONE' })).join('')}`;
 }
 
@@ -163,7 +172,7 @@ async function paintFollow() {
       <div style="overflow:auto"><table class="dtk-table"><thead><tr><th>الشخص</th><th>اتسلّم</th><th>خلّص</th><th>ماتعملش</th><th>اتأجّل لبكرة</th><th>اتحلّت لوحدها</th><th>لسه</th><th>نسبة الإنجاز</th><th>متوسط الزمن</th></tr></thead><tbody>
       ${rows.map((x) => `<tr><td><b>${E(x.name)}</b></td><td>${x.assigned}</td><td style="color:var(--green)">${x.done}</td><td style="color:${x.notDone ? 'var(--red)' : 'inherit'}">${x.notDone}</td><td>${x.missed}</td><td>${x.autoResolved}</td><td>${x.open}</td><td>${rate(x.rate)}</td><td>${x.avgHours == null ? '—' : x.avgHours + ' س'}</td></tr>`).join('') || '<tr><td colspan="9" class="dtk-none">لسه مفيش بيانات</td></tr>'}</tbody></table></div>
       <div style="color:var(--text-dim);font-size:12.5px;margin-top:8px">«اتأجّل لبكرة» = المهمة ماخلصتش وانضافت على نفس الشخص في اليوم اللي بعده. «اتحلّت لوحدها» مش بتتحسب عليه.</div></div>
-    <div class="dtk-card"><h3><span>🕘 سجل يوم ${E(dateAr(S.date))}</span><button class="dtk-btn sm" id="dtkEod">📋 تقرير نهاية اليوم</button></h3>
+    <div class="dtk-card"><h3><span>🕘 سجل يوم ${E(dateAr(S.date))}</span>${S.mgr ? '<button class="dtk-btn sm" id="dtkEod">📋 تقرير نهاية اليوم</button>' : ''}</h3>
       <div id="dtkEodBox"></div>
       <div class="dtk-log">${v.log.map((l) => `<div class="dtk-li"><time>${hhmm(l.at)}</time><span class="ic">${iconOf[l.action] || '•'}</span><div><b>${E(l.actorName || nameOf(l.memberId) || 'السيستم')}</b> — ${E(l.text || '')}<br><small>${E(l.taskTitle || '')}</small></div></div>`).join('') || '<div class="dtk-none">مفيش حركة متسجّلة لسه</div>'}</div></div>`;
 }
@@ -184,9 +193,11 @@ async function paintTeam() {
 // ───────────── الإعدادات ─────────────
 async function paintSettings() {
   const body = $('dtkBody'); const o = S.view.options; const v = S.view;
-  const typeRows = [['ZERO_ORDERS', 'بيصرف ومبيجيبش أوردرات', 'حملات صرفت فوق الحد النهارده من غير ولا أوردر'], ['CPA', 'CPA فوق الحد', 'حملات شغالة وتكلفة الأوردر فوق حد التخفيض/الإيقاف'], ['TEST', 'تيست جديد للمنتجات اللي بتطلع', 'منتج بيجيب أوردرات وعنده مخزون كويس — يتعمله تيست جديد'], ['STOCK', 'مخزون', 'منتج المخزون قليل أو خلص والإعلان شغال'], ['DECISIONS', 'قرارات AI Operator المستنية', 'إيقاف / فتح / زيادة ميزانية مستنية موافقتك'], ['FUNDS', 'رصيد الحسابات', 'حساب إعلاني رصيده قليل'], ['SCALE', 'فرص الاسكيل', 'حملات رابحة جاهزة للتوسّع + اسكيل فشل ومحتاج تكملة'], ['CLONE', 'دفعات النسخ المتعطّلة', 'دفعة محتاجة بيانات (زي لينك الإعلان) أو فشلت'], ['OPEN_PLAN', 'خطة فتح الحملات', 'مهمة مراجعة خطة الفتح لما تتجهّز']];
+  const typeRows = [['ZERO_ORDERS', 'بيصرف ومبيجيبش أوردرات', 'حملات صرفت فوق الحد النهارده من غير ولا أوردر'], ['CPA', 'CPA فوق الحد', 'حملات شغالة وتكلفة الأوردر فوق حد التخفيض/الإيقاف'], ['TEST', 'تيست جديد للمنتجات اللي بتطلع', 'منتج بيجيب أوردرات وعنده مخزون كويس — يتعمله تيست جديد'], ['STOCK', 'مخزون', 'منتج المخزون قليل أو خلص والإعلان شغال'], ['REVIEW', 'مراجعة يومية للمنتجات', 'فحص سريع لكل منتج شغّال (بيكمّل العدد لحد الحد الأدنى)'], ['DECISIONS', 'قرارات AI Operator المستنية', 'إيقاف / فتح / زيادة ميزانية مستنية موافقتك'], ['FUNDS', 'رصيد الحسابات', 'حساب إعلاني رصيده قليل'], ['SCALE', 'فرص الاسكيل', 'حملات رابحة جاهزة للتوسّع + اسكيل فشل ومحتاج تكملة'], ['CLONE', 'دفعات النسخ المتعطّلة', 'دفعة محتاجة بيانات (زي لينك الإعلان) أو فشلت'], ['OPEN_PLAN', 'خطة فتح الحملات', 'مهمة مراجعة خطة الفتح لما تتجهّز']];
   body.innerHTML = `<div class="dtk-card"><h3>⚙️ التوزيع الأوتوماتيك</h3>
       <div class="dtk-sw"><span>جهّز مهام كل يوم لوحده<small>عشان أي حد يفتح الشغل يلاقي مهامه جاهزة</small></span><input type="checkbox" id="oAuto" ${o.autoGenerate ? 'checked' : ''}></div>
+      ${numRow('oTarget', 'الحد الأدنى للمهام لكل شخص', 'لو مهام الداتا أقل، السيستم بيكمّل بشغل حقيقي (اسكيل بحذر / تيست / مراجعة منتج) بنسبة 50/25/25. اكتب 0 لو مش عايز تكميل.', o.perPersonTarget)}
+      <div class="dtk-sw"><span>وزّع المهام تلقائي أول ما تتجهّز<small>مقفول: المهام بتستنى لحد ما تضغط «توزيع بالتساوي»، وكل واحد بيشوف مهامه بعدها</small></span><input type="checkbox" id="oAutoDist" ${o.autoDistribute ? 'checked' : ''}></div>
       <div class="dtk-sw"><span>وقت تجهيز اليوم (بتوقيت القاهرة)</span><input type="time" id="oAt" value="${E(o.generateAt)}" style="width:auto;padding:6px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg-card);color:var(--text)"></div>
       <div class="dtk-sw"><span>يحدّث المهام كل (دقيقة)<small>بيضيف المشاكل الجديدة ويقفل اللي اتحلّت لوحدها</small></span><input type="number" id="oRef" min="15" max="720" value="${o.refreshMinutes}" style="width:90px;padding:6px 10px;border:1px solid var(--border);border-radius:9px;background:var(--bg-card);color:var(--text)"></div></div>
     <div class="dtk-card"><h3>🚀 اسكيل المنتجات الرابحة</h3>
@@ -247,17 +258,22 @@ function wire() {
   $('dtkToday').onclick = () => { S.date = null; S.view = null; load(); };
   $('dtkDate').onchange = (e) => { if (e.target.value) { S.date = e.target.value; S.view = null; load(); } };
   $('dtkRefresh').onclick = doRefresh;
-  $('dtkRebalance').onclick = async () => { if (!confirm('هوزّع المهام اللي لسه ماتبدأتش بالتساوي من جديد. اللي بدأ أو خلّص مش هيتحرّك. أكمّل؟')) return; const r = await call(() => api.post(`${API}/rebalance`, { date: S.date }), 'اتوزّعت بالتساوي'); if (r) { S.view = r; paint(); } };
-  $('dtkAdd').onclick = async () => {
+  const distribute = async () => { if (!confirm('هوزّع مهام النهارده على الفريق بالتساوي. اللي بدأ أو خلّص أو اتنقل من إمبارح مش هيتحرّك. أكمّل؟')) return; const r = await call(() => api.post(`${API}/rebalance`, { date: S.date }), 'اتوزّعت بالتساوي'); if (r) { S.view = r; S.who = 'ALL'; paint(); } };
+  $('dtkRebalance').onclick = distribute;
+  const addTask = async (pre = '') => {
     const team = S.view.team.filter((m) => m.active);
-    const res = await modal(`<h3>➕ مهمة جديدة</h3><div class="dtk-form"><div><label>العنوان</label><input id="mT" placeholder="مثلًا: راجع كرياتيف منتج كذا"></div><div><label>تفاصيل (اختياري)</label><textarea id="mD" rows="2"></textarea></div><div><label>المنتج (اختياري)</label><input id="mPr"></div><div><label>القسم</label><select id="mC">${optionsHtml([['MIX', '🧩 شغل متنوّع'], ['SCALE', '🚀 اسكيل'], ['FIX', '🔧 مشاكل وتيست']], 'MIX')}</select></div><div style="display:flex;gap:8px"><div style="flex:1"><label>الأولوية</label><select id="mPi">${optionsHtml([['MED', 'مهم'], ['HIGH', 'عاجل'], ['LOW', 'عادي']], 'MED')}</select></div><div style="flex:1"><label>لمين</label><select id="mW">${optionsHtml([['', 'توزيع تلقائي (الأقل شغل)'], ...team.map((m) => [m.id, m.name])], '')}</select></div></div></div><div class="btns"><button class="dtk-btn" data-close>إلغاء</button><button class="dtk-btn primary" id="mOk">أضف</button></div>`, { onMount: (el, close) => { el.querySelector('#mOk').onclick = () => close({ title: el.querySelector('#mT').value, detail: el.querySelector('#mD').value, productName: el.querySelector('#mPr').value, priority: el.querySelector('#mPi').value, category: el.querySelector('#mC').value, memberId: el.querySelector('#mW').value || null }); } });
+    const res = await modal(`<h3>➕ مهمة جديدة</h3><div class="dtk-form"><div><label>العنوان</label><input id="mT" placeholder="مثلًا: راجع كرياتيف منتج كذا"></div><div><label>تفاصيل (اختياري)</label><textarea id="mD" rows="2"></textarea></div><div><label>المنتج (اختياري)</label><input id="mPr"></div><div><label>القسم</label><select id="mC">${optionsHtml([['MIX', '🧩 شغل متنوّع'], ['SCALE', '🚀 اسكيل'], ['FIX', '🔧 مشاكل وتيست']], 'MIX')}</select></div><div style="display:flex;gap:8px"><div style="flex:1"><label>الأولوية</label><select id="mPi">${optionsHtml([['MED', 'مهم'], ['HIGH', 'عاجل'], ['LOW', 'عادي']], 'MED')}</select></div><div style="flex:1"><label>لمين</label><select id="mW">${optionsHtml([['', 'توزيع تلقائي (الأقل شغل)'], ...team.map((m) => [m.id, m.name])], pre)}</select></div></div></div><div class="btns"><button class="dtk-btn" data-close>إلغاء</button><button class="dtk-btn primary" id="mOk">أضف</button></div>`, { onMount: (el, close) => { el.querySelector('#mOk').onclick = () => close({ title: el.querySelector('#mT').value, detail: el.querySelector('#mD').value, productName: el.querySelector('#mPr').value, priority: el.querySelector('#mPi').value, category: el.querySelector('#mC').value, memberId: el.querySelector('#mW').value || null }); } });
     if (!res) return; const r = await call(() => api.post(`${API}/tasks`, { date: S.date, ...res }), 'اتضافت المهمة'); if (r) { S.view = r; paint(); }
   };
+  $('dtkAdd').onclick = () => addTask(S.who && !['ALL', 'NONE'].includes(S.who) ? S.who : '');
   $('dtkBody').addEventListener('click', async (e) => {
     const q = e.target.closest('[data-a]'); if (q) { e.stopPropagation(); return act(q.dataset.a, q.dataset.id); }
     const tg = e.target.closest('[data-toggle]'); if (tg && !e.target.closest('a')) { const id = tg.dataset.toggle; S.open.has(id) ? S.open.delete(id) : S.open.add(id); return paint(); }
     const f = e.target.closest('[data-filter]'); if (f) { S.filter = f.dataset.filter; return paint(); }
     const wh = e.target.closest('[data-who]'); if (wh) { S.who = wh.dataset.who; return paint(); }
+    if (e.target.closest('[data-dist]')) return distribute();
+    const af = e.target.closest('[data-addfor]'); if (af) return addTask(af.dataset.addfor);
+    const mo = e.target.closest('[data-more]'); if (mo) { const k = mo.dataset.more; S.more.has(k) ? S.more.delete(k) : S.more.add(k); return paint(); }
     const fo = e.target.closest('[data-fold]'); if (fo) { const id = fo.dataset.fold; S.foldDone.has(id) ? S.foldDone.delete(id) : S.foldDone.add(id); return paint(); }
     const rg = e.target.closest('[data-range]'); if (rg) { S.range = +rg.dataset.range; return paint(); }
     if (e.target.closest('#dtkEod')) { const r = await call(() => api.get(`${API}/eod`, { date: S.date })); if (r) { $('dtkEodBox').innerHTML = `<pre class="dtk-eod">${E(r.text)}</pre><div style="margin:8px 0"><button class="dtk-btn sm" id="dtkCopy">نسخ</button></div>`; $('dtkCopy').onclick = async () => { try { await navigator.clipboard.writeText(r.text); UI.toast('اتنسخ'); } catch { UI.toast('مقدرتش أنسخ', 'error'); } }; } return; }
@@ -275,7 +291,7 @@ function wire() {
     const rd = e.target.closest('[data-rdel]'); if (rd) { const cur = readRoutines(); cur.splice(+rd.dataset.rdel, 1); S.view.options.routines = cur; $('oRoutines').innerHTML = routinesHtml(cur); return; }
     if (e.target.closest('#oSave')) {
       const types = {}; document.querySelectorAll('[data-type]').forEach((c) => { types[c.dataset.type] = c.checked; });
-      const r = await call(() => api.put(`${API}/options`, { autoGenerate: $('oAuto').checked, generateAt: $('oAt').value, refreshMinutes: +$('oRef').value, types, scaleBudget: $('oScaleBudget').value, strongCpa: $('oStrongCpa').value, strongScales: $('oStrongScales').value, normalScales: $('oNormalScales').value, testMinOrders: $('oMinTestOrders').value, minTestStock: $('oMinTestStock').value, maxTest: $('oMaxTest').value, maxFix: $('oMaxFix').value, routines: readRoutines().filter((x) => x.title.trim()) }), 'اتحفظت الإعدادات'); if (r) { S.view.options = r; paint(); }
+      const r = await call(() => api.put(`${API}/options`, { autoGenerate: $('oAuto').checked, generateAt: $('oAt').value, refreshMinutes: +$('oRef').value, types, perPersonTarget: $('oTarget').value, autoDistribute: $('oAutoDist').checked, scaleBudget: $('oScaleBudget').value, strongCpa: $('oStrongCpa').value, strongScales: $('oStrongScales').value, normalScales: $('oNormalScales').value, testMinOrders: $('oMinTestOrders').value, minTestStock: $('oMinTestStock').value, maxTest: $('oMaxTest').value, maxFix: $('oMaxFix').value, routines: readRoutines().filter((x) => x.title.trim()) }), 'اتحفظت الإعدادات'); if (r) { S.view.options = r; paint(); }
     }
   });
   $('dtkBody').addEventListener('change', async (e) => { const l = e.target.closest('[data-link]'); if (l) { const r = await call(() => api.patch(`${API}/team/${l.dataset.link}`, { userId: l.value || null }), 'اتربط'); if (r) await load({ quiet: true }); } });
@@ -284,7 +300,7 @@ function wire() {
 async function init() {
   UI.renderSidebar('tasks');
   try { S.me = await api.get('/api/auth/me'); } catch { S.me = null; }
-  const u = S.me?.user || S.me || {}; S.mgr = !!(u.is_owner || ['ADMIN', 'MANAGER'].includes(u.role));
+  const u = S.me?.user || S.me || {}; S.mgr = !!(u.is_owner || u.role === 'ADMIN'); // only the admin manages and sees everyone
   wire(); await load();
   if (S.view?.mineId && !S.mgr) S.filter = 'MINE';
   paint();

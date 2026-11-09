@@ -194,6 +194,10 @@
 .dtk-mgr { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 0; padding-inline-start: 18px; }
 .dtk-more-btn { position: absolute; top: 10px; inset-inline-end: 12px; border: 0; background: transparent; color: var(--d-dim); font-size: 20px; cursor: pointer; line-height: 1; padding: 2px 8px; border-radius: 8px; }
 .dtk-more-btn:hover { background: color-mix(in srgb, var(--d-dim) 14%, transparent); }
+.dtk-morebar { display: block; width: 100%; margin: 0 0 10px; padding: 10px; background: var(--d-card); border: 1px dashed color-mix(in srgb, var(--bc) 55%, var(--d-line)); border-radius: 14px; color: var(--bc); font: inherit; font-weight: 900; font-size: 14px; cursor: pointer; }
+.dtk-morebar:hover { background: color-mix(in srgb, var(--bc) 8%, var(--d-card)); }
+.dtk-pool { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; background: color-mix(in srgb, #5b5bf0 9%, var(--d-card)); border: 2px solid color-mix(in srgb, #5b5bf0 45%, var(--d-line)); border-radius: 16px; padding: 14px 18px; margin-bottom: 14px; }
+.dtk-pool b { display: block; font-size: 16px; font-weight: 900; } .dtk-pool small { color: var(--d-dim); font-weight: 600; font-size: 13px; }
 .dtk-sec-b .dtk-none { text-align: center; color: var(--d-dim); padding: 14px; font-weight: 700; background: var(--d-card); border: 1px dashed var(--d-line); border-radius: 14px; }
 
 @media (max-width: 900px) { .dtk-sumbar { grid-template-columns: repeat(2, 1fr); } .dtk-sum.rate { grid-column: span 2; } .dtk-whos { grid-template-columns: 1fr 1fr; } .dtk-t-hd h4 { font-size: 15.5px; } }

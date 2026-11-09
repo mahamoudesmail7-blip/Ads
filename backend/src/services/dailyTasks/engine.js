@@ -77,11 +77,12 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
     for (const t of [...day.tasks, ...carriedIn]) if (resolved.includes(t.id)) { t.status = 'AUTO_RESOLVED'; t.doneAt = stamp; t.resolvedNote = 'المشكلة اختفت (الحملة اتقفلت أو جابت أوردرات أو اتحلّت)'; S.logEntry(day, { action: 'AUTO_RESOLVED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: 'السيستم لقى إن المشكلة اتحلّت لوحدها' }); }
     day.tasks.push(...carriedIn);
     const existing = day.tasks;
-    const mustPlace = [...carriedIn.filter((t) => !t.assigneeId), ...fresh.filter((t) => !t.assigneeId)];
+    const autoDist = cfg.options.autoDistribute === true; // off by default: the day is built as a POOL and the admin hands it out with «توزيع بالتساوي»
+    const mustPlace = autoDist ? [...carriedIn.filter((t) => !t.assigneeId), ...fresh.filter((t) => !t.assigneeId)] : [];
     day.tasks.push(...fresh);
     if (mustPlace.length) C.distribute(mustPlace, { members, existing: existing.filter((t) => !mustPlace.includes(t)), date });
     for (const t of carriedIn) S.logEntry(day, { action: 'CARRIED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: `اتنقلت من ${t.carriedFromDate || 'إمبارح'} (مرة ${t.carryCount})` });
-    for (const t of fresh) S.logEntry(day, { action: 'ASSIGNED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: t.assigneeId ? 'اتوزّعت تلقائيًا' : 'مفيش حد متاح — مستنية توزيع' });
+    for (const t of fresh) S.logEntry(day, { action: t.assigneeId ? 'ASSIGNED' : 'CREATED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: t.assigneeId ? 'اتوزّعت تلقائيًا' : 'اتجهّزت وبتستنى التوزيع' });
     day.generatedAt = day.generatedAt || stamp; day.refreshedAt = stamp;
     day.notes = { carriedIn: (day.notes?.carriedIn || 0) + carriedIn.length, generator: gen.status, lastAdded: fresh.length, lastResolved: resolved.length };
     cap(fresh.length, `${date} new`); return day;
@@ -104,10 +105,12 @@ export async function redistributeFrom(date, memberId, actor, why = '') {
 export async function rebalance(date, actor) {
   const cfg = await getConfig(); const members = C.availableMembers(cfg.team, date);
   return S.updateDay(date, (day) => {
-    const movable = day.tasks.filter((t) => t.status === 'PENDING' && t.source !== 'CARRIED_LOCKED');
+    const movable = day.tasks.filter((t) => t.status === 'PENDING' && (t.source !== 'CARRIED' || !t.assigneeId)); // yesterday's unfinished work stays with the same person
+    const before = new Map(movable.map((t) => [t.id, t.assigneeId]));
     for (const t of movable) t.assigneeId = null;
     C.distribute(movable, { members, existing: day.tasks.filter((t) => !movable.includes(t)), date, stickyGap: 0 });
-    S.logEntry(day, { action: 'REBALANCED', actorName: actor?.name || 'السيستم', text: `إعادة توزيع بالتساوي (${movable.length} مهمة)` });
+    for (const t of movable) if (t.assigneeId !== before.get(t.id)) S.logEntry(day, { action: before.get(t.id) ? 'REASSIGNED' : 'ASSIGNED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, fromMemberId: before.get(t.id) || undefined, actorName: actor?.name || 'السيستم', text: before.get(t.id) ? 'اتنقلت في إعادة التوزيع' : 'اتوزّعت' });
+    S.logEntry(day, { action: 'REBALANCED', actorName: actor?.name || 'السيستم', text: `وزّع ${movable.length} مهمة على ${members.length} ${members.length === 1 ? 'شخص' : 'أشخاص'} بالتساوي` });
     return day;
   });
 }
@@ -115,7 +118,7 @@ export async function rebalance(date, actor) {
 // ───────────── task actions ─────────────
 const findTask = (day, id) => { const t = day.tasks.find((x) => x.id === id); if (!t) throw bad('المهمة مش موجودة.', 404); return t; };
 function canAct(user, task, cfg) {
-  if (user.is_owner || ['ADMIN', 'MANAGER'].includes(user.role)) return true;
+  if (C.isAdminUser(user)) return true;
   const m = cfg.team.find((x) => x.userId === user.id); return !!m && m.id === task.assigneeId;
 }
 const nameOf = (cfg, id) => cfg.team.find((m) => m.id === id)?.name || '—';
@@ -124,7 +127,7 @@ export async function actOnTask(date, id, action, body, user) {
   const cfg = await getConfig();
   return S.updateDay(date, (day) => {
     const t = findTask(day, id); if (!canAct(user, t, cfg)) throw bad('المهمة دي مش بتاعتك.', 403);
-    const now = new Date().toISOString(); const isMgr = user.is_owner || ['ADMIN', 'MANAGER'].includes(user.role);
+    const now = new Date().toISOString(); const isMgr = C.isAdminUser(user);
     const log = (a, text) => S.logEntry(day, { action: a, taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, actorName: user.name, actorId: user.id, text });
     if (action === 'start') { if (t.status !== 'PENDING') throw bad('المهمة مش في حالة «مستني».'); t.status = 'IN_PROGRESS'; t.startedAt = now; log('STARTED', 'بدأ الشغل عليها'); }
     else if (action === 'done') { if (['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)) throw bad('المهمة اتقفلت قبل كده.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = user.name; t.note = String(body.note || '').slice(0, 400) || null; t.reason = null; log('DONE', t.note ? `خلّصها — ${t.note}` : 'خلّصها'); }
@@ -155,19 +158,27 @@ export async function addManualTask(date, body, user) {
 
 // ───────────── read models ─────────────
 export async function getDayView(date, user) {
-  const cfg = await getConfig(); let day = await S.loadDay(date);
-  const mine = cfg.team.find((m) => m.userId && user && m.userId === user.id)?.id || null;
-  const d = day || S.emptyDay(date);
+  const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.isAdminUser(user);
+  const me = cfg.team.find((m) => m.userId && user && m.userId === user.id) || null;
+  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
+  const memberView = (m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length });
+  if (!admin) { // everyone else sees ONLY their own tasks and numbers — never another person's
+    const mine = me ? d.tasks.filter((t) => t.assigneeId === me.id) : [];
+    return { ...head, linked: !!me, notes: null, team: me ? [memberView(me)] : [], tasks: mine, log: me ? d.log.filter((l) => l.memberId === me.id).slice(-100).reverse() : [], summary: C.daySummary(mine), perMember: me ? C.memberStats([{ date, tasks: mine }], [me]) : [], options: null };
+  }
   const members = cfg.team.filter((m) => m.active !== false || d.tasks.some((t) => t.assigneeId === m.id));
-  const perMember = C.memberStats([d], members);
-  return { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, notes: d.notes || null, team: members.map((m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length })), tasks: d.tasks, log: d.log.slice(-200).reverse(), summary: C.daySummary(d.tasks), perMember, mineId: mine, options: cfg.options, types: C.TYPES, reasons: C.NOT_DONE_REASONS };
+  return { ...head, linked: !!me, notes: d.notes || null, team: members.map(memberView), tasks: d.tasks, log: d.log.slice(-200).reverse(), summary: C.daySummary(d.tasks), perMember: C.memberStats([d], members), options: cfg.options };
 }
 
-export async function getReport(from, to) {
+export async function getReport(from, to, user = null) {
   if (!C.validDate(from) || !C.validDate(to) || to < from) throw bad('نطاق تاريخ غير صالح.');
   if (Date.parse(to) - Date.parse(from) > 31 * 86_400_000) throw bad('أقصى نطاق 31 يوم.');
-  const cfg = await getConfig(); const days = await S.loadRange(from, to);
-  const members = cfg.team.filter((m) => m.active !== false || days.some((d) => d.tasks.some((t) => t.assigneeId === m.id)));
+  const cfg = await getConfig(); let days = await S.loadRange(from, to); let team = cfg.team;
+  if (user && !C.isAdminUser(user)) { // a non-admin only ever gets their own numbers
+    const me = cfg.team.find((m) => m.userId && m.userId === user.id); team = me ? [me] : [];
+    days = days.map((d) => ({ ...d, tasks: me ? d.tasks.filter((t) => t.assigneeId === me.id) : [] }));
+  }
+  const members = team.filter((m) => m.active !== false || days.some((d) => d.tasks.some((t) => t.assigneeId === m.id)));
   return { from, to, days: days.map((d) => ({ date: d.date, ...C.daySummary(d.tasks) })), perMember: C.memberStats(days, members), team: members };
 }
 
@@ -178,6 +189,9 @@ export async function saveOptions(patch) {
     const o = c.options;
     if (typeof patch.autoGenerate === 'boolean') o.autoGenerate = patch.autoGenerate;
     if (/^\d{2}:\d{2}$/.test(patch.generateAt || '')) o.generateAt = patch.generateAt;
+    if (typeof patch.autoDistribute === 'boolean') o.autoDistribute = patch.autoDistribute;
+    if (Number.isFinite(+patch.perPersonTarget) && patch.perPersonTarget !== '' && patch.perPersonTarget !== null) o.perPersonTarget = Math.min(60, Math.max(0, Math.round(+patch.perPersonTarget)));
+    if (Number.isFinite(+patch.liteCpa) && patch.liteCpa !== '' && patch.liteCpa !== null) o.liteCpa = Math.min(1000, Math.max(20, Math.round(+patch.liteCpa)));
     if (Number.isFinite(+patch.refreshMinutes) && +patch.refreshMinutes >= 15) o.refreshMinutes = Math.min(720, Math.round(+patch.refreshMinutes));
     for (const [k, lo, hi] of [['scaleBudget', 100, 5000], ['strongCpa', 10, 500], ['strongScales', 1, 8], ['normalScales', 1, 8], ['testMinOrders', 1, 50], ['minTestStock', 0, 5000], ['testMaxCampaigns', 1, 20], ['maxTest', 0, 40], ['maxFix', 0, 60]]) if (Number.isFinite(+patch[k]) && patch[k] !== '' && patch[k] !== null) o[k] = Math.min(hi, Math.max(lo, Math.round(+patch[k])));
     if (patch.types && typeof patch.types === 'object') for (const k of Object.keys(C.DEFAULT_CONFIG.types)) if (typeof patch.types[k] === 'boolean') o.types[k] = patch.types[k];
