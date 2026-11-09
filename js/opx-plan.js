@@ -312,7 +312,7 @@ function draw() {
       <div class="opx-head-icon ${m.tone}">${ICONS[m.icon]}</div>
       <div class="grow"><h1>${m.title}</h1><p>${E(m.sub)}</p></div>
       ${P.ctx.modeSegment()}
-      <div class="opx-state"><span class="opx-switch ${live || autoLive ? 'on' : ''}" aria-hidden="true"></span><div><b>${E(stateText)}</b><small>${c.writesLocked ? 'قفل النشر مقفول' : 'قفل النشر مفتوح'} · صلاحية ${m.verb}: ${perm ? 'ON' : 'OFF'}</small></div></div>
+      <div class="opx-state"><span class="opx-switch ${live || autoLive ? 'on' : ''}" aria-hidden="true"></span><div><b>${E(stateText)}</b><small class="opx-adv">${c.writesLocked ? 'قفل النشر مقفول' : 'قفل النشر مفتوح'} · صلاحية ${m.verb}: ${perm ? 'ON' : 'OFF'}</small></div></div>
     </div>
     <div class="opx-kpis">
       ${kpiCard({ label: `حملة مرشحة لل${m.verb}`, value: num(p?.counts?.total ?? p?.items?.length ?? 0), icon: 'megaphone', tone: 'violet' })}
@@ -325,25 +325,25 @@ function draw() {
       <div class="opx-count" id="opxCountdown">${countdownHtml(nextAt)}</div></div>` : `<div class="opx-notice amber"><div class="grow"><b>مفيش خطة ${m.verb} لليوم بعد</b><small>الخطة بتتجهز على السيرفر في الموعد (${m.slot} بتوقيت القاهرة)، أو ابدأ خطة الآن.</small></div></div>`}
     <div class="opx-work opx-work-plan">
       <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
-        ${P.type === 'OPEN' ? cpaPanel(p, editable) + (P.cpa && P.advForm ? advPanel(P.cpa.policy, P.advForm, P.ctx.isAdmin) : '') : ''}
+        ${P.type === 'OPEN' ? `<div class="opx-adv">${cpaPanel(p, editable) + (P.cpa && P.advForm ? advPanel(P.cpa.policy, P.advForm, P.ctx.isAdmin) : '')}</div>` : ''}
         ${renewNotice(p, m)}
-        ${plansOfType().length > 1 ? `<div class="opx-card opx-filters" id="opxPlans">${plansOfType().map((x) => `<button class="opx-chip ${x.key === (p?.key) ? 'on' : ''}" data-plan="${E(x.key)}">${E(planLabel(x))} · ${num(x.counts?.total)} حملة</button>`).join('')}</div>` : ''}
+        ${plansOfType().length > 1 ? `<div class="opx-card opx-filters opx-adv" id="opxPlans">${plansOfType().map((x) => `<button class="opx-chip ${x.key === (p?.key) ? 'on' : ''}" data-plan="${E(x.key)}">${E(planLabel(x))} · ${num(x.counts?.total)} حملة</button>`).join('')}</div>` : ''}
         <div class="opx-card opx-filters">
           <div class="opx-chips opx-views" role="group" aria-label="عرض الحملات">${VIEWS.map(([k, t]) => `<button class="opx-chip ${P.f.view === k ? 'on' : ''}" data-view="${k}">${t} <span class="opx-chip-n">${num(counts[k])}</span></button>`).join('')}</div>
-          <div class="opx-chips" role="group" aria-label="الفترة">${PERIOD_CHIPS.map(([k, t]) => `<button class="opx-chip ${P.f.period === k ? 'on' : ''}" data-period="${k}">${t}</button>`).join('')}</div>
+          <div class="opx-chips opx-adv" role="group" aria-label="الفترة">${PERIOD_CHIPS.map(([k, t]) => `<button class="opx-chip ${P.f.period === k ? 'on' : ''}" data-period="${k}">${t}</button>`).join('')}</div>
           ${P.f.period === 'custom' ? `<div class="opx-range"><label>من<input class="opx-input" type="date" id="opxFrom" max="${todayStr()}" value="${E(P.f.from)}"></label><label>إلى<input class="opx-input" type="date" id="opxTo" max="${todayStr()}" value="${E(P.f.to)}"></label><button class="opx-btn sm primary" id="opxApplyRange">تطبيق</button></div>` : ''}
           ${P.pmErr ? `<div class="opx-note bad" style="flex:1 1 100%">⚠️ ${E(P.pmErr)}</div>` : ''}
           <input class="opx-input opx-search" id="opxQ" placeholder="ابحث باسم المنتج أو الحملة…" value="${E(P.f.q)}">
-          ${stores.length > 1 ? `<select class="opx-select" id="opxStore"><option value="">كل المتاجر</option>${stores.map((s) => `<option ${P.f.store === s ? 'selected' : ''}>${E(s)}</option>`).join('')}</select>` : ''}
-          ${P.type === 'PAUSE' ? `<select class="opx-select" id="opxCat"><option value="">كل التصنيفات</option>${Object.entries(PAUSE_CATS).map(([k, v]) => `<option value="${k}" ${P.f.cat === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}
-          <select class="opx-select" id="opxSort" aria-label="الترتيب">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${P.f.sort === k ? 'selected' : ''}>ترتيب: ${v}${['purchases', 'cpa', 'spend'].includes(k) ? ' — ' + periodLabel() : ''}</option>`).join('')}</select>
+          ${stores.length > 1 ? `<select class="opx-select opx-adv" id="opxStore"><option value="">كل المتاجر</option>${stores.map((s) => `<option ${P.f.store === s ? 'selected' : ''}>${E(s)}</option>`).join('')}</select>` : ''}
+          ${P.type === 'PAUSE' ? `<select class="opx-select opx-adv" id="opxCat"><option value="">كل التصنيفات</option>${Object.entries(PAUSE_CATS).map(([k, v]) => `<option value="${k}" ${P.f.cat === k ? 'selected' : ''}>${v}</option>`).join('')}</select>` : ''}
+          <select class="opx-select opx-adv" id="opxSort" aria-label="الترتيب">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${P.f.sort === k ? 'selected' : ''}>ترتيب: ${v}${['purchases', 'cpa', 'spend'].includes(k) ? ' — ' + periodLabel() : ''}</option>`).join('')}</select>
         </div>
-        ${sliderCard(rows.length)}
+        <div class="opx-adv">${sliderCard(rows.length)}</div>
         <div class="opx-card opx-tablecard opx-fade">
           <div class="opx-tablehead"><h3>الحملات — ${E(viewLabel)} (${num(rows.length)} حملة${rows.length > P.shown ? ` — المعروض ${num(P.shown)}` : ''})<small class="opx-sub">اليوم = ${E(P.board?.today || '—')} بتوقيت القاهرة · CPA = الصرف ÷ الأوردرات لنفس الفترة${P.board?.staleExcluded ? ` · استُبعدت ${num(P.board.staleExcluded)} حملة لقدم بياناتها` : ''}${P.board ? '' : ' · ⚠️ تعذّر تحميل كل الحملات — المعروض المرشحة فقط'}</small></h3>
-            <button class="opx-btn sm opx-set-btn" data-act="settings">${ICONS.clock} إعدادات الجدولة</button>
-            <button class="opx-btn sm ${editable ? '' : 'opx-soft'}" data-act="eligible" ${P.ctx.isAdmin ? '' : 'disabled'} title="${editable ? 'يحدد الحملات المؤهلة (داخل الفلاتر لو فيه فلاتر) — بعدها راجعهم واعتمد' : 'الخطة مقفولة — هعرض عليك تجهيز خطة جديدة'}">${ICONS.check} تحديد المؤهل (${num(eligN)})</button><button class="opx-btn sm ${editable ? '' : 'opx-soft'}" data-act="none" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.x} إلغاء التحديد</button>
-            <button class="opx-btn sm" data-act="new" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.plus} إنشاء خطة جديدة</button></div>
+            <button class="opx-btn sm opx-set-btn opx-adv" data-act="settings">${ICONS.clock} إعدادات الجدولة</button>
+            <button class="opx-btn sm ${editable ? '' : 'opx-soft'}" data-act="eligible" ${P.ctx.isAdmin ? '' : 'disabled'} title="${editable ? 'يحدد الحملات المؤهلة (داخل الفلاتر لو فيه فلاتر) — بعدها راجعهم واعتمد' : 'الخطة مقفولة — هعرض عليك تجهيز خطة جديدة'}">${ICONS.check} تحديد المؤهل (${num(eligN)})</button><button class="opx-btn sm opx-adv ${editable ? '' : 'opx-soft'}" data-act="none" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.x} إلغاء التحديد</button>
+            <button class="opx-btn sm opx-adv" data-act="new" ${P.ctx.isAdmin ? '' : 'disabled'}>${ICONS.plus} إنشاء خطة جديدة</button></div>
           ${narrow
             ? `<div class="opx-cards" style="display:flex">${pageRows.length ? pageRows.map((r) => rowCard(r, editable)).join('') : `<div class="opx-empty">${E(m.empty)}</div>`}${moreBtn}</div>`
             : `<div class="opx-scroll opx-desk">${pageRows.length ? table(pageRows, editable, layout === 'xl') : `<div class="opx-empty">${E(m.empty)}</div>`}${moreBtn}</div>`}
@@ -352,7 +352,7 @@ function draw() {
             <button class="opx-btn primary" data-act="approve" ${editable && sel.length ? '' : 'disabled'}>${ICONS[m.icon]} اعتماد المحدد (${num(sel.length)})</button></div>
         </div>
       </div>
-      <aside class="opx-card opx-panel opx-fade">${panelHtml(p, c, nextAt)}</aside>
+      <aside class="opx-card opx-panel opx-fade opx-adv">${panelHtml(p, c, nextAt)}</aside>
     </div>
     <div class="opx-actionbar" id="opxActionBar"><div class="opx-ab-info"><b>${num(sel.length)}</b> حملة مختارة<small>${egp(lastBudget)}</small></div><button class="opx-btn" data-act="preview" ${p && sel.length ? '' : 'disabled'}>${ICONS.eye} معاينة</button><button class="opx-btn primary" data-act="approve" ${editable && sel.length ? '' : 'disabled'}>${ICONS[m.icon]} اعتماد</button></div>`;
   wire(p, editable);

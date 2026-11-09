@@ -4,17 +4,18 @@ import { api } from './api-client.js';
 import { E, $, num, ICONS, ago, pill, skeletonRows, toast, confirmModal, store } from './opx-ui.js';
 
 const WS = [
+  { key: 'home', label: 'الرئيسية', icon: 'compass', kind: 'home' },
   { key: 'open', label: 'فتح الحملات', icon: 'play', kind: 'plan', type: 'OPEN' },
   { key: 'pause', label: 'إيقاف الحملات', icon: 'pause', kind: 'plan', type: 'PAUSE' },
   { key: 'budget', label: 'إدارة الميزانيات', icon: 'budget', kind: 'budget' },
-  { key: 'automation', label: 'الأتمتة (AUTOMATIC)', icon: 'shield', kind: 'module', file: './opx-automation.js', fn: 'mountAutomationWorkspace' },
-  { key: 'manual', label: 'التشغيل اليدوي', icon: 'key', kind: 'module', file: './opx-manual.js', fn: 'mountManualWorkspace' },
-  { key: 'rules', label: 'قواعد المنتجات', icon: 'rules', kind: 'rules' },
-  { key: 'pricing', label: 'التسعير الذكي', icon: 'coins', kind: 'module', file: './opx-pricing.js', fn: 'mountPricingWorkspace' },
+  { key: 'automation', label: 'الأتمتة (AUTOMATIC)', icon: 'shield', kind: 'module', file: './opx-automation.js', fn: 'mountAutomationWorkspace', adv: true },
+  { key: 'manual', label: 'التشغيل اليدوي', icon: 'key', kind: 'module', file: './opx-manual.js', fn: 'mountManualWorkspace', adv: true },
+  { key: 'rules', label: 'قواعد المنتجات', icon: 'rules', kind: 'rules', adv: true },
+  { key: 'pricing', label: 'التسعير الذكي', icon: 'coins', kind: 'module', file: './opx-pricing.js', fn: 'mountPricingWorkspace', adv: true },
   { key: 'approvals', label: 'الموافقات', icon: 'approve', kind: 'module', file: './opx-approvals.js', fn: 'mountApprovalsWorkspace', badge: 'pendingApprovals' },
-  { key: 'history', label: 'سجل التنفيذ', icon: 'history', kind: 'module', file: './opx-history.js', fn: 'mountHistoryWorkspace' },
+  { key: 'history', label: 'سجل التنفيذ', icon: 'history', kind: 'module', file: './opx-history.js', fn: 'mountHistoryWorkspace', adv: true },
   { key: 'alerts', label: 'التنبيهات', icon: 'bell', kind: 'alerts', badge: 'importantAlerts' },
-  { key: 'integration', label: 'مركز الربط', icon: 'compass', kind: 'module', file: './opx-integration.js', fn: 'mountIntegrationWorkspace' },
+  { key: 'integration', label: 'مركز الربط', icon: 'compass', kind: 'module', file: './opx-integration.js', fn: 'mountIntegrationWorkspace', adv: true },
 ];
 const ADV = [
   { key: 'perms', label: 'صلاحيات التنفيذ', icon: 'key', kind: 'legacy', tab: 'perms' },
@@ -24,20 +25,22 @@ const ADV = [
 const ALL = [...WS, ...ADV];
 const MODE_SEG = [{ key: 'OFF', label: 'MANUAL', sub: 'يدوي' }, { key: 'APPROVAL', label: 'APPROVAL', sub: 'بموافقتي' }, { key: 'AUTOPILOT', label: 'AUTOMATIC', sub: 'تلقائي' }];
 
-const SH = { panel: null, host: null, isAdmin: false, legacy: null, ws: 'open', ov: null, status: null, mods: {} };
+const SH = { panel: null, host: null, isAdmin: false, legacy: null, ws: 'home', ov: null, status: null, mods: {} };
 
 /** legacy = { mountBody(container, tab), mountFull(container), refreshTop(), showGate() , getOv() } supplied by ai-operator.js */
 export async function renderShell(panel, { isAdmin = false, legacy }) {
   SH.panel = panel; SH.isAdmin = isAdmin; SH.legacy = legacy;
-  const saved = store.get('opx.ws', 'open'); SH.ws = ALL.some((w) => w.key === saved) ? saved : 'open';
+  let saved = store.get('opx.ws', 'home'); if (store.get('opx.homeSeen', '0') !== '1') { saved = 'home'; store.set('opx.homeSeen', '1'); } SH.ws = ALL.some((w) => w.key === saved) ? saved : 'home';
+  const simple = store.get('opx.simple', '1') !== '0'; // the SIMPLE view is the default; «عرض كامل» shows every control exactly as before
   const theme = store.get('opx.theme', 'light'); const collapsed = store.get('opx.collapsed', window.innerWidth < 1650 ? '1' : '0'); // narrower screens start with the icon rail so the tables get the room
-  panel.innerHTML = `<div class="opx" data-theme="${theme}" data-collapsed="${collapsed}" id="opxRoot">
+  panel.innerHTML = `<div class="opx" data-theme="${theme}" data-collapsed="${collapsed}" data-simple="${simple ? '1' : '0'}" id="opxRoot">
     <aside class="opx-side" id="opxSide">
       <div class="opx-brand"><div class="opx-logo">AI</div><div><b>AI Operator</b><small>التحكم الذكي في الحملات</small></div></div>
       <nav class="opx-nav" id="opxNav" aria-label="أقسام AI Operator"></nav>
-      <div class="opx-navgroup">متقدم</div><nav class="opx-nav" id="opxNavAdv"></nav>
+      <details class="opx-advgroup" id="opxAdvGroup"><summary class="opx-navgroup">أدوات متقدمة</summary><nav class="opx-nav" id="opxNavAdv"></nav></details>
       <div class="opx-side-foot">
         <div class="opx-foot-row" id="opxSysState"></div>
+        <button class="opx-iconbtn" id="opxSimple" aria-label="عرض مبسّط / كامل"><span style="display:inline-flex">⚙️</span><span class="txt" id="opxSimpleTx"></span></button>
         <button class="opx-iconbtn" id="opxTheme" aria-label="تبديل المظهر"><span id="opxThemeIc"></span><span class="txt" id="opxThemeTx"></span></button>
         <button class="opx-iconbtn" id="opxCollapse" aria-label="طي القائمة"><span style="display:inline-flex">${ICONS.collapse}</span><span class="txt">طي القائمة</span></button>
       </div>
@@ -48,6 +51,7 @@ export async function renderShell(panel, { isAdmin = false, legacy }) {
   SH.root = $('opxRoot'); SH.host = $('opxWork');
   const nav = document.getElementById('ambNav'); SH.navWasCollapsed = !!nav?.classList.contains('collapsed'); nav?.classList.add('collapsed'); // the app nav becomes an icon rail so the workspace gets the width
   $('opxScrim').onclick = () => { SH.root.dataset.mobileOpen = '0'; }; $('bnMenu').onclick = () => { SH.root.dataset.mobileOpen = SH.root.dataset.mobileOpen === '1' ? '0' : '1'; }; $('bnApprovals').onclick = () => { SH.root.dataset.mobileOpen = '0'; openWorkspace('approvals'); }; $('bnStop').onclick = () => emergencyStop();
+  $('opxSimple').onclick = toggleSimple; paintSimple();
   $('opxTheme').onclick = toggleTheme; $('opxCollapse').onclick = toggleCollapse; $('opxBurger').onclick = () => { SH.root.dataset.mobileOpen = SH.root.dataset.mobileOpen === '1' ? '0' : '1'; };
   paintTheme();
   if (!SH.evt) window.addEventListener('opx:open', SH.evt = (e) => { if (document.body.contains(SH.root) && ALL.some((w) => w.key === e.detail)) openWorkspace(e.detail); });
@@ -64,7 +68,10 @@ async function refreshSystem() {
 function drawNav() {
   const badgeOf = (w) => (w.badge && SH.status ? Number(SH.status[w.badge]) || 0 : 0);
   const item = (w) => { const b = badgeOf(w); return `<button class="opx-item ${w.key === SH.ws ? 'on' : ''}" data-ws="${w.key}" title="${E(w.label)}">${ICONS[w.icon]}<span class="lbl">${E(w.label)}</span>${b ? `<span class="opx-badge">${b}</span>` : ''}</button>`; };
-  $('opxNav').innerHTML = WS.map(item).join(''); $('opxNavAdv').innerHTML = ADV.map(item).join('');
+  const simple = SH.root.dataset.simple === '1';
+  $('opxNav').innerHTML = (simple ? WS.filter((w) => !w.adv) : WS.filter((w) => w.key !== 'home')).concat([]).map(item).join('');
+  $('opxNavAdv').innerHTML = (simple ? WS.filter((w) => w.adv).concat(ADV) : ADV).map(item).join('');
+  { const g = $('opxAdvGroup'); if (g) { const inAdv = (simple ? WS.filter((w) => w.adv).concat(ADV) : ADV).some((w) => w.key === SH.ws); if (inAdv) g.open = true; } }
   SH.root.querySelectorAll('[data-ws]').forEach((b) => { b.onclick = () => { SH.root.dataset.mobileOpen = '0'; openWorkspace(b.dataset.ws); }; });
   { const pend = SH.status ? Number(SH.status.pendingApprovals) || 0 : 0; const bb = $('bnBadge'); if (bb) { bb.textContent = pend; bb.hidden = !pend; } const tt = $('opxTopTitle'); if (tt) tt.textContent = (ALL.find((w) => w.key === SH.ws) || {}).label || ''; }
   const ov = SH.ov; const tone = ov.emergencyStop ? 'red' : ov.mode === 'AUTOPILOT' ? 'green' : ov.mode === 'APPROVAL' ? 'amber' : 'amber';
@@ -74,6 +81,8 @@ const modeLabel = (m) => ({ OFF: 'MANUAL', SHADOW: 'SHADOW', APPROVAL: 'APPROVAL
 
 function paintTheme() { const dark = SH.root.dataset.theme === 'dark'; $('opxThemeIc').innerHTML = dark ? ICONS.sun : ICONS.moon; $('opxThemeIc').style.display = 'inline-flex'; $('opxThemeTx').textContent = dark ? 'المظهر الفاتح' : 'المظهر الداكن'; }
 function toggleTheme() { SH.root.dataset.theme = SH.root.dataset.theme === 'dark' ? 'light' : 'dark'; store.set('opx.theme', SH.root.dataset.theme); paintTheme(); }
+function paintSimple() { const s = SH.root.dataset.simple === '1'; const t = $('opxSimpleTx'); if (t) t.textContent = s ? 'عرض كامل (كل الخيارات)' : 'عرض مبسّط'; }
+function toggleSimple() { SH.root.dataset.simple = SH.root.dataset.simple === '1' ? '0' : '1'; store.set('opx.simple', SH.root.dataset.simple); paintSimple(); if (SH.ws === 'home' && SH.root.dataset.simple === '0') SH.ws = 'open'; drawNav(); openWorkspace(SH.ws); }
 function toggleCollapse() { SH.root.dataset.collapsed = SH.root.dataset.collapsed === '1' ? '0' : '1'; store.set('opx.collapsed', SH.root.dataset.collapsed); }
 
 /** the mode segment shared by every workspace header (same endpoints / confirmations as the previous UI) */
@@ -111,9 +120,10 @@ async function openWorkspaceNow(key, { first = false } = {}) {
   SH.root.querySelectorAll('[data-ws]').forEach((b) => b.classList.toggle('on', b.dataset.ws === w.key)); { const tt = $('opxTopTitle'); if (tt) tt.textContent = w.label; }
   SH.mods.plan?.unmountPlanWorkspace?.(); drawBanner();
   const host = SH.host; host.innerHTML = `<div class="opx-card">${skeletonRows(5)}</div>`;
-  const ctx = { isAdmin: SH.isAdmin, modeSegment: () => modeSegment(), ov: () => SH.ov, emergencyStop, refresh: async () => { await refreshSystem(); drawNav(); drawBanner(); }, statusExtra: () => '' };
+  const ctx = { isAdmin: SH.isAdmin, modeSegment: () => modeSegment(), ov: () => SH.ov, status: () => SH.status, open: (k) => openWorkspace(k), emergencyStop, refresh: async () => { await refreshSystem(); drawNav(); drawBanner(); }, statusExtra: () => '' };
   try {
-    if (w.kind === 'plan') { SH.mods.plan = await import('./opx-plan.js'); await SH.mods.plan.mountPlanWorkspace(host, w.type, ctx); }
+    if (w.kind === 'home') { const mod = await import('./opx-home.js'); await mod.mountHomeWorkspace(host, ctx); }
+    else if (w.kind === 'plan') { SH.mods.plan = await import('./opx-plan.js'); await SH.mods.plan.mountPlanWorkspace(host, w.type, ctx); }
     else if (w.kind === 'budget' || w.kind === 'rules') {
       const file = w.kind === 'budget' ? './opx-budget.js' : './opx-rules.js'; let mod = null; try { mod = await import(file); } catch { mod = null; }
       if (mod) await (w.kind === 'budget' ? mod.mountBudgetWorkspace(host, ctx) : mod.mountRulesWorkspace(host, ctx));

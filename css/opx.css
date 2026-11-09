@@ -522,3 +522,29 @@ body:has(.opx) { overflow-x: hidden; } .opx { max-width: 100%; }
 .opx-diagk{border:1px solid var(--opx-line,#e2e8f0);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px}
 .opx-diagk b{font-size:20px}.opx-diagk small{color:var(--opx-muted)}
 .opx-diagk.green b{color:#16a34a}.opx-diagk.red b{color:#dc2626}.opx-diagk.amber b{color:#d97706}
+
+/* ── AI Operator — SIMPLE view (default) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   Presentation only: `.opx-adv` elements stay in the DOM (every handler keeps working); «عرض كامل» (data-simple="0") shows them exactly as before. */
+.opx[data-simple="1"] .opx-adv { display: none !important; }
+.opx[data-simple="1"] .opx-kpis > :nth-child(3), .opx[data-simple="1"] .opx-kpis > :nth-child(4) { display: none; } /* keep: candidates · selected · total budget */
+.opx[data-simple="1"] .opx-kpis { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.opx-advgroup > summary { cursor: pointer; list-style: none; user-select: none; } .opx-advgroup > summary::-webkit-details-marker { display: none; }
+.opx-advgroup > summary::after { content: ' ▾'; opacity: .7; } .opx-advgroup[open] > summary::after { content: ' ▴'; }
+/* Home */
+.opx-home-state { display: flex; align-items: center; gap: 16px; padding: 18px 22px; flex-wrap: wrap; border-width: 2px; }
+.opx-home-state .grow { flex: 1; min-width: 220px; } .opx-home-state h1 { margin: 0; font-size: 22px; font-weight: 800; } .opx-home-state p { margin: 4px 0 0; color: var(--opx-muted); font-size: 14px; line-height: 1.6; }
+.opx-home-dot { width: 18px; height: 18px; border-radius: 50%; background: var(--opx-muted); box-shadow: 0 0 0 6px rgba(107, 122, 153, .15); flex: none; }
+.opx-home-state.green { border-color: var(--opx-success); } .opx-home-state.green .opx-home-dot { background: var(--opx-success); box-shadow: 0 0 0 6px rgba(16, 166, 106, .18); }
+.opx-home-state.amber { border-color: var(--opx-warning); } .opx-home-state.amber .opx-home-dot { background: var(--opx-warning); box-shadow: 0 0 0 6px rgba(245, 158, 11, .2); }
+.opx-home-state.red { border-color: var(--opx-danger); background: var(--opx-danger-soft); } .opx-home-state.red .opx-home-dot { background: var(--opx-danger); box-shadow: 0 0 0 6px rgba(239, 68, 68, .2); }
+.opx-home-state.blue { border-color: var(--opx-info); } .opx-home-state.blue .opx-home-dot { background: var(--opx-info); }
+.opx-home-todo, .opx-home-modes { padding: 18px 22px; display: grid; gap: 14px; margin-top: 14px; } .opx-home-todo h2, .opx-home-modes h2 { margin: 0; font-size: 17px; font-weight: 800; }
+.opx-home-list { display: grid; gap: 10px; } .opx-home-row { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--opx-border); border-radius: 14px; background: var(--opx-bg); } .opx-home-row b { flex: 1; font-size: 15px; }
+.opx-home-ok { padding: 18px; text-align: center; font-weight: 700; color: var(--opx-success); background: var(--opx-success-soft); border-radius: 14px; }
+.opx-home-sub { color: var(--opx-muted); font-size: 12.5px; }
+.opx-home-modegrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } @media (max-width: 820px) { .opx-home-modegrid { grid-template-columns: 1fr; } }
+.opx-home-mode { position: relative; display: grid; gap: 6px; text-align: start; padding: 16px; border: 2px solid var(--opx-border); border-radius: 16px; background: var(--opx-card); color: var(--opx-text); cursor: pointer; font-family: inherit; transition: border-color .18s, box-shadow .18s, transform .18s; }
+.opx-home-mode:hover:not(:disabled) { border-color: var(--opx-primary); transform: translateY(-2px); } .opx-home-mode:disabled { opacity: .55; cursor: not-allowed; }
+.opx-home-mode .ic { font-size: 26px; } .opx-home-mode b { font-size: 16px; } .opx-home-mode small { color: var(--opx-muted); font-size: 12.5px; line-height: 1.6; }
+.opx-home-mode.on { border-color: var(--opx-primary); background: var(--opx-primary-soft); box-shadow: var(--opx-shadow-hover); } .opx-home-mode .tag { position: absolute; top: 10px; left: 12px; font-size: 11px; font-weight: 800; background: var(--opx-primary); color: #fff; padding: 2px 9px; border-radius: 999px; }
+.opx-home-more { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; color: var(--opx-muted); font-size: 13px; }
