@@ -94,7 +94,8 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
     for (const t of carriedIn) S.logEntry(day, { action: 'CARRIED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: `اتنقلت من ${t.carriedFromDate || 'إمبارح'} (مرة ${t.carryCount})` });
     for (const t of fresh) S.logEntry(day, { action: t.assigneeId ? 'ASSIGNED' : 'CREATED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, text: t.assigneeId ? 'اتوزّعت تلقائيًا' : 'اتجهّزت وبتستنى التوزيع' });
     day.generatedAt = day.generatedAt || stamp; day.refreshedAt = stamp;
-    day.notes = { asOf: gen.asOf || day.notes?.asOf || null, period: gen.period || day.notes?.period || null, carriedIn: (day.notes?.carriedIn || 0) + carriedIn.length, generator: gen.status, lastAdded: fresh.length, lastResolved: resolved.length };
+    const qn = cfg.options.quota || {}; const quotaStatus = Object.fromEntries(C.KINDS.map((k) => [k, { need: (Number(qn[k]) || 0) * members.length, have: day.tasks.filter((t) => !['CANCELLED', 'AUTO_RESOLVED'].includes(t.status) && C.kindOf(t) === k).length }]));
+    day.notes = { quota: quotaStatus, asOf: gen.asOf || day.notes?.asOf || null, period: gen.period || day.notes?.period || null, carriedIn: (day.notes?.carriedIn || 0) + carriedIn.length, generator: gen.status, lastAdded: fresh.length, lastResolved: resolved.length };
     cap(fresh.length, `${date} new`); return day;
   });
 }
@@ -121,8 +122,8 @@ export async function previewRebalance(date) {
   for (const t of movable) t.assigneeId = null;
   C.distribute(movable, { members, existing: tasks.filter((t) => !movable.includes(t)), date, stickyGap: 0 });
   const live = (t) => C.isOpen(t) || ['NEEDS_REVIEW', 'DONE'].includes(t.status);
-  const rows = cfg.team.filter((m) => m.active !== false).map((m) => { const was = day.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length; const now = tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)); const cat = (c) => now.filter((t) => (t.category || 'MIX') === c).length; return { id: m.id, name: m.name, off: (m.off || []).includes(date), before: was, after: now.length, added: movable.filter((t) => t.assigneeId === m.id && before.get(t.id) !== m.id).length, SCALE: cat('SCALE'), FIX: cat('FIX'), MIX: cat('MIX') }; });
-  return { date, moving: movable.length, fromPool: movable.filter((t) => !before.get(t.id)).length, moved: movable.filter((t) => before.get(t.id) && t.assigneeId !== before.get(t.id)).length, unplaced: movable.filter((t) => !t.assigneeId).length, members: rows, people: members.length, hasLive: tasks.some(live) };
+  const rows = cfg.team.filter((m) => m.active !== false).map((m) => { const was = day.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length; const now = tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)); const cat = (c) => now.filter((t) => C.kindOf(t) === c).length; return { id: m.id, name: m.name, off: (m.off || []).includes(date), before: was, after: now.length, added: movable.filter((t) => t.assigneeId === m.id && before.get(t.id) !== m.id).length, SCALE: cat('SCALE'), PROBLEM: cat('PROBLEM'), TEST: cat('TEST'), MIX: cat('MIX') }; });
+  return { date, moving: movable.length, fromPool: movable.filter((t) => !before.get(t.id)).length, moved: movable.filter((t) => before.get(t.id) && t.assigneeId !== before.get(t.id)).length, unplaced: movable.filter((t) => !t.assigneeId).length, members: rows, people: members.length, quota: cfg.options.quota, hasLive: tasks.some(live) };
 }
 
 /**
@@ -197,7 +198,7 @@ export async function addManualTask(date, body, user) {
   return S.updateDay(date, (day) => {
     const t = C.makeTask({ type: 'MANUAL', category: body.category, key: null, title, why: body.detail, priority: body.priority, product: body.productName ? { id: null, name: String(body.productName).slice(0, 80) } : null }, { date, source: 'MANUAL' });
     const pick = body.memberId && cfg.team.find((m) => m.id === body.memberId && m.active !== false);
-    if (pick) t.assigneeId = pick.id; else C.distribute([t], { members, existing: day.tasks, date });
+    if (pick) t.assigneeId = pick.id; // otherwise it simply joins today's plan (the pool) and is handed out with the rest
     day.tasks.push(t); S.logEntry(day, { action: 'CREATED', taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, actorName: user.name, actorId: user.id, text: `${user.name} أضاف المهمة وسلّمها لـ ${nameOf(cfg, t.assigneeId)}` });
     return day;
   });
@@ -207,7 +208,7 @@ export async function addManualTask(date, body, user) {
 export async function getDayView(date, user) {
   const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.seesAll(user, cfg);
   const me = cfg.team.find((m) => m.userId && user && m.userId === user.id) || null;
-  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, dataAsOf: d.notes?.asOf || null, period: d.notes?.period || null, lastReset: d.resets?.length ? { at: d.resets[d.resets.length - 1].at, by: d.resets[d.resets.length - 1].by } : null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
+  const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, dataAsOf: d.notes?.asOf || null, quotaStatus: admin ? d.notes?.quota || null : null, quota: admin ? cfg.options.quota : null, period: d.notes?.period || null, lastReset: d.resets?.length ? { at: d.resets[d.resets.length - 1].at, by: d.resets[d.resets.length - 1].by } : null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
   const memberView = (m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length });
   if (!admin) { // everyone else sees ONLY their own tasks and numbers — never another person's
     const mine = me ? d.tasks.filter((t) => t.assigneeId === me.id) : [];
@@ -237,6 +238,7 @@ export async function saveOptions(patch) {
     if (typeof patch.autoGenerate === 'boolean') o.autoGenerate = patch.autoGenerate;
     if (/^\d{2}:\d{2}$/.test(patch.generateAt || '')) o.generateAt = patch.generateAt;
     if (typeof patch.autoDistribute === 'boolean') o.autoDistribute = patch.autoDistribute;
+    if (patch.quota && typeof patch.quota === 'object') for (const k of C.KINDS) if (Number.isFinite(+patch.quota[k]) && patch.quota[k] !== '' && patch.quota[k] !== null) o.quota[k] = Math.min(60, Math.max(0, Math.round(+patch.quota[k])));
     if (Number.isFinite(+patch.perPersonTarget) && patch.perPersonTarget !== '' && patch.perPersonTarget !== null) o.perPersonTarget = Math.min(60, Math.max(0, Math.round(+patch.perPersonTarget)));
     if (Number.isFinite(+patch.liteCpa) && patch.liteCpa !== '' && patch.liteCpa !== null) o.liteCpa = Math.min(1000, Math.max(20, Math.round(+patch.liteCpa)));
     if (Number.isFinite(+patch.refreshMinutes) && +patch.refreshMinutes >= 15) o.refreshMinutes = Math.min(720, Math.round(+patch.refreshMinutes));

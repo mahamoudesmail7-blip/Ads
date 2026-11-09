@@ -140,8 +140,8 @@ const OWNER = 'mahamoudesmail7@gmail.com'; const admin = { id: 1, name: 'Mahmoud
 const now1 = new Date('2026-11-09T09:00:00Z'); const now2 = new Date('2026-11-10T09:00:00Z');
 {
   const cfg0 = await E.getConfig(); ok('first use seeds the 4 media buyers', cfg0.team.map((m) => m.name).join() === 'Ahmed Samy,Samy,Mohamed 3sam,Hady');
-  ok('defaults: top-up target 15 per person, distribution waits for the admin', cfg0.options.perPersonTarget === 15 && cfg0.options.autoDistribute === false);
-  await E.saveOptions({ perPersonTarget: 0 }); // (the top-up has its own section below)
+  ok('defaults: minimum per media buyer = 15 scale · 4 problems · 2 tests · 3 mix; distribution waits for the admin', JSON.stringify(cfg0.options.quota) === JSON.stringify({ SCALE: 15, PROBLEM: 4, TEST: 2, MIX: 3 }) && cfg0.options.autoDistribute === false);
+  await E.saveOptions({ quota: { SCALE: 0, PROBLEM: 0, TEST: 0, MIX: 0 } }); // (the minimums have their own section below)
   await E.generateDay(day1, { deps: { ...dep(), getAlerts: async () => ({ unavailable: [], alerts: [{ id: 'funds:act_9', kind: 'FUNDS', title: 'حساب Ahmed Samy: الرصيد المتاح 800 ج بس', entity: { adAccountId: 'act_9' }, facts: [{ l: 'الرصيد المتاح', v: '800 ج' }] }] }) }, now: now1 });
   const pool = await E.getDayView(day1, admin); ok('the day is built as a POOL: nothing is handed to anyone until the admin presses «توزيع بالتساوي»', pool.tasks.length > 0 && pool.tasks.every((t) => !t.assigneeId));
   await E.rebalance(day1, admin);
@@ -235,7 +235,7 @@ console.log('\n7. people act on tasks');
   ok('«ماتعملش» keeps the reason', d.tasks.find((x) => x.id === other.id).status === 'NOT_DONE' && d.tasks.find((x) => x.id === other.id).reason === 'NEEDS_APPROVAL');
   const target = cfg.team.find((m) => m.id !== other.assigneeId);
   d = await E.actOnTask(day1, other.id, 'assign', { memberId: target.id }, admin); ok('manager reassigns (logged with from → to)', d.tasks.find((x) => x.id === other.id).assigneeId === target.id && d.log.some((l) => l.action === 'REASSIGNED' && /اتحوّلت/.test(l.text)));
-  const mt = await E.addManualTask(day1, { title: 'راجع كرياتيف المنتج X', priority: 'HIGH', category: 'FIX' }, admin); ok('manual task is added to the chosen bucket and distributed', mt.tasks.some((x) => x.title === 'راجع كرياتيف المنتج X' && x.assigneeId && x.category === 'FIX'));
+  const mt = await E.addManualTask(day1, { title: 'راجع كرياتيف المنتج X', priority: 'HIGH', category: 'FIX' }, admin); ok('a manual task with nobody chosen joins TODAY’S PLAN (the pool) in the chosen bucket — it is handed out with the rest', mt.tasks.some((x) => x.title === 'راجع كرياتيف المنتج X' && !x.assigneeId && x.category === 'FIX' && x.status === 'PENDING'));
   const mx = mt.tasks.find((x) => x.title === 'راجع كرياتيف المنتج X'); const cx = await E.actOnTask(day1, mx.id, 'cancel', { note: 'مش لازم' }, admin); ok('the admin can REMOVE a task from a person (logged, not counted any more)', cx.tasks.find((x) => x.id === mx.id).status === 'CANCELLED' && cx.log.some((l) => l.action === 'CANCELLED') && C.daySummary(cx.tasks).total === C.daySummary(mt.tasks).total - 1);
   const mt2 = await E.addManualTask(day1, { title: 'مهمة يدوي لهادي', memberId: target.id, category: 'MIX' }, admin); ok('…and ADD a manual task straight to that person', mt2.tasks.find((x) => x.title === 'مهمة يدوي لهادي').assigneeId === target.id);
   ok('an empty manual task is refused', (await rejects(() => E.addManualTask(day1, { title: '  ' }, admin)))?.status === 400);
@@ -294,32 +294,42 @@ console.log('\n10. only the admin sees everything');
   }
 }
 
-console.log('\n11. top-up: at least N real tasks per person, in the 50 / 25 / 25 proportions');
+console.log('\n11. per-kind minimums: every media buyer gets at least N scale / problem / test / mix tasks, evenly');
 {
   const many = []; let k = 0; const R = (o) => row({ id: `m${++k}`, ...o });
   for (let i = 0; i < 6; i++) many.push(R({ pid: 200 + i, product: `رابح ${i}`, winner: true, cpa: 40, spend3: 300, orders3: 8 }));
   for (let i = 0; i < 12; i++) many.push(R({ pid: 300 + i, product: `كويس ${i}`, cpa: 70, spend3: 280, orders3: 4 + (i % 3) }));
-  for (let i = 0; i < 12; i++) many.push(R({ pid: 400 + i, product: `بيبيع ${i}`, cpa: 130, spend3: 260, orders3: 2, vs: 'BETWEEN' }));
+  for (let i = 0; i < 12; i++) many.push(R({ pid: 400 + i, product: `بيبيع ${i}`, cpa: 90, spend3: 180, orders3: 2 }));
   for (let i = 0; i < 20; i++) many.push(R({ pid: 500 + i, product: `عادي ${i}`, spend3: 150, orders3: 0 }));
-  const o = { ...O, types: {} }; const nat = SM.buildSmartCandidates({ rows: many, cards: [], funds: [], batches: [], plan: null }, o);
-  const filled = SM.buildSmartCandidates({ rows: many, cards: [], funds: [], batches: [], plan: null, }, { ...o, target: 40 });
-  ok('without a target there is no filler', nat.filler === 0);
-  ok('with a target the day is filled to exactly the target when the data allows it', filled.candidates.length === 40, filled.candidates.length);
-  const by = (c) => filled.candidates.filter((t) => t.category === c).length;
-  ok('in the owner’s proportions (≈ 50% scale, 25% fix/test, 25% mix)', by('SCALE') >= 18 && by('SCALE') <= 22 && by('FIX') >= 8 && by('FIX') <= 12 && by('MIX') >= 8 && by('MIX') <= 12, `${by('SCALE')}/${by('FIX')}/${by('MIX')}`);
-  ok('every filler task is real work about a real product: reason + steps, never two tasks of the same kind for one product', filled.candidates.filter((t) => t.filler).every((t) => t.why && t.steps.length >= 3 && t.product?.name) && new Set(filled.candidates.map((t) => t.category + '|' + t.key.slice(t.key.indexOf(':') + 1))).size === filled.candidates.length);
-  ok('a careful «اسكيل بحذر» is a single ABO 500, labelled as not-yet-proven', filled.candidates.find((t) => t.key.startsWith('scalelite:')).plan.length === 1 && /لسه مش رابح مؤكد/.test(filled.candidates.find((t) => t.key.startsWith('scalelite:')).why));
-  const tiny = SM.buildSmartCandidates({ rows: many.slice(0, 3), cards: [], funds: [], batches: [], plan: null }, { ...o, target: 60 }); ok('when the data cannot fill the target the day stays honestly shorter', tiny.candidates.length < 60);
-  // through the engine: target = perPersonTarget × people, filler never auto-resolves
-  await E.saveOptions({ perPersonTarget: 6 }); mem.delete('dtk:day:2026-11-20');
-  const d3 = await E.generateDay('2026-11-20', { deps: { ...dep(), getRows: async () => ({ rows: many, zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards: [] }), getBatches: async () => [], getPlan: async () => null }, now: new Date('2026-11-20T09:00:00Z') });
-  const live = d3.tasks.filter((t) => t.status !== 'CANCELLED').length; ok('the engine builds it for the active team (6 × 4 = 24)', live === 24, live);
-  const d3b = await E.generateDay('2026-11-20', { deps: { ...dep(), getRows: async () => ({ rows: many.slice(0, 5), zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards: [] }), getBatches: async () => [], getPlan: async () => null }, now: new Date('2026-11-20T09:00:00Z') });
-  ok('a filler task is never marked «اتحل لوحده» just because the fill set changed', d3b.tasks.filter((t) => t.filler).every((t) => t.status === 'PENDING'));
-  await E.saveOptions({ perPersonTarget: 0, autoDistribute: true }); mem.delete('dtk:day:2026-11-21');
-  const d4 = await E.generateDay('2026-11-21', { deps: dep(), now: new Date('2026-11-21T09:00:00Z') }); ok('autoDistribute ON hands the tasks out at build time (the old behaviour, optional)', d4.tasks.length > 0 && d4.tasks.every((t) => t.assigneeId));
+  for (let i = 0; i < 6; i++) many.push(R({ pid: 600 + i, product: `مشكلة ${i}`, spendToday: 320, ordersToday: 0, spend3: 400, orders3: 0 }));
+  const o = { ...O, types: {} }; const src = { rows: many, cards: [], funds: [], batches: [], plan: null };
+  const kinds = (c) => Object.fromEntries(['SCALE', 'PROBLEM', 'TEST', 'MIX'].map((x) => [x, c.filter((t) => SM.kindOfTask(t) === x).length]));
+  const nat = SM.buildSmartCandidates(src, o); ok('without minimums there is no filler', nat.filler === 0);
+  const totals = { SCALE: 24, PROBLEM: 4, TEST: 8, MIX: 12 }; const filled = SM.buildSmartCandidates(src, { ...o, totals }); const kc = kinds(filled.candidates);
+  ok('every kind reaches its minimum when the data allows: scale 24 · tests 8 · mix 12', kc.SCALE >= 24 && kc.TEST >= 8 && kc.MIX >= 12 && kc.PROBLEM >= 4, JSON.stringify(kc));
+  ok('scale is filled in tiers: proven winners first, then careful, then small «تجريبي» ones (single ABO 500)', filled.candidates.some((t) => t.key.startsWith('scalelite:') && /بحذر/.test(t.title)) && filled.candidates.some((t) => t.key.startsWith('scalelite:') && /تجريبي/.test(t.title) && t.plan.length === 1 && t.plan[0].budget === 500));
+  ok('problems are NEVER invented: with no problems in the data the PROBLEM kind stays empty (shortage stays visible)', kinds(SM.buildSmartCandidates({ rows: many.slice(0, 50), cards: [], funds: [], batches: [], plan: null }, { ...o, totals: { SCALE: 0, PROBLEM: 8, TEST: 0, MIX: 0 } }).candidates).PROBLEM === 0);
+  ok('every filler is real work about a real product (reason + steps), never two tasks of the same kind for one product', filled.candidates.filter((t) => t.filler).every((t) => t.why && t.steps.length >= 3 && t.product?.name) && new Set(filled.candidates.map((t) => SM.kindOfTask(t) + '|' + t.key.slice(t.key.indexOf(':') + 1))).size === filled.candidates.length);
+  const tiny = SM.buildSmartCandidates({ ...src, rows: many.slice(0, 3) }, { ...o, totals: { SCALE: 60, PROBLEM: 20, TEST: 20, MIX: 20 } }); ok('when the data cannot fill the minimums the plan stays honestly shorter', tiny.candidates.length < 60);
+  // through the engine: minimum × people, shortage reported, even hand-out
+  await E.saveOptions({ quota: { SCALE: 6, PROBLEM: 1, TEST: 2, MIX: 3 } }); mem.delete('dtk:day:2026-11-20');
+  const rows20 = { ...dep(), getRows: async () => ({ rows: many, zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards: [] }), getBatches: async () => [], getPlan: async () => null };
+  const d3 = await E.generateDay('2026-11-20', { deps: rows20, now: new Date('2026-11-20T09:00:00Z') });
+  const act = (await E.getConfig()).team.filter((m) => m.active !== false).length; const kk = kinds(d3.tasks.filter((t) => t.status !== 'CANCELLED'));
+  ok('the plan holds the minimum × the active people (' + act + ' people)', kk.SCALE >= 6 * act && kk.PROBLEM >= 1 * act && kk.TEST >= 2 * act && kk.MIX >= 3 * act, JSON.stringify(kk));
+  const v20 = await E.getDayView('2026-11-20', admin); ok('the day reports need vs have for every kind', ['SCALE', 'PROBLEM', 'TEST', 'MIX'].every((x) => v20.quotaStatus[x].need === ({ SCALE: 6, PROBLEM: 1, TEST: 2, MIX: 3 }[x]) * act && v20.quotaStatus[x].have >= v20.quotaStatus[x].need));
+  await E.rebalance('2026-11-20', admin); const v20b = await E.getDayView('2026-11-20', admin);
+  const per = (m, x) => v20b.tasks.filter((t) => t.assigneeId === m.id && t.status !== 'CANCELLED' && SM.kindOfTask(t) === x).length; const mem4 = v20b.team.filter((m) => m.active);
+  ok('after «توزيع» every person has AT LEAST the minimum of each kind', mem4.every((m) => per(m, 'SCALE') >= 6 && per(m, 'PROBLEM') >= 1 && per(m, 'TEST') >= 2 && per(m, 'MIX') >= 3), mem4.map((m) => ['SCALE', 'PROBLEM', 'TEST', 'MIX'].map((x) => per(m, x)).join('/')).join(' | '));
+  ok('…and EVENLY: for each kind the difference between any two people is at most 1', ['SCALE', 'PROBLEM', 'TEST', 'MIX'].every((x) => { const n = mem4.map((m) => per(m, x)); return Math.max(...n) - Math.min(...n) <= 1; }));
+  const pv = await E.previewRebalance('2026-11-20'); ok('the preview carries the minimums and the per-kind counts', pv.quota.SCALE === 6 && pv.members.every((m) => 'SCALE' in m && 'PROBLEM' in m && 'TEST' in m && 'MIX' in m));
+  // new tasks join the plan
+  const mt3 = await E.addManualTask('2026-11-20', { title: 'مهمة جديدة في الخطة', category: 'SCALE' }, admin); ok('a task added to today’s plan waits in the pool until the next distribution', mt3.tasks.find((t) => t.title === 'مهمة جديدة في الخطة').assigneeId === null);
+  const q = await E.saveOptions({ quota: { SCALE: 999, TEST: -5 } }); ok('minimums are bounded (0–60) and editable', q.quota.SCALE === 60 && q.quota.TEST === 0);
+  await E.saveOptions({ quota: { SCALE: 15, PROBLEM: 4, TEST: 2, MIX: 3 } });
+  await E.saveOptions({ autoDistribute: true }); mem.delete('dtk:day:2026-11-21');
+  const d4 = await E.generateDay('2026-11-21', { deps: dep(), now: new Date('2026-11-21T09:00:00Z') }); ok('autoDistribute ON hands the tasks out at build time (optional)', d4.tasks.length > 0 && d4.tasks.filter((t) => t.status !== 'CANCELLED').every((t) => t.assigneeId));
   await E.saveOptions({ autoDistribute: false });
-  ok('settings are bounded (target ≤ 60)', (await E.saveOptions({ perPersonTarget: 999 })).perPersonTarget === 60 && (await E.saveOptions({ perPersonTarget: 15 })).perPersonTarget === 15);
 }
 
 console.log('\n12. scheduler');

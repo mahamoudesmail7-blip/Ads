@@ -13,7 +13,7 @@ export function withLock(key, fn) {
   return run;
 }
 
-const mergeCfg = (c) => ({ team: Array.isArray(c?.team) ? c.team : [], options: { ...DEFAULT_CONFIG, ...(c?.options || {}), types: { ...DEFAULT_CONFIG.types, ...(c?.options?.types || {}) }, routines: Array.isArray(c?.options?.routines) ? c.options.routines : [] }, seeded: !!c?.seeded, updatedAt: c?.updatedAt || null });
+const mergeCfg = (c) => ({ team: Array.isArray(c?.team) ? c.team : [], options: { ...DEFAULT_CONFIG, ...(c?.options || {}), quota: { ...DEFAULT_CONFIG.quota, ...(c?.options?.quota || {}) }, types: { ...DEFAULT_CONFIG.types, ...(c?.options?.types || {}) }, routines: Array.isArray(c?.options?.routines) ? c.options.routines : [] }, seeded: !!c?.seeded, updatedAt: c?.updatedAt || null });
 
 export async function loadConfig() { const row = await prisma.settings.findUnique({ where: { id: CFG } }); return mergeCfg(parse(row?.data)); }
 export async function saveConfig(cfg) { const c = { ...cfg, updatedAt: new Date().toISOString() }; const data = JSON.stringify(c); await prisma.settings.upsert({ where: { id: CFG }, create: { id: CFG, data }, update: { data } }); return mergeCfg(c); }

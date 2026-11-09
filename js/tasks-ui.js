@@ -143,12 +143,30 @@ export function kpiStrip(S, v) {
   </div>`;
 }
 
+// ───────────── manager: does today's plan hold the minimum for everyone? ─────────────
+export function quotaCard(S, v) {
+  const st = v.quotaStatus; const q = v.quota; if (!st || !q) return '';
+  const kinds = ['SCALE', 'PROBLEM', 'TEST', 'MIX']; const need = kinds.reduce((a, k) => a + (st[k]?.need || 0), 0); if (!need) return '';
+  const short = kinds.filter((k) => (st[k]?.have || 0) < (st[k]?.need || 0)); const people = v.team.filter((m) => m.active).length;
+  const bar = (k) => { const s = st[k] || { need: 0, have: 0 }; const pct = s.need ? Math.min(100, Math.round((s.have / s.need) * 100)) : 100; return `<div class="dx-q ${s.have < s.need ? 'low' : 'ok'}"><span>${KIND_SHORT[k]}</span><i><b style="width:${pct}%"></b></i><em>${s.have} / ${s.need}</em></div>`; };
+  return `<section class="dx-card dx-quota ${short.length ? 'short' : 'full'}"><header><h3>${ic(short.length ? 'triangle-alert' : 'circle-check', 18)} ${short.length ? 'خطة اليوم ناقصة عن الحد الأدنى' : 'خطة اليوم مكتملة: كل واحد هياخد الحد الأدنى'}</h3><span class="dx-minline">الحد الأدنى لكل ميديا باير: اسكيل ${q.SCALE} · مشاكل ${q.PROBLEM} · تيست ${q.TEST} · متنوع ${q.MIX} (× ${people})</span></header>
+    <div class="dx-qbars">${kinds.map(bar).join('')}</div>
+    ${short.length ? `<p class="dx-hint">المهام بتتولّد من أرقام الحملات الحقيقية. اللي ناقص (${short.map((k) => `${KIND_SHORT[k]} ${(st[k].need - st[k].have)}`).join('، ')}) مفيش داتا كفاية تطلّعه، ومبنألفش مهام وهمية. تقدر تضيف مهام يدوي، أو تنزّل الحد الأدنى من الإعدادات.</p>` : ''}</section>`;
+}
+
 // ───────────── manager: team card ─────────────
+const KIND_SHORT = { SCALE: 'اسكيل', PROBLEM: 'مشاكل', TEST: 'تيست', MIX: 'متنوع' };
+/** per-kind counts of one person, red when under the minimum the owner set (so «at least N each» is visible at a glance) */
+function kindRow(v, mine) {
+  const q = v.quota; if (!q) return '';
+  return `<span class="dx-kinds">${['SCALE', 'PROBLEM', 'TEST', 'MIX'].map((k) => { const n = mine.filter((t) => tabOf(t) === k).length; return `<i class="${n < (q[k] || 0) ? 'low' : 'ok'}" title="${KIND_SHORT[k]}: ${n} من الحد الأدنى ${q[k] || 0}">${KIND_SHORT[k]} <b>${n}</b></i>`; }).join('')}</span>`;
+}
+
 export function teamCard(S, v) {
   const rows = v.team.filter((m) => m.active).map((m) => {
     const mine = visibleTasks(v).filter((t) => t.assigneeId === m.id); const done = mine.filter((t) => ['DONE', 'AUTO_RESOLVED'].includes(t.status)).length; const pct = mine.length ? Math.round((done / mine.length) * 100) : 0;
     const late = mine.filter((t) => ['LATE', 'NOTDONE'].includes(statusKey(t, S.date))).length; const on = S.f.who === m.id;
-    return `<div class="dx-memrow"><button class="dx-mem ${on ? 'on' : ''}" data-who="${m.id}" title="اعرض مهامه بس">${avatar(v, m.id, m.name, 42)}<span class="nm"><b>${E(m.name)}${m.off ? '<i class="dx-off">إجازة</i>' : ''}</b><small>${done}/${mine.length} مهمة${late ? ` · <u>${late} متأخرة</u>` : ''}</small></span>${ring(mine.length ? pct : null)}</button><span class="dx-memside"><button class="dx-memadd" data-addfor="${m.id}" title="ادّي ${E(m.name)} مهمة بإيدك" aria-label="إضافة مهمة لـ ${E(m.name)}">${ic('plus', 18)}</button><button class="dx-memrm" data-rmmem="${m.id}" title="شيل ${E(m.name)} من الفريق" aria-label="شيل ${E(m.name)} من الفريق">${ic('user-minus', 16)}</button></span></div>`;
+    return `<div class="dx-memrow"><button class="dx-mem ${on ? 'on' : ''}" data-who="${m.id}" title="اعرض مهامه بس">${avatar(v, m.id, m.name, 42)}<span class="nm"><b>${E(m.name)}${m.off ? '<i class="dx-off">إجازة</i>' : ''}</b><small>${done}/${mine.length} مهمة${late ? ` · <u>${late} متأخرة</u>` : ''}</small></span>${ring(mine.length ? pct : null)}${kindRow(v, mine)}</button><span class="dx-memside"><button class="dx-memadd" data-addfor="${m.id}" title="ادّي ${E(m.name)} مهمة بإيدك" aria-label="إضافة مهمة لـ ${E(m.name)}">${ic('plus', 18)}</button><button class="dx-memrm" data-rmmem="${m.id}" title="شيل ${E(m.name)} من الفريق" aria-label="شيل ${E(m.name)} من الفريق">${ic('user-minus', 16)}</button></span></div>`;
   }).join('');
   const un = v.summary.unassigned;
   return `<section class="dx-card"><header><h3>${ic('users', 18)} فريق الميديا بايرز (${v.team.filter((m) => m.active).length})</h3>${S.f.who !== 'ALL' ? '<button class="dx-link" data-who="ALL">عرض الكل</button>' : ''}</header>
@@ -274,6 +292,7 @@ export function previewHtml(pv) {
   return `<h3>${ic('sparkles', 20)} معاينة التوزيع</h3>
     <p class="dx-hint">ده شكل التوزيع لو أكّدت. <b>مفيش حاجة اتغيّرت لسه.</b> اللي بدأ أو خلّص أو اتنقل من إمبارح مش هيتحرّك.</p>
     <div class="dx-pv-sum"><span><b>${pv.moving}</b> مهمة هتتوزّع</span><span><b>${pv.fromPool}</b> من المجمّعة</span><span><b>${pv.moved}</b> هتتنقل من حد لحد</span>${pv.unplaced ? `<span class="warn"><b>${pv.unplaced}</b> مفيش حد متاح ليها</span>` : ''}</div>
-    <table class="dx-pv"><thead><tr><th>الشخص</th><th>دلوقتي</th><th>بعد التوزيع</th><th>اسكيل</th><th>مشاكل وتيست</th><th>متنوّع</th></tr></thead><tbody>${pv.members.map((m) => `<tr class="${m.off ? 'off' : ''}"><td><b>${E(m.name)}</b>${m.off ? ' <i class="dx-off">إجازة</i>' : ''}</td><td>${m.before}</td><td><b>${m.after}</b>${m.added ? ` <span class="add">+${m.added}</span>` : ''}</td><td>${m.SCALE}</td><td>${m.FIX}</td><td>${m.MIX}</td></tr>`).join('')}</tbody><tfoot><tr><td>الإجمالي</td><td>${pv.members.reduce((a, m) => a + m.before, 0)}</td><td>${total}</td><td colspan="3"></td></tr></tfoot></table>
+    <table class="dx-pv"><thead><tr><th>الشخص</th><th>دلوقتي</th><th>بعد التوزيع</th><th>اسكيل</th><th>مشاكل</th><th>تيست</th><th>متنوّع</th></tr></thead><tbody>${pv.members.map((m) => `<tr class="${m.off ? 'off' : ''}"><td><b>${E(m.name)}</b>${m.off ? ' <i class="dx-off">إجازة</i>' : ''}</td><td>${m.before}</td><td><b>${m.after}</b>${m.added ? ` <span class="add">+${m.added}</span>` : ''}</td>${['SCALE', 'PROBLEM', 'TEST', 'MIX'].map((k) => `<td class="${m[k] < ((pv.quota || {})[k] || 0) ? 'low' : 'okc'}">${m[k]}</td>`).join('')}</tr>`).join('')}</tbody><tfoot><tr><td>الإجمالي</td><td>${pv.members.reduce((a, m) => a + m.before, 0)}</td><td>${total}</td><td colspan="4"></td></tr></tfoot></table>
+    ${pv.quota ? `<p class="dx-hint">الحد الأدنى لكل واحد: اسكيل ${pv.quota.SCALE} · مشاكل ${pv.quota.PROBLEM} · تيست ${pv.quota.TEST} · متنوع ${pv.quota.MIX}. <span class="dx-redtxt">الأحمر = أقل من الحد الأدنى</span> (لأن مفيش مهام كفاية من النوع ده في الخطة).</p>` : ''}
     <div class="btns"><button class="dx-sec-btn" data-close>إلغاء</button><button class="dx-go" id="mOk" ${pv.moving ? '' : 'disabled'}>${ic('check-check', 17)} أكّد التوزيع</button></div>`;
 }

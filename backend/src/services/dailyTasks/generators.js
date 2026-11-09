@@ -64,7 +64,7 @@ export async function runGenerators({ date, options, members, deps = {} }) {
     src.plan = await getPlan(); mark(['OPEN_PLAN'], true);
   } catch (e) { logger.warn('[dailyTasks] plan source failed', { message: e.message }); mark(['OPEN_PLAN'], false, { error: e.message }); }
 
-  const smartOpts = { ...SMART_DEFAULTS, ...Object.fromEntries(Object.keys(SMART_DEFAULTS).filter((k) => Number.isFinite(Number(options[k]))).map((k) => [k, Number(options[k])])), types: on, target: (Number(options.perPersonTarget) || 0) * members.length };
+  const smartOpts = { ...SMART_DEFAULTS, ...Object.fromEntries(Object.keys(SMART_DEFAULTS).filter((k) => Number.isFinite(Number(options[k]))).map((k) => [k, Number(options[k])])), types: on, totals: Object.fromEntries(['SCALE', 'PROBLEM', 'TEST', 'MIX'].map((k) => [k, (Math.max(0, Number(options.quota?.[k]) || 0)) * members.length])) };
   const built = buildSmartCandidates({ ...src, rows: src.rows || [] }, smartOpts);
   // a type whose source failed produces nothing AND is never auto-resolved (okTypes excludes it)
   const candidates = built.candidates.filter((c) => on[c.type] !== false);

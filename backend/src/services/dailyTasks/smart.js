@@ -217,32 +217,51 @@ export function mixTasks(groups, { funds = [], batches = [], plan = null, failed
 // proven winners yet · a new test for any selling product with stock · a quick daily review of every other active product. If the data cannot fill it, the day simply stays shorter.
 const pkeyOf = (t) => (/^(scale|fix|test|stock|scalelite|review):/.test(t.key || '') ? t.key.slice(t.key.indexOf(':') + 1) : null);
 
-export function topUp(groups, natural, o, target) {
-  if (!(target > 0)) return [];
-  const have = (c) => natural.filter((t) => t.category === c).length; const total = natural.length; if (total >= target) return [];
-  const scaleQ = Math.ceil(target * 0.5); const fixQ = Math.round(target * 0.25); const mixQ = Math.max(0, target - scaleQ - fixQ);
-  const taken = new Set(natural.map(pkeyOf).filter(Boolean)); const keys = new Set(natural.map((t) => t.key));
-  const takenForScale = new Set(natural.filter((t) => !String(t.key).startsWith('test:')).map(pkeyOf).filter(Boolean)); // a product that already has a natural TEST can still get a careful scale
+export const kindOfTask = (t) => (t.type === 'SCALE' ? 'SCALE' : t.type === 'ZERO_ORDERS' || t.type === 'CPA' ? 'PROBLEM' : t.type === 'TEST' ? 'TEST' : 'MIX');
+
+/**
+ * Per-kind MINIMUMS (owner's rule: every media buyer gets at least N scale / N problem / N test / N mix tasks, evenly). `totals` = { SCALE, PROBLEM, TEST, MIX } = quota × people.
+ * The natural tasks come first; what is still missing is filled with REAL work only:
+ *   SCALE   — a careful single scale for products that sell at a good cost but are not proven winners (≥3 Meta orders), then a small «تجريبي» scale for anything that sells (≥1 order) within its CPA limit
+ *   TEST    — a new test for every selling product that has stock
+ *   MIX     — a quick daily review of the remaining active products
+ *   PROBLEM — never invented: a problem exists or it does not. A shortfall stays visible instead.
+ * Never two tasks of the same kind for one product.
+ */
+export function topUp(groups, natural, o, totals) {
+  if (!totals) return [];
+  const have = (k) => natural.filter((t) => kindOfTask(t) === k).length;
+  const need = { SCALE: Math.max(0, (totals.SCALE || 0) - have('SCALE')), TEST: Math.max(0, (totals.TEST || 0) - have('TEST')), MIX: Math.max(0, (totals.MIX || 0) - have('MIX')) };
+  if (!need.SCALE && !need.TEST && !need.MIX) return [];
+  const keys = new Set(natural.map((t) => t.key)); const taken = new Set(natural.map(pkeyOf).filter(Boolean));
+  const takenBy = (prefixes) => new Set(natural.filter((t) => prefixes.some((p) => String(t.key).startsWith(p))).map(pkeyOf).filter(Boolean));
   const activeOf = (g) => g.campaigns.filter((r) => r.status === 'ACTIVE' && r.dataFresh !== false);
-  const eligible = [...groups.values()].filter((g) => !taken.has(g.key) && activeOf(g).length > 0);
-  const eligibleScale = [...groups.values()].filter((g) => !takenForScale.has(g.key) && activeOf(g).length > 0);
   const okStock = (g) => stockKnownOk(g.stock, o.minTestStock); const bad = (g) => activeOf(g).some((r) => r.cpaVsLimits === 'ABOVE_HARDSTOP' || r.cpaVsLimits === 'ABOVE_REDUCE');
-  const pools = {
-    SCALE: eligibleScale.filter((g) => okStock(g) && !bad(g) && g.n3Known && g.orders3 >= 3 && g.cpa3 != null && g.cpa3 <= (g.reduceLimit || o.liteCpa)).sort((a, b) => b.orders3 - a.orders3).map((g) => liteScale(g, o)),
-    FIX: eligible.filter((g) => okStock(g) && !bad(g) && g.n3Known && g.orders3 >= 1).sort((a, b) => b.orders3 - a.orders3).map((g) => ({ ...testTask(g, o, 'LOW', g.orders3), key: `test:${g.key}` })),
-    MIX: eligible.filter((g) => g.spend3 > 0 || g.orders3 > 0).sort((a, b) => b.spend3 - a.spend3).map((g) => reviewTask(g)),
-  };
-  const out = []; const usedProducts = new Set(); let need = target - total;
-  const take = (bucket, n) => { let k = 0; for (const t of pools[bucket]) { if (k >= n || need <= 0) break; const pk = pkeyOf(t); if (usedProducts.has(pk) || keys.has(t.key)) continue; usedProducts.add(pk); out.push({ ...t, filler: true }); k++; need--; } };
-  take('SCALE', Math.max(0, scaleQ - have('SCALE'))); take('FIX', Math.max(0, fixQ - have('FIX'))); take('MIX', Math.max(0, mixQ - have('MIX')));
-  for (const b of ['FIX', 'MIX', 'SCALE']) take(b, need); // still short → whatever real work is left, in this order
+  const all = [...groups.values()].filter((g) => activeOf(g).length > 0);
+  const out = []; const usedMix = new Set();
+  const take = (list, n, used = new Set()) => { let k = 0; for (const t of list) { if (k >= n) break; const pk = pkeyOf(t); if (used.has(pk) || keys.has(t.key)) continue; used.add(pk); keys.add(t.key); out.push({ ...t, filler: true }); k++; } return k; };
+  // TEST: every selling product with stock (a product with a natural test is skipped)
+  const noTest = takenBy(['test:', 'fix:']);
+  const testPool = all.filter((g) => !noTest.has(g.key) && okStock(g) && !bad(g) && g.n3Known && g.orders3 >= 1).sort((a, b) => b.orders3 - a.orders3).map((g) => ({ ...testTask(g, o, 'LOW', g.orders3), key: `test:${g.key}` }));
+  const usedTest = new Set(); take(testPool, need.TEST, usedTest);
+  // SCALE: tier 1 = careful (proven-ish), tier 2 = small experimental. A product that already has a natural scale / fix / stock task is skipped.
+  const noScale = takenBy(['scale:', 'fix:', 'stock:']);
+  const scaleBase = all.filter((g) => !noScale.has(g.key) && okStock(g) && !bad(g) && g.n3Known && g.cpa3 != null);
+  const lim = (g) => g.reduceLimit || o.liteCpa;
+  const tier1 = scaleBase.filter((g) => g.orders3 >= 3 && g.cpa3 <= lim(g)).sort((a, b) => b.orders3 - a.orders3).map((g) => liteScale(g, o));
+  const tier2 = scaleBase.filter((g) => g.orders3 >= 1 && g.orders3 < 3 && g.cpa3 <= lim(g)).sort((a, b) => b.orders3 - a.orders3).map((g) => liteScale(g, o, true));
+  const usedScale = new Set(); let got = take(tier1, need.SCALE, usedScale); if (got < need.SCALE) take(tier2, need.SCALE - got, usedScale);
+  // MIX: a daily review for products that got no other task today
+  const busy = new Set([...taken, ...out.map(pkeyOf).filter(Boolean)]);
+  const reviewPool = all.filter((g) => !busy.has(g.key) && (g.spend3 > 0 || g.orders3 > 0)).sort((a, b) => b.spend3 - a.spend3).map((g) => reviewTask(g));
+  take(reviewPool, need.MIX, usedMix);
   return out;
 }
 
-function liteScale(g, o) {
+function liteScale(g, o, experimental = false) {
   const name = clean(g.name); const plan = [{ mode: 'ABO', budget: o.scaleBudget }]; const stockTxt = stockShort(g.stock);
-  return { key: `scalelite:${g.key}`, type: 'SCALE', category: 'SCALE', priority: 'MED', title: `اسكيل بحذر «${name}» — ABO بـ${n0(o.scaleBudget)} ج`,
-    why: `${g.linked ? `«${name}»` : `حملة «${name}»`} جاب ${g.orders3} أوردر (حسب Meta) في آخر 3 أيام بتكلفة ${n0(g.cpa3)} ج للأوردر. التكلفة كويسة، بس لسه مش رابح مؤكد، فنجرّب اسكيل واحد بحذر ونشوف.`,
+  return { key: `scalelite:${g.key}`, type: 'SCALE', category: 'SCALE', priority: experimental ? 'LOW' : 'MED', title: experimental ? `اسكيل تجريبي «${name}» — ABO بـ${n0(o.scaleBudget)} ج` : `اسكيل بحذر «${name}» — ABO بـ${n0(o.scaleBudget)} ج`,
+    why: experimental ? `${g.linked ? `«${name}»` : `حملة «${name}»`} جاب ${g.orders3} أوردر بس (حسب Meta) في آخر 3 أيام بتكلفة ${n0(g.cpa3)} ج للأوردر، وده تحت الحد. لسه بدري نحكم عليه، فنجرّب اسكيل واحد صغير ونتابعه.` : `${g.linked ? `«${name}»` : `حملة «${name}»`} جاب ${g.orders3} أوردر (حسب Meta) في آخر 3 أيام بتكلفة ${n0(g.cpa3)} ج للأوردر. التكلفة كويسة، بس لسه مش رابح مؤكد، فنجرّب اسكيل واحد بحذر ونشوف.`,
     steps: ['افتح «مركز التوسّع» وخد أحسن حملة للمنتج كأساس.', `اعمل اسكيل واحد ABO بميزانية ${n0(o.scaleBudget)} ج.`, 'راقبه 48 ساعة قبل أي زيادة.', 'اكتب في الملاحظة اللي عملته.'],
     plan, facts: [{ l: 'أوردرات Meta (3 أيام)', v: String(g.orders3) }, { l: 'تكلفة الأوردر (3 أيام)', v: egp(g.cpa3) }, ...(stockTxt ? [{ l: 'المخزون', v: stockTxt }] : [])],
     product: { id: g.productId, name }, link: { page: 'ai-media-buyer.html#scale', label: 'افتح مركز التوسّع' }, action: 'اسكيل بحذر' };
@@ -257,12 +276,13 @@ function reviewTask(g) {
 
 /** Everything together. `src` = { rows, cards, funds, batches, plan, zeroLimit, minSpend, period, asOf }. Returns candidates + counts. Every candidate carries `meta` (source window + data time). */
 export function buildSmartCandidates(src, options = {}) {
-  const o = { ...SMART_DEFAULTS, ...options }; const on = options.types || {}; const groups = groupByProduct(src.rows || []);
+  const totals = options.totals || null; // { SCALE, PROBLEM, TEST, MIX } = the per-person minimums × people
+  const o = { ...SMART_DEFAULTS, ...options }; if (totals) { o.maxFix = Math.max(o.maxFix, totals.PROBLEM || 0); o.maxTest = Math.max(o.maxTest, totals.TEST || 0); } const on = options.types || {}; const groups = groupByProduct(src.rows || []);
   const sc = on.SCALE === false ? { tasks: [], used: new Set() } : scaleTasks(groups, src.cards, o);
   const fx = fixTasks(groups, sc.used, o, { zeroLimit: src.zeroLimit || 150, minSpend: src.minSpend || 150 });
   const mix = mixTasks(groups, { funds: src.funds, batches: on.CLONE === false ? [] : src.batches, plan: on.OPEN_PLAN === false ? null : src.plan, failedScales: on.CLONE === false ? [] : (src.cards || []).filter((c) => c.decisionStatus === 'FAILED') });
   const all = [...sc.tasks, ...fx.fixes.filter((t) => on[t.type] !== false), ...(on.TEST === false ? [] : fx.tests), ...mix.filter((t) => on[t.type] !== false)];
-  const filler = topUp(groups, all, o, Number(options.target) || 0).filter((t) => on[t.type] !== false);
+  const filler = topUp(groups, all, o, totals).filter((t) => on[t.type] !== false);
   const meta = { window: src.period || null, asOf: src.asOf || null, basis: 'مشتريات Meta' };
   return { candidates: [...all, ...filler].map((t) => ({ ...t, meta })), groups: groups.size, natural: all.length, filler: filler.length };
 }

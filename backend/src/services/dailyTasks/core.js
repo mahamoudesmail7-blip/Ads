@@ -28,12 +28,15 @@ export const NOT_DONE_REASONS = {
   OTHER: 'سبب تاني',
 };
 export const BUCKETS = ['SCALE', 'FIX', 'MIX'];
+/** The 4 kinds the owner balances evenly between people: اسكيل · حل مشاكل · تيست جديد · متنوّع. */
+export const KINDS = ['SCALE', 'PROBLEM', 'TEST', 'MIX'];
+export const kindOf = (t) => (t.type === 'SCALE' ? 'SCALE' : t.type === 'ZERO_ORDERS' || t.type === 'CPA' ? 'PROBLEM' : t.type === 'TEST' ? 'TEST' : t.type === 'MANUAL' ? (t.category === 'SCALE' ? 'SCALE' : t.category === 'FIX' ? 'PROBLEM' : 'MIX') : 'MIX');
 export const categoryOf = (type) => (type === 'SCALE' ? 'SCALE' : ['ZERO_ORDERS', 'CPA', 'TEST'].includes(type) ? 'FIX' : 'MIX');
 export const MAX_CARRY = 3; // after this many roll-overs the task is flagged «متأخر جدًا» and bumped to HIGH
 export const DEFAULT_CONFIG = {
   autoGenerate: true, generateAt: '00:05', refreshMinutes: 60, maxPerPerson: 15,
   types: { ZERO_ORDERS: true, CPA: true, TEST: true, REVIEW: true, STOCK: true, FUNDS: true, SCALE: true, CLONE: true, OPEN_PLAN: true, DECISIONS: true },
-  scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20, liteCpa: 100, perPersonTarget: 15, autoDistribute: false,
+  scaleBudget: 500, strongCpa: 50, strongScales: 4, normalScales: 2, testMinOrders: 2, minTestStock: 30, testMaxCampaigns: 2, maxTest: 8, maxFix: 20, liteCpa: 100, perPersonTarget: 0, autoDistribute: false, quota: { SCALE: 15, PROBLEM: 4, TEST: 2, MIX: 3 }, // quota = the MINIMUM per media buyer; perPersonTarget is the old single number (unused)
   routines: [], // [{ id, title, detail, priority, days: [0..6] | [] (every day), mode: 'SPREAD' | 'ALL' }]
 };
 
@@ -65,8 +68,8 @@ export function availableMembers(team, date) {
 
 /** Current load of every member = weight of the open tasks they hold. */
 export function loadsOf(tasks, members) {
-  const load = new Map(members.map((m) => [m.id, { w: 0, n: 0, cat: { SCALE: 0, FIX: 0, MIX: 0 } }]));
-  for (const t of tasks) { if (!isOpen(t) || !load.has(t.assigneeId)) continue; const l = load.get(t.assigneeId); l.w += weightOf(t); l.n += 1; l.cat[t.category || 'MIX'] = (l.cat[t.category || 'MIX'] || 0) + 1; }
+  const load = new Map(members.map((m) => [m.id, { w: 0, n: 0, cat: { SCALE: 0, PROBLEM: 0, TEST: 0, MIX: 0 } }]));
+  for (const t of tasks) { if (!isOpen(t) || !load.has(t.assigneeId)) continue; const l = load.get(t.assigneeId); const k = kindOf(t); l.w += weightOf(t); l.n += 1; l.cat[k] = (l.cat[k] || 0) + 1; }
   return load;
 }
 
@@ -83,8 +86,8 @@ export function distribute(toAssign, { members, existing = [], date = '', sticky
   const owner = new Map(); // product key -> member currently holding an open task of it
   for (const t of existing) { const pk = t.product?.id != null ? `p:${t.product.id}` : t.product?.name ? `n:${t.product.name}` : null; if (pk && isOpen(t) && load.has(t.assigneeId)) owner.set(pk, t.assigneeId); }
   const groups = new Map();
-  toAssign.forEach((t, i) => { const pk = t.product?.id != null ? `p:${t.product.id}` : t.product?.name ? `n:${t.product.name}` : `solo:${i}`; const gk = `${t.category || 'MIX'}|${pk}`; if (!groups.has(gk)) groups.set(gk, { pk, cat: t.category || 'MIX', ts: [] }); groups.get(gk).ts.push(t); });
-  const catRank = { SCALE: 0, FIX: 1, MIX: 2 };
+  toAssign.forEach((t, i) => { const pk = t.product?.id != null ? `p:${t.product.id}` : t.product?.name ? `n:${t.product.name}` : `solo:${i}`; const kd = kindOf(t); const gk = `${kd}|${pk}`; if (!groups.has(gk)) groups.set(gk, { pk, cat: kd, ts: [] }); groups.get(gk).ts.push(t); });
+  const catRank = { SCALE: 0, PROBLEM: 1, TEST: 2, MIX: 3 };
   const list = [...groups.values()].map((g) => ({ ...g, w: g.ts.reduce((a, t) => a + weightOf(t), 0) })).sort((a, b) => (catRank[a.cat] ?? 3) - (catRank[b.cat] ?? 3) || b.w - a.w || String(a.pk).localeCompare(String(b.pk)));
   // each bucket is spread evenly first (so everyone gets a similar share of scale / fix / mix), then the total weight, then task count
   const lightest = (cat) => [...members].sort((a, b) => (load.get(a.id).cat[cat] || 0) - (load.get(b.id).cat[cat] || 0) || load.get(a.id).w - load.get(b.id).w || load.get(a.id).n - load.get(b.id).n || order.get(a.id) - order.get(b.id))[0];

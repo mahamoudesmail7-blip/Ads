@@ -77,6 +77,14 @@
 .dx-ring { --p: 0; display: grid; place-items: center; border-radius: 50%; flex: none; position: relative; background: conic-gradient(var(--x-green) calc(var(--p) * 1%), color-mix(in srgb, var(--x-dim) 20%, transparent) 0); }
 .dx-ring::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--x-card); }
 .dx-ring b { position: relative; font-size: 11px; font-weight: 900; font-variant-numeric: tabular-nums; }
+.dx-mem { flex-wrap: wrap; } .dx-mem > .dx-kinds { flex: 1 0 100%; justify-content: space-between; margin-top: 2px; padding-top: 7px; border-top: 1px dashed var(--x-line); }
+.dx-mem .nm .dx-kinds i b { display: inline; font-size: inherit; line-height: inherit; overflow-wrap: normal; } .dx-mem .nm .dx-kinds { white-space: nowrap; }
+.dx-kinds { display: flex; flex-wrap: wrap; gap: 3px 8px; margin-top: 3px; } .dx-kinds i { font-style: normal; font-size: 10.5px; font-weight: 800; color: var(--x-dim); } .dx-kinds i b { font-weight: 900; font-variant-numeric: tabular-nums; } .dx-kinds i.low { color: var(--x-red); } .dx-kinds i.ok b { color: var(--x-green); }
+.dx-quota { margin-bottom: 14px; padding: 14px 18px; } .dx-quota.short { border-color: color-mix(in srgb, var(--x-amber) 55%, var(--x-line)); background: color-mix(in srgb, var(--x-amber) 6%, var(--x-card)); } .dx-quota.full { border-color: color-mix(in srgb, var(--x-green) 45%, var(--x-line)); }
+.dx-quota > header { flex-wrap: wrap; margin-bottom: 10px; } .dx-minline { color: var(--x-dim); font-weight: 700; font-size: 12.5px; }
+.dx-qbars { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 18px; } .dx-q { display: grid; grid-template-columns: 54px 1fr auto; gap: 8px; align-items: center; font-weight: 800; font-size: 12.5px; } .dx-q i { height: 8px; border-radius: 6px; background: color-mix(in srgb, var(--x-dim) 18%, transparent); overflow: hidden; display: block; } .dx-q i b { display: block; height: 100%; background: var(--x-green); } .dx-q.low i b { background: var(--x-amber); } .dx-q em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--x-dim); } .dx-q.low em { color: #b45309; }
+.dx-redtxt { color: var(--x-red); font-weight: 800; } .dx-pv td.low { color: var(--x-red); font-weight: 900; }
+@container dxbody (max-width: 899px) { .dx-qbars { grid-template-columns: 1fr 1fr; } }
 .dx-memrow { display: flex; align-items: stretch; gap: 6px; } .dx-memrow .dx-mem { flex: 1; min-width: 0; }
 .dx-memside { display: flex; flex-direction: column; gap: 4px; flex: none; } .dx-memside .dx-memadd { flex: 1; min-height: 34px; }
 .dx-memrm { width: 44px; height: 30px; border-radius: 12px; border: 1px solid var(--x-line); background: transparent; color: var(--x-dim); cursor: pointer; display: grid; place-items: center; flex: none; } .dx-memrm:hover { color: var(--x-red); border-color: var(--x-red); background: color-mix(in srgb, var(--x-red) 8%, transparent); }
