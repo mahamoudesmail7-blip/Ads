@@ -200,5 +200,13 @@ console.log('\n9. «منتج جديد» — a product that does not exist in the
   ok('the other new product is unaffected', (await PS.listDrafts()).some((x) => x.id === d2.id));
 }
 
+console.log('\n10. light product list for the picker (the screen used to be slow because it computed spend / CPA / health for every product)');
+{
+  let asked = null;
+  const list = await PS.listProductsLight({ storeId: 'trendy' }, { discover: async (s) => { asked = s; return [3, 1, 2, 9]; }, findMany: async (a) => { ok('it only asks for id + name + store (no metrics), restricted to the relevant ids', JSON.stringify(a.select) === JSON.stringify({ id: true, product_name: true, store_id: true }) && a.where.id.in.length === 4); return [{ id: 3, product_name: 'جهاز ب', store_id: 'trendy' }, { id: 1, product_name: 'جهاز أ', store_id: null }, { id: 2, product_name: '', store_id: 'x' }]; } });
+  ok('rows without a name are dropped, the rest are sorted by name and carry id / name / storeId', asked === 'trendy' && list.length === 2 && list[0].name === 'جهاز أ' && list[1].storeId === 'trendy');
+  ok('no relevant products → an empty list without any query', (await PS.listProductsLight({}, { discover: async () => [], findMany: async () => { throw new Error('must not query'); } })).length === 0);
+}
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

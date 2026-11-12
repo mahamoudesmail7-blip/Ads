@@ -11,6 +11,7 @@ router.use(requireAuth, requireRole('ADMIN', 'MANAGER'));
 // StrategyError carries a real Arabic message + status — surfaced as-is (asyncRoute honours err.status)
 const view = (req) => PS.getView(req.params.id);
 
+router.get('/products', asyncRoute(async (req, res) => res.json({ products: await PS.listProductsLight({ storeId: req.query.storeId || null }) })));
 router.get('/drafts', asyncRoute(async (req, res) => res.json({ drafts: await PS.listDrafts() })));
 router.post('/drafts', asyncRoute(async (req, res) => res.status(201).json({ draft: await PS.createDraft(req.body || {}) })));
 router.delete('/drafts/:id', asyncRoute(async (req, res) => res.json(await PS.deleteDraft(req.params.id))));

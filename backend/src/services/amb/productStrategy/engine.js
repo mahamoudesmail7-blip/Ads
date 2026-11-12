@@ -33,6 +33,14 @@ async function saveState(s) { s.updatedAt = now(); const data = JSON.stringify(s
 const mutate = (productId, fn) => withLock(KEY(productId), async () => { const s = await loadState(productId); const out = (await fn(s)) || s; await saveState(out); return out; });
 
 
+// ───────────── light product list for the picker (id + name only — no spend / CPA / health) ─────────────
+export async function listProductsLight({ storeId = null } = {}, deps = {}) {
+  const ids = await (deps.discover || (async (s) => (await import('../productDiscovery.js')).discoverRelevantProductIds(s)))(storeId || null);
+  if (!ids.length) return [];
+  const rows = await (deps.findMany || ((a) => prisma.product.findMany(a)))({ where: { id: { in: ids } }, select: { id: true, product_name: true, store_id: true } });
+  return rows.filter((r) => r.product_name).map((r) => ({ id: r.id, name: r.product_name, storeId: r.store_id || null })).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+}
+
 // ───────────── new (draft) products — a product that does NOT exist in the system ─────────────
 // The owner can analyse any product from just a name + photos (e.g. a massager he is only considering). Drafts live ONLY in this module's own settings rows (negative ids, so they can never clash with a real
 // product id); nothing is added to the products table, the stores, the campaigns or any other module.

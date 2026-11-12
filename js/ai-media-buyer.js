@@ -2002,11 +2002,11 @@ async function renderDecisionCenter(panel) {
   dcRenderAll(panel);
 }
 
+// AI Targeting & Creative only needs id + name, so it reads a LIGHT list (one indexed query) instead of the old decision-center list that computed spend / CPA / health for every product (that was what made the screen slow).
 async function dcLoadProducts() {
-  dcState.products = await api.get('/api/ai-media-buyer/decision-center/products', dcState.storeId ? { storeId: dcState.storeId } : undefined);
+  const r = await api.get('/api/product-strategy/products', dcState.storeId ? { storeId: dcState.storeId } : undefined);
+  dcState.products = (r.products || []).map((p) => ({ productId: p.id, productName: p.name, storeId: p.storeId }));
   dcState.lastLoadedAt = new Date().toISOString();
-  const actionable = dcState.products.filter((p) => ['scale', 'needsCreative', 'needsImprovement', 'pauseCandidate'].includes(p.filterBucket)).length;
-  state.pendingCount = actionable; renderNav();
   dcState.mappingOverview = null; // (the mapping-review button is not part of the AI Targeting & Creative screen)
 }
 
