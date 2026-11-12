@@ -60,6 +60,10 @@
 .ps-pre { background: var(--p-bg2); border-radius: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.7; white-space: pre-wrap; margin: 0 0 8px; max-height: 240px; overflow: auto; direction: ltr; text-align: left; }
 .ps-fact { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; } .ps-fact input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--p-acc); } .ps-fact small { display: block; color: var(--p-dim); font-weight: 600; font-size: 12px; }
 .amb-btn.danger { color: var(--p-red); }
+/* product picker (AI Targeting & Creative screen): a compact text list, no pictures */
+.amb-dclist { max-height: 340px; overflow: auto; border: 1px solid var(--amb-border, #e7eaf0); border-radius: 14px; background: var(--amb-surface, #fff); }
+.amb-dcrow { display: block; width: 100%; text-align: start; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--amb-border, #e7eaf0); background: transparent; color: inherit; font: inherit; font-size: 13.5px; cursor: pointer; }
+.amb-dcrow:last-child { border-bottom: 0; } .amb-dcrow:hover, .amb-dcrow.sel { background: color-mix(in srgb, var(--amb-purple, #7c3aed) 9%, transparent); }
 /* page audit + 8 interests */
 .ps-scoreRow { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .ps-score { width: 104px; height: 104px; border-radius: 50%; display: grid; place-content: center; text-align: center; border: 7px solid var(--p-line); background: var(--p-card); flex: none; }

@@ -2077,20 +2077,22 @@ function dcFilteredProducts() {
 // screens (health score, tabs, action plan, filters …) are kept below as *Legacy functions (not rendered) so nothing is lost and it can be restored.
 function dcRenderAll(panel) {
   const all = dcState.products || [];
+  const sel = dcState.selectedProductId ? all.find((x) => x.productId === dcState.selectedProductId) : null;
   panel.innerHTML = `
     <div class="toolbar" style="margin-bottom:14px; align-items:center;">
       ${(dcState.stores || []).length > 1 ? `<select class="amb-select" id="ambDcStore">
         <option value="">جميع المتاجر</option>
         ${dcState.stores.map((s) => `<option value="${E(s.id)}" ${dcState.storeId === s.id ? 'selected' : ''}>${E(s.name || s.id)}</option>`).join('')}
       </select>` : ''}
-      <div class="amb-search"><span class="s-ic">${ic('search', 's-ic')}</span><input id="ambDcSearch" placeholder="ابحث عن منتج…" value="${E(dcState.search)}" /></div>
-      <span class="faint" style="font-size:12px;" id="ambDcCount">${all.length} منتج — اختار منتج عشان تحلله وتجهّز الاستهداف والبوستات.</span>
+      ${sel ? `<div style="font-weight:800; font-size:15px;">${E(sel.productName)}</div><button class="amb-btn ghost sm" id="ambDcChange">🔄 تغيير المنتج</button>`
+        : `<div class="amb-search"><span class="s-ic">${ic('search', 's-ic')}</span><input id="ambDcSearch" placeholder="ابحث عن منتج…" value="${E(dcState.search)}" /></div><span class="faint" style="font-size:12px;">${all.length} منتج — اختار منتج.</span>`}
     </div>
-    <div id="ambDcDossier"></div>
-    <div class="amb-pgrid" id="ambDcGrid" style="margin-top:16px;">${dcGridHtml()}</div>`;
+    ${sel ? '' : `<div class="amb-dclist" id="ambDcGrid">${dcGridHtml()}</div>`}
+    <div id="ambDcDossier"></div>`;
   const storeSel = $('ambDcStore');
   if (storeSel) storeSel.onchange = async (e) => { dcState.storeId = e.target.value || null; dcState.selectedProductId = null; await dcLoadProducts(); dcRenderAll(panel); };
-  $('ambDcSearch').oninput = (e) => { dcState.search = e.target.value; const g = $('ambDcGrid'); if (g) { g.innerHTML = dcGridHtml(); dcWireCards(panel); } };
+  const sIn = $('ambDcSearch'); if (sIn) sIn.oninput = (e) => { dcState.search = e.target.value; const g = $('ambDcGrid'); if (g) { g.innerHTML = dcGridHtml(); dcWireCards(panel); } };
+  const chg = $('ambDcChange'); if (chg) chg.onclick = () => { dcState.selectedProductId = null; dcRenderAll(panel); };
   dcWireCards(panel);
   if (dcState.selectedProductId) dcRenderStrategyOnly(panel);
 }
@@ -2099,21 +2101,17 @@ function dcGridHtml() {
   const q = (dcState.search || '').trim().toLowerCase();
   if (q) list = list.filter((p) => (p.productName || '').toLowerCase().includes(q));
   list = [...list].sort((a, b) => (a.productName || '').localeCompare(b.productName || '', 'ar'));
-  return list.length ? list.map(dcCardHtml).join('') : '<div class="amb-panel amb-empty" style="grid-column:1/-1;">مفيش منتجات مطابقة للبحث.</div>';
+  return list.length ? list.map(dcCardHtml).join('') : '<div class="amb-empty" style="padding:14px;">مفيش منتجات مطابقة للبحث.</div>';
 }
 function dcWireCards(panel) { panel.querySelectorAll('[data-dcopen]').forEach((b) => b.onclick = () => dcOpenProduct(panel, Number(b.dataset.dcopen))); }
 function dcCardHtml(p) {
   const sel = dcState.selectedProductId === p.productId;
-  return `<div class="amb-pcard ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">
-    ${p.image ? `<img class="amb-pcard-img" src="${E(p.image)}" alt="" loading="lazy" />` : `<div class="amb-pcard-img ph">${ic('image', 'ic')}</div>`}
-    <div class="amb-pcard-name">${E(p.productName)}</div>
-  </div>`;
+  return `<button class="amb-dcrow ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">${E(p.productName)}</button>`;
 }
 function dcRenderStrategyOnly(panel) {
   const el = $('ambDcDossier'); if (!el) return;
   const id = dcState.selectedProductId; const p = (dcState.products || []).find((x) => x.productId === id) || {};
   el.innerHTML = `<div class="amb-dossier">
-    <div class="amb-dossier-head">${p.image ? `<img class="amb-dossier-img" src="${E(p.image)}" alt="" />` : ''}<div style="flex:1; min-width:200px;"><div class="amb-dossier-title">${E(p.productName || '')}</div></div></div>
     <div id="ambDcStrategyBody" class="amb-empty">جارِ التحميل...</div></div>`;
   UI.setAssistantContext({ page: 'ai-targeting-creative', productId: id, productName: p.productName || null });
   import('./amb-product-strategy.js').then((m) => m.mountProductStrategy(el.querySelector('#ambDcStrategyBody'), id)).catch((e) => { const b = el.querySelector('#ambDcStrategyBody'); if (b) b.innerHTML = `<div class="amb-empty">⚠️ ${E(e.message || e)}</div>`; });
