@@ -44,7 +44,7 @@ async function loadDrafts() {
 const mutateDrafts = (fn) => withLock(DRAFTS_KEY, async () => { const d = await loadDrafts(); const out = (await fn(d)) || d; const data = JSON.stringify(out); await prisma.settings.upsert({ where: { id: DRAFTS_KEY }, create: { id: DRAFTS_KEY, data }, update: { data } }); return out; });
 const publicDraft = (x) => ({ id: x.id, name: x.name, category: x.category || null, price: x.price ?? null, createdAt: x.createdAt });
 async function draftOrThrow(id) { const d = (await loadDrafts()).items.find((x) => x.id === id && !x.deleted); if (!d) throw bad('المنتج الجديد مش موجود (يمكن اتمسح).', 404, 'NOT_FOUND'); return d; }
-export async function listDrafts() { return (await loadDrafts()).items.filter((x) => !x.deleted).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicDraft); }
+export async function listDrafts() { return (await loadDrafts()).items.filter((x) => !x.deleted).sort((a, b) => a.id - b.id).map(publicDraft) // newest first: ids go -1, -2, -3 … so the most negative is the newest (deterministic, unlike a timestamp); }
 export async function createDraft({ name, category, price } = {}) {
   const n = String(name || '').replace(/\s+/g, ' ').trim(); if (n.length < 2) throw bad('اكتب اسم المنتج (حرفين على الأقل).'); if (n.length > 120) throw bad('اسم المنتج طويل جدًا (أقصى 120 حرف).');
   const cat = String(category || '').replace(/\s+/g, ' ').trim().slice(0, 60) || null;
