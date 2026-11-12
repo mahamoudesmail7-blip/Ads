@@ -203,9 +203,14 @@ console.log('\n9. «منتج جديد» — a product that does not exist in the
 console.log('\n10. light product list for the picker (the screen used to be slow because it computed spend / CPA / health for every product)');
 {
   let asked = null;
-  const list = await PS.listProductsLight({ storeId: 'trendy' }, { discover: async (s) => { asked = s; return [3, 1, 2, 9]; }, findMany: async (a) => { ok('it only asks for id + name + store (no metrics), restricted to the relevant ids', JSON.stringify(a.select) === JSON.stringify({ id: true, product_name: true, store_id: true }) && a.where.id.in.length === 4); return [{ id: 3, product_name: 'جهاز ب', store_id: 'trendy' }, { id: 1, product_name: 'جهاز أ', store_id: null }, { id: 2, product_name: '', store_id: 'x' }]; } });
-  ok('rows without a name are dropped, the rest are sorted by name and carry id / name / storeId', asked === 'trendy' && list.length === 2 && list[0].name === 'جهاز أ' && list[1].storeId === 'trendy');
-  ok('no relevant products → an empty list without any query', (await PS.listProductsLight({}, { discover: async () => [], findMany: async () => { throw new Error('must not query'); } })).length === 0);
+  const list = await PS.listProductsLight({ storeId: 'trendy' }, { findMany: async (a) => { asked = a; return [{ id: 3, product_name: 'جهاز ب', store_id: 'trendy' }, { id: 1, product_name: 'جهاز أ', store_id: null }, { id: 2, product_name: '', store_id: 'x' }]; } });
+  ok('it asks only for id + name + store (no metrics) and for EVERY active product of that store — not only the ones with recent orders', JSON.stringify(asked.select) === JSON.stringify({ id: true, product_name: true, store_id: true }) && asked.where.active === true && asked.where.store_id === 'trendy' && !asked.where.id);
+  ok('rows without a name are dropped; the rest are sorted by name and carry id / name / storeId', list.length === 2 && list[0].name === 'جهاز أ' && list[1].storeId === 'trendy');
+  let all = null; await PS.listProductsLight({}, { findMany: async (a) => { all = a; return []; } });
+  ok('no store filter → all stores', all.where.active === true && !('store_id' in all.where));
+  const wins = []; const segDeps = { findProduct: async () => ({ id: 7, store_id: 'trendy' }), settings: async () => ({}), segment: async (a) => { wins.push(a.windowName); return { window: { label: 'x' }, metaAvailable: true, gender: { table: [] }, age: { table: [] }, governorates: { table: Array.from({ length: 27 }, (_, i) => ({ segment: `g${i}`, orders: 30 - i })) } }; } };
+  const r90 = await PS.realAudience(7, segDeps, 'last90'); await PS.realAudience(7, segDeps, 'bogus'); await PS.realAudience(7, segDeps);
+  ok('the real audience can be viewed for 7 / 14 / 30 / 90 days (anything else falls back to 30) and lists up to 27 governorates', wins.join() === 'last90,last30,last30' && r90.governorates.length === 27);
 }
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);

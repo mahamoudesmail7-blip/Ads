@@ -18,7 +18,7 @@ router.delete('/drafts/:id', asyncRoute(async (req, res) => res.json(await PS.de
 router.get('/products/:id', asyncRoute(async (req, res) => res.json(await view(req))));
 router.post('/products/:id/page', asyncRoute(async (req, res) => { await PS.analyzePage(req.params.id, { url: req.body?.url }); res.json(await view(req)); }));
 router.post('/products/:id/interests', asyncRoute(async (req, res) => { await PS.buildInterests(req.params.id, { force: !!req.body?.force }); res.json(await view(req)); }));
-router.get('/products/:id/real-audience', asyncRoute(async (req, res) => res.json(await PS.realAudience(req.params.id))));
+router.get('/products/:id/real-audience', asyncRoute(async (req, res) => res.json(await PS.realAudience(req.params.id, {}, String(req.query.window || 'last30')))));
 router.get('/products/:id/images/:slot', asyncRoute(async (req, res) => {
   const b = await PS.getImageBlob(req.params.id, req.params.slot);
   if (!b) return res.status(404).json({ error: 'NOT_FOUND', message: 'الصورة مش موجودة.' });

@@ -35,9 +35,9 @@ const mutate = (productId, fn) => withLock(KEY(productId), async () => { const s
 
 // ───────────── light product list for the picker (id + name only — no spend / CPA / health) ─────────────
 export async function listProductsLight({ storeId = null } = {}, deps = {}) {
-  const ids = await (deps.discover || (async (s) => (await import('../productDiscovery.js')).discoverRelevantProductIds(s)))(storeId || null);
-  if (!ids.length) return [];
-  const rows = await (deps.findMany || ((a) => prisma.product.findMany(a)))({ where: { id: { in: ids } }, select: { id: true, product_name: true, store_id: true } });
+  // EVERY active product of the store(s) — not only the ones that sold in the last 90 days — so the owner can open any product and see where its orders come from.
+  const where = { active: true, ...(storeId ? { store_id: storeId } : {}) };
+  const rows = await (deps.findMany || ((a) => prisma.product.findMany(a)))({ where, select: { id: true, product_name: true, store_id: true } });
   return rows.filter((r) => r.product_name).map((r) => ({ id: r.id, name: r.product_name, storeId: r.store_id || null })).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 }
 
@@ -166,15 +166,16 @@ export async function analyze(productId, { force = false, deps = {} } = {}) {
 }
 
 // ───────────── real buyer audience (existing segment intelligence) ─────────────
-export async function realAudience(productId, deps = {}) {
+export async function realAudience(productId, deps = {}, windowName = 'last30') {
+  if (!['last7', 'last14', 'last30', 'last90'].includes(windowName)) windowName = 'last30';
   productId = pid(productId);
   if (productId < 0) { await draftOrThrow(productId); return { window: null, metaAvailable: false, metaUnavailableReason: 'منتج جديد مش موجود في سيستمك — مفيش بيانات مشترين فعلية.', gender: [], age: [], governorates: [], best: { gender: null, age: null, governorate: null }, topObserved: { gender: null, age: null, governorate: null }, audienceSignal: null, note: 'منتج جديد: مفيش Real Buyer Audience لأنه لسه ماتباعش عندك. استخدم الجمهور المقترح من AI كبداية وجرّبه.' }; }
   const product = await (deps.findProduct || ((id) => prisma.product.findUnique({ where: { id }, select: { id: true, store_id: true } })))(productId);
   if (!product) throw bad('المنتج مش موجود.', 404, 'NOT_FOUND');
   const settings = await (deps.settings || (async () => (await import('../settings.js')).getAmbSettings()))();
-  const r = await (deps.segment || (async (a) => (await import('../segmentIntel.js')).segmentIntelForProduct(a)))({ productId, storeId: product.store_id, adAccountId: null, windowName: 'last30', settings });
+  const r = await (deps.segment || (async (a) => (await import('../segmentIntel.js')).segmentIntelForProduct(a)))({ productId, storeId: product.store_id, adAccountId: null, windowName, settings });
   const top = (t, n = 6) => (t?.table || []).slice(0, n);
-  return { window: r.window, metaAvailable: !!r.metaAvailable, metaUnavailableReason: r.metaUnavailableReason || null, gender: top(r.gender), age: top(r.age), governorates: top(r.governorates, 8), best: { gender: r.gender?.best || null, age: r.age?.best || null, governorate: r.governorates?.best || null }, topObserved: { gender: r.gender?.topObserved || null, age: r.age?.topObserved || null, governorate: r.governorates?.topObserved || null }, audienceSignal: r.audienceSignal || null,
+  return { window: r.window, metaAvailable: !!r.metaAvailable, metaUnavailableReason: r.metaUnavailableReason || null, gender: top(r.gender), age: top(r.age), governorates: top(r.governorates, 30), best: { gender: r.gender?.best || null, age: r.age?.best || null, governorate: r.governorates?.best || null }, topObserved: { gender: r.gender?.topObserved || null, age: r.age?.topObserved || null, governorate: r.governorates?.topObserved || null }, audienceSignal: r.audienceSignal || null,
     note: 'ده Real Buyer Audience: أرقام فعلية من توصيل Meta وأوردرات Easy Orders. مفيش اختراع لخصائص ديموغرافية — Meta بتكشف النوع والعمر للإعلان مش للأوردر نفسه.' };
 }
 const realSummary = (ra) => { if (!ra) return ''; const p = []; const g = ra.best?.gender || ra.topObserved?.gender; const a = ra.best?.age || ra.topObserved?.age; const gv = ra.best?.governorate || ra.topObserved?.governorate; if (g?.segment) p.push(`النوع: ${g.segment}`); if (a?.segment) p.push(`العمر: ${a.segment}`); if (gv?.segment) p.push(`المحافظة: ${gv.segment}`); return p.join(' | '); };

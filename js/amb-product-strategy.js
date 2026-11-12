@@ -9,11 +9,11 @@ const API = '/api/product-strategy';
 const GENDER_AR = { MALE: 'رجال', FEMALE: 'سيدات', ALL: 'الجميع' };
 const CONF_AR = { LOW: ['منخفضة', 'gray'], MEDIUM: ['متوسطة', 'amber'] };
 const POST_STATUS = { DRAFT: ['مسودة', 'gray'], EDITED: ['معدّل', 'amber'], APPROVED: ['معتمد', 'green'] };
-const TABS = [['media', '📷 الصور والتحليل'], ['page', '🌐 الصفحة والاهتمامات'], ['targeting', '🎯 الاستهداف'], ['posts', '✍️ البوستات'], ['creative', '🎨 الكرياتيف'], ['data', '🔗 بيانات المنتج']];
+const TABS = [['media', '📷 الصور والتحليل'], ['audience', '📊 الجمهور الفعلي'], ['page', '🌐 الصفحة والاهتمامات'], ['targeting', '🎯 الاستهداف'], ['posts', '✍️ البوستات'], ['creative', '🎨 الكرياتيف'], ['data', '🔗 بيانات المنتج']];
 
 export async function mountProductStrategy(host, productId) {
   if (!host) return;
-  const S = { id: productId, v: null, tab: 'media', busy: null, error: null, real: null, realErr: null, aud: 'ai', drafts: {}, open: new Set(['GOODBYE']), openS: new Set(['PRIMARY']), instr: {} };
+  const S = { id: productId, v: null, tab: 'media', busy: null, error: null, real: null, realErr: null, realWin: 'last30', aud: 'ai', drafts: {}, open: new Set(['GOODBYE']), openS: new Set(['PRIMARY']), instr: {} };
   const q = (s) => host.querySelector(s);
   const call = async (fn) => { try { return await fn(); } catch (e) { S.error = e.message || 'حصلت مشكلة'; return null; } };
 
@@ -108,17 +108,29 @@ export async function mountProductStrategy(host, productId) {
   function realTab() {
     if (S.realErr) return `<div class="ps-warn">${E(S.realErr)}</div>`;
     if (!S.real) { loadReal(); return '<div class="amb-empty">جارِ تحميل بيانات المشترين الفعلية…</div>'; }
-    const r = S.real; const rows = (t, cols) => (t.length ? `<table class="ps-table"><thead><tr>${cols.map((c) => `<th>${E(c[1])}</th>`).join('')}</tr></thead><tbody>${t.map((x) => `<tr>${cols.map((c) => `<td>${E(c[2] ? c[2](x[c[0]]) : (x[c[0]] ?? '—'))}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '<div class="faint">لا توجد بيانات كافية.</div>');
+    const r = S.real; { const tot = (r.governorates || []).reduce((s, x) => s + (Number(x.orders) || 0), 0); r.governorates = (r.governorates || []).map((x) => ({ ...x, share: tot > 0 ? (Number(x.orders) || 0) / tot : null })); }
+    const rows = (t, cols) => (t.length ? `<table class="ps-table"><thead><tr>${cols.map((c) => `<th>${E(c[1])}</th>`).join('')}</tr></thead><tbody>${t.map((x) => `<tr>${cols.map((c) => `<td>${E(c[2] ? c[2](x[c[0]]) : (x[c[0]] ?? '—'))}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '<div class="faint">لا توجد بيانات كافية.</div>');
     const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
     return `<div class="ps-note">${E(r.note)}${r.window ? ` الفترة: ${E(r.window.label || `${r.window.from || ''} → ${r.window.to || ''}`)}` : ''}</div>
       ${!r.metaAvailable ? `<div class="ps-warn">بيانات Meta مش متاحة: ${E(r.metaUnavailableReason || '')}</div>` : ''}
       <div class="ps-cols"><div class="ps-box"><h5>النوع (توصيل Meta)</h5>${rows(r.gender, [['segment', 'الشريحة'], ['purchases', 'مشتريات'], ['cpa', 'CPA']])}</div>
         <div class="ps-box"><h5>العمر (توصيل Meta)</h5>${rows(r.age, [['segment', 'الشريحة'], ['purchases', 'مشتريات'], ['cpa', 'CPA']])}</div>
-        <div class="ps-box"><h5>المحافظات (أوردرات Easy Orders)</h5>${rows(r.governorates, [['segment', 'المحافظة'], ['orders', 'أوردرات'], ['confirmationRate', 'تأكيد', pct], ['deliveryRate', 'توصيل', pct]])}</div></div>
+        <div class="ps-box"><h5>المحافظات (أوردرات Easy Orders)</h5>${rows(r.governorates, [['segment', 'المحافظة'], ['orders', 'أوردرات'], ['share', 'الحصة', pct], ['confirmationRate', 'تأكيد', pct], ['deliveryRate', 'توصيل', pct]])}</div></div>
       ${r.audienceSignal?.label ? `<div class="ps-note">أقوى الإشارات المستقلة: <b>${E(r.audienceSignal.label)}</b> — ${E(r.audienceSignal.note || '')}</div>` : ''}`;
   }
-  async function loadReal() { if (S.realLoading) return; S.realLoading = true; try { S.real = await api.get(`${API}/products/${S.id}/real-audience`); } catch (e) { S.realErr = e.message || 'تعذّر تحميل بيانات المشترين.'; } S.realLoading = false; paint(); }
+  async function loadReal() { if (S.realLoading) return; S.realLoading = true; try { S.real = await api.get(`${API}/products/${S.id}/real-audience?window=${S.realWin}`); } catch (e) { S.realErr = e.message || 'تعذّر تحميل بيانات المشترين.'; } S.realLoading = false; paint(); }
 
+  /** 📊 الجمهور الفعلي — the real buyers of THIS product: governorates from Easy Orders orders, age + gender from Meta delivery. Nothing here needs the AI. */
+  function audienceTab() {
+    const wins = [['last7', 'آخر 7 أيام'], ['last14', 'آخر 14 يوم'], ['last30', 'آخر 30 يوم'], ['last90', 'آخر 90 يوم']];
+    const pick = `<div class="ps-seg">${wins.map(([k, l]) => `<button class="${S.realWin === k ? 'on' : ''}" data-rwin="${k}">${l}</button>`).join('')}</div>`;
+    let sum = '';
+    if (S.real && S.real.governorates?.length) {
+      const tot = S.real.governorates.reduce((s, x) => s + (Number(x.orders) || 0), 0); const top = S.real.governorates[0];
+      if (tot > 0 && top) sum = `<div class="ps-ok">أكتر محافظة بتيجي منها الأوردرات: <b>${E(top.segment)}</b> — ${top.orders} أوردر من ${tot} (${Math.round((top.orders / tot) * 100)}%).</div>`;
+    }
+    return pick + sum + realTab();
+  }
   function postsTab(v) {
     if (!v.posts) return '<div class="amb-empty">لسه مفيش بوستات. اضغط «تحليل المنتج».</div>';
     const miss = v.postsMissing?.length ? `<div class="ps-warn">بوستات ماتولّدتش: ${E(v.postsMissing.join('، '))} — اضغط إعادة التوليد عليها.</div>` : '';
@@ -190,7 +202,7 @@ export async function mountProductStrategy(host, productId) {
 
   function paint() {
     const v = S.v; if (!v) { host.innerHTML = '<div class="ps"><div class="amb-empty">جارِ التحميل…</div></div>'; return; }
-    const body = { media: mediaTab, page: pageTab, targeting: targetingTab, posts: postsTab, creative: creativeTab, data: dataTab }[S.tab](v);
+    const body = { media: mediaTab, audience: audienceTab, page: pageTab, targeting: targetingTab, posts: postsTab, creative: creativeTab, data: dataTab }[S.tab](v);
     const hasAnalysis = !!v.analysis;
     host.innerHTML = `<div class="ps">
       <div class="ps-head"><div><h3>🎯 AI Targeting & Creative Strategy</h3><div class="faint">تحليل المنتج من صوره (3 صور مع بعض) ← استهداف ← بوستات ← كرياتيف. نتايج محفوظة جوه المنتج. اقتراحات فقط — مفيش تنفيذ على Meta.</div></div>
@@ -209,6 +221,7 @@ export async function mountProductStrategy(host, productId) {
     on('[data-tab]', 'onclick', (el) => { S.tab = el.dataset.tab; S.error = null; paint(); });
     on('[data-up]', 'onchange', (el) => upload(Number(el.dataset.up), el.files[0]));
     on('[data-rmimg]', 'onclick', async (el) => { const out = await call(() => api.delete(`${API}/products/${S.id}/images/${el.dataset.rmimg}`)); if (out) S.v = out; paint(); });
+    on('[data-rwin]', 'onclick', (el) => { S.realWin = el.dataset.rwin; S.real = null; S.realErr = null; S.realLoading = false; paint(); });
     on('[data-aud]', 'onclick', (el) => { S.aud = el.dataset.aud; paint(); });
     on('[data-sopen]', 'onclick', (el) => { const k = el.dataset.sopen; S.openS.has(k) ? S.openS.delete(k) : S.openS.add(k); paint(); });
     on('[data-popen]', 'onclick', (el) => { const k = el.dataset.popen; S.open.has(k) ? S.open.delete(k) : S.open.add(k); paint(); });
