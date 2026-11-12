@@ -38,7 +38,16 @@ export async function listProductsLight({ storeId = null } = {}, deps = {}) {
   // EVERY active product of the store(s) — not only the ones that sold in the last 90 days — so the owner can open any product and see where its orders come from.
   const where = { active: true, ...(storeId ? { store_id: storeId } : {}) };
   const rows = await (deps.findMany || ((a) => prisma.product.findMany(a)))({ where, select: { id: true, product_name: true, store_id: true } });
-  return rows.filter((r) => r.product_name).map((r) => ({ id: r.id, name: r.product_name, storeId: r.store_id || null })).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+  // how many Easy Orders orders each product had in the last 90 days — so the picker can show (and sort by) the products that actually HAVE a real audience. Optional: if it fails the list still works.
+  const counts = new Map();
+  try {
+    const cutoff = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const where = { product_id: { not: null }, date: { gte: cutoff }, ...(storeId ? { OR: [{ store_id: storeId }, { store_id: null }] } : {}) };
+    const g = await (deps.orderCounts || ((a) => prisma.easyOrdersOrder.groupBy(a)))({ by: ['product_id'], where, _count: { _all: true } });
+    for (const x of g) counts.set(x.product_id, Number(x._count?._all) || 0);
+  } catch (e) { logger.warn('PS_ORDER_COUNTS_FAILED', { message: e.message }); }
+  return rows.filter((r) => r.product_name && !/^__/.test(r.product_name)).map((r) => ({ id: r.id, name: r.product_name, storeId: r.store_id || null, orders: counts.get(r.id) || 0 }))
+    .sort((a, b) => b.orders - a.orders || a.name.localeCompare(b.name, 'ar'));
 }
 
 // ───────────── new (draft) products — a product that does NOT exist in the system ─────────────

@@ -203,10 +203,14 @@ console.log('\n9. «منتج جديد» — a product that does not exist in the
 console.log('\n10. light product list for the picker (the screen used to be slow because it computed spend / CPA / health for every product)');
 {
   let asked = null;
-  const list = await PS.listProductsLight({ storeId: 'trendy' }, { findMany: async (a) => { asked = a; return [{ id: 3, product_name: 'جهاز ب', store_id: 'trendy' }, { id: 1, product_name: 'جهاز أ', store_id: null }, { id: 2, product_name: '', store_id: 'x' }]; } });
+  const list = await PS.listProductsLight({ storeId: 'trendy' }, { orderCounts: async () => [], findMany: async (a) => { asked = a; return [{ id: 3, product_name: 'جهاز ب', store_id: 'trendy' }, { id: 1, product_name: 'جهاز أ', store_id: null }, { id: 2, product_name: '', store_id: 'x' }]; } });
   ok('it asks only for id + name + store (no metrics) and for EVERY active product of that store — not only the ones with recent orders', JSON.stringify(asked.select) === JSON.stringify({ id: true, product_name: true, store_id: true }) && asked.where.active === true && asked.where.store_id === 'trendy' && !asked.where.id);
   ok('rows without a name are dropped; the rest are sorted by name and carry id / name / storeId', list.length === 2 && list[0].name === 'جهاز أ' && list[1].storeId === 'trendy');
-  let all = null; await PS.listProductsLight({}, { findMany: async (a) => { all = a; return []; } });
+  const oc = await PS.listProductsLight({ storeId: 'trendy' }, { orderCounts: async () => [{ product_id: 3, _count: { _all: 42 } }], findMany: async () => [{ id: 1, product_name: 'جهاز أ', store_id: null }, { id: 3, product_name: 'جهاز ب', store_id: 'trendy' }, { id: 4, product_name: '__test_queue_product__', store_id: null }] });
+  ok('each product carries its last-90-day order count; products WITH orders come first; internal «__test» products are hidden', oc.length === 2 && oc[0].id === 3 && oc[0].orders === 42 && oc[1].orders === 0);
+  const noc = await PS.listProductsLight({}, { orderCounts: async () => { throw new Error('db'); }, findMany: async () => [{ id: 1, product_name: 'أ', store_id: null }] });
+  ok('if the order counts cannot be read, the list still works (counts are optional)', noc.length === 1 && noc[0].orders === 0);
+  let all = null; await PS.listProductsLight({}, { orderCounts: async () => [], findMany: async (a) => { all = a; return []; } });
   ok('no store filter → all stores', all.where.active === true && !('store_id' in all.where));
   const wins = []; const segDeps = { findProduct: async () => ({ id: 7, store_id: 'trendy' }), settings: async () => ({}), segment: async (a) => { wins.push(a.windowName); return { window: { label: 'x' }, metaAvailable: true, gender: { table: [] }, age: { table: [] }, governorates: { table: Array.from({ length: 27 }, (_, i) => ({ segment: `g${i}`, orders: 30 - i })) } }; } };
   const r90 = await PS.realAudience(7, segDeps, 'last90'); await PS.realAudience(7, segDeps, 'bogus'); await PS.realAudience(7, segDeps);

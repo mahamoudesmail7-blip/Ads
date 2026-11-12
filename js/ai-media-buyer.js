@@ -1999,13 +1999,14 @@ async function renderDecisionCenter(panel) {
   }
   if (!dcState.products) await dcLoadProducts();
   try { dcState.drafts = (await api.get('/api/product-strategy/drafts')).drafts || []; } catch { dcState.drafts = []; }
+  if (dcState.onlyOrders === undefined) dcState.onlyOrders = true; // default: the products that actually have orders (= a real audience to look at)
   dcRenderAll(panel);
 }
 
 // AI Targeting & Creative only needs id + name, so it reads a LIGHT list (one indexed query) instead of the old decision-center list that computed spend / CPA / health for every product (that was what made the screen slow).
 async function dcLoadProducts() {
   const r = await api.get('/api/product-strategy/products', dcState.storeId ? { storeId: dcState.storeId } : undefined);
-  dcState.products = (r.products || []).map((p) => ({ productId: p.id, productName: p.name, storeId: p.storeId }));
+  dcState.products = (r.products || []).map((p) => ({ productId: p.id, productName: p.name, storeId: p.storeId, orders: p.orders || 0 }));
   dcState.lastLoadedAt = new Date().toISOString();
   dcState.mappingOverview = null; // (the mapping-review button is not part of the AI Targeting & Creative screen)
 }
@@ -2104,7 +2105,7 @@ function dcRenderAll(panel) {
         ${dcState.stores.map((s) => `<option value="${E(s.id)}" ${dcState.storeId === s.id ? 'selected' : ''}>${E(s.name || s.id)}</option>`).join('')}
       </select>` : ''}
       ${sel ? `<div style="font-weight:800; font-size:15px;">${E(sel.productName)}${sel.isDraft ? ' <span class="badge gray">منتج جديد</span>' : ''}</div><button class="amb-btn ghost sm" id="ambDcChange">🔄 تغيير المنتج</button>`
-        : `<div class="amb-search"><span class="s-ic">${ic('search', 's-ic')}</span><input id="ambDcSearch" placeholder="ابحث عن منتج…" value="${E(dcState.search)}" /></div><span class="faint" style="font-size:12px;">${all.length + (dcState.drafts || []).length} منتج — اختار منتج.</span><button class="amb-btn primary sm" id="ambDcNew">➕ منتج جديد</button>`}
+        : `<div class="amb-search"><span class="s-ic">${ic('search', 's-ic')}</span><input id="ambDcSearch" placeholder="ابحث عن منتج…" value="${E(dcState.search)}" /></div><button class="amb-btn ghost sm" id="ambDcOnly">${dcState.onlyOrders ? `📦 اللي ليها أوردرات فقط (${all.filter((p) => p.orders > 0).length}) · اضغط لعرض الكل (${all.length})` : `عرض الكل (${all.length}) · اضغط لعرض اللي ليها أوردرات فقط`}</button><button class="amb-btn primary sm" id="ambDcNew">➕ منتج جديد</button>`}
     </div>
     ${!sel && dcState.newOpen ? dcNewProductForm() : ''}
     ${sel ? '' : `<div class="amb-dclist" id="ambDcGrid">${dcGridHtml()}</div>`}
@@ -2112,6 +2113,7 @@ function dcRenderAll(panel) {
   const storeSel = $('ambDcStore');
   if (storeSel) storeSel.onchange = async (e) => { dcState.storeId = e.target.value || null; dcState.selectedProductId = null; await dcLoadProducts(); dcRenderAll(panel); };
   const sIn = $('ambDcSearch'); if (sIn) sIn.oninput = (e) => { dcState.search = e.target.value; const g = $('ambDcGrid'); if (g) { g.innerHTML = dcGridHtml(); dcWireCards(panel); } };
+  const only = $('ambDcOnly'); if (only) only.onclick = () => { dcState.onlyOrders = !dcState.onlyOrders; dcRenderAll(panel); };
   const chg = $('ambDcChange'); if (chg) chg.onclick = () => { dcState.selectedProductId = null; dcRenderAll(panel); };
   const nb = $('ambDcNew'); if (nb) nb.onclick = () => { dcState.newOpen = !dcState.newOpen; dcRenderAll(panel); if (dcState.newOpen) $('ambDcNName')?.focus(); };
   const nc = $('ambDcNCancel'); if (nc) nc.onclick = () => { dcState.newOpen = false; dcRenderAll(panel); };
@@ -2130,8 +2132,9 @@ function dcRenderAll(panel) {
 function dcGridHtml() {
   let list = dcState.products || []; let drafts = dcState.drafts || [];
   const q = (dcState.search || '').trim().toLowerCase();
+  if (dcState.onlyOrders) list = list.filter((p) => p.orders > 0);
   if (q) { list = list.filter((p) => (p.productName || '').toLowerCase().includes(q)); drafts = drafts.filter((d) => (d.name || '').toLowerCase().includes(q)); }
-  list = [...list].sort((a, b) => (a.productName || '').localeCompare(b.productName || '', 'ar'));
+  list = [...list].sort((a, b) => (b.orders || 0) - (a.orders || 0) || (a.productName || '').localeCompare(b.productName || '', 'ar'));
   const draftRows = drafts.map((d) => `<div class="amb-dcrow-wrap"><button class="amb-dcrow ${dcState.selectedProductId === d.id ? 'sel' : ''}" data-dcopen="${d.id}">${E(d.name)} <span class="badge gray" style="margin-inline-start:6px;">منتج جديد</span></button><button class="amb-dcdel" data-dcdel="${d.id}" title="مسح المنتج الجديد">🗑</button></div>`).join('');
   return (draftRows + list.map(dcCardHtml).join('')) || '<div class="amb-empty" style="padding:14px;">مفيش منتجات مطابقة للبحث.</div>';
 }
@@ -2146,7 +2149,7 @@ function dcWireCards(panel) {
 }
 function dcCardHtml(p) {
   const sel = dcState.selectedProductId === p.productId;
-  return `<button class="amb-dcrow ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">${E(p.productName)}</button>`;
+  return `<button class="amb-dcrow ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">${E(p.productName)}${p.orders > 0 ? ` <span class="badge green" style="margin-inline-start:6px;">${p.orders} أوردر / 90 يوم</span>` : ''}</button>`;
 }
 function dcRenderStrategyOnly(panel) {
   const el = $('ambDcDossier'); if (!el) return;
