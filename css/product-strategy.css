@@ -63,6 +63,7 @@
 /* product picker (AI Targeting & Creative screen): a compact text list, no pictures */
 .amb-dclist { max-height: 340px; overflow: auto; border: 1px solid var(--amb-border, #e7eaf0); border-radius: 14px; background: var(--amb-surface, #fff); }
 .amb-dcrow { display: block; width: 100%; text-align: start; padding: 10px 14px; border: 0; border-bottom: 1px solid var(--amb-border, #e7eaf0); background: transparent; color: inherit; font: inherit; font-size: 13.5px; cursor: pointer; }
+.amb-dcrow-wrap { display: flex; align-items: center; border-bottom: 1px solid var(--amb-border, #e7eaf0); } .amb-dcrow-wrap .amb-dcrow { border-bottom: 0; flex: 1; } .amb-dcdel { border: 0; background: transparent; cursor: pointer; padding: 8px 12px; opacity: .6; } .amb-dcdel:hover { opacity: 1; }
 .amb-dcrow:last-child { border-bottom: 0; } .amb-dcrow:hover, .amb-dcrow.sel { background: color-mix(in srgb, var(--amb-purple, #7c3aed) 9%, transparent); }
 /* page audit + 8 interests */
 .ps-scoreRow { display: flex; gap: 16px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }

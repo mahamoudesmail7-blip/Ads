@@ -18,7 +18,7 @@ const bad = (m, s = 400, c) => new StrategyError(m, s, c);
 const now = () => new Date().toISOString();
 const KEY = (id) => `ps:${id}`;
 const BLOB = (id, slot) => `ps/${id}/${slot}`;
-const pid = (v) => { const n = Number(v); if (!Number.isInteger(n) || n <= 0) throw bad('معرّف المنتج غير صالح.'); return n; };
+const pid = (v) => { const n = Number(v); if (!Number.isInteger(n) || n === 0) throw bad('معرّف المنتج غير صالح.'); return n; }; // negative = a «new product» draft (see below)
 
 // ───────────── storage ─────────────
 const chains = new Map();
@@ -32,8 +32,46 @@ export async function loadState(productId) {
 async function saveState(s) { s.updatedAt = now(); const data = JSON.stringify(s); await prisma.settings.upsert({ where: { id: KEY(s.productId) }, create: { id: KEY(s.productId), data }, update: { data } }); return s; }
 const mutate = (productId, fn) => withLock(KEY(productId), async () => { const s = await loadState(productId); const out = (await fn(s)) || s; await saveState(out); return out; });
 
+
+// ───────────── new (draft) products — a product that does NOT exist in the system ─────────────
+// The owner can analyse any product from just a name + photos (e.g. a massager he is only considering). Drafts live ONLY in this module's own settings rows (negative ids, so they can never clash with a real
+// product id); nothing is added to the products table, the stores, the campaigns or any other module.
+const DRAFTS_KEY = 'psd:index';
+async function loadDrafts() {
+  const row = await prisma.settings.findUnique({ where: { id: DRAFTS_KEY } }); let d = null; try { d = JSON.parse(row?.data || 'null'); } catch { d = null; }
+  return d && Array.isArray(d.items) ? d : { next: 1, items: [] };
+}
+const mutateDrafts = (fn) => withLock(DRAFTS_KEY, async () => { const d = await loadDrafts(); const out = (await fn(d)) || d; const data = JSON.stringify(out); await prisma.settings.upsert({ where: { id: DRAFTS_KEY }, create: { id: DRAFTS_KEY, data }, update: { data } }); return out; });
+const publicDraft = (x) => ({ id: x.id, name: x.name, category: x.category || null, price: x.price ?? null, createdAt: x.createdAt });
+async function draftOrThrow(id) { const d = (await loadDrafts()).items.find((x) => x.id === id && !x.deleted); if (!d) throw bad('المنتج الجديد مش موجود (يمكن اتمسح).', 404, 'NOT_FOUND'); return d; }
+export async function listDrafts() { return (await loadDrafts()).items.filter((x) => !x.deleted).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map(publicDraft); }
+export async function createDraft({ name, category, price } = {}) {
+  const n = String(name || '').replace(/\s+/g, ' ').trim(); if (n.length < 2) throw bad('اكتب اسم المنتج (حرفين على الأقل).'); if (n.length > 120) throw bad('اسم المنتج طويل جدًا (أقصى 120 حرف).');
+  const cat = String(category || '').replace(/\s+/g, ' ').trim().slice(0, 60) || null;
+  let p = null; if (price !== undefined && price !== null && String(price).trim() !== '') { p = Number(price); if (!Number.isFinite(p) || p <= 0 || p > 1_000_000) throw bad('السعر لازم يكون رقم أكبر من صفر.'); }
+  let created = null;
+  await mutateDrafts((d) => {
+    if (d.items.filter((x) => !x.deleted).length >= 200) throw bad('وصلت للحد الأقصى (200 منتج جديد). امسح اللي مش محتاجه.');
+    const id = -d.next; d.next += 1; created = { id, name: n, category: cat, price: p, createdAt: now() }; d.items.push(created);
+  });
+  return publicDraft(created);
+}
+export async function deleteDraft(id) {
+  id = pid(id); if (id > 0) throw bad('الحذف للمنتجات الجديدة بس.');
+  await mutateDrafts((d) => { const it = d.items.find((x) => x.id === id && !x.deleted); if (!it) throw bad('المنتج مش موجود.', 404, 'NOT_FOUND'); it.deleted = true; it.deletedAt = now(); });
+  for (const def of SC.IMAGE_SLOTS) await prisma.cfBlob.deleteMany({ where: { key: BLOB(id, def.slot) } });
+  await mutate(id, () => emptyState(id)); // its photos, analysis, targeting, posts, page audit and interests go with it
+  return { ok: true };
+}
+async function draftContext(productId) {
+  const d = await draftOrThrow(productId);
+  return { productId, isDraft: true, storeId: null, name: d.name, category: d.category || null, price: d.price ?? null, oldPrice: null, freeShipping: false, features: [], storeUrl: null,
+    storeUrlMissingReason: 'منتج جديد مش موجود في متجرك — اكتب رابط صفحة المنتج لو عندك.', eoError: null, linkedCampaigns: null };
+}
+
 // ───────────── product data (reused, never duplicated) ─────────────
 export async function getContext(productId, deps = {}) {
+  if (productId < 0) return draftContext(productId);
   const product = await (deps.findProduct || ((id) => prisma.product.findUnique({ where: { id }, select: { id: true, product_name: true, category: true, selling_price: true, store_id: true, easy_orders_uuid: true } })))(productId);
   if (!product) throw bad('المنتج مش موجود.', 404, 'NOT_FOUND');
   let eo = null; let eoError = null;
@@ -74,6 +112,7 @@ export function parseImageDataUrl(dataUrl) {
 const slotOf = (v) => { const s = Number(v); if (![1, 2, 3].includes(s)) throw bad('رقم الصورة لازم يكون 1 أو 2 أو 3.'); return s; };
 export async function putImage(productId, slot, dataUrl) {
   productId = pid(productId); slot = slotOf(slot);
+  if (productId < 0) await draftOrThrow(productId);
   const { mime, buffer } = parseImageDataUrl(dataUrl);
   await prisma.cfBlob.upsert({ where: { key: BLOB(productId, slot) }, create: { key: BLOB(productId, slot), data: buffer, mime, bytes: buffer.length }, update: { data: buffer, mime, bytes: buffer.length } });
   const sha = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16);
@@ -121,6 +160,7 @@ export async function analyze(productId, { force = false, deps = {} } = {}) {
 // ───────────── real buyer audience (existing segment intelligence) ─────────────
 export async function realAudience(productId, deps = {}) {
   productId = pid(productId);
+  if (productId < 0) { await draftOrThrow(productId); return { window: null, metaAvailable: false, metaUnavailableReason: 'منتج جديد مش موجود في سيستمك — مفيش بيانات مشترين فعلية.', gender: [], age: [], governorates: [], best: { gender: null, age: null, governorate: null }, topObserved: { gender: null, age: null, governorate: null }, audienceSignal: null, note: 'منتج جديد: مفيش Real Buyer Audience لأنه لسه ماتباعش عندك. استخدم الجمهور المقترح من AI كبداية وجرّبه.' }; }
   const product = await (deps.findProduct || ((id) => prisma.product.findUnique({ where: { id }, select: { id: true, store_id: true } })))(productId);
   if (!product) throw bad('المنتج مش موجود.', 404, 'NOT_FOUND');
   const settings = await (deps.settings || (async () => (await import('../settings.js')).getAmbSettings()))();

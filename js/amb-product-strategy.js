@@ -110,7 +110,7 @@ export async function mountProductStrategy(host, productId) {
     if (!S.real) { loadReal(); return '<div class="amb-empty">جارِ تحميل بيانات المشترين الفعلية…</div>'; }
     const r = S.real; const rows = (t, cols) => (t.length ? `<table class="ps-table"><thead><tr>${cols.map((c) => `<th>${E(c[1])}</th>`).join('')}</tr></thead><tbody>${t.map((x) => `<tr>${cols.map((c) => `<td>${E(c[2] ? c[2](x[c[0]]) : (x[c[0]] ?? '—'))}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '<div class="faint">لا توجد بيانات كافية.</div>');
     const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
-    return `<div class="ps-note">${E(r.note)} الفترة: ${E(r.window?.label || `${r.window?.from || ''} → ${r.window?.to || ''}`)}</div>
+    return `<div class="ps-note">${E(r.note)}${r.window ? ` الفترة: ${E(r.window.label || `${r.window.from || ''} → ${r.window.to || ''}`)}` : ''}</div>
       ${!r.metaAvailable ? `<div class="ps-warn">بيانات Meta مش متاحة: ${E(r.metaUnavailableReason || '')}</div>` : ''}
       <div class="ps-cols"><div class="ps-box"><h5>النوع (توصيل Meta)</h5>${rows(r.gender, [['segment', 'الشريحة'], ['purchases', 'مشتريات'], ['cpa', 'CPA']])}</div>
         <div class="ps-box"><h5>العمر (توصيل Meta)</h5>${rows(r.age, [['segment', 'الشريحة'], ['purchases', 'مشتريات'], ['cpa', 'CPA']])}</div>

@@ -177,5 +177,28 @@ console.log('\n8. insufficient data + real buyer audience + removal');
   const gone = await PS.removeImage(7, 1); ok('removing a photo works and marks the analysis stale (re-analyse suggested)', !gone.images[1] && gone.analysis.stale === true);
 }
 
+console.log('\n9. «منتج جديد» — a product that does not exist in the system');
+{
+  const deps = { ai: true, getStore: () => null, campaigns: async () => [], generate: async (a) => ({ text: JSON.stringify(a.feature.endsWith('analysis') ? analysisJson : a.feature.endsWith('targeting') ? targetingJson : { posts: [] }), cached: false }), meta: { getToken: async () => { throw new Error('x'); } } };
+  ok('a name is required (and bounded); a bad price is refused', (await rejects(() => PS.createDraft({ name: ' ' })))?.status === 400 && (await rejects(() => PS.createDraft({ name: 'x'.repeat(121) })))?.status === 400 && (await rejects(() => PS.createDraft({ name: 'جهاز', price: -5 })))?.status === 400 && (await rejects(() => PS.createDraft({ name: 'جهاز', price: 'abc' })))?.status === 400);
+  const d1 = await PS.createDraft({ name: '  جهاز مساج  جديد ', category: 'عناية', price: '299' }); const d2 = await PS.createDraft({ name: 'منتج تاني' });
+  ok('a new product gets its own NEGATIVE id (never clashes with a real product), the name is tidied, the price is optional', d1.id < 0 && d2.id < 0 && d1.id !== d2.id && d1.name === 'جهاز مساج جديد' && d1.price === 299 && d2.price === null);
+  ok('listing returns the newest first; nothing was added to the products table', (await PS.listDrafts())[0].id === d2.id && !products.has(d1.id));
+  const ctx = await PS.getContext(d1.id);
+  ok('its data comes from what the owner typed — no store, no campaigns, no invented features', ctx.isDraft === true && ctx.name === 'جهاز مساج جديد' && ctx.price === 299 && ctx.features.length === 0 && ctx.storeId === null && ctx.linkedCampaigns === null && ctx.eoError === null);
+  ok('photos can only be added to an existing new product', (await rejects(() => PS.putImage(-999, 1, url(PNG, 'image/png'))))?.status === 404);
+  await PS.putImage(d1.id, 1, url(PNG, 'image/png'));
+  const a = await PS.analyze(d1.id, { deps }); ok('analysis runs on a new product from its photos', !!a.analysis && a.analysis.confirmed.specs.length > 0);
+  const t = await PS.buildTargeting(d1.id, { deps }); ok('targeting runs too and its interests say Meta verification is unavailable (not «verified»)', t.targeting.strategies.length === 5 && t.targeting.verification.available === false);
+  const ra = await PS.realAudience(d1.id); ok('Real Buyer Audience is honestly empty for a product that never sold (no invented demographics)', ra.gender.length === 0 && ra.governorates.length === 0 && /لسه ماتباعش/.test(ra.note));
+  const v = await PS.getView(d1.id, deps); ok('the screen model shows the new product with the typed price and no link until the owner adds one', v.context.isDraft && v.commercial.price === 299 && v.commercial.link === null);
+  const link = await PS.saveCommercial(d1.id, { link: 'https://example.com/p/1' }); ok('the owner can add a page link for it', link.commercial.link.value === 'https://example.com/p/1');
+  ok('real products are untouched (positive ids still need a real product; id 0 / junk are refused)', (await rejects(() => PS.getContext(424242, { findProduct: async () => null })))?.status === 404 && (await rejects(() => PS.getView('0')))?.status === 400 && (await rejects(() => PS.getView('abc')))?.status === 400);
+  ok('deleting a real product id through the draft delete is refused', (await rejects(() => PS.deleteDraft(7)))?.status === 400);
+  await PS.deleteDraft(d1.id);
+  ok('deleting removes it from the list and wipes its photos / analysis', !(await PS.listDrafts()).some((x) => x.id === d1.id) && (await rejects(() => PS.getContext(d1.id)))?.status === 404 && !blobs.has(`ps/${d1.id}/1`) && (await PS.loadState(d1.id)).analysis === null);
+  ok('the other new product is unaffected', (await PS.listDrafts()).some((x) => x.id === d2.id));
+}
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
