@@ -15,7 +15,7 @@ export const AMB_SECTIONS = [
   { sub: 'campaigns', label: 'أداء الإعلانات', icon: 'trending' },
   { sub: 'products', label: 'منتجات الإعلانات', icon: 'package' },
   { sub: 'plan', label: 'القرارات الذكية', icon: 'sparkles' },
-  { sub: 'decisions', label: 'مركز القرار', icon: 'zap' },
+  { sub: 'decisions', label: 'AI Targeting & Creative', icon: 'zap' },
   { sub: 'scale', label: 'مركز التوسّع', icon: 'rocket' },
   { sub: 'operator', label: 'AI Operator', icon: 'shield' },
   { sub: 'winners', label: 'الأبطال', icon: 'image' },

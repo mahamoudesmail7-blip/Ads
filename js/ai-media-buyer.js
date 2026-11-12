@@ -87,7 +87,7 @@ const NAV = [
   { key: 'campaigns', label: 'أداء الإعلانات', icon: 'chart' },
   { key: 'products', label: 'المنتجات', icon: 'box' },
   { key: 'plan', label: 'القرارات الذكية', icon: 'bulb', badge: true },
-  { key: 'decisions', label: 'مركز القرار الذكي', icon: 'target', badge: true },
+  { key: 'decisions', label: 'AI Targeting & Creative', icon: 'target' },
   { key: 'scale', label: 'مركز التوسّع', icon: 'rocket' },
   { key: 'operator', label: 'AI Operator', icon: 'bot' },
   { key: 'winners', label: 'الأبطال', icon: 'image' },
@@ -102,7 +102,7 @@ const NAV = [
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
 const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, operator: (panel) => renderOperator(panel, { isAdmin: state.isAdmin, me: state.me }), winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, smart: (panel) => mountSmartCampaign(panel, { toast: (m, t) => UI.toast(m, t) }), tiktok: (panel) => mountTikTok(panel, { toast: (m, t) => UI.toast(m, t) }), pages: (panel) => mountProductPage(panel, { toast: (m, t) => UI.toast(m, t) }), tasks: renderTasks, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'مركز القرار الذكي', scale: 'مركز التوسّع', operator: 'AI Operator — التحكم الذكي في الحملات', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', smart: 'Smart Campaign — من المنتج للكامبين', tiktok: 'تيك توك — كامبين كامل', pages: 'صفحة المنتج — إنشاء من A لـ Z', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'AI Targeting & Creative', scale: 'مركز التوسّع', operator: 'AI Operator — التحكم الذكي في الحملات', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', smart: 'Smart Campaign — من المنتج للكامبين', tiktok: 'تيك توك — كامبين كامل', pages: 'صفحة المنتج — إنشاء من A لـ Z', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
 const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', operator: 'bot', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', smart: 'bulb', tiktok: 'play', pages: 'doc', tasks: 'doc', history: 'doc', settings: 'gear' };
 const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'smart', 'tiktok', 'pages', 'decisions', 'scale', 'tasks', 'operator']);
 
@@ -1991,7 +1991,7 @@ const FILTER_CHIPS = [
 // decision today. Defaulting to "ready" (active/testing/needs-attention
 // products only) fixes this; "الكل" and "يحتاج ربط" stay one click away for
 // anyone who wants the full picture.
-const dcState = { products: null, filter: 'ready', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null }, actionPlanInputs: {} };
+const dcState = { products: null, filter: 'all', search: '', sort: 'recent', storeId: null, stores: null, selectedProductId: null, dossier: null, activeTab: 'overview', lastLoadedAt: null, dossierWindow: { key: null }, actionPlanInputs: {} };
 
 async function renderDecisionCenter(panel) {
   if (!dcState.stores) {
@@ -2006,7 +2006,7 @@ async function dcLoadProducts() {
   dcState.lastLoadedAt = new Date().toISOString();
   const actionable = dcState.products.filter((p) => ['scale', 'needsCreative', 'needsImprovement', 'pauseCandidate'].includes(p.filterBucket)).length;
   state.pendingCount = actionable; renderNav();
-  try { dcState.mappingOverview = await api.get('/api/ai-media-buyer/mapping'); } catch { dcState.mappingOverview = null; }
+  dcState.mappingOverview = null; // (the mapping-review button is not part of the AI Targeting & Creative screen)
 }
 
 /**
@@ -2073,7 +2073,58 @@ function dcFilteredProducts() {
   return [...list].sort(sorters[dcState.sort] || sorters.recent);
 }
 
+// 🎯 AI Targeting & Creative — the former «مركز القرار الذكي» screen now holds ONLY the AI Targeting & Creative module (owner request 2026-11-12): a plain product picker + the module. The old decision-center
+// screens (health score, tabs, action plan, filters …) are kept below as *Legacy functions (not rendered) so nothing is lost and it can be restored.
 function dcRenderAll(panel) {
+  const all = dcState.products || [];
+  panel.innerHTML = `
+    <div class="toolbar" style="margin-bottom:14px; align-items:center;">
+      ${(dcState.stores || []).length > 1 ? `<select class="amb-select" id="ambDcStore">
+        <option value="">جميع المتاجر</option>
+        ${dcState.stores.map((s) => `<option value="${E(s.id)}" ${dcState.storeId === s.id ? 'selected' : ''}>${E(s.name || s.id)}</option>`).join('')}
+      </select>` : ''}
+      <div class="amb-search"><span class="s-ic">${ic('search', 's-ic')}</span><input id="ambDcSearch" placeholder="ابحث عن منتج…" value="${E(dcState.search)}" /></div>
+      <span class="faint" style="font-size:12px;" id="ambDcCount">${all.length} منتج — اختار منتج عشان تحلله وتجهّز الاستهداف والبوستات.</span>
+    </div>
+    <div id="ambDcDossier"></div>
+    <div class="amb-pgrid" id="ambDcGrid" style="margin-top:16px;">${dcGridHtml()}</div>`;
+  const storeSel = $('ambDcStore');
+  if (storeSel) storeSel.onchange = async (e) => { dcState.storeId = e.target.value || null; dcState.selectedProductId = null; await dcLoadProducts(); dcRenderAll(panel); };
+  $('ambDcSearch').oninput = (e) => { dcState.search = e.target.value; const g = $('ambDcGrid'); if (g) { g.innerHTML = dcGridHtml(); dcWireCards(panel); } };
+  dcWireCards(panel);
+  if (dcState.selectedProductId) dcRenderStrategyOnly(panel);
+}
+function dcGridHtml() {
+  let list = dcState.products || [];
+  const q = (dcState.search || '').trim().toLowerCase();
+  if (q) list = list.filter((p) => (p.productName || '').toLowerCase().includes(q));
+  list = [...list].sort((a, b) => (a.productName || '').localeCompare(b.productName || '', 'ar'));
+  return list.length ? list.map(dcCardHtml).join('') : '<div class="amb-panel amb-empty" style="grid-column:1/-1;">مفيش منتجات مطابقة للبحث.</div>';
+}
+function dcWireCards(panel) { panel.querySelectorAll('[data-dcopen]').forEach((b) => b.onclick = () => dcOpenProduct(panel, Number(b.dataset.dcopen))); }
+function dcCardHtml(p) {
+  const sel = dcState.selectedProductId === p.productId;
+  return `<div class="amb-pcard ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">
+    ${p.image ? `<img class="amb-pcard-img" src="${E(p.image)}" alt="" loading="lazy" />` : `<div class="amb-pcard-img ph">${ic('image', 'ic')}</div>`}
+    <div class="amb-pcard-name">${E(p.productName)}</div>
+  </div>`;
+}
+function dcRenderStrategyOnly(panel) {
+  const el = $('ambDcDossier'); if (!el) return;
+  const id = dcState.selectedProductId; const p = (dcState.products || []).find((x) => x.productId === id) || {};
+  el.innerHTML = `<div class="amb-dossier">
+    <div class="amb-dossier-head">${p.image ? `<img class="amb-dossier-img" src="${E(p.image)}" alt="" />` : ''}<div style="flex:1; min-width:200px;"><div class="amb-dossier-title">${E(p.productName || '')}</div></div></div>
+    <div id="ambDcStrategyBody" class="amb-empty">جارِ التحميل...</div></div>`;
+  UI.setAssistantContext({ page: 'ai-targeting-creative', productId: id, productName: p.productName || null });
+  import('./amb-product-strategy.js').then((m) => m.mountProductStrategy(el.querySelector('#ambDcStrategyBody'), id)).catch((e) => { const b = el.querySelector('#ambDcStrategyBody'); if (b) b.innerHTML = `<div class="amb-empty">⚠️ ${E(e.message || e)}</div>`; });
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+async function dcOpenProduct(panel, productId) {
+  dcState.selectedProductId = productId; dcState.dossier = null; dcState.activeTab = 'strategy';
+  dcRenderAll(panel);
+}
+
+function dcRenderAllLegacy(panel) {
   const all = dcState.products || [];
   const filtered = dcFilteredProducts();
   panel.innerHTML = `
@@ -2128,7 +2179,7 @@ async function dcRefreshAll(panel) {
   dcRenderAll(panel);
 }
 
-function dcCardHtml(p) {
+function dcCardHtmlLegacy(p) {
   const sel = dcState.selectedProductId === p.productId;
   const badgeClass = BUCKET_BADGE_CLASS[p.filterBucket] || 'gray';
   return `<div class="amb-pcard ${sel ? 'sel' : ''}" data-dcopen="${p.productId}">
@@ -2152,7 +2203,7 @@ const DOSSIER_WINDOW_CHIPS = [
   { key: 'last90', label: 'آخر 90 يوم' }, { key: 'custom', label: 'فترة مخصصة' },
 ];
 
-async function dcOpenProduct(panel, productId) {
+async function dcOpenProductLegacy(panel, productId) {
   dcState.selectedProductId = productId;
   dcState.dossier = null;
   dcState.activeTab = 'overview';
