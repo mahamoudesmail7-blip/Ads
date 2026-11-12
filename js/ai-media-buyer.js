@@ -2208,6 +2208,7 @@ const DC_TABS = [
   { key: 'audience', label: 'الجمهور والمحافظات' },
   { key: 'creatives', label: 'الكرياتيفات والـHooks' },
   { key: 'growth', label: '🧠 خطة النمو' },
+  { key: 'strategy', label: '🎯 AI Targeting & Creative' },
   { key: 'actionplan', label: '🚀 أكشن بلان' },
   { key: 'history', label: 'سجل القرارات' },
   { key: 'learning', label: 'تعلم المنتج' },
@@ -2272,7 +2273,7 @@ function dcRenderDossierInto(el, panel) {
     </div>
     <div class="amb-dossier-tabs">${DC_TABS.map((t) => `<button class="amb-dossier-tab ${dcState.activeTab === t.key ? 'active' : ''}" data-dctab="${t.key}">${E(t.label)}</button>`).join('')}</div>
     <div id="ambDcTabBody">${dcTabBody(d)}</div>
-    ${dcState.activeTab === 'actionplan' ? '' : dcActionPlanHtml(pkg)}
+    ${['actionplan', 'strategy'].includes(dcState.activeTab) ? '' : dcActionPlanHtml(pkg)}
   </div>`;
 
   $('ambDcReanalyze').onclick = () => { dcGrowthCache.delete(d.productId); dcReanalyze(panel, d.productId); };
@@ -2283,7 +2284,8 @@ function dcRenderDossierInto(el, panel) {
     dcChangeWindow(panel, d.productId, key === 'operational' ? null : key);
   });
   if (dcState.activeTab === 'actionplan') dcWireActionPlanTab(el, panel, pkg);
-  else dcWireActionPlan(el, panel, pkg);
+  else if (dcState.activeTab !== 'strategy') dcWireActionPlan(el, panel, pkg);
+  if (dcState.activeTab === 'strategy') import('./amb-product-strategy.js').then((m) => m.mountProductStrategy(el.querySelector('#ambDcStrategyBody'), d.productId)).catch((e) => { const b = el.querySelector('#ambDcStrategyBody'); if (b) b.innerHTML = `<div class="amb-empty">⚠️ ${E(e.message || e)}</div>`; });
   if (dcState.activeTab === 'growth') dcLoadGrowthTab(el, d.productId).catch(() => {});
 }
 
@@ -2291,6 +2293,7 @@ function dcTabBody(d) {
   if (dcState.activeTab === 'audience') return dcTabAudience(d.package);
   if (dcState.activeTab === 'creatives') return dcTabCreatives(d.package);
   if (dcState.activeTab === 'growth') return `<div id="ambDcGrowthBody" class="amb-empty">جارِ التحميل...</div>`;
+  if (dcState.activeTab === 'strategy') return `<div id="ambDcStrategyBody" class="amb-empty">جارِ التحميل...</div>`;
   if (dcState.activeTab === 'actionplan') return dcTabActionPlan(d.package);
   if (dcState.activeTab === 'history') return dcTabHistory(d.history);
   if (dcState.activeTab === 'learning') return dcTabLearning(d.learning);

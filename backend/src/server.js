@@ -58,6 +58,7 @@ import ambMediaRoutes from './routes/ambMedia.js';
 import ambPagesRoutes from './routes/ambPages.js';
 import ambTiktokRoutes from './routes/ambTiktok.js';
 import dailyTasksRoutes from './routes/dailyTasks.js';
+import productStrategyRoutes from './routes/productStrategy.js';
 import { startDailyTasksScheduler } from './services/dailyTasks/scheduler.js';
 import productMarketingRoutes from './routes/productMarketing.js';
 import aiUsageRoutes from './routes/aiUsage.js';
@@ -131,6 +132,7 @@ app.use('/api/operator', operatorRoutes); // 🤖 AI Operator — execution/auto
 app.use('/api/scale-center', scaleCenterRoutes); // 🚀 مركز التوسّع — Scale/Bump execution only, deliberately separate from AI Media Buyer's Decision Center (see routes/scaleCenter.js)
 app.use('/api/assistant-tasks', assistantTasksRoutes); // 🤖 AI Media Buyer Operator — Task Engine (Phase 2 Slice 1, see routes/assistantTasks.js)
 app.use('/api/amb-media/pages', ambPagesRoutes); // product-page projects (copy + designed images + videos), mounted BEFORE the generic media router
+app.use('/api/product-strategy', productStrategyRoutes); // AI Product Targeting & Creative Strategy — analysis + text only, never writes to Meta
 app.use('/api/daily-tasks', dailyTasksRoutes); // تاسكات اليوم — daily work distribution between media buyers (settings rows only, no Meta writes)
 app.use('/api/amb-tiktok', ambTiktokRoutes); // TikTok campaigns (wizard → launch), ADMIN only
 app.use('/api/amb-media', ambMediaRoutes); // AMB smart media tools for the launch wizard (provider keys now; finder/AI later)
