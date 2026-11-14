@@ -41,6 +41,35 @@ try {
   const empty = M.buildMonthDoc({ month: '2026-11', today: '2026-11-04', perAccount: [] });
   ok('no data at all → zero totals, no best day, no average', empty.total.orders === 0 && empty.bestDay === null && empty.avgPerDay === null && empty.total.cpa === null);
 
+  const withActual = M.buildMonthDoc({ month: '2026-11', today: '2026-11-04', perAccount: [{ id: 'A', name: 'Acc A', days: new Map([['2026-11-01', new Map([g('p:1', 'Soleva', 5, 500, 'LAUNCH')])]]) }],
+    actual: new Map([['2026-11-01', [{ id: 1, name: 'Soleva', orders: 9, delivered: 4, returned: 1 }, { id: 2, name: 'Other', orders: 3 }]], ['2026-11-02', [{ id: 2, name: 'Other', orders: 6 }]], ['2026-11-20', [{ id: 2, name: 'Other', orders: 99 }]]]) });
+  ok('real store orders per day sit next to Meta purchases (day 1: 12 real vs 5 Meta; day 2: 6 real, no Meta data)', withActual.days[0].actualOrders === 12 && withActual.days[0].orders === 5 && withActual.days[1].actualOrders === 6 && withActual.days[1].hasData === false);
+  ok('the real orders of a product merge into the Meta product row (key p:1); the popup list carries Meta orders + spend beside it', withActual.days[0].products[0].actualOrders === 9 && withActual.days[0].actualProducts[0].metaOrders === 5 && withActual.days[0].actualProducts[0].spend === 500 && withActual.days[0].actualProducts[1].metaOrders === null);
+  ok('delivered / returned are summed for the day', withActual.days[0].actualDelivered === 4 && withActual.days[0].actualReturned === 1);
+  ok('a FUTURE day never counts (the 99 on day 20 is ignored in the totals)', withActual.days[19].future && withActual.actual.total === 18, JSON.stringify(withActual.actual));
+  ok('real-orders month stats: total, average over days with orders, best day', withActual.actual.total === 18 && withActual.actual.avgPerDay === 9 && withActual.actual.bestDay.day === 1 && withActual.actual.daysWithData === 2);
+  ok('no real orders given: zeros, never undefined', empty.actual.total === 0 && empty.actual.bestDay === null && empty.days[0].actualOrders === 0 && empty.days[0].actualProducts.length === 0);
+
+  // ---- whole-month summary (click on «إجمالي الشهر») ----
+  const sumIn = { month: '2026-11', today: '2026-11-04',
+    perAccount: [
+      { id: 'A', name: 'Acc A', days: new Map([['2026-11-01', new Map([g('p:1', 'Soleva', 5, 500, 'LAUNCH'), g('n:x', 'X', 0, 80)])], ['2026-11-03', new Map([g('p:1', 'Soleva', 2, 100, 'LAUNCH')])], ['2026-11-20', new Map([g('p:1', 'Soleva', 50, 9999, 'LAUNCH')])]]) },
+      { id: 'B', name: 'Acc B', days: new Map([['2026-11-01', new Map([g('p:1', 'Soleva', 3, 150, 'LAUNCH'), g('n:nail clipper', 'Nail Clipper', 4, 200)])]]) },
+    ],
+    actual: new Map([['2026-11-01', [{ id: 1, name: 'Soleva', orders: 9, delivered: 4, returned: 1 }, { id: 7, name: 'Nail  clipper', orders: 6 }, { id: 9, name: 'Store only', orders: 2 }]], ['2026-11-03', [{ id: 1, name: 'Soleva', orders: 3 }]], ['2026-11-20', [{ id: 1, name: 'Soleva', orders: 77 }]]]) };
+  const S = M.buildMonthSummary(sumIn);
+  const sol = S.products.find((p) => p.key === 'p:1');
+  ok('month summary: totals = Meta purchases, spend and CPA over the whole month (future day 20 ignored)', S.totals.metaOrders === 14 && S.totals.spend === 1030 && S.totals.cpa === 73.57 && S.totals.storeOrders === 20, JSON.stringify(S.totals));
+  ok('a product merges across accounts and days: Soleva 10 Meta purchases, 750 spend, CPA 75', sol.metaOrders === 10 && sol.spend === 750 && sol.cpa === 75 && sol.activeDays === 2, JSON.stringify(sol));
+  ok('…with its split by ad account (A 7 / B 3), best first, each with spend + CPA', sol.accounts.length === 2 && sol.accounts[0].name === 'Acc A' && sol.accounts[0].orders === 7 && sol.accounts[0].spend === 600 && sol.accounts[0].cpa === 85.71 && sol.accounts[1].orders === 3);
+  ok('real store orders are added to the same product over the month (9 + 3 = 12), delivered/returned too', sol.actualOrders === 12 && sol.delivered === 4 && sol.returned === 1 && sol.realCpa === 62.5);
+  ok('a real product matches a name-grouped Meta row by normalised name ("Nail  clipper" ↔ "Nail Clipper")', S.products.find((p) => p.key === 'n:nail clipper').actualOrders === 6 && S.products.filter((p) => /nail/i.test(p.name)).length === 1);
+  ok('a store-only product (no Meta campaign) still appears, flagged (metaOrders null)', S.products.some((p) => p.name === 'Store only' && p.metaOrders === null && p.actualOrders === 2));
+  ok('per-account month totals: A 7 purchases / 680 spend, B 7 / 350; shares add up', S.accounts.find((a) => a.id === 'A').orders === 7 && S.accounts.find((a) => a.id === 'A').spend === 680 && S.accounts.find((a) => a.id === 'B').orders === 7 && Math.abs(S.accounts.reduce((x, a) => x + a.share, 0) - 100) < 0.1);
+  ok('spend without orders is listed apart (X 80)', S.noOrders.length === 1 && S.noOrders[0].name === 'X' && S.noOrders[0].spend === 80);
+  const emptySum = M.buildMonthSummary({ month: '2026-11', today: '2026-11-04', perAccount: [] });
+  ok('empty month summary: zeros, no rows, null CPA', emptySum.totals.metaOrders === 0 && emptySum.products.length === 0 && emptySum.accounts.length === 0 && emptySum.totals.cpa === null && emptySum.totals.realCpa === null);
+
   console.log('\n2. real snapshots (isolated DB)');
   conn = await prisma.metaConnection.findFirst(); prevAcc = conn?.selected_ad_account_id;
   await prisma.metaConnection.update({ where: { id: conn.id }, data: { selected_ad_account_id: PRIMARY, status: 'CONNECTED' } });
@@ -70,13 +99,24 @@ try {
   ok('totals sum the days; best day is day 1 when it has the most orders', r.total.orders === 14 && r.bestDay.day === 1);
   const other = await M.getMonthDailyOrders({ month: '2020-01', force: true });
   ok('a past month with no data → 31 empty days, no best day', other.days.length === 31 && other.total.orders === 0 && other.bestDay === null);
+  const rp = await prisma.product.create({ data: { product_name: 'MD Real Product' } }); made.real = rp;
+  await prisma.dailyOrder.create({ data: { product_id: rp.id, date: d(1), orders_count: 7, delivered_count: 3, returned_count: 1 } });
+  await prisma.dailyOrder.create({ data: { product_id: made.product.id, date: d(1), orders_count: 4 } });
+  await prisma.dailyOrder.create({ data: { product_id: rp.id, date: d(2), orders_count: 50, is_demo: true } });
+  const rr = await M.getMonthDailyOrders({ month, force: true });
+  ok('DB: day 1 real orders = 7 + 4 (the demo row on day 2 is ignored)', rr.days[0].actualOrders === 11 && rr.days[1].actualOrders === 0, JSON.stringify([rr.days[0].actualOrders, rr.days[1].actualOrders]));
+  ok('DB: the launched product shows its real 4 next to its 5 Meta purchases', rr.days[0].products.find((p) => p.name === 'MD Launch Product').actualOrders === 4 && rr.days[0].actualProducts.find((p) => p.name === 'MD Launch Product').metaOrders === 5);
+  ok('DB: the Meta numbers are unchanged by the real-orders column', rr.days[0].orders === 10 && rr.total.orders === 14);
+  ok('DB: the document carries the month summary — same Meta total as the days, real orders 11, launched product listed with its account', rr.summary.totals.metaOrders === rr.total.orders && rr.summary.totals.storeOrders === 11 && rr.summary.products.some((p) => p.name === 'MD Launch Product' && p.actualOrders === 4 && p.accounts[0].id === HADY));
   const cached = await M.getMonthDailyOrders({ month });
-  ok('a second call within the cache window is served from memory (same object)', cached === r);
+  ok('a second call within the cache window is served from memory (same object)', cached === rr);
 } finally {
   if (conn) await prisma.metaConnection.update({ where: { id: conn.id }, data: { selected_ad_account_id: prevAcc ?? null } }).catch(() => {});
   await prisma.metaPerformanceSnapshot.deleteMany({ where: { campaign_id: { startsWith: 'md_' } } }).catch(() => {});
   await prisma.ambSyncRun.deleteMany({ where: { id: { in: runIds } } }).catch(() => {});
   if (made.job) await prisma.ambLaunchJob.delete({ where: { job_id: made.job.job_id } }).catch(() => {});
+  await prisma.dailyOrder.deleteMany({ where: { product_id: { in: [made.real?.id ?? -1, made.product?.id ?? -1] } } }).catch(() => {});
+  if (made.real) await prisma.product.delete({ where: { id: made.real.id } }).catch(() => {});
   if (made.product) await prisma.product.delete({ where: { id: made.product.id } }).catch(() => {});
   await prisma.$disconnect();
 }
