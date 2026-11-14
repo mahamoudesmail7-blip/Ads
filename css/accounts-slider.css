@@ -238,9 +238,6 @@ html [data-legacy="hidden"] { display: none !important; }
 .md-stats .md-sum-btn { cursor: pointer; border-radius: 10px; }
 .md-stats .md-sum-btn:hover .v, .md-stats .md-sum-btn:focus-visible .v { color: #ff7a1a; } .md-stats .md-sum-btn:focus-visible { outline: 2px solid #ff7a1a; outline-offset: 4px; }
 .md-sect { margin: 12px 0 8px; font-size: 13px; font-weight: 800; color: var(--text, #1f2937); } .md-sect small { font-weight: 700; color: var(--text-dim, #566178); }
-.md-accs { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0 2px; }
-.md-acc { font-size: 11.5px; font-weight: 700; color: var(--text-dim, #566178); background: var(--bg-secondary, #f6f7fb); border: 1px solid var(--border, #e7eaf0); border-radius: 999px; padding: 2px 9px; font-variant-numeric: tabular-nums; } .md-acc b { color: var(--text, #1f2937); font-weight: 800; }
-.md-month .atp-sum { flex-wrap: wrap; }
 .md-chart { display: flex; align-items: flex-end; gap: 6px; height: 230px; padding: 22px 4px 0; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: thin; }
 .md-col { flex: 1 0 28px; min-width: 28px; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; scroll-snap-align: center; -webkit-tap-highlight-color: transparent; }
 .md-val { min-height: 18px; font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text, #1f2937); white-space: nowrap; position: relative; animation: mdFade .5s ease backwards; animation-delay: calc(var(--i, 0) * 22ms + .25s); }
@@ -272,12 +269,20 @@ html [data-legacy="hidden"] { display: none !important; }
 @media (max-width: 720px) { .md-chart { height: 200px; } .md-pager .md-pos { display: none; } .md-daybadge { width: 46px; height: 46px; } }
 @media (prefers-reduced-motion: reduce) { .md-val, .md-val em, .md-bar > i, .md-body, .md-row { animation: none !important; } .md-bar > i { transition: none; } }
 
-/* month popup: product rows carry 4 numbers (store orders / Meta purchases / spend / cost per order) */
-.md-month .md-prow { grid-template-columns: 38px minmax(0, 1fr) 86px 86px 96px 80px; }
+/* month popup (Meta purchases only): accounts, then product cards with a small per-account table */
+.md-plist { display: flex; flex-direction: column; gap: 12px; }
+.md-pcard { border: 1px solid var(--border, #e7eaf0); border-radius: 16px; background: var(--bg-card, #fff); padding: 6px 6px 10px; }
+.md-pcard > .atp-row { border: 0; box-shadow: none; background: none; }
+.md-pcard > .atp-row:hover { transform: none; box-shadow: none; }
+.md-acct { width: calc(100% - 20px); margin: 2px 10px 0; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.md-acct th { text-align: start; font-size: 11px; font-weight: 700; color: var(--text-dim, #566178); padding: 5px 8px; border-bottom: 1px solid var(--border, #e7eaf0); white-space: nowrap; }
+.md-acct td { padding: 6px 8px; font-weight: 700; color: var(--text, #1f2937); border-bottom: 1px dashed var(--border, #e7eaf0); white-space: nowrap; }
+.md-acct td:first-child { font-weight: 800; white-space: normal; word-break: break-word; }
+.md-acct tr:last-child td { border-bottom: 0; }
+.md-month .atp-sum { flex-wrap: wrap; }
 @media (max-width: 720px) {
   .md-month .atp-row { grid-template-columns: repeat(auto-fit, minmax(68px, 1fr)); }
   .md-month .atp-row .atp-rank { display: none; }
   .md-month .atp-row .atp-main { grid-column: 1 / -1; }
   .md-month .atp-row .atp-stat:not(.orders) { display: block; }
-  .md-month .md-prow { grid-template-columns: repeat(auto-fit, minmax(68px, 1fr)); }
 }

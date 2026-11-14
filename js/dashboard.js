@@ -1146,7 +1146,7 @@ function closeDayOrders() {
   if (mdKeyHandler) { document.removeEventListener('keydown', mdKeyHandler); mdKeyHandler = null; }
 }
 
-/** The popup for the WHOLE month: totals, each ad account, and every product (store orders / Meta purchases / spend / cost per order / which accounts). */
+/** The popup for the WHOLE month — Meta purchases only: totals, each ad account, and every product (most purchases on top) with its split by account. */
 function openMonthSummary() {
   const S = mdDoc?.summary;
   if (!S) return;
@@ -1156,39 +1156,45 @@ function openMonthSummary() {
   ov.className = 'atp-overlay';
   ov.id = 'mdOverlay';
   ov.innerHTML = '<div class="atp-modal md-modal md-month" role="dialog" aria-modal="true" style="--acc:#ff7a1a"></div>';
-  document.documentElement.appendChild(ov);
+  document.documentElement.appendChild(ov); // not <body>: see openDayOrders
   ov.addEventListener('click', (e) => { if (e.target === ov) closeDayOrders(); });
   mdKeyHandler = (e) => { if (e.key === 'Escape') closeDayOrders(); };
   document.addEventListener('keydown', mdKeyHandler);
   const modal = ov.querySelector('.md-modal');
   const medal = (k) => (k === 0 ? ' gold' : k === 1 ? ' silver' : k === 2 ? ' bronze' : '');
-  const accRows = S.accounts.map((a, k) => `
+  const cpa = (v) => (v === null || v === undefined ? '—' : mdNum(v, 'money'));
+  const accRows = S.accounts.map((x, k) => `
     <div class="atp-row md-row" style="--i:${Math.min(k, 8)}">
       <div class="atp-rank${medal(k)}">${k + 1}</div>
       <div class="atp-main">
-        <div class="atp-name">${UI.escapeHtml(a.name)}</div>
-        <div class="atp-sub">${a.products} ${a.products === 1 ? 'منتج' : 'منتجات'} · ${a.activeDays} يوم فيه مشتريات · ${UI.fmtNum(Math.round(a.share))}% من مشتريات Meta</div>
-        <div class="atp-bar"><i data-w="${a.share.toFixed(1)}"></i></div>
+        <div class="atp-name">${UI.escapeHtml(x.name)}</div>
+        <div class="atp-sub">${x.products} ${x.products === 1 ? 'منتج' : 'منتجات'} · ${x.activeDays} يوم فيه مشتريات · ${UI.fmtNum(Math.round(x.share))}% من المشتريات</div>
+        <div class="atp-bar"><i data-w="${x.share.toFixed(1)}"></i></div>
       </div>
-      <div class="atp-stat orders"><div class="l">المشتريات</div><div class="v">${mdNum(a.orders, 'int')}</div></div>
-      <div class="atp-stat"><div class="l">الصرف</div><div class="v">${mdNum(a.spend, 'money')}</div></div>
-      <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${a.cpa === null ? '—' : mdNum(a.cpa, 'money')}</div></div>
+      <div class="atp-stat orders"><div class="l">المشتريات</div><div class="v">${mdNum(x.orders, 'int')}</div></div>
+      <div class="atp-stat"><div class="l">الصرف</div><div class="v">${mdNum(x.spend, 'money')}</div></div>
+      <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${cpa(x.cpa)}</div></div>
     </div>`).join('');
-  const prodRows = S.products.map((p, k) => `
-    <div class="atp-row md-row md-prow" style="--i:${Math.min(k, 8)}">
-      <div class="atp-rank${medal(k)}">${k + 1}</div>
-      <div class="atp-main">
-        <div class="atp-name">${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip" title="الحملات دي متجمّعة بالاسم المتشابه بس، مش مربوطة بمنتج">بالاسم</span>' : ''}${p.metaOrders === null ? '<span class="atp-chip" title="مفيش حملات Meta مربوطة بالمنتج ده">من غير Meta</span>' : ''}</div>
-        <div class="atp-sub">${p.activeDays ? `${p.activeDays} يوم فيه مشتريات` : 'مفيش مشتريات Meta'}${p.delivered ? ` · تسليم ${UI.fmtNum(p.delivered)}` : ''}${p.returned ? ` · مرتجع ${UI.fmtNum(p.returned)}` : ''}</div>
-        ${p.accounts.length ? `<div class="md-accs">${p.accounts.map((a) => `<span class="md-acc" title="${UI.escapeHtml(a.name)}"><b>${UI.escapeHtml(a.name)}</b> ${UI.fmtNum(a.orders)} أوردر · ${UI.fmtNum(Math.round(a.spend))} ج${a.cpa === null ? '' : ` · كوست ${UI.fmtNum(Math.round(a.cpa))} ج`}</span>`).join('')}</div>` : ''}
-        <div class="atp-bar"><i data-w="${p.share.toFixed(1)}"></i></div>
+  const topOrders = S.products.length ? S.products[0].orders : 1;
+  const prodCards = S.products.map((p, k) => `
+    <div class="md-pcard">
+      <div class="atp-row md-row" style="--i:${Math.min(k, 8)}">
+        <div class="atp-rank${medal(k)}">${k + 1}</div>
+        <div class="atp-main">
+          <div class="atp-name">${UI.escapeHtml(p.name)}${p.source === 'NAME' ? '<span class="atp-chip" title="الحملات دي متجمّعة بالاسم المتشابه بس، مش مربوطة بمنتج">بالاسم</span>' : ''}</div>
+          <div class="atp-sub">${p.activeDays} يوم فيه مشتريات · ${UI.fmtNum(Math.round(p.share))}% من مشتريات الشهر</div>
+          <div class="atp-bar"><i data-w="${((p.orders / topOrders) * 100).toFixed(1)}"></i></div>
+        </div>
+        <div class="atp-stat orders"><div class="l">المشتريات</div><div class="v">${mdNum(p.orders, 'int')}</div></div>
+        <div class="atp-stat"><div class="l">الصرف</div><div class="v">${mdNum(p.spend, 'money')}</div></div>
+        <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${cpa(p.cpa)}</div></div>
       </div>
-      <div class="atp-stat orders"><div class="l">أوردرات المتجر</div><div class="v">${mdNum(p.actualOrders, 'int')}</div></div>
-      <div class="atp-stat"><div class="l">مشتريات Meta</div><div class="v">${p.metaOrders === null ? '—' : mdNum(p.metaOrders, 'int')}</div></div>
-      <div class="atp-stat"><div class="l">الصرف</div><div class="v">${p.spend > 0 ? mdNum(p.spend, 'money') : '—'}</div></div>
-      <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${p.cpa === null ? '—' : mdNum(p.cpa, 'money')}</div></div>
+      <table class="md-acct">
+        <thead><tr><th>الحساب</th><th>المشتريات</th><th>الصرف</th><th>الكوست</th></tr></thead>
+        <tbody>${p.accounts.map((x) => `<tr><td>${UI.escapeHtml(x.name)}</td><td>${UI.fmtNum(x.orders)}</td><td>${UI.fmtNum(Math.round(x.spend))} ج</td><td>${x.cpa === null ? '—' : `${UI.fmtNum(Math.round(x.cpa))} ج`}</td></tr>`).join('')}</tbody>
+      </table>
     </div>`).join('');
-  const noOrdersSpend = S.noOrders.reduce((a, p) => a + p.spend, 0);
+  const noOrdersSpend = S.noOrders.reduce((t, p) => t + p.spend, 0);
   const noOrdersHtml = S.noOrders.length ? `
     <details class="atp-noorders">
       <summary>⚠️ صرف من غير أوردرات (${S.noOrders.length}) — ${UI.fmtNum(Math.round(noOrdersSpend))} ج</summary>
@@ -1202,17 +1208,16 @@ function openMonthSummary() {
     </div>
     <div class="atp-body md-body">
       <div class="atp-sum">
-        <div class="s"><div class="l">أوردرات المتجر</div><div class="v">${mdNum(T.storeOrders, 'int')}</div></div>
-        <div class="s"><div class="l">مشتريات Meta</div><div class="v">${mdNum(T.metaOrders, 'int')}</div></div>
+        <div class="s"><div class="l">إجمالي الأوردرات</div><div class="v">${mdNum(T.orders, 'int')}</div></div>
         <div class="s"><div class="l">إجمالي الصرف</div><div class="v">${mdNum(T.spend, 'money')}</div></div>
-        <div class="s"><div class="l">الكوست (Meta)</div><div class="v">${T.cpa === null ? '—' : mdNum(T.cpa, 'money')}</div></div>
-        <div class="s"><div class="l">الكوست (أوردرات المتجر)</div><div class="v">${T.realCpa === null ? '—' : mdNum(T.realCpa, 'money')}</div></div>
-        <div class="s"><div class="l">تسليم / مرتجع</div><div class="v">${mdNum(T.delivered, 'int')} <small>/ ${UI.fmtNum(T.returned)}</small></div></div>
+        <div class="s"><div class="l">الكوست أوفر رول</div><div class="v">${cpa(T.cpa)}</div></div>
+        <div class="s"><div class="l">منتجات جابت أوردرات</div><div class="v">${mdNum(T.products, 'int')}</div></div>
+        <div class="s"><div class="l">أيام فيها أوردرات</div><div class="v">${mdNum(T.activeDays, 'int')}</div></div>
       </div>
       ${S.accounts.length ? `<div class="md-sect">🏦 حسب الحساب الإعلاني <small>(${S.accounts.length})</small></div><div class="md-list">${accRows}</div>` : ''}
-      ${S.products.length ? `<div class="md-sect">📦 حسب المنتج <small>(${S.products.length} منتج · مرتّبين بالأكثر أوردرات)</small></div><div class="md-list">${prodRows}</div>` : '<div class="atp-empty">مفيش أوردرات في الشهر ده.</div>'}
+      ${S.products.length ? `<div class="md-sect">📦 حسب المنتج <small>(${S.products.length} منتج · الأكتر أوردرات فوق)</small></div><div class="md-plist">${prodCards}</div>` : '<div class="atp-empty">مفيش أوردرات في الشهر ده.</div>'}
       ${noOrdersHtml}
-      <div class="atd-note">أوردرات المتجر = الأوردرات المسجّلة فعليًا (Easy Orders)؛ المشتريات والصرف والكوست = من Meta لكل الحسابات. «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج.</div>
+      <div class="atd-note">الأوردرات = مشتريات Meta لكل الحسابات. «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج.</div>
     </div>`;
   modal.querySelector('.atp-x').onclick = closeDayOrders;
   atdAnimate(modal);
