@@ -1064,7 +1064,7 @@ function renderDailyReport() {
 }
 
 // ---------------------------------------------------------------------------
-// 📅 كل يوم جاب كام أوردر — عمودين لكل يوم: مشتريات Meta (لكل الحسابات) + أوردرات المتجر الفعلية، للشهر كله، والضغط على عمود يفتح منتجات اليوم ده، وفيه سلايدر بين الأيام.
+// 📅 كل يوم جاب كام أوردر — أعمدة اليوم بالنسبة للشهر كله (مشتريات Meta لكل الحسابات)، والضغط على عمود يفتح منتجات اليوم ده، وفيه سلايدر بين الأيام.
 // ---------------------------------------------------------------------------
 
 const MD_MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
@@ -1095,21 +1095,17 @@ async function renderMonthDays(force) {
 
   const todayStr = A.todayStr();
   const isCurrent = month === todayStr.slice(0, 7);
-  const maxOrders = Math.max(1, ...r.days.map((d) => Math.max(d.orders, d.actualOrders || 0)));
+  const maxOrders = Math.max(1, ...r.days.map((d) => d.orders));
   const best = r.bestDay?.date || null;
   const bars = r.days.map((d, i) => {
     const h = d.hasData ? Math.max(4, Math.round((d.orders / maxOrders) * 100)) : 0;
     const cls = ['md-col', d.future ? 'is-future' : '', !d.hasData ? 'is-empty' : '', d.date === todayStr ? 'is-today' : '', d.date === best ? 'is-best' : ''].filter(Boolean).join(' ');
     const label = d.future ? '' : d.hasData ? UI.fmtNum(d.orders) : '—';
-    const hA = d.actualOrders > 0 ? Math.max(4, Math.round((d.actualOrders / maxOrders) * 100)) : 0;
-    const labelA = d.future ? '' : d.actualOrders > 0 ? UI.fmtNum(d.actualOrders) : '—';
-    const title = d.future ? `${d.day} — لسه ما جاش` : (d.hasData ? `يوم ${d.day}: مشتريات Meta ${d.orders} · صرف ${UI.fmtNum(Math.round(d.spend))} ج` : `يوم ${d.day}: مفيش بيانات Meta`) + ` · أوردرات المتجر ${d.actualOrders || 0}`;
+    const title = d.future ? `${d.day} — لسه ما جاش` : d.hasData ? `يوم ${d.day}: ${d.orders} أوردر · صرف ${UI.fmtNum(Math.round(d.spend))} ج` : `يوم ${d.day}: مفيش بيانات`;
     return `
       <button type="button" class="${cls}" data-day="${d.date}" style="--i:${i}" ${d.future ? 'disabled' : ''} title="${UI.escapeHtml(title)}" aria-label="${UI.escapeHtml(title)}">
-        <span class="md-pair">
-          <span class="md-one"><span class="md-val">${d.date === best ? '<em aria-hidden="true">👑</em>' : ''}${label}</span><span class="md-bar"><i style="--h:${h}%"></i></span></span>
-          <span class="md-one is-actual${d.actualOrders > 0 ? '' : ' is-zero'}"><span class="md-val">${labelA}</span><span class="md-bar"><i style="--h:${hA}%"></i></span></span>
-        </span>
+        <span class="md-val">${d.date === best ? '<em aria-hidden="true">👑</em>' : ''}${label}</span>
+        <span class="md-bar"><i style="--h:${h}%"></i></span>
         <span class="md-day">${d.day}</span>
       </button>`;
   }).join('');
@@ -1124,22 +1120,20 @@ async function renderMonthDays(force) {
         </div>
       </div>
       <div class="md-stats">
-        <button type="button" class="s md-sum-btn" data-md-summary title="اضغط لتفاصيل الشهر كله" aria-label="تفاصيل الشهر كله"><div class="l">إجمالي الشهر <em aria-hidden="true">↗</em></div><div class="v">${mdNum(r.total.orders, 'int')}</div></button>
-        <button type="button" class="s md-sum-btn is-actual" data-md-summary title="اضغط لتفاصيل الشهر كله" aria-label="تفاصيل الشهر كله"><div class="l">أوردرات المتجر <em aria-hidden="true">↗</em></div><div class="v">${mdNum(r.actual?.total ?? 0, 'int')}</div></button>
+        <div class="s md-sum-btn" role="button" tabindex="0" data-md-summary title="اضغط لتفاصيل الشهر كله"><div class="l">إجمالي الشهر</div><div class="v">${mdNum(r.total.orders, 'int')}</div></div>
         <div class="s"><div class="l">متوسط اليوم</div><div class="v">${r.avgPerDay === null ? '—' : mdNum(Math.round(r.avgPerDay), 'int')}</div></div>
         <div class="s"><div class="l">أفضل يوم</div><div class="v">${r.bestDay ? `${mdNum(r.bestDay.orders, 'int')} <small>(يوم ${r.bestDay.day})</small>` : '—'}</div></div>
         <div class="s"><div class="l">الصرف</div><div class="v">${mdNum(r.total.spend, 'money')}</div></div>
         <div class="s"><div class="l">الكوست</div><div class="v">${mdNum(r.total.cpa, 'money')}</div></div>
       </div>
-      <div class="md-legend"><span><i class="k-meta"></i>مشتريات Meta</span><span><i class="k-actual"></i>أوردرات المتجر الفعلية</span></div>
       <div class="md-chart" dir="ltr" tabindex="0">${bars}</div>
-      <div class="atd-note">📦 اضغط على أي يوم يظهرلك الأوردرات اللي جت فيه من منتجات إيه، وعلى «إجمالي الشهر» تشوف الشهر كله منتج بمنتج وحساب بحساب. ${UI.escapeHtml(r.note || '')}</div>
+      <div class="atd-note">📦 اضغط على أي يوم يظهرلك الأوردرات اللي جت فيه من منتجات إيه. ${UI.escapeHtml(r.note || '')}</div>
     </section>`;
 
   const root = body.querySelector('.md');
   atdAnimate(root);
   root.querySelectorAll('[data-md]').forEach((b) => { b.onclick = () => { mdMonth = mdShift(month, b.dataset.md === 'prev' ? -1 : 1); renderMonthDays(false); }; });
-  root.querySelectorAll('[data-md-summary]').forEach((b) => { b.onclick = () => openMonthSummary(); });
+  root.querySelectorAll('[data-md-summary]').forEach((b) => { b.onclick = () => openMonthSummary(); b.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMonthSummary(); } }; });
   root.querySelectorAll('.md-col:not([disabled])').forEach((c) => { c.onclick = () => openDayOrders(c.dataset.day); });
   const chart = root.querySelector('.md-chart');
   const cur = chart.querySelector('.is-today') || chart.querySelector('.md-col:last-child');
@@ -1268,21 +1262,6 @@ function openDayOrders(date) {
         <div class="atp-stat"><div class="l">الصرف</div><div class="v">${mdNum(p.spend, 'money')}</div></div>
         <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${mdNum(p.cpa, 'money')}</div></div>
       </div>`).join('');
-    const maxA = Math.max(1, ...(d.actualProducts || []).map((p) => p.orders));
-    const actualHtml = (d.actualProducts || []).length ? `
-      <div class="md-sect">🛒 أوردرات المتجر الفعلية حسب المنتج <small>(${UI.fmtNum(d.actualOrders)} أوردر · تسليم ${UI.fmtNum(d.actualDelivered)} · مرتجع ${UI.fmtNum(d.actualReturned)})</small></div>
-      <div class="md-list">${d.actualProducts.map((p, k) => `
-        <div class="atp-row md-row md-arow" style="--i:${Math.min(k, 8)}">
-          <div class="atp-rank${medal(k)}">${k + 1}</div>
-          <div class="atp-main">
-            <div class="atp-name">${UI.escapeHtml(p.name)}</div>
-            <div class="atp-sub">${p.metaOrders !== null ? `مشتريات Meta: ${UI.fmtNum(p.metaOrders)}` : 'مفيش مشتريات Meta مربوطة'}${p.delivered ? ` · تسليم ${UI.fmtNum(p.delivered)}` : ''}${p.returned ? ` · مرتجع ${UI.fmtNum(p.returned)}` : ''}</div>
-            <div class="atp-bar md-abar"><i data-w="${((p.orders / maxA) * 100).toFixed(1)}"></i></div>
-          </div>
-          <div class="atp-stat orders"><div class="l">الأوردرات</div><div class="v">${mdNum(p.orders, 'int')}</div></div>
-          <div class="atp-stat"><div class="l">الصرف</div><div class="v">${p.spend === null ? '—' : mdNum(p.spend, 'money')}</div></div>
-          <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${p.spend && p.orders ? mdNum(p.spend / p.orders, 'money') : '—'}</div></div>
-        </div>`).join('')}</div>` : `<div class="atp-empty">${d.future ? '' : 'مفيش أوردرات متجر مسجّلة في اليوم ده.'}</div>`;
     const noOrdersSpend = d.noOrders.reduce((s, p) => s + p.spend, 0);
     const noOrdersHtml = d.noOrders.length ? `
       <details class="atp-noorders">
@@ -1292,7 +1271,7 @@ function openDayOrders(date) {
     modal.innerHTML = `
       <div class="atp-head">
         <div class="md-daybadge"><b>${d.day}</b><span>${UI.escapeHtml(MD_MONTHS[Number(d.date.slice(5, 7)) - 1])}</span></div>
-        <div class="atp-title"><b>أوردرات يوم ${d.day} — ${UI.escapeHtml(weekday)}</b><span>📦 أوردرات المتجر الفعلية + مشتريات Meta، من كل الحسابات</span></div>
+        <div class="atp-title"><b>أوردرات يوم ${d.day} — ${UI.escapeHtml(weekday)}</b><span>📦 المنتجات اللي جابت الأوردرات دي، من كل الحسابات</span></div>
         <div class="md-pager">
           <button type="button" class="atd-nav" data-go="prev" aria-label="اليوم السابق" ${i <= 0 ? 'disabled' : ''}>›</button>
           <span class="md-pos"><b>${i + 1}</b> / ${days.length}</span>
@@ -1302,16 +1281,14 @@ function openDayOrders(date) {
       </div>
       <div class="atp-body md-body ${dir ? `md-slide-${dir}` : ''}">
         <div class="atp-sum">
-          <div class="s"><div class="l">أوردرات المتجر</div><div class="v">${mdNum(d.actualOrders || 0, 'int')}</div></div>
-          <div class="s"><div class="l">مشتريات Meta</div><div class="v">${mdNum(d.orders, 'int')}</div></div>
+          <div class="s"><div class="l">إجمالي الأوردرات</div><div class="v">${mdNum(d.orders, 'int')}</div></div>
           <div class="s"><div class="l">منتجات جابت أوردرات</div><div class="v">${mdNum(d.products.length, 'int')}</div></div>
           <div class="s"><div class="l">إجمالي الصرف</div><div class="v">${mdNum(d.spend, 'money')}</div></div>
           <div class="s"><div class="l">الكوست أوفر رول</div><div class="v">${mdNum(d.cpa, 'money')}</div></div>
         </div>
-        ${actualHtml}
-        ${d.products.length ? `<div class="md-sect">📣 مشتريات Meta حسب المنتج</div><div class="md-list">${rows}</div>` : `<div class="atp-empty">${d.hasData ? 'مفيش منتج جاب أوردرات في اليوم ده.' : 'مفيش بيانات مزامنة لليوم ده.'}</div>`}
+        ${d.products.length ? `<div class="md-list">${rows}</div>` : `<div class="atp-empty">${d.hasData ? 'مفيش منتج جاب أوردرات في اليوم ده.' : 'مفيش بيانات مزامنة لليوم ده.'}</div>`}
         ${noOrdersHtml}
-        <div class="atd-note">أوردرات المتجر = الأوردرات المسجّلة فعليًا (Easy Orders)؛ المشتريات = مشتريات Meta. «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج.</div>
+        <div class="atd-note">الأوردرات = مشتريات Meta. «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج.</div>
       </div>`;
     modal.querySelector('.atp-x').onclick = closeDayOrders;
     modal.querySelector('[data-go="prev"]').onclick = () => showDay(mdOpenDay - 1, 'prev');

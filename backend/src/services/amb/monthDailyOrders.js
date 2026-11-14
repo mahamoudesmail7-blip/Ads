@@ -144,7 +144,7 @@ export function buildMonthDoc({ month, today, perAccount, actual = new Map() }) 
     actual: { total: totalActual, avgPerDay: actualDays.length ? r2(totalActual / actualDays.length) : null, bestDay: bestActual ? { date: bestActual.date, day: bestActual.day, orders: bestActual.actualOrders } : null, daysWithData: actualDays.length },
     bestDay: best && best.orders > 0 ? { date: best.date, day: best.day, orders: best.orders } : null,
     daysWithData: dataDays.length,
-    note: 'العمود البرتقالي = مشتريات Meta (Purchases) لكل الحسابات، والأزرق = أوردرات المتجر الفعلية (Easy Orders) نفس اليوم. مشتريات Meta، من آخر مزامنة (كل 15 دقيقة). المنتج = من الربط بالرفع/الربط اليدوي؛ «بالاسم» = تجميع حملات متشابهة.',
+    note: 'الأوردرات = مشتريات Meta (Purchases) لكل الحسابات، من آخر مزامنة (كل 15 دقيقة). المنتج = من الربط بالرفع/الربط اليدوي؛ «بالاسم» = تجميع حملات متشابهة.',
   };
 }
 
