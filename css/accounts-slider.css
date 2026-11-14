@@ -270,6 +270,13 @@ html [data-legacy="hidden"] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { .md-val, .md-val em, .md-bar > i, .md-body, .md-row { animation: none !important; } .md-bar > i { transition: none; } }
 
 /* month popup (Meta purchases only): accounts, then product cards with a small per-account table */
+.md-search { position: relative; margin: 0 0 12px; }
+.md-search input { width: 100%; box-sizing: border-box; padding: 11px 14px; padding-inline-end: 40px; border-radius: 14px; border: 1px solid var(--border, #e7eaf0); background: var(--bg-secondary, #f6f7fb); color: var(--text, #1f2937); font: inherit; font-size: 14px; font-weight: 700; outline: none; transition: border-color .2s, box-shadow .2s, background .2s; }
+.md-search input::placeholder { color: var(--text-faint, #7b869e); font-weight: 600; }
+.md-search input:focus { border-color: #ff7a1a; background: var(--bg-card, #fff); box-shadow: 0 0 0 3px rgba(255, 122, 26, .18); }
+.md-search input::-webkit-search-cancel-button { display: none; }
+.md-search-x { position: absolute; inset-inline-end: 8px; top: 50%; transform: translateY(-50%); width: 26px; height: 26px; border-radius: 50%; border: 0; background: var(--border, #e7eaf0); color: var(--text-dim, #566178); cursor: pointer; font-size: 12px; line-height: 1; }
+.md-search-x[hidden], .md-pcard[hidden], #mdNoMatch[hidden] { display: none !important; }
 .md-plist { display: flex; flex-direction: column; gap: 12px; }
 .md-pcard { border: 1px solid var(--border, #e7eaf0); border-radius: 16px; background: var(--bg-card, #fff); padding: 6px 6px 10px; }
 .md-pcard > .atp-row { border: 0; box-shadow: none; background: none; }

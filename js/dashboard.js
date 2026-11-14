@@ -1175,9 +1175,10 @@ function openMonthSummary() {
       <div class="atp-stat"><div class="l">الصرف</div><div class="v">${mdNum(x.spend, 'money')}</div></div>
       <div class="atp-stat cpa"><div class="l">الكوست</div><div class="v">${cpa(x.cpa)}</div></div>
     </div>`).join('');
+  const normAr = (t) => String(t || '').toLowerCase().replace(/[ً-ْـ]/g, '').replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/\s+/g, ' ').trim(); // search ignores case, tashkeel and alef/yaa/taa-marbuta spelling
   const topOrders = S.products.length ? S.products[0].orders : 1;
   const prodCards = S.products.map((p, k) => `
-    <div class="md-pcard">
+    <div class="md-pcard" data-name="${UI.escapeHtml(normAr(p.name))}">
       <div class="atp-row md-row" style="--i:${Math.min(k, 8)}">
         <div class="atp-rank${medal(k)}">${k + 1}</div>
         <div class="atp-main">
@@ -1215,12 +1216,30 @@ function openMonthSummary() {
         <div class="s"><div class="l">أيام فيها أوردرات</div><div class="v">${mdNum(T.activeDays, 'int')}</div></div>
       </div>
       ${S.accounts.length ? `<div class="md-sect">🏦 حسب الحساب الإعلاني <small>(${S.accounts.length})</small></div><div class="md-list">${accRows}</div>` : ''}
-      ${S.products.length ? `<div class="md-sect">📦 حسب المنتج <small>(${S.products.length} منتج · الأكتر أوردرات فوق)</small></div><div class="md-plist">${prodCards}</div>` : '<div class="atp-empty">مفيش أوردرات في الشهر ده.</div>'}
+      ${S.products.length ? `<div class="md-sect">📦 حسب المنتج <small>(<span id="mdProdCount">${S.products.length}</span> منتج · الأكتر أوردرات فوق)</small></div>
+        <div class="md-search"><input type="search" id="mdSearch" placeholder="🔍 دوّر على اسم المنتج…" autocomplete="off" aria-label="بحث باسم المنتج"><button type="button" class="md-search-x" id="mdSearchX" aria-label="مسح البحث" hidden>✕</button></div>
+        <div class="md-plist" id="mdPlist">${prodCards}</div><div class="atp-empty" id="mdNoMatch" hidden>مفيش منتج بالاسم ده.</div>` :'<div class="atp-empty">مفيش أوردرات في الشهر ده.</div>'}
       ${noOrdersHtml}
       <div class="atd-note">الأوردرات = مشتريات Meta لكل الحسابات. «بالاسم» = تجميع حملات متشابهة في الاسم، مش مربوطة بمنتج.</div>
     </div>`;
   modal.querySelector('.atp-x').onclick = closeDayOrders;
   atdAnimate(modal);
+  const search = modal.querySelector('#mdSearch');
+  if (search) {
+    const clearBtn = modal.querySelector('#mdSearchX');
+    const cards = [...modal.querySelectorAll('.md-pcard')];
+    const apply = () => {
+      const q = normAr(search.value);
+      let shown = 0;
+      for (const c of cards) { const hit = !q || c.dataset.name.includes(q); c.hidden = !hit; if (hit) shown++; }
+      modal.querySelector('#mdProdCount').textContent = q ? `${shown} من ${cards.length}` : String(cards.length);
+      modal.querySelector('#mdNoMatch').hidden = shown > 0;
+      clearBtn.hidden = !q;
+    };
+    search.addEventListener('input', apply);
+    clearBtn.onclick = () => { search.value = ''; apply(); search.focus(); };
+    search.addEventListener('keydown', (e) => { if (e.key === 'Escape' && search.value) { e.stopPropagation(); search.value = ''; apply(); } }); // first Esc clears the search, the next one closes
+  }
 }
 
 /** The popup for one day: its products (orders / spend / cost per order, best first) with arrows + keyboard to slide to the previous / next day. */
