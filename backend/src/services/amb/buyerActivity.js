@@ -16,7 +16,7 @@ import { logger } from '../../logger.js';
 const r2 = (n) => Math.round(n * 100) / 100;
 const validDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`));
 const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-const CACHE_TODAY_MS = 90_000; const CACHE_PAST_MS = 10 * 60_000; const RESULT_DAYS = 7; const ALIAS_ID = 'ba:aliases';
+const ACCOUNT_TIMEOUT_MS = 15_000; const CACHE_TODAY_MS = 90_000; const CACHE_PAST_MS = 10 * 60_000; const RESULT_DAYS = 7; const ALIAS_ID = 'ba:aliases';
 const cache = new Map(); // date -> { at, data }
 
 // ───────────── pure helpers ─────────────
@@ -126,10 +126,11 @@ async function metaEvents(first, end, accounts) {
   let token = null; try { token = await getDecryptedToken(); } catch { return { events: [], ok: false, reason: 'مفيش اتصال Meta دلوقتي' }; }
   const since = new Date(`${addDays(first, -1)}T12:00:00Z`).toISOString(), until = new Date(`${addDays(end, 1)}T12:00:00Z`).toISOString(); // wide window; each Cairo day is cut afterwards
   const events = []; const failed = [];
-  for (const a of accounts) {
-    try { events.push(...creationEvents(await getAccountActivities(token, a.id, { since, until }), a.id)); }
+  const withLimit = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+  await Promise.all(accounts.map(async (a) => { // every account at the same time, each with its own time limit — one slow account never holds the page
+    try { events.push(...creationEvents(await withLimit(getAccountActivities(token, a.id, { since, until }), ACCOUNT_TIMEOUT_MS), a.id)); }
     catch (e) { failed.push(a.name || a.id); logger.warn('[buyerActivity] activity history failed', { account: a.id, message: e.message }); }
-  }
+  }));
   const v = { events, ok: failed.length === 0, failed }; EVENTS_CACHE.set(key, { at: Date.now(), v }); if (EVENTS_CACHE.size > 6) EVENTS_CACHE.delete(EVENTS_CACHE.keys().next().value);
   return v;
 }
@@ -153,17 +154,27 @@ async function resultsFor(list, day, today) {
 }
 
 /** The day strip: how many campaigns each day created — from the same Meta history + system records as the cards, so every chip is honest (not only the selected day). Ends on today; an older selected day extends it. */
-function weekStrip(day, today, first, events, sys, accountNames) {
+function weekStrip(day, today, first, events, sys, accountNames, { exact = true } = {}) {
   const n = Math.min(60, Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`)) / 86_400_000) + 1);
-  return range(first, n).map((d) => ({ date: d, campaigns: mergeCampaigns(events, sys, { day: d, accountNames }).length, selected: d === day, today: d === today }));
+  return range(first, n).map((d) => { const known = exact || d === day; return { date: d, campaigns: mergeCampaigns(known ? events : [], sys, { day: d, accountNames }).length, selected: d === day, today: d === today, approx: !known }; });
 }
 
+/** The 7-day strip with EVERY day counted from Meta's history + the system records (one wider read, cached). The page asks for it after the cards are already on screen. */
+export async function getWeekStrip({ date = null } = {}) {
+  const today = todayISO(); let day = validDate(date) ? String(date) : today; if (day > today) day = today;
+  const first = day < addDays(today, -6) ? day : addDays(today, -6);
+  const accounts = (await listViewAccounts()).accounts; const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
+  const [sys, meta] = await Promise.all([systemRecords(first, today), metaEvents(first, today, accounts)]);
+  return { date: day, week: weekStrip(day, today, first, meta.events, sys, accountNames, { exact: true }), ok: meta.ok };
+}
+
+/** @param {{ date?: string|null, force?: boolean }} p */
 export async function getBuyerActivity({ date = null, force = false } = {}) {
   const today = todayISO(); let day = validDate(date) ? String(date) : today; if (day > today) day = today;
   const hit = cache.get(day); if (!force && hit && Date.now() - hit.at < (day === today ? CACHE_TODAY_MS : CACHE_PAST_MS)) return hit.data;
   const accounts = (await listViewAccounts()).accounts; const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
   const first = day < addDays(today, -6) ? day : addDays(today, -6);
-  const [sys, meta, aliases] = await Promise.all([systemRecords(first, today), metaEvents(first, today, accounts), loadAliases()]);
+  const [sys, meta, aliases] = await Promise.all([systemRecords(first, today), metaEvents(day, day, accounts), loadAliases()]); // Meta: the selected day only (fast); the strip's other days are filled by getWeekStrip
   const list = mergeCampaigns(meta.events, sys, { day, accountNames });
   // product of the campaigns the system links to a product (never guessed beyond the owner's «Product - Test» naming)
   const byAcc = new Map(); for (const c of list) if (!c.product) { if (!byAcc.has(c.accountId)) byAcc.set(c.accountId, []); byAcc.get(c.accountId).push(c.id); }
@@ -172,7 +183,7 @@ export async function getBuyerActivity({ date = null, force = false } = {}) {
   let team = []; try { const E = await import('../dailyTasks/engine.js'); team = ((await E.getConfig()).team || []).filter((m) => m.active !== false).map((m) => ({ id: m.id, name: m.name, userId: m.userId || null })); } catch (e) { logger.warn('[buyerActivity] team failed', { message: e.message }); }
   const people = groupByPerson(list, team, aliases);
   const data = {
-    date: day, today, isToday: day === today, people, team: team.map((m) => ({ id: m.id, name: m.name })), week: weekStrip(day, today, first, meta.events, sys, accountNames),
+    date: day, today, isToday: day === today, people, team: team.map((m) => ({ id: m.id, name: m.name })), week: weekStrip(day, today, first, meta.events, sys, accountNames, { exact: false }),
     totals: { campaigns: list.length, tests: list.filter((c) => c.type === 'TEST').length, scales: list.filter((c) => c.type === 'SCALE').length, people: people.filter((p) => !p.idle).length },
     meta: { ok: meta.ok, failed: meta.failed || [], reason: meta.reason || null },
     note: 'الكامبينات دي من «View history» في كل أكونت (نفس اللي بيظهر في Ads Manager)، فيها اللي اتعمل من جوه السيستم واللي اتعمل بإيدك في Meta. نوع الكامبين (تيست / اسكيل) من اسمه. النتايج = مشتريات Meta من آخر مزامنة، وبتبدأ من تاني يوم لأن الكامبين بيشتغل 12 ص بعد ما بيتعمل.',

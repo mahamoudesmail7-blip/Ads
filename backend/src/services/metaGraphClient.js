@@ -549,8 +549,8 @@ async function graphListQuiet(path, params, token) {
 }
 
 /** Paginated GET of a node's edge (e.g. /act_x/campaigns) returning every page's `data` concatenated. */
-export async function graphList(path, params, token) {
-  const rows = [];
+export async function graphList(path, params, token, { maxPages = 0 } = {}) {
+  const rows = []; let pages = 0;
   let url = new URL(`${GRAPH_BASE}${path}`);
   for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
   url.searchParams.set('access_token', token);
@@ -562,7 +562,8 @@ export async function graphList(path, params, token) {
     if (!res.ok || data?.error) throwGraphOAuthError(data, res, `list ${path}`);
     rows.push(...(data.data || []));
     target = data.paging?.next || null;
-  } while (target);
+    pages += 1;
+  } while (target && (!maxPages || pages < maxPages));
   return rows;
 }
 
@@ -1337,5 +1338,5 @@ export async function createAd(token, adAccountId, payload) {
 export async function getAccountActivities(token, adAccountId, { since, until } = {}) {
   const base = { fields: 'event_type,translated_event_type,event_time,object_id,object_name,object_type,actor_id,actor_name', ...(since ? { since } : {}), ...(until ? { until } : {}) };
   // campaign-category history first (a busy account logs every edit: far fewer pages); if Meta refuses the filter, the plain call still works
-  try { return await graphList(`/${adAccountId}/activities`, { ...base, category: 'CAMPAIGN' }, token); } catch (e) { if (e?.isMetaRateLimit) throw e; return graphList(`/${adAccountId}/activities`, base, token); }
+  try { return await graphList(`/${adAccountId}/activities`, { ...base, category: 'CAMPAIGN' }, token, { maxPages: 6 }); } catch (e) { if (e?.isMetaRateLimit) throw e; return graphList(`/${adAccountId}/activities`, base, token, { maxPages: 6 }); }
 }

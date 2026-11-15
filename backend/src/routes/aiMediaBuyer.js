@@ -86,6 +86,11 @@ router.get('/buyer-activity', asyncRoute(async (req, res) => {
   if (req.query.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date))) return res.status(400).json({ error: 'REQUEST_ERROR', message: 'التاريخ لازم يكون بصيغة YYYY-MM-DD.' });
   res.json(await getBuyerActivity({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+router.get('/buyer-activity/week', asyncRoute(async (req, res) => {
+  const { getWeekStrip } = await import('../services/amb/buyerActivity.js');
+  if (req.query.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date))) return res.status(400).json({ error: 'REQUEST_ERROR', message: 'التاريخ لازم يكون بصيغة YYYY-MM-DD.' });
+  res.json(await getWeekStrip({ date: req.query.date || null }));
+}));
 // The owner links a Facebook name (as «View history» shows it) to a media buyer once. Settings table only — never touches Meta.
 router.put('/buyer-activity/aliases', requireRole('ADMIN'), asyncRoute(async (req, res) => {
   const { setAlias, getBuyerActivity } = await import('../services/amb/buyerActivity.js');

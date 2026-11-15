@@ -45,9 +45,12 @@ function personCard(p, team) {
   </section>`;
 }
 
+function stripHtml(week) {
+  return week.map((w) => `<button type="button" class="ba-day ${w.selected ? 'on' : ''} ${w.campaigns || w.approx ? '' : 'zero'}" data-day="${w.date}"><small>${wd(w.date)}</small><b>${dm(w.date)}</b><em>${w.approx && !w.campaigns ? '…' : w.campaigns ? `${w.campaigns} كامبين` : '—'}</em></button>`).join('');
+}
 function render(body, d) {
   const shift = (n) => { const x = new Date(`${d.date}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
-  const strip = d.week.map((w) => `<button type="button" class="ba-day ${w.selected ? 'on' : ''} ${w.campaigns ? '' : 'zero'}" data-day="${w.date}"><small>${wd(w.date)}</small><b>${dm(w.date)}</b><em>${w.campaigns ? `${w.campaigns} كامبين` : '—'}</em></button>`).join('');
+  const strip = stripHtml(d.week);
   const warn = d.meta?.reason ? `<div class="ba-warn">⚠️ ${E(d.meta.reason)} — بيظهر اللي اتعمل من السيستم بس.</div>` : (d.meta && !d.meta.ok ? `<div class="ba-warn">⚠️ مقدرتش أقرا «View history» لأكونت: ${E(d.meta.failed.join('، '))} — ممكن يكون فيه كامبينات ناقصة.</div>` : '');
   body.innerHTML = `<section class="ba">
     <div class="ba-head"><div class="ba-title">🧑‍💼 اللي اتعمل ${d.isToday ? 'النهارده' : 'يوم'} <em>${E(long(d.date))}</em></div>
@@ -61,6 +64,19 @@ function render(body, d) {
     <div class="ba-dots" aria-hidden="true">${d.people.map((_, i) => `<i class="${i === baIdx ? 'on' : ''}"></i>`).join('')}</div>
     <div class="ba-note">${E(d.note)}</div></section>`;
   wire(body, d);
+  loadWeek(body, d); // the counts of the other days (a wider read) arrive after the cards are already on screen
+}
+
+async function loadWeek(body, d) {
+  if (!d.week.some((w) => w.approx)) return;
+  const gen = baGen;
+  try {
+    const w = await api.get('/api/ai-media-buyer/buyer-activity/week', { date: d.date });
+    if (gen !== baGen || !w?.week) return;
+    const box = body.querySelector('.ba-days'); if (!box) return;
+    box.innerHTML = stripHtml(w.week);
+    box.querySelectorAll('[data-day]').forEach((b) => { b.onclick = () => { baDay = b.dataset.day; baIdx = 0; renderBuyerActivity(false); }; });
+  } catch { /* the chips keep the system-only counts: the cards are the important part */ }
 }
 
 function wire(body, d) {
