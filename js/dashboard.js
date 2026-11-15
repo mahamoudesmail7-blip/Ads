@@ -10,6 +10,7 @@
 // second copy of those pages.
 import { Products, DailyOrders, Settings, TaskAssignments, TeamMembers } from './db.js';
 import * as A from './analytics.js';
+import { renderBuyerActivity } from './buyer-activity.js';
 import * as UI from './ui-common.js';
 import { buildProductBundle } from './product-bundle.js';
 import { classifyDailyStatus } from './daily-monitor.js';
@@ -105,7 +106,7 @@ async function init() {
     await refresh();
   };
 
-  document.getElementById('btnAccountsTodayRefresh').onclick = () => { renderAccountsToday(true); renderMonthDays(true); renderTopProducts(); };
+  document.getElementById('btnAccountsTodayRefresh').onclick = () => { renderAccountsToday(true); renderMonthDays(true); renderTopProducts(); renderBuyerActivity(true); };
   initProfitCard(); // the product profit card loads its own product list once; it is not part of refresh()
 
   await refresh();
@@ -158,6 +159,7 @@ async function refresh() {
   { const anchor = String(state.asOfDate).slice(0, 7); if (anchor !== mdAnchor) { mdAnchor = anchor; mdMonth = null; } } // the dashboard date moved to another month → follow it
   renderMonthDays(false);
   renderTopProducts();
+  renderBuyerActivity(false); // «اللي اتعمل النهارده حسب الميديا باير» (own slider; a 403 for non-managers just hides the card)
   // Owner 2026-11-03: the empty / all-zero / stale sections (quick stats, inventory, comparison, improved, declined, top 4, zero-order, needs-intervention, action plan, work teaser) are hidden in index.html (hidden) and no longer computed;
   // their render functions are kept so putting a card back is just removing its `hidden` and re-adding its render call here.
   if (document.getElementById('dailyReportCard').style.display !== 'none') renderDailyReport();

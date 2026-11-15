@@ -1329,3 +1329,13 @@ export async function createAdCreative(token, adAccountId, payload) {
 export async function createAd(token, adAccountId, payload) {
   return graphPost(`/${adAccountId}/ads`, payload, token);
 }
+
+/**
+ * READ ONLY — the ad account's «Activity history» (the same list Ads Manager shows under «View history»): who did what and when. Used to find which CAMPAIGNS were created in a time window
+ * and by which Facebook user (event_type create_campaign), including campaigns made by hand inside Ads Manager. `since` / `until` = ISO instants. Never writes anything.
+ */
+export async function getAccountActivities(token, adAccountId, { since, until } = {}) {
+  const base = { fields: 'event_type,translated_event_type,event_time,object_id,object_name,object_type,actor_id,actor_name', ...(since ? { since } : {}), ...(until ? { until } : {}) };
+  // campaign-category history first (a busy account logs every edit: far fewer pages); if Meta refuses the filter, the plain call still works
+  try { return await graphList(`/${adAccountId}/activities`, { ...base, category: 'CAMPAIGN' }, token); } catch (e) { if (e?.isMetaRateLimit) throw e; return graphList(`/${adAccountId}/activities`, base, token); }
+}
