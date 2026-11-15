@@ -54,7 +54,7 @@ console.log('\n2. FIX — products that HAVE stock but do not sell · TEST — p
   const f3 = fixes.find((t) => t.product.id === 3); const f4 = fixes.find((t) => t.product.id === 4);
   ok('spend with no orders → a FIX task that says the stock is there («المشكلة مش في الكمية»)', f3 && f3.type === 'ZERO_ORDERS' && /صرف 400 ج النهارده من غير ولا أوردر \(حسب Meta\)/.test(f3.why) && /300 قطعة/.test(f3.why) && /مش في الكمية/.test(f3.why), f3 && f3.why);
   ok('CPA above the hard-stop limit → a FIX task with both numbers, HIGH', f4 && f4.type === 'CPA' && /150 ج/.test(f4.why) && /90 ج/.test(f4.why) && f4.priority === 'HIGH');
-  ok('every fix has concrete steps (3-4) ending with «اكتب في الملاحظة»', fixes.every((t) => t.steps.length >= 3 && /الملاحظة/.test(t.steps[t.steps.length - 1])));
+  ok('every fix has concrete steps (3-4) ending with «اكتب في الإثبات» (what was done is sent as the proof)', fixes.every((t) => t.steps.length >= 3 && /الإثبات/.test(t.steps[t.steps.length - 1])));
   ok('a product that is out of stock is NOT a fix (it is a stock job)', !fixes.some((t) => t.product.id === 6));
   ok('a selling product with stock and few campaigns → a TEST task, with its numbers', tests.length === 1 && tests[0].product.id === 5 && /5 أوردر \(حسب Meta\)/.test(tests[0].why) && /120 قطعة/.test(tests[0].why));
   ok('a product already being scaled or fixed is not also tested', !tests.some((t) => [1, 2, 3, 4].includes(t.product.id)));
@@ -340,6 +340,73 @@ console.log('\n12. scheduler');
   ok('after it → the day is built', (await SC.tick({ now: new Date('2026-11-11T22:10:00Z'), gen })).built === '2026-11-12' && calls.length === 1);
   const again = await SC.tick({ now: new Date('2026-11-12T10:20:00Z'), gen }); ok('already built and fresh → nothing', again.skipped === 'fresh' || !!again.refreshed);
   await E.saveOptions({ autoGenerate: false }); ok('switched off → never builds', (await SC.tick({ now: new Date('2026-11-13T22:10:00Z'), gen })).skipped === 'off');
+}
+
+console.log('\n13. «مهامي اليوم» — simple cards, one panel per task, notes + proof images, no duplicates');
+{
+  // the page's escapeHtml uses the DOM: a tiny stand-in with the same output (text → HTML-escaped) is enough to render the screens here
+  globalThis.document = { createElement: () => { let v = ''; return { set textContent(x) { v = String(x); }, get innerHTML() { return v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); } }; } };
+  const EMP = await imp('../../../js/tasks-emp.js');
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  // — the same job for the same product is ONE task, whatever the wording or the key
+  const mk = (key, type, pid, name) => ({ key, type, product: { id: pid, name } });
+  const dd = C.dedupeCandidates([mk('scale:p:1', 'SCALE', 1, 'قصافة'), mk('scalelite:p:1', 'SCALE', 1, 'قصافة'), mk('fix:p:1', 'ZERO_ORDERS', 1, 'قصافة'), mk('fix2:p:1', 'CPA', 1, 'قصافة'), mk('test:p:1', 'TEST', 1, 'قصافة'), mk('scale:p:2', 'SCALE', 2, 'فرشاة')], []);
+  ok('one scale + one problem + one test per product (a second wording of the same job is dropped)', JSON.stringify(dd.map((c) => c.key)) === JSON.stringify(['scale:p:1', 'fix:p:1', 'test:p:1', 'scale:p:2']), JSON.stringify(dd.map((c) => c.key)));
+  ok('…and a finished task of that job today blocks a new one too', C.dedupeCandidates([mk('scalelite:p:1', 'SCALE', 1, 'قصافة')], [{ key: 'scale:p:1', type: 'SCALE', product: { id: 1, name: 'قصافة' }, status: 'DONE' }]).length === 0);
+  ok('a cancelled task of that job does not block a new one', C.dedupeCandidates([mk('scalelite:p:1', 'SCALE', 1, 'قصافة')], [{ key: 'scale:p:1', type: 'SCALE', product: { id: 1, name: 'قصافة' }, status: 'CANCELLED' }]).length === 1);
+
+  // — a real day: long technical campaign names stay in the details
+  mem.clear(); await E.saveOptions({ autoGenerate: true, autoDistribute: false, quota: { SCALE: 2, PROBLEM: 1, TEST: 1, MIX: 1 } });
+  const LONG = 'Quran-Speaker - Test 17 - CBO 500 - Nov 12 - Broad';
+  const rowsL = [row({ id: 'L1', pid: null, product: 'x', name: LONG, winner: true, cpa: 40, spend3: 300, orders3: 8 }), row({ id: 'L2', pid: 3, product: 'قصافة', spendToday: 400, ordersToday: 0, spend3: 500, orders3: 0, stock: { status: 'OK', current: 300 } })];
+  const depL = { ...dep(), getRows: async () => ({ rows: rowsL, zeroLimit: 150, minSpend: 150 }), getWinners: async () => ({ connected: true, cards: [] }), getBatches: async () => [], getPlan: async () => null };
+  const dL = await E.generateDay('2026-11-22', { deps: depL, now: new Date('2026-11-22T09:00:00Z') }); await E.rebalance('2026-11-22', admin);
+  const vL = await E.getDayView('2026-11-22', admin); const live = vL.tasks.filter((t) => t.status !== 'CANCELLED' && t.category);
+  const sc = live.find((t) => t.type === 'SCALE'); const zr = live.find((t) => t.type === 'ZERO_ORDERS');
+  ok('tasks carry their technical details apart (full campaign names in tech.campaigns)', !!sc && !!zr && sc.tech?.campaigns?.includes(LONG) && zr.tech?.campaigns?.length >= 1, JSON.stringify([sc?.tech, zr?.tech]));
+  const jobs = live.map(C.jobKey).filter(Boolean); ok('the generated day never repeats a job for a product', new Set(jobs).size === jobs.length, jobs.join());
+
+  // — notes, proof images, who verifies
+  const cfgL = await E.getConfig(); const mem0 = cfgL.team.find((m) => m.id === sc.assigneeId); await E.updateMember(mem0.id, { userId: 901 });
+  const buyer = { id: 901, name: 'Buyer Z', role: 'EMPLOYEE' }; const other = { id: 902, name: 'Other Z', role: 'EMPLOYEE' };
+  ok('who verifies is shown: problems → the SYSTEM (when the problem disappears), scale → the MANAGER', vL.tasks.find((t) => t.id === zr.id).verifyBy === 'SYSTEM' && vL.tasks.find((t) => t.id === sc.id).verifyBy === 'MANAGER');
+  ok('a stranger cannot write a note on it', (await rejects(() => E.actOnTask('2026-11-22', sc.id, 'note', { note: 'x' }, other)))?.status === 403);
+  let dN = await E.actOnTask('2026-11-22', sc.id, 'note', { note: 'هبدأ بالـABO الأول' }, buyer);
+  ok('a note is saved without changing the status', dN.tasks.find((t) => t.id === sc.id).empNote === 'هبدأ بالـABO الأول' && dN.tasks.find((t) => t.id === sc.id).status === 'PENDING');
+  ok('proof needs words OR an image — nothing at all is refused', (await rejects(() => E.actOnTask('2026-11-22', sc.id, 'submit', { proof: '' }, buyer)))?.status === 400);
+  ok('only real images are accepted (≤ 3, jpeg/png/webp)', (await rejects(() => E.actOnTask('2026-11-22', sc.id, 'submit', { files: [{ name: 'a.exe', data: 'data:application/pdf;base64,AAAA' }] }, buyer)))?.status === 400 && (await rejects(() => E.actOnTask('2026-11-22', sc.id, 'submit', { files: [1, 2, 3, 4].map(() => ({ data: PNG })) }, buyer)))?.status === 400 && (await rejects(() => E.actOnTask('2026-11-22', sc.id, 'submit', { files: [{ data: `data:image/jpeg;base64,${'A'.repeat(1_000_000)}` }] }, buyer)))?.status === 400);
+  dN = await E.actOnTask('2026-11-22', sc.id, 'submit', { proof: '', files: [{ name: 'شاشة اسكيل.png', data: PNG }], note: 'خلصت 4 اسكيلات' }, buyer);
+  const st = dN.tasks.find((t) => t.id === sc.id);
+  ok('an image alone is a valid proof → «تحتاج مراجعة»; the day row keeps only the image metadata (not the pixels)', st.status === 'NEEDS_REVIEW' && st.proofFiles?.length === 1 && !('data' in st.proofFiles[0]) && !JSON.stringify(mem.get('dtk:day:2026-11-22')).includes('iVBORw0KGgo'));
+  ok('the buyer’s note travels with the proof', st.empNote === 'خلصت 4 اسكيلات');
+  ok('a proof link is kept only if it is a real http(s) link — «javascript:» and quotes never reach the manager’s page', C.validDate('2026-11-22') && !/javascript/.test(JSON.stringify((await E.actOnTask('2026-11-22', zr.id, 'submit', { proof: 'عملت التعديل المطلوب', link: 'javascript:alert(1)' }, { id: 1, name: 'Mahmoud', role: 'ADMIN', email: OWNER, is_owner: true })).tasks.find((t) => t.id === zr.id).proofLink)));
+  const f0 = await E.getProofFile('2026-11-22', sc.id, 0, buyer); const f1 = await E.getProofFile('2026-11-22', sc.id, 0, admin);
+  ok('the image can be read by the buyer and by the manager — and by nobody else', f0.type === 'image/png' && f0.data === PNG && f1.data === PNG && (await rejects(() => E.getProofFile('2026-11-22', sc.id, 0, other)))?.status === 403 && (await rejects(() => E.getProofFile('2026-11-22', sc.id, 5, admin)))?.status === 404);
+  const evw = await E.getDayView('2026-11-22', buyer);
+  ok('the buyer sees only his own tasks (and no one else’s numbers) on his screen', evw.admin === false && evw.tasks.every((t) => t.assigneeId === mem0.id) && evw.team.length === 1);
+
+  // — the screen itself (pure rendering)
+  ok('shortName keeps the product part: «Quran-Speaker - Test 17 - CBO…» → «Quran-Speaker»', EMP.shortName(LONG) === 'Quran-Speaker' && EMP.shortName('قصافة') === 'قصافة');
+  ok('tidy shortens only technical names inside «…» (an ordinary product name stays whole)', EMP.tidy(`اسكيل «${LONG}» و«قصافة»`) === 'اسكيل «Quran-Speaker» و«قصافة»');
+  const mine = evw.tasks; const S0 = { date: '2026-11-22', f: { who: 'ALL', cat: 'ALL', types: new Set(), statuses: new Set(), prios: new Set(), q: '' }, page: 1, more: new Set(), proofDraft: {}, mgr: false, me: { user: { name: 'أحمد سامي' } } };
+  const board = EMP.employeeBoard(S0, evw);
+  ok('the board greets by first name and shows the four sections + total', /مرحباً أحمد/.test(board) && ['اسكيل', 'حل مشاكل', 'تيستات جديدة', 'متابعة', 'إجمالي المهام'].every((w) => board.includes(w)));
+  ok('the main cards never show the long technical campaign name', !board.includes(LONG) && !board.includes('Test 17'));
+  const scTask = mine.find((t) => t.id === sc.id); const dr = EMP.employeeDrawer(S0, { ...evw, mineId: mem0.id }, { ...scTask, status: 'PENDING' });
+  ok('the panel answers: why / what to do / result wanted — with the start + done buttons', ['ليه المهمة دي؟', 'المطلوب منك', 'النتيجة المطلوبة', 'ابدأ المهمة', 'تم التنفيذ'].every((w) => dr.includes(w)));
+  ok('…the full technical names live only in «تفاصيل فنية»', dr.includes(LONG) && dr.indexOf(LONG) > dr.indexOf('تفاصيل فنية') && !dr.slice(0, dr.indexOf('تفاصيل فنية')).includes(LONG));
+  ok('…notes + proof (text, link, image upload) are there, and it says who verifies', ['ملاحظاتي', 'dxProof', 'dxProofLink', 'dxFiles', 'المدير هيراجع'].every((w) => dr.includes(w)));
+  const zt = mine.find((t) => t.id === zr.id); const zdr = zt ? EMP.employeeDrawer(S0, { ...evw, mineId: mem0.id }, { ...zt, status: 'PENDING' }) : '';
+  ok('a problem task says the SYSTEM will verify it', !zt || /السيستم هيتأكد/.test(zdr));
+  const scPlanTask = { ...scTask, plan: [{ mode: 'ABO', budget: 500 }, { mode: 'CBO', budget: 500 }, { mode: 'ABO', budget: 500 }, { mode: 'CBO', budget: 500 }] };
+  ok('four scales stay ONE task, described in one line: «4 اسكيلات: ABO ×2 + CBO ×2 · 500 ج لكل واحد»', EMP.planLine(scPlanTask) === '4 اسكيلات: ABO ×2 + CBO ×2 · 500 ج لكل واحد', EMP.planLine(scPlanTask));
+  ok('the wanted result is built from the task’s own numbers (CPA limit / plan) — nothing invented', /تحت 90 ج/.test(EMP.resultText({ type: 'CPA', facts: [{ l: 'حد الإيقاف', v: '90 ج' }] })) && /4 اسكيلات/.test(EMP.resultText(scPlanTask)));
+  ok('a missing number is simply not shown (no zero, no guess)', !/undefined|null|NaN/.test(EMP.brief({ type: 'CPA', facts: [], why: '' })) && !/undefined|null|NaN/.test(board + dr));
+  const UIX = await imp('../../../js/tasks-ui.js'); const evil = '"><script>alert(1)</script>';
+  const mdr = UIX.drawerHtml({ ...S0, mgr: true }, { team: [{ id: 'm', name: 'A' }], mineId: null, log: [] }, { ...scTask, status: 'NEEDS_REVIEW', proof: evil, empNote: evil, proofFiles: [{ name: 'a.png' }], submittedBy: 'B' });
+  ok('the manager sees the buyer’s proof image and note — and text from the buyer is always escaped', mdr.includes(`/api/daily-tasks/proof/${scTask.id}/0?date=2026-11-22`) && mdr.includes('ملاحظته') && !mdr.includes('<script>') && !mdr.includes('"><script'));
+  ok('the buyer’s own panel escapes everything he typed too', !EMP.employeeDrawer({ ...S0, proofDraft: { [scTask.id]: { text: evil, link: evil, note: evil } } }, { ...evw, mineId: mem0.id }, { ...scTask, status: 'PENDING', empNote: evil }).includes('<script>'));
+  ok('«منذ …» ages are plain Arabic', EMP.ago(new Date(Date.now() - 10 * 60000).toISOString()) === 'منذ 10 دقائق' && EMP.ago(new Date(Date.now() - 3 * 3600000).toISOString()) === 'منذ 3 ساعات' && EMP.ago(new Date(Date.now() - 2 * 86400000).toISOString()) === 'منذ يومين');
 }
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);

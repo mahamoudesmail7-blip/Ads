@@ -34,3 +34,8 @@ export async function loadRange(from, to) {
   return rows.map((r) => parse(r.data)).filter((d) => d && validDate(d.date) && d.date >= from && d.date <= to).sort((a, b) => a.date.localeCompare(b.date));
 }
 export const logEntry = (day, e) => { day.log.push({ id: newId('l'), at: new Date().toISOString(), ...e }); if (day.log.length > 800) day.log.splice(0, day.log.length - 800); };
+
+// Proof images: one settings row per task (`dtk:proof:<taskId>` = [{ name, type, data(base64) }]) so the day row never grows by megabytes.
+const PROOF = 'dtk:proof:';
+export async function saveProofFiles(taskId, files) { const data = JSON.stringify(files); await prisma.settings.upsert({ where: { id: PROOF + taskId }, create: { id: PROOF + taskId, data }, update: { data } }); }
+export async function loadProofFiles(taskId) { const row = await prisma.settings.findUnique({ where: { id: PROOF + taskId } }); const v = parse(row?.data); return Array.isArray(v) ? v : []; }

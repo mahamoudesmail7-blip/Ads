@@ -33,6 +33,8 @@ router.post('/rebalance', mgr, asyncRoute(async (req, res) => { const date = dat
 router.post('/tasks', mgr, asyncRoute(async (req, res) => { const date = dateOf(req); await E.addManualTask(date, req.body || {}, req.user); res.status(201).json(await E.getDayView(date, req.user)); }));
 router.post('/tasks/:id/:action', asyncRoute(async (req, res) => { const date = dateOf(req); await E.actOnTask(date, req.params.id, req.params.action, req.body || {}, req.user); res.json(await E.getDayView(date, req.user)); }));
 
+// one proof image of a task (the manager or the assignee only)
+router.get('/proof/:taskId/:idx', asyncRoute(async (req, res) => { const f = await E.getProofFile(dateOf(req), String(req.params.taskId), Number(req.params.idx) || 0, req.user); const buf = Buffer.from(String(f.data).split(',')[1] || '', 'base64'); res.set({ 'Content-Type': f.type, 'Cache-Control': 'private, max-age=300', 'X-Content-Type-Options': 'nosniff' }); res.send(buf); }));
 router.get('/report', asyncRoute(async (req, res) => { const to = String(req.query.to || cairoDate()); const from = String(req.query.from || C.addDays(to, -6)); res.json(await E.getReport(from, to, req.user)); }));
 router.get('/eod', mgr, asyncRoute(async (req, res) => res.json({ text: await E.getEodText(dateOf(req)) })));
 

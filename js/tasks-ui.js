@@ -39,6 +39,11 @@ const P = {
   history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
   list: '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
   'bar-chart': '<path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>',
+  image: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  'clipboard-list': '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
+  pencil: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
 };
 export const ic = (n, s = 18, cls = '') => `<svg class="lu ${cls}" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n] || ''}</svg>`;
@@ -58,7 +63,7 @@ export const STATUS_META = {
 };
 const STATUS_RANK = { REVIEW: 0, LATE: 1, PROG: 2, NEW: 3, NOTDONE: 4, DONE: 5 };
 const OPEN = ['PENDING', 'IN_PROGRESS', 'NOT_DONE'];
-const EXPECT = {
+export const EXPECT = {
   SCALE: 'أوردرات أكتر من الحملة الرابحة، مع تكلفة أوردر تفضل تحت الحد.',
   ZERO_ORDERS: 'إما الصرف الضايع يقف، أو الحملة تبدأ تجيب أوردرات بعد التعديل.',
   CPA: 'تكلفة الأوردر ترجع تحت الحد بعد التخفيض أو الإيقاف.',
@@ -98,8 +103,8 @@ export function actionText(t) {
   return t.title;
 }
 export const productOf = (t) => (t.product && t.product.name) || 'مهمة عامة';
-const hhmm = (iso) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)); } catch { return ''; } };
-const dm = (d) => { try { return new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${d}T00:00:00Z`)); } catch { return d; } };
+export const hhmm = (iso) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)); } catch { return ''; } };
+export const dm = (d) => { try { return new Intl.DateTimeFormat('ar-EG', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(`${d}T00:00:00Z`)); } catch { return d; } };
 const COLORS = ['#7c5cff', '#0ea5e9', '#14b86e', '#f59e0b', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6'];
 export const colorOf = (v, id) => COLORS[Math.max(0, v.team.findIndex((m) => m.id === id)) % COLORS.length];
 
@@ -260,7 +265,7 @@ export function drawerHtml(S, v, t) {
   // proof block
   let proof = '';
   if (t.status === 'NEEDS_REVIEW') {
-    proof = `<section class="dx-sec"><h4>${ic('circle-alert', 17)} إثبات التنفيذ — مستني مراجعة</h4><div class="dx-proof"><p>${E(t.proof || '')}</p>${t.proofLink ? `<a href="${E(t.proofLink)}" target="_blank" rel="noopener noreferrer">${ic('external-link', 14)} رابط الإثبات</a>` : ''}<small>بعتها ${E(t.submittedBy || '')} ${t.submittedAt ? 'الساعة ' + hhmm(t.submittedAt) : ''}</small></div>
+    proof = `<section class="dx-sec"><h4>${ic('circle-alert', 17)} إثبات التنفيذ — مستني مراجعة</h4><div class="dx-proof"><p>${E(t.proof || '')}</p>${t.proofLink ? `<a href="${E(t.proofLink)}" target="_blank" rel="noopener noreferrer">${ic('external-link', 14)} رابط الإثبات</a>` : ''}${(t.proofFiles || []).length ? `<div class="emp-imgs">${t.proofFiles.map((_, i) => `<a href="/api/daily-tasks/proof/${E(t.id)}/${i}?date=${E(S.date)}" target="_blank" rel="noopener noreferrer"><img loading="lazy" alt="إثبات ${i + 1}" src="/api/daily-tasks/proof/${E(t.id)}/${i}?date=${E(S.date)}"></a>`).join('')}</div>` : ''}${t.empNote ? `<p class="dx-hint">ملاحظته: ${E(t.empNote)}</p>` : ''}<small>بعتها ${E(t.submittedBy || '')} ${t.submittedAt ? 'الساعة ' + hhmm(t.submittedAt) : ''}</small></div>
       ${S.mgr ? `<div class="dx-revbtns"><button class="dx-go" data-a="approve" data-id="${t.id}">${ic('check-check', 17)} اعتمد الإثبات</button><button class="dx-sec-btn" data-a="reject" data-id="${t.id}">${ic('x', 16)} ارجّعها مع سبب</button></div>` : '<p class="dx-hint">المدير هيراجع الإثبات، أو السيستم يتأكد لوحده لما المشكلة تتحل.</p>'}</section>`;
   } else if (t.status === 'DONE') {
     proof = `<section class="dx-sec"><h4>${ic('circle-check', 17)} اتقفلت</h4><div class="dx-proof ok"><p>${E(t.proof || t.note || 'اتقفلت من المدير.')}</p><small>${t.verifiedBy === 'SYSTEM' ? 'تحقّق منها السيستم (المشكلة اتحلّت فعلًا)' : t.reviewedBy ? `اعتمدها ${E(t.reviewedBy)}` : 'اتقفلت من المدير'}${t.doneAt ? ' · ' + hhmm(t.doneAt) : ''}</small></div></section>`;

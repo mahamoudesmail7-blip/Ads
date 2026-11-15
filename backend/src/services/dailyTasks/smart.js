@@ -102,10 +102,11 @@ export function scaleTasks(groups, cards, o) {
         `افتح «مركز التوسّع» وخد ${campName ? `حملة «${campName}»` : 'أحسن حملة للمنتج'} كأساس.`,
         ...plan.map((p, i) => `اعمل اسكيل ${i + 1}: ${p.mode} بميزانية ${n0(p.budget)} ج${p.mode === 'ABO' ? ' (الميزانية على الـ Ad Set)' : ' (الميزانية على الحملة)'}.`),
         'استخدم الكرياتيفات الرابحة بس، وماتكرّرش اسكيل اتعمل قبل كده.',
-        'لما تخلّص اضغط «تمّت» واكتب في الملاحظة أرقام الاسكيلات.',
+        'لما تخلّص اضغط «تم التنفيذ» وابعت إثبات (وصف أو صورة) فيه أرقام الاسكيلات.',
       ],
       plan, facts: [...(orders != null ? [{ l: 'أوردرات Meta (3 أيام)', v: String(orders) }] : []), ...(cpa3 != null ? [{ l: 'تكلفة الأوردر (3 أيام)', v: egp(cpa3) }] : []), ...(cpa7 != null ? [{ l: 'تكلفة الأوردر (7 أيام)', v: egp(cpa7) }] : []), ...(spend != null ? [{ l: 'صرف (3 أيام)', v: egp(spend) }] : []), ...(stockTxt ? [{ l: 'المخزون', v: stockTxt }] : [])],
       product: { id: g?.productId ?? null, name }, campaignId: row?.campaignId || card?.sourceCampaignId || null, accountId: card?.adAccountId || row?.adAccountId || null,
+      tech: { campaigns: [campName].filter(Boolean), campaignId: row?.campaignId || card?.sourceCampaignId || null, accountId: card?.adAccountId || row?.adAccountId || null },
       link: { page: 'ai-media-buyer.html#scale', label: 'افتح مركز التوسّع' }, action: 'اسكيل',
     });
     used.add(key);
@@ -139,17 +140,17 @@ export function fixTasks(groups, scaleKeys, o, { zeroLimit = 150, minSpend = 150
         `افتح حملات «${name}» وشوف الكرياتيف: الـ Hook في أول 3 ثواني والـ CTR.`,
         `لو الحملة صرفت فوق ${egp(zeroLimit)} من غير أوردر، وقّفها (أو قلّل ميزانيتها للنص على الأقل).`,
         `جرّب كرياتيف أو جمهور جديد بميزانية صغيرة (حوالي ${egp(200)}) بدل ما تكمّل على اللي مش شغّال.`,
-        'اكتب في الملاحظة إيه اللي عملته (وقفت / غيّرت كرياتيف / جمهور جديد).',
+        'اكتب في الإثبات إيه اللي عملته (وقفت / غيّرت كرياتيف / جمهور جديد).',
       ] : [
         `افتح حملات «${name}» وابدأ بالأعلى تكلفة: ${over.slice(0, 3).map((x) => `«${clean(x.r.name)}» (${n0(x.cpa)} ج)`).join('، ')}.`,
         over.some((x) => x.hard) ? 'وقّف الحملات اللي فوق حد الإيقاف، أو قلّل ميزانيتها بشكل واضح.' : 'قلّل ميزانية الحملات اللي فوق حد التخفيض وراقبها بكرة.',
         'خلّي الحملات الأحسن شغّالة ومتلمسهاش.',
-        'اكتب في الملاحظة إيه اللي عملته.',
+        'اكتب في الإثبات إيه اللي عملته.',
       ],
       facts: zero
         ? [...(zeroToday ? [{ l: 'صرف النهارده', v: egp(g.spendToday) }] : []), { l: 'صرف (3 أيام)', v: egp(g.spend3) }, { l: 'أوردرات Meta (3 أيام)', v: String(g.orders3) }, { l: 'المخزون', v: stockTxt || 'غير معروف' }]
         : [{ l: 'تكلفة الأوردر (3 أيام)', v: egp(worst.cpa) }, { l: worst.hard ? 'حد الإيقاف' : 'حد التخفيض', v: egp(worst.lim) }, { l: 'صرف الحملة (3 أيام)', v: egp(worst.r.period?.spend) }, { l: 'أوردرات Meta (3 أيام)', v: String(worst.r.period?.orders ?? '—') }, ...(stockTxt ? [{ l: 'المخزون', v: stockTxt }] : [])],
-      product: { id: g.productId, name }, campaignId: worst?.r.campaignId || null, link: { page: 'ai-media-buyer.html', label: 'افتح AI Media Buyer' }, action: zero ? 'افحص أو وقّف' : 'قلّل أو وقّف',
+      product: { id: g.productId, name }, campaignId: worst?.r.campaignId || null, tech: { campaigns: (zero ? active : over.map((x) => x.r)).slice(0, 8).map((r) => clean(r.name)), campaignId: worst?.r.campaignId || null }, link: { page: 'ai-media-buyer.html', label: 'افتح AI Media Buyer' }, action: zero ? 'افحص أو وقّف' : 'قلّل أو وقّف',
     });
     fixKeys.add(g.key);
   }
@@ -176,10 +177,10 @@ function testTask(g, o, priority, weightHint) {
       'اعمل تيست جديد بكرياتيف مختلف تمامًا (زاوية أو فيديو جديد) وسيب القديم شغّال زي ما هو.',
       `ابدأ بميزانية صغيرة (حوالي ${egp(200)}) وراقبه 48 ساعة.`,
       'لو جاب أوردرات بتكلفة كويسة، يبقى مرشّح للاسكيل في تاسكات الأيام الجاية.',
-      'اكتب في الملاحظة إيه الكرياتيف الجديد.',
+      'اكتب في الإثبات إيه الكرياتيف الجديد.',
     ],
     facts: [{ l: 'أوردرات Meta (3 أيام)', v: String(g.orders3) }, ...(g.cpa3 != null ? [{ l: 'تكلفة الأوردر (3 أيام)', v: egp(g.cpa3) }] : []), { l: 'المخزون', v: stockTxt }],
-    product: { id: g.productId, name }, link: { page: 'creative-factory.html', label: 'افتح مصنع الكرياتيفات' }, action: 'تيست جديد',
+    product: { id: g.productId, name }, tech: { campaigns: g.campaigns.slice(0, 8).map((r) => clean(r.name)) }, link: { page: 'creative-factory.html', label: 'افتح مصنع الكرياتيفات' }, action: 'تيست جديد',
   };
 }
 
@@ -262,16 +263,16 @@ function liteScale(g, o, experimental = false) {
   const name = clean(g.name); const plan = [{ mode: 'ABO', budget: o.scaleBudget }]; const stockTxt = stockShort(g.stock);
   return { key: `scalelite:${g.key}`, type: 'SCALE', category: 'SCALE', priority: experimental ? 'LOW' : 'MED', title: experimental ? `اسكيل تجريبي «${name}» — ABO بـ${n0(o.scaleBudget)} ج` : `اسكيل بحذر «${name}» — ABO بـ${n0(o.scaleBudget)} ج`,
     why: experimental ? `${g.linked ? `«${name}»` : `حملة «${name}»`} جاب ${g.orders3} أوردر بس (حسب Meta) في آخر 3 أيام بتكلفة ${n0(g.cpa3)} ج للأوردر، وده تحت الحد. لسه بدري نحكم عليه، فنجرّب اسكيل واحد صغير ونتابعه.` : `${g.linked ? `«${name}»` : `حملة «${name}»`} جاب ${g.orders3} أوردر (حسب Meta) في آخر 3 أيام بتكلفة ${n0(g.cpa3)} ج للأوردر. التكلفة كويسة، بس لسه مش رابح مؤكد، فنجرّب اسكيل واحد بحذر ونشوف.`,
-    steps: ['افتح «مركز التوسّع» وخد أحسن حملة للمنتج كأساس.', `اعمل اسكيل واحد ABO بميزانية ${n0(o.scaleBudget)} ج.`, 'راقبه 48 ساعة قبل أي زيادة.', 'اكتب في الملاحظة اللي عملته.'],
+    steps: ['افتح «مركز التوسّع» وخد أحسن حملة للمنتج كأساس.', `اعمل اسكيل واحد ABO بميزانية ${n0(o.scaleBudget)} ج.`, 'راقبه 48 ساعة قبل أي زيادة.', 'اكتب في الإثبات اللي عملته.'],
     plan, facts: [{ l: 'أوردرات Meta (3 أيام)', v: String(g.orders3) }, { l: 'تكلفة الأوردر (3 أيام)', v: egp(g.cpa3) }, ...(stockTxt ? [{ l: 'المخزون', v: stockTxt }] : [])],
-    product: { id: g.productId, name }, link: { page: 'ai-media-buyer.html#scale', label: 'افتح مركز التوسّع' }, action: 'اسكيل بحذر' };
+    product: { id: g.productId, name }, tech: { campaigns: g.campaigns.slice(0, 8).map((r) => clean(r.name)) }, link: { page: 'ai-media-buyer.html#scale', label: 'افتح مركز التوسّع' }, action: 'اسكيل بحذر' };
 }
 function reviewTask(g) {
   const name = clean(g.name); const ordersTxt = g.n3Known ? `${g.orders3} أوردر (حسب Meta)` : 'عدد أوردرات مش متاح';
   return { key: `review:${g.key}`, type: 'REVIEW', category: 'MIX', priority: 'LOW', title: `راجع أداء «${name}» النهارده`,
     why: `${g.linked ? `«${name}»` : `حملة «${name}»`} صرف ${egp(g.spend3)} في آخر 3 أيام وجاب ${ordersTxt}${g.cpa3 != null ? ` بتكلفة ${n0(g.cpa3)} ج للأوردر` : ''}. فحص سريع كل يوم عشان نمسك أي مشكلة بدري.`,
-    steps: ['قارن صرف وأوردرات النهارده بإمبارح.', 'لو الـ Frequency عالي أو الـ CTR نازل، جهّز كرياتيف جديد.', 'لو كل حاجة تمام سيبه واكتب في الملاحظة «تمام».'],
-    facts: [{ l: 'صرف (3 أيام)', v: egp(g.spend3) }, { l: 'أوردرات Meta (3 أيام)', v: g.n3Known ? String(g.orders3) : 'غير متاح' }], product: { id: g.productId, name }, link: { page: 'ai-media-buyer.html', label: 'افتح AI Media Buyer' }, action: 'فحص سريع' };
+    steps: ['قارن صرف وأوردرات النهارده بإمبارح.', 'لو الـ Frequency عالي أو الـ CTR نازل، جهّز كرياتيف جديد.', 'لو كل حاجة تمام سيبه واكتب في الإثبات «تمام».'],
+    facts: [{ l: 'صرف (3 أيام)', v: egp(g.spend3) }, { l: 'أوردرات Meta (3 أيام)', v: g.n3Known ? String(g.orders3) : 'غير متاح' }], product: { id: g.productId, name }, tech: { campaigns: g.campaigns.slice(0, 8).map((r) => clean(r.name)) }, link: { page: 'ai-media-buyer.html', label: 'افتح AI Media Buyer' }, action: 'فحص سريع' };
 }
 
 /** Everything together. `src` = { rows, cards, funds, batches, plan, zeroLimit, minSpend, period, asOf }. Returns candidates + counts. Every candidate carries `meta` (source window + data time). */

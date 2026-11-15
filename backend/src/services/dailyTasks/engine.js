@@ -76,7 +76,7 @@ export async function generateDay(date, { actor = null, deps = {}, now = new Dat
     const liveBy = new Map(gen.candidates.map((c) => [c.key, c]));
     for (const t of [...day.tasks, ...carriedIn]) {
       const c = t.key && t.category && C.isOpen(t) && ['AUTO', 'CARRIED'].includes(t.source) ? liveBy.get(t.key) : null; if (!c) continue;
-      t.title = c.title; t.why = c.why; t.steps = c.steps || t.steps; t.plan = c.plan || null; t.facts = c.facts || []; t.meta = c.meta || t.meta; if (!t.priorityLocked) t.priority = c.priority; t.numbersAt = stamp;
+      t.title = c.title; t.why = c.why; t.steps = c.steps || t.steps; t.plan = c.plan || null; t.facts = c.facts || []; t.tech = c.tech || t.tech || null; t.meta = c.meta || t.meta; if (!t.priorityLocked) t.priority = c.priority; t.numbersAt = stamp;
     }
     const fresh = C.dedupeCandidates([...gen.candidates, ...routines], [...day.tasks, ...carriedIn]).map((c) => C.makeTask(c, { date, source: c.type === 'ROUTINE' ? 'ROUTINE' : 'AUTO', now: stamp }));
     // auto-resolve (open AUTO/CARRIED tasks whose condition is gone — only for generators that ran fine)
@@ -165,17 +165,35 @@ function canAct(user, task, cfg) {
 }
 const nameOf = (cfg, id) => cfg.team.find((m) => m.id === id)?.name || '—';
 
+/** Proof images sent by the buyer: ≤ 3, only real image data-URLs, ≤ 700 KB each. Returns [{ name, type, size, data }] — anything else is refused, never silently kept. */
+export function cleanProofFiles(list) {
+  if (list == null) return []; if (!Array.isArray(list) || list.length > 3) throw bad('أقصى عدد للصور 3.');
+  return list.map((f, i) => {
+    const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(f?.data || '')); if (!m) throw bad('الملف لازم يكون صورة (JPG / PNG / WEBP).');
+    const size = Math.floor((m[2].length * 3) / 4); if (size > 700 * 1024) throw bad('الصورة كبيرة (أقصى 700 كيلوبايت بعد التصغير).');
+    return { name: String(f?.name || `proof-${i + 1}`).replace(/[^\w.\-\u0600-\u06FF ]/g, '').slice(0, 60) || `proof-${i + 1}`, type: m[1], size, data: String(f.data) };
+  });
+}
+/** Who confirms a finished task: the SYSTEM (the problem disappears from the live data → verified) or the manager (a judgment call: scale / test / review / routine…). */
+export const verifyByOf = (t) => (t.key && t.category && !t.filler && ['AUTO', 'CARRIED'].includes(t.source) && ['ZERO_ORDERS', 'CPA', 'STOCK', 'FUNDS', 'DECISIONS', 'OPEN_PLAN', 'CLONE'].includes(t.type) ? 'SYSTEM' : 'MANAGER');
+
 export async function actOnTask(date, id, action, body, user) {
-  const cfg = await getConfig();
-  return S.updateDay(date, (day) => {
-    const t = findTask(day, id); if (!canAct(user, t, cfg)) throw bad('المهمة دي مش بتاعتك.', 403);
+  const cfg = await getConfig(); let pendingFiles = null; let taskIdForFiles = null;
+  const result = await S.updateDay(date, (day) => {
+    const t = findTask(day, id); if (!canAct(user, t, cfg)) throw bad('المهمة دي مش بتاعتك.', 403); taskIdForFiles = t.id;
     const now = new Date().toISOString(); const isMgr = C.seesAll(user, cfg);
     const log = (a, text) => S.logEntry(day, { action: a, taskId: t.id, taskTitle: t.title, memberId: t.assigneeId, actorName: user.name, actorId: user.id, text });
-    if (action === 'start') { if (t.status !== 'PENDING') throw bad('المهمة مش في حالة «مستني».'); t.status = 'IN_PROGRESS'; t.startedAt = now; log('STARTED', 'بدأ الشغل عليها'); }
+    if (action === 'note') { // the buyer's own notes: saved any time, never changes the status
+      if (t.status === 'CANCELLED') throw bad('المهمة اتلغت.');
+      t.empNote = String(body.note || '').trim().slice(0, 600) || null; t.empNoteAt = now; log('NOTE', t.empNote ? `كتب ملاحظة — ${t.empNote.slice(0, 120)}` : 'مسح ملاحظته'); }
+    else if (action === 'start') { if (t.status !== 'PENDING') throw bad('المهمة مش في حالة «مستني».'); t.status = 'IN_PROGRESS'; t.startedAt = now; log('STARTED', 'بدأ الشغل عليها'); }
     else if (action === 'submit') { // a task is NOT complete because a button was pressed: the buyer sends PROOF, the admin approves (or the system verifies it)
       if (!['PENDING', 'IN_PROGRESS', 'NOT_DONE'].includes(t.status)) throw bad('المهمة مش في حالة تسمح بإرسال إثبات.');
-      const proof = String(body.proof || '').trim(); if (proof.length < 8) throw bad('اكتب إثبات التنفيذ: إيه اللي عملته بالظبط (جملة على الأقل).');
-      t.status = 'NEEDS_REVIEW'; t.proof = proof.slice(0, 600); t.proofLink = String(body.link || '').trim().slice(0, 300) || null; t.submittedAt = now; t.submittedBy = user.name; t.reviewNote = null; t.reason = null; log('SUBMITTED', `بعت إثبات التنفيذ — ${t.proof.slice(0, 140)}`); }
+      const proof = String(body.proof || '').trim(); const files = cleanProofFiles(body.files);
+      if (proof.length < 8 && !files.length) throw bad('اكتب إثبات التنفيذ: إيه اللي عملته بالظبط (جملة على الأقل) أو ارفع صورة.');
+      if (files.length) { t.proofFiles = files.map((f) => ({ name: f.name, type: f.type, size: f.size })); pendingFiles = files; }
+      if (body.note !== undefined) t.empNote = String(body.note || '').trim().slice(0, 600) || t.empNote || null;
+      t.status = 'NEEDS_REVIEW'; t.proof = (proof || 'صور إثبات مرفقة').slice(0, 600); t.proofLink = /^https?:\/\/[^\s<>"']{3,290}$/i.test(String(body.link || '').trim()) ? String(body.link).trim() : null; /* only a real http(s) link is kept (never javascript:) */ t.submittedAt = now; t.submittedBy = user.name; t.reviewNote = null; t.reason = null; log('SUBMITTED', `بعت إثبات التنفيذ — ${t.proof.slice(0, 140)}`); }
     else if (action === 'approve') { if (!isMgr) throw bad('اعتماد الإثبات للمدير بس.', 403); if (t.status !== 'NEEDS_REVIEW') throw bad('المهمة مش مستنية مراجعة.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = t.submittedBy || user.name; t.reviewedBy = user.name; t.reviewNote = String(body.note || '').slice(0, 300) || null; log('APPROVED', 'اعتمد الإثبات واتقفلت المهمة'); }
     else if (action === 'reject') { if (!isMgr) throw bad('رفض الإثبات للمدير بس.', 403); if (t.status !== 'NEEDS_REVIEW') throw bad('المهمة مش مستنية مراجعة.'); t.status = 'IN_PROGRESS'; t.reviewNote = String(body.note || '').trim().slice(0, 300) || 'الإثبات مش كفاية'; t.reviewedBy = user.name; log('REJECTED', `رجّع المهمة: ${t.reviewNote}`); }
     else if (action === 'done') { if (!isMgr) throw bad('المهمة مبتتقفلش بزرار: ابعت إثبات التنفيذ وهيتراجع.', 403); if (['CANCELLED', 'AUTO_RESOLVED'].includes(t.status)) throw bad('المهمة اتقفلت قبل كده.'); t.status = 'DONE'; t.doneAt = now; t.doneBy = user.name; t.note = String(body.note || '').slice(0, 400) || null; t.reason = null; log('DONE', t.note ? `خلّصها — ${t.note}` : 'خلّصها'); }
@@ -190,6 +208,15 @@ export async function actOnTask(date, id, action, body, user) {
     else throw bad('إجراء غير معروف.');
     return day;
   });
+  if (pendingFiles && taskIdForFiles) await S.saveProofFiles(taskIdForFiles, pendingFiles); // the images are stored only after the task update succeeded
+  return result;
+}
+
+/** One proof image (manager or the assignee only). */
+export async function getProofFile(date, taskId, idx, user) {
+  const cfg = await getConfig(); const day = await S.loadDay(date); const t = day?.tasks.find((x) => x.id === taskId); if (!t) throw bad('المهمة مش موجودة.', 404);
+  if (!canAct(user, t, cfg)) throw bad('المهمة دي مش بتاعتك.', 403);
+  const f = (await S.loadProofFiles(taskId))[idx]; if (!f) throw bad('الصورة مش موجودة.', 404); return f;
 }
 
 export async function addManualTask(date, body, user) {
@@ -205,17 +232,18 @@ export async function addManualTask(date, body, user) {
 }
 
 // ───────────── read models ─────────────
+const withVerify = (t) => ({ ...t, verifyBy: verifyByOf(t) }); // who confirms the finished task: the system or the manager (shown to the buyer before he sends the proof)
 export async function getDayView(date, user) {
   const cfg = await getConfig(); const day = await S.loadDay(date); const d = day || S.emptyDay(date); const admin = C.seesAll(user, cfg);
   const me = cfg.team.find((m) => m.userId && user && m.userId === user.id) || null;
   const head = { date, exists: !!day, today: today(), generatedAt: d.generatedAt, refreshedAt: d.refreshedAt || null, dataAsOf: d.notes?.asOf || null, quotaStatus: admin ? d.notes?.quota || null : null, quota: admin ? cfg.options.quota : null, period: d.notes?.period || null, lastReset: d.resets?.length ? { at: d.resets[d.resets.length - 1].at, by: d.resets[d.resets.length - 1].by } : null, types: C.TYPES, reasons: C.NOT_DONE_REASONS, admin, mineId: me?.id || null };
   const memberView = (m) => ({ id: m.id, name: m.name, userId: m.userId || null, active: m.active !== false, off: (m.off || []).includes(date), load: d.tasks.filter((t) => t.assigneeId === m.id && C.isOpen(t)).length });
   if (!admin) { // everyone else sees ONLY their own tasks and numbers — never another person's
-    const mine = me ? d.tasks.filter((t) => t.assigneeId === me.id) : [];
+    const mine = me ? d.tasks.filter((t) => t.assigneeId === me.id).map(withVerify) : [];
     return { ...head, linked: !!me, notes: null, team: me ? [memberView(me)] : [], tasks: mine, log: me ? d.log.filter((l) => l.memberId === me.id).slice(-100).reverse() : [], summary: C.daySummary(mine), perMember: me ? C.memberStats([{ date, tasks: mine }], [me]) : [], options: null };
   }
   const members = cfg.team.filter((m) => m.active !== false || d.tasks.some((t) => t.assigneeId === m.id));
-  return { ...head, linked: !!me, notes: d.notes || null, team: members.map(memberView), tasks: d.tasks, log: d.log.slice(-200).reverse(), summary: C.daySummary(d.tasks), perMember: C.memberStats([d], members), options: cfg.options };
+  return { ...head, linked: !!me, notes: d.notes || null, team: members.map(memberView), tasks: d.tasks.map(withVerify), log: d.log.slice(-200).reverse(), summary: C.daySummary(d.tasks), perMember: C.memberStats([d], members), options: cfg.options };
 }
 
 export async function getReport(from, to, user = null) {

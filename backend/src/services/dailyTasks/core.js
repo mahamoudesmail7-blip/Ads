@@ -56,7 +56,7 @@ export function makeTask(c, { date, source = 'AUTO', now = new Date().toISOStrin
   return {
     id: newId('t'), key: c.key || null, type: c.type || 'MANUAL', category: BUCKETS.includes(c.category) ? c.category : categoryOf(c.type || 'MANUAL'), source, priority: PRIORITY_WEIGHT[c.priority] ? c.priority : 'MED',
     title: String(c.title || '').trim().slice(0, 200), detail: String(c.detail || '').trim().slice(0, 600), why: String(c.why || '').trim().slice(0, 700), steps: Array.isArray(c.steps) ? c.steps.map((s) => String(s).slice(0, 300)).slice(0, 8) : [], plan: Array.isArray(c.plan) ? c.plan.slice(0, 8) : null, facts: Array.isArray(c.facts) ? c.facts.slice(0, 6) : [],
-    product: c.product || null, accountId: c.accountId || null, campaignId: c.campaignId || null, link: c.link || null, action: c.action || null,
+    tech: c.tech || null, product: c.product || null, accountId: c.accountId || null, campaignId: c.campaignId || null, link: c.link || null, action: c.action || null,
     assigneeId: c.assigneeId || null, status: 'PENDING', originDate: date, carryCount: 0, createdAt: now, startedAt: null, doneAt: null, doneBy: null, note: null, reason: null, resolvedNote: null, carried: false, filler: !!c.filler, meta: c.meta || null, numbersAt: now, priorityLocked: false,
   };
 }
@@ -119,10 +119,25 @@ export function rollOver(prevTasks, { date, members, now = new Date().toISOStrin
 }
 
 /** Candidates that are not already represented: an open/finished task today with the same key blocks a new one (carried tasks count). */
+/**
+ * The JOB a task stands for, independent of wording: «scale» / «problem» / «test» / «review» / «stock» of ONE product. Two tasks with the same job for the same product are the same task,
+ * however the text or the key differs (a careful scale and a full scale of one product; a zero-orders and a high-CPA task of one product). Tasks without a product have no job key.
+ */
+export function jobKey(t) {
+  const p = t.product && (t.product.id != null ? `p${t.product.id}` : t.product.name ? `n:${String(t.product.name).toLowerCase().replace(/\s+/g, ' ').trim()}` : null);
+  if (!p) return null;
+  const job = t.type === 'SCALE' ? 'SCALE' : (t.type === 'ZERO_ORDERS' || t.type === 'CPA') ? 'PROBLEM' : (['TEST', 'REVIEW', 'STOCK'].includes(t.type) ? t.type : null);
+  return job ? `${job}|${p}` : null;
+}
 export function dedupeCandidates(cands, existing) {
-  const seen = new Set((existing || []).filter((t) => t.key && t.status !== 'CANCELLED').map((t) => t.key));
+  const live = (existing || []).filter((t) => t.status !== 'CANCELLED');
+  const seen = new Set(live.filter((t) => t.key).map((t) => t.key)); const jobs = new Set(live.map(jobKey).filter(Boolean));
   const out = [];
-  for (const c of cands) { if (!c.key || seen.has(c.key)) continue; seen.add(c.key); out.push(c); }
+  for (const c of cands) {
+    if (!c.key || seen.has(c.key)) continue;
+    const j = jobKey(c); if (j && jobs.has(j)) continue; // same job for the same product already exists today (open or finished)
+    seen.add(c.key); if (j) jobs.add(j); out.push(c);
+  }
   return out;
 }
 

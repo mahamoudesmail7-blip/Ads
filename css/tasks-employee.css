@@ -1,0 +1,71 @@
+/* «مهامي اليوم» — the media buyer's own screen. Short cards, big numbers, one panel per task. Uses the .dx tokens from tasks-board.css; scoped so nothing else changes. */
+.emp-hello { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; margin-bottom: 14px; border-radius: 22px; color: #fff; background: linear-gradient(135deg, #3f2bb8, #6d4aff 60%, #8b5cf6); box-shadow: 0 14px 34px rgba(80, 50, 200, .28); }
+.emp-hello h2 { margin: 0 0 4px; font-size: 22px; font-weight: 900; } .emp-hello p { margin: 0; font-size: 14px; font-weight: 600; opacity: .92; }
+.emp-prog { display: flex; flex-direction: column; align-items: center; gap: 6px; } .emp-prog small { font-weight: 800; font-size: 12px; opacity: .95; white-space: nowrap; }
+.emp-prog .dx-ring { background: conic-gradient(#fff calc(var(--p) * 1%), rgba(255, 255, 255, .25) 0); width: 54px; height: 54px; } .emp-prog .dx-ring b { color: #3f2bb8; font-size: 13px; }
+
+.emp-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+.emp-kpi { position: relative; display: flex; align-items: center; gap: 12px; text-align: start; padding: 14px 16px; border-radius: 20px; border: 1px solid var(--x-line); background: var(--x-card); color: var(--x-text); cursor: pointer; font: inherit; box-shadow: var(--x-shadow); transition: transform .2s, border-color .2s, box-shadow .2s; --tc: #6d4aff; }
+.emp-kpi:hover { transform: translateY(-2px); } .emp-kpi.on { border-color: var(--tc); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tc) 28%, transparent), var(--x-shadow); }
+.emp-kic { width: 46px; height: 46px; border-radius: 15px; display: grid; place-items: center; background: color-mix(in srgb, var(--tc) 14%, transparent); color: var(--tc); flex: none; }
+.emp-kpi small { display: block; color: var(--x-dim); font-weight: 800; font-size: 12.5px; } .emp-kpi b { display: block; font-size: 28px; font-weight: 900; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.emp-kpi em { margin-inline-start: auto; align-self: flex-start; font-style: normal; font-size: 11px; font-weight: 800; color: var(--tc); background: color-mix(in srgb, var(--tc) 12%, transparent); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+
+.emp-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.emp-chips button { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 999px; border: 1px solid var(--x-line); background: var(--x-card); color: var(--x-text); font: inherit; font-weight: 800; font-size: 13.5px; cursor: pointer; }
+.emp-chips button em { font-style: normal; font-size: 12px; background: var(--x-bg2); color: var(--x-dim); border-radius: 999px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
+.emp-chips button.on { background: linear-gradient(135deg, var(--x-acc), var(--x-acc2)); color: #fff; border-color: transparent; box-shadow: 0 6px 16px rgba(109, 74, 255, .3); } .emp-chips button.on em { background: rgba(255, 255, 255, .22); color: #fff; }
+
+.emp-list { display: flex; flex-direction: column; gap: 12px; }
+.emp-card { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 14px; width: 100%; text-align: start; padding: 14px 16px; border-radius: 20px; border: 1px solid var(--x-line); background: var(--x-card); color: var(--x-text); cursor: pointer; font: inherit; box-shadow: var(--x-shadow); transition: transform .2s, border-color .2s, box-shadow .2s; position: relative; --tc: #6d4aff; }
+.emp-card::before { content: ''; position: absolute; inset-block: 14px; inset-inline-start: 0; width: 4px; border-radius: 0 4px 4px 0; background: var(--tc); }
+.emp-card:hover, .emp-card:focus-visible { transform: translateY(-2px); border-color: var(--tc); outline: none; }
+.emp-card.is-done { opacity: .62; }
+.emp-ic { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; color: var(--tc); background: color-mix(in srgb, var(--tc) 13%, transparent); }
+.emp-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.emp-title { font-size: 16.5px; font-weight: 900; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.emp-line { font-size: 13.5px; font-weight: 600; color: var(--x-dim); line-height: 1.6; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.emp-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.emp-prod { font-size: 12.5px; font-weight: 800; color: var(--x-dim); }
+.emp-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; } .emp-side small { color: var(--x-dim); font-weight: 700; font-size: 12px; white-space: nowrap; }
+.emp-empty { display: grid; justify-items: center; gap: 6px; padding: 46px 10px; border: 1px dashed var(--x-line); border-radius: 20px; color: var(--x-dim); text-align: center; } .emp-empty b { color: var(--x-text); font-size: 16px; }
+.emp-pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; color: var(--x-dim); font-weight: 700; font-size: 13px; }
+.emp-pager div { display: flex; gap: 6px; align-items: center; } .emp-pager button { min-width: 36px; height: 36px; border-radius: 11px; border: 1px solid var(--x-line); background: var(--x-card); color: var(--x-text); font: inherit; font-weight: 800; cursor: pointer; }
+.emp-pager button.on { background: var(--x-acc); color: #fff; border-color: transparent; } .emp-pager button:disabled { opacity: .4; cursor: default; }
+
+/* the task panel */
+.emp-dr h2 { font-size: 20px; }
+.emp-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; color: var(--x-dim); font-weight: 700; font-size: 13px; } .emp-meta b { color: var(--x-text); }
+.emp-sec { border: 1px solid var(--x-line); border-radius: 18px; background: var(--x-bg2); padding: 13px 15px; margin-bottom: 12px; }
+.emp-sec h4 { margin: 0 0 8px; display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 900; color: var(--tc, var(--x-acc)); }
+.emp-sec p { margin: 0 0 6px; font-size: 14px; line-height: 1.8; font-weight: 600; }
+.emp-facts { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; } .emp-facts li { font-size: 14px; font-weight: 700; line-height: 1.7; padding-inline-start: 18px; position: relative; } .emp-facts li::before { content: ''; position: absolute; inset-inline-start: 2px; top: .72em; width: 7px; height: 7px; border-radius: 50%; background: var(--tc, var(--x-acc)); }
+.emp-steps { margin: 6px 0 0; padding-inline-start: 22px; display: grid; gap: 7px; } .emp-steps li { font-size: 14px; font-weight: 600; line-height: 1.75; }
+.emp-sec.res { background: color-mix(in srgb, var(--x-green) 8%, var(--x-card)); border-color: color-mix(in srgb, var(--x-green) 30%, var(--x-line)); } .emp-sec.res h4 { color: var(--x-green); }
+.emp-hint { display: flex; gap: 7px; align-items: flex-start; margin: 8px 0 0; color: var(--x-dim); font-weight: 700; font-size: 12.5px; line-height: 1.7; }
+.emp-proof { font-size: 14px; } .emp-proof small { color: var(--x-dim); font-weight: 700; display: block; margin-top: 6px; } .emp-proof.ok p { color: var(--x-green); }
+.emp-sec textarea, .emp-sec input[type="url"] { width: 100%; padding: 10px 12px; border: 1px solid var(--x-line); border-radius: 13px; background: var(--x-card); color: var(--x-text); font: inherit; font-weight: 600; margin-bottom: 8px; resize: vertical; }
+.emp-up { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.emp-file { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 13px; border: 1px dashed var(--x-acc); color: var(--x-acc); font-weight: 800; font-size: 13px; cursor: pointer; background: var(--x-card); } .emp-file:hover { background: var(--x-soft); }
+.emp-th-wrap { display: inline-flex; gap: 8px; flex-wrap: wrap; } .emp-th { position: relative; width: 58px; height: 58px; border-radius: 12px; overflow: hidden; border: 1px solid var(--x-line); } .emp-th img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.emp-th button { position: absolute; inset-block-start: 3px; inset-inline-end: 3px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .6); color: #fff; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.emp-imgs { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; } .emp-imgs img { width: 84px; height: 84px; object-fit: cover; border-radius: 12px; border: 1px solid var(--x-line); display: block; }
+.emp-linkbtn { border: 0; background: none; color: var(--x-acc); font: inherit; font-weight: 800; font-size: 13px; cursor: pointer; padding: 2px 0; }
+.emp-tech { margin: 4px 0 12px; border: 1px solid var(--x-line); border-radius: 16px; background: var(--x-card); padding: 4px 14px; } .emp-tech summary { cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 10px 0; font-weight: 800; font-size: 13.5px; color: var(--x-dim); list-style: none; } .emp-tech summary::-webkit-details-marker { display: none; }
+.emp-tech[open] summary { border-bottom: 1px solid var(--x-line); margin-bottom: 10px; }
+.emp-tl { font-size: 13px; font-weight: 600; line-height: 1.8; margin-bottom: 8px; word-break: break-word; } .emp-tl ul { margin: 4px 0 0; padding-inline-start: 18px; } .emp-tl code { font-size: 12px; background: var(--x-bg2); padding: 1px 6px; border-radius: 6px; }
+.emp-lg { font-size: 12.5px; color: var(--x-dim); } .emp-lg time { font-variant-numeric: tabular-nums; font-weight: 800; }
+.emp-foot-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 12px 18px; border-top: 1px solid var(--x-line); background: var(--x-card); }
+.emp-start, .emp-done { display: inline-flex; align-items: center; justify-content: center; gap: 8px; flex: 1 1 140px; height: 48px; border-radius: 14px; font: inherit; font-weight: 900; font-size: 15px; cursor: pointer; }
+.emp-start { border: 0; color: #fff; background: linear-gradient(135deg, var(--x-acc), var(--x-acc2)); box-shadow: 0 8px 20px rgba(109, 74, 255, .3); }
+.emp-done { border: 1px solid var(--x-line); background: var(--x-card); color: var(--x-text); } .emp-done:hover { border-color: var(--x-green); color: var(--x-green); }
+.emp-running { display: inline-flex; align-items: center; gap: 7px; font-weight: 800; font-size: 13px; color: var(--x-blue); padding: 0 6px; }
+.emp-cant { flex: 0 0 100%; border: 0; background: none; color: var(--x-dim); font: inherit; font-weight: 700; font-size: 12.5px; cursor: pointer; text-decoration: underline; padding: 0; }
+.dx-drawer:has(.emp-foot-bar) { display: flex; flex-direction: column; }
+
+@media (max-width: 900px) {
+  .emp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .emp-kpi.total { grid-column: 1 / -1; }
+  .emp-card { grid-template-columns: 46px minmax(0, 1fr); } .emp-ic { width: 46px; height: 46px; border-radius: 15px; } .emp-side { grid-column: 1 / -1; flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .emp-hello { padding: 14px 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .emp-card, .emp-kpi { transition: none; } }

@@ -3,6 +3,7 @@
 import { api } from './api-client.js';
 import * as UI from './ui-common.js';
 import * as X from './tasks-ui.js';
+import * as EMP from './tasks-emp.js';
 
 const $ = (id) => document.getElementById(id);
 const E = UI.escapeHtml;
@@ -49,7 +50,7 @@ function paint() {
   $('dtkDate').value = S.date;
   $('dtkSub').textContent = `${dateAr(S.date)}${S.date === v.today ? ' — النهارده' : ''}${v.generatedAt ? ` · اتجهّزت ${hhmm(v.generatedAt)}` : ''}${v.dataAsOf ? ` · أرقام Meta لحد ${hhmm(v.dataAsOf)}` : ''}${v.lastReset && S.mgr ? ` · اتصفّر ${hhmm(v.lastReset.at)}` : ''}`;
   document.querySelector('.dx-title h1').textContent = S.mgr || S.tab !== 'day' ? 'توزيع المهام' : 'مهامي اليوم';
-  document.querySelectorAll('#dtkTabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
+  document.querySelectorAll('#dtkTabs button').forEach((b) => { b.classList.toggle('on', b.dataset.tab === S.tab); if (b.dataset.tab === 'day') { const l = b.querySelector('span'); if (l) l.textContent = S.mgr ? 'التوزيع' : 'مهامي'; } });
   $('dtkActions').style.display = S.tab === 'day' && S.mgr ? '' : 'none';
   if (S.tab === 'day') paintDay(); else if (S.tab === 'follow') paintFollow(); else if (S.tab === 'team') paintTeam(); else paintSettings();
   paintDrawer();
@@ -61,7 +62,7 @@ function paintDay() {
   if (v.building) { body.innerHTML = '<div class="dtk-empty">⏳ بجهّز مهام اليوم من بيانات الحملات… دقيقة وتظهر لوحدها.</div><div class="dtk-skel" style="margin-top:14px"><div></div><div></div><div></div></div>'; return; }
   if (!v.exists && S.date !== v.today) { body.innerHTML = `<div class="dtk-empty">مفيش مهام متسجّلة ليوم ${E(dateAr(S.date))}.</div>`; return; }
   if (!S.mgr) { // a buyer sees only their own day — no other person, no other numbers
-    body.innerHTML = v.linked ? X.employeeBoard(S, v) : '<div class="dtk-empty">حسابك لسه مش مربوط بميديا باير.<br><small>كلّم المدير يربطه من تبويب «الفريق» وهتلاقي مهامك هنا.</small></div>';
+    body.innerHTML = v.linked ? EMP.employeeBoard(S, v) : '<div class="dtk-empty">حسابك لسه مش مربوط بميديا باير.<br><small>كلّم المدير يربطه من تبويب «الفريق» وهتلاقي مهامك هنا.</small></div>';
     return;
   }
   const bad = Object.entries(v.notes?.generator || {}).filter(([, g]) => g && g.ok === false).map(([k]) => (v.types[k]?.label || k));
@@ -75,7 +76,7 @@ function paintDrawer() {
   const el = $('dxDrawer'); const scrim = $('dxScrim'); const t = S.drawer && S.view ? S.view.tasks.find((x) => x.id === S.drawer) : null;
   if (!t) { el.hidden = true; scrim.hidden = true; el.innerHTML = ''; document.body.classList.remove('dx-lock'); return; }
   const keep = el.querySelector('.dx-dr-body')?.scrollTop || 0; const sameTask = el.dataset.id === t.id;
-  el.innerHTML = X.drawerHtml(S, S.view, t); el.dataset.id = t.id; el.hidden = false; scrim.hidden = false; document.body.classList.add('dx-lock');
+  el.innerHTML = S.mgr ? X.drawerHtml(S, S.view, t) : EMP.employeeDrawer(S, S.view, t); el.dataset.id = t.id; el.hidden = false; scrim.hidden = false; document.body.classList.add('dx-lock');
   if (sameTask) { const b = el.querySelector('.dx-dr-body'); if (b) b.scrollTop = keep; }
 }
 
@@ -149,17 +150,39 @@ function routinesHtml(list) {
 function readRoutines() { return [...document.querySelectorAll('#oRoutines [data-r]')].map((el) => ({ title: el.querySelector('[data-f=title]').value, detail: el.querySelector('[data-f=detail]').value, priority: el.querySelector('[data-f=priority]').value, mode: el.querySelector('[data-f=mode]').value, days: [...el.querySelectorAll('[data-day]:checked')].map((c) => +c.dataset.day), id: S.view.options.routines[+el.dataset.r]?.id })); }
 
 // ───────────── task actions ─────────────
+/** What the buyer typed in the panel survives every repaint (start / note / error): kept per task until the proof is sent. */
+function captureDraft(id) {
+  const d = S.proofDraft[id] || (S.proofDraft[id] = {});
+  if ($('dxProof')) d.text = $('dxProof').value; if ($('dxProofLink')) d.link = $('dxProofLink').value; if ($('empNote')) d.note = $('empNote').value;
+  return d;
+}
+/** Shrinks a photo in the browser (max 1280px, JPEG) so the proof stays small and safe to store. */
+async function compressImage(file, maxSide = 1280, maxBytes = 600 * 1024) {
+  if (!file.type.startsWith('image/')) throw new Error('الملف لازم يكون صورة.');
+  const bmp = await createImageBitmap(file); const sc = Math.min(1, maxSide / Math.max(bmp.width, bmp.height)); const w = Math.round(bmp.width * sc), h = Math.round(bmp.height * sc);
+  const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  let q = 0.82; let data = c.toDataURL('image/jpeg', q); while (data.length * 0.75 > maxBytes && q > 0.4) { q -= 0.1; data = c.toDataURL('image/jpeg', q); }
+  if (data.length * 0.75 > 700 * 1024) throw new Error('الصورة كبيرة. جرّب صورة أصغر.');
+  return { name: `${(file.name || 'proof').replace(/\.[^.]+$/, '')}.jpg`, data };
+}
+async function addFiles(fileList) {
+  const id = S.drawer; if (!id) return; const d = captureDraft(id); d.files = d.files || [];
+  for (const file of [...fileList]) { if (d.files.length >= 3) { UI.toast('أقصى عدد للصور 3.', 'error'); break; } try { d.files.push(await compressImage(file)); } catch (e) { UI.toast(e.message || 'مقدرتش أجهّز الصورة.', 'error'); } }
+  const box = $('empThumbs'); if (box) box.innerHTML = EMP.thumbsHtml(d.files);
+}
 async function act(a, id) {
   const t = S.view.tasks.find((x) => x.id === id); if (!t) return;
+  if (!S.mgr) captureDraft(id);
   const post = async (action, body = {}) => { const r = await call(() => api.post(`${API}/tasks/${id}/${action}`, { date: S.date, ...body })); if (r) { S.view = r; paint(); } return r; };
   if (a === 'start') return post('start');
+  if (a === 'note') { const note = ($('empNote')?.value || '').trim(); const r = await post('note', { note }); if (r) { UI.toast('اتحفظت ملاحظتك'); if (S.proofDraft[id]) delete S.proofDraft[id].note; } return r; }
   if (a === 'reopen') return post('reopen');
   if (a === 'approve') return post('approve');
   if (a === 'done') { if (!confirm('هتقفل المهمة دي كمكتملة من عندك من غير إثبات. أكمّل؟')) return; return post('done'); }
   if (a === 'submit') {
-    const text = ($('dxProof')?.value || '').trim(); const link = ($('dxProofLink')?.value || '').trim(); S.proofDraft[id] = { text, link };
-    if (text.length < 8) { UI.toast('اكتب إثبات التنفيذ: إيه اللي عملته بالظبط (جملة على الأقل).', 'error'); $('dxProof')?.focus(); return; }
-    const r = await post('submit', { proof: text, link }); if (r) delete S.proofDraft[id]; return;
+    const dr = captureDraft(id); const text = (dr.text || '').trim(); const link = (dr.link || '').trim(); const files = dr.files || [];
+    if (text.length < 8 && !files.length) { UI.toast('اكتب إثبات التنفيذ: إيه اللي عملته بالظبط (جملة على الأقل) أو ارفع صورة.', 'error'); $('dxProof')?.focus(); return; }
+    const r = await post('submit', { proof: text, link, files: files.map((f) => ({ name: f.name, data: f.data })), ...(dr.note !== undefined ? { note: dr.note } : {}) }); if (r) delete S.proofDraft[id]; return;
   }
   if (a === 'reject') {
     const res = await modal(`<h3>ارجّع المهمة للميديا باير</h3><div class="dtk-form"><div style="font-weight:700;font-size:13.5px">${E(t.title)}</div><div><label>السبب (هيظهرله)</label><textarea id="mN" rows="2" placeholder="مثلًا: ماحددتش أنهي حملة"></textarea></div></div><div class="btns"><button class="dx-sec-btn" data-close>رجوع</button><button class="dx-go" id="mOk">ارجّعها</button></div>`, { onMount: (el, close) => { el.querySelector('#mOk').onclick = () => close({ note: el.querySelector('#mN').value }); } });
@@ -303,6 +326,9 @@ function wire() {
     if (t.matches('select[data-size]')) { S.size = +t.value; S.page = 1; return paintDay(); }
     const l = t.closest('[data-link]'); if (l) { const r = await call(() => api.patch(`${API}/team/${l.dataset.link}`, { userId: l.value || null }), 'اتربط'); if (r) await load({ quiet: true }); }
   });
+  document.addEventListener('change', (e) => { if (e.target.id === 'dxFiles') { addFiles(e.target.files).finally(() => { e.target.value = ''; }); } });
+  document.addEventListener('click', (e) => { const rf = e.target.closest('[data-rmfile]'); if (rf && S.drawer) { const d = captureDraft(S.drawer); (d.files || []).splice(+rf.dataset.rmfile, 1); const box = $('empThumbs'); if (box) box.innerHTML = EMP.thumbsHtml(d.files); } });
+  document.addEventListener('input', (e) => { if (S.drawer && ['dxProof', 'dxProofLink', 'empNote'].includes(e.target.id)) captureDraft(S.drawer); });
   let qTimer = null;
   document.addEventListener('input', (e) => { if (e.target.id !== 'dxQ') return; clearTimeout(qTimer); const val = e.target.value; qTimer = setTimeout(() => { S.f.q = val; S.page = 1; paintDay(); }, 180); });
 }

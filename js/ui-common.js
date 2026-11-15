@@ -446,7 +446,7 @@ export function fmtCurrency(n) {
 export function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s ?? '';
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); // quotes too: the result is also used inside HTML attributes (href / value / title)
 }
 
 // ---------------------------------------------------------------------------
