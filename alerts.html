@@ -3,50 +3,9 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<script src="js/embed-boot.js"></script>
-<title>التنبيهات — AI Media Buyer</title>
-<script>(function(){try{var t=localStorage.getItem('theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
-<link rel="stylesheet" href="css/style.css" />
-<link rel="stylesheet" href="css/embed.css" />
-<link rel="stylesheet" href="css/embed-fx.css" />
-<link rel="stylesheet" href="css/alerts-center.css" />
+<title>AI Media Buyer</title>
+<meta http-equiv="refresh" content="0; url=index.html" />
+<script>location.replace('index.html' + (location.hash.indexOf('#/') === 0 ? '' : location.hash));</script>
 </head>
-<body>
-  <div class="app-shell">
-    <div id="sidebar" class="sidebar"></div>
-    <div class="main">
-      <div class="page-header">
-        <div>
-          <h1>التنبيهات</h1>
-          <div class="subtitle" id="dateLabel">—</div>
-        </div>
-      </div>
-
-      <div class="ac-head">
-        <div class="section-title" style="margin:0">🚨 مركز التنبيهات — اللي محتاج انتباهك دلوقتي</div>
-        <div class="ac-tools"><span id="acStamp" class="ac-stamp"></span><button class="btn secondary small" id="acRefresh" type="button">🔄 تحديث</button></div>
-      </div>
-      <div id="acSummary" class="ac-summary"></div>
-      <div id="acFilters" class="ac-filters"></div>
-      <div id="acList" class="ac-list"><div class="empty-state">⏳ بنفحص الأوردرات والحملات والمخزون والأرصدة…</div></div>
-
-      <div class="section-title" style="margin-top:28px">📊 تحليل اتجاه الأوردرات (من جدول الأوردرات اليومية)</div>
-      <div id="attentionList"></div>
-
-      <div class="section-title">📦 تنبيهات المخزون</div>
-      <div id="stockList"></div>
-
-      <div class="section-title">🔥 أداء ممتاز</div>
-      <div id="positiveList"></div>
-
-      <div class="section-title">🚨 انخفاض مستمر</div>
-      <div id="declineList"></div>
-
-      <div class="section-title">⚠️ تنبيهات تحتاج متابعة</div>
-      <div id="negativeList"></div>
-    </div>
-  </div>
-
-  <script type="module" src="js/alerts.js"></script>
-</body>
+<body></body>
 </html>

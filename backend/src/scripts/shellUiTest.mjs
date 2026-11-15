@@ -61,7 +61,7 @@ try {
   await shot('t1-menu.png');
 
   console.log('\n2. Every page inside the shell — desktop, phone, light, dark');
-  const PAGES = ['index.html', 'alerts.html', 'tasks.html', 'entry.html', 'easy-orders.html', 'lost-orders.html', 'store-connections.html', 'customers.html', 'products.html', 'inventory.html', 'compare.html', 'ranking.html', 'product-research.html', 'ai-media-buyer.html', 'ai-intelligence.html', 'product-marketing-center.html', 'creative-factory.html', 'work.html', 'manager.html', 'users.html', 'settings.html', 'backup-recovery.html', 'ai-usage.html', 'easyorders-catalog-sync.html', 'register.html'];
+  const PAGES = ['index.html', 'tasks.html', 'entry.html', 'easy-orders.html', 'lost-orders.html', 'store-connections.html', 'customers.html', 'products.html', 'inventory.html', 'compare.html', 'ranking.html', 'product-research.html', 'ai-media-buyer.html', 'ai-intelligence.html', 'product-marketing-center.html', 'creative-factory.html', 'work.html', 'manager.html', 'users.html', 'settings.html', 'backup-recovery.html', 'ai-usage.html', 'easyorders-catalog-sync.html', 'register.html'];
   for (const [width, theme] of [[1440, null], [390, null], [1440, 'dark']]) {
     const bad = [];
     for (const p of PAGES) {
@@ -89,8 +89,8 @@ try {
   await openShell('#/ai-media-buyer.html#plan'); const loadsBefore = await js(`window.__n = (window.__n || 0) + 1; document.getElementById('shFrame').contentWindow.__marker = 'same-document'; 1`);
   await js(`document.querySelector('.sh-child[data-child="clone"]').click()`);
   ok('moving between sub-sections does NOT reload the page (same document, only the section changes)', await waitFor(`document.getElementById('shFrame').contentWindow.location.hash === '#clone'`) && await js(`document.getElementById('shFrame').contentWindow.__marker === 'same-document'`) && await js(`location.hash === '#/ai-media-buyer.html#clone'`));
-  await js(`document.querySelector('.sh-item[data-key="alerts"]').click()`);
-  ok('clicking another page swaps the frame, updates the URL, the title and the highlighted entry', await waitFor(`(document.getElementById('shFrame').contentWindow.location.pathname || '').endsWith('alerts.html') && location.hash === '#/alerts.html' && document.querySelector('.sh-item.active')?.dataset.key === 'alerts' && /التنبيهات/.test(document.title)`));
+  await js(`document.querySelector('.sh-item[data-key="tasks"]').click()`);
+  ok('clicking another page swaps the frame, updates the URL, the title and the highlighted entry', await waitFor(`(document.getElementById('shFrame').contentWindow.location.pathname || '').endsWith('tasks.html') && location.hash === '#/tasks.html' && document.querySelector('.sh-item.active')?.dataset.key === 'tasks' && /تاسكات|المهام/.test(document.title)`));
   await js(`history.back()`);
   ok('the browser Back button goes to the previous section', await waitFor(`location.hash === '#/ai-media-buyer.html#clone' && document.querySelector('.sh-child.active')?.dataset.child === 'clone'`));
   await openShell('#/index.html'); await js(`document.getElementById('shFrame').contentWindow.location.href = 'products.html?embed=1'`);
@@ -124,7 +124,7 @@ try {
   await openShell('#/index.html', { width: 390 });
   ok('on a phone the sidebar is a hidden drawer with a burger button', await js(`document.getElementById('shSide').getBoundingClientRect().right > window.innerWidth + 50 && getComputedStyle(document.getElementById('shBurger')).display !== 'none'`));
   await js(`document.getElementById('shBurger').click()`);
-  ok('the burger opens it (with a scrim) and picking a page closes it again', await waitFor(`document.getElementById('shSide').classList.contains('open') && !document.getElementById('shScrim').hidden`) && (await js(`document.querySelector('.sh-item[data-key="alerts"]').click(); 1`)) && await waitFor(`!document.getElementById('shSide').classList.contains('open')`));
+  ok('the burger opens it (with a scrim) and picking a page closes it again', await waitFor(`document.getElementById('shSide').classList.contains('open') && !document.getElementById('shScrim').hidden`) && (await js(`document.querySelector('.sh-item[data-key="tasks"]').click(); 1`)) && await waitFor(`!document.getElementById('shSide').classList.contains('open')`));
   await openShell('#/index.html', { width: 390 }); await js(`document.getElementById('shBurger').click()`); await sleep(500); await shot('t5-phone-drawer.png');
   ok('after login the app lands in the shell (the «next» rule: pages map to shell routes, foreign URLs are ignored)', await js(`(async () => { const src = await fetch('js/auth.js').then((r) => r.text()); return src.includes("app.html#/") && src.includes('function safeNext') && !src.includes("|| 'index.html'"); })()`));
   ok('a logged-out frame sends the WHOLE shell to the login page (not a login form inside the frame)', await js(`(async () => { const src = await fetch('js/api-client.js').then((r) => r.text()); return src.includes('window.top.location.href'); })()`));

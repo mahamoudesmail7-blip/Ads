@@ -13,7 +13,7 @@
       return;
     }
     var m = /\/([a-z0-9-]+\.html)$/i.exec(location.pathname);
-    var PAGES = ['index', 'alerts', 'tasks', 'entry', 'easy-orders', 'lost-orders', 'store-connections', 'customers', 'products', 'inventory', 'compare', 'ranking', 'product-research', 'ai-media-buyer', 'ai-intelligence', 'product-marketing-center', 'creative-factory', 'work', 'manager', 'users', 'settings', 'backup-recovery', 'ai-usage', 'easyorders-catalog-sync'];
+    var PAGES = ['index', 'tasks', 'entry', 'easy-orders', 'lost-orders', 'store-connections', 'customers', 'products', 'inventory', 'compare', 'ranking', 'product-research', 'ai-media-buyer', 'ai-intelligence', 'product-marketing-center', 'creative-factory', 'work', 'manager', 'users', 'settings', 'backup-recovery', 'ai-usage', 'easyorders-catalog-sync'];
     if (m && PAGES.indexOf(m[1].replace(/\.html$/i, '').toLowerCase()) >= 0 && !location.search && localStorage.getItem('noShell') !== '1') {
       location.replace('app.html#/' + m[1].toLowerCase() + location.hash);
     }

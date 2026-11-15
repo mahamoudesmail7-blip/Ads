@@ -31,7 +31,7 @@ export const AMB_SECTIONS = [
 ];
 
 export const NAV_GROUPS = [
-  { id: 'home', accent: '#6d8cff', label: 'الرئيسية', icon: ic('target'), items: [page('dashboard'), page('alerts'), page('tasks')] },
+  { id: 'home', accent: '#6d8cff', label: 'الرئيسية', icon: ic('target'), items: [page('dashboard'), page('tasks')] },
   { id: 'orders', accent: '#2ec4e6', label: 'الأوردرات والعملاء', icon: ic('cart'), items: [page('entry'), page('easyorders'), page('lostorders'), page('storeconnections'), page('customers')] },
   { id: 'catalog', accent: '#34d399', label: 'المنتجات والمخزون', icon: ic('package'), items: [page('products'), page('inventory'), page('compare'), page('ranking'), page('productresearch')] },
   {

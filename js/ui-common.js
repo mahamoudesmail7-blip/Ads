@@ -65,7 +65,6 @@ export const NAV_ITEMS = [
   { key: 'scalecenter', href: 'ai-media-buyer.html#scale', label: 'مركز التوسّع', icon: navIcon('ranking') }, // was a link to a page that does not exist (scale-center.html) — it is a section of AI Media Buyer
   { key: 'creativefactory', href: 'creative-factory.html', label: 'مصنع الكرياتيفات', icon: navIcon('aimediabuyer') },
   { key: 'productresearch', href: 'product-research.html', label: 'بحث المنتجات', icon: navIcon('productresearch') },
-  { key: 'alerts', href: 'alerts.html', label: 'التنبيهات', icon: navIcon('alerts') },
   { key: 'compare', href: 'compare.html', label: 'مقارنة المنتجات', icon: navIcon('compare') },
   { key: 'ranking', href: 'ranking.html', label: 'ترتيب الربحية', icon: navIcon('ranking') },
   { key: 'settings', href: 'settings.html', label: 'إعدادات النظام', icon: navIcon('settings') },
@@ -166,8 +165,8 @@ const HAMBURGER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 
 // Bottom-nav short labels — only used in the condensed 5-slot mobile bar;
 // the drawer/desktop sidebar keep each item's full existing label.
-const BOTTOM_NAV_KEYS = ['dashboard', 'tasks', 'aiintel', 'alerts'];
-const BOTTOM_NAV_LABELS = { dashboard: 'الرئيسية', tasks: 'تاسكات', aiintel: 'AI', alerts: 'تنبيهات' };
+const BOTTOM_NAV_KEYS = ['dashboard', 'tasks', 'aiintel'];
+const BOTTOM_NAV_LABELS = { dashboard: 'الرئيسية', tasks: 'تاسكات', aiintel: 'AI' };
 
 function openMobileDrawer() {
   document.getElementById('mobileNavOverlay')?.classList.add('open');
