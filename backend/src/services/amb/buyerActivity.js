@@ -75,7 +75,7 @@ export function sumResults(byCampaign, ids, dates) {
   for (const id of ids) { const m = byCampaign.get(id); if (!m) continue; for (const d of dates) { const v = m.get(d); if (!v) continue; any = true; spend += v.spend || 0; orders += v.orders || 0; } }
   return any ? { spend: r2(spend), orders, cpa: orders > 0 ? r2(spend / orders) : null } : null;
 }
-const range = (from, n) => Array.from({ length: n }, (_, i) => addDays(from, i));
+export const range = (from, n) => Array.from({ length: n }, (_, i) => addDays(from, i));
 
 /** Pure: campaigns → one row per person. `team` = [{ id, name, userId }] (listed even with nothing created); anyone not in the team gets their own «غير مربوط» row (a Facebook actor) or «مش معروف». */
 export function groupByPerson(campaigns, team, aliases = {}) {
@@ -107,7 +107,7 @@ export async function setAlias(actorId, memberId) {
   return cur;
 }
 
-async function systemRecords(fromDay, toDay = fromDay) {
+export async function systemRecords(fromDay, toDay = fromDay) {
   const from = new Date(`${addDays(fromDay, -1)}T00:00:00Z`), to = new Date(`${addDays(toDay, 2)}T00:00:00Z`);
   const [jobs, batches] = await Promise.all([
     prisma.ambLaunchJob.findMany({ where: { created_at: { gte: from, lt: to } }, select: { ad_account_id: true, ad_account_name: true, created_at: true, created_by: { select: { id: true, name: true } }, product: { select: { product_name: true } }, campaigns: { select: { name: true, meta_campaign_id: true } } } }),
@@ -121,7 +121,7 @@ async function systemRecords(fromDay, toDay = fromDay) {
 }
 
 const EVENTS_CACHE = new Map(); // 'first|end' -> { at, v }
-async function metaEvents(first, end, accounts) {
+export async function metaEvents(first, end, accounts) {
   const key = `${first}|${end}`; const hit = EVENTS_CACHE.get(key); if (hit && Date.now() - hit.at < CACHE_TODAY_MS) return hit.v;
   let token = null; try { token = await getDecryptedToken(); } catch { return { events: [], ok: false, reason: 'مفيش اتصال Meta دلوقتي' }; }
   const since = new Date(`${addDays(first, -1)}T12:00:00Z`).toISOString(), until = new Date(`${addDays(end, 1)}T12:00:00Z`).toISOString(); // wide window; each Cairo day is cut afterwards

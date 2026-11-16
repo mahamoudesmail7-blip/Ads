@@ -86,6 +86,11 @@ router.get('/buyer-activity', asyncRoute(async (req, res) => {
   if (req.query.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date))) return res.status(400).json({ error: 'REQUEST_ERROR', message: 'التاريخ لازم يكون بصيغة YYYY-MM-DD.' });
   res.json(await getBuyerActivity({ date: req.query.date || null, force: req.query.force === '1' }));
 }));
+// «نتايج شغل الميديا باير»: what the campaigns each buyer created gave, per product — mode=yesterday (today so far) | month. Read only; {ready:false} while a big month is still being read.
+router.get('/buyer-activity/report', asyncRoute(async (req, res) => {
+  const { getBuyerReport } = await import('../services/amb/buyerReport.js');
+  res.json(await getBuyerReport({ mode: String(req.query.mode || 'yesterday'), force: req.query.force === '1' }));
+}));
 router.get('/buyer-activity/week', asyncRoute(async (req, res) => {
   const { getWeekStrip } = await import('../services/amb/buyerActivity.js');
   if (req.query.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date))) return res.status(400).json({ error: 'REQUEST_ERROR', message: 'التاريخ لازم يكون بصيغة YYYY-MM-DD.' });

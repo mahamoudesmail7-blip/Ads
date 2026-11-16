@@ -5,7 +5,11 @@ import { api } from './api-client.js';
 import * as UI from './ui-common.js';
 
 const E = UI.escapeHtml;
-let baDay = null; let baGen = 0; let baIdx = 0; let baTimer = null;
+let baDay = null; let baGen = 0; let baIdx = 0; let baTimer = null; let baTries = 0;
+const MODES = [['day', 'اللي اتعمل'], ['yesterday', 'نتايج شغل امبارح'], ['month', 'الشهر']];
+let baMode = 'day'; try { const m = localStorage.getItem('ba.mode'); if (MODES.some(([k]) => k === m)) baMode = m; } catch { /* default */ }
+const modeTabs = () => `<div class="ba-modes" role="tablist">${MODES.map(([k, l]) => `<button type="button" role="tab" class="${baMode === k ? 'on' : ''}" data-mode="${k}">${l}</button>`).join('')}</div>`;
+function wireModes(body) { body.querySelectorAll('[data-mode]').forEach((b) => { b.onclick = () => { baMode = b.dataset.mode; baIdx = 0; baTries = 0; try { localStorage.setItem('ba.mode', baMode); } catch { /* ignore */ } renderBuyerActivity(false); }; }); }
 const num = (n) => UI.fmtNum(Math.round(n));
 const DAYS = ['الأحد', 'الاتنين', 'التلات', 'الأربع', 'الخميس', 'الجمعة', 'السبت'];
 const wd = (d) => DAYS[new Date(`${d}T12:00:00Z`).getUTCDay()];
@@ -55,6 +59,7 @@ function render(body, d) {
   body.innerHTML = `<section class="ba">
     <div class="ba-head"><div class="ba-title">🧑‍💼 اللي اتعمل ${d.isToday ? 'النهارده' : 'يوم'} <em>${E(long(d.date))}</em></div>
       <div class="ba-nav"><button type="button" class="ba-arrow" data-day="${shift(-1)}" aria-label="اليوم اللي قبله">›</button><button type="button" class="ba-arrow" data-day="${shift(1)}" aria-label="اليوم اللي بعده" ${d.isToday ? 'disabled' : ''}>‹</button></div></div>
+    ${modeTabs()}
     <div class="ba-days">${strip}</div>
     <div class="ba-sum"><span><b>${d.totals.campaigns}</b> كامبين</span><span><b>${d.totals.tests}</b> تيست</span><span><b>${d.totals.scales}</b> اسكيل</span><span><b>${d.totals.people}</b> ميديا باير اشتغل</span></div>
     ${warn}
@@ -63,6 +68,7 @@ function render(body, d) {
       <button type="button" class="ba-sl" data-slide="prev" aria-label="اللي قبله">›</button></div>
     <div class="ba-dots" aria-hidden="true">${d.people.map((_, i) => `<i class="${i === baIdx ? 'on' : ''}"></i>`).join('')}</div>
     <div class="ba-note">${E(d.note)}</div></section>`;
+  wireModes(body);
   wire(body, d);
   loadWeek(body, d); // the counts of the other days (a wider read) arrive after the cards are already on screen
 }
@@ -96,10 +102,46 @@ function wire(body, d) {
   if (baIdx > 0) setTimeout(() => go(baIdx), 0);
 }
 
+const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+const money = (n) => (n == null ? '—' : `${num(n)} ج`);
+function prodRow(p, mode) {
+  const kinds = [p.tests ? `${p.tests} تيست` : '', p.scales ? `${p.scales} اسكيل` : '', p.other ? `${p.other} كامبين` : ''].filter(Boolean).join(' · ');
+  const items = mode === 'yesterday' ? `<details class="ba-pcamps"><summary>الكامبينات (${p.items.length})</summary>${p.items.map((c) => { const [tl, tc] = TYPE[c.type] || TYPE.OTHER; return `<div class="ba-pc ${tc}"><span class="ba-type">${tl}</span><b dir="auto" title="${E(c.name)}">${E(c.name)}</b><em>${E(c.accountName)}</em><span class="r">${c.perf ? `<b>${num(c.perf.orders)}</b> أوردر · ${c.perf.cpa != null ? `كوست <i>${num(c.perf.cpa)} ج</i>` : 'كوست —'}` : 'لسه مفيش بيانات'}</span></div>`; }).join('')}</details>` : '';
+  return `<div class="ba-prow"><div class="n"><b dir="auto">${E(p.name)}</b><small>${E(kinds)}</small></div><div class="v"><small>أوردر</small><b>${p.orders == null ? '—' : num(p.orders)}</b></div><div class="v"><small>صرف</small><b>${p.spendKnown ? money(p.spend) : '—'}</b></div><div class="v"><small>كوست</small><b class="cp">${p.cpa != null ? money(p.cpa) : '—'}</b></div>${items}</div>`;
+}
+function reportCard(p, mode) {
+  const initial = E([...(p.name || '؟')][0] || '؟'); const t = p.totals;
+  const head = p.idle ? 'ملوش كامبينات في الفترة دي' : `${t.campaigns} ${t.campaigns === 1 ? 'كامبين' : 'كامبينات'} · ${t.tests} تيست · ${t.scales} اسكيل`;
+  return `<section class="ba-card ${p.idle ? 'is-idle' : ''}"><header><span class="ba-av ${p.linked ? '' : 'unk'}">${initial}</span><div><b>${E(p.name)}</b><small>${head}${p.linked ? '' : ' · غير مربوط'}</small></div></header>
+    ${p.idle ? '' : `<div class="ba-tot"><span><b>${t.orders == null ? '—' : num(t.orders)}</b> أوردر</span><span><b>${money(t.spend)}</b> صرف</span><span>كوست <b class="cp">${t.cpa != null ? money(t.cpa) : '—'}</b></span></div>`}
+    <div class="ba-list">${p.idle ? '<div class="ba-none">مفيش كامبين اتعمل باسمه.</div>' : p.products.map((r) => prodRow(r, mode)).join('')}</div></section>`;
+}
+function renderReport(body, r) {
+  const tm = r.totals; const title = r.mode === 'yesterday' ? `شغل امبارح <em>${E(long(r.from))}</em> — إيه اللي عمله النهارده` : `الشهر كله <em>${MONTHS[Number(r.today.slice(5, 7)) - 1]} ${r.today.slice(0, 4)}</em>`;
+  const warn = r.meta && !r.meta.ok ? `<div class="ba-warn">⚠️ مقدرتش أقرا «View history» لـ: ${E(r.meta.failed.join('، '))} — ممكن يكون فيه كامبينات ناقصة.</div>` : '';
+  body.innerHTML = `<section class="ba"><div class="ba-head"><div class="ba-title">📊 ${title}</div></div>${modeTabs()}
+    <div class="ba-sum"><span><b>${tm.campaigns}</b> كامبين</span><span><b>${tm.orders == null ? '—' : num(tm.orders)}</b> أوردر</span><span><b>${money(tm.spend)}</b> صرف</span><span>كوست <b>${tm.cpa != null ? money(tm.cpa) : '—'}</b></span></div>${warn}
+    <div class="ba-slider"><button type="button" class="ba-sl" data-slide="next" aria-label="اللي بعده">‹</button><div class="ba-track" tabindex="0">${r.people.map((p) => reportCard(p, r.mode)).join('') || '<div class="ba-none">مفيش بيانات.</div>'}</div><button type="button" class="ba-sl" data-slide="prev" aria-label="اللي قبله">›</button></div>
+    <div class="ba-dots" aria-hidden="true">${r.people.map((_, i) => `<i class="${i === baIdx ? 'on' : ''}"></i>`).join('')}</div><div class="ba-note">${E(r.note)}</div></section>`;
+  wireModes(body); wire(body, { date: r.today });
+}
+async function renderReportMode(body, gen, force) {
+  let r;
+  try { r = await api.get('/api/ai-media-buyer/buyer-activity/report', { mode: baMode, ...(force ? { force: '1' } : {}) }); }
+  catch (e) { if (gen === baGen) { if (e.status === 403) { document.getElementById('buyerActCard')?.setAttribute('hidden', ''); return; } body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل النتايج: ${E(e.message || '')}</span>`; } return; }
+  if (gen !== baGen || !r) return;
+  if (!r.ready) { // a big month is still being read in the background: show the progress and ask again
+    body.innerHTML = `<section class="ba">${modeTabs()}<div class="ba-loading">⏳ بجمّع كامبينات الشهر من Meta… (${r.progress?.done || 0} من ${r.progress?.total || '—'} يوم)</div></section>`; wireModes(body);
+    if (baTries++ < 60) baTimer = setTimeout(() => renderBuyerActivity(false), 3000); return;
+  }
+  renderReport(body, r);
+}
+
 export async function renderBuyerActivity(force) {
   const body = document.getElementById('buyerActBody'); if (!body) return;
   clearTimeout(baTimer); const gen = ++baGen;
   if (!body.querySelector('.ba')) body.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:220px"></div></div>';
+  if (baMode !== 'day') return renderReportMode(body, gen, force);
   let d;
   try { d = await api.get('/api/ai-media-buyer/buyer-activity', { ...(baDay ? { date: baDay } : {}), force: force ? '1' : '' }); }
   catch (e) { if (gen === baGen) { if (e.status === 403) { document.getElementById('buyerActCard')?.setAttribute('hidden', ''); return; } body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل نشاط الميديا بايرز: ${E(e.message || '')}</span>`; } return; }
