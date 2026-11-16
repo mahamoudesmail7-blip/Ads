@@ -282,5 +282,28 @@ console.log('\nexecuteScale rejects (no Meta writes):');
   await prisma.ambScaleDecision.deleteMany({ where: { source_campaign_id: TAG } }); await prisma.ambCloneJob.deleteMany({ where: { id: job.id } }); await prisma.ambCloneBatch.deleteMany({ where: { id: batch.id } });
 }
 
+// ---- the recurring «النسخ لسه شغال على ميتا (PENDING)» failure: a clone that is only QUEUED (the chain runs one batch at a time) must not be failed after the clone timeout
+{
+  const ACC = 'act_queue_test'; const TAG = 'queue_' + Date.now();
+  const batch = await prisma.ambCloneBatch.create({ data: { batch_id: TAG, source_ad_account_id: ACC, destination_account_ids_json: '[]', campaign_ids_json: '[]', status: 'APPROVED' } });
+  const job = await prisma.ambCloneJob.create({ data: { batch_id: TAG, source_ad_account_id: ACC, destination_ad_account_id: ACC, source_campaign_id: TAG, status: 'PENDING' } });
+  const clock = (hook) => { let t = 0; return { now: () => t, sleep: async (ms) => { t += ms; await hook?.(t); } }; };
+  // (a) the old behaviour is kept for a single scale: no queue ceiling → gives up after timeoutMs even if only queued
+  let c = clock(); const a = await waitAndVerifyScale({ batchId: TAG, expectedAdSetSourceIds: ['x'], expectedAdSourceIds: ['y'], timeoutMs: 60_000, pollMs: 5_000, ...c });
+  ok('single scale (no queue ceiling): a still-PENDING job times out after timeoutMs, as before', a.ok === false && a.timedOut === true && c.now() >= 60_000 && c.now() < 70_000, String(c.now()));
+  // (b) bulk: the job waits for its turn up to the queue ceiling — 10 minutes queued is NOT a failure when the clone timeout is 5
+  c = clock(); const b = await waitAndVerifyScale({ batchId: TAG, expectedAdSetSourceIds: ['x'], expectedAdSourceIds: ['y'], timeoutMs: 300_000, queueTimeoutMs: 2_400_000, pollMs: 5_000, ...c });
+  ok('bulk: queued for the whole ceiling (40 min) before it gives up — never at the 5-minute clone timeout', b.timedOut === true && c.now() >= 2_400_000 && c.now() < 2_410_000, String(c.now()));
+  // (c) the clone starts after 12 minutes in the queue → the 5-minute clone clock starts THEN
+  c = clock(async (t) => { if (t >= 720_000) await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'CLONING' } }); });
+  const d = await waitAndVerifyScale({ batchId: TAG, expectedAdSetSourceIds: ['x'], expectedAdSourceIds: ['y'], timeoutMs: 300_000, queueTimeoutMs: 2_400_000, pollMs: 5_000, ...c });
+  ok('after waiting 12 min in the queue, the clone starts; «too slow» is judged 5 minutes AFTER it started (not 5 minutes after the wait began)', d.timedOut === true && c.now() >= 720_000 + 300_000 && c.now() < 720_000 + 310_000, String(c.now()));
+  // (d) the clone finishes while queued-then-running → success path is reached (terminal job ends the wait immediately)
+  await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'FAILED', error: 'boom' } });
+  c = clock(); const e = await waitAndVerifyScale({ batchId: TAG, expectedAdSetSourceIds: ['x'], expectedAdSourceIds: ['y'], timeoutMs: 300_000, queueTimeoutMs: 2_400_000, pollMs: 5_000, ...c });
+  ok('a finished job ends the wait at once (no waiting out any clock)', e.ok === false && !e.timedOut && c.now() === 0);
+  await prisma.ambCloneJob.deleteMany({ where: { id: job.id } }); await prisma.ambCloneBatch.deleteMany({ where: { id: batch.id } });
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

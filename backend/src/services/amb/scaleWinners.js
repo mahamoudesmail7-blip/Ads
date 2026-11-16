@@ -242,15 +242,20 @@ export async function waitAndVerifyScale({
   // legacy aliases (CBO callers / repair script)
   requiredAdSetIds, selectedAdIds,
   timeoutMs = 120_000, pollMs = 2500,
+  queueTimeoutMs = null, // how long the job may sit QUEUED (PENDING, waiting for the clone chain's turn) before giving up; null = same as timeoutMs (single scale). `timeoutMs` then counts from when the clone really STARTS.
+  now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
 }) {
   const wantAdSets = (expectedAdSetSourceIds || requiredAdSetIds || []).map(String);
   const wantAds = (expectedAdSourceIds || selectedAdIds || []).map(String);
-  const deadline = Date.now() + timeoutMs;
+  const t0 = now(); const queueMax = queueTimeoutMs == null ? timeoutMs : Math.max(queueTimeoutMs, timeoutMs); let cloningSince = null;
   let jobs = [];
-  while (Date.now() < deadline) {
+  for (;;) {
     jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: batchId } });
     if (jobs.length && jobs.every((j) => JOB_TERMINAL.has(j.status))) break;
-    await new Promise((r) => setTimeout(r, pollMs));
+    if (jobs.some((j) => j.status === 'CLONING') && cloningSince == null) cloningSince = now(); // the clone has really started: the clock for «too slow» starts HERE, not while it queued
+    const deadline = cloningSince != null ? cloningSince + timeoutMs : t0 + queueMax;
+    if (now() >= deadline) break;
+    await sleep(pollMs);
   }
   const job = jobs[0];
   if (!job) return { ok: false, error: 'لم يُنشأ أي job للاستنساخ.', counts: { adSetsCreated: 0, adsCreated: 0 } };
@@ -329,6 +334,7 @@ export async function executeScale({
   sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets,
   budgetEgp, // legacy alias for campaignBudgetEgp
   startMode, startAt, windowName = 'today', userId,
+  queueWaitMs = null, // bulk scale only: how long the clone may wait for its TURN in the clone chain (one batch at a time) before the wait gives up
   waitTimeoutMs = 120_000, // how long to wait for the clone worker (the bulk scale waits much longer: a big product clones for several minutes, paced by Meta's throttle)
   adAccountId: viewAccountId = null, // another switchable account (validated by the route): the scale is built inside THAT account
 }) {
@@ -484,7 +490,7 @@ export async function executeScale({
     await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { clone_batch_id: batchId } });
     await approveBatch({ batchId, userId }); // kicks the async clone worker
 
-    const verdict = await waitAndVerifyScale({ batchId, expectedAdSetSourceIds, expectedAdSourceIds, timeoutMs: waitTimeoutMs });
+    const verdict = await waitAndVerifyScale({ batchId, expectedAdSetSourceIds, expectedAdSourceIds, timeoutMs: waitTimeoutMs, queueTimeoutMs: queueWaitMs });
     if (!verdict.ok) {
       await prisma.ambScaleDecision.update({ where: { id: decision.id }, data: { status: verdict.timedOut ? 'APPROVED' : 'FAILED', error: verdict.error.slice(0, 800) } });
       const e = new Error(`فشل إنشاء حملة الاسكيل: ${verdict.error}`);

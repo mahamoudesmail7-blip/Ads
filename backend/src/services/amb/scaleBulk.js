@@ -14,6 +14,8 @@ export const DEFAULT_GAP_S = 60;
 export const MAX_GAP_S = 900;
 /** How long ONE campaign may take to clone before the bulk gives up waiting on it (the single scale waits 2 minutes — too short for a product with many ads / videos). */
 export const WAIT_PER_CAMPAIGN_MS = 5 * 60_000;
+/** …counted from when the clone STARTS. A campaign whose clone is still QUEUED behind another batch (the clone chain runs one batch at a time — other accounts' bulks included) may wait this long for its turn before the bulk gives up. */
+export const WAIT_IN_QUEUE_MS = 40 * 60_000;
 
 const batches = new Map(); // id -> batch
 /** The key of the ad account a bulk scale builds inside (null = the connected account). Every account runs its OWN batch: Ahmed Samy's keeps going while Hady's starts. */
@@ -127,7 +129,7 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
       if (b.cancel) { it.status = 'CANCELED'; continue; }
       it.status = 'RUNNING'; it.startedAt = now();
       try {
-        const common = { sourceCampaignId: it.sourceCampaignId, budgetMode: it.budgetMode, startMode: b.startMode, startAt: b.startAt, windowName, userId, adAccountId, waitTimeoutMs: WAIT_PER_CAMPAIGN_MS };
+        const common = { sourceCampaignId: it.sourceCampaignId, budgetMode: it.budgetMode, startMode: b.startMode, startAt: b.startAt, windowName, userId, adAccountId, waitTimeoutMs: WAIT_PER_CAMPAIGN_MS, queueWaitMs: WAIT_IN_QUEUE_MS };
         const r = await exec(it.budgetMode === 'ABO' ? { ...common, adSets: it.adSets } : { ...common, selectedAdIds: it.selectedAdIds, campaignBudgetEgp: it.campaignBudgetEgp });
         it.status = 'DONE'; it.result = { scaleCampaignName: r?.scaleCampaignName || null, adSetsCreated: r?.adSetsCreated ?? null, adsCreated: r?.adsCreated ?? null, decisionId: r?.decisionId ?? null };
       } catch (e) {
