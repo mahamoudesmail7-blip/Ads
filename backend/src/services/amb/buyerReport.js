@@ -94,6 +94,13 @@ async function compute(mode, today, progress) {
     note: mode === 'yesterday' ? 'كامبينات امبارح (اتعملت Scheduled وبدأت 12 ص). الأرقام دي لحد دلوقتي النهارده، وبتكبر على مدار اليوم.' : 'كل كامبين اتعمل من أول الشهر، وأرقامه من تاني يوم لإنشائه لحد دلوقتي. الكامبين اللي معندوش مزامنة لسه مش بيتحسب (مش بيتحسب صفر).' };
 }
 
+/** Pure: the report as ONE media buyer may see it — his own card only, his own totals, no team list. */
+export function scopeReport(r, memberId) {
+  if (!memberId || !r?.ready) return r;
+  const people = r.people.filter((p) => p.memberId === memberId); const mine = people.flatMap((p) => p.products.flatMap((x) => x.items));
+  return { ...r, scope: 'SELF', people, team: [], totals: personTotals(mine), meta: { ...r.meta, failed: [] } };
+}
+
 /** @param {{ mode?: 'yesterday'|'month', force?: boolean }} p — returns { ready:false, progress } while a big month is still being read (the page asks again in a few seconds). */
 export async function getBuyerReport({ mode = 'yesterday', force = false } = {}) {
   if (!['yesterday', 'month'].includes(mode)) { const e = new Error('نوع التقرير غير معروف.'); e.status = 400; throw e; }

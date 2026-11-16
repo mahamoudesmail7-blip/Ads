@@ -97,6 +97,21 @@ export function groupByPerson(campaigns, team, aliases = {}) {
 }
 
 // ───────────── data ─────────────
+// ───────────── who may see what ─────────────
+/** The viewer of the section: the OWNER account (same rule as «تاسكات اليوم») sees everyone; a media buyer (his login linked to his team card) sees only himself; anyone else: null (no access). */
+export async function resolveViewer(user) {
+  const C = await import('../dailyTasks/core.js'); if (C.seesAll(user)) return { all: true, memberId: null };
+  if (!user) return null;
+  const E = await import('../dailyTasks/engine.js'); const cfg = await E.getConfig(); const m = (cfg.team || []).find((x) => x.userId && x.userId === user.id && x.active !== false);
+  return m ? { all: false, memberId: m.id, name: m.name } : null;
+}
+/** Pure: the day view as ONE media buyer may see it — only his own card and campaigns, totals of his own work, no team list (nobody else's name), strip counts left for the own-counts call. */
+export function scopeActivity(data, memberId) {
+  if (!memberId) return data;
+  const people = data.people.filter((p) => p.memberId === memberId); const mine = people.flatMap((p) => p.campaigns);
+  return { ...data, scope: 'SELF', people, team: [], week: (data.week || []).map((w) => ({ date: w.date, selected: w.selected, today: w.today, campaigns: 0, approx: true })),
+    totals: { campaigns: mine.length, tests: mine.filter((c) => c.type === 'TEST').length, scales: mine.filter((c) => c.type === 'SCALE').length, people: people.filter((p) => !p.idle).length } };
+}
 export async function loadAliases() { try { const row = await prisma.settings.findUnique({ where: { id: ALIAS_ID } }); const v = JSON.parse(row?.data || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; } }
 /** The owner links a Facebook actor to a media buyer once (memberId null = remove the link). Stored in the settings table only. */
 export async function setAlias(actorId, memberId) {
@@ -160,11 +175,17 @@ function weekStrip(day, today, first, events, sys, accountNames, { exact = true 
 }
 
 /** The 7-day strip with EVERY day counted from Meta's history + the system records (one wider read, cached). The page asks for it after the cards are already on screen. */
-export async function getWeekStrip({ date = null } = {}) {
+export async function getWeekStrip({ date = null, memberId = null } = {}) {
   const today = todayISO(); let day = validDate(date) ? String(date) : today; if (day > today) day = today;
   const first = day < addDays(today, -6) ? day : addDays(today, -6);
   const accounts = (await listViewAccounts()).accounts; const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
   const [sys, meta] = await Promise.all([systemRecords(first, today), metaEvents(first, today, accounts)]);
+  if (memberId) { // a media buyer: the chips count ONLY his own campaigns
+    let team = []; try { const E = await import('../dailyTasks/engine.js'); team = ((await E.getConfig()).team || []).filter((m) => m.active !== false).map((m) => ({ id: m.id, name: m.name, userId: m.userId || null })); } catch { /* none */ }
+    const aliases = await loadAliases(); const n = Math.min(60, Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`)) / 86_400_000) + 1);
+    const week = range(first, n).map((d) => ({ date: d, campaigns: groupByPerson(mergeCampaigns(meta.events, sys, { day: d, accountNames }), team, aliases).find((p) => p.memberId === memberId)?.total || 0, selected: d === day, today: d === today, approx: false }));
+    return { date: day, week, ok: meta.ok, scope: 'SELF' };
+  }
   return { date: day, week: weekStrip(day, today, first, meta.events, sys, accountNames, { exact: true }), ok: meta.ok };
 }
 

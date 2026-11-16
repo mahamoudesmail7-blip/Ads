@@ -46,6 +46,12 @@ try {
   const perf = R.campaignPerf(byCamp, { id: 'c', at: '2026-11-10T10:00:00+02:00' }, '2026-11-12');
   ok('a campaign’s numbers start the day AFTER its creation day (the 500 / 9 of the creation day is never counted)', perf.orders === 3 && perf.spend === 160 && R.campaignPerf(byCamp, { id: 'c', at: '2026-11-12T10:00:00+02:00' }, '2026-11-12') === null);
 
+  const rp = (memberId, name, orders) => ({ memberId, name, products: [{ items: [{ perf: orders === null ? null : { orders, spend: orders * 100 }, type: 'TEST' }] }], idle: false });
+  const full = { ready: true, scope: 'ALL', team: [{ id: 'm1' }], meta: { ok: false, failed: ['Acct'] }, people: [rp('m1', 'Hady', 2), rp('m2', 'Ahmed', 5), rp(null, 'Stranger', 1)], totals: { orders: 8 } };
+  const sr = R.scopeReport(full, 'm1');
+  ok('a media buyer’s report has ONLY his own card and his own totals (2 orders / 200 spend) — no other names, no team list', sr.scope === 'SELF' && sr.people.length === 1 && sr.people[0].name === 'Hady' && sr.totals.orders === 2 && sr.totals.spend === 200 && sr.team.length === 0 && !JSON.stringify(sr).includes('Ahmed') && !JSON.stringify(sr).includes('Stranger'));
+  ok('the owner’s report is untouched; a report still being built (ready:false) passes through', R.scopeReport(full, null) === full && R.scopeReport({ ready: false }, 'm1').ready === false);
+
   console.log('\n2. yesterday: campaigns created yesterday → what they did today (mock Graph + isolated DB)');
   const ev = (id, name, actor, aid, when) => ({ event_type: 'create_campaign', translated_event_type: 'Campaign created', object_type: 'CAMPAIGN', object_id: id, object_name: name, actor_id: aid, actor_name: actor, event_time: when.toISOString() });
   world.activities.set(ACC, [

@@ -3,6 +3,9 @@
 //   node src/scripts/buyerActivityTest.js
 import './_testGuard.js';
 import http from 'node:http';
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import jwt from 'jsonwebtoken';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,6 +67,15 @@ try {
   const m = new Map([['c1', new Map([['2026-11-01', { spend: 100, orders: 2 }], ['2026-11-02', { spend: 300, orders: 3 }]])]]);
   ok('results: spend + Meta purchases + CPA over the days; no snapshot at all → null (never a fake zero)', JSON.stringify(B.sumResults(m, ['c1'], ['2026-11-01'])) === JSON.stringify({ spend: 100, orders: 2, cpa: 50 }) && B.sumResults(m, ['c1'], ['2026-11-09']) === null && B.sumResults(m, ['nope'], ['2026-11-01']) === null);
 
+  console.log('\n3b. who sees what');
+  const camp = (id, type, key) => ({ id, type, name: id, by: null, actor: null, results: null, _k: key });
+  const full = { date: '2026-11-16', scope: 'ALL', team: [{ id: 'm1', name: 'Hady' }, { id: 'm2', name: 'Ahmed' }], people: [{ key: 'm:m1', memberId: 'm1', name: 'Hady', campaigns: [camp('a', 'TEST'), camp('b', 'SCALE')], idle: false }, { key: 'm:m2', memberId: 'm2', name: 'Ahmed', campaigns: [camp('c', 'TEST')], idle: false }, { key: 'a:x', memberId: null, name: 'Stranger', campaigns: [camp('d', 'TEST')], idle: false }], totals: { campaigns: 4, tests: 3, scales: 1, people: 3 }, week: [{ date: '2026-11-16', selected: true, today: true, campaigns: 4, approx: false }, { date: '2026-11-15', selected: false, today: false, campaigns: 9, approx: false }] };
+  const self = B.scopeActivity(full, 'm1');
+  ok('a media buyer gets ONLY his own card and campaigns — nobody else’s name, work or the unlinked rows', self.scope === 'SELF' && self.people.length === 1 && self.people[0].name === 'Hady' && self.people[0].campaigns.length === 2 && !JSON.stringify(self).includes('Ahmed') && !JSON.stringify(self).includes('Stranger'));
+  ok('his totals are his own (2 campaigns: 1 test + 1 scale), no team list is sent, and the strip counts of others are not leaked (left for his own-counts call)', self.totals.campaigns === 2 && self.totals.tests === 1 && self.totals.scales === 1 && self.team.length === 0 && self.week.every((w) => w.campaigns === 0 && w.approx === true));
+  ok('the owner (no member) gets the full data untouched', B.scopeActivity(full, null) === full);
+  ok('a media buyer with no campaigns today gets an empty (idle) own view, not someone else’s', B.scopeActivity({ ...full, people: full.people.filter((p) => p.memberId !== 'm1') }, 'm1').people.length === 0);
+
   console.log('\n4. real rows + mock Graph (isolated DB)');
   const mkUser = async (tag) => { const u = await prisma.user.create({ data: { email: `${T}${tag}@example.invalid`, password_hash: 'x'.repeat(20), name: `Hady ${T}`, role: 'ADMIN', status: 'ACTIVE', permissions: '{}' } }); made.users.push(u.id); return u; };
   const hadyU = await mkUser('hady'); const prod = await prisma.product.create({ data: { product_name: 'Cup' } }); made.product = prod.id;
@@ -98,8 +110,42 @@ try {
   const calls = world.calls.length; ok('everything asked of Meta was a READ (GET) — nothing written', world.writes === 0 && calls > 0, `${world.writes} writes / ${calls} calls`);
   world.activities.clear(); const quiet = await B.getBuyerActivity({ date: today, force: true });
   ok('if Meta’s history has nothing, the system’s own record still shows the campaign (it is not lost)', quiet.people.flatMap((p) => p.campaigns).some((c) => c.id === `${T}sys1`));
+  // viewers: the owner account sees all; a media buyer (his login linked to his team card) sees himself; an unlinked login nothing
+  { const E = await imp('../services/dailyTasks/engine.js'); const cfg = await E.getConfig(); const hadyM = cfg.team.find((m) => m.name === 'Hady') || cfg.team[0]; const prevLink = hadyM.userId || null; const UID = 987654;
+    try {
+      await E.updateMember(hadyM.id, { userId: UID });
+      const owner = await B.resolveViewer({ id: 1, email: 'mahamoudesmail7@gmail.com', role: 'ADMIN', is_owner: true }); const buyer = await B.resolveViewer({ id: UID, email: 'buyer@example.invalid', role: 'EMPLOYEE' }); const stranger = await B.resolveViewer({ id: 123456789, email: 'x@example.invalid', role: 'ADMIN' }); const anon = await B.resolveViewer(null);
+      ok('viewers: the owner account → everyone; a linked media buyer → only his own team card; another ADMIN who is not the owner and not linked → no access; nobody → no access', owner.all === true && buyer.all === false && buyer.memberId === hadyM.id && stranger === null && anon === null, JSON.stringify([owner, buyer, stranger, anon]));
+      const wk = await B.getWeekStrip({ date: today, memberId: hadyM.id }); const all = await B.getWeekStrip({ date: today });
+      ok('the strip for a media buyer counts only HIS campaigns (≤ the full counts, flagged SELF)', wk.scope === 'SELF' && wk.week.length === all.week.length && wk.week.every((w, i) => w.campaigns <= all.week[i].campaigns && w.approx === false));
+    } finally { await E.updateMember(hadyM.id, { userId: prevLink }).catch(() => {}); }
+  }
   const fut = await B.getBuyerActivity({ date: addDays(today, 5), force: true }); ok('a future date is clamped to today; a bad date falls back to today', fut.date === today && (await B.getBuyerActivity({ date: 'nonsense', force: true })).date === today);
   const none = await B.getBuyerActivity({ date: '2020-01-01', force: true }); ok('a day with nothing: zero totals, everybody listed as idle, no error', none.totals.campaigns === 0 && none.people.every((p) => p.idle));
+  console.log('\n5. the real routes: who may ask, and what each one gets');
+  {
+    const E = await imp('../services/dailyTasks/engine.js'); const router = (await imp('../routes/buyerActivity.js')).default; const { errorHandler } = await imp('../middleware/errorHandler.js');
+    const app = express(); app.use(cookieParser()); app.use(express.json()); app.use('/api/ai-media-buyer/buyer-activity', router); app.use(errorHandler);
+    const srv = await new Promise((rs) => { const x = app.listen(0, '127.0.0.1', () => rs(x)); }); const base = `http://127.0.0.1:${srv.address().port}/api/ai-media-buyer/buyer-activity`;
+    const mkU = async (tag, role, email = null) => { const e = email || `${T}${tag}@example.invalid`; const ex = await prisma.user.findFirst({ where: { email: e } }); if (ex) return { u: ex, made: false }; const u = await prisma.user.create({ data: { email: e, password_hash: 'x'.repeat(20), name: `${T}${tag}`, role, status: 'ACTIVE', permissions: '{}' } }); return { u, made: true }; };
+    const cfg = await E.getConfig(); const hadyM = cfg.team.find((m) => m.name === 'Hady') || cfg.team[0]; const prevLink = hadyM.userId || null;
+    const bu = await mkU('buyer', 'EMPLOYEE'); const st = await mkU('stranger', 'ADMIN'); const ow = await mkU('owner', 'ADMIN', 'mahamoudesmail7@gmail.com');
+    const get = async (u, path = '/', method = 'GET', body) => { const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json', ...(u ? { cookie: `token=${jwt.sign({ id: u.id, role: u.role }, process.env.JWT_SECRET, { expiresIn: '10m' })}` } : {}) }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, json: await r.json().catch(() => null) }; };
+    try {
+      await E.updateMember(hadyM.id, { userId: bu.u.id });
+      ok('no login → 401', (await get(null)).status === 401);
+      const rS = await get(st.u); ok('an ADMIN who is not the owner and not linked to a media buyer → 403 «حسابك مش مربوط» (the section is the owner’s and the buyers’ own)', rS.status === 403 && rS.json?.error === 'NOT_LINKED');
+      const rB = await get(bu.u); ok('a media buyer asks for the day: he gets scope SELF, only his own card (his team member), no team list', rB.status === 200 && rB.json.scope === 'SELF' && rB.json.people.every((x) => x.memberId === hadyM.id) && rB.json.team.length === 0, JSON.stringify([rB.status, rB.json?.scope, rB.json?.people?.map((x) => x.name)]));
+      const rO = await get(ow.u); ok('the owner account gets EVERYTHING (all media buyers + the team list)', rO.status === 200 && rO.json.scope !== 'SELF' && rO.json.people.length >= rB.json.people.length && rO.json.team.length > 1);
+      const wB = await get(bu.u, '/week'); ok('the strip for the buyer counts only his work', wB.status === 200 && wB.json.scope === 'SELF');
+      const repB = await get(bu.u, '/report?mode=yesterday'); ok('his report is his own too (scope SELF, only his card)', repB.status === 200 && repB.json.scope === 'SELF' && repB.json.people.every((x) => x.memberId === hadyM.id));
+      const alB = await get(bu.u, '/aliases', 'PUT', { actorId: 'x', memberId: hadyM.id }); ok('a media buyer cannot link names (owner only)', alB.status === 403);
+      const alO = await get(ow.u, '/aliases', 'PUT', { actorId: 'x', memberId: 'no-such-member' }); ok('the owner can (a wrong member is a 400, not a 403)', alO.status === 400);
+    } finally {
+      await E.updateMember(hadyM.id, { userId: prevLink }).catch(() => {}); srv.close();
+      for (const x of [bu, st, ow]) if (x.made) await prisma.user.delete({ where: { id: x.u.id } }).catch(() => {});
+    }
+  }
 } finally {
   await prisma.metaPerformanceSnapshot.deleteMany({ where: { campaign_id: { startsWith: T } } }).catch(() => {});
   await prisma.ambSyncRun.deleteMany({ where: { id: { in: made.runs } } }).catch(() => {});

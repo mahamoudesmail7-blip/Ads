@@ -49,6 +49,7 @@ import adsIntelligenceRoutes from './routes/adsIntelligence.js';
 import metaRoutes from './routes/meta.js';
 import aiAssistantRoutes from './routes/aiAssistant.js';
 import aiMediaBuyerRoutes from './routes/aiMediaBuyer.js';
+import buyerActivityRoutes from './routes/buyerActivity.js';
 import operatorRoutes from './routes/operator.js';
 import operatorV2Routes from './routes/operatorV2.js';
 import scaleCenterRoutes from './routes/scaleCenter.js';
@@ -126,6 +127,7 @@ app.use('/api/customers', customersRoutes);
 app.use('/api/ai-intelligence', adsIntelligenceRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/ai-assistant', aiAssistantRoutes);
+app.use('/api/ai-media-buyer/buyer-activity', buyerActivityRoutes); // BEFORE the manager-only router: login required, the viewer (owner / media buyer) decides what is shown
 app.use('/api/ai-media-buyer', aiMediaBuyerRoutes); // AI Media Buyer — a new module INSIDE AI Intelligence (see routes/aiMediaBuyer.js)
 app.use('/api/operator-v2', operatorV2Routes); // 🧭 AI Operator V2 — read-only campaign center (server-side filters / pagination), saved views, selection snapshots, bulk review preview. Writes nothing to Meta.
 app.use('/api/operator', operatorRoutes); // 🤖 AI Operator — execution/automation layer INSIDE AI Media Buyer (SHADOW by default, see routes/operator.js)

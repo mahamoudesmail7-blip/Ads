@@ -57,11 +57,11 @@ function render(body, d) {
   const strip = stripHtml(d.week);
   const warn = d.meta?.reason ? `<div class="ba-warn">⚠️ ${E(d.meta.reason)} — بيظهر اللي اتعمل من السيستم بس.</div>` : (d.meta && !d.meta.ok ? `<div class="ba-warn">⚠️ مقدرتش أقرا «View history» لأكونت: ${E(d.meta.failed.join('، '))} — ممكن يكون فيه كامبينات ناقصة.</div>` : '');
   body.innerHTML = `<section class="ba">
-    <div class="ba-head"><div class="ba-title">🧑‍💼 اللي اتعمل ${d.isToday ? 'النهارده' : 'يوم'} <em>${E(long(d.date))}</em></div>
+    <div class="ba-head"><div class="ba-title">🧑‍💼 ${d.scope === 'SELF' ? 'شغلك' : 'اللي اتعمل'} ${d.isToday ? 'النهارده' : 'يوم'} <em>${E(long(d.date))}</em></div>
       <div class="ba-nav"><button type="button" class="ba-arrow" data-day="${shift(-1)}" aria-label="اليوم اللي قبله">›</button><button type="button" class="ba-arrow" data-day="${shift(1)}" aria-label="اليوم اللي بعده" ${d.isToday ? 'disabled' : ''}>‹</button></div></div>
     ${modeTabs()}
     <div class="ba-days">${strip}</div>
-    <div class="ba-sum"><span><b>${d.totals.campaigns}</b> كامبين</span><span><b>${d.totals.tests}</b> تيست</span><span><b>${d.totals.scales}</b> اسكيل</span><span><b>${d.totals.people}</b> ميديا باير اشتغل</span></div>
+    <div class="ba-sum"><span><b>${d.totals.campaigns}</b> كامبين</span><span><b>${d.totals.tests}</b> تيست</span><span><b>${d.totals.scales}</b> اسكيل</span>${d.scope === 'SELF' ? '' : `<span><b>${d.totals.people}</b> ميديا باير اشتغل</span>`}</div>
     ${warn}
     <div class="ba-slider"><button type="button" class="ba-sl" data-slide="next" aria-label="اللي بعده">‹</button>
       <div class="ba-track" tabindex="0">${d.people.map((p) => personCard(p, d.team)).join('') || '<div class="ba-none">مفيش ميديا بايرز متسجّلين لسه.</div>'}</div>
@@ -117,7 +117,7 @@ function reportCard(p, mode) {
     <div class="ba-list">${p.idle ? '<div class="ba-none">مفيش كامبين اتعمل باسمه.</div>' : p.products.map((r) => prodRow(r, mode)).join('')}</div></section>`;
 }
 function renderReport(body, r) {
-  const tm = r.totals; const title = r.mode === 'yesterday' ? `شغل امبارح <em>${E(long(r.from))}</em> — إيه اللي عمله النهارده` : `الشهر كله <em>${MONTHS[Number(r.today.slice(5, 7)) - 1]} ${r.today.slice(0, 4)}</em>`;
+  const tm = r.totals; const who = r.scope === 'SELF' ? 'شغلك' : 'شغل امبارح'; const title = r.mode === 'yesterday' ? `${who}${r.scope === 'SELF' ? ' امبارح' : ''} <em>${E(long(r.from))}</em> — إيه اللي عمله النهارده` : `الشهر كله <em>${MONTHS[Number(r.today.slice(5, 7)) - 1]} ${r.today.slice(0, 4)}</em>`;
   const warn = r.meta && !r.meta.ok ? `<div class="ba-warn">⚠️ مقدرتش أقرا «View history» لـ: ${E(r.meta.failed.join('، '))} — ممكن يكون فيه كامبينات ناقصة.</div>` : '';
   body.innerHTML = `<section class="ba"><div class="ba-head"><div class="ba-title">📊 ${title}</div></div>${modeTabs()}
     <div class="ba-sum"><span><b>${tm.campaigns}</b> كامبين</span><span><b>${tm.orders == null ? '—' : num(tm.orders)}</b> أوردر</span><span><b>${money(tm.spend)}</b> صرف</span><span>كوست <b>${tm.cpa != null ? money(tm.cpa) : '—'}</b></span></div>${warn}
