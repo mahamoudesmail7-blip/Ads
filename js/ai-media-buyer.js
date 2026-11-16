@@ -476,7 +476,7 @@ async function renderScaleWinners(cached) {
     _scaleData = data;
   }
   const cards = (data.cards || []).filter((c) => c.decisionStatus === 'PENDING' || c.decisionStatus === 'FAILED' || (scaleUi.get(c.sourceCampaignId)?.open));
-  if (!cards.length && !bulkRun) { el.innerHTML = ''; return; }
+  if (!cards.length && !curRun()) { el.innerHTML = ''; return; }
   for (const id of [...bulkSel]) if (!cards.some((c) => c.sourceCampaignId === id)) bulkSel.delete(id);
   if (!bulkSel.size) bulkUi.open = false;
   el.innerHTML = `
@@ -754,8 +754,10 @@ function wireScaleCards(root, data) {
 // ---------------------------------------------------------------------------
 const bulkSel = new Set(); // sourceCampaignIds ticked for the bulk scale
 const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 2, busy: false };
-let bulkRun = null;   // last /scale/bulk batch payload (while running or just finished)
-let bulkPoll = null;
+// Bulk scale runs PER AD ACCOUNT: Ahmed Samy's keeps running (and keeps being polled) while you look at Hady or start a bulk scale there. `bulkRuns` = account → its last batch payload.
+const bulkRuns = new Map(); const bulkPolls = new Map(); // batchId -> interval
+const acctKey = () => state.account || 'PRIMARY';
+const curRun = () => bulkRuns.get(acctKey()) || null;
 
 function bulkRow(card) {
   let r = bulkUi.rows.get(card.sourceCampaignId);
@@ -883,7 +885,7 @@ function bulkRowHtml(card) {
 
 const BULK_ST = { QUEUED: ['في الانتظار', ''], RUNNING: ['جاري الإنشاء…', 'run'], DONE: ['تم ✓', 'ok'], FAILED: ['فشل', 'bad'], CANCELED: ['اتلغى', 'dim'] };
 function bulkProgressHtml() {
-  const b = bulkRun; if (!b) return '';
+  const b = curRun(); if (!b) return '';
   const running = b.status === 'RUNNING';
   const nextIn = running && b.nextAt ? Math.max(0, Math.round((b.nextAt - Date.now()) / 1000)) : null;
   const head = running ? `⏳ اسكيل مجمّع شغال — ${b.counts.done + b.counts.failed}/${b.counts.total}${nextIn != null ? ` · اللي بعده بعد ${nextIn} ثانية` : ''}`
@@ -899,27 +901,29 @@ function bulkProgressHtml() {
   </div>`;
 }
 
-function stopBulkPolling() { if (bulkPoll) { clearInterval(bulkPoll); bulkPoll = null; } }
-function startBulkPolling(id) {
-  stopBulkPolling();
-  bulkPoll = setInterval(async () => {
+function stopBulkPolling(id) { const t = bulkPolls.get(id); if (t) { clearInterval(t); bulkPolls.delete(id); } }
+function startBulkPolling(id, key = acctKey()) {
+  stopBulkPolling(id);
+  const name = key === 'PRIMARY' ? (state.viewAccounts?.accounts.find((x) => x.id === state.viewAccounts?.primaryId)?.name || 'الحساب الأساسي') : (state.viewAccounts?.accounts.find((x) => x.id === key)?.name || key);
+  bulkPolls.set(id, setInterval(async () => {
     try {
       const b = await api.get(`/api/ai-media-buyer/scale/bulk/${id}`);
-      const wasRunning = bulkRun?.status === 'RUNNING';
-      bulkRun = b; rerenderScale();
+      const wasRunning = bulkRuns.get(key)?.status === 'RUNNING';
+      bulkRuns.set(key, b); if (acctKey() === key) rerenderScale(); // only repaint when that account is the one on screen
       if (b.status !== 'RUNNING') {
-        stopBulkPolling();
-        if (wasRunning) { UI.toast(`خلص الاسكيل المجمّع — تم ${b.counts.done}${b.counts.failed ? ` · فشل ${b.counts.failed}` : ''}`, b.counts.failed ? 'error' : 'success'); bulkSel.clear(); route(); }
+        stopBulkPolling(id);
+        if (wasRunning) { UI.toast(`خلص الاسكيل المجمّع على ${name} — تم ${b.counts.done}${b.counts.failed ? ` · فشل ${b.counts.failed}` : ''}`, b.counts.failed ? 'error' : 'success'); if (acctKey() === key) { bulkSel.clear(); route(); } }
       }
-    } catch { stopBulkPolling(); }
-  }, 4000);
+    } catch { stopBulkPolling(id); }
+  }, 4000));
 }
-/** Page (re)load: if a bulk scale is still running on the server, show it again. */
+/** Page (re)load / account switch: if a bulk scale of THIS account is still running on the server, show it again (the other accounts' keep being polled on their own). */
 async function resumeBulk() {
-  if (bulkPoll || !state.isAdmin) return;
+  if (!state.isAdmin) return;
   try {
-    const { batch } = await api.get('/api/ai-media-buyer/scale/bulk/latest');
-    if (batch && batch.status === 'RUNNING') { bulkRun = batch; rerenderScale(); startBulkPolling(batch.id); }
+    const { batch } = await api.get('/api/ai-media-buyer/scale/bulk/latest'); // scoped to the account on screen by the X-Amb-Account header
+    if (batch && batch.status === 'RUNNING' && !bulkPolls.has(batch.id)) { bulkRuns.set(acctKey(), batch); rerenderScale(); startBulkPolling(batch.id, acctKey()); }
+    else if (batch && batch.status === 'RUNNING') { bulkRuns.set(acctKey(), batch); rerenderScale(); }
   } catch { /* the bulk feature is optional on the page */ }
 }
 
@@ -940,11 +944,11 @@ function wireBulk(root) {
       const act = btn.dataset.bulkAct;
       if (act === 'open') { if (!bulkUi.date) bulkUi.date = cairoDateStr(1); bulkUi.open = true; rerenderScale(); return; }
       if (act === 'close') { bulkUi.open = false; rerenderScale(); return; }
-      if (act === 'dismiss') { bulkRun = null; rerenderScale(); return; }
+      if (act === 'dismiss') { bulkRuns.delete(acctKey()); rerenderScale(); return; }
       if (act === 'apply-common') { const v = bulkUi.common; if (!(Number(v) > 0)) { UI.toast('اكتب الميزانية الأول.', 'error'); return; } bulkCards().forEach((c) => { bulkRow(c).budget = String(v); }); rerenderScale(); return; }
       if (act === 'cancel-run') {
-        if (!bulkRun) return;
-        try { bulkRun = await api.post(`/api/ai-media-buyer/scale/bulk/${bulkRun.id}/cancel`, {}); rerenderScale(); UI.toast('اتبعت طلب الإيقاف — اللي اتعمل قبل كده فضل زي ما هو.'); } catch (e) { UI.toast(e.message, 'error'); }
+        const cur = curRun(); if (!cur) return;
+        try { bulkRuns.set(acctKey(), await api.post(`/api/ai-media-buyer/scale/bulk/${cur.id}/cancel`, {})); rerenderScale(); UI.toast('اتبعت طلب الإيقاف — اللي اتعمل قبل كده فضل زي ما هو.'); } catch (e) { UI.toast(e.message, 'error'); }
         return;
       }
       if (act === 'approve') {
@@ -967,8 +971,8 @@ function wireBulk(root) {
         u.busy = true; syncBulkApprove();
         try {
           const b = await api.post('/api/ai-media-buyer/scale/bulk', { items, startMode: u.startMode, startAt: sched ? `${u.date}T${u.time}` : null, gapSeconds: Math.round(u.gapMin * 60), window: state.window, ...acctBody() });
-          bulkRun = b; u.open = false; u.busy = false; bulkSel.clear(); sel.forEach((c) => { scaleUi.delete(c.sourceCampaignId); bulkUi.rows.delete(c.sourceCampaignId); });
-          UI.toast(`بدأ الاسكيل المجمّع — ${b.counts.total} كامبين`); rerenderScale(); startBulkPolling(b.id);
+          bulkRuns.set(acctKey(), b); u.open = false; u.busy = false; bulkSel.clear(); sel.forEach((c) => { scaleUi.delete(c.sourceCampaignId); bulkUi.rows.delete(c.sourceCampaignId); });
+          UI.toast(`بدأ الاسكيل المجمّع — ${b.counts.total} كامبين`); rerenderScale(); startBulkPolling(b.id, acctKey());
         } catch (e) { u.busy = false; UI.toast(`تعذّر بدء الاسكيل المجمّع: ${e.message}`, 'error'); syncBulkApprove(); }
       }
     };

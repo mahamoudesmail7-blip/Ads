@@ -16,7 +16,9 @@ export const MAX_GAP_S = 900;
 export const WAIT_PER_CAMPAIGN_MS = 5 * 60_000;
 
 const batches = new Map(); // id -> batch
-let activeId = null;
+/** The key of the ad account a bulk scale builds inside (null = the connected account). Every account runs its OWN batch: Ahmed Samy's keeps going while Hady's starts. */
+export const accountKeyOf = (adAccountId) => (adAccountId ? String(adAccountId) : 'PRIMARY');
+const runningOf = (key) => [...batches.values()].find((x) => x.status === 'RUNNING' && x.accountKey === key) || null;
 
 /** Meta's temporary per-ad-account throttle (#4 / #17 / #32 / #613 / #80004 …). Once it is hit, every next campaign would hit it too — the bulk stops instead of hammering. */
 export const META_THROTTLE_RE = /request limit reached|rate limit|too many (api )?calls|\(#(?:4|17|32|613|80000|80003|80004)\)/i;
@@ -74,7 +76,7 @@ export function validatePlan({ items, startMode, startAt, gapSeconds }, { now = 
 
 export function publicBatch(b) {
   return {
-    id: b.id, status: b.status, stopReason: b.stopReason || null, startedAt: b.startedAt, finishedAt: b.finishedAt, gapSeconds: b.gapSeconds, startMode: b.startMode, startAt: b.startAt,
+    id: b.id, accountKey: b.accountKey || 'PRIMARY', status: b.status, stopReason: b.stopReason || null, startedAt: b.startedAt, finishedAt: b.finishedAt, gapSeconds: b.gapSeconds, startMode: b.startMode, startAt: b.startAt,
     nextAt: b.nextAt || null,
     items: b.items.map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, budgetMode: it.budgetMode, status: it.status, startedAt: it.startedAt || null, finishedAt: it.finishedAt || null, error: it.error || null, hint: it.status === 'FAILED' ? classifyScaleError(it.error) : null, result: it.result || null })),
     counts: {
@@ -87,8 +89,10 @@ export function publicBatch(b) {
 }
 
 export function getBatch(id) { const b = batches.get(String(id)); return b ? publicBatch(b) : null; }
-export function currentBatch() { return activeId ? getBatch(activeId) : null; }
-export function latestBatch() { let last = null; for (const b of batches.values()) if (!last || b.startedAt > last.startedAt) last = b; return last ? publicBatch(last) : null; }
+/** The batch running on this account right now (null = none). */
+export function currentBatch(accountKey = 'PRIMARY') { const r = runningOf(accountKey); return r ? publicBatch(r) : null; }
+/** The latest batch of this account — the running one first (null accountKey = latest of any account). */
+export function latestBatch(accountKey = null) { let last = null; for (const b of batches.values()) { if (accountKey && (b.accountKey || 'PRIMARY') !== accountKey) continue; if (!last || (b.status === 'RUNNING') > (last.status === 'RUNNING') || (((b.status === 'RUNNING') === (last.status === 'RUNNING')) && b.startedAt > last.startedAt)) last = b; } return last ? publicBatch(last) : null; }
 
 export function cancelBatch(id) {
   const b = batches.get(String(id)); if (!b) throw bad('الطلب مش موجود.', 404);
@@ -104,16 +108,17 @@ export function cancelBatch(id) {
  */
 export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 'today', userId, adAccountId = null }, { exec, sleep = null, now = () => Date.now(), toUtc = null } = {}) {
   if (typeof exec !== 'function') throw new Error('exec required');
-  if (activeId && batches.get(activeId)?.status === 'RUNNING') throw bad('في اسكيل مجمّع شغال دلوقتي — استنى لحد ما يخلص أو وقّفه.', 409);
+  const accountKey = accountKeyOf(adAccountId);
+  if (runningOf(accountKey)) throw bad('في اسكيل مجمّع شغال على الحساب ده دلوقتي — استنى لحد ما يخلص أو وقّفه (الحسابات التانية تقدر تسكيل في نفس الوقت).', 409);
   const plan = validatePlan({ items, startMode, startAt, gapSeconds }, { now: now(), toUtc });
   const id = crypto.randomBytes(6).toString('hex');
   const b = {
-    id, status: 'RUNNING', startedAt: now(), finishedAt: null, gapSeconds: plan.gapSeconds, startMode: plan.startMode, startAt: plan.startAt, nextAt: null, cancel: false, wake: null,
+    id, accountKey, status: 'RUNNING', startedAt: now(), finishedAt: null, gapSeconds: plan.gapSeconds, startMode: plan.startMode, startAt: plan.startAt, nextAt: null, cancel: false, wake: null,
     items: plan.items.map((x) => ({ ...x, status: 'QUEUED' })),
   };
-  batches.set(id, b); activeId = id;
-  // keep memory small: only the last 10 batches
-  if (batches.size > 10) { const old = [...batches.keys()][0]; if (old !== id) batches.delete(old); }
+  batches.set(id, b);
+  // keep memory small: only the last 30 batches (a running one is never dropped)
+  if (batches.size > 30) { const old = [...batches.entries()].find(([k, v]) => k !== id && v.status !== 'RUNNING'); if (old) batches.delete(old[0]); }
 
   const doSleep = sleep || ((ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); b.wake = () => { clearTimeout(t); resolve(); }; }));
   (async () => {
@@ -140,10 +145,9 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
     }
     if (b.stopReason) for (const it of b.items) if (it.status === 'CANCELED') it.error = b.stopReason === 'WAIT_TIMEOUT' ? WAIT_STOP_MSG : b.stopReason === 'WRITE_BLOCKED' ? WRITE_BLOCKED_STOP_MSG : RATE_LIMIT_STOP_MSG;
     b.status = b.cancel ? 'CANCELED' : 'DONE'; b.finishedAt = now(); b.wake = null;
-    if (activeId === id) activeId = null;
-  })().catch((e) => { b.status = 'FAILED'; b.error = String(e?.message || e); b.finishedAt = now(); if (activeId === id) activeId = null; });
+  })().catch((e) => { b.status = 'FAILED'; b.error = String(e?.message || e); b.finishedAt = now(); });
   return publicBatch(b);
 }
 
 /** test helper */
-export function _resetForTests() { batches.clear(); activeId = null; }
+export function _resetForTests() { batches.clear(); }

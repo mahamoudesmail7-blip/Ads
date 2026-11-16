@@ -87,6 +87,21 @@ ok('first done, the others canceled and never executed', done7.join() === '1' &&
 ok('unknown batch → 404', throws(() => SB.cancelBatch('nope'))?.status === 404);
 ok('latestBatch returns the most recent', SB.latestBatch()?.id === b7.id);
 
+console.log('\n7z. every ad account runs its OWN bulk scale at the same time');
+SB._resetForTests();
+let releaseA; const gateA = new Promise((r) => { releaseA = r; }); const rawA = [], rawB = [];
+const bA = SB.startBulk({ items: [cbo('a1'), cbo('a2')], adAccountId: 'act_AHMED' }, { exec: async (x) => { rawA.push(x.sourceCampaignId); await gateA; return {}; }, sleep: async () => {} });
+ok('account A (Ahmed Samy) is running its batch, tagged with its account', bA.status === 'RUNNING' && bA.accountKey === 'act_AHMED' && SB.currentBatch('act_AHMED')?.id === bA.id);
+const bB = SB.startBulk({ items: [cbo('b1')], adAccountId: 'act_HADY' }, { exec: async (x) => { rawB.push(x.sourceCampaignId); return {}; }, sleep: async () => {} });
+const dB = await waitDone(bB.id);
+ok('…and account B (Hady) starts and FINISHES its own while A is still running (no «wait for the other account»)', dB.status === 'DONE' && rawB.join() === 'b1' && SB.getBatch(bA.id).status === 'RUNNING');
+ok('a second bulk on the SAME account is still refused (409) — one at a time per account', throws(() => SB.startBulk({ items: [cbo('a3')], adAccountId: 'act_AHMED' }, { exec: async () => ({}) }))?.status === 409);
+ok('the connected (primary) account is its own account too', (() => { const p = SB.startBulk({ items: [cbo('p1')] }, { exec: async () => new Promise(() => {}), sleep: async () => {} }); return p.accountKey === 'PRIMARY' && SB.currentBatch('PRIMARY')?.id === p.id && SB.currentBatch('act_HADY') === null; })());
+ok('latestBatch(account) returns that account’s batch (the running one first), not another account’s', SB.latestBatch('act_AHMED')?.id === bA.id && SB.latestBatch('act_HADY')?.id === bB.id && SB.latestBatch('act_NOPE') === null);
+releaseA(); const dA = await waitDone(bA.id);
+ok('A finishes normally after B (both accounts completed independently)', dA.status === 'DONE' && dA.counts.done === 2);
+SB._resetForTests();
+
 console.log('\n7a. the Emergency Stop refuses every write → the bulk stops at the first one, with a clear reason (not «فشل غير متوقع»)');
 SB._resetForTests();
 const ran7a = [];

@@ -502,9 +502,9 @@ router.post('/scale/bulk', requireRole('ADMIN'), asyncRoute(async (req, res) => 
     { exec: executeScale, toUtc: cairoLocalToUtc },
   ));
 }));
-router.get('/scale/bulk/latest', asyncRoute(async (_req, res) => {
-  const { latestBatch } = await import('../services/amb/scaleBulk.js');
-  res.json({ batch: latestBatch() });
+router.get('/scale/bulk/latest', asyncRoute(async (req, res) => {
+  const { latestBatch, accountKeyOf } = await import('../services/amb/scaleBulk.js');
+  res.json({ batch: latestBatch(accountKeyOf(await viewAccountFrom(req))) }); // the batch of THE ACCOUNT the page is on (each account runs its own)
 }));
 router.get('/scale/bulk/:id', asyncRoute(async (req, res) => {
   const { getBatch } = await import('../services/amb/scaleBulk.js');
