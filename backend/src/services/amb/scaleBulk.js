@@ -21,6 +21,9 @@ let activeId = null;
 /** Meta's temporary per-ad-account throttle (#4 / #17 / #32 / #613 / #80004 …). Once it is hit, every next campaign would hit it too — the bulk stops instead of hammering. */
 export const META_THROTTLE_RE = /request limit reached|rate limit|too many (api )?calls|\(#(?:4|17|32|613|80000|80003|80004)\)/i;
 export const WAIT_STOP_MSG = 'اتوقف الاسكيل المجمّع تلقائيًا: كلون الكامبين اللي قبله لسه شغال على ميتا (غالبًا حد طلبات). ماابتدأش اللي بعده عشان ما يتراكمش. الكلون بيكمل لوحده — راجع «استنساخ وجدولة» وأعد اللي ماتعملش بعد ما يخلص.';
+/** The Emergency Stop / the deployment write lock refuse EVERY write: the rest of the batch would fail the same way, so the bulk stops at the first one. */
+export const WRITE_BLOCKED_RE = /إيقاف الطوارئ مفعّل|كتابة Meta مقفولة|META_WRITE_BLOCKED/i;
+export const WRITE_BLOCKED_STOP_MSG = 'اتوقف الاسكيل المجمّع: إيقاف الطوارئ (أو قفل كتابة Meta) شغّال، فمفيش أي كتابة على ميتا. ماابتدأش اللي بعده. ألغي الإيقاف من AI Operator وأعد الاسكيل.';
 export const WAIT_TIMEOUT_RE = /انتهت مهلة الانتظار|المهلة والـ job لسه/;
 export const RATE_LIMIT_STOP_MSG = 'اتوقف الاسكيل المجمّع تلقائيًا: ميتا حاطّة حد مؤقت على الحساب الإعلاني (طلبات كتير). استنى حوالي ساعة من غير كلونات وأعد اللي ماتعملش.';
 function bad(msg, status = 400) { const e = new Error(msg); e.status = status; return e; }
@@ -124,7 +127,8 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
         it.status = 'DONE'; it.result = { scaleCampaignName: r?.scaleCampaignName || null, adSetsCreated: r?.adSetsCreated ?? null, adsCreated: r?.adsCreated ?? null, decisionId: r?.decisionId ?? null };
       } catch (e) {
         it.status = 'FAILED'; it.error = String(e?.message || e).slice(0, 400);
-        if (META_THROTTLE_RE.test(it.error)) { b.stopReason = 'RATE_LIMIT'; b.cancel = true; } // the rest are not even started
+        if (WRITE_BLOCKED_RE.test(it.error)) { b.stopReason = 'WRITE_BLOCKED'; b.cancel = true; } // the safety switch is ON: nothing can be written, the rest are not even started
+        else if (META_THROTTLE_RE.test(it.error)) { b.stopReason = 'RATE_LIMIT'; b.cancel = true; } // the rest are not even started
         else if (WAIT_TIMEOUT_RE.test(it.error)) { b.stopReason = 'WAIT_TIMEOUT'; b.cancel = true; } // a clone still running after 5 min = Meta is slow/throttling: starting the next one would only pile up behind it
       }
       it.finishedAt = now();
@@ -134,7 +138,7 @@ export function startBulk({ items, startMode, startAt, gapSeconds, windowName = 
         b.nextAt = null;
       }
     }
-    if (b.stopReason) for (const it of b.items) if (it.status === 'CANCELED') it.error = b.stopReason === 'WAIT_TIMEOUT' ? WAIT_STOP_MSG : RATE_LIMIT_STOP_MSG;
+    if (b.stopReason) for (const it of b.items) if (it.status === 'CANCELED') it.error = b.stopReason === 'WAIT_TIMEOUT' ? WAIT_STOP_MSG : b.stopReason === 'WRITE_BLOCKED' ? WRITE_BLOCKED_STOP_MSG : RATE_LIMIT_STOP_MSG;
     b.status = b.cancel ? 'CANCELED' : 'DONE'; b.finishedAt = now(); b.wake = null;
     if (activeId === id) activeId = null;
   })().catch((e) => { b.status = 'FAILED'; b.error = String(e?.message || e); b.finishedAt = now(); if (activeId === id) activeId = null; });

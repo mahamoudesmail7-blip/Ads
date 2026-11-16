@@ -482,6 +482,7 @@ async function renderScaleWinners(cached) {
   el.innerHTML = `
     <div class="amb-scale-wrap">
       <div class="amb-scale-h">🚀 جاهزة للاسكيل <span class="faint">— طلب ≥ 1 و CPA ≤ ${data.winnerCpaEgp} ج.م</span></div>
+      ${data.writeGate && data.writeGate.ok === false ? `<div class="amb-bulk-progress" style="border-color:#ef4444;background:rgba(239,68,68,.08)"><b>🛑 ${E(data.writeGate.message || 'الكتابة على Meta مقفولة')}</b><div class="faint" style="margin-top:4px">الاسكيل مش هيتنفّذ لحد ما تلغي الإيقاف من <b>AI Operator</b> (زر «إلغاء الإيقاف» للمسؤول). مفيش حاجة هتتعمل على ميتا في الأثناء.</div></div>` : ''}
       ${bulkProgressHtml()}
       ${cards.length ? bulkBarHtml(cards) : ''}
       ${bulkUi.open && bulkSel.size ? bulkPanelHtml() : ''}
@@ -887,12 +888,13 @@ function bulkProgressHtml() {
   const nextIn = running && b.nextAt ? Math.max(0, Math.round((b.nextAt - Date.now()) / 1000)) : null;
   const head = running ? `⏳ اسكيل مجمّع شغال — ${b.counts.done + b.counts.failed}/${b.counts.total}${nextIn != null ? ` · اللي بعده بعد ${nextIn} ثانية` : ''}`
     : b.stopReason === 'RATE_LIMIT' ? '⏹ اتوقف تلقائيًا — ميتا حاطّة حد مؤقت على الحساب'
+    : b.stopReason === 'WRITE_BLOCKED' ? '⏹ اتوقف — إيقاف الطوارئ / قفل الكتابة شغّال (ماحصلش أي حاجة على ميتا)'
     : b.stopReason === 'WAIT_TIMEOUT' ? '⏹ اتوقف تلقائيًا — كلون لسه شغال على ميتا (أكتر من 5 دقايق)'
     : b.status === 'CANCELED' ? '⏹ اتوقف الاسكيل المجمّع' : `✅ خلص الاسكيل المجمّع — تم ${b.counts.done} · فشل ${b.counts.failed}`;
   return `<div class="amb-bulk-progress ${running ? 'running' : ''}">
     <div class="amb-bulk-ph"><b>${head}</b>
       <span>${running ? '<button class="amb-btn ghost sm" data-bulk-act="cancel-run">إيقاف اللي لسه مابدأش</button>' : '<button class="amb-btn ghost sm" data-bulk-act="dismiss">إخفاء</button>'}</span></div>
-    ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.status === 'FAILED' && it.hint ? `<div class="e"><b>${E(it.hint.title)}</b> — ${E(it.hint.action)}</div>` : it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
+    ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.status === 'FAILED' && it.hint ? `<div class="e"><b>${E(it.hint.title)}</b> — ${E(it.hint.action)}${it.error ? `<div class="faint" style="font-size:11px;margin-top:4px;direction:auto;word-break:break-word">الرسالة الأصلية: ${E(it.error)}</div>` : ''}</div>` : it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
     ${running ? '<div class="faint" style="font-size:11.5px; margin-top:6px;">تقدر تقفل الصفحة — الاسكيل بيكمل على السيرفر. (لو السيرفر اتعمله restart بيتوقف اللي لسه مابدأش.)</div>' : ''}
   </div>`;
 }

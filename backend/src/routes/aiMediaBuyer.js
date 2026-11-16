@@ -468,7 +468,9 @@ router.get('/winners', asyncRoute(async (req, res) => {
 // ---------------------------------------------------------------------------
 router.get('/scale/winners', asyncRoute(async (req, res) => {
   const { listScaleWinners } = await import('../services/amb/scaleWinners.js');
-  res.json(await listScaleWinners({ windowName: String(req.query.window || 'today'), includeResolved: req.query.includeResolved === '1', adAccountId: await viewAccountFrom(req) }));
+  const out = await listScaleWinners({ windowName: String(req.query.window || 'today'), includeResolved: req.query.includeResolved === '1', adAccountId: await viewAccountFrom(req) });
+  const { checkGlobalMetaWrite } = await import('../services/amb/writeGate.js'); const gate = await checkGlobalMetaWrite({ source: 'scale:status', deps: { audit: false } }).catch(() => null);
+  res.json({ ...out, writeGate: gate ? { ok: !!gate.ok, code: gate.code || null, message: gate.message || null } : null }); // the page warns UP FRONT when the Emergency Stop / write lock would refuse the scale
 }));
 
 router.post('/scale/reject', asyncRoute(async (req, res) => {

@@ -87,6 +87,17 @@ ok('first done, the others canceled and never executed', done7.join() === '1' &&
 ok('unknown batch → 404', throws(() => SB.cancelBatch('nope'))?.status === 404);
 ok('latestBatch returns the most recent', SB.latestBatch()?.id === b7.id);
 
+console.log('\n7a. the Emergency Stop refuses every write → the bulk stops at the first one, with a clear reason (not «فشل غير متوقع»)');
+SB._resetForTests();
+const ran7a = [];
+const b7a = SB.startBulk({ items: [cbo('1'), cbo('2'), cbo('3')] }, { exec: async (a) => { ran7a.push(a.sourceCampaignId); throw new Error('إيقاف الطوارئ مفعّل — مفيش أي كتابة على Meta. [scale:execute]'); }, sleep: async () => {} });
+const d7a = await waitDone(b7a.id);
+ok('the first campaign fails, the others are never started', ran7a.join() === '1' && d7a.items[0].status === 'FAILED' && d7a.items[1].status === 'CANCELED' && d7a.items[2].status === 'CANCELED');
+ok('the batch says WHY (write blocked) and the skipped ones carry the instruction', d7a.stopReason === 'WRITE_BLOCKED' && d7a.status === 'CANCELED' && d7a.items[1].error === SB.WRITE_BLOCKED_STOP_MSG);
+ok('the failed card is explained as a SAFETY LOCK with the way out — never «فشل غير متوقع» — and the raw text is kept', d7a.items[0].hint.kind === 'WRITE_BLOCKED' && !/غير متوقع/.test(d7a.items[0].hint.title) && /AI Operator/.test(d7a.items[0].hint.action) && /إيقاف الطوارئ/.test(d7a.items[0].error));
+ok('the write-lock wording is recognised too, ordinary errors are not', SB.WRITE_BLOCKED_RE.test('كتابة Meta مقفولة على مستوى النشر (OPERATOR_ALLOW_META_WRITES).') && !SB.WRITE_BLOCKED_RE.test('User request limit reached'));
+SB._resetForTests();
+
 console.log('\n7b. a Meta rate limit stops the whole bulk (nothing else is started)');
 SB._resetForTests();
 const ran7b = [];
@@ -202,6 +213,7 @@ console.log('\n12. every failure says what it means and what to do (no raw Meta 
 {
   const SE = await import(pathToFileURL(join(__dirname, '../services/amb/scaleErrors.js')).href);
   const k = (m) => SE.classifyScaleError(m);
+  ok('Emergency Stop / write lock → its own explanation (a safety switch, nothing was written, safe to scale again once it is off)', k('إيقاف الطوارئ مفعّل — مفيش أي كتابة على Meta. [clone:approveBatch]').kind === 'WRITE_BLOCKED' && k('كتابة Meta مقفولة على مستوى النشر').retry === 'RESCALE' && k('something odd').kind === 'UNKNOWN');
   ok('Meta throttle → wait', k('فشل إنشاء حملة الاسكيل: User request limit reached — Ad Account Has Too Many API Calls').kind === 'THROTTLE' && k('(#17) x').retry === 'WAIT' && k(SB.RATE_LIMIT_STOP_MSG).kind === 'THROTTLE');
   ok('wait timeout → resume, never re-scale', k('انتهت مهلة الانتظار والنسخ لسه شغال على ميتا (CLONING)').kind === 'WAIT_TIMEOUT' && k('انتهت المهلة والـ job لسه في حالة CLONING.').retry === 'RESUME');
   ok('missing link → resume', k('Invalid parameter — Required Field Is Missing: The link field is required').kind === 'MISSING_LINK' && k('هذا الإعلان يحتاج رابط وجهة').retry === 'RESUME');

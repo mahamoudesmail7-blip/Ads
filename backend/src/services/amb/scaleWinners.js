@@ -21,6 +21,7 @@ import { getDecryptedToken } from '../metaAuth.js';
 import { getAdSetNodes } from '../metaGraphClient.js';
 import { hydrateCampaigns } from './liveCampaignTree.js';
 import { classifyScaleError } from './scaleErrors.js';
+import { assertMetaWritesAllowed } from './writeGate.js';
 
 // Bid strategies that REQUIRE a bid_amount / cost cap / ROAS target.
 const CAP_BID_STRATEGIES = new Set(['LOWEST_COST_WITH_BID_CAP', 'COST_CAP', 'LOWEST_COST_WITH_MIN_ROAS', 'TARGET_COST']);
@@ -210,6 +211,13 @@ export async function reconcileScaleDecisions(adAccountId) {
   });
   let changed = 0;
   for (const d of rows) {
+    // a batch that was NEVER approved (the approval was refused — Emergency Stop / write lock — or the server died before it) is not «in progress»: nothing is running, so the decision is FAILED and the card comes back
+    // (before this, its still-PENDING jobs flipped the decision to APPROVED and hid the campaign from the scale list for good)
+    const batch = await prisma.ambCloneBatch.findUnique({ where: { batch_id: d.clone_batch_id }, select: { status: true } });
+    if (batch && ['PENDING_APPROVAL', 'DRAFT'].includes(batch.status)) {
+      if (d.status !== 'FAILED') { await prisma.ambScaleDecision.update({ where: { id: d.id }, data: { status: 'FAILED', error: d.error || 'اتلغى قبل ما يبدأ — النسخ ماتعتمدش على ميتا.' } }); changed++; }
+      continue;
+    }
     const jobs = await prisma.ambCloneJob.findMany({ where: { batch_id: d.clone_batch_id } });
     const objs = jobs.length ? await prisma.ambCloneObjectMap.findMany({ where: { job_id: { in: jobs.map((j) => j.id) } } }) : [];
     const out = classifyScaleOutcome(jobs, objs);
@@ -327,6 +335,7 @@ export async function executeScale({
   const conn = await getConnection();
   if (!conn || conn.status !== 'CONNECTED' || !conn.selected_ad_account_id) throw bad('اربط حساب Meta Ads الأول.');
   const adAccountId = viewAccountId || conn.selected_ad_account_id;
+  await assertMetaWritesAllowed({ source: 'scale:execute', userId }); // Emergency Stop / write lock: refused HERE, before any decision row or clone batch is created (a clean refusal, nothing half-made)
   const settings = await getAmbSettings();
 
   if (!sourceCampaignId) throw bad('sourceCampaignId مطلوب.');

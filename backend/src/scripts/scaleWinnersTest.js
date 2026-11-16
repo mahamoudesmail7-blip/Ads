@@ -5,7 +5,7 @@
 import './_testGuard.js'; // refuses to run unless DATABASE_URL is the isolated TEST database
 import 'dotenv/config';
 import { prisma } from '../prisma.js';
-import { waitAndVerifyScale } from '../services/amb/scaleWinners.js';
+import { waitAndVerifyScale, reconcileScaleDecisions } from '../services/amb/scaleWinners.js';
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => { if (cond) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra); } };
@@ -267,6 +267,19 @@ console.log('\nexecuteScale rejects (no Meta writes):');
   }
   const rows1 = await prisma.ambScaleDecision.count();
   ok('no AmbScaleDecision rows leaked by rejected inputs', rows1 === rows0, `${rows0} -> ${rows1}`);
+}
+
+// ---- a scale whose clone batch was NEVER approved (Emergency Stop refused the approval) must come back as FAILED — not stay «APPROVED» and hide the campaign for good
+{
+  const ACC = 'act_recon_test'; const TAG = 'recon_' + Date.now();
+  const batch = await prisma.ambCloneBatch.create({ data: { batch_id: TAG, source_ad_account_id: ACC, destination_account_ids_json: '[]', campaign_ids_json: '[]', status: 'PENDING_APPROVAL' } });
+  const job = await prisma.ambCloneJob.create({ data: { batch_id: TAG, source_ad_account_id: ACC, destination_ad_account_id: ACC, source_campaign_id: TAG, status: 'PENDING' } });
+  const mk = (status, error) => prisma.ambScaleDecision.create({ data: { ad_account_id: ACC, source_campaign_id: TAG, source_campaign_name: 'recon', status, budget_mode: 'CBO', clone_batch_id: TAG, error, winner_ads_json: '[]' } });
+  const d1 = await mk('APPROVED', 'إيقاف الطوارئ مفعّل — مفيش أي كتابة على Meta. [clone:approveBatch]'); const d2 = await mk('FAILED', 'x');
+  await reconcileScaleDecisions(ACC);
+  const r1 = await prisma.ambScaleDecision.findUnique({ where: { id: d1.id } }); const r2 = await prisma.ambScaleDecision.findUnique({ where: { id: d2.id } });
+  ok('a decision whose batch was never approved is FAILED again (the card returns), its reason is kept; an already-FAILED one stays FAILED', r1.status === 'FAILED' && /إيقاف الطوارئ/.test(r1.error) && r2.status === 'FAILED');
+  await prisma.ambScaleDecision.deleteMany({ where: { source_campaign_id: TAG } }); await prisma.ambCloneJob.deleteMany({ where: { id: job.id } }); await prisma.ambCloneBatch.deleteMany({ where: { id: batch.id } });
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
