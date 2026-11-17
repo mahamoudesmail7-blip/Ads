@@ -5,6 +5,7 @@ import { api } from './api-client.js';
 import { logout } from './ui-common.js';
 import { visibleGroups, NAV_GROUPS, PAGE_ALIASES, locate } from './nav-config.js';
 import { lucide } from './launch-icons.js';
+import { startBuyerNotify } from './buyer-notify.js';
 
 const $ = (id) => document.getElementById(id);
 const frame = $('shFrame'); const stage = $('shStage'); const side = $('shSide'); const scrim = $('shScrim');
@@ -190,5 +191,6 @@ async function boot() {
   renderNav(); renderUser(); wire(); loadBadges();
   if (!location.hash) history.replaceState(null, '', '#/index.html');
   navigate();
+  startBuyerNotify({ user, onOpen: () => { location.hash = routeHref('index.html', ''); } }); // owner only: alerts when a media buyer creates a campaign / acts on his task
 }
 boot();

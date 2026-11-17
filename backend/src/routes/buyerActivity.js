@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncRoute } from '../middleware/errorHandler.js';
 import { getBuyerActivity, getWeekStrip, setAlias, scopeActivity, resolveViewer } from '../services/amb/buyerActivity.js';
 import { getBuyerReport, scopeReport } from '../services/amb/buyerReport.js';
+import { getFeed } from '../services/amb/buyerFeed.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -22,6 +23,11 @@ router.get('/', asyncRoute(async (req, res) => {
 }));
 router.get('/report', asyncRoute(async (req, res) => {
   res.json(scopeReport(await getBuyerReport({ mode: String(req.query.mode || 'yesterday'), force: req.query.force === '1' }), req.viewer.memberId));
+}));
+// The owner's live alert feed (new campaigns + what media buyers did on their own tasks). Owner account only — a media buyer is never told about the others.
+router.get('/feed', asyncRoute(async (req, res) => {
+  if (!req.viewer.all) return res.status(403).json({ error: 'FORBIDDEN', message: 'تنبيهات شغل الميديا بايرز للمالك بس.' });
+  res.json(await getFeed());
 }));
 router.get('/week', asyncRoute(async (req, res) => {
   if (!dateOk(req.query.date)) return bad(res, 'التاريخ لازم يكون بصيغة YYYY-MM-DD.');

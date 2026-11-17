@@ -154,5 +154,5 @@ button { font-family: inherit; cursor: pointer; }
   .sh-stage { margin: 4px 0 0; border-radius: 0; } #shFrame { border-radius: 0; }
   .sh-arrow { display: none; }
 }
-@media (max-width: 520px) { .sh-top { height: 56px; } .sh-crumb b { font-size: 15px; } .sh-actions .sh-iconbtn:nth-child(2) { display: none; } }
+@media (max-width: 520px) { .sh-top { height: 56px; } .sh-crumb b { font-size: 15px; } .sh-actions #shNewTab { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; } }

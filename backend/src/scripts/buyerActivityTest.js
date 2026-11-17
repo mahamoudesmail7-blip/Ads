@@ -76,6 +76,33 @@ try {
   ok('the owner (no member) gets the full data untouched', B.scopeActivity(full, null) === full);
   ok('a media buyer with no campaigns today gets an empty (idle) own view, not someone else’s', B.scopeActivity({ ...full, people: full.people.filter((p) => p.memberId !== 'm1') }, 'm1').people.length === 0);
 
+  console.log('\n3c. the owner alert feed (pure)');
+  {
+    const F = await imp('../services/amb/buyerFeed.js'); const N = await import(pathToFileURL(join(__dirname, '../../../js/buyer-notify.js')).href);
+    const act = { people: [{ name: 'Hady', campaigns: [{ id: 'k1', name: 'Cup - Test', type: 'TEST', accountName: 'Hazem', product: 'Cup', at: '2026-11-17T08:00:00Z' }, { id: 'k2', name: 'Cup - Scale', type: 'SCALE', accountName: 'Hazem', at: '2026-11-17T09:00:00Z' }] }, { name: 'Stranger', campaigns: [{ id: 'k3', name: 'X', type: 'OTHER', at: '2026-11-17T07:00:00Z' }] }, { name: 'Idle', campaigns: [] }] };
+    const ce = F.campaignEvents(act);
+    ok('every campaign becomes one feed event with a stable id, its person, its type and its time (people with nothing created add nothing)', ce.length === 3 && ce[0].id === 'c:k1' && ce[0].who === 'Hady' && ce[1].type === 'SCALE' && ce.every((e) => e.kind === 'CAMPAIGN' && e.at));
+    ok('no activity at all (Meta down) → no campaign events, no crash', F.campaignEvents(null).length === 0 && F.campaignEvents({}).length === 0);
+    const team = [{ id: 'm1', name: 'Hady', userId: 5 }, { id: 'm2', name: 'Ahmed', userId: 6 }];
+    const day = { log: [
+      { id: 'l1', action: 'SUBMITTED', taskId: 't1', taskTitle: 'اقفل كامبين', memberId: 'm1', actorId: 5, actorName: 'Hady', text: 'بعت إثبات', at: '2026-11-17T10:00:00Z' },
+      { id: 'l2', action: 'STARTED', taskId: 't2', taskTitle: 'اسكيل', memberId: 'm2', actorId: 6, actorName: 'Ahmed', at: '2026-11-17T10:05:00Z' },
+      { id: 'l3', action: 'APPROVED', taskId: 't1', taskTitle: 'اقفل كامبين', memberId: 'm1', actorId: 1, actorName: 'Owner', at: '2026-11-17T10:30:00Z' },
+      { id: 'l4', action: 'SUBMITTED', taskId: 't3', taskTitle: 'مهمة', memberId: 'm1', actorId: 99, actorName: 'Someone else', at: '2026-11-17T10:40:00Z' },
+      { id: 'l5', action: 'NOT_DONE', taskId: 't4', taskTitle: 'مهمة تانية', memberId: 'm2', actorId: 6, actorName: 'Ahmed', at: '2026-11-17T11:00:00Z' },
+      { id: 'l6', action: 'NOTE', taskId: 't1', taskTitle: 'x', memberId: 'm1', actorId: 5, at: '2026-11-17T11:10:00Z' },
+    ] };
+    const te = F.taskEvents(day, team);
+    ok('only what a media buyer did on HIS OWN task alerts the owner: submitted / started / not-done — not the owner’s approval, not someone else acting on the task, not a plain note', te.map((e) => e.id).join() === 't:l1,t:l2,t:l5' && te[0].who === 'Hady' && te[0].action === 'SUBMITTED');
+    ok('an unlinked team card (no login) can never match an actor', F.taskEvents(day, [{ id: 'm1', name: 'Hady', userId: null }]).length === 0 && F.taskEvents(null, team).length === 0);
+    const feed = F.mergeFeed(ce, te); ok('the merged feed is newest first and carries both kinds', feed[0].id === 't:l5' && feed.some((e) => e.kind === 'CAMPAIGN') && feed.some((e) => e.kind === 'TASK') && feed.every((e, i) => i === 0 || feed[i - 1].at >= e.at));
+    const d1 = N.describeEvent(ce[0]), d2 = N.describeEvent(ce[1]), d3 = N.describeEvent(ce[2]), d4 = N.describeEvent(te[0]), d5 = N.describeEvent(te[1]);
+    ok('the alert wording: «Hady عمل تيست جديد» / «اسكيل جديد» / «كامبين جديد» + the campaign and account on the second line', d1.head === 'Hady عمل تيست جديد' && d1.line === 'Cup - Test · Hazem' && d2.head === 'Hady عمل اسكيل جديد' && d2.icon === 'scale' && d3.head === 'Stranger عمل كامبين جديد');
+    ok('task alerts: «بعت إثبات مهمة» / «بدأ مهمة» with the task title', d4.head === 'Hady بعت إثبات مهمة' && d4.line === 'اقفل كامبين' && d5.head === 'Ahmed بدأ مهمة');
+    ok('the order sound rings only for a CAMPAIGN (test / scale / other) — a task alert alone is silent, a mixed batch rings once', N.shouldPlaySound([ce[0]]) && N.shouldPlaySound([ce[1]]) && N.shouldPlaySound([te[0], ce[2]]) && !N.shouldPlaySound([te[0], te[1]]) && !N.shouldPlaySound([]) && !N.shouldPlaySound(null));
+    const nw = N.pickNew(feed, ['c:k1', 't:l1']); ok('only ids not announced yet are new, oldest first (nothing is announced twice)', nw.map((e) => e.id).join() === 'c:k3,c:k2,t:l2,t:l5' && N.pickNew(feed, feed.map((e) => e.id)).length === 0 && N.pickNew(null, []).length === 0);
+  }
+
   console.log('\n4. real rows + mock Graph (isolated DB)');
   const mkUser = async (tag) => { const u = await prisma.user.create({ data: { email: `${T}${tag}@example.invalid`, password_hash: 'x'.repeat(20), name: `Hady ${T}`, role: 'ADMIN', status: 'ACTIVE', permissions: '{}' } }); made.users.push(u.id); return u; };
   const hadyU = await mkUser('hady'); const prod = await prisma.product.create({ data: { product_name: 'Cup' } }); made.product = prod.id;
@@ -140,6 +167,9 @@ try {
       const wB = await get(bu.u, '/week'); ok('the strip for the buyer counts only his work', wB.status === 200 && wB.json.scope === 'SELF');
       const repB = await get(bu.u, '/report?mode=yesterday'); ok('his report is his own too (scope SELF, only his card)', repB.status === 200 && repB.json.scope === 'SELF' && repB.json.people.every((x) => x.memberId === hadyM.id));
       const alB = await get(bu.u, '/aliases', 'PUT', { actorId: 'x', memberId: hadyM.id }); ok('a media buyer cannot link names (owner only)', alB.status === 403);
+      const fB = await get(bu.u, '/feed'); const fS = await get(st.u, '/feed'); const fO = await get(ow.u, '/feed'); const fN = await get(null, '/feed');
+      ok('the alert feed is the OWNER’s: a media buyer → 403, another ADMIN → 403, nobody → 401; the owner gets the feed', fB.status === 403 && fS.status === 403 && fN.status === 401 && fO.status === 200 && Array.isArray(fO.json.events) && typeof fO.json.date === 'string' && typeof fO.json.now === 'string', JSON.stringify([fB.status, fS.status, fN.status, fO.status]));
+      ok('and what the buyer is refused does not leak the others’ names', !JSON.stringify(fB.json).includes('Ahmed'));
       const alO = await get(ow.u, '/aliases', 'PUT', { actorId: 'x', memberId: 'no-such-member' }); ok('the owner can (a wrong member is a 400, not a 403)', alO.status === 400);
     } finally {
       await E.updateMember(hadyM.id, { userId: prevLink }).catch(() => {}); srv.close();

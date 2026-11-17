@@ -1,0 +1,25 @@
+/* «تنبيه شغل الميديا باير» — Shopify-style alerts in the app shell (top-left corner, away from the RTL sidebar). */
+.bn-toasts { position: fixed; top: 74px; left: 18px; z-index: 90; display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100vw - 28px)); pointer-events: none; }
+.bn-toast { pointer-events: auto; position: relative; overflow: hidden; display: flex; align-items: center; gap: 12px; width: 100%; text-align: start; font-family: inherit; cursor: pointer; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--sh-line, #e3e9f7); background: var(--sh-surface, #fff); color: var(--sh-ink, #111a37); box-shadow: 0 2px 4px rgba(15, 25, 60, .08), 0 18px 40px rgba(15, 25, 60, .22); animation: bn-in .42s cubic-bezier(.2, 1.1, .3, 1) both; }
+.bn-toast.out { animation: bn-out .26s ease-in both; }
+.bn-ico { flex: 0 0 auto; width: 42px; height: 42px; border-radius: 13px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #3b6cff, #7a4dff); box-shadow: 0 6px 14px rgba(59, 108, 255, .35); }
+.bn-ico svg { width: 21px; height: 21px; }
+.bn-scale .bn-ico { background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 6px 14px rgba(16, 185, 129, .35); }
+.bn-task .bn-ico { background: linear-gradient(135deg, #f59e0b, #f97316); box-shadow: 0 6px 14px rgba(245, 158, 11, .35); }
+.bn-txt { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.bn-txt b { font-size: 14.5px; font-weight: 800; line-height: 1.35; }
+.bn-txt small { font-size: 12px; color: var(--sh-dim, #5b6685); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: ltr; text-align: start; unicode-bidi: plaintext; }
+.bn-time { flex: 0 0 auto; align-self: flex-start; font-size: 11px; font-weight: 700; color: var(--sh-faint, #98a2bd); }
+.bn-bar { position: absolute; inset-inline: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, #3b6cff, #7a4dff); transform-origin: right; animation: bn-bar 9s linear both; }
+.bn-scale .bn-bar { background: linear-gradient(90deg, #10b981, #059669); }
+.bn-task .bn-bar { background: linear-gradient(90deg, #f59e0b, #f97316); }
+.bn-toast:hover .bn-bar { animation-play-state: paused; }
+#shBell .bn-slash { display: none; }
+#shBell.bn-off { opacity: .7; color: #dc2626; }
+#shBell.bn-off .bn-slash { display: inline; stroke-width: 2.4; }
+#shBell.bn-off .bn-wave { display: none; }
+@keyframes bn-in { from { opacity: 0; transform: translateX(-26px) scale(.94); } to { opacity: 1; transform: none; } }
+@keyframes bn-out { to { opacity: 0; transform: translateX(-26px) scale(.96); } }
+@keyframes bn-bar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (max-width: 520px) { .bn-toasts { top: 62px; left: 14px; right: 14px; width: auto; } }
+@media (prefers-reduced-motion: reduce) { .bn-toast, .bn-toast.out, .bn-bar { animation: none; } }
