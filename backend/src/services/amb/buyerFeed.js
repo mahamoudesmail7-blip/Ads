@@ -2,7 +2,7 @@
 //   • a new CAMPAIGN (test / scale / other) shows up in today's activity (Meta «View history» + the system's own launch / clone records), and
 //   • a media buyer acted on HIS OWN task in «تاسكات اليوم»: started it, sent proof, or said it was not done.
 // READ ONLY. It reuses the cached activity view (≈90 s) and the day's task log; nothing is written anywhere, nothing is sent to Meta. The browser decides what is NEW (ids it has not announced yet).
-import { getBuyerActivity } from './buyerActivity.js';
+import { getTodayCampaigns } from './buyerActivity.js';
 import { todayISO } from './metricsEngine.js';
 
 const TASK_ACTIONS = new Set(['SUBMITTED', 'STARTED', 'NOT_DONE']);
@@ -34,11 +34,12 @@ export function mergeFeed(...lists) {
   return lists.flat().filter((e) => e && e.id && e.at).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, LIMIT);
 }
 
-export async function getFeed() {
+/** fast: only what the system itself made + the task log (database only, answers in milliseconds — polled every few seconds). Otherwise Meta's «View history» is read too (at most every 15 s) to catch campaigns made by hand. */
+export async function getFeed({ fast = false } = {}) {
   const today = todayISO();
   const S = await import('../dailyTasks/store.js'); const E = await import('../dailyTasks/engine.js');
   const [activity, day, cfg] = await Promise.all([
-    getBuyerActivity({ date: today }).catch(() => null), // Meta slow / down: the task events still come
+    getTodayCampaigns({ fast, maxAgeMs: 15_000 }).catch(() => null), // Meta slow / down: the task events still come
     S.loadDay(today).catch(() => null),
     E.getConfig().catch(() => ({ team: [] })),
   ]);

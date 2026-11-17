@@ -136,8 +136,8 @@ export async function systemRecords(fromDay, toDay = fromDay) {
 }
 
 const EVENTS_CACHE = new Map(); // 'first|end' -> { at, v }
-export async function metaEvents(first, end, accounts) {
-  const key = `${first}|${end}`; const hit = EVENTS_CACHE.get(key); if (hit && Date.now() - hit.at < CACHE_TODAY_MS) return hit.v;
+export async function metaEvents(first, end, accounts, { maxAgeMs = CACHE_TODAY_MS } = {}) {
+  const key = `${first}|${end}`; const hit = EVENTS_CACHE.get(key); if (hit && Date.now() - hit.at < maxAgeMs) return hit.v;
   let token = null; try { token = await getDecryptedToken(); } catch { return { events: [], ok: false, reason: 'مفيش اتصال Meta دلوقتي' }; }
   const since = new Date(`${addDays(first, -1)}T12:00:00Z`).toISOString(), until = new Date(`${addDays(end, 1)}T12:00:00Z`).toISOString(); // wide window; each Cairo day is cut afterwards
   const events = []; const failed = [];
@@ -187,6 +187,18 @@ export async function getWeekStrip({ date = null, memberId = null } = {}) {
     return { date: day, week, ok: meta.ok, scope: 'SELF' };
   }
   return { date: day, week: weekStrip(day, today, first, meta.events, sys, accountNames, { exact: true }), ok: meta.ok };
+}
+
+/**
+ * TODAY's campaigns per person, as light as possible — for the owner's live alerts (no results, no product look-ups).
+ *   fast: true  → ONLY the system's own launch / clone records (database, no Meta call): a campaign made from inside the system shows up the moment it exists.
+ *   fast: false → plus Meta's «View history» (campaigns made by hand in Ads Manager), re-read at most every `maxAgeMs` (the normal views keep their 90 s cache).
+ */
+export async function getTodayCampaigns({ fast = false, maxAgeMs = 15_000 } = {}) {
+  const today = todayISO(); const accounts = (await listViewAccounts()).accounts; const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
+  let team = []; try { const E = await import('../dailyTasks/engine.js'); team = ((await E.getConfig()).team || []).filter((m) => m.active !== false).map((m) => ({ id: m.id, name: m.name, userId: m.userId || null })); } catch { /* none */ }
+  const [sys, meta, aliases] = await Promise.all([systemRecords(today, today), fast ? { events: [], ok: true, failed: [] } : metaEvents(today, today, accounts, { maxAgeMs }), loadAliases()]);
+  return { date: today, people: groupByPerson(mergeCampaigns(meta.events, sys, { day: today, accountNames }), team, aliases), meta: { ok: meta.ok, failed: meta.failed || [] } };
 }
 
 /** @param {{ date?: string|null, force?: boolean }} p */

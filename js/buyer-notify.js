@@ -4,7 +4,7 @@
 import { api } from './api-client.js';
 import { renderOrderSound } from './order-sound.js';
 
-const POLL_MS = 45_000; const SEEN_CAP = 400; const MAX_TOASTS = 3; const TOAST_MS = 9_000;
+const SEEN_CAP = 400; const MAX_TOASTS = 3; const TOAST_MS = 9_000;
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } } };
 
 /** Pure: the Arabic headline + detail line + icon kind of one feed event. */
@@ -63,29 +63,34 @@ function desktopNotify(items) {
   } catch { /* not allowed */ }
 }
 
-let timer = null; let stopped = false; let busy = false;
+let timers = []; let stopped = false; const busy = { fast: false, full: false };
+const FAST_MS = 5_000; const FULL_MS = 20_000; // fast = what the system itself made (database only); full = also Meta's «View history» (campaigns made by hand), the server re-reads Meta at most every 15 s
+const seenMem = new Map(); // date -> Set of announced ids (in memory too, so two overlapping polls can never announce the same campaign twice)
 function seenKey(date) { return `bn.seen.${date}`; }
-function loadSeen(date) { try { const v = JSON.parse(store.get(seenKey(date)) || 'null'); return Array.isArray(v) ? v : null; } catch { return null; } }
-async function tick(go) {
-  if (stopped || busy || document.hidden) return; busy = true;
+function loadSeen(date) { if (seenMem.has(date)) return seenMem.get(date); let v = null; try { v = JSON.parse(store.get(seenKey(date)) || 'null'); } catch { v = null; } if (!Array.isArray(v)) return null; const s = new Set(v); seenMem.set(date, s); return s; }
+function remember(date, ids) { const s = seenMem.get(date) || new Set(); ids.forEach((i) => s.add(i)); seenMem.set(date, s); store.set(seenKey(date), JSON.stringify([...s].slice(-SEEN_CAP))); return s; }
+function announce(fresh, go) {
+  const items = fresh.map((e) => ({ ...describeEvent(e), at: e.at }));
+  const shown = items.slice(-MAX_TOASTS); const more = items.length - shown.length;
+  if (more > 0) toast({ icon: 'task', head: `و ${more} حاجات تانية جديدة`, line: 'افتح «نظرة سريعة» تشوفهم كلهم' }, { onClick: () => go?.() });
+  shown.forEach((it) => toast(it, { onClick: () => go?.() }));
+  if (shouldPlaySound(fresh)) ching(); // the order sound rings AT ONCE, for a campaign / scale that was made — a task alert is silent
+  desktopNotify(items);
+}
+async function tick(go, mode) {
+  if (stopped || busy[mode]) return; busy[mode] = true;
   try {
-    const f = await api.get('/api/ai-media-buyer/buyer-activity/feed');
-    const events = f.events || []; let seen = loadSeen(f.date);
-    if (seen === null) { store.set(seenKey(f.date), JSON.stringify(events.map((e) => e.id).slice(-SEEN_CAP))); return; } // first look today: just remember what is already there
-    const fresh = pickNew(events, seen); if (!fresh.length) return;
-    store.set(seenKey(f.date), JSON.stringify([...seen, ...fresh.map((e) => e.id)].slice(-SEEN_CAP)));
-    const items = fresh.map((e) => ({ ...describeEvent(e), at: e.at }));
-    const shown = items.slice(-MAX_TOASTS); const more = items.length - shown.length;
-    if (more > 0) toast({ icon: 'task', head: `و ${more} حاجات تانية جديدة`, line: 'افتح «نظرة سريعة» تشوفهم كلهم' }, { onClick: () => go?.() });
-    shown.forEach((it) => toast(it, { onClick: () => go?.() }));
-    if (shouldPlaySound(fresh)) ching(); // the order sound is for a campaign / scale that was made — a task alert is silent
-    desktopNotify(items);
+    const f = await api.get(`/api/ai-media-buyer/buyer-activity/feed${mode === 'fast' ? '?fast=1' : ''}`);
+    const events = f.events || []; const seen = loadSeen(f.date);
+    if (seen === null) { if (mode === 'full') remember(f.date, events.map((e) => e.id)); return; } // first look of a day (done by the FULL read, which sees everything): just remember what is already there
+    const fresh = pickNew(events, [...seen]); if (!fresh.length) return;
+    remember(f.date, fresh.map((e) => e.id)); announce(fresh, go);
   } catch (e) {
-    if (e?.status === 403 || e?.status === 404) { stopped = true; clearInterval(timer); const bell = document.getElementById('shBell'); if (bell) bell.hidden = true; } // not the owner (or the feed is not on this server): never ask again
-  } finally { busy = false; }
+    if (e?.status === 403 || e?.status === 404) { stopped = true; timers.forEach(clearInterval); const bell = document.getElementById('shBell'); if (bell) bell.hidden = true; } // not the owner (or the feed is not on this server): never ask again
+  } finally { busy[mode] = false; }
 }
 
-/** The bell in the top bar: sound on/off + (first click) permission for desktop alerts when the tab is in the background. Shows a sample alert so the owner hears what it will sound like. */
+/** The bell in the top bar: sound on/off + (first click) permission for desktop alerts when the tab is in the background. Turning the sound on rings once so the owner hears it. */
 function wireBell(btn) {
   if (!btn) return; btn.hidden = false;
   const paint = () => { const on = store.get('bn.sound') !== '0'; btn.classList.toggle('bn-off', !on); btn.title = on ? 'تنبيهات شغل الميديا بايرز: شغّالة بصوت (دوس لكتم الصوت)' : 'تنبيهات شغل الميديا بايرز: صامتة (دوس لتشغيل الصوت)'; btn.setAttribute('aria-pressed', String(on)); };
@@ -98,10 +103,11 @@ function wireBell(btn) {
   });
 }
 
-/** Called once by the shell after the user is known. Only an ADMIN can be the owner; the server makes the real decision (403 → stop). */
+/** Called once by the shell after the user is known. Only an ADMIN can be the owner; the server makes the real decision (403 → stop).
+ *  Timing: a campaign made from inside the system rings within ~5 s; one made by hand in Ads Manager within ~20 s (Meta's own history is read at most every 15 s). The first full read runs first, so nothing old is announced. */
 export function startBuyerNotify({ user, onOpen } = {}) {
   if (typeof document === 'undefined' || !user || user.role !== 'ADMIN') return;
   wireBell(document.getElementById('shBell'));
-  tick(onOpen); timer = setInterval(() => tick(onOpen), POLL_MS);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(onOpen); });
+  tick(onOpen, 'full').finally(() => { if (stopped) return; timers = [setInterval(() => tick(onOpen, 'fast'), FAST_MS), setInterval(() => tick(onOpen, 'full'), FULL_MS)]; });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { tick(onOpen, 'fast'); tick(onOpen, 'full'); } });
 }

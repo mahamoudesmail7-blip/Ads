@@ -27,7 +27,7 @@ router.get('/report', asyncRoute(async (req, res) => {
 // The owner's live alert feed (new campaigns + what media buyers did on their own tasks). Owner account only — a media buyer is never told about the others.
 router.get('/feed', asyncRoute(async (req, res) => {
   if (!req.viewer.all) return res.status(403).json({ error: 'FORBIDDEN', message: 'تنبيهات شغل الميديا بايرز للمالك بس.' });
-  res.json(await getFeed());
+  res.json(await getFeed({ fast: req.query.fast === '1' }));
 }));
 router.get('/week', asyncRoute(async (req, res) => {
   if (!dateOk(req.query.date)) return bad(res, 'التاريخ لازم يكون بصيغة YYYY-MM-DD.');

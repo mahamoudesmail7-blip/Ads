@@ -123,6 +123,13 @@ try {
   const mine = td.people.find((p) => p.campaigns.some((c) => c.id === `${T}sys1`)); const man = td.people.flatMap((p) => p.campaigns).find((c) => c.id === `${T}man1`); const sc = td.people.flatMap((p) => p.campaigns).find((c) => c.id === `${T}sys1`);
   ok('today: the campaign the system launched is Hady’s (by the login, not the token owner), type TEST, product Cup, with the account name', !!mine && sc.source === 'SYSTEM' && sc.type === 'TEST' && sc.product === 'Cup' && sc.by.userId === hadyU.id && !!sc.accountName);
   ok('today: the campaign made by hand in Ads Manager is found from «View history» (type SCALE from its name «Cup - Scale»), by the Facebook actor', !!man && man.source === 'META' && man.type === 'SCALE' && man.actor.name === 'Hady Manual' && man.product === 'Cup');
+  { // the owner's live alerts: a campaign made from inside the system is visible at once (database only, no Meta call); one made by hand needs Meta's history
+    const c0 = world.calls.length; const fastT = await B.getTodayCampaigns({ fast: true }); const fastAll = fastT.people.flatMap((p) => p.campaigns); const hadyFast = fastAll.find((c) => c.id === sc.id);
+    ok('FAST alerts: the campaign the system launched is there at once with its person (Hady), and NOT ONE call went to Meta; the hand-made one (Meta only) is not in the fast read', !!hadyFast && hadyFast.by?.userId === hadyU.id && world.calls.length === c0 && !fastAll.some((c) => c.id === man.id), JSON.stringify([!!hadyFast, world.calls.length - c0]));
+    const fullT = await B.getTodayCampaigns({ fast: false, maxAgeMs: 0 }); const fullAll = fullT.people.flatMap((p) => p.campaigns);
+    ok('FULL alerts: both the system one and the hand-made one are found (Meta re-read because maxAgeMs=0), nothing written to Meta', fullAll.some((c) => c.id === sc.id) && fullAll.some((c) => c.id === man.id) && world.writes === 0 && world.calls.length > c0);
+    const c1 = world.calls.length; await B.getTodayCampaigns({ fast: false, maxAgeMs: 60_000 }); ok('the full read is cached for the asked time (no new Meta call inside it) — Meta is not hammered by the polling', world.calls.length === c1);
+  }
   ok('a campaign made today has NO result yet (it starts at 12 AM tomorrow): started=false, nothing counted — even though a snapshot exists for today', sc.results.started === false && sc.results.first === null && sc.results.total === null && man.results.first === null && sc.results.firstDay === addDays(today, 1));
   ok('the totals count what the day holds (tests / scales / campaigns); yesterday’s campaign is not in today', td.totals.campaigns >= 2 && td.totals.tests >= 1 && td.totals.scales >= 1 && !td.people.flatMap((p) => p.campaigns).some((c) => c.id === `${T}old1`));
   ok('the day strip is 7 days ending on today, the selected day flagged', td.week.length === 7 && td.week.at(-1).date === today && td.week.at(-1).selected === true && td.week.filter((w) => w.selected).length === 1);
@@ -169,6 +176,7 @@ try {
       const alB = await get(bu.u, '/aliases', 'PUT', { actorId: 'x', memberId: hadyM.id }); ok('a media buyer cannot link names (owner only)', alB.status === 403);
       const fB = await get(bu.u, '/feed'); const fS = await get(st.u, '/feed'); const fO = await get(ow.u, '/feed'); const fN = await get(null, '/feed');
       ok('the alert feed is the OWNER’s: a media buyer → 403, another ADMIN → 403, nobody → 401; the owner gets the feed', fB.status === 403 && fS.status === 403 && fN.status === 401 && fO.status === 200 && Array.isArray(fO.json.events) && typeof fO.json.date === 'string' && typeof fO.json.now === 'string', JSON.stringify([fB.status, fS.status, fN.status, fO.status]));
+      const fF = await get(ow.u, '/feed?fast=1'); const fFB = await get(bu.u, '/feed?fast=1'); ok('the fast feed is the owner’s too (200 for the owner with events array, 403 for a media buyer)', fF.status === 200 && Array.isArray(fF.json.events) && fFB.status === 403);
       ok('and what the buyer is refused does not leak the others’ names', !JSON.stringify(fB.json).includes('Ahmed'));
       const alO = await get(ow.u, '/aliases', 'PUT', { actorId: 'x', memberId: 'no-such-member' }); ok('the owner can (a wrong member is a 400, not a 403)', alO.status === 400);
     } finally {
