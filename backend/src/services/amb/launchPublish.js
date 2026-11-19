@@ -223,6 +223,9 @@ export function buildTargeting(job) {
   if (!t || t.mode !== 'CUSTOM') return base;
 
   const out = { ...base };
+  // Meta: an ad set that carries its OWN audience (age / gender / interests / regions) must state the Advantage-audience flag explicitly, or Meta rejects the ad set with «Advantage Audience Flag Required
+  // (you need to enable or disable the Advantage audience feature … targeting_automation.advantage_audience)». 0 = use EXACTLY the audience the owner chose (1 would let Meta widen it). Broad (no custom audience) is untouched.
+  out.targeting_automation = { advantage_audience: 0 };
   if (t.geoRegions?.length) out.geo_locations = { regions: t.geoRegions.map((r) => ({ key: r.key, country: 'EG' })) };
   if (t.genders === 'MALE') out.genders = [1];
   else if (t.genders === 'FEMALE') out.genders = [2];

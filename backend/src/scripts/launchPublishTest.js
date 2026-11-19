@@ -50,6 +50,18 @@ console.log('\n§1b Final core execution step — CUSTOM targeting override, and
   ok('AUTOMATIC placements never sets facebook_positions/instagram_positions', allT.facebook_positions === undefined && allT.instagram_positions === undefined);
 }
 
+console.log('\n§1c Meta «Advantage Audience Flag Required» — an ad set with its own audience must carry the flag (real production rejection):');
+{
+  const mk = (t) => buildTargeting({ ...abojob, config_json: JSON.stringify({ targeting: t }) });
+  const custom = mk({ mode: 'CUSTOM', genders: 'FEMALE', ageMin: 20, ageMax: 35, geoRegions: [], placementsMode: 'AUTOMATIC' });
+  const smart = mk({ mode: 'CUSTOM', smart: true, genders: 'ALL', ageMin: 26, ageMax: 50, geoRegions: [], placementsMode: 'AUTOMATIC', interests: [{ id: '6003349442621', name: 'Cooking' }] });
+  const plainAge = mk({ mode: 'CUSTOM', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: [], placementsMode: 'AUTOMATIC' });
+  ok('CUSTOM audience carries targeting_automation.advantage_audience = 0 (use exactly the owner’s audience)', JSON.stringify(custom.targeting_automation) === '{"advantage_audience":0}', JSON.stringify(custom));
+  ok('the same for the Smart Targeting audience (interests in flexible_spec + the flag)', JSON.stringify(smart.targeting_automation) === '{"advantage_audience":0}' && smart.flexible_spec?.[0]?.interests?.length === 1);
+  ok('even a CUSTOM audience that only repeats the defaults states the flag (Meta rejects an ad set without it)', JSON.stringify(plainAge.targeting_automation) === '{"advantage_audience":0}');
+  ok('BROAD / no targeting is byte-identical to before: no targeting_automation key at all', buildTargeting(abojob).targeting_automation === undefined && mk({ mode: 'BROAD' }).targeting_automation === undefined);
+}
+
 console.log('\n§2 buildCampaignPayload — ABO vs CBO budget-field placement:');
 {
   const abo = buildCampaignPayload(abojob, campaign);
