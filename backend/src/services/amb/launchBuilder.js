@@ -315,8 +315,8 @@ export async function validateLaunchConfig(input, { landingValidator = validateL
  * Broad age/gender, Advantage+ automatic placements), so every job that
  * never touches this feature is completely unaffected.
  */
-function validateTargeting(t) {
-  if (!t || t.mode !== 'CUSTOM') return null;
+export function validateTargeting(t) {
+  if (!t || (t.mode !== 'CUSTOM' && t.mode !== 'SMART')) return null; // SMART = «AI Smart Targeting» — the same targeting as CUSTOM plus real Meta interests
   const genders = ALLOWED_GENDERS.includes(t.genders) ? t.genders : 'ALL';
   let ageMin = Number.isInteger(Number(t.ageMin)) ? Number(t.ageMin) : 18;
   let ageMax = Number.isInteger(Number(t.ageMax)) ? Number(t.ageMax) : 65;
@@ -327,7 +327,10 @@ function validateTargeting(t) {
     ? t.geoRegions.filter((r) => r && typeof r.key === 'string' && r.key).map((r) => ({ key: r.key, name: r.name || r.key }))
     : [];
   const placementsMode = ALLOWED_PLACEMENTS_MODES.includes(t.placementsMode) ? t.placementsMode : 'AUTOMATIC';
-  return { mode: 'CUSTOM', genders, ageMin, ageMax, geoRegions, placementsMode };
+  // interests: only real Meta interests (numeric id from Meta's own targeting search) — at most 10, no duplicates; anything else is dropped, never guessed
+  const seen = new Set(); const interests = [];
+  for (const i of Array.isArray(t.interests) ? t.interests : []) { const id = String(i?.id ?? '').trim(); const name = String(i?.name ?? '').replace(/\s+/g, ' ').trim(); if (!/^\d{5,20}$/.test(id) || !name || name.length > 120 || seen.has(id)) continue; seen.add(id); interests.push({ id, name }); if (interests.length >= 10) break; }
+  return { mode: 'CUSTOM', genders, ageMin, ageMax, geoRegions, placementsMode, interests, smart: t.mode === 'SMART' };
 }
 
 /**

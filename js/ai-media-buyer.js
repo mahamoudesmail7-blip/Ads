@@ -5540,7 +5540,8 @@ const launchState = {
   // for every wizard session, including every one before this feature
   // existed) sends NOTHING extra to the backend — buildTargeting() on the
   // server treats it exactly like no targeting at all.
-  targeting: { mode: 'BROAD', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: [], placementsMode: 'AUTOMATIC' },
+  targeting: { mode: 'BROAD', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: [], placementsMode: 'AUTOMATIC', interests: [] }, // mode: BROAD | CUSTOM | SMART («AI Smart Targeting» — CUSTOM + real Meta interests)
+  smart: null, // { status: 'idle'|'loading'|'ready'|'error', productId, result, applied, error }
   campaignCount: 1,
   copyMode: 'SAME',       // SAME | DIFFERENT
   campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
@@ -5605,7 +5606,7 @@ function launchCurrentAssets() {
 // a private-browsing tab or blocked storage just means this session behaves
 // as it always did (nothing persisted), never a hard failure.
 const LAUNCH_STORAGE_KEY = 'amb_launch_wizard_v1';
-const LAUNCH_PERSISTED_FIELDS = ['instagramKind', 'step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'targeting', 'campaignCount', 'copyMode', 'campaigns'];
+const LAUNCH_PERSISTED_FIELDS = ['instagramKind', 'step', 'jobId', 'jobStarted', 'storeId', 'storeName', 'productId', 'productName', 'adAccountId', 'adAccountName', 'adAccountTimezoneName', 'baseName', 'budgetMode', 'cboDailyBudget', 'aboBudgets', 'adSetsPerCampaign', 'adsPerAdSet', 'startMode', 'startDate', 'startTime', 'launchMode', 'biddingMode', 'bidCapAmount', 'platforms', 'pageId', 'pageName', 'instagramId', 'instagramUsername', 'pixelId', 'pixelName', 'conversionEvent', 'perCampaignPixel', 'targeting', 'smart', 'campaignCount', 'copyMode', 'campaigns'];
 function saveLaunchSnapshot() {
   try {
     const snap = {};
@@ -5651,6 +5652,7 @@ function launchFreshDefaults() {
     pageId: null, pageName: null, instagramId: null, instagramUsername: null, pixelId: null, pixelName: null,
     conversionEvent: 'PURCHASE', perCampaignPixel: false, campaignCount: 1, copyMode: 'SAME',
     campaigns: [{ name: 'Cup - Test', primaryText: '', headline: '', websiteUrl: '', pixelId: null }],
+    targeting: { mode: 'BROAD', genders: 'ALL', ageMin: 18, ageMax: 65, geoRegions: [], placementsMode: 'AUTOMATIC', interests: [] }, smart: null, // a new campaign never inherits the previous audience (or its Smart proposal)
     savedJob: null, videos: [], videosRestored: false, queueProgress: null, viewingHistory: false,
   };
 }
@@ -5879,6 +5881,7 @@ function wireLaunchProductRadios(container, products) {
       launchState.productId = Number(r.value);
       launchState.productName = products.find((p) => p.id === launchState.productId)?.product_name || null;
       launchState._productSkipped = false;
+      if (launchState.smart) { launchState.smart = null; if (launchState.targeting.mode === 'SMART') launchState.targeting.interests = []; }
       renderLaunchStep();
     };
   });
@@ -6290,7 +6293,7 @@ async function renderLaunchPlatforms(body) {
     launchAutoPickInstagram(ig);
   }
   const assets = launchCurrentAssets() || { pages: [], instagram: [], pixels: [], pagesVerified: false, instagramReadable: false };
-  const custom = launchState.targeting.mode === 'CUSTOM'; const regions = launchState.targeting.geoRegions || [];
+  const custom = launchState.targeting.mode === 'CUSTOM'; const smart = launchState.targeting.mode === 'SMART'; const geoOn = custom || smart; const regions = launchState.targeting.geoRegions || [];
   const row = (nameAttr, value, checked, title, sub, avCls = '') => `<label class="lp-row ${checked ? 'sel' : ''}"><span class="lp-av ${avCls}">${E(lpInitial(title))}</span><span class="lp-rtext"><b>${E(title)}</b><small>${E(sub)}</small></span><input type="radio" name="${nameAttr}" value="${E(value)}" data-name="${E(String(title).replace(/^@/, ''))}" ${checked ? 'checked' : ''} /></label>`;
 
   const igBlock = launchState.platforms.instagram && launchState.instagramKind === 'PAGE_BACKED' && launchState.instagramId && !assets.instagram.length
@@ -6345,8 +6348,9 @@ async function renderLaunchPlatforms(body) {
           <div class="lp-modes">
             <label class="lp-mode ${launchState.targeting.mode === 'BROAD' ? 'sel' : ''}"><span><b>Broad (تلقائي بالكامل)</b><small>Meta بتختار الجمهور</small></span><input type="radio" name="ambLaunchTargetingMode" value="BROAD" ${launchState.targeting.mode === 'BROAD' ? 'checked' : ''} /></label>
             <label class="lp-mode ${custom ? 'sel' : ''}"><span><b>تخصيص الجمهور</b><small>نوع · سن · مواضع · محافظات</small></span><input type="radio" name="ambLaunchTargetingMode" value="CUSTOM" ${custom ? 'checked' : ''} /></label>
+            <label class="lp-mode lp-mode-ai ${smart ? 'sel' : ''}"><span><b>✨ AI Smart Targeting</b><small>يحلل المنتج ويقترح الجمهور والاهتمامات</small></span><input type="radio" name="ambLaunchTargetingMode" value="SMART" ${smart ? 'checked' : ''} /></label>
           </div>
-          ${custom ? `
+          ${smart ? smartPanelHtml() : custom ? `
             <div class="lp-grid">
               <div class="lp-field" style="margin:0"><label>النوع</label>
                 <select class="amb-input" id="ambLaunchTargetGender"><option value="ALL" ${launchState.targeting.genders === 'ALL' ? 'selected' : ''}>الكل</option><option value="MALE" ${launchState.targeting.genders === 'MALE' ? 'selected' : ''}>رجال</option><option value="FEMALE" ${launchState.targeting.genders === 'FEMALE' ? 'selected' : ''}>نساء</option></select></div>
@@ -6368,10 +6372,10 @@ async function renderLaunchPlatforms(body) {
           <div class="lp-sec">الدول المحددة</div>
           <div class="lp-sel-country"><span class="lp-flagmini"><svg viewBox="0 0 30 20" width="30" height="20" aria-hidden="true"><rect width="30" height="20" fill="#fff"/><rect width="30" height="6.7" fill="#ce1126"/><rect y="13.3" width="30" height="6.7" fill="#000"/><path d="M15 7.6l.9 2.2-.9 2.2-.9-2.2z" fill="#c09300"/></svg></span><span>مصر</span><span class="lp-tick">${lucide('check', 14)}</span></div>
           <div class="lp-hintline" id="lpCountryNote">الاستهداف في النظام حاليًا لمصر فقط. اختيار دولة تانية من البحث بيحرّك الكوكب للعرض بس.</div>
-          <div class="lp-sec">المدن / المحافظات ${custom ? '(اختياري)' : ''}</div>
+          <div class="lp-sec">المدن / المحافظات ${geoOn ? '(اختياري)' : ''}</div>
           <div class="lp-cities" id="lpQuickCities">${quick}</div>
           <div class="lp-chips" id="ambLaunchGeoChips" style="margin-top:8px">${chips}</div>
-          <div class="lp-hintline" id="lpGeoHint">${custom ? (regions.length ? '' : 'لو مفيش محافظة مختارة، هيفضل الاستهداف الجغرافي مصر بالكامل.') : 'فعّل «تخصيص الجمهور» عشان تختار محافظات.'}</div>
+          <div class="lp-hintline" id="lpGeoHint">${geoOn ? (regions.length ? '' : 'لو مفيش محافظة مختارة، هيفضل الاستهداف الجغرافي مصر بالكامل.') : 'فعّل «تخصيص الجمهور» أو «AI Smart Targeting» عشان تختار محافظات.'}</div>
           <div class="lp-aud"><span class="lp-audico">${lucide('users', 22)}</span><span><small>حجم الجمهور التقريبي</small><b>غير متاح</b><em>النظام مش مربوط بتقدير حجم الجمهور من Meta — مش بنعرض رقم تقريبي.</em></span></div>
         </div>
         <div class="lp-glass lp-ctl" role="group" aria-label="التحكم في الكوكب">
@@ -6401,14 +6405,15 @@ async function renderLaunchPlatforms(body) {
   body.querySelectorAll('input[name="ambLaunchPixel"]').forEach((r) => { r.onchange = () => { launchState.pixelId = r.value; launchState.pixelName = r.dataset.name; saveLaunchSnapshot(); }; });
   $('ambLaunchConvEvent').onchange = (e) => { launchState.conversionEvent = e.target.value; saveLaunchSnapshot(); };
 
-  body.querySelectorAll('input[name="ambLaunchTargetingMode"]').forEach((r) => { r.onchange = () => { launchState.targeting.mode = r.value; renderLaunchStep(); }; });
+  body.querySelectorAll('input[name="ambLaunchTargetingMode"]').forEach((r) => { r.onchange = () => { launchState.targeting.mode = r.value; if (r.value === 'SMART') smartEnsure(); renderLaunchStep(); }; });
   if (custom) {
     $('ambLaunchTargetGender').onchange = (e) => { launchState.targeting.genders = e.target.value; saveLaunchSnapshot(); };
     $('ambLaunchAgeMin').onchange = (e) => { launchState.targeting.ageMin = Math.min(65, Math.max(13, Number(e.target.value) || 18)); saveLaunchSnapshot(); };
     $('ambLaunchAgeMax').onchange = (e) => { launchState.targeting.ageMax = Math.min(65, Math.max(13, Number(e.target.value) || 65)); saveLaunchSnapshot(); };
     $('ambLaunchPlacementsMode').onchange = (e) => { launchState.targeting.placementsMode = e.target.value; saveLaunchSnapshot(); };
   }
-  wireLaunchGeoPanel(body, custom);
+  wireLaunchGeoPanel(body, geoOn);
+  if (smart) wireSmartPanel(body);
 
   wireLaunchNav(4, () => {
     if (!launchState.platforms.facebook && !launchState.platforms.instagram) { UI.toast('اختار منصة واحدة على الأقل.', 'error'); return; }
@@ -6417,8 +6422,76 @@ async function renderLaunchPlatforms(body) {
     // Real production bug: Instagram checked with no real identity silently
     // published Facebook-only ads. Block here instead of letting it through.
     if (launchState.platforms.instagram && !launchState.instagramId) { UI.toast('اخترت إنستجرام كمنصة لكن لسه معملتش اختيار حساب إنستجرام حقيقي متصل بالصفحة.', 'error'); return; }
+    if (launchState.targeting.mode === 'SMART' && !launchState.smart?.applied) { UI.toast('اضغط «تطبيق الاستهداف» الأول، أو اختار وضع تاني (Broad / تخصيص الجمهور).', 'error'); return; }
     launchState.step = 6; renderLaunchStep();
   });
+}
+
+/* ───────────── «AI Smart Targeting» — the third audience choice of the launch wizard ─────────────
+ * Read only: POST /launch/smart-targeting analyses the chosen product (its REAL buyers when proven, the AI, or the Egyptian-market rules) and every proposed interest is checked against Meta itself.
+ * The result fills launchState.targeting (mode SMART) as an EDITABLE draft; «تطبيق الاستهداف» confirms it. Nothing is sent to Meta from here. */
+const SM_GENDERS = [['MALE', 'رجالي'], ['FEMALE', 'حريمي'], ['ALL', 'الاتنين']];
+const SM_SOURCE = { 'REAL_DATA+AI': ['مبيعاتك الحقيقية + AI + Meta', 'grn'], 'REAL_DATA+RULES': ['مبيعاتك الحقيقية + قواعد + Meta', 'grn'], AI: ['AI + تحقق Meta', 'blue'], RULES: ['قواعد السوق المصري + تحقق Meta', 'amber'] };
+const smAud = (n) => { const v = Number(n); if (!Number.isFinite(v) || v <= 0) return ''; return v >= 1e6 ? (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + ' مليون' : Math.round(v / 1e3) + ' ألف'; };
+let smartBusy = null; // the draft currently being analysed (a draft restored from storage mid-analysis is not busy: it starts over)
+function smartEnsure() {
+  if (!launchState.targeting.interests) launchState.targeting.interests = [];
+  if (!launchState.smart || launchState.smart.productId !== launchState.productId) launchState.smart = { status: 'idle', productId: launchState.productId, result: null, applied: false, error: null };
+  if (launchState.smart.status === 'loading' && smartBusy !== launchState.smart) { launchState.smart.status = 'idle'; launchState.smart._auto = false; }
+}
+function smartPanelHtml() {
+  smartEnsure(); const t = launchState.targeting; const sm = launchState.smart;
+  if (!launchState.productId) return '<div class="lp-note">اختار المنتج الأول (خطوة المنتج) عشان الـ AI يقدر يحلله.</div>';
+  const head = '<div class="sm-head"><span class="sm-spark">✨</span><span><b>AI Smart Targeting</b><small>تحليل المنتج + تحقق من Meta نفسها — وأنت اللي بتوافق وتعدّل.</small></span></div>';
+  if (sm.status === 'loading') return '<div class="sm-box">' + head + '<div class="sm-loading"><div class="lp-spin"></div><div><b>بحلل المنتج وبتأكد من الاهتمامات على Meta…</b><small>غالبًا ثواني قليلة.</small></div></div></div>';
+  if (sm.status === 'error') return '<div class="sm-box">' + head + '<div class="lp-note" style="border-color:#ef4444;color:#b91c1c">' + E(sm.error || 'تعذّر التحليل.') + '</div><button type="button" class="amb-btn primary" id="smRun">حاول تاني</button></div>';
+  if (sm.status !== 'ready' || !sm.result) return '<div class="sm-box">' + head + '<p class="sm-p">هيقترح لك: النوع، السن، أفضل 5 اهتمامات موجودة فعلًا على Meta، المواضع، والمحافظات — مع سبب كل اختيار.</p><button type="button" class="amb-btn primary" id="smRun">✨ حلّل المنتج واقترح الاستهداف</button></div>';
+  const r = sm.result; const src = SM_SOURCE[r.source] || ['—', 'blue'];
+  const ints = (t.interests || []).map((i, ix) => '<span class="sm-chip" title="' + E(i.why || '') + '"><b>' + E(i.name) + '</b>' + (i.audienceUpper ? '<small>' + E(smAud(i.audienceUpper)) + '</small>' : '') + '<button type="button" data-sm-rm="' + ix + '" aria-label="إزالة">×</button></span>').join('');
+  const why = [['النوع', r.reasons?.gender], ['السن', r.reasons?.age], ['الاهتمامات', r.reasons?.interests], ['المحافظات', r.locations?.reason], ['المواضع', r.placements?.reason]].filter((x) => x[1]).map((x) => '<li><b>' + x[0] + ':</b> ' + E(x[1]) + '</li>').join('');
+  const intWhy = (r.interests || []).filter((i) => i.why).map((i) => '<li><b>' + E(i.name) + (i.requested ? ' <em>(أقرب اسم في Meta لـ«' + E(i.requested) + '»)</em>' : '') + ':</b> ' + E(i.why) + '</li>').join('');
+  return '<div class="sm-box">' + head + '<div class="sm-top"><span class="sm-badge ' + src[1] + '">' + E(src[0]) + '</span><span class="sm-prod">' + E(r.product?.name || launchState.productName || '') + '</span><button type="button" class="sm-link" id="smRun">إعادة التحليل</button></div>'
+    + '<div class="sm-grid">'
+    + '<div class="sm-f"><label>النوع</label><div class="sm-seg">' + SM_GENDERS.map(([v, l]) => '<button type="button" data-sm-gender="' + v + '" class="' + (t.genders === v ? 'on' : '') + '">' + l + '</button>').join('') + '</div></div>'
+    + '<div class="sm-f"><label>السن (من — إلى)</label><div class="sm-age"><input class="amb-input" type="number" min="18" max="65" id="smAgeMin" value="' + E(t.ageMin) + '"><span>—</span><input class="amb-input" type="number" min="18" max="65" id="smAgeMax" value="' + E(t.ageMax) + '"></div></div>'
+    + '<div class="sm-f"><label>المواضع</label><select class="amb-input" id="smPlacements"><option value="AUTOMATIC" ' + (t.placementsMode === 'AUTOMATIC' ? 'selected' : '') + '>تلقائي (Advantage+)</option><option value="FEED_ONLY" ' + (t.placementsMode === 'FEED_ONLY' ? 'selected' : '') + '>الفيد فقط</option></select></div></div>'
+    + '<div class="sm-f"><label>أفضل الاهتمامات <small>(كلها ليها ID حقيقي في Meta)</small></label><div class="sm-chips" id="smChips">' + (ints || '<span class="sm-none">مفيش اهتمامات متحقق منها — ضيف من البحث تحت.</span>') + '</div>'
+    + '<div class="sm-add"><input class="amb-input" id="smIntQ" type="search" placeholder="ضيف اهتمام (ابحث بالإنجليزي: Cooking, Gym…)" autocomplete="off"><div class="sm-results" id="smIntRes" hidden></div></div></div>'
+    + '<div class="sm-f"><label>المحافظات</label><div class="sm-loc">' + ((t.geoRegions || []).length ? t.geoRegions.map((g) => E(g.name)).join(' + ') : 'مصر بالكامل') + ' <small>— عدّلها من الكوكب على الشمال</small></div></div>'
+    + '<details class="sm-why" open><summary>ليه الاختيار ده؟</summary><ul>' + why + intWhy + '</ul></details>'
+    + ((r.notes || []).length ? '<ul class="sm-notes">' + r.notes.map((n) => '<li>' + E(n) + '</li>').join('') + '</ul>' : '')
+    + '<div class="sm-apply">' + (sm.applied ? '<span class="sm-ok">✅ اتطبّق — أي تعديل بتعمله دلوقتي بيتحفظ لوحده</span>' : '<button type="button" class="amb-btn primary" id="smApply">تطبيق الاستهداف</button><small>مش هيتبعت لـ Meta غير لما تنشر الكامبين، وتقدر تعدّل أي حاجة قبلها.</small>') + '</div></div>';
+}
+async function smartRun() {
+  smartEnsure(); const sm = launchState.smart; sm.status = 'loading'; sm.applied = false; sm.error = null; smartBusy = sm; renderLaunchStep();
+  try {
+    const r = await api.post('/api/ai-media-buyer/launch/smart-targeting', { productId: launchState.productId });
+    if (launchState.smart !== sm) return; // the product changed meanwhile
+    sm.result = r; sm.status = 'ready';
+    Object.assign(launchState.targeting, { mode: 'SMART', genders: r.gender, ageMin: r.ageMin, ageMax: r.ageMax, placementsMode: r.placements?.mode || 'AUTOMATIC', interests: (r.interests || []).map((i) => ({ id: i.id, name: i.name, why: i.why, audienceUpper: i.audienceUpper })), geoRegions: (r.locations?.regions || []).map((g) => ({ key: g.key, name: g.name })) });
+  } catch (e) { sm.status = 'error'; sm.error = e.message || 'تعذّر تحليل المنتج.'; }
+  if (smartBusy === sm) smartBusy = null;
+  saveLaunchSnapshot(); renderLaunchStep();
+}
+function wireSmartPanel(body) {
+  const sm = launchState.smart; const t = launchState.targeting; const touch = () => saveLaunchSnapshot();
+  const run = $('smRun'); if (run) run.onclick = smartRun;
+  if (sm.status === 'idle' && launchState.productId && !sm._auto) { sm._auto = true; smartRun(); return; } // choosing the mode runs the analysis once
+  if (sm.status !== 'ready') return;
+  body.querySelectorAll('[data-sm-gender]').forEach((b) => { b.onclick = () => { t.genders = b.dataset.smGender; body.querySelectorAll('[data-sm-gender]').forEach((x) => x.classList.toggle('on', x === b)); touch(); }; });
+  $('smAgeMin').onchange = (e) => { t.ageMin = Math.min(65, Math.max(18, Number(e.target.value) || 18)); if (t.ageMin > t.ageMax) t.ageMax = t.ageMin; $('smAgeMax').value = t.ageMax; e.target.value = t.ageMin; touch(); };
+  $('smAgeMax').onchange = (e) => { t.ageMax = Math.min(65, Math.max(18, Number(e.target.value) || 65)); if (t.ageMax < t.ageMin) t.ageMin = t.ageMax; $('smAgeMin').value = t.ageMin; e.target.value = t.ageMax; touch(); };
+  $('smPlacements').onchange = (e) => { t.placementsMode = e.target.value; touch(); };
+  body.querySelectorAll('[data-sm-rm]').forEach((b) => { b.onclick = () => { t.interests.splice(Number(b.dataset.smRm), 1); touch(); renderLaunchStep(); }; });
+  const ap = $('smApply'); if (ap) ap.onclick = () => { if (!(t.interests || []).length && !window.confirm('مفيش ولا اهتمام متحقق منه — هيتطبق النوع والسن فقط. تكمّل؟')) return; sm.applied = true; saveLaunchSnapshot(); UI.toast('اتطبّق الاستهداف الذكي — راجعه وعدّل براحتك.', 'success'); renderLaunchStep(); };
+  const q = $('smIntQ'); const res = $('smIntRes'); let timer = null; let seq = 0;
+  q.oninput = () => { clearTimeout(timer); const term = q.value.trim(); if (term.length < 2) { res.hidden = true; return; } timer = setTimeout(async () => {
+    const my = ++seq; res.hidden = false; res.innerHTML = '<div class="sm-r-msg">بدوّر في Meta…</div>';
+    try { const { results } = await api.get('/api/ai-media-buyer/launch/interest-search', { q: term }); if (my !== seq) return;
+      res.innerHTML = (results || []).length ? results.map((x, i) => '<button type="button" data-sm-add="' + i + '"><b>' + E(x.name) + '</b><small>' + E(smAud(x.audienceUpper) || '') + (x.path ? ' · ' + E(x.path) : '') + '</small></button>').join('') : '<div class="sm-r-msg">Meta مرجّعتش نتيجة.</div>';
+      res.querySelectorAll('[data-sm-add]').forEach((b) => { b.onclick = () => { const it = results[Number(b.dataset.smAdd)]; if ((t.interests || []).some((i) => i.id === it.id)) { UI.toast('الاهتمام ده مضاف.', 'error'); return; } if ((t.interests || []).length >= 10) { UI.toast('أقصى 10 اهتمامات.', 'error'); return; } t.interests.push({ id: it.id, name: it.name, why: 'أضفته بإيدك', audienceUpper: it.audienceUpper }); touch(); renderLaunchStep(); }; });
+    } catch (e) { if (my === seq) res.innerHTML = '<div class="sm-r-msg">تعذّر البحث في Meta: ' + E(e.message || '') + '</div>'; }
+  }, 350); };
 }
 
 /**
@@ -7368,9 +7441,10 @@ async function renderLaunchReview(body) {
     rrow('Instagram', launchState.instagramId ? (launchState.instagramKind === 'PAGE_BACKED' ? '🟦 إنستجرام الصفحة نفسها (' + E(launchState.instagramUsername) + ')' : '@' + E(launchState.instagramUsername)) : (launchState.platforms.instagram ? '⚠️ بدون حساب مخصص (هوية الصفحة فقط)' : '—')),
     rrow('Meta Pixel', E(launchState.pixelName || '—')),
     rrow('حدث التحويل', E(LAUNCH_CONVERSION_EVENTS.find((c) => c.v === launchState.conversionEvent)?.l || launchState.conversionEvent)),
-    rrow('الجمهور', launchState.targeting.mode === 'CUSTOM' ? `${{ ALL: 'الكل', MALE: 'رجال', FEMALE: 'نساء' }[launchState.targeting.genders]} · ${launchState.targeting.ageMin}-${launchState.targeting.ageMax}` : 'Broad'),
-    rrow('المحافظات', launchState.targeting.mode === 'CUSTOM' && launchState.targeting.geoRegions?.length ? launchState.targeting.geoRegions.map((r) => E(r.name)).join(' + ') : 'مصر بالكامل'),
-    rrow('المواضع', launchState.targeting.mode === 'CUSTOM' && launchState.targeting.placementsMode === 'FEED_ONLY' ? 'الفيد فقط' : 'تلقائي (Advantage+)'),
+    rrow('الجمهور', ['CUSTOM', 'SMART'].includes(launchState.targeting.mode) ? `${launchState.targeting.mode === 'SMART' ? '✨ ' : ''}${{ ALL: 'الكل', MALE: 'رجال', FEMALE: 'نساء' }[launchState.targeting.genders]} · ${launchState.targeting.ageMin}-${launchState.targeting.ageMax}` : 'Broad'),
+    ...(launchState.targeting.mode === 'SMART' && (launchState.targeting.interests || []).length ? [rrow('الاهتمامات', launchState.targeting.interests.map((i) => E(i.name)).join(' · '))] : []),
+    rrow('المحافظات', ['CUSTOM', 'SMART'].includes(launchState.targeting.mode) && launchState.targeting.geoRegions?.length ? launchState.targeting.geoRegions.map((r) => E(r.name)).join(' + ') : 'مصر بالكامل'),
+    rrow('المواضع', ['CUSTOM', 'SMART'].includes(launchState.targeting.mode) && launchState.targeting.placementsMode === 'FEED_ONLY' ? 'الفيد فقط' : 'تلقائي (Advantage+)'),
   ])}
         ${rcard('clock', 'التشغيل والنصوص', [
     rrow('وضع التشغيل', { NOW: 'تشغيل الآن', PAUSED_REVIEW: 'إنشاء متوقف للمراجعة', SCHEDULED: 'تشغيل في موعد محدد' }[launchState.launchMode]),

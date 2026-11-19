@@ -229,6 +229,8 @@ export function buildTargeting(job) {
   // 'ALL' -> genders omitted entirely, Meta's own Broad default.
   if (Number.isInteger(t.ageMin)) out.age_min = t.ageMin;
   if (Number.isInteger(t.ageMax)) out.age_max = t.ageMax;
+  // «AI Smart Targeting» interests — real Meta ids only (validated in launchBuilder.validateTargeting); none → nothing is added (Meta's own broad default)
+  if (Array.isArray(t.interests) && t.interests.length) out.flexible_spec = [{ interests: t.interests.map((i) => ({ id: String(i.id), name: i.name })) }];
   if (t.placementsMode === 'FEED_ONLY') {
     out.facebook_positions = ['feed'];
     out.instagram_positions = ['stream'];

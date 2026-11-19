@@ -832,6 +832,16 @@ router.get('/launch/geo-search', asyncRoute(async (req, res) => {
   const launch = await import('../services/amb/launchBuilder.js');
   res.json({ results: await launch.searchLaunchGeoLocations(String(req.query.q || '')) });
 }));
+// «AI Smart Targeting» — read only: analyses one product and proposes gender / age / Meta-verified interests / placements / locations with reasons. Writes nothing (not even to Meta).
+router.post('/launch/smart-targeting', asyncRoute(async (req, res) => {
+  const { suggestSmartTargeting } = await import('../services/amb/smartTargeting.js');
+  res.json(await suggestSmartTargeting({ productId: Number(req.body?.productId) }));
+}));
+// manual interest search for the targeting editor — Meta's real adinterest search (read only)
+router.get('/launch/interest-search', asyncRoute(async (req, res) => {
+  const { searchInterests } = await import('../services/amb/smartTargeting.js');
+  res.json({ results: await searchInterests(String(req.query.q || '')) });
+}));
 
 // Smart Decision Center Phase 1 — Step 1 "المنتج": Store -> Product, the
 // deterministic root-entity chain's starting point. Plain DB reads, zero

@@ -398,3 +398,34 @@
 .sc-radio input[type="radio"], .sc-opts input[type="checkbox"], .sc-radio input[type="checkbox"] { width: auto !important; min-width: 0; height: auto; flex: 0 0 auto; margin: 0; padding: 0; }
 .sc-radio label, .sc-opts label { cursor: pointer; line-height: 1.5; } .sc-radio small { color: var(--lp-dim, #566178); }
 .sc-final .pgp-actions { flex-wrap: wrap; }
+
+/* «AI Smart Targeting» — the third audience choice */
+.lp-modes:has(.lp-mode-ai) { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 760px) { .lp-modes:has(.lp-mode-ai) { grid-template-columns: 1fr; } }
+.lp-mode-ai { background: linear-gradient(135deg, #f6f1ff, #eef4ff); border-color: #cbbcff; }
+.lp-mode-ai.sel { border-color: #7a4dff; box-shadow: 0 0 0 1px rgba(122, 77, 255, .3), 0 8px 22px rgba(122, 77, 255, .16); }
+.sm-box { margin-top: 12px; border: 1px solid #d9cffc; border-radius: 18px; padding: 14px 16px; background: linear-gradient(180deg, #faf7ff, #fff); }
+.sm-head { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; } .sm-head b { font-size: 15px; display: block; } .sm-head small { color: var(--lp-faint); font-size: 11.5px; }
+.sm-spark { width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; font-size: 19px; background: linear-gradient(135deg, #7a4dff, #3b6cff); box-shadow: 0 6px 16px rgba(122, 77, 255, .35); }
+.sm-p { font-size: 12.5px; color: var(--lp-dim); line-height: 1.8; margin: 0 0 10px; }
+.sm-loading { display: flex; gap: 12px; align-items: center; padding: 8px 2px; } .sm-loading b { font-size: 13px; display: block; } .sm-loading small { color: var(--lp-faint); font-size: 11.5px; }
+.sm-top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.sm-badge { font-size: 11.5px; font-weight: 800; padding: 3px 12px; border-radius: 999px; } .sm-badge.grn { background: #dcfce7; color: #15803d; } .sm-badge.blue { background: #dbeafe; color: #1d4ed8; } .sm-badge.amber { background: #fef3c7; color: #b45309; }
+.sm-prod { font-size: 12.5px; font-weight: 700; flex: 1; } .sm-link { border: 0; background: none; color: #5b3df5; font-weight: 700; font-size: 12px; cursor: pointer; text-decoration: underline; }
+.sm-grid { display: grid; grid-template-columns: 1fr; gap: 0; margin-bottom: 4px; } .sm-grid > * { min-width: 0; }
+.sm-f { margin-bottom: 10px; } .sm-f > label { display: block; font-size: 12px; font-weight: 800; margin-bottom: 5px; } .sm-f > label small { font-weight: 600; color: var(--lp-faint); }
+.sm-seg { display: flex; gap: 6px; } .sm-seg button { flex: 1; border: 1px solid var(--lp-line); background: #fff; border-radius: 12px; padding: 8px 6px; font: 700 13px inherit; cursor: pointer; } .sm-seg button.on { background: linear-gradient(135deg, #3b6cff, #7a4dff); color: #fff; border-color: transparent; }
+.sm-age { display: flex; align-items: center; gap: 8px; max-width: 320px; } .sm-age input { flex: 1 1 0; width: 0 !important; min-width: 0 !important; box-sizing: border-box; } .sm-grid select { width: 100%; min-width: 0; box-sizing: border-box; }
+.sm-chips { display: flex; flex-wrap: wrap; gap: 7px; } .sm-none { font-size: 12px; color: var(--lp-faint); }
+.sm-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px; border-radius: 999px; background: #ede9fe; color: #4c1d95; font-size: 12.5px; } .sm-chip small { color: #7c6bb5; font-size: 11px; }
+.sm-chip button { border: 0; background: rgba(76, 29, 149, .12); width: 20px; height: 20px; border-radius: 50%; cursor: pointer; line-height: 1; color: #4c1d95; }
+.sm-add { position: relative; margin-top: 8px; } .sm-add input { width: 100%; box-sizing: border-box; }
+.sm-results { position: absolute; z-index: 20; inset-inline: 0; top: 100%; margin-top: 4px; background: #fff; border: 1px solid var(--lp-line); border-radius: 12px; box-shadow: 0 14px 34px rgba(30, 40, 90, .18); max-height: 240px; overflow: auto; }
+.sm-results button { display: block; width: 100%; text-align: start; border: 0; background: none; padding: 9px 12px; cursor: pointer; font: inherit; border-bottom: 1px solid #f0f2fa; } .sm-results button:hover { background: #f4f1ff; } .sm-results small { display: block; color: var(--lp-faint); font-size: 11px; direction: ltr; text-align: start; }
+.sm-r-msg { padding: 10px 12px; font-size: 12px; color: var(--lp-dim); }
+.sm-loc { font-size: 12.5px; font-weight: 700; } .sm-loc small { color: var(--lp-faint); font-weight: 600; }
+.sm-why { margin: 8px 0; border: 1px solid var(--lp-line); border-radius: 14px; background: #fff; padding: 8px 12px; } .sm-why summary { cursor: pointer; font-weight: 800; font-size: 12.5px; } .sm-why ul { margin: 8px 0 2px; padding-inline-start: 18px; font-size: 12px; line-height: 1.85; color: var(--lp-dim); } .sm-why li b { color: #1b2447; }
+.sm-notes { margin: 8px 0; padding: 8px 28px 8px 12px; background: #fff8ec; border: 1px solid #fde2b0; border-radius: 12px; font-size: 12px; color: #7a4b00; line-height: 1.8; }
+.sm-apply { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; } .sm-apply small { color: var(--lp-faint); font-size: 11.5px; } .sm-ok { color: #15803d; font-weight: 800; font-size: 13px; background: #dcfce7; padding: 7px 14px; border-radius: 12px; }
+.lp-modes:has(.lp-mode-ai) .lp-mode { padding-inline-end: 40px; }
+@media (max-width: 760px) { .sm-grid { grid-template-columns: 1fr; } }
