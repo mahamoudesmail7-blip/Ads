@@ -39,7 +39,7 @@ ok('AI nonsense (bad gender, no ages) → nulls, never a guess', ST.sanitizeAi({
 ok('a too-narrow age range is widened to at least 8 years', (() => { const a = ST.sanitizeAi({ ageMin: 30, ageMax: 32 }, {}); return a.ageMax - a.ageMin >= 8; })());
 
 console.log('\n2. the whole suggestion — AI answers');
-const real0 = { real: async () => null, geoSearch: async () => [] };
+const real0 = { real: async () => null, geoSearch: async () => [], memory: async () => null }; // no product memory here (covered by productMemoryTest.js)
 let r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...ctx(), ...aiOk(AI_ANSWER), ...real0, meta: meta() } });
 ok('source AI: gender FEMALE (الحريمي), age 26-50 — from the AI, with the AI’s reasons', r.source === 'AI' && r.gender === 'FEMALE' && r.genderLabel === 'حريمي' && r.ageMin === 26 && r.ageMax === 50 && r.sources.gender === 'AI' && r.reasons.gender.includes('ست البيت'));
 ok('at most 5 interests, ALL with a real Meta id and audience size (nothing invented)', r.interests.length === 5 && r.interests.every((i) => /^\d{10,}$/.test(i.id) && i.audienceUpper > 0));
@@ -47,7 +47,7 @@ ok('a similar-name candidate is replaced by Meta’s closest real interest and s
 ok('too-narrow audiences («Tiny», 9k) and sensitive interests («Islam») are never proposed', !r.interests.some((i) => /tiny|islam/i.test(i.name)));
 ok('order: exact Meta matches first (Cooking, Kitchen, Home appliance, Baking), the substitute after', r.interests.map((i) => i.name).join() === 'Cooking,Kitchen,Home appliance,Baking,Air fryers recipe', r.interests.map((i) => i.name).join());
 ok('applying-ready payload: SMART mode with {id,name} interests only, placements AUTOMATIC, Egypt-wide (no proven governorate)', r.targeting.mode === 'SMART' && r.targeting.interests.length === 5 && r.targeting.interests.every((i) => Object.keys(i).sort().join() === 'id,name') && r.targeting.placementsMode === 'AUTOMATIC' && r.locations.mode === 'EGYPT' && r.targeting.geoRegions.length === 0);
-ok('verification is reported honestly (candidates vs verified) and notes say the age/gender are only a first proposal (no proven segment)', r.verification.available === true && r.verification.candidates === 6 && r.verification.verified === 5 && r.notes.some((n) => n.includes('اقتراح مبدئي')));
+ok('verification is reported honestly (candidates vs verified) and notes say the age/gender are only a first proposal (no proven segment)', r.verification.available === true && r.verification.candidates === 6 && r.verification.verified === 5 && r.notes.some((n) => n.includes('مبني على فهم المنتج')));
 
 console.log('\n3. AI not available → the rule table, still verified against Meta, and it says so');
 searched.length = 0;
@@ -59,11 +59,24 @@ r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...ctx(), ai: false, 
 ok('AI key not configured → same fallback, no crash', r.source === 'RULES' && r.aiError.includes('مفتاح'));
 
 console.log('\n4. real buyers win over the AI (proven segments only)');
-const realProven = { real: async () => ({ window: { name: 'last30' }, best: { gender: { segment: 'رجال' }, age: { segment: '25-34' }, governorate: { segment: 'القاهرة' } }, governorates: [{ segment: 'القاهرة', orders: 40 }, { segment: 'الجيزة', orders: 22 }, { segment: 'مكان غلط', orders: 9 }, { segment: 'الإسكندرية', orders: 0 }] }), geoSearch: async (q) => (q === 'القاهرة' ? [{ key: '2551', name: 'القاهرة' }] : q === 'الجيزة' ? [{ key: '2552', name: 'الجيزة' }] : []) };
+const realProven = { real: async () => ({ window: { name: 'last30' }, best: { gender: { segment: 'رجال' }, age: { segment: '25-34' }, governorate: { segment: 'القاهرة' } }, governorates: [{ segment: 'القاهرة', orders: 40 }, { segment: 'الجيزة', orders: 22 }, { segment: 'مكان غلط', orders: 9 }, { segment: 'الإسكندرية', orders: 0 }] }), memory: async () => null, geoSearch: async (q) => (q === 'القاهرة' ? [{ key: '2551', name: 'القاهرة' }] : q === 'الجيزة' ? [{ key: '2552', name: 'الجيزة' }] : []) };
 r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...ctx(), ...aiOk(AI_ANSWER), ...realProven, meta: meta() } });
 ok('gender MALE + age 20-39 from the product’s own buyers (the AI said FEMALE 26-50) — labelled REAL_DATA', r.gender === 'MALE' && r.ageMin === 20 && r.ageMax === 39 && r.sources.gender === 'REAL_DATA' && r.sources.age === 'REAL_DATA' && r.source === 'REAL_DATA+AI' && r.reasons.gender.includes('رجال') && r.reasons.age.includes('25-34'));
 ok('a proven governorate winner earns a REAL region restriction (Meta keys only; an unresolvable name is skipped)', r.locations.mode === 'REGIONS' && r.locations.regions.map((g) => g.key).join() === '2551,2552' && r.targeting.geoRegions.length === 2);
 ok('with real data there is no «first proposal only» warning', !r.notes.some((n) => n.includes('اقتراح مبدئي')));
+
+console.log('\n4b. a real age bracket that DISAGREES with the product’s usual age does not override it (a Broad campaign can simply deliver cheapest to 55-64)');
+const realAge = (seg) => ({ real: async () => ({ window: { name: 'last30' }, best: { gender: null, age: { segment: seg }, governorate: null }, governorates: [] }), geoSearch: async () => [], memory: async () => null });
+const massage = { getContext: async () => ({ name: 'Massage Roller', category: 'Massage', price: 400, features: [] }) };
+r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...massage, ai: false, ...realAge('55-64'), meta: meta() } });
+ok('massage roller, sales say 55-64: the usual age (rules 20-45) is used, NOT 50-65 — source RULES', r.ageMin === 20 && r.ageMax === 45 && r.sources.age === 'RULES', JSON.stringify([r.ageMin, r.ageMax, r.sources.age]));
+ok('…the sales age is offered as an alternative (50-65 for 55-64) and the note explains why it was not used', r.alternatives.age?.ageMin === 50 && r.alternatives.age?.ageMax === 65 && r.alternatives.age?.segment === '55-64' && r.notes.some((n) => n.includes('55-64') && n.includes('الأرخص')));
+r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...massage, ...aiOk(AI_ANSWER), ...realAge('55-64'), meta: meta() } });
+ok('same with the AI’s range (26-50): 55-64 does not overlap it → the AI range stays', r.ageMin === 26 && r.ageMax === 50 && r.sources.age === 'AI' && !!r.alternatives.age);
+r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...massage, ai: false, ...realAge('35-44'), meta: meta() } });
+ok('a sales bracket that AGREES (35-44 vs 20-45) is used: 30-49, source REAL_DATA, no alternative needed', r.ageMin === 30 && r.ageMax === 49 && r.sources.age === 'REAL_DATA' && !r.alternatives.age && r.reasons.age.includes('متوافقة'));
+r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...massage, ai: false, ...real0, meta: meta() } });
+ok('no sales data: no alternatives at all', JSON.stringify(r.alternatives) === '{}');
 
 console.log('\n5. Meta not reachable → no invented interests');
 r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...ctx(), ...aiOk(AI_ANSWER), ...real0, meta: meta({ getToken: async () => { throw new Error('no token'); } }) } });

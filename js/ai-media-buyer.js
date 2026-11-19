@@ -6431,7 +6431,24 @@ async function renderLaunchPlatforms(body) {
  * Read only: POST /launch/smart-targeting analyses the chosen product (its REAL buyers when proven, the AI, or the Egyptian-market rules) and every proposed interest is checked against Meta itself.
  * The result fills launchState.targeting (mode SMART) as an EDITABLE draft; «تطبيق الاستهداف» confirms it. Nothing is sent to Meta from here. */
 const SM_GENDERS = [['MALE', 'رجالي'], ['FEMALE', 'حريمي'], ['ALL', 'الاتنين']];
-const SM_SOURCE = { 'REAL_DATA+AI': ['مبيعاتك الحقيقية + AI + Meta', 'grn'], 'REAL_DATA+RULES': ['مبيعاتك الحقيقية + قواعد + Meta', 'grn'], AI: ['AI + تحقق Meta', 'blue'], RULES: ['قواعد السوق المصري + تحقق Meta', 'amber'] };
+const SM_SOURCE = { 'HISTORY+AI': ['ذاكرة المنتج + AI + Meta', 'grn'], 'HISTORY+RULES': ['ذاكرة المنتج + قواعد + Meta', 'grn'], 'REAL_DATA+AI': ['مبيعاتك الحقيقية + AI + Meta', 'grn'], 'REAL_DATA+RULES': ['مبيعاتك الحقيقية + قواعد + Meta', 'grn'], AI: ['AI + تحقق Meta', 'blue'], RULES: ['قواعد السوق المصري + تحقق Meta', 'amber'] };
+const SM_ORIGIN = { PROVEN: ['نجح قبل كده', 'grn'], NEW_RELATED: ['جديد قريب', 'blue'], PRIOR: ['اقتراح المنتج', 'gray'] };
+const SM_VERDICT = { WIN: ['رابح', 'grn'], LOSS: ['خاسر', 'red'], NEUTRAL: ['متوسط', 'gray'], INCONCLUSIVE: ['عينة صغيرة', 'amber'] };
+const SM_CONF = { HIGH: 'عالية', MEDIUM: 'متوسطة', LOW: 'منخفضة' };
+const smM = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 }));
+/** «ذاكرة المنتج»: what the system learned from this product's own past tests — every number is from the product's real data. */
+function smMemoryHtml(r) {
+  const m = r.memory; const conf = r.confidence ? '<span class="sm-conf ' + (r.confidence.level || 'LOW') + '">ثقة ' + E(SM_CONF[r.confidence.level] || '') + '</span>' : '';
+  if (!m?.hasHistory) return '<div class="sm-mem new"><b>🌱 منتج جديد على السيستم</b><p>' + E(m?.summary || 'مفيش حملات سابقة للمنتج ده.') + ' الاقتراح تحت <b>مبني على فهم المنتج</b> مش على نتايج حملات، وده بيتحسّن بعد أول تيست.</p>' + conf + '</div>';
+  const W = [['w7', '7 أيام'], ['w14', '14 يوم'], ['w30', '30 يوم'], ['w60', '60 يوم'], ['w90', '90 يوم']];
+  const wTbl = '<table class="sm-tbl"><tr><th></th>' + W.map((w) => '<th>' + w[1] + '</th>').join('') + '</tr><tr><td>الصرف</td>' + W.map((w) => '<td>' + smM(m.windows[w[0]]?.spend) + '</td>').join('') + '</tr><tr><td>المشتريات</td>' + W.map((w) => '<td>' + smM(m.windows[w[0]]?.purchases) + '</td>').join('') + '</tr><tr><td>CPA</td>' + W.map((w) => '<td>' + smM(m.windows[w[0]]?.cpa) + '</td>').join('') + '</tr></table>';
+  const T = Object.entries(m.audienceTypes || {}); const tTbl = T.length ? '<table class="sm-tbl"><tr><th>نوع الجمهور</th><th>Ad Sets</th><th>الصرف</th><th>مشتريات</th><th>CPA</th><th>رابح / خاسر</th></tr>' + T.map(([k, v]) => '<tr><td>' + E(v.label) + '</td><td>' + v.adSets + '</td><td>' + smM(v.spend) + '</td><td>' + v.purchases + '</td><td>' + smM(v.cpa) + '</td><td>' + v.wins + ' / ' + v.losses + '</td></tr>').join('') + '</table>' : '';
+  const sets = (m.adSets || []).slice(0, 5).map((a) => { const v = SM_VERDICT[a.verdict] || ['—', 'gray']; return '<li><span class="sm-v ' + v[1] + '">' + v[0] + '</span> <b>' + E(a.name) + '</b>' + (a.smart ? ' <em>✨ Smart</em>' : '') + ' — ' + E(a.why) + '</li>'; }).join('');
+  const learn = (m.learnings || []).slice(0, 8).map((l) => '<li><i class="sm-dot ' + (l.confidence || 'LOW') + '"></i>' + E(l.text) + '</li>').join('');
+  const jr = (m.journal || []).slice(-3).map((j) => '<li>' + E(j.text) + '</li>').join('');
+  const strat = r.strategy ? '<div class="sm-strat"><b>التوصية: ' + E({ BOTH: 'Broad + اهتمامات مع بعض', INTERESTS: 'اهتمامات', BROAD: 'Broad', EXPLORE: 'استكشافي' }[r.strategy.mode] || '') + '</b><p>' + E(r.strategy.reason) + '</p><ul>' + (r.adSetsPlan || []).map((p) => '<li><b>' + E(p.label) + '</b> — ' + E(p.note) + '</li>').join('') + '</ul><small>«تطبيق الاستهداف» بيحط الاهتمامات في الكامبين دي. لو عايز Ad Set واسع للمقارنة اعمله كتيست Broad بنفس المنتج (طريقة الرفع زي ما هي).</small></div>' : '';
+  return '<details class="sm-mem" open><summary>🧠 ذاكرة المنتج — اتعمله ' + m.tests + ' حملة ' + conf + '</summary><p class="sm-mem-sum">' + E(m.summary) + '</p>' + wTbl + tTbl + (sets ? '<ul class="sm-sets">' + sets + '</ul>' : '') + (learn ? '<div class="sm-learn"><b>اللي اتعلّمه السيستم</b><ul>' + learn + '</ul></div>' : '') + (jr ? '<div class="sm-learn"><b>آخر تقييمات نهائية</b><ul>' + jr + '</ul></div>' : '') + strat + ((m.limits || []).length ? '<ul class="sm-limits">' + m.limits.map((x) => '<li>' + E(x) + '</li>').join('') + '</ul>' : '') + '</details>';
+}
 const smAud = (n) => { const v = Number(n); if (!Number.isFinite(v) || v <= 0) return ''; return v >= 1e6 ? (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + ' مليون' : Math.round(v / 1e3) + ' ألف'; };
 let smartBusy = null; // the draft currently being analysed (a draft restored from storage mid-analysis is not busy: it starts over)
 function smartEnsure() {
@@ -6447,19 +6464,22 @@ function smartPanelHtml() {
   if (sm.status === 'error') return '<div class="sm-box">' + head + '<div class="lp-note" style="border-color:#ef4444;color:#b91c1c">' + E(sm.error || 'تعذّر التحليل.') + '</div><button type="button" class="amb-btn primary" id="smRun">حاول تاني</button></div>';
   if (sm.status !== 'ready' || !sm.result) return '<div class="sm-box">' + head + '<p class="sm-p">هيقترح لك: النوع، السن، أفضل 5 اهتمامات موجودة فعلًا على Meta، المواضع، والمحافظات — مع سبب كل اختيار.</p><button type="button" class="amb-btn primary" id="smRun">✨ حلّل المنتج واقترح الاستهداف</button></div>';
   const r = sm.result; const src = SM_SOURCE[r.source] || ['—', 'blue'];
-  const ints = (t.interests || []).map((i, ix) => '<span class="sm-chip" title="' + E(i.why || '') + '"><b>' + E(i.name) + '</b>' + (i.audienceUpper ? '<small>' + E(smAud(i.audienceUpper)) + '</small>' : '') + '<button type="button" data-sm-rm="' + ix + '" aria-label="إزالة">×</button></span>').join('');
+  const originOf = (i) => (r.interests || []).find((x) => x.id === i.id)?.origin || null;
+  const ints = (t.interests || []).map((i, ix) => { const o = SM_ORIGIN[originOf(i)]; return '<span class="sm-chip" title="' + E(i.why || '') + '"><b>' + E(i.name) + '</b>' + (o ? '<em class="sm-org ' + o[1] + '">' + o[0] + '</em>' : '') + (i.audienceUpper ? '<small>' + E(smAud(i.audienceUpper)) + '</small>' : '') + '<button type="button" data-sm-rm="' + ix + '" aria-label="إزالة">×</button></span>'; }).join('');
   const why = [['النوع', r.reasons?.gender], ['السن', r.reasons?.age], ['الاهتمامات', r.reasons?.interests], ['المحافظات', r.locations?.reason], ['المواضع', r.placements?.reason]].filter((x) => x[1]).map((x) => '<li><b>' + x[0] + ':</b> ' + E(x[1]) + '</li>').join('');
   const intWhy = (r.interests || []).filter((i) => i.why).map((i) => '<li><b>' + E(i.name) + (i.requested ? ' <em>(أقرب اسم في Meta لـ«' + E(i.requested) + '»)</em>' : '') + ':</b> ' + E(i.why) + '</li>').join('');
   return '<div class="sm-box">' + head + '<div class="sm-top"><span class="sm-badge ' + src[1] + '">' + E(src[0]) + '</span><span class="sm-prod">' + E(r.product?.name || launchState.productName || '') + '</span><button type="button" class="sm-link" id="smRun">إعادة التحليل</button></div>'
+    + smMemoryHtml(r)
     + '<div class="sm-grid">'
     + '<div class="sm-f"><label>النوع</label><div class="sm-seg">' + SM_GENDERS.map(([v, l]) => '<button type="button" data-sm-gender="' + v + '" class="' + (t.genders === v ? 'on' : '') + '">' + l + '</button>').join('') + '</div></div>'
-    + '<div class="sm-f"><label>السن (من — إلى)</label><div class="sm-age"><input class="amb-input" type="number" min="18" max="65" id="smAgeMin" value="' + E(t.ageMin) + '"><span>—</span><input class="amb-input" type="number" min="18" max="65" id="smAgeMax" value="' + E(t.ageMax) + '"></div></div>'
+    + '<div class="sm-f"><label>السن (من — إلى)</label><div class="sm-age"><input class="amb-input" type="number" min="18" max="65" id="smAgeMin" value="' + E(t.ageMin) + '"><span>—</span><input class="amb-input" type="number" min="18" max="65" id="smAgeMax" value="' + E(t.ageMax) + '"></div>' + (r.alternatives?.age ? '<button type="button" class="sm-link" id="smUseSalesAge" title="السن اللي مبيعاتك الفعلية بتقول عليه">استخدم سن مبيعاتك (' + E(r.alternatives.age.ageMin) + '–' + E(r.alternatives.age.ageMax) + ')</button>' : '') + '</div>'
     + '<div class="sm-f"><label>المواضع</label><select class="amb-input" id="smPlacements"><option value="AUTOMATIC" ' + (t.placementsMode === 'AUTOMATIC' ? 'selected' : '') + '>تلقائي (Advantage+)</option><option value="FEED_ONLY" ' + (t.placementsMode === 'FEED_ONLY' ? 'selected' : '') + '>الفيد فقط</option></select></div></div>'
     + '<div class="sm-f"><label>أفضل الاهتمامات <small>(كلها ليها ID حقيقي في Meta)</small></label><div class="sm-chips" id="smChips">' + (ints || '<span class="sm-none">مفيش اهتمامات متحقق منها — ضيف من البحث تحت.</span>') + '</div>'
     + '<div class="sm-add"><input class="amb-input" id="smIntQ" type="search" placeholder="ضيف اهتمام (ابحث بالإنجليزي: Cooking, Gym…)" autocomplete="off"><div class="sm-results" id="smIntRes" hidden></div></div></div>'
     + '<div class="sm-f"><label>المحافظات</label><div class="sm-loc">' + ((t.geoRegions || []).length ? t.geoRegions.map((g) => E(g.name)).join(' + ') : 'مصر بالكامل') + ' <small>— عدّلها من الكوكب على الشمال</small></div></div>'
     + '<details class="sm-why" open><summary>ليه الاختيار ده؟</summary><ul>' + why + intWhy + '</ul></details>'
     + ((r.notes || []).length ? '<ul class="sm-notes">' + r.notes.map((n) => '<li>' + E(n) + '</li>').join('') + '</ul>' : '')
+    + (r.advantage ? '<div class="sm-adv">ℹ️ ' + E(r.advantage.text) + '</div>' : '')
     + '<div class="sm-apply">' + (sm.applied ? '<span class="sm-ok">✅ اتطبّق — أي تعديل بتعمله دلوقتي بيتحفظ لوحده</span>' : '<button type="button" class="amb-btn primary" id="smApply">تطبيق الاستهداف</button><small>مش هيتبعت لـ Meta غير لما تنشر الكامبين، وتقدر تعدّل أي حاجة قبلها.</small>') + '</div></div>';
 }
 async function smartRun() {
@@ -6481,6 +6501,7 @@ function wireSmartPanel(body) {
   body.querySelectorAll('[data-sm-gender]').forEach((b) => { b.onclick = () => { t.genders = b.dataset.smGender; body.querySelectorAll('[data-sm-gender]').forEach((x) => x.classList.toggle('on', x === b)); touch(); }; });
   $('smAgeMin').onchange = (e) => { t.ageMin = Math.min(65, Math.max(18, Number(e.target.value) || 18)); if (t.ageMin > t.ageMax) t.ageMax = t.ageMin; $('smAgeMax').value = t.ageMax; e.target.value = t.ageMin; touch(); };
   $('smAgeMax').onchange = (e) => { t.ageMax = Math.min(65, Math.max(18, Number(e.target.value) || 65)); if (t.ageMax < t.ageMin) t.ageMin = t.ageMax; $('smAgeMin').value = t.ageMin; e.target.value = t.ageMax; touch(); };
+  const useAge = $('smUseSalesAge'); if (useAge) useAge.onclick = () => { const a = sm.result.alternatives.age; t.ageMin = a.ageMin; t.ageMax = a.ageMax; touch(); renderLaunchStep(); };
   $('smPlacements').onchange = (e) => { t.placementsMode = e.target.value; touch(); };
   body.querySelectorAll('[data-sm-rm]').forEach((b) => { b.onclick = () => { t.interests.splice(Number(b.dataset.smRm), 1); touch(); renderLaunchStep(); }; });
   const ap = $('smApply'); if (ap) ap.onclick = () => { if (!(t.interests || []).length && !window.confirm('مفيش ولا اهتمام متحقق منه — هيتطبق النوع والسن فقط. تكمّل؟')) return; sm.applied = true; saveLaunchSnapshot(); UI.toast('اتطبّق الاستهداف الذكي — راجعه وعدّل براحتك.', 'success'); renderLaunchStep(); };

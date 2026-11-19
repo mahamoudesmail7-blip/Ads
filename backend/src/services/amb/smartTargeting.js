@@ -9,6 +9,8 @@ import { generateText, TIERS, isAiConfigured } from '../aiGateway/index.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { verifyInterests, searchAdInterest } from './productStrategy/metaInterests.js';
 import { getContext, realAudience, parseJson } from './productStrategy/engine.js';
+import { getProductMemory, recommendFromMemory, RULES as MEM_RULES } from './productMemory.js';
+import { graphFetch } from '../metaGraphClient.js';
 import { logger } from '../../logger.js';
 
 export const SMART_VERSION = 'smart-targeting-2026-11-v1';
@@ -90,7 +92,7 @@ async function realEvidence(productId, deps) {
     const ra = await (deps.real || ((id) => realAudience(id, deps.realDeps || {})))(productId); if (!ra) return null;
     const g = genderOfSegment(ra.best?.gender?.segment); const ageSeg = ra.best?.age?.segment ? parseAgeSegment(ra.best.age.segment) : null;
     const govs = (ra.best?.governorate?.segment && Array.isArray(ra.governorates)) ? ra.governorates.filter((r) => (r.orders || 0) > 0).slice(0, 3).map((r) => r.segment) : [];
-    return { gender: g, genderText: ra.best?.gender?.segment || null, ageSeg, age: ra.best?.age?.segment || null, governorates: govs, windowName: ra.window?.name || null };
+    return { gender: g, genderText: ra.best?.gender?.segment || null, ageSeg, age: ra.best?.age?.segment || null, governorates: govs, windowName: ra.window?.name || null, raw: ra };
   } catch (e) { logger.warn('[smartTargeting] real audience unavailable', { message: e.message }); return null; }
 }
 async function resolveRegions(names, deps) {
@@ -102,45 +104,103 @@ async function resolveRegions(names, deps) {
 /**
  * @param {{ productId: number, deps?: object }} p   deps (tests): ai, generate, real, meta, geoSearch, getContext
  */
+// ───────────── memory helpers ─────────────
+/** What this product's OWN tests proved about gender / age: only a WIN with a real sample (not «small sample») counts, and the range is exactly the one that was tested. */
+export function historyEvidence(m) {
+  const wins = (m?.adSets || []).filter((x) => x.verdict === 'WIN' && x.confidence !== 'LOW' && x.targeting).sort((x, y) => x.cpa - y.cpa); const out = { gender: null, age: null };
+  const g = wins.find((x) => x.targeting.genders !== 'ALL'); if (g) out.gender = { value: g.targeting.genders, text: `الجنس ${GENDER_AR[g.targeting.genders]} كسب في تيست حقيقي: «${g.name}» CPA ${g.cpa} ج بعد ${g.purchases} مشتريات.` };
+  const a = wins.find((x) => x.targeting.ageMin > 18 || x.targeting.ageMax < 65); if (a) { const label = `${a.targeting.ageMin}–${a.targeting.ageMax}`; out.age = { min: a.targeting.ageMin, max: a.targeting.ageMax, label, text: `السن ${label} كسب في تيست حقيقي: «${a.name}» CPA ${a.cpa} ج بعد ${a.purchases} مشتريات — وهو متوافق مع العمر المعتاد للمنتج.` }; }
+  return out;
+}
+export function demographicsOf(ra) { return { window: ra.window?.name || null, gender: ra.gender || [], age: ra.age || [], governorates: (ra.governorates || []).slice(0, 10), best: { gender: ra.best?.gender?.segment || null, age: ra.best?.age?.segment || null, governorate: ra.best?.governorate?.segment || null }, note: ra.note || null }; }
+/** The memory as the screen needs it (the full ad-set list stays on the server). */
+export function trimMemory(m) {
+  return { hasHistory: m.hasHistory, tests: m.tests, baseline: m.baseline ?? null, windows: m.windows, audienceTypes: m.audienceTypes, learnings: m.learnings, summary: m.summary, limits: m.limits, journal: m.journal, demographics: m.demographics || null, smartTests: m.smartTests,
+    adSets: (m.adSets || []).slice(0, 8).map((x) => ({ id: x.id, name: x.name, type: x.type, verdict: x.verdict, confidence: x.confidence, spend: x.spend, purchases: x.purchases, cpa: x.cpa, smart: x.smart, why: x.why })), interestsTested: (m.interests || []).length };
+}
+/** Meta's own «related interests» for some interests (read only) — real ids, sensitive / tiny audiences dropped. */
+export async function relatedInterests(names, deps = {}) {
+  const token = await (deps.getToken || getDecryptedToken)();
+  const data = await (deps.suggest || ((t, n) => graphFetch('/search', { type: 'adinterestsuggestion', interest_list: JSON.stringify(n.slice(0, 5)), limit: 15, locale: 'en_US' }, t)))(token, names);
+  const list = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+  return list.filter((r) => r?.id && r?.name && !SENSITIVE.test(r.name) && !(r.audience_size_upper_bound != null && Number(r.audience_size_upper_bound) < MIN_AUDIENCE_UPPER)).map((r) => ({ id: String(r.id), name: String(r.name), audienceLower: r.audience_size_lower_bound ?? null, audienceUpper: r.audience_size_upper_bound ?? null, path: Array.isArray(r.path) ? r.path.join(' › ') : (r.topic || null) }));
+}
+
+
 export async function suggestSmartTargeting({ productId, deps = {} }) {
   const id = Number(productId); if (!Number.isInteger(id) || id <= 0) { const e = new Error('اختار منتج الأول.'); e.status = 400; throw e; }
   const context = await (deps.getContext || getContext)(id, deps.ctxDeps || {});
   const real = await realEvidence(id, deps);
+  // the product's MEMORY: every past test of THIS product (its own campaigns only), judged on real numbers — empty for a new product
+  let memory = null; try { memory = await (deps.memory || ((pid) => getProductMemory(pid, { persist: true })))(id); } catch (e) { logger.warn('[smartTargeting] memory unavailable', { message: e.message }); }
+  const hasHistory = !!memory?.hasHistory; const rec = hasHistory ? recommendFromMemory(memory) : null; const hist = hasHistory ? historyEvidence(memory) : null;
+  if (hasHistory && real?.raw) memory.demographics = demographicsOf(real.raw);
+  const alternatives = {}; // proposals the owner can switch to with one click (e.g. the age of his own sales when it disagrees with the usual age of the product)
   const sources = { gender: null, age: null, interests: null }; const reasons = { gender: '', age: '', interests: '', locations: '', placements: '' }; const notes = [];
   let ai = null; let aiError = null;
   try { ai = await askAi(context, real ? { gender: real.genderText, age: real.age } : null, deps, id); } catch (e) { aiError = e.code === 'NOT_CONFIGURED' ? e.message : 'الذكاء الاصطناعي مش متاح دلوقتي (رصيد/مفتاح/عطل مؤقت).'; logger.warn('[smartTargeting] AI unavailable', { message: e.message }); }
   const rule = ruleProfile(context.name, context.category);
 
-  // gender / age: real buyers (proven winner) > AI > rules
+  // gender: a gender that WON in this product's own tests > the product's proven buyer segment > AI > rules
   let gender; let ageMin; let ageMax;
-  if (real?.gender) { gender = real.gender; sources.gender = 'REAL_DATA'; reasons.gender = `من بيانات مشتريّن منتجك الفعلية: أقوى شريحة ${real.genderText}.`; }
+  if (hist?.gender) { gender = hist.gender.value; sources.gender = 'HISTORY'; reasons.gender = hist.gender.text; }
+  else if (real?.gender) { gender = real.gender; sources.gender = 'REAL_DATA'; reasons.gender = `من بيانات مشتريّن منتجك الفعلية: أقوى شريحة ${real.genderText}.`; }
   else if (ai?.gender) { gender = ai.gender; sources.gender = 'AI'; reasons.gender = ai.genderReason || `الذكاء الاصطناعي رشّح ${GENDER_AR[gender]} للمنتج ده.`; }
   else { gender = rule.gender; sources.gender = 'RULES'; reasons.gender = rule.why; }
-  if (real?.ageSeg) { ageMin = clamp(real.ageSeg[0] - 5, 18, 65); ageMax = clamp(real.ageSeg[1] + 5, 18, 65); sources.age = 'REAL_DATA'; reasons.age = `أقوى شريحة عمرية في مبيعاتك ${real.age} — وسّعتها 5 سنين من كل ناحية عشان التوزيع ميضيقش.`; }
-  else if (ai?.ageMin != null) { ageMin = ai.ageMin; ageMax = ai.ageMax; sources.age = 'AI'; reasons.age = ai.ageReason || 'نطاق عمر مرشّح من الذكاء الاصطناعي حسب نوع المنتج.'; }
-  else { ageMin = rule.ageMin; ageMax = rule.ageMax; sources.age = 'RULES'; reasons.age = rule.why; }
+  // age: the usual age of this kind of product (AI, else the rule table) is the PRIOR. Evidence (an age range that WON in this product's own tests, then the product's best Meta age bracket) only overrides it when it AGREES with it
+  // (overlaps at least half) — a single Meta bracket can just be the cheapest place Meta delivered (e.g. 55-64 on a Broad campaign), not the real buyer. When it disagrees the prior stays, the screen says why and offers it in one click.
+  const prior = ai?.ageMin != null ? { min: ai.ageMin, max: ai.ageMax, src: 'AI', reason: ai.ageReason || 'نطاق عمر مرشّح من الذكاء الاصطناعي حسب نوع المنتج.' } : { min: rule.ageMin, max: rule.ageMax, src: 'RULES', reason: rule.why };
+  ageMin = prior.min; ageMax = prior.max; sources.age = prior.src; reasons.age = prior.reason;
+  const evidence = [];
+  if (hist?.age) evidence.push({ min: hist.age.min, max: hist.age.max, src: 'HISTORY', label: hist.age.label, agree: hist.age.text, segment: hist.age.label });
+  if (real?.ageSeg) { const rMin = clamp(real.ageSeg[0] - 5, 18, 65), rMax = clamp(real.ageSeg[1] + 5, 18, 65); evidence.push({ min: rMin, max: rMax, src: 'REAL_DATA', label: real.age, agree: `أقوى شريحة عمرية في مبيعاتك ${real.age} وهي متوافقة مع العمر المعتاد للمنتج (${prior.min}–${prior.max}) — وسّعتها 5 سنين من كل ناحية عشان التوزيع ميضيقش.`, segment: real.age }); }
+  let usedAge = false;
+  for (const ev of evidence) {
+    const overlap = Math.max(0, Math.min(ev.max, prior.max) - Math.max(ev.min, prior.min)); const ratio = overlap / Math.max(1, Math.min(ev.max - ev.min, prior.max - prior.min));
+    if (!usedAge && ratio >= 0.5) { ageMin = ev.min; ageMax = ev.max; sources.age = ev.src; reasons.age = ev.agree; usedAge = true; }
+    else if (!usedAge && ratio < 0.5 && !alternatives.age) { alternatives.age = { ageMin: ev.min, ageMax: ev.max, segment: ev.segment }; notes.push(`بيانات ${ev.src === 'HISTORY' ? 'تيستات المنتج' : 'مبيعاتك'} بتقول إن أحسن نتيجة في ${ev.src === 'HISTORY' ? 'سن' : 'شريحة'} ${ev.segment} (${ev.min}–${ev.max}) — بس ده بعيد عن العمر المعتاد للمنتج ده (${prior.min}–${prior.max}). Meta ساعات بتوزّع على شريحة لأنها الأرخص مش لأنها الجمهور الحقيقي، فاستخدمت العمر المعتاد. لو عايز سن ${ev.src === 'HISTORY' ? 'التيستات' : 'مبيعاتك'} اضغط الزرار تحت السن.`); }
+  }
 
-  // interests: AI candidates (or the rule table) — each verified against Meta; only verified ones can be applied
+  // interests: (1) the audience that WON before (as a set — never credited to one interest), (2) new interests Meta says are close to it, (3) verified candidates from the AI / rule table — each one a real Meta id
   const cands = ai?.interests?.length >= 3 ? ai.interests : rule.interests.map((name) => ({ name, why: rule.why }));
   sources.interests = ai?.interests?.length >= 3 ? 'AI' : 'RULES';
+  const avoidIds = new Set((rec?.avoid || []).map((x) => x.id)); const testedIds = new Set((memory?.interests || []).map((x) => x.id));
   const verification = await verifyInterests(cands.map((c) => c.name), deps.meta || {});
-  const interests = pickInterests(cands, verification);
+  let priorPicks = pickInterests(cands.filter((c) => true), verification, 12).filter((i) => !avoidIds.has(i.id)).map((i) => ({ ...i, origin: 'PRIOR' }));
+  if (hasHistory) { const fresh = priorPicks.filter((i) => !testedIds.has(i.id)); priorPicks = fresh.length >= 2 ? fresh : priorPicks; } // a new test explores what was NOT tried yet
+  const proven = [];
+  const winSet = rec?.proven?.[0]; if (winSet) for (const i of winSet.targeting.interests.slice(0, 3)) if (!avoidIds.has(i.id)) proven.push({ id: i.id, name: i.name, requested: null, why: `من الجمهور اللي نجح قبل كده: «${winSet.name}» (CPA ${winSet.cpa} ج بعد ${winSet.purchases} مشتريات) — النتيجة للمجموعة كلها مش للاهتمام ده لوحده.`, audienceLower: null, audienceUpper: null, path: null, exact: true, origin: 'PROVEN' });
+  let related = [];
+  if (hasHistory && (proven.length || testedIds.size)) {
+    const seeds = proven.length ? proven.map((p) => p.name) : (memory.interests || []).filter((x) => x.verdict !== 'LOSS').slice(0, 3).map((x) => x.name);
+    if (seeds.length) { try { related = (await (deps.related || relatedInterests)(seeds, deps.meta || {})).filter((x) => !testedIds.has(x.id) && !avoidIds.has(x.id)).slice(0, 3).map((x) => ({ ...x, requested: null, exact: true, origin: 'NEW_RELATED', why: `اهتمام قريب من اللي جرّبته (${seeds.join('، ')}) — Meta بتقترحه وملهوش تجربة قبل كده في المنتج ده.` })); } catch (e) { logger.warn('[smartTargeting] related interests unavailable', { message: e.message }); } }
+  }
+  const seenIds = new Set(); const interests = [];
+  for (const i of [...proven, ...related.slice(0, 2), ...priorPicks, ...related.slice(2)]) { if (seenIds.has(i.id) || interests.length >= MAX_INTERESTS) continue; seenIds.add(i.id); interests.push(i); }
   const unverified = verification.available ? [] : cands.slice(0, MAX_INTERESTS).map((c) => c.name);
-  if (!verification.available) notes.push('مش قادر أتأكد من الاهتمامات على Meta دلوقتي (' + (verification.reason || 'Meta مش متصل') + ') — مش هقترح اهتمامات غير متحقق منها. اربط Meta أو جرّب تاني.');
-  else if (interests.length < MAX_INTERESTS) notes.push(`لقيت ${interests.length} اهتمام متحقق منهم في Meta بس من ${cands.length} مرشّحين — تقدر تضيف باقي الخمسة بنفسك من البحث.`);
-  reasons.interests = interests.length ? 'الاهتمامات دي اتشافت واحدة واحدة في بحث Meta نفسه (ليها ID حقيقي وحجم جمهور)، ومرتبطة بنوع المنتج.' : '';
+  if (!verification.available && !proven.length) notes.push('مش قادر أتأكد من الاهتمامات على Meta دلوقتي (' + (verification.reason || 'Meta مش متصل') + ') — مش هقترح اهتمامات غير متحقق منها. اربط Meta أو جرّب تاني.');
+  else if (interests.length < MAX_INTERESTS) notes.push(`لقيت ${interests.length} اهتمام متحقق منهم في Meta بس — تقدر تضيف باقي الخمسة بنفسك من البحث.`);
+  reasons.interests = interests.length ? (hasHistory ? 'الاهتمامات مرتّبة: اللي نجح قبل كده، وبعدها اهتمامات قريبة جديدة، وبعدها اقتراحات المنتج — وكلها ليها ID حقيقي من Meta.' : 'الاهتمامات دي اتشافت واحدة واحدة في بحث Meta نفسه (ليها ID حقيقي وحجم جمهور)، ومرتبطة بنوع المنتج.') : '';
 
   // locations: only a PROVEN governorate winner earns a restriction — otherwise Egypt-wide (the system's usual, safest choice)
   let locations = { mode: 'EGYPT', regions: [], reason: 'مفيش دليل كفاية في مبيعاتك على محافظات بعينها — الأفضل مصر كلها وMeta توزّع. تقدر تحدد محافظات من الكوكب بنفسك.' };
   if (real?.governorates?.length) { const regions = await resolveRegions(real.governorates, deps); if (regions.length) locations = { mode: 'REGIONS', regions, reason: `أقوى المحافظات في أوردراتك الفعلية: ${regions.map((r) => r.name).join('، ')}.` }; }
   const placements = { mode: 'AUTOMATIC', reason: 'المواضع التلقائية (Advantage+) بتسيب Meta تجيب أرخص نتيجة — الأفضل كبداية. تقدر تحصرها في الفيد بس لو عايز.' };
-  if (sources.gender !== 'REAL_DATA' && sources.age !== 'REAL_DATA') notes.push('المنتج لسه معندوش شريحة مثبتة من مبيعاته، فالنوع والسن اقتراح مبدئي — جرّبه كتيست وراجع أرقامه.');
+  const advantage = { mode: 'RESTRICT', text: 'الجمهور بيتبعت لـ Meta كتقييد فعلي (Advantage audience مقفول): Meta هتلتزم بالسن والنوع والاهتمامات اللي اخترتها ومش هتوسّعها. لو فتحت Advantage+ بيبقوا مجرد اقتراح وMeta ممكن توسّع برا حدودك.' };
+  if (!hasHistory) notes.push('المنتج ده جديد على السيستم (مفيش حملات سابقة مسجّلة ليه)، فالاقتراح مبني على فهم المنتج مش على نتايج حملات.');
+  else if (sources.gender !== 'HISTORY' && sources.gender !== 'REAL_DATA' && sources.age !== 'HISTORY' && sources.age !== 'REAL_DATA') notes.push('اتعمله حملات قبل كده بس لسه مفيش شريحة سن/نوع مثبتة بعينة كافية، فالنوع والسن اقتراح مبدئي.');
 
-  const source = (sources.gender === 'REAL_DATA' || sources.age === 'REAL_DATA') ? (ai ? 'REAL_DATA+AI' : 'REAL_DATA+RULES') : (ai ? 'AI' : 'RULES');
+  const base = ai ? 'AI' : 'RULES';
+  const source = hasHistory ? `HISTORY+${base}` : (sources.gender === 'REAL_DATA' || sources.age === 'REAL_DATA') ? `REAL_DATA+${base}` : base;
   if (aiError) notes.push(`${aiError} — استخدمت قواعد السوق المصري بدل الذكاء الاصطناعي (والاهتمامات لسه متحقق منها من Meta).`);
+  const strategy = rec ? rec.strategy : { mode: 'EXPLORE', reason: 'منتج جديد: ابدأ باستهداف استكشافي (الاقتراح ده) وخلّي السيستم يتعلم من نتيجته.', confidence: 'LOW' };
+  const adSetsPlan = rec ? rec.adSetsPlan : [{ type: 'INTERESTS', label: 'اهتمامات استكشافية', note: 'أول تجربة للمنتج.' }, { type: 'BROAD', label: 'Ad Set واسع (Broad) للمقارنة', note: 'عشان بعد النتايج تعرف الاهتمامات فرقت ولا لأ.' }];
+  const w90 = memory?.windows?.w90?.purchases || 0;
+  const confidence = !hasHistory ? { level: 'LOW', text: 'منخفضة — منتج جديد، مبني على فهم المنتج فقط.' } : (w90 >= MEM_RULES.highPurchases && strategy.confidence !== 'LOW') ? { level: 'HIGH', text: `عالية — ${w90} مشتريات في 90 يوم.` } : (w90 >= MEM_RULES.mediumPurchases) ? { level: 'MEDIUM', text: `متوسطة — ${w90} مشتريات في 90 يوم.` } : { level: 'LOW', text: `منخفضة — ${w90} مشتريات بس في 90 يوم، البيانات لسه قليلة.` };
   return {
-    ok: true, version: SMART_VERSION, at: new Date().toISOString(), source, sources, aiError, product: { id: id, name: context.name, category: context.category || null, price: context.price ?? null, kind: ai?.productKind || null },
-    gender, genderLabel: GENDER_AR[gender], ageMin, ageMax, interests, unverified, placements, locations, reasons, notes,
+    ok: true, version: SMART_VERSION, at: new Date().toISOString(), basis: hasHistory ? 'HISTORY' : 'EXPLORATORY', source, sources, aiError, product: { id: id, name: context.name, category: context.category || null, price: context.price ?? null, kind: ai?.productKind || null },
+    gender, genderLabel: GENDER_AR[gender], ageMin, ageMax, alternatives, interests, unverified, placements, locations, reasons, notes, advantage, strategy, adSetsPlan, confidence,
+    memory: memory ? trimMemory(memory) : null,
     verification: { available: verification.available, reason: verification.reason || null, candidates: cands.length, verified: interests.length },
     targeting: { mode: 'SMART', genders: gender, ageMin, ageMax, interests: interests.map((i) => ({ id: i.id, name: i.name })), geoRegions: locations.regions, placementsMode: placements.mode },
   };
