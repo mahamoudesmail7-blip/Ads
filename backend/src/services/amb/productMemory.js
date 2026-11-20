@@ -5,6 +5,7 @@
 //   • an ad set with several interests is judged AS A SET — its result is never credited to one interest;
 //   • a past Smart-Targeting test is judged like any other test, so every new test teaches the next one.
 // The learning log (settings row `ssm:<productId>`) only remembers WHEN a verdict became final; the numbers are always recomputed from the data.
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { loadSnapshots, latestPerDayPerEntity, aggregateRows, todayISO, addDaysISO } from './metricsEngine.js';
@@ -58,6 +59,24 @@ function entityTotals(byEntity, from, to) {
 }
 
 // ───────────── the memory ─────────────
+/**
+ * ONLY this product's campaigns, ONLY the columns the maths needs (never actions_json): the account-wide loader reads every campaign / ad set of the account × 90 days × every 15-minute snapshot —
+ * on a big account that is millions of rows and was slow enough to drop the request («Failed to fetch»). `level` = campaign | adset.
+ */
+export async function loadProductSnapshots({ level, campaignIds, from, to }) {
+  const idCol = Prisma.raw(level === 'adset' ? '"adset_id"' : '"campaign_id"'); const out = [];
+  for (let i = 0; i < campaignIds.length; i += 150) {
+    const ids = campaignIds.slice(i, i + 150);
+    out.push(...await prisma.$queryRaw`
+      SELECT DISTINCT ON (${idCol}, date_start)
+        snapshot_at, ad_account_id, level, date_start, date_stop, campaign_id, campaign_name, campaign_status, campaign_budget, campaign_budget_type,
+        adset_id, adset_name, adset_status, adset_budget, adset_budget_type, spend, impressions, reach, frequency, clicks, meta_purchases, meta_revenue, results, result_indicator, landing_page_views
+      FROM "meta_performance_snapshots"
+      WHERE level = ${level} AND date_start >= ${from} AND date_start <= ${to} AND campaign_id IN (${Prisma.join(ids)}) AND ${idCol} IS NOT NULL
+      ORDER BY ${idCol} ASC, date_start ASC, snapshot_at DESC`);
+  }
+  return out;
+}
 async function defaultCampaigns(productId) { const m = await import('./productPerformance.js'); return m.resolveProductCampaigns(productId); }
 async function defaultJobs(productId) {
   const jobs = await prisma.ambLaunchJob.findMany({ where: { product_id: productId }, select: { job_id: true, created_at: true, config_json: true, campaigns: { select: { name: true, meta_campaign_id: true } } }, orderBy: { created_at: 'asc' } });
@@ -95,11 +114,16 @@ export async function getProductMemory(productId, { deps = {}, persist = false }
   if (!cIds.size) return empty;
 
   // 1) real numbers: campaign + ad set level, last 90 days, product campaigns only
-  const snap = deps.snapshots || ((level, f, t, acc) => loadSnapshots({ level, from: f, to: t, adAccountId: acc }));
   const campRows = []; const adsetRows = [];
-  for (const acc of accounts) {
-    try { campRows.push(...(await snap('campaign', from90, today, acc)).filter((r) => cIds.has(String(r.campaign_id)))); } catch (e) { logger.warn('[productMemory] campaign snapshots failed', { message: e.message }); }
-    try { adsetRows.push(...(await snap('adset', from90, today, acc)).filter((r) => cIds.has(String(r.campaign_id)))); } catch (e) { logger.warn('[productMemory] ad set snapshots failed', { message: e.message }); }
+  if (deps.snapshots) { // injected (tests): per account, as before
+    for (const acc of accounts) {
+      try { campRows.push(...(await deps.snapshots('campaign', from90, today, acc)).filter((r) => cIds.has(String(r.campaign_id)))); } catch (e) { logger.warn('[productMemory] campaign snapshots failed', { message: e.message }); }
+      try { adsetRows.push(...(await deps.snapshots('adset', from90, today, acc)).filter((r) => cIds.has(String(r.campaign_id)))); } catch (e) { logger.warn('[productMemory] ad set snapshots failed', { message: e.message }); }
+    }
+  } else {
+    const ids = [...cIds];
+    try { campRows.push(...await loadProductSnapshots({ level: 'campaign', campaignIds: ids, from: from90, to: today })); } catch (e) { logger.warn('[productMemory] campaign snapshots failed', { message: e.message }); }
+    try { adsetRows.push(...await loadProductSnapshots({ level: 'adset', campaignIds: ids, from: from90, to: today })); } catch (e) { logger.warn('[productMemory] ad set snapshots failed', { message: e.message }); }
   }
   const campDay = latestPerDayPerEntity(campRows, 'campaign'); const adsetDay = latestPerDayPerEntity(adsetRows, 'adset');
   const windows = {}; for (const w of WINDOWS) { const f = addDaysISO(today, -(w - 1)); windows[`w${w}`] = { days: w, ...sumAgg([...entityTotals(campDay, f, today).values()]) }; }

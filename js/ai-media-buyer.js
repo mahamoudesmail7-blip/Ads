@@ -6451,6 +6451,13 @@ function smMemoryHtml(r) {
 }
 const smAud = (n) => { const v = Number(n); if (!Number.isFinite(v) || v <= 0) return ''; return v >= 1e6 ? (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + ' مليون' : Math.round(v / 1e3) + ' ألف'; };
 let smartBusy = null; // the draft currently being analysed (a draft restored from storage mid-analysis is not busy: it starts over)
+/** The real numbers behind the age / gender: the product's purchases by Meta age bracket (same numbers as Ads Manager's age breakdown for the product's campaigns). */
+function smEvidenceHtml(r) {
+  const ev = r.evidence; if (!ev?.age?.rows?.length) return '';
+  const rows = ev.age.rows.map((b) => '<tr class="' + (b.included ? 'inc' : '') + '"><td>' + E(b.segment) + '</td><td>' + b.purchases + '</td><td>' + (b.share != null ? b.share + '%' : '—') + '</td><td>' + smM(b.spend) + '</td><td>' + (b.cpa != null ? smM(b.cpa) : '—') + '</td></tr>').join('');
+  const g = ev.gender ? '<p class="sm-ev-g">النوع (من المشتريات): رجال ' + E(ev.gender.malePct) + '% · نساء ' + E(ev.gender.femalePct) + '% — ' + E(ev.gender.total) + ' مشترى</p>' : '';
+  return '<details class="sm-ev" open><summary>📊 الأرقام الفعلية وراء السن · ' + E(ev.window || 'Meta') + ' · ' + ev.age.total + ' مشترى ' + (ev.age.used ? '<em>(اتبنى عليها السن)</em>' : '<em>(مش كفاية للحكم لوحدها)</em>') + '</summary><table class="sm-tbl"><tr><th>السن</th><th>مشتريات</th><th>% من الكل</th><th>صرف (ج)</th><th>CPA (ج)</th></tr>' + rows + '</table><p class="sm-ev-n">الشرايح المظلّلة هي اللي فيها ' + E(ev.age.coverage) + '% من المشتريات (' + ev.age.range.min + '–' + ev.age.range.max + '). المصدر: تقسيم Meta حسب السن لحملات المنتج المربوطة — قارنه بـ Ads Manager (Website purchases).</p>' + g + '</details>';
+}
 function smartEnsure() {
   if (!launchState.targeting.interests) launchState.targeting.interests = [];
   if (!launchState.smart || launchState.smart.productId !== launchState.productId) launchState.smart = { status: 'idle', productId: launchState.productId, result: null, applied: false, error: null };
@@ -6474,6 +6481,7 @@ function smartPanelHtml() {
     + '<div class="sm-f"><label>النوع</label><div class="sm-seg">' + SM_GENDERS.map(([v, l]) => '<button type="button" data-sm-gender="' + v + '" class="' + (t.genders === v ? 'on' : '') + '">' + l + '</button>').join('') + '</div></div>'
     + '<div class="sm-f"><label>السن (من — إلى)</label><div class="sm-age"><input class="amb-input" type="number" min="18" max="65" id="smAgeMin" value="' + E(t.ageMin) + '"><span>—</span><input class="amb-input" type="number" min="18" max="65" id="smAgeMax" value="' + E(t.ageMax) + '"></div>' + (r.alternatives?.age ? '<button type="button" class="sm-link" id="smUseSalesAge" title="السن اللي مبيعاتك الفعلية بتقول عليه">استخدم سن مبيعاتك (' + E(r.alternatives.age.ageMin) + '–' + E(r.alternatives.age.ageMax) + ')</button>' : '') + '</div>'
     + '<div class="sm-f"><label>المواضع</label><select class="amb-input" id="smPlacements"><option value="AUTOMATIC" ' + (t.placementsMode === 'AUTOMATIC' ? 'selected' : '') + '>تلقائي (Advantage+)</option><option value="FEED_ONLY" ' + (t.placementsMode === 'FEED_ONLY' ? 'selected' : '') + '>الفيد فقط</option></select></div></div>'
+    + smEvidenceHtml(r)
     + '<div class="sm-f"><label>أفضل الاهتمامات <small>(كلها ليها ID حقيقي في Meta)</small></label><div class="sm-chips" id="smChips">' + (ints || '<span class="sm-none">مفيش اهتمامات متحقق منها — ضيف من البحث تحت.</span>') + '</div>'
     + '<div class="sm-add"><input class="amb-input" id="smIntQ" type="search" placeholder="ضيف اهتمام (ابحث بالإنجليزي: Cooking, Gym…)" autocomplete="off"><div class="sm-results" id="smIntRes" hidden></div></div></div>'
     + '<div class="sm-f"><label>المحافظات</label><div class="sm-loc">' + ((t.geoRegions || []).length ? t.geoRegions.map((g) => E(g.name)).join(' + ') : 'مصر بالكامل') + ' <small>— عدّلها من الكوكب على الشمال</small></div></div>'
@@ -6484,12 +6492,13 @@ function smartPanelHtml() {
 }
 async function smartRun() {
   smartEnsure(); const sm = launchState.smart; sm.status = 'loading'; sm.applied = false; sm.error = null; smartBusy = sm; renderLaunchStep();
+  const ask = () => api.post('/api/ai-media-buyer/launch/smart-targeting', { productId: launchState.productId });
   try {
-    const r = await api.post('/api/ai-media-buyer/launch/smart-targeting', { productId: launchState.productId });
+    let r; try { r = await ask(); } catch (e) { if (e && !e.status) { await new Promise((res) => setTimeout(res, 1500)); r = await ask(); } else throw e; } // a dropped connection (no HTTP answer at all) gets ONE automatic retry — the heavy parts are cached by then
     if (launchState.smart !== sm) return; // the product changed meanwhile
     sm.result = r; sm.status = 'ready';
     Object.assign(launchState.targeting, { mode: 'SMART', genders: r.gender, ageMin: r.ageMin, ageMax: r.ageMax, placementsMode: r.placements?.mode || 'AUTOMATIC', interests: (r.interests || []).map((i) => ({ id: i.id, name: i.name, why: i.why, audienceUpper: i.audienceUpper })), geoRegions: (r.locations?.regions || []).map((g) => ({ key: g.key, name: g.name })) });
-  } catch (e) { sm.status = 'error'; sm.error = e.message || 'تعذّر تحليل المنتج.'; }
+  } catch (e) { sm.status = 'error'; sm.error = (e && !e.status) ? 'الاتصال بالسيرفر اتقطع أثناء التحليل (ممكن يكون السيرفر بيعيد التشغيل أو النت ضعيف). اضغط «حاول تاني».' : (e.message || 'تعذّر تحليل المنتج.'); }
   if (smartBusy === sm) smartBusy = null;
   saveLaunchSnapshot(); renderLaunchStep();
 }

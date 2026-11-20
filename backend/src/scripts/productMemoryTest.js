@@ -91,5 +91,34 @@ const memOld = await PM.getProductMemory(7, { deps: { ...memDeps, jobs: async ()
 r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...dp, memory: async () => memOld } });
 ok('the winning ad set ran at 55-65 (far from the usual 24-55 kitchen age): the usual age stays, 55–65 is one click away, and the screen explains', r.sources.age !== 'HISTORY' && r.ageMin === 24 && r.alternatives.age?.ageMin === 55 && r.alternatives.age?.ageMax === 65 && r.notes.some((n) => n.includes('التيستات')), JS([r.ageMin, r.ageMax, r.alternatives]));
 
+console.log('\n6. slow / failing parts never hang or break the proposal («Failed to fetch» in production)');
+{
+  const never = () => new Promise(() => {}); const fast = { real: 40, memory: 40, related: 40, ai: 40, verify: 40 };
+  const t0 = Date.now();
+  r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...dp, memory: never, real: never, timeouts: fast } });
+  ok('the memory AND the live buyer data hanging forever: the proposal still comes (within the time limits), exploratory, with a note about the memory', r.ok && Date.now() - t0 < 5000 && r.basis === 'EXPLORATORY' && r.notes.some((n) => n.includes('ذاكرة المنتج مقدرتش تتحمّل')) && r.interests.length > 0, JS([Date.now() - t0, r.basis, r.notes]));
+  r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...dp, related: never, timeouts: fast } });
+  ok('Meta’s «related interests» hanging: the proposal still comes with the winning audience + verified candidates', r.ok && r.interests.length >= 3 && r.interests.slice(0, 2).every((i) => i.origin === 'PROVEN'));
+  r = await ST.suggestSmartTargeting({ productId: 7, deps: { ...dp, ai: true, generate: never, timeouts: fast } });
+  ok('the AI hanging: falls back to the rules (labelled), nothing hangs', r.ok && r.source.endsWith('RULES') && !!r.aiError);
+}
+
+console.log('\n7. the real database loader reads ONLY the product’s campaigns and only the needed columns');
+{
+  const { prisma } = await imp('../prisma.js'); const T = 'PMT' + Date.now(); const run = await prisma.ambSyncRun.create({ data: { trigger: 'TEST', status: 'SUCCESS', ad_account_id: 'act_pm', started_at: new Date(), finished_at: new Date() } });
+  try {
+    const mk = (level, cid, aid, day, sp, pu, extra = {}) => prisma.metaPerformanceSnapshot.create({ data: { sync_run_id: run.id, ad_account_id: 'act_pm', level, date_start: day, date_stop: day, campaign_id: cid, campaign_name: cid, adset_id: aid, adset_name: aid, spend: sp, meta_purchases: pu, snapshot_at: new Date(`${day}T10:00:00Z`), actions_json: '[{"big":"payload"}]', ...extra } });
+    await mk('campaign', T + 'P', null, TODAY, 100, 2); await mk('campaign', T + 'P', null, TODAY, 150, 3, { snapshot_at: new Date(`${TODAY}T20:00:00Z`) }); // two snapshots of one day: the LATEST wins
+    await mk('adset', T + 'P', T + 'A1', TODAY, 150, 3); await mk('campaign', T + 'OTHER', null, TODAY, 9999, 1); await mk('adset', T + 'OTHER', T + 'A9', TODAY, 9999, 1);
+    const rowsC = await PM.loadProductSnapshots({ level: 'campaign', campaignIds: [T + 'P'], from: TODAY, to: TODAY }); const rowsA = await PM.loadProductSnapshots({ level: 'adset', campaignIds: [T + 'P'], from: TODAY, to: TODAY });
+    ok('only the product’s campaign comes back (the other campaign of the same account never does); one row per day — the latest snapshot (150 / 3)', rowsC.length === 1 && rowsC[0].campaign_id === T + 'P' && Number(rowsC[0].spend) === 150 && Number(rowsC[0].meta_purchases) === 3, JS(rowsC));
+    ok('ad set level the same, and the heavy actions_json column is NOT read', rowsA.length === 1 && rowsA[0].adset_id === T + 'A1' && !('actions_json' in rowsA[0]));
+    const memDb = await PM.getProductMemory(7, { deps: { today: TODAY, campaigns: async () => [{ campaignId: T + 'P', adAccountId: 'act_pm', via: 'LAUNCH' }], jobs: async () => [], adSetTargeting: async () => new Map(), journal: async () => ({ events: [], final: {} }) } });
+    ok('getProductMemory with the real loader: product totals 150 ج / 3 purchases (the other campaign’s 9999 is not in it)', memDb.hasHistory && memDb.windows.w90.spend === 150 && memDb.windows.w90.purchases === 3, JS(memDb.windows.w90));
+  } finally {
+    await prisma.metaPerformanceSnapshot.deleteMany({ where: { campaign_id: { startsWith: T } } }).catch(() => {}); await prisma.ambSyncRun.delete({ where: { id: run.id } }).catch(() => {}); await prisma.$disconnect();
+  }
+}
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

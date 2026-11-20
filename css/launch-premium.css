@@ -439,4 +439,6 @@
 .sm-limits { color: var(--lp-faint); font-size: 11px; }
 .sm-org { font-style: normal; font-size: 10px; font-weight: 800; padding: 1px 7px; border-radius: 999px; } .sm-org.grn { background: #dcfce7; color: #15803d; } .sm-org.blue { background: #dbeafe; color: #1d4ed8; } .sm-org.gray { background: #eceff6; color: #4b5678; }
 .sm-adv { margin: 8px 0; font-size: 11.5px; line-height: 1.8; color: var(--lp-dim); background: #f6f8ff; border: 1px dashed #c7d2f3; border-radius: 12px; padding: 8px 12px; }
+.sm-ev { margin: 0 0 10px; border: 1px solid #dbe3f7; border-radius: 12px; background: #fbfcff; padding: 6px 12px; } .sm-ev > summary { cursor: pointer; font-weight: 800; font-size: 12px; } .sm-ev em { font-style: normal; color: var(--lp-faint); font-weight: 600; }
+.sm-ev .sm-tbl tr.inc td { background: #e8f7ee; font-weight: 700; } .sm-ev-n, .sm-ev-g { font-size: 11px; color: var(--lp-dim); line-height: 1.8; margin: 4px 0; }
 @media (max-width: 760px) { .sm-grid { grid-template-columns: 1fr; } .sm-tbl { font-size: 11px; } }
