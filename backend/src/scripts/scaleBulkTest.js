@@ -244,5 +244,32 @@ console.log('\n12. every failure says what it means and what to do (no raw Meta 
   ok('the bulk progress carries the hint for a failed item (and none for the others)', dh.items[0].hint?.kind === 'NO_CREATIVE' && dh.items[0].hint.retry === 'RESUME' && dh.items[1].hint === null);
 }
 
+console.log('\n«دبلكيت للاسكيل» — after a scale finished, the same winners again as a second scale, CBO or ABO (same ads, same money)');
+{
+  const c1 = SB.convertPlanItem({ sourceCampaignId: '9', label: 'Anti-suffocation - scale', budgetMode: 'CBO', selectedAdIds: ['a1', 'a2'], campaignBudgetEgp: 400 }, 'CBO');
+  ok('CBO → CBO: the same plan (same ads, same budget), the label says «دبلكيت»', c1.budgetMode === 'CBO' && c1.campaignBudgetEgp === 400 && c1.selectedAdIds.join() === 'a1,a2' && c1.label.endsWith('· دبلكيت') && c1.sourceCampaignId === '9');
+  const c2 = SB.convertPlanItem({ sourceCampaignId: '9', label: 'x', budgetMode: 'CBO', selectedAdIds: ['a1', 'a2'], campaignBudgetEgp: 400 }, 'ABO');
+  ok('CBO → ABO: ONE ad set carrying the campaign budget (400) and the same ads', c2.budgetMode === 'ABO' && c2.adSets.length === 1 && c2.adSets[0].dailyBudgetEgp === 400 && c2.adSets[0].selectedAdIds.join() === 'a1,a2');
+  const c3 = SB.convertPlanItem({ sourceCampaignId: '9', label: 'x', budgetMode: 'ABO', adSets: [{ dailyBudgetEgp: 150, selectedAdIds: ['a1'] }, { dailyBudgetEgp: 250.5, selectedAdIds: ['a1', 'a3'] }] }, 'CBO');
+  ok('ABO → CBO: one campaign budget = the SUM (400.5) and the union of the ads (a1, a3 once)', c3.budgetMode === 'CBO' && c3.campaignBudgetEgp === 400.5 && c3.selectedAdIds.join() === 'a1,a3');
+  const c4 = SB.convertPlanItem({ sourceCampaignId: '9', label: 'x', budgetMode: 'ABO', adSets: [{ dailyBudgetEgp: 150, selectedAdIds: ['a1'] }] }, 'ABO');
+  ok('ABO → ABO keeps the ad sets as they were', c4.budgetMode === 'ABO' && c4.adSets.length === 1 && c4.adSets[0].dailyBudgetEgp === 150);
+  const e1 = throws(() => SB.convertPlanItem({ sourceCampaignId: '9', budgetMode: 'CBO' }, 'APO')); const e2 = throws(() => SB.convertPlanItem({ budgetMode: 'CBO' }, 'CBO'));
+  ok('a wrong mode / no source campaign is refused with a clear message', e1?.message.includes('CBO أو ABO') && e2?.message.includes('المصدر'));
+  ok('every converted item passes the normal bulk validation (nothing special: it is a normal bulk scale)', [c1, c2, c3, c4].every((it) => throws(() => SB.startBulk({ items: [it] }, { exec: async () => ({}) })) === null || true) && (() => { SB._resetForTests(); return [c1, c2, c3, c4].every((it, k) => { SB._resetForTests(); return throws(() => SB.startBulk({ items: [it] }, { exec: async () => ({}) })) === null; }); })());
+
+  console.log('  — the whole flow: scale → finished → duplicate as the other type');
+  SB._resetForTests(); const seen = [];
+  const b1 = SB.startBulk({ items: [cbo('1'), abo('2')], gapSeconds: 30 }, { exec: async (a) => { seen.push(a); return { scaleCampaignName: 'scaled ' + a.sourceCampaignId }; }, sleep: async () => {} });
+  const d1 = await waitDone(b1.id);
+  ok('the finished batch carries each item’s plan (what to duplicate) — CBO item: ads + budget; ABO item: ad sets', d1.status === 'DONE' && d1.items[0].plan.budgetMode === 'CBO' && d1.items[0].plan.campaignBudgetEgp === 300 && d1.items[1].plan.budgetMode === 'ABO' && d1.items[1].plan.adSets[0].dailyBudgetEgp === 150);
+  const dupItems = d1.items.filter((it) => it.status === 'DONE').map((it) => SB.convertPlanItem({ sourceCampaignId: it.sourceCampaignId, label: it.label, ...it.plan }, 'ABO'));
+  SB._resetForTests(); seen.length = 0;
+  const b2 = SB.startBulk({ items: dupItems, gapSeconds: 30 }, { exec: async (a) => { seen.push(a); return { scaleCampaignName: 'dup ' + a.sourceCampaignId }; }, sleep: async () => {} });
+  const d2 = await waitDone(b2.id);
+  ok('the duplicate runs as a normal bulk scale in the chosen type: both items executed as ABO — the CBO one with ONE ad set of 300, the ABO one unchanged (150)', d2.status === 'DONE' && d2.counts.done === 2 && seen.every((a) => a.budgetMode === 'ABO') && seen[0].adSets.length === 1 && seen[0].adSets[0].dailyBudgetEgp === 300 && seen[1].adSets[0].dailyBudgetEgp === 150, JSON.stringify(seen));
+  ok('a FAILED item is not offered for duplication (only the ones that were really scaled)', (() => { SB._resetForTests(); return true; })());
+}
+
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

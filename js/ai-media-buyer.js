@@ -700,6 +700,7 @@ function wireScaleCards(root, data) {
           UI.toast(`✅ تم إنشاء حملة الاسكيل بنجاح — ${E(r.scaleCampaignName)} · ${E(r.budgetMode || '')} · ${fmtNum(r.adSetsCreated)} مجموعة · ${fmtNum(r.adsCreated)} إعلان (متوقفة)`);
           scaleUi.delete(card.sourceCampaignId);
           route();
+          askSingleDuplicate(card, body, r);
         } catch (e) {
           UI.toast(`فشل إنشاء حملة الاسكيل: ${e.message}`, 'error');
           btn.disabled = false; btn.textContent = 'موافق على الاسكيل';
@@ -883,6 +884,46 @@ function bulkRowHtml(card) {
   </div>`;
 }
 
+/** «دبلكيت للاسكيل»: once a scale finished, offer the SAME winners again as a second scale copy — the owner picks CBO or ABO (the budget is carried over: CBO→ABO = one ad set with the campaign budget, ABO→CBO = the sum). Nothing starts before his approval. */
+const dupDone = (b) => (b?.items || []).filter((it) => it.status === 'DONE' && it.plan);
+function dupPromptHtml(b) {
+  const n = dupDone(b).length; if (!n) return '';
+  return '<div class="amb-dup"><div class="amb-dup-h">🔁 عايز تعمل دبلكيت للاسكيل؟</div><div class="amb-dup-p">الاسكيل خلص ✓ — لو عايز نسخة تانية من ' + (n === 1 ? 'الكامبين اللي اتسكّلت' : n + ' كامبين اللي اتسكّلوا') + ' (نفس الإعلانات ونفس الميزانية)، اختار نوع الميزانية:</div>'
+    + '<div class="amb-dup-b"><button class="amb-btn primary sm" data-dup-mode="CBO" data-dup-batch="' + E(b.id) + '">دبلكيت CBO — ميزانية الحملة</button><button class="amb-btn primary sm" data-dup-mode="ABO" data-dup-batch="' + E(b.id) + '">دبلكيت ABO — ميزانية المجموعة</button><button class="amb-btn ghost sm" data-bulk-act="dismiss">مش دلوقتي</button></div>'
+    + '<div class="faint" style="font-size:11.5px;margin-top:6px;">هتتأكد الأول قبل ما يبدأ أي حاجة، والنسخ بتتعمل متوقفة زي الاسكيل العادي.</div></div>';
+}
+/** What the duplicate will be, for the confirmation (mirrors the server's conversion exactly). */
+function dupPreview(it, mode) {
+  const p = it.plan; const from = p.budgetMode; const sets = p.adSets || [];
+  const budget = mode === from ? (from === 'CBO' ? Number(p.campaignBudgetEgp) : sets.reduce((t, s) => t + Number(s.dailyBudgetEgp || 0), 0)) : (from === 'CBO' ? Number(p.campaignBudgetEgp) : sets.reduce((t, s) => t + Number(s.dailyBudgetEgp || 0), 0));
+  const ads = from === 'CBO' ? (p.selectedAdIds || []).length : new Set(sets.flatMap((s) => s.selectedAdIds || [])).size;
+  return { label: it.label, budget, ads, adSets: mode === 'ABO' ? (from === 'ABO' ? sets.length : 1) : null };
+}
+async function runDuplicate(b, mode) {
+  const items = dupDone(b).map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, ...it.plan })); if (!items.length) { UI.toast('مفيش كامبينات اتسكّلت بنجاح عشان نعمل لها دبلكيت.', 'error'); return; }
+  const rows = dupDone(b).map((it) => dupPreview(it, mode)); const total = rows.reduce((t, r) => t + r.budget, 0);
+  const lines = rows.map((r, i) => (i + 1) + '. ' + r.label + ' — ' + fmtEGP(r.budget) + '/يوم · ' + r.ads + ' إعلان' + (r.adSets ? ' · ' + r.adSets + ' Ad Set' : '')).join('\n');
+  const ok = await UI.confirmModal({ title: 'تأكيد دبلكيت الاسكيل (' + mode + ')', message: (isViewOnly() ? 'الحساب: ' + viewAcctName() + '\n' : '') + 'هيتم إنشاء ' + rows.length + ' حملة دبلكيت (' + mode + ') — نسخة تانية من الكامبينات اللي اتسكّلت، بنفس الإعلانات والميزانية، متوقفة، واحدة ورا التانية بفاصل ' + Math.round((b.gapSeconds || 60) / 60 * 10) / 10 + ' دقيقة:\n' + lines + '\nإجمالي الميزانية اليومية ' + fmtEGP(total) + '.', confirmLabel: 'موافق وتشغيل', danger: true });
+  if (!ok) return;
+  try {
+    const nb = await api.post('/api/ai-media-buyer/scale/duplicate', { items, budgetMode: mode, gapSeconds: b.gapSeconds || 60, ...acctBody() });
+    bulkRuns.set(acctKey(), nb); UI.toast('بدأ دبلكيت الاسكيل (' + mode + ') — ' + nb.counts.total + ' كامبين'); rerenderScale(); startBulkPolling(nb.id, acctKey());
+  } catch (e) { UI.toast('تعذّر بدء الدبلكيت: ' + e.message, 'error'); }
+}
+
+/** After a SINGLE scale succeeded: the same question as after a bulk one — «دبلكيت؟» with CBO / ABO. A small overlay (the approval modal of the real run follows). */
+function askSingleDuplicate(card, body, result) {
+  if (!state.isAdmin) return;
+  const plan = body.budgetMode === 'ABO' ? { budgetMode: 'ABO', adSets: body.adSets || [] } : { budgetMode: 'CBO', selectedAdIds: body.selectedAdIds || [], campaignBudgetEgp: body.campaignBudgetEgp };
+  const fake = { id: 'single', gapSeconds: 60, items: [{ sourceCampaignId: card.sourceCampaignId, label: card.displayName || card.proposedScaleCampaignName, status: 'DONE', plan }] };
+  const overlay = document.createElement('div'); overlay.className = 'confirm-modal-overlay';
+  overlay.innerHTML = '<div class="card confirm-modal-card"><div class="section-title" style="margin-top:0;">✅ تم الاسكيل — ' + E(result.scaleCampaignName || '') + '</div><p class="muted" style="margin:0 0 16px;">عايز تعمل <b>دبلكيت للاسكيل</b> (نسخة تانية من نفس الكامبين بنفس الإعلانات والميزانية)؟ اختار نوع الميزانية:</p><div class="toolbar" style="justify-content:flex-end;gap:8px;flex-wrap:wrap;"><button type="button" class="btn secondary" data-d="no">مش دلوقتي</button><button type="button" class="btn" data-d="CBO">دبلكيت CBO</button><button type="button" class="btn" data-d="ABO">دبلكيت ABO</button></div></div>';
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelectorAll('[data-d]').forEach((b) => { b.onclick = () => { const d = b.dataset.d; close(); if (d !== 'no') runDuplicate(fake, d); }; });
+}
+
 const BULK_ST = { QUEUED: ['في الانتظار', ''], RUNNING: ['جاري الإنشاء…', 'run'], DONE: ['تم ✓', 'ok'], FAILED: ['فشل', 'bad'], CANCELED: ['اتلغى', 'dim'] };
 function bulkProgressHtml() {
   const b = curRun(); if (!b) return '';
@@ -897,6 +938,7 @@ function bulkProgressHtml() {
     <div class="amb-bulk-ph"><b>${head}</b>
       <span>${running ? '<button class="amb-btn ghost sm" data-bulk-act="cancel-run">إيقاف اللي لسه مابدأش</button>' : '<button class="amb-btn ghost sm" data-bulk-act="dismiss">إخفاء</button>'}</span></div>
     ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.status === 'FAILED' && it.hint ? `<div class="e"><b>${E(it.hint.title)}</b> — ${E(it.hint.action)}${it.error ? `<div class="faint" style="font-size:11px;margin-top:4px;direction:auto;word-break:break-word">الرسالة الأصلية: ${E(it.error)}</div>` : ''}</div>` : it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
+    ${!running && state.isAdmin && b.counts.done > 0 ? dupPromptHtml(b) : ''}
     ${running ? '<div class="faint" style="font-size:11.5px; margin-top:6px;">تقدر تقفل الصفحة — الاسكيل بيكمل على السيرفر. (لو السيرفر اتعمله restart بيتوقف اللي لسه مابدأش.)</div>' : ''}
   </div>`;
 }
@@ -945,6 +987,7 @@ function wireBulk(root) {
       if (act === 'open') { if (!bulkUi.date) bulkUi.date = cairoDateStr(1); bulkUi.open = true; rerenderScale(); return; }
       if (act === 'close') { bulkUi.open = false; rerenderScale(); return; }
       if (act === 'dismiss') { bulkRuns.delete(acctKey()); rerenderScale(); return; }
+      if (btn.dataset.dupMode) return; // handled below
       if (act === 'apply-common') { const v = bulkUi.common; if (!(Number(v) > 0)) { UI.toast('اكتب الميزانية الأول.', 'error'); return; } bulkCards().forEach((c) => { bulkRow(c).budget = String(v); }); rerenderScale(); return; }
       if (act === 'cancel-run') {
         const cur = curRun(); if (!cur) return;
@@ -977,6 +1020,7 @@ function wireBulk(root) {
       }
     };
   });
+  root.querySelectorAll('[data-dup-mode]').forEach((btn) => { btn.onclick = () => { const b = curRun(); if (b && b.id === btn.dataset.dupBatch) runDuplicate(b, btn.dataset.dupMode); }; });
   root.querySelectorAll('[data-bulk-mode]').forEach((b) => { b.onclick = () => { bulkUi.mode = b.dataset.bulkMode === 'ABO' ? 'ABO' : 'CBO'; rerenderScale(); }; });
   const common = root.querySelector('[data-bulk-common]');
   if (common) common.oninput = () => { bulkUi.common = common.value; }; // no re-render on change: it would swallow the click on «طبّقها على الكل»

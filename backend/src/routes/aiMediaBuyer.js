@@ -480,6 +480,17 @@ router.post('/scale/bulk', requireRole('ADMIN'), asyncRoute(async (req, res) => 
     { exec: executeScale, toUtc: cairoLocalToUtc },
   ));
 }));
+// «دبلكيت للاسكيل»: after a scale finished, the owner may ask for the SAME winners again as a second scale copy, as CBO or ABO. It is a normal bulk scale (same sequencer, same safety gates, created paused) started only after his explicit approval in the UI.
+router.post('/scale/duplicate', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+  const { executeScale } = await import('../services/amb/scaleWinners.js');
+  const { startBulk, convertPlanItem } = await import('../services/amb/scaleBulk.js');
+  const { cairoLocalToUtc } = await import('../services/amb/cloneEngine.js');
+  const { items, budgetMode, gapSeconds } = req.body || {};
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'مفيش كامبينات للدبلكيت.' });
+  const converted = items.slice(0, 15).map((it) => convertPlanItem(it, budgetMode));
+  const adAccountId = await viewAccountFrom(req);
+  res.status(202).json(startBulk({ items: converted, startMode: 'RUN_NOW', startAt: null, gapSeconds: gapSeconds || 60, windowName: 'today', userId: req.user.id, adAccountId }, { exec: executeScale, toUtc: cairoLocalToUtc }));
+}));
 router.get('/scale/bulk/latest', asyncRoute(async (req, res) => {
   const { latestBatch, accountKeyOf } = await import('../services/amb/scaleBulk.js');
   res.json({ batch: latestBatch(accountKeyOf(await viewAccountFrom(req))) }); // the batch of THE ACCOUNT the page is on (each account runs its own)

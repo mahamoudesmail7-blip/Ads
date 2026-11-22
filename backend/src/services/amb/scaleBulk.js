@@ -76,11 +76,29 @@ export function validatePlan({ items, startMode, startAt, gapSeconds }, { now = 
   return { items: normalised, startMode: mode, startAt: mode === 'SCHEDULE' ? String(startAt) : null, gapSeconds: gap };
 }
 
+/** The plan of one item as the screen needs it to offer «دبلكيت للاسكيل» (same ads, same money) — nothing secret, nothing that is not already in the request the owner approved. */
+export const planOf = (it) => (it.budgetMode === 'ABO' ? { budgetMode: 'ABO', adSets: (it.adSets || []).map((s) => ({ dailyBudgetEgp: s.dailyBudgetEgp, selectedAdIds: s.selectedAdIds })) } : { budgetMode: 'CBO', selectedAdIds: it.selectedAdIds || [], campaignBudgetEgp: it.campaignBudgetEgp });
+/**
+ * «دبلكيت للاسكيل»: the SAME winners again, as a second scale copy, with the budget type the owner picks (CBO or ABO). Same budget and same ads — only the type of budget changes:
+ *   CBO → ABO : ONE ad set with the campaign budget and the same ads      ·      ABO → CBO : ONE campaign budget = the sum of the ad-set budgets, the union of the ads.
+ * Returns an item exactly like the ones startBulk accepts (it is validated by normaliseItem there, like any other plan).
+ */
+export function convertPlanItem(item, mode) {
+  const to = mode === 'ABO' ? 'ABO' : mode === 'CBO' ? 'CBO' : null; if (!to) throw bad('اختار CBO أو ABO.');
+  const label = String(item?.label || item?.sourceCampaignId || '').slice(0, 110); const base = { sourceCampaignId: String(item?.sourceCampaignId || ''), label: `${label} · دبلكيت` };
+  if (!base.sourceCampaignId) throw bad('الكامبين المصدر مش معروف.');
+  const from = item.budgetMode === 'ABO' ? 'ABO' : 'CBO';
+  if (from === 'CBO' && to === 'CBO') return { ...base, budgetMode: 'CBO', selectedAdIds: [...(item.selectedAdIds || [])], campaignBudgetEgp: item.campaignBudgetEgp };
+  if (from === 'ABO' && to === 'ABO') return { ...base, budgetMode: 'ABO', adSets: (item.adSets || []).map((s) => ({ dailyBudgetEgp: s.dailyBudgetEgp, selectedAdIds: [...(s.selectedAdIds || [])] })) };
+  if (from === 'CBO') return { ...base, budgetMode: 'ABO', adSets: [{ dailyBudgetEgp: item.campaignBudgetEgp, selectedAdIds: [...(item.selectedAdIds || [])] }] };
+  const sets = item.adSets || []; return { ...base, budgetMode: 'CBO', selectedAdIds: [...new Set(sets.flatMap((s) => s.selectedAdIds || []))], campaignBudgetEgp: Math.round(sets.reduce((t, s) => t + (Number(s.dailyBudgetEgp) || 0), 0) * 100) / 100 };
+}
+
 export function publicBatch(b) {
   return {
     id: b.id, accountKey: b.accountKey || 'PRIMARY', status: b.status, stopReason: b.stopReason || null, startedAt: b.startedAt, finishedAt: b.finishedAt, gapSeconds: b.gapSeconds, startMode: b.startMode, startAt: b.startAt,
     nextAt: b.nextAt || null,
-    items: b.items.map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, budgetMode: it.budgetMode, status: it.status, startedAt: it.startedAt || null, finishedAt: it.finishedAt || null, error: it.error || null, hint: it.status === 'FAILED' ? classifyScaleError(it.error) : null, result: it.result || null })),
+    items: b.items.map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, budgetMode: it.budgetMode, status: it.status, startedAt: it.startedAt || null, finishedAt: it.finishedAt || null, error: it.error || null, hint: it.status === 'FAILED' ? classifyScaleError(it.error) : null, result: it.result || null, plan: planOf(it) })),
     counts: {
       total: b.items.length,
       done: b.items.filter((x) => x.status === 'DONE').length,
