@@ -754,7 +754,7 @@ function wireScaleCards(root, data) {
 // (the first now, each next one `gap` later) through the SAME executeScale as the single flow. The single-campaign flow above is untouched.
 // ---------------------------------------------------------------------------
 const bulkSel = new Set(); // sourceCampaignIds ticked for the bulk scale
-const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 0.25, busy: false }; // 15 s between campaigns by default (a scale takes ~10-20 s; the old 2 minutes was mostly waiting)
+const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 1, busy: false }; // 1 minute between campaigns by default (steady: Meta's per-account call quota, not our speed, is what limits a day of scaling); faster presets stay one click away
 const gapText = (min) => { const m = Number(min) || 0; return m < 1 ? Math.round(m * 60) + ' ثانية' : (Math.round(m * 10) / 10) + ' دقيقة'; };
 const GAP_PRESETS = [[0.1, 'أسرع 6 ث'], [0.25, 'سريع 15 ث'], [0.5, 'متوسط 30 ث'], [1, 'آمن 1 د'], [2, 'بطيء 2 د']];
 // Bulk scale runs PER AD ACCOUNT: Ahmed Samy's keeps running (and keeps being polled) while you look at Hady or start a bulk scale there. `bulkRuns` = account → its last batch payload.

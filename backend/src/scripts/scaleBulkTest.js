@@ -25,7 +25,7 @@ ok('CBO without ads rejected', throws(() => SB.startBulk({ items: [cbo('1', { se
 ok('ABO slot without budget rejected', throws(() => SB.startBulk({ items: [{ ...abo('1'), adSets: [{ dailyBudgetEgp: 0, selectedAdIds: ['a'] }] }] }, { exec })) !== null);
 ok('missing budget mode rejected', throws(() => SB.startBulk({ items: [{ sourceCampaignId: '1' }] }, { exec })) !== null);
 ok('gap below the minimum (5 s) rejected, the minimum itself is fine', throws(() => SB.startBulk({ items: [cbo('1')], gapSeconds: 3 }, { exec })) !== null && SB.MIN_GAP_S === 5);
-ok('the DEFAULT gap is short (15 s): a scale takes ~10-20 s, the old 60 s gap was mostly waiting', SB.DEFAULT_GAP_S === 15 && SB.startBulk({ items: [cbo('g1')] }, { exec: async () => ({}), sleep: async () => {} }).gapSeconds === 15 && (SB._resetForTests(), true));
+ok('the DEFAULT gap is 1 minute (steady: Meta per-account call quota limits a day of scaling); 5 s … is still allowed by choice', SB.DEFAULT_GAP_S === 60 && SB.startBulk({ items: [cbo('g1')] }, { exec: async () => ({}), sleep: async () => {} }).gapSeconds === 60 && (SB._resetForTests(), true));
 ok('one bad campaign among good ones → the whole request is rejected, exec never called', throws(() => SB.startBulk({ items: [cbo('1'), cbo('2', { campaignBudgetEgp: -1 })] }, { exec })) !== null && calls === 0);
 
 console.log('\n2. schedule must leave room for the last campaign');

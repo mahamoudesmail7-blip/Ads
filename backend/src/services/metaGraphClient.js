@@ -25,6 +25,25 @@ const GRAPH_BASE = MOCK_URL ? `${MOCK_URL}/${GRAPH_VERSION}` : `https://graph.fa
  * surface the safe subset to the user — without ever touching
  * client_id/client_secret/code/token, which never appear in this object.
  */
+/**
+ * How long Meta itself says the throttle will last. Two public response headers carry it:
+ *   x-business-use-case-usage: { "<id>": [ { type, call_count, total_cputime, total_time, estimated_time_to_regain_access (MINUTES) } ] }
+ *   x-ad-account-usage:        { acc_id_util_pct, reset_time_duration (SECONDS) }
+ * Returns ms (0 = Meta gave no figure). Never throws.
+ */
+export function regainMsFromHeaders(headers) {
+  let best = 0;
+  const get = (n) => { try { return headers?.get?.(n) ?? null; } catch { return null; } };
+  try {
+    const buc = JSON.parse(get('x-business-use-case-usage') || 'null');
+    if (buc && typeof buc === 'object') for (const arr of Object.values(buc)) for (const u of Array.isArray(arr) ? arr : []) { const m = Number(u?.estimated_time_to_regain_access); if (Number.isFinite(m) && m > 0) best = Math.max(best, m * 60_000); }
+  } catch { /* header is optional */ }
+  try {
+    const au = JSON.parse(get('x-ad-account-usage') || 'null');
+    const s = Number(au?.reset_time_duration); if (Number.isFinite(s) && s > 0) best = Math.max(best, s * 1000);
+  } catch { /* header is optional */ }
+  return Math.round(best);
+}
 function throwGraphOAuthError(data, res, context) {
   const e = data?.error || {};
   // error_user_title / error_user_msg carry Meta's human-facing reason for a
@@ -55,6 +74,7 @@ function throwGraphOAuthError(data, res, context) {
   // Tagged so the asset cache can serve stale data + back off instead of retrying.
   if ([4, 17, 32, 613, 80004].includes(Number(e.code)) || /request limit reached|rate limit|too many calls/i.test(e.message || '')) {
     err.isMetaRateLimit = true;
+    err.graphRegainMs = regainMsFromHeaders(res?.headers); // Meta's own estimate of when the quota is back (0 = not given)
   }
   err.graphUserTitle = userTitle;
   err.graphUserMsg = userMsg;

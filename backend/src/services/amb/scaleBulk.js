@@ -11,7 +11,7 @@ import { classifyScaleError } from './scaleErrors.js';
 export const MAX_ITEMS = 15;
 // A scale itself is ~10–20 s of Meta calls (measured on this system's last 12 days); the old 60 s default gap (2 min in the screen) was ~90% idle time. Fast by default, still stoppable: the sequencer stops by itself on a Meta rate limit.
 export const MIN_GAP_S = 5;
-export const DEFAULT_GAP_S = 15;
+export const DEFAULT_GAP_S = 60; // «آمن 1 د»: Meta's per-ad-account call quota is what limits a day of scaling, not our speed — 15 s between campaigns used it up and parked the next scale behind an hour-long block
 export const MAX_GAP_S = 900;
 /** How long ONE campaign may take to clone before the bulk gives up waiting on it (the single scale waits 2 minutes — too short for a product with many ads / videos). */
 export const WAIT_PER_CAMPAIGN_MS = 5 * 60_000;

@@ -105,8 +105,8 @@ ok('clone batches run one at a time PER LANE (per ad account; a scale has its ow
 {
   const { laneOfBatch } = await import(pathToFileURL(join(__dirname, '../services/amb/cloneEngine.js')).href);
   const b = (src, dest) => ({ source_ad_account_id: src, destination_account_ids_json: JSON.stringify(dest) });
-  ok('lanes: a clone to another account → CLONE lane of that account; a scale (destination = the source account) → its own SCALE lane', laneOfBatch(b('act_1', ['act_2'])) === 'CLONE:act_2' && laneOfBatch(b('act_1', ['act_1'])) === 'SCALE:act_1');
-  ok('different accounts = different lanes (they run at the same time); the same account’s scale and heavy clone are different lanes too (a video re-upload can not hold a scale back)', laneOfBatch(b('act_1', ['act_1'])) !== laneOfBatch(b('act_2', ['act_2'])) && laneOfBatch(b('act_9', ['act_1'])) !== laneOfBatch(b('act_1', ['act_1'])));
+  ok('lanes: a clone to another account and a scale (destination = the source account) → the ONE lane of the destination account', laneOfBatch(b('act_1', ['act_2'])) === 'ACCOUNT:act_2' && laneOfBatch(b('act_1', ['act_1'])) === 'ACCOUNT:act_1');
+  ok('different accounts = different lanes (they run at the same time); the SAME account’s scale and clone share ONE lane (one at a time — the quota is shared)', laneOfBatch(b('act_1', ['act_1'])) !== laneOfBatch(b('act_2', ['act_2'])) && laneOfBatch(b('act_9', ['act_1'])) === laneOfBatch(b('act_1', ['act_1'])));
   ok('two scales on the SAME account share a lane (still one at a time — the quota is protected); destination order never changes the lane; garbage → a safe lane, no crash', laneOfBatch(b('act_1', ['act_1'])) === laneOfBatch(b('act_1', ['act_1', 'act_1'])) && laneOfBatch(b('x', ['b', 'a'])) === laneOfBatch(b('x', ['a', 'b'])) && typeof laneOfBatch({ destination_account_ids_json: 'not json' }) === 'string' && typeof laneOfBatch(null) === 'string');
 }
 console.log('\n6. A throttled live-state read is NEVER read as «the scheduled campaign is gone»');
@@ -261,7 +261,17 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
 { // a throttle the clone engine hits is remembered PER AD ACCOUNT so the owner's alerts / syncs stop competing with the scale for the same quota
   const MC = await imp('../services/metaAssetCache.js');
   ok('an ad account is not «throttled» until the engine notes it, then it is for ~10 minutes (and a pause of 0 ends at once)', MC.isAccountThrottled('act_zz1') === false && (MC.noteAccountThrottled('act_zz1'), MC.isAccountThrottled('act_zz1') === true) && (MC.noteAccountThrottled('act_zz1', -1), MC.isAccountThrottled('act_zz1') === false));
-  ok('the clone engine notes the throttled accounts of the job it is running (destination + source) on every throttle wait', src.includes('throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id]') && src.includes('noteThrottledAccounts();') && src.includes('noteAccountThrottled'));
+  ok('the clone engine notes the throttled accounts of the job it is running (destination + source) on every throttle wait', src.includes('throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id]') && src.includes('noteAccountThrottled'));
+}
+{ // the wait follows what META says about its own throttle (response headers), not only a blind back-off
+  const GC = await imp('../services/metaGraphClient.js'); const CE = await imp('../services/amb/cloneEngine.js');
+  const H = (o) => ({ get: (n) => (o[n] === undefined ? null : o[n]) });
+  ok('Meta «estimated_time_to_regain_access» (minutes, business-use-case header) is read as milliseconds', GC.regainMsFromHeaders(H({ 'x-business-use-case-usage': JSON.stringify({ 123: [{ type: 'ads_management', call_count: 100, estimated_time_to_regain_access: 12 }] }) })) === 12 * 60_000);
+  ok('the ad-account usage header (reset_time_duration, seconds) is read too, the longest figure wins, and garbage / no header = 0', GC.regainMsFromHeaders(H({ 'x-ad-account-usage': JSON.stringify({ acc_id_util_pct: 99, reset_time_duration: 900 }), 'x-business-use-case-usage': JSON.stringify({ 1: [{ estimated_time_to_regain_access: 5 }] }) })) === 900_000 && GC.regainMsFromHeaders(H({ 'x-business-use-case-usage': '{not json' })) === 0 && GC.regainMsFromHeaders(null) === 0);
+  const keep = process.env.CLONE_THROTTLE_WAIT_MS; delete process.env.CLONE_THROTTLE_WAIT_MS;
+  ok('the engine waits META own time (+5 s) when it is longer than the planned back-off, never less than planned, never more than 20 minutes', CE.throttleWaitMs(30_000, 600_000) === 605_000 && CE.throttleWaitMs(90_000, 0) === 90_000 && CE.throttleWaitMs(300_000, 60_000) === 300_000 && CE.throttleWaitMs(30_000, 3 * 3600_000) === 20 * 60_000);
+  if (keep !== undefined) process.env.CLONE_THROTTLE_WAIT_MS = keep;
+  ok('a throttle wait is written to the clone log (THROTTLE_WAIT) with the reason, so the owner sees WHY a scale is waiting', src.includes("'THROTTLE_WAIT'") && src.includes('batchId, jobId: job.id'));
 }
 mode = 'ok';
 mock.close();

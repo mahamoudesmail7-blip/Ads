@@ -115,17 +115,22 @@ export function isMetaThrottle(e) {
 }
 // Which ad accounts the running job is working on — so a throttle it hits is remembered PER ACCOUNT (the owner's alerts and syncs then stay off those accounts instead of competing with the scale for the same quota).
 const throttleCtx = new AsyncLocalStorage();
-const noteThrottledAccounts = () => { const c = throttleCtx.getStore(); if (c) for (const a of c.accounts) noteAccountThrottled(a); };
+const noteThrottledAccounts = (ms) => { const c = throttleCtx.getStore(); if (c) for (const a of c.accounts) noteAccountThrottled(a, ms); };
+const THROTTLE_MAX_WAIT_MS = 20 * 60_000; // one wait never exceeds this, even when Meta says the quota needs longer
+/** How long to wait after this throttle: the planned back-off, or Meta's own «time to regain access» (+5 s) when it is longer — never blind-polling a quota Meta says is empty for 15 minutes. */
+export const throttleWaitMs = (planned, regainMs) => (process.env.CLONE_THROTTLE_WAIT_MS !== undefined ? planned : Math.min(THROTTLE_MAX_WAIT_MS, Math.max(planned, Number(regainMs) > 0 ? Number(regainMs) + 5_000 : 0)));
 const throttleWaits = (waits) => { const o = Number(process.env.CLONE_THROTTLE_WAIT_MS); return Number.isFinite(o) && process.env.CLONE_THROTTLE_WAIT_MS !== undefined ? waits.map(() => o) : waits; };
 async function withThrottleRetry(fn, label, waitsMs = [30_000, 90_000, 180_000, 300_000]) {
   const waits = throttleWaits(waitsMs);
   for (let i = 0; ; i++) {
     try { return await fn(); } catch (e) {
       if (!isMetaThrottle(e) || i >= waits.length) throw e;
-      noteThrottledAccounts();
+      const waitMs = throttleWaitMs(waits[i], e.graphRegainMs);
+      noteThrottledAccounts(Math.max(10 * 60_000, waitMs + 60_000));
       noteRateLimit(); // tell every other Meta reader to prefer its cache for the next 2 minutes instead of piling on (a throttle lasts longer the more it is hammered)
-      logger.warn('AMB clone: Meta throttled a read — waiting then retrying', { label, attempt: i + 1, waitMs: waits[i] });
-      await new Promise((r) => setTimeout(r, waits[i]));
+      logger.warn('AMB clone: Meta throttled a call — waiting then retrying', { label, attempt: i + 1, waitMs, metaRegainMs: e.graphRegainMs || 0 });
+      { const c = throttleCtx.getStore(); if (c?.batchId && waitMs >= 30_000) await audit(c.batchId, c.jobId, 'THROTTLE_WAIT', { level: 'WARNING', detail: `ميتا عاملة حد طلبات مؤقت على حساب الإعلانات — السيستم مستني ${Math.round(waitMs / 60_000 * 10) / 10} دقيقة${e.graphRegainMs ? ' (ده الوقت اللي ميتا نفسها قالته)' : ''} وبعدها يكمّل لوحده (المحاولة ${i + 1}). مش خطأ في الحملة.` }); }
+      await new Promise((r) => setTimeout(r, waitMs));
     }
   }
 }
@@ -820,8 +825,8 @@ let runChain = Promise.resolve(); // only keeps the ORDER in which batches are p
 export function laneOfBatch(batch) {
   let dest = []; try { dest = JSON.parse(batch?.destination_account_ids_json || '[]'); } catch { dest = []; }
   dest = [...new Set((Array.isArray(dest) ? dest : []).map(String))].sort();
-  const same = dest.includes(String(batch?.source_ad_account_id));
-  return `${same ? 'SCALE' : 'CLONE'}:${dest.join(',') || String(batch?.source_ad_account_id || 'UNKNOWN')}`;
+  // ONE lane per ad account — a scale and a clone on the same account never run together (Meta's per-account call quota is shared by both; two at once turned a busy day into «Too Many API Calls»).
+  return `ACCOUNT:${dest.join(',') || String(batch?.source_ad_account_id || 'UNKNOWN')}`;
 }
 function kickRun(batchId) {
   if (running.has(batchId)) return;
@@ -855,7 +860,7 @@ async function runBatch(batchId) {
   for (const job of jobs) {
     if (['CLONED_PAUSED', 'ACTIVATION_PENDING', 'SCHEDULED_NATIVE', 'ACTIVATED'].includes(job.status)) continue; // done cloning, waiting for schedule / already live
     try {
-      await throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id].filter(Boolean) }, () => cloneJob(job.id, token));
+      await throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id].filter(Boolean), batchId, jobId: job.id }, () => cloneJob(job.id, token));
     } catch (err) {
       logger.error('AMB clone job failed hard', { jobId: job.id, message: err.message });
       await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800) } });

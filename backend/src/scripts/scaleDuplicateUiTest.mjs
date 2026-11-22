@@ -107,12 +107,12 @@ try {
   console.log('\n3. «مش دلوقتي» just closes the prompt');
   await clickSel('.amb-dup [data-bulk-act="dismiss"]'); await sleep(400);
   ok('dismissed: no panel, no request', await js(`!document.querySelector('.amb-dup')`) && (await dcalls()).length === 1);
-  console.log('\n4. a fast scale by default: 15 s between campaigns (it used to be 2 minutes), with one-click presets');
+  console.log('\n4. a steady scale by default: 1 minute between campaigns, with one-click presets (faster ones included)');
   await clickSel('[data-bulk-pick="S9"]'); await clickSel('[data-bulk-act="open"]');
-  ok('the bulk panel opens with a 15 second gap, «سريع 15 ث» selected and the summary says 15 ثانية', await waitFor(`(() => { const g = document.querySelector('[data-bulk-gap]'); const on = document.querySelector('.amb-gap-presets .on'); return !!g && Number(g.value) === 0.25 && !!on && /سريع 15 ث/.test(on.innerText) && /15 ثانية/.test(document.querySelector('[data-bulk-gaptxt]').innerText); })()`, 150000));
+  ok('the bulk panel opens with a 1 minute gap, «آمن 1 د» selected and the summary says 1 دقيقة', await waitFor(`(() => { const g = document.querySelector('[data-bulk-gap]'); const on = document.querySelector('.amb-gap-presets .on'); return !!g && Number(g.value) === 1 && !!on && /آمن 1 د/.test(on.innerText) && /1 دقيقة/.test(document.querySelector('[data-bulk-gaptxt]').innerText); })()`, 150000));
   ok('five presets: أسرع 6 ث · سريع 15 ث · متوسط 30 ث · آمن 1 د · بطيء 2 د', await js(`document.querySelectorAll('.amb-gap-presets button').length === 5 && /أسرع 6 ث/.test(document.querySelector('.amb-gap-presets').innerText) && /بطيء 2 د/.test(document.querySelector('.amb-gap-presets').innerText)`));
-  await clickSel('[data-bulk-gap-preset="1"]');
-  ok('«آمن 1 د» → the gap becomes 1 minute (field + summary + the preset is marked)', await waitFor(`(() => { const g = document.querySelector('[data-bulk-gap]'); const on = document.querySelector('.amb-gap-presets .on'); return !!g && Number(g.value) === 1 && !!on && /آمن 1 د/.test(on.innerText) && /1 دقيقة/.test(document.querySelector('[data-bulk-gaptxt]').innerText); })()`, 60000));
+  await clickSel('[data-bulk-gap-preset="0.25"]');
+  ok('«سريع 15 ث» → the gap becomes 15 seconds (field + summary + the preset is marked)', await waitFor(`(() => { const g = document.querySelector('[data-bulk-gap]'); const on = document.querySelector('.amb-gap-presets .on'); return !!g && Number(g.value) === 0.25 && !!on && /سريع 15 ث/.test(on.innerText) && /15 ثانية/.test(document.querySelector('[data-bulk-gaptxt]').innerText); })()`, 60000));
   await js(`(() => { const g = document.querySelector('[data-bulk-gap]'); g.value = '0.03'; g.dispatchEvent(new Event('input')); })()`); await sleep(300);
   ok('under 5 seconds is refused with a clear hint (the approve button stays off)', await js(`/5 ثواني/.test(document.querySelector('.amb-bulk-hint').innerText) && document.querySelector('[data-bulk-act="approve"]').disabled`));
   ok('no JavaScript errors were thrown during the whole run', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
