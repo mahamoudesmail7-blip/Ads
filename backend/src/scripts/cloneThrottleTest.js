@@ -92,7 +92,14 @@ ok('if Meta never recovers it gives up after the configured waits and surfaces t
 let n3 = 0; let e3 = null; try { await withThrottleRetry(async () => { n3++; throw err('Invalid parameter', { graphCode: 100, graphSubcode: 1487 }); }, 't', [0, 0, 0]); } catch (e) { e3 = e; }
 ok('a real error (bad payload) is NEVER retried — one attempt, same error', n3 === 1 && /Invalid parameter/.test(e3?.message || ''));
 ok('every clone-engine Meta write goes through the throttle-aware wrapper (create campaign / ad set / creative / ad / image / video / status)', ['_createCampaign', '_createAdSet', '_createAdCreative', '_createAd', '_uploadAdImageFromUrl', '_uploadAdVideoFromUrl', '_setEntityStatus'].every((n) => src.includes('writeRetry(() => ' + n + '(')));
-ok('clone batches run one at a time (a single run chain) so two batches never hammer the same quota together', src.includes('let runChain = Promise.resolve()') && src.includes('runChain = runChain.then(async () => {'));
+ok('clone batches run one at a time PER LANE (per ad account; a scale has its own lane) so two batches never hammer the same quota together, but different accounts never wait for each other', src.includes('let runChain = Promise.resolve()') && /const laneChains = new (TenantMap|Map)\(\)/.test(src) && src.includes('laneChains.set(lane, prev.then(async () => {') && src.includes('export function laneOfBatch'));
+{
+  const { laneOfBatch } = await import(pathToFileURL(join(__dirname, '../services/amb/cloneEngine.js')).href);
+  const b = (src, dest) => ({ source_ad_account_id: src, destination_account_ids_json: JSON.stringify(dest) });
+  ok('lanes: a clone to another account → CLONE lane of that account; a scale (destination = the source account) → its own SCALE lane', laneOfBatch(b('act_1', ['act_2'])) === 'CLONE:act_2' && laneOfBatch(b('act_1', ['act_1'])) === 'SCALE:act_1');
+  ok('different accounts = different lanes (they run at the same time); the same account’s scale and heavy clone are different lanes too (a video re-upload can not hold a scale back)', laneOfBatch(b('act_1', ['act_1'])) !== laneOfBatch(b('act_2', ['act_2'])) && laneOfBatch(b('act_9', ['act_1'])) !== laneOfBatch(b('act_1', ['act_1'])));
+  ok('two scales on the SAME account share a lane (still one at a time — the quota is protected); destination order never changes the lane; garbage → a safe lane, no crash', laneOfBatch(b('act_1', ['act_1'])) === laneOfBatch(b('act_1', ['act_1', 'act_1'])) && laneOfBatch(b('x', ['b', 'a'])) === laneOfBatch(b('x', ['a', 'b'])) && typeof laneOfBatch({ destination_account_ids_json: 'not json' }) === 'string' && typeof laneOfBatch(null) === 'string');
+}
 console.log('\n6. A throttled live-state read is NEVER read as «the scheduled campaign is gone»');
 const { getCloneJobLiveState } = await imp('../services/metaGraphClient.js');
 mode = 'ok'; const live = await getCloneJobLiveState('tok', { campaignId: '555', adsetIds: ['6'], adIds: ['7'] });

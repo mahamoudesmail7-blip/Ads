@@ -754,7 +754,9 @@ function wireScaleCards(root, data) {
 // (the first now, each next one `gap` later) through the SAME executeScale as the single flow. The single-campaign flow above is untouched.
 // ---------------------------------------------------------------------------
 const bulkSel = new Set(); // sourceCampaignIds ticked for the bulk scale
-const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 2, busy: false };
+const bulkUi = { open: false, mode: 'CBO', common: '', rows: new Map(), startMode: 'RUN_NOW', date: '', time: '00:00', gapMin: 0.25, busy: false }; // 15 s between campaigns by default (a scale takes ~10-20 s; the old 2 minutes was mostly waiting)
+const gapText = (min) => { const m = Number(min) || 0; return m < 1 ? Math.round(m * 60) + ' ثانية' : (Math.round(m * 10) / 10) + ' دقيقة'; };
+const GAP_PRESETS = [[0.1, 'أسرع 6 ث'], [0.25, 'سريع 15 ث'], [0.5, 'متوسط 30 ث'], [1, 'آمن 1 د'], [2, 'بطيء 2 د']];
 // Bulk scale runs PER AD ACCOUNT: Ahmed Samy's keeps running (and keeps being polled) while you look at Hady or start a bulk scale there. `bulkRuns` = account → its last batch payload.
 const bulkRuns = new Map(); const bulkPolls = new Map(); // batchId -> interval
 const acctKey = () => state.account || 'PRIMARY';
@@ -777,7 +779,7 @@ function bulkApproveState(cards) {
   if (!cards.length) return { ok: false, reason: 'علّم على كامبين واحد على الأقل.' };
   if (cards.length > 15) return { ok: false, reason: 'الحد الأقصى 15 كامبين في المرة.' };
   const u = bulkUi;
-  if (!(u.gapMin >= 0.5 && u.gapMin <= 15)) return { ok: false, reason: 'الفاصل بين الكامبينات لازم بين نص دقيقة و 15 دقيقة.' };
+  if (!(u.gapMin >= 0.08 && u.gapMin <= 15)) return { ok: false, reason: 'الفاصل بين الكامبينات لازم بين 5 ثواني و 15 دقيقة.' };
   if (u.startMode === 'SCHEDULE' && !cloneStartInFuture(u.date, u.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
   for (const c of cards) {
     const r = bulkRow(c);
@@ -792,7 +794,7 @@ function syncBulkApprove() {
   btn.disabled = !ok || bulkUi.busy;
   const hint = document.querySelector('.amb-bulk-hint'); if (hint) { hint.textContent = ok ? '' : reason; hint.hidden = ok; }
   const tot = document.querySelector('[data-bulk-total]'); if (tot) tot.textContent = bulkTotalText(bulkCards());
-  const gt = document.querySelector('[data-bulk-gaptxt]'); if (gt) gt.textContent = `${bulkUi.gapMin} دقيقة`;
+  const gt = document.querySelector('[data-bulk-gaptxt]'); if (gt) gt.textContent = gapText(bulkUi.gapMin);
 }
 function bulkTotalText(cards) {
   const sum = cards.reduce((t, c) => { const r = bulkRow(c); const b = Number(r.budget) || 0; return t + b; }, 0);
@@ -815,7 +817,7 @@ function bulkBarHtml(cards) {
 function bulkPanelHtml() {
   const cards = bulkCards(); const u = bulkUi; const sched = u.startMode === 'SCHEDULE';
   const ap = bulkApproveState(cards);
-  const gapOk = u.gapMin >= 0.5 && u.gapMin <= 15;
+  const gapOk = u.gapMin >= 0.08 && u.gapMin <= 15;
   const futureOk = !sched || cloneStartInFuture(u.date, u.time);
   return `<div class="amb-bulk-panel">
     ${cards.length > 5 ? `<div class="amb-scale-failed" style="margin:10px 0 0;">⚠️ اخترت ${cards.length} كامبين. الأنسب 5 في المرة لكل حساب (وبعدين 5 تانيين بعد 30–60 دقيقة) عشان ميتا ماتحطش حد طلبات. لو ميتا وقفتها السيستم بيوقف لوحده.</div>` : ''}
@@ -850,8 +852,9 @@ function bulkPanelHtml() {
         <div class="field" style="max-width:150px;"><label>Start Time</label><input type="time" value="${E(u.time)}" data-bulk-time /></div>
         <div class="field" style="max-width:160px;"><label>Timezone</label><input type="text" value="Africa/Cairo" disabled readonly /></div>
       </div>${futureOk ? '' : `<div class="faint" style="font-size:12px; color:var(--amb-red); margin-top:4px;">The selected start date and time must be in the future.</div>`}` : ''}
-      <div class="field" style="max-width:230px; margin-top:10px;"><label>الفاصل بين كل كامبين والتاني (دقيقة)</label><input type="number" min="0.5" max="15" step="0.5" value="${E(u.gapMin)}" data-bulk-gap /></div>
-      ${gapOk ? '' : '<div class="faint" style="font-size:12px; color:var(--amb-red);">بين نص دقيقة و 15 دقيقة.</div>'}
+      <div class="field" style="max-width:230px; margin-top:10px;"><label>الفاصل بين كل كامبين والتاني (دقيقة)</label><input type="number" min="0.08" max="15" step="0.05" value="${E(u.gapMin)}" data-bulk-gap /></div>
+      <div class="amb-gap-presets">${GAP_PRESETS.map(([m, l]) => `<button type="button" class="amb-btn ghost sm ${Number(u.gapMin) === m ? 'on' : ''}" data-bulk-gap-preset="${m}">${l}</button>`).join('')}</div>
+      ${gapOk ? '' : '<div class="faint" style="font-size:12px; color:var(--amb-red);">بين 5 ثواني و 15 دقيقة.</div>'}
       <div class="faint" style="font-size:11.5px; margin-top:4px;">بيعمل الأول فورًا، وبعد الفاصل بيبدأ اللي بعده وهكذا. كل كامبين بيتعمل زي الاسكيل العادي بالظبط (نسخة متوقفة + تحقق).${sched ? ' وقت البداية واحد لكل الكامبينات.' : ''}</div>
     </div>
     <div class="amb-scale-sec summary">
@@ -860,7 +863,7 @@ function bulkPanelHtml() {
         <div><span>نوع الميزانية</span><b>${u.mode}</b></div>
         <div><span>العدد</span><b data-bulk-total>${bulkTotalText(cards)}</b></div>
         <div><span>التشغيل</span><b>${sched ? `${fmtDMY(u.date)} ${fmt12h(u.time)} — القاهرة` : 'الآن'}</b></div>
-        <div><span>الفاصل</span><b data-bulk-gaptxt>${E(u.gapMin)} دقيقة</b></div>
+        <div><span>الفاصل</span><b data-bulk-gaptxt>${E(gapText(u.gapMin))}</b></div>
       </div>
     </div>
     <div class="amb-scale-actions">
@@ -903,7 +906,7 @@ async function runDuplicate(b, mode) {
   const items = dupDone(b).map((it) => ({ sourceCampaignId: it.sourceCampaignId, label: it.label, ...it.plan })); if (!items.length) { UI.toast('مفيش كامبينات اتسكّلت بنجاح عشان نعمل لها دبلكيت.', 'error'); return; }
   const rows = dupDone(b).map((it) => dupPreview(it, mode)); const total = rows.reduce((t, r) => t + r.budget, 0);
   const lines = rows.map((r, i) => (i + 1) + '. ' + r.label + ' — ' + fmtEGP(r.budget) + '/يوم · ' + r.ads + ' إعلان' + (r.adSets ? ' · ' + r.adSets + ' Ad Set' : '')).join('\n');
-  const ok = await UI.confirmModal({ title: 'تأكيد دبلكيت الاسكيل (' + mode + ')', message: (isViewOnly() ? 'الحساب: ' + viewAcctName() + '\n' : '') + 'هيتم إنشاء ' + rows.length + ' حملة دبلكيت (' + mode + ') — نسخة تانية من الكامبينات اللي اتسكّلت، بنفس الإعلانات والميزانية، متوقفة، واحدة ورا التانية بفاصل ' + Math.round((b.gapSeconds || 60) / 60 * 10) / 10 + ' دقيقة:\n' + lines + '\nإجمالي الميزانية اليومية ' + fmtEGP(total) + '.', confirmLabel: 'موافق وتشغيل', danger: true });
+  const ok = await UI.confirmModal({ title: 'تأكيد دبلكيت الاسكيل (' + mode + ')', message: (isViewOnly() ? 'الحساب: ' + viewAcctName() + '\n' : '') + 'هيتم إنشاء ' + rows.length + ' حملة دبلكيت (' + mode + ') — نسخة تانية من الكامبينات اللي اتسكّلت، بنفس الإعلانات والميزانية، متوقفة، واحدة ورا التانية بفاصل ' + gapText((b.gapSeconds || 15) / 60) + ':\n' + lines + '\nإجمالي الميزانية اليومية ' + fmtEGP(total) + '.', confirmLabel: 'موافق وتشغيل', danger: true });
   if (!ok) return;
   try {
     const nb = await api.post('/api/ai-media-buyer/scale/duplicate', { items, budgetMode: mode, gapSeconds: b.gapSeconds || 60, ...acctBody() });
@@ -1007,7 +1010,7 @@ function wireBulk(root) {
         const lines = sel.map((c, i) => `${i + 1}. ${c.displayName} — ${fmtEGP(Number(bulkRow(c).budget))}/يوم`).join('\n');
         const ok = await UI.confirmModal({
           title: isViewOnly() ? `تأكيد الاسكيل المجمّع — حساب ${viewAcctName()}` : 'تأكيد الاسكيل المجمّع',
-          message: `${isViewOnly() ? `الحساب: ${viewAcctName()}\n` : ''}هيتم إنشاء ${sel.length} حملة اسكيل (${u.mode}) متوقفة بنسخة مطابقة للمصدر، واحدة ورا التانية بفاصل ${u.gapMin} دقيقة:\n${lines}\nإجمالي الميزانية اليومية ${fmtEGP(total)}.\n${sched ? `التشغيل: ${fmtDMY(u.date)} — ${fmt12h(u.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال كل نسخة.'}\nحملات المصدر مش هتتغير. متابعة؟`,
+          message: `${isViewOnly() ? `الحساب: ${viewAcctName()}\n` : ''}هيتم إنشاء ${sel.length} حملة اسكيل (${u.mode}) متوقفة بنسخة مطابقة للمصدر، واحدة ورا التانية بفاصل ${gapText(u.gapMin)}:\n${lines}\nإجمالي الميزانية اليومية ${fmtEGP(total)}.\n${sched ? `التشغيل: ${fmtDMY(u.date)} — ${fmt12h(u.time)} — Africa/Cairo.` : 'تشغيل الآن بعد اكتمال كل نسخة.'}\nحملات المصدر مش هتتغير. متابعة؟`,
           confirmLabel: sched ? 'موافق وجدولة' : 'موافق وتشغيل', danger: true,
         });
         if (!ok) return;
@@ -1036,6 +1039,7 @@ function wireBulk(root) {
   const d = root.querySelector('[data-bulk-date]'); if (d) d.onchange = () => { bulkUi.date = d.value || cairoDateStr(1); syncBulkApprove(); };
   const t = root.querySelector('[data-bulk-time]'); if (t) t.onchange = () => { bulkUi.time = /^\d{1,2}:\d{2}$/.test(t.value) ? t.value : '00:00'; syncBulkApprove(); };
   const g = root.querySelector('[data-bulk-gap]'); if (g) { g.oninput = () => { bulkUi.gapMin = Number(g.value) || 0; syncBulkApprove(); }; }
+  root.querySelectorAll('[data-bulk-gap-preset]').forEach((b) => { b.onclick = () => { bulkUi.gapMin = Number(b.dataset.bulkGapPreset); rerenderScale(); }; });
 }
 
 /**

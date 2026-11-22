@@ -784,15 +784,32 @@ export async function cancelBatch({ batchId, userId }) {
 // ---------------------------------------------------------------------------
 // The clone worker
 // ---------------------------------------------------------------------------
-let runChain = Promise.resolve(); // batches run ONE AT A TIME (two batches hammering the same development-access quota is what turns a slow day into «Too Many API Calls»)
+// Batches run ONE AT A TIME *PER LANE* (two batches hammering the same ad account's quota is what turns a slow day into «Too Many API Calls»), but different lanes run at the same time:
+//   • one lane per destination ad account — Ahmed Samy's clones never wait for Hady's;
+//   • a scale (the copy lands in the SAME account it was copied from) has its OWN lane per account — a clone of 30 videos that takes an hour can no longer hold a 10-second scale behind it.
+// A real measurement (the last 12 days of this system): a scale itself takes 7–21 s of Meta calls; the waits of 5–38 MINUTES were all queue time behind slower clones.
+const laneChains = new Map(); // lane -> the tail of that lane's queue
+let runChain = Promise.resolve(); // only keeps the ORDER in which batches are put into their lanes (never waits for a run)
+/** The lane a batch runs in (pure). */
+export function laneOfBatch(batch) {
+  let dest = []; try { dest = JSON.parse(batch?.destination_account_ids_json || '[]'); } catch { dest = []; }
+  dest = [...new Set((Array.isArray(dest) ? dest : []).map(String))].sort();
+  const same = dest.includes(String(batch?.source_ad_account_id));
+  return `${same ? 'SCALE' : 'CLONE'}:${dest.join(',') || String(batch?.source_ad_account_id || 'UNKNOWN')}`;
+}
 function kickRun(batchId) {
   if (running.has(batchId)) return;
   running.add(batchId);
   runChain = runChain.then(async () => {
-    try { await runBatch(batchId); }
-    catch (err) { logger.error('AMB clone runBatch crashed', { batchId, message: err.message }); }
-    finally { running.delete(batchId); }
-  });
+    let lane = 'GLOBAL';
+    try { const b = await prisma.ambCloneBatch.findUnique({ where: { batch_id: batchId }, select: { source_ad_account_id: true, destination_account_ids_json: true } }); if (b) lane = laneOfBatch(b); } catch { /* unknown lane: the shared one */ }
+    const prev = laneChains.get(lane) || Promise.resolve();
+    laneChains.set(lane, prev.then(async () => {
+      try { await runBatch(batchId); }
+      catch (err) { logger.error('AMB clone runBatch crashed', { batchId, message: err.message }); }
+      finally { running.delete(batchId); }
+    }));
+  }).catch((err) => { running.delete(batchId); logger.error('AMB clone enqueue failed', { batchId, message: err.message }); });
 }
 
 async function runBatch(batchId) {
