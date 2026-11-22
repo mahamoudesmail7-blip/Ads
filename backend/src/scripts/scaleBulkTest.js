@@ -245,6 +245,11 @@ console.log('\n12. every failure says what it means and what to do (no raw Meta 
   ok('the bulk progress carries the hint for a failed item (and none for the others)', dh.items[0].hint?.kind === 'NO_CREATIVE' && dh.items[0].hint.retry === 'RESUME' && dh.items[1].hint === null);
 }
 
+{
+  const { classifyScaleError: cls } = await import(pathToFileURL(join(__dirname, '../services/amb/scaleErrors.js')).href);
+  const h = cls('فشل إنشاء حملة الاسكيل: Invalid parameter — Action query missing object: Each action type must use at least one object. [code=100, subcode=1634005, type=OAuthException, fbtrace_id=x]');
+  ok('the production error «Action query missing object» (subcode 1634005) is explained, not «فشل غير متوقع»: the clone retries without the copied tracking_specs, the campaign is partial → RESUME (never a new scale)', h.kind === 'TRACKING_SPECS' && h.retry === 'RESUME' && /كمّل الناقص/.test(h.action));
+}
 console.log('\n«دبلكيت للاسكيل» — after a scale finished, the same winners again as a second scale, CBO or ABO (same ads, same money)');
 {
   const c1 = SB.convertPlanItem({ sourceCampaignId: '9', label: 'Anti-suffocation - scale', budgetMode: 'CBO', selectedAdIds: ['a1', 'a2'], campaignBudgetEgp: 400 }, 'CBO');

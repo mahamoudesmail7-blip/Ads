@@ -58,6 +58,27 @@ function adCopyable(cr, { destPageId, identityMap, sameAccount = false }) {
 }
 
 const TERMINAL_JOB = new Set(['ACTIVATED', 'CANCELLED']);
+/**
+ * The source ad's `tracking_specs` copied to the new ad. Meta rejects the ad with «Invalid parameter — Action query missing object: Each action type must use at least one object (code 100 / subcode 1634005)» when an entry carries
+ * an `action.type` but NO object at all (no fb_pixel / page / post …) — it happens when Meta's own read of the source ad returned an entry without its pixel. Such an entry is dropped, empty object lists are removed,
+ * and if nothing real is left the ad is created WITHOUT tracking_specs (Meta then tracks with the ad set's own pixel, exactly like a new ad). Entries that carry real objects are copied untouched.
+ */
+export function sanitizeTrackingSpecs(specs) {
+  if (!Array.isArray(specs)) return specs || null;
+  const out = [];
+  for (const entry of specs) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const kept = { ...entry }; let hasObject = false;
+    for (const k of Object.keys(kept)) {
+      if (k === 'action.type') continue;
+      const v = kept[k]; const real = Array.isArray(v) ? v.filter((x) => x != null && String(x).trim() !== '') : (v != null && String(v).trim() !== '' ? [v] : []);
+      if (!real.length) delete kept[k]; else { kept[k] = Array.isArray(v) ? real : v; hasObject = true; }
+    }
+    if (hasObject && Array.isArray(kept['action.type']) && kept['action.type'].length) out.push(kept);
+  }
+  return out.length ? out : null;
+}
+export const TRACKING_SPEC_ERR_RE = /Action query missing object|subcode=1634005|1634005/i;
 const running = new Set(); // batch_ids with an in-flight runBatch()
 
 function j(v, d = null) { try { return v ? JSON.parse(v) : d; } catch { return d; } }
@@ -1341,9 +1362,18 @@ async function cloneJob(jobId, token) {
       }
       try {
         const payload = { name: ad.name, adset_id: newAdsetId, creative: { creative_id: newCreativeId }, status: 'PAUSED' };
-        if (ad.tracking_specs) payload.tracking_specs = ad.tracking_specs;
+        const ts = sanitizeTrackingSpecs(ad.tracking_specs); if (ts) payload.tracking_specs = ts;
         if (ad.conversion_domain) payload.conversion_domain = ad.conversion_domain;
-        const res = await createAd(token, dest, payload);
+        let res;
+        try { res = await createAd(token, dest, payload); }
+        catch (e1) {
+          // Meta still refused the copied tracking_specs («Action query missing object»): create the ad WITHOUT them (Meta tracks with the ad set's pixel, like any new ad) — once, and say so.
+          if (payload.tracking_specs && TRACKING_SPEC_ERR_RE.test(metaErr(e1))) {
+            await audit(batchId, jobId, 'RETRY', { level: 'AD', source_id: ad.id, detail: `ميتا رفضت tracking_specs المنسوخة (${metaErr(e1)}) — إعادة المحاولة من غيرها (ميتا بتتبع بالبيكسل بتاع الـAd Set)`, data: { metaError: metaErrData(e1), droppedTrackingSpecs: payload.tracking_specs } });
+            delete payload.tracking_specs;
+            res = await createAd(token, dest, payload);
+          } else throw e1;
+        }
         idMap.ads[ad.id] = res.id;
         counts.ads++;
         await markObj(arow.id, { status: 'CREATED', destination_id: res.id, payload_json: JSON.stringify(payload).slice(0, 4000), error: null });

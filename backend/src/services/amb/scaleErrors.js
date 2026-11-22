@@ -5,13 +5,14 @@
 //          'FIX_INPUT' — the owner has to supply something (a landing URL) and then resume
 //          'RESCALE'   — nothing was written to Meta → a normal new scale is safe
 //          'NONE'      — nothing to do (already fine)
-export const KINDS = ['WRITE_BLOCKED', 'THROTTLE', 'WAIT_TIMEOUT', 'MISSING_LINK', 'NO_CREATIVE', 'ADS_UNREADABLE', 'REPORT_ONLY', 'PERMISSION', 'UNKNOWN'];
+export const KINDS = ['WRITE_BLOCKED', 'THROTTLE', 'WAIT_TIMEOUT', 'MISSING_LINK', 'NO_CREATIVE', 'TRACKING_SPECS', 'ADS_UNREADABLE', 'REPORT_ONLY', 'PERMISSION', 'UNKNOWN'];
 
 const RULES = [
   { kind: 'WRITE_BLOCKED', re: /إيقاف الطوارئ مفعّل|كتابة Meta مقفولة|META_WRITE_BLOCKED/i, title: 'إيقاف الطوارئ / قفل الكتابة شغّال — ماحصلش أي حاجة على Meta', action: 'ده قفل أمان في AI Operator، مش عطل. افتح AI Operator وألغي «إيقاف الطوارئ» (للمسؤول) وبعدها أعد الاسكيل. ماتعملش أي كامبين خالص فمفيش خطر تكرار.', retry: 'RESCALE' },
   { kind: 'THROTTLE', re: /request limit reached|rate limit|too many (api )?calls|\(#(?:4|17|32|613|80000|80003|80004)\)|حد مؤقت على الحساب/i, title: 'ميتا حاطّة حد طلبات مؤقت على الحساب', action: 'استنى 10–15 دقيقة من غير أي كلون أو مزامنة، وبعدها كمّل.', retry: 'WAIT' },
   { kind: 'WAIT_TIMEOUT', re: /انتهت مهلة الانتظار|المهلة والـ job لسه/i, title: 'النسخ لسه شغال على ميتا', action: 'ما تعيدش الاسكيل — النسخ بيخلص لوحده. راجع «استنساخ وجدولة».', retry: 'RESUME' },
   { kind: 'MISSING_LINK', re: /link field is required|Required Field Is Missing[\s\S]*link|رابط وجهة/i, title: 'ميتا طلبت رابط المنتج للإعلان ده', action: 'الكامبين اتعمل ناقص إعلان. اضغط «كمّل الناقص» (بيستخدم رابط المنتج من باقي الحملة)، ولو مفيش رابط أدخله مرة واحدة.', retry: 'RESUME' },
+  { kind: 'TRACKING_SPECS', re: /Action query missing object|subcode=1634005|1634005/i, title: 'ميتا رفضت إعدادات التتبع المنسوخة للإعلان', action: 'السيستم بقى بيعيد المحاولة لوحده من غير إعدادات التتبع المنسوخة (ميتا بتتبع بالبيكسل بتاع الـ Ad Set). الكامبين اتعمل ناقص — اضغط «كمّل الناقص» (مش اسكيل جديد).', retry: 'RESUME' },
   { kind: 'NO_CREATIVE', re: /لا يوجد كرياتيف صالح/i, title: 'الإعلان ماتعملوش كرييتيف', action: 'الكامبين اتعمل ناقص. اضغط «كمّل الناقص».', retry: 'RESUME' },
   { kind: 'ADS_UNREADABLE', re: /تعذّر قراءة إعلانات الحملة|مقدرتش أقرأ إعلانات/i, title: 'مقدرتش أقرأ إعلانات الحملة من ميتا', action: 'ماحصلش أي كتابة على ميتا. جرّب تاني بعد دقايق.', retry: 'RESCALE' },
   { kind: 'PERMISSION', re: /permission|\(#200\)|\(#10\)|OAuthException.*(?:access|token)|Error validating access token/i, title: 'ميتا رفضت الصلاحية', action: 'راجع ربط ميتا / صلاحية الحساب الإعلاني من الإعدادات.', retry: 'NONE' },
