@@ -1505,6 +1505,19 @@ function transformTargeting(targeting, resolved) {
   if (t.excluded_custom_audiences) t.excluded_custom_audiences = fix(t.excluded_custom_audiences);
   // Meta rejects these read-only/annotation fields on create.
   delete t.targeting_optimization_types;
+  stripDeprecatedPlacements(t);
+  return t;
+}
+/**
+ * Meta removed the Instagram «Explore» placement from the API («IG Explore Placement Is Deprecated», subcode 2490589): an ad set copied from a source that still lists it is REJECTED.
+ * The deprecated value is dropped from the copy; the other placements stay exactly as they were. If «explore» was the only Instagram position the key is removed (Meta's own default for Instagram),
+ * never replaced by a position the source did not have. Pure — exported for the tests.
+ */
+export function stripDeprecatedPlacements(t) {
+  if (t && Array.isArray(t.instagram_positions) && t.instagram_positions.includes('explore')) {
+    const rest = t.instagram_positions.filter((p) => p !== 'explore');
+    if (rest.length) t.instagram_positions = rest; else delete t.instagram_positions;
+  }
   return t;
 }
 

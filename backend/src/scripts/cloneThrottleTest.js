@@ -273,6 +273,16 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
   if (keep !== undefined) process.env.CLONE_THROTTLE_WAIT_MS = keep;
   ok('a throttle wait is written to the clone log (THROTTLE_WAIT) with the reason, so the owner sees WHY a scale is waiting', src.includes("'THROTTLE_WAIT'") && src.includes('batchId, jobId: job.id'));
 }
+{ // job 1204: Meta rejects the copied ad set — «IG Explore Placement Is Deprecated» (subcode 2490589)
+  const CE = await imp('../services/amb/cloneEngine.js');
+  const mk = (t) => CE.buildAdSetPayload({ name: 'a', billing_event: 'IMPRESSIONS', optimization_goal: 'OFFSITE_CONVERSIONS', targeting: t }, { newCampaignId: '1', campaignHasBudget: true, resolved: {} }).targeting;
+  const t1 = mk({ publisher_platforms: ['facebook', 'instagram'], instagram_positions: ['stream', 'explore', 'story'], facebook_positions: ['feed'] });
+  ok('the deprecated Instagram «explore» placement is dropped from the copy; every other placement stays exactly as it was', JSON.stringify(t1.instagram_positions) === JSON.stringify(['stream', 'story']) && JSON.stringify(t1.facebook_positions) === JSON.stringify(['feed']) && JSON.stringify(t1.publisher_platforms) === JSON.stringify(['facebook', 'instagram']));
+  const t2 = mk({ publisher_platforms: ['instagram'], instagram_positions: ['explore'] });
+  ok('when «explore» was the ONLY Instagram position the key is removed (Meta default) — no position the source never had is invented', !('instagram_positions' in t2) && JSON.stringify(t2.publisher_platforms) === JSON.stringify(['instagram']));
+  const keep = { publisher_platforms: ['instagram'], instagram_positions: ['stream', 'explore_home', 'reels'] };
+  ok('«explore_home» (still valid) and a targeting with no Instagram positions are left untouched', JSON.stringify(mk(keep).instagram_positions) === JSON.stringify(['stream', 'explore_home', 'reels']) && !('instagram_positions' in mk({ geo_locations: { countries: ['EG'] } })) && CE.stripDeprecatedPlacements(null) === null);
+}
 mode = 'ok';
 mock.close();
 await prisma.$disconnect();
