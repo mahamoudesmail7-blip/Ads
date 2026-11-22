@@ -19,6 +19,7 @@
 //   • Only READY/WARNING jobs are cloned & scheduled; BLOCKED jobs are not
 //     touched and show the exact blocking reason.
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
 import { getConnection, getDecryptedToken } from '../metaAuth.js';
@@ -29,7 +30,7 @@ import {
   createAdSet as _createAdSet, createAdCreative as _createAdCreative, createAd as _createAd,
   setEntityStatus as _setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
 } from '../metaGraphClient.js';
-import { cachedMetaFetch, fingerprintToken, noteRateLimit } from '../metaAssetCache.js';
+import { cachedMetaFetch, fingerprintToken, noteRateLimit, noteAccountThrottled } from '../metaAssetCache.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
 import { assertMetaWritesAllowed, checkGlobalMetaWrite } from './writeGate.js';
@@ -112,12 +113,16 @@ export function isMetaThrottle(e) {
   if (!e) return false;
   return !!(e.isMetaRateLimit || [4, 17, 32, 613, 80004].includes(Number(e.graphCode)) || THROTTLE_RE.test(e.message || String(e)));
 }
+// Which ad accounts the running job is working on — so a throttle it hits is remembered PER ACCOUNT (the owner's alerts and syncs then stay off those accounts instead of competing with the scale for the same quota).
+const throttleCtx = new AsyncLocalStorage();
+const noteThrottledAccounts = () => { const c = throttleCtx.getStore(); if (c) for (const a of c.accounts) noteAccountThrottled(a); };
 const throttleWaits = (waits) => { const o = Number(process.env.CLONE_THROTTLE_WAIT_MS); return Number.isFinite(o) && process.env.CLONE_THROTTLE_WAIT_MS !== undefined ? waits.map(() => o) : waits; };
 async function withThrottleRetry(fn, label, waitsMs = [30_000, 90_000, 180_000, 300_000]) {
   const waits = throttleWaits(waitsMs);
   for (let i = 0; ; i++) {
     try { return await fn(); } catch (e) {
       if (!isMetaThrottle(e) || i >= waits.length) throw e;
+      noteThrottledAccounts();
       noteRateLimit(); // tell every other Meta reader to prefer its cache for the next 2 minutes instead of piling on (a throttle lasts longer the more it is hammered)
       logger.warn('AMB clone: Meta throttled a read — waiting then retrying', { label, attempt: i + 1, waitMs: waits[i] });
       await new Promise((r) => setTimeout(r, waits[i]));
@@ -850,7 +855,7 @@ async function runBatch(batchId) {
   for (const job of jobs) {
     if (['CLONED_PAUSED', 'ACTIVATION_PENDING', 'SCHEDULED_NATIVE', 'ACTIVATED'].includes(job.status)) continue; // done cloning, waiting for schedule / already live
     try {
-      await cloneJob(job.id, token);
+      await throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id].filter(Boolean) }, () => cloneJob(job.id, token));
     } catch (err) {
       logger.error('AMB clone job failed hard', { jobId: job.id, message: err.message });
       await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800) } });

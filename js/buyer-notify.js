@@ -64,7 +64,7 @@ function desktopNotify(items) {
 }
 
 let timers = []; let stopped = false; const busy = { fast: false, full: false };
-const FAST_MS = 5_000; const FULL_MS = 20_000; // fast = what the system itself made (database only); full = also Meta's «View history» (campaigns made by hand), the server re-reads Meta at most every 15 s
+const FAST_MS = 5_000; const FULL_MS = 60_000; // fast = what the system itself made (database only); full = also Meta's «View history» (campaigns made by hand), the server re-reads Meta at most every 15 s
 const seenMem = new Map(); // date -> Set of announced ids (in memory too, so two overlapping polls can never announce the same campaign twice)
 function seenKey(date) { return `bn.seen.${date}`; }
 function loadSeen(date) { if (seenMem.has(date)) return seenMem.get(date); let v = null; try { v = JSON.parse(store.get(seenKey(date)) || 'null'); } catch { v = null; } if (!Array.isArray(v)) return null; const s = new Set(v); seenMem.set(date, s); return s; }
@@ -78,7 +78,9 @@ function announce(fresh, go) {
   desktopNotify(items);
 }
 async function tick(go, mode) {
-  if (stopped || busy[mode]) return; busy[mode] = true;
+  if (stopped || busy[mode]) return;
+  if (mode === 'full' && document.hidden) return; // Meta's history is only read while the owner is looking (it is read traffic on the ad accounts)
+  busy[mode] = true;
   try {
     const f = await api.get(`/api/ai-media-buyer/buyer-activity/feed${mode === 'fast' ? '?fast=1' : ''}`);
     const events = f.events || []; const seen = loadSeen(f.date);
@@ -104,7 +106,7 @@ function wireBell(btn) {
 }
 
 /** Called once by the shell after the user is known. Only an ADMIN can be the owner; the server makes the real decision (403 → stop).
- *  Timing: a campaign made from inside the system rings within ~5 s; one made by hand in Ads Manager within ~20 s (Meta's own history is read at most every 15 s). The first full read runs first, so nothing old is announced. */
+ *  Timing: a campaign made from inside the system rings within ~5 s; one made by hand in Ads Manager within ~1 minute (Meta's own history is read at most once a minute, only while the page is open, and never while a scale is running). The first full read runs first, so nothing old is announced. */
 export function startBuyerNotify({ user, onOpen } = {}) {
   if (typeof document === 'undefined' || !user || user.role !== 'ADMIN') return;
   wireBell(document.getElementById('shBell'));

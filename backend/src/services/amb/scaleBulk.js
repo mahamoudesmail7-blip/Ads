@@ -109,6 +109,8 @@ export function publicBatch(b) {
   };
 }
 
+/** Is ANY bulk scale running right now (any account)? The owner's live alerts use it to stay off Meta's API while a scale needs the quota. */
+export const anyBulkRunning = () => [...batches.values()].some((b) => b.status === 'RUNNING');
 export function getBatch(id) { const b = batches.get(String(id)); return b ? publicBatch(b) : null; }
 /** The batch running on this account right now (null = none). */
 export function currentBatch(accountKey = 'PRIMARY') { const r = runningOf(accountKey); return r ? publicBatch(r) : null; }

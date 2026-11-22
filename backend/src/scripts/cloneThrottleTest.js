@@ -258,6 +258,11 @@ const acctAgain = await getAllAccessibleAdAccounts('tok-acc');
 ok('a COMPLETE list is cached normally', acctAgain === full);
 mode = 'acctsThrottled'; const stale = await getAllAccessibleAdAccounts('tok-acc', { force: true });
 ok('if Meta throttles again, the last COMPLETE list is served (stale) rather than a partial one', stale === full);
+{ // a throttle the clone engine hits is remembered PER AD ACCOUNT so the owner's alerts / syncs stop competing with the scale for the same quota
+  const MC = await imp('../services/metaAssetCache.js');
+  ok('an ad account is not «throttled» until the engine notes it, then it is for ~10 minutes (and a pause of 0 ends at once)', MC.isAccountThrottled('act_zz1') === false && (MC.noteAccountThrottled('act_zz1'), MC.isAccountThrottled('act_zz1') === true) && (MC.noteAccountThrottled('act_zz1', -1), MC.isAccountThrottled('act_zz1') === false));
+  ok('the clone engine notes the throttled accounts of the job it is running (destination + source) on every throttle wait', src.includes('throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id]') && src.includes('noteThrottledAccounts();') && src.includes('noteAccountThrottled'));
+}
 mode = 'ok';
 mock.close();
 await prisma.$disconnect();

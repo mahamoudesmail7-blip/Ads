@@ -39,7 +39,7 @@ export async function getFeed({ fast = false } = {}) {
   const today = todayISO();
   const S = await import('../dailyTasks/store.js'); const E = await import('../dailyTasks/engine.js');
   const [activity, day, cfg] = await Promise.all([
-    getTodayCampaigns({ fast, maxAgeMs: 15_000 }).catch(() => null), // Meta slow / down: the task events still come
+    getTodayCampaigns({ fast, maxAgeMs: 55_000 }).catch(() => null), // Meta slow / down: the task events still come
     S.loadDay(today).catch(() => null),
     E.getConfig().catch(() => ({ team: [] })),
   ]);

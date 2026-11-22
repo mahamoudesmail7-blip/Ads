@@ -12,6 +12,8 @@ import { listViewAccounts } from './viewAccounts.js';
 import { getDecryptedToken } from '../metaAuth.js';
 import { getAccountActivities } from '../metaGraphClient.js';
 import { logger } from '../../logger.js';
+import { anyBulkRunning } from './scaleBulk.js';
+import { noteAccountThrottled, isAccountThrottled } from '../metaAssetCache.js';
 
 const r2 = (n) => Math.round(n * 100) / 100;
 const validDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`));
@@ -136,15 +138,25 @@ export async function systemRecords(fromDay, toDay = fromDay) {
 }
 
 const EVENTS_CACHE = new Map(); // 'first|end' -> { at, v }
-export async function metaEvents(first, end, accounts, { maxAgeMs = CACHE_TODAY_MS } = {}) {
-  const key = `${first}|${end}`; const hit = EVENTS_CACHE.get(key); if (hit && Date.now() - hit.at < maxAgeMs) return hit.v;
+// The owner's LIVE ALERTS read Meta's «View history» all day long. That is read traffic on the very ad accounts the scale / clone needs the quota of («Ad Account Has Too Many API Calls»), so the light read:
+//   asks only for today (2 pages at most, not 1.5 days × 6 pages), is cached ~55 s, keeps OFF Meta completely while a bulk scale is running, and leaves an account alone for 10 minutes after Meta throttled it.
+const THROTTLE_RE = /request limit reached|rate limit|too many (api )?calls|\(#(?:4|17|32|613|80000|80003|80004)\)/i;
+export const markFeedThrottled = (accountId, ms) => noteAccountThrottled(accountId, ms); // shared with the clone engine: a throttle it hit also pauses the alerts' reads of that account
+export async function metaEvents(first, end, accounts, { maxAgeMs = CACHE_TODAY_MS, light = false } = {}) {
+  const key = `${first}|${end}${light ? '|light' : ''}`; const hit = EVENTS_CACHE.get(key); if (hit && Date.now() - hit.at < maxAgeMs) return hit.v;
+  if (light) {
+    if (anyBulkRunning()) return hit?.v || { events: [], ok: true, failed: [], skipped: 'SCALE_RUNNING' }; // a scale is using the quota: the alerts wait
+    accounts = accounts.filter((a) => !isAccountThrottled(a.id));
+    if (!accounts.length) return hit?.v || { events: [], ok: true, failed: [], skipped: 'THROTTLED' };
+  }
   let token = null; try { token = await getDecryptedToken(); } catch { return { events: [], ok: false, reason: 'مفيش اتصال Meta دلوقتي' }; }
-  const since = new Date(`${addDays(first, -1)}T12:00:00Z`).toISOString(), until = new Date(`${addDays(end, 1)}T12:00:00Z`).toISOString(); // wide window; each Cairo day is cut afterwards
+  const since = light ? new Date(Date.parse(`${first}T00:00:00+03:00`) - 2 * 3_600_000).toISOString() : new Date(`${addDays(first, -1)}T12:00:00Z`).toISOString(); // light = today only (Cairo midnight, 2 h earlier to be safe)
+  const until = light ? new Date(Date.now() + 3_600_000).toISOString() : new Date(`${addDays(end, 1)}T12:00:00Z`).toISOString(); // the wide window is cut per Cairo day afterwards
   const events = []; const failed = [];
   const withLimit = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
   await Promise.all(accounts.map(async (a) => { // every account at the same time, each with its own time limit — one slow account never holds the page
-    try { events.push(...creationEvents(await withLimit(getAccountActivities(token, a.id, { since, until }), ACCOUNT_TIMEOUT_MS), a.id)); }
-    catch (e) { failed.push(a.name || a.id); logger.warn('[buyerActivity] activity history failed', { account: a.id, message: e.message }); }
+    try { events.push(...creationEvents(await withLimit(getAccountActivities(token, a.id, { since, until, maxPages: light ? 2 : 6 }), ACCOUNT_TIMEOUT_MS), a.id)); }
+    catch (e) { failed.push(a.name || a.id); if (light && (e?.isMetaRateLimit || THROTTLE_RE.test(String(e?.message || '')))) markFeedThrottled(a.id); logger.warn('[buyerActivity] activity history failed', { account: a.id, message: e.message }); }
   }));
   const v = { events, ok: failed.length === 0, failed }; EVENTS_CACHE.set(key, { at: Date.now(), v }); if (EVENTS_CACHE.size > 6) EVENTS_CACHE.delete(EVENTS_CACHE.keys().next().value);
   return v;
@@ -194,10 +206,10 @@ export async function getWeekStrip({ date = null, memberId = null } = {}) {
  *   fast: true  → ONLY the system's own launch / clone records (database, no Meta call): a campaign made from inside the system shows up the moment it exists.
  *   fast: false → plus Meta's «View history» (campaigns made by hand in Ads Manager), re-read at most every `maxAgeMs` (the normal views keep their 90 s cache).
  */
-export async function getTodayCampaigns({ fast = false, maxAgeMs = 15_000 } = {}) {
+export async function getTodayCampaigns({ fast = false, maxAgeMs = 55_000 } = {}) {
   const today = todayISO(); const accounts = (await listViewAccounts()).accounts; const accountNames = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
   let team = []; try { const E = await import('../dailyTasks/engine.js'); team = ((await E.getConfig()).team || []).filter((m) => m.active !== false).map((m) => ({ id: m.id, name: m.name, userId: m.userId || null })); } catch { /* none */ }
-  const [sys, meta, aliases] = await Promise.all([systemRecords(today, today), fast ? { events: [], ok: true, failed: [] } : metaEvents(today, today, accounts, { maxAgeMs }), loadAliases()]);
+  const [sys, meta, aliases] = await Promise.all([systemRecords(today, today), fast ? { events: [], ok: true, failed: [] } : metaEvents(today, today, accounts, { maxAgeMs, light: true }), loadAliases()]);
   return { date: today, people: groupByPerson(mergeCampaigns(meta.events, sys, { day: today, accountNames }), team, aliases), meta: { ok: meta.ok, failed: meta.failed || [] } };
 }
 

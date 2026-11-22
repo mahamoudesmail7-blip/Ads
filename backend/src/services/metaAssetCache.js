@@ -47,6 +47,11 @@ export function fingerprintToken(token) {
 export function isRateLimitedNow() {
   return Date.now() < rateLimitedUntil;
 }
+// A per-AD-ACCOUNT throttle memory. Meta's «Ad Account Has Too Many API Calls» is a bucket per ad account: while it is empty, every extra read we make (the owner's alerts, syncs) only keeps it empty longer
+// and holds the scale / clone behind it. The clone engine notes the accounts it was throttled on; the optional background readers leave those accounts alone until the pause is over.
+const accountThrottle = new Map(); const ACCOUNT_THROTTLE_MS = 10 * 60_000;
+export function noteAccountThrottled(accountId, ms = ACCOUNT_THROTTLE_MS) { if (accountId) accountThrottle.set(String(accountId), Date.now() + ms); }
+export function isAccountThrottled(accountId) { return !!accountId && (accountThrottle.get(String(accountId)) || 0) > Date.now(); }
 export function noteRateLimit() {
   rateLimitedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
 }

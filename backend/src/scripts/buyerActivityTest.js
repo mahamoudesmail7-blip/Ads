@@ -14,10 +14,10 @@ let pass = 0, fail = 0;
 const ok = (label, cond, detail = '') => { if (cond) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.log(`  ✗ ${label}${detail ? ' — ' + String(detail).slice(0, 400) : ''}`); } };
 
 // ── mock Graph: account info + the activity history of each account (GET only; any other method is recorded as a violation)
-const world = { activities: new Map(), calls: [], writes: 0 };
+const world = { activities: new Map(), calls: [], writes: 0, acts: {} };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x'); const seg = url.pathname.split('/').filter(Boolean); const id = seg[1], edge = seg[2];
-  world.calls.push(`${req.method} ${edge || id}`); if (req.method !== 'GET') world.writes++;
+  world.calls.push(`${req.method} ${edge || id}`); if (edge === 'activities') world.acts[id] = (world.acts[id] || 0) + 1; if (req.method !== 'GET') world.writes++;
   const send = (c, j) => { res.writeHead(c, { 'content-type': 'application/json' }); res.end(JSON.stringify(j)); };
   if (/^act_/.test(id || '') && edge === 'activities') return send(200, { data: world.activities.get(id) || [] });
   if (/^act_/.test(id || '')) return send(200, { id, name: `Acct ${id.slice(-4)}`, account_status: 1, currency: 'EGP' });
@@ -129,6 +129,19 @@ try {
     const fullT = await B.getTodayCampaigns({ fast: false, maxAgeMs: 0 }); const fullAll = fullT.people.flatMap((p) => p.campaigns);
     ok('FULL alerts: both the system one and the hand-made one are found (Meta re-read because maxAgeMs=0), nothing written to Meta', fullAll.some((c) => c.id === sc.id) && fullAll.some((c) => c.id === man.id) && world.writes === 0 && world.calls.length > c0);
     const c1 = world.calls.length; await B.getTodayCampaigns({ fast: false, maxAgeMs: 60_000 }); ok('the full read is cached for the asked time (no new Meta call inside it) — Meta is not hammered by the polling', world.calls.length === c1);
+  }
+  { // the alerts must not compete with a scale for Meta's quota (the scale failed with «Too Many API Calls»)
+    const SBm = await imp('../services/amb/scaleBulk.js'); let release; const gate = new Promise((r) => { release = r; });
+    SBm._resetForTests(); const batch = SBm.startBulk({ items: [{ sourceCampaignId: 'zz1', label: 'zz', budgetMode: 'CBO', selectedAdIds: ['a'], campaignBudgetEgp: 100 }] }, { exec: () => gate, sleep: async () => {} });
+    const c0 = world.calls.length; const during = await B.getTodayCampaigns({ fast: false, maxAgeMs: 0 });
+    ok('while a bulk scale is RUNNING the alerts make NO call to Meta at all (the system-made campaigns still show, from the database)', SBm.anyBulkRunning() === true && world.calls.length === c0 && during.people.flatMap((p) => p.campaigns).some((c) => c.id === sc.id), String(world.calls.length - c0));
+    release({}); for (let k = 0; k < 100 && SBm.anyBulkRunning(); k++) await new Promise((r) => setTimeout(r, 10)); SBm._resetForTests();
+    const c1 = world.calls.length; await B.getTodayCampaigns({ fast: false, maxAgeMs: 0 });
+    ok('after the scale finished the alerts read Meta again', SBm.anyBulkRunning() === false && world.calls.length > c1);
+    B.markFeedThrottled(ACC, 60_000); const c2 = world.acts[ACC] || 0; const thr = await B.getTodayCampaigns({ fast: false, maxAgeMs: 0 });
+    ok('an ad account Meta throttled is left alone (no call) — and the alerts still answer (system-made ones from the database)', (world.acts[ACC] || 0) === c2 && thr.people.flatMap((p) => p.campaigns).some((c) => c.id === sc.id));
+    B.markFeedThrottled(ACC, -1); const c3 = world.acts[ACC] || 0; await B.getTodayCampaigns({ fast: false, maxAgeMs: 0 });
+    ok('…and it is read again once the pause is over', (world.acts[ACC] || 0) > c3);
   }
   ok('a campaign made today has NO result yet (it starts at 12 AM tomorrow): started=false, nothing counted — even though a snapshot exists for today', sc.results.started === false && sc.results.first === null && sc.results.total === null && man.results.first === null && sc.results.firstDay === addDays(today, 1));
   ok('the totals count what the day holds (tests / scales / campaigns); yesterday’s campaign is not in today', td.totals.campaigns >= 2 && td.totals.tests >= 1 && td.totals.scales >= 1 && !td.people.flatMap((p) => p.campaigns).some((c) => c.id === `${T}old1`));
