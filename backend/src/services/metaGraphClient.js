@@ -5,12 +5,19 @@
 // fabricates a response.
 import { logger } from '../logger.js';
 import { cachedMetaFetch, fingerprintToken, invalidateForToken } from './metaAssetCache.js';
-import { noteUsageHeader } from './metaUsage.js';
+import { noteUsageHeader, callerLabel, recordCall, maybeLogConsumers, parseUsage } from './metaUsage.js';
 
 /** fetch + remember Meta's own quota reading (x-business-use-case-usage) of every Graph response. */
 async function gfetch(input, init) {
-  const res = await fetch(input, init);
-  try { const h = res?.headers?.get?.('x-business-use-case-usage'); if (h) noteUsageHeader(h); } catch { /* never breaks a call */ }
+  const t0 = Date.now(); let label = 'unlabeled'; try { label = callerLabel(); } catch { /* never breaks a call */ }
+  const acctOf = () => { try { return String(typeof input === 'string' ? input : input?.url || '').match(/act_(\d+)/)?.[1] || null; } catch { return null; } };
+  let res;
+  try { res = await fetch(input, init); } catch (e) { try { recordCall({ label, account: acctOf(), ms: Date.now() - t0, status: 0 }); } catch { /* */ } throw e; }
+  try {
+    const h = res?.headers?.get?.('x-business-use-case-usage'); if (h) noteUsageHeader(h);
+    recordCall({ label, account: (h && parseUsage(h)[0]?.id) || acctOf(), ms: Date.now() - t0, status: res.status });
+    maybeLogConsumers(logger);
+  } catch { /* never breaks a call */ }
   return res;
 }
 

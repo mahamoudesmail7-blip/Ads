@@ -300,7 +300,20 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
   U._resetUsageForTests();
   ok('the clone engine asks Meta for the quota before a copy starts (a tiny read per account), waits what Meta says, and logs it', src.includes('async function waitForQuota(') && src.includes('await waitForQuota(token,') && src.includes('remainingRegainMs'));
   const gc = (await import('node:fs')).readFileSync(join(__dirname, '../services/metaGraphClient.js'), 'utf8');
-  ok('every Graph response in the client passes through the wrapper that records Meta\'s usage header', gc.includes('async function gfetch(') && !/\bawait fetch\(/.test(gc.replace(/const res = await fetch\(input, init\);/, '')));
+  ok('every Graph response in the client passes through the wrapper that records Meta\'s usage header', gc.includes('async function gfetch(') && gc.split('await fetch(').length === 2);
+}
+{ // who uses Meta's quota: every Graph call is attributed to the code that made it
+  const U = await imp('../services/metaUsage.js'); U._resetUsageForTests();
+  const stack = ['Error', '    at callerLabel (file:///x/backend/src/services/metaUsage.js:1:1)', '    at gfetch (file:///x/backend/src/services/metaGraphClient.js:5:5)', '    at async graphFetch (file:///x/backend/src/services/metaGraphClient.js:99:9)', '    at async getEntitiesMeta (file:///x/backend/src/services/metaGraphClient.js:300:1)', '    at async runSnapshotSync (file:///x/backend/src/services/amb/snapshotSync.js:210:20)', '    at async file:///x/backend/src/services/amb/snapshotSync.js:355:13'].join('\n');
+  ok('a Graph call is labelled by the first caller outside the client and the scheduler / route at the start of the chain', U.labelFromStack(stack) === 'snapshotSync:runSnapshotSync' && U.labelFromStack(['Error', '    at x (C:\\a\\backend\\src\\services\\amb\\scaleWinners.js:1:1)', '    at y (C:\\a\\backend\\src\\routes\\aiMediaBuyer.js:5:5)'].join('\n')) === 'scaleWinners:x ⇐ aiMediaBuyer:y' && U.labelFromStack('') === 'unlabeled');
+  const now = Date.now();
+  U.recordCall({ label: 'a:f', account: 'act_1', ms: 400, status: 200, now }); U.recordCall({ label: 'a:f', account: '1', ms: 600, status: 200, now }); U.recordCall({ label: 'b:g', account: '1', ms: 100, status: 500, now }); U.recordCall({ label: 'c:h', account: '2', ms: 5000, status: 200, now });
+  const all = U.topConsumers({ minutes: 60, now }); const one = U.topConsumers({ minutes: 60, account: 'act_1', now });
+  ok('the heaviest callers are ranked by Graph time with calls / average / share, and can be narrowed to one ad account (act_ prefix or not)', all[0].label === 'c:h' && all[0].sharePct > 60 && one.length === 2 && one[0].label === 'a:f' && one[0].calls === 2 && one[0].ms === 1000 && one[0].avgMs === 500 && one[1].errors === 1);
+  ok('the numbers older than the window are left out', U.topConsumers({ minutes: 5, now: now + 3 * 3600_000 }).length === 0);
+  const fsm = await import('node:fs'); const rt = fsm.readFileSync(join(__dirname, '../routes/metaUsage.js'), 'utf8'); const sv = fsm.readFileSync(join(__dirname, '../server.js'), 'utf8');
+  ok('the report is an ADMIN-only read route mounted in the server', rt.includes("requireRole('ADMIN')") && sv.includes("app.use('/api/meta-usage', metaUsageRoutes)") && !/fetch\(/.test(rt));
+  U._resetUsageForTests();
 }
 mode = 'ok';
 mock.close();

@@ -63,6 +63,7 @@ import productStrategyRoutes from './routes/productStrategy.js';
 import { startDailyTasksScheduler } from './services/dailyTasks/scheduler.js';
 import productMarketingRoutes from './routes/productMarketing.js';
 import aiUsageRoutes from './routes/aiUsage.js';
+import metaUsageRoutes from './routes/metaUsage.js';
 import backupStatusRoutes from './routes/backupStatus.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
@@ -140,6 +141,7 @@ app.use('/api/amb-tiktok', ambTiktokRoutes); // TikTok campaigns (wizard → lau
 app.use('/api/amb-media', ambMediaRoutes); // AMB smart media tools for the launch wizard (provider keys now; finder/AI later)
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
 app.use('/api/product-marketing', productMarketingRoutes); // AI Product Marketing Center — "مركز التسويق الذكي للمنتج" (see routes/productMarketing.js)
+app.use('/api/meta-usage', metaUsageRoutes); // who uses Meta's quota (ADMIN, read only)
 app.use('/api/ai-usage', aiUsageRoutes); // AI Gateway admin usage/cost dashboard + health check (see routes/aiUsage.js)
 app.use('/api/backup-status', backupStatusRoutes); // Backup & Recovery status page (informational only, see routes/backupStatus.js)
 app.use('/api/product-research/experimental', productResearchExperimentalRoutes); // mounted before the general router below so its own path prefix always wins first — see that file's header for the isolation guarantee
