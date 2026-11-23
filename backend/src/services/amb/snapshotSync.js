@@ -21,6 +21,7 @@ import { getConnection, getConnectionUnscoped, getDecryptedToken, accountScope }
 import { getAdAccountInfo, getInsightsByLevel, getEntitiesMeta } from '../metaGraphClient.js';
 import { extractResults, runSync } from '../metaSync.js';
 import { getAmbSettings } from './settings.js';
+import { noteAccountThrottled, isAccountThrottled, isMetaRateLimitError } from '../metaAssetCache.js'; // the background syncs stay OFF an ad account Meta is throttling (they share its call quota with the scale / clone)
 import { raiseAlert } from './alerts.js';
 
 const LEVELS = ['campaign', 'adset', 'ad'];
@@ -205,6 +206,7 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
   }
 
   const adAccountId = connection.selected_ad_account_id;
+  if (trigger === 'SCHEDULED' && isAccountThrottled(adAccountId)) { runningSlot.clear(); return { skipped: 'THROTTLED' }; } // Meta is throttling this account: a scheduled read now only prolongs the block (a manual sync still runs)
   const syncRun = await prisma.ambSyncRun.create({ data: { trigger, status: 'RUNNING', ad_account_id: adAccountId } });
 
   try {
@@ -306,6 +308,7 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
       where: { id: syncRun.id },
       data: { status: 'FAILED', finished_at: new Date(), error: err.message?.slice(0, 500) || String(err) },
     }).catch(() => {});
+    if (isMetaRateLimitError(err)) noteAccountThrottled(adAccountId);
     logger.error('AMB snapshot sync FAILED', { syncRunId: syncRun.id, message: err.message });
     await raiseAlert({
       severity: 'CRITICAL',
@@ -451,6 +454,7 @@ export async function runViewAccountSync(adAccountId, { force = false, now = new
     return { ok: true, snapshotRows: built.rows.length };
   } catch (err) {
     await prisma.ambSyncRun.update({ where: { id: syncRun.id }, data: { status: 'FAILED', finished_at: new Date(), error: err.message?.slice(0, 500) || String(err) } }).catch(() => {});
+    if (isMetaRateLimitError(err)) noteAccountThrottled(adAccountId);
     logger.warn('AMB view-account sync failed (view only, no alert)', { adAccountId, message: err.message });
     return { ok: false, error: err.message };
   } finally {
@@ -498,6 +502,7 @@ export function startAmbViewSyncScheduler() {
       let synced = 0;
       for (const id of await getViewAccountIds()) {
         if (id === connection.selected_ad_account_id) continue;
+        if (isAccountThrottled(id)) continue; // throttled by Meta right now — left alone until the pause is over
         const info = await getAccountSyncInfo(id);
         if (info.nextSyncAt && new Date(info.nextSyncAt).getTime() > Date.now()) continue;
         if (synced >= VIEW_SYNCS_PER_TICK) break; // many accounts are spread over several ticks (Meta rate limits); a processed account is not due again for a full interval, so none is starved

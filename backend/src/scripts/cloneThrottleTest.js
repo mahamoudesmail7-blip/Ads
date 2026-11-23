@@ -283,6 +283,11 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
   const keep = { publisher_platforms: ['instagram'], instagram_positions: ['stream', 'explore_home', 'reels'] };
   ok('«explore_home» (still valid) and a targeting with no Instagram positions are left untouched', JSON.stringify(mk(keep).instagram_positions) === JSON.stringify(['stream', 'explore_home', 'reels']) && !('instagram_positions' in mk({ geo_locations: { countries: ['EG'] } })) && CE.stripDeprecatedPlacements(null) === null);
 }
+{ // the background syncs (every 15 min × 15 accounts, all day) leave a throttled ad account alone
+  const fsm = await import('node:fs'); const ss = fsm.readFileSync(join(__dirname, '../services/amb/snapshotSync.js'), 'utf8');
+  ok('the scheduled sync of the connected account is skipped while Meta throttles it (a manual sync still runs)', ss.includes("trigger === 'SCHEDULED' && isAccountThrottled(adAccountId)") && ss.includes("skipped: 'THROTTLED'"));
+  ok('the view-account sync loop skips a throttled account, and a rate-limit failure of either sync marks the account as throttled', ss.includes('if (isAccountThrottled(id)) continue;') && ss.split('if (isMetaRateLimitError(err)) noteAccountThrottled(adAccountId);').length === 3);
+}
 mode = 'ok';
 mock.close();
 await prisma.$disconnect();
