@@ -23,6 +23,7 @@
 // key uses a SHA-256 prefix of the token, never the token itself).
 import crypto from 'node:crypto';
 import { logger } from '../logger.js';
+import { isAccountBusy } from './metaUsage.js';
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 2 * 60 * 1000;
@@ -51,7 +52,7 @@ export function isRateLimitedNow() {
 // and holds the scale / clone behind it. The clone engine notes the accounts it was throttled on; the optional background readers leave those accounts alone until the pause is over.
 const accountThrottle = new Map(); const ACCOUNT_THROTTLE_MS = 10 * 60_000;
 export function noteAccountThrottled(accountId, ms = ACCOUNT_THROTTLE_MS) { if (accountId) accountThrottle.set(String(accountId), Date.now() + ms); }
-export function isAccountThrottled(accountId) { return !!accountId && (accountThrottle.get(String(accountId)) || 0) > Date.now(); }
+export function isAccountThrottled(accountId) { return !!accountId && ((accountThrottle.get(String(accountId)) || 0) > Date.now() || isAccountBusy(accountId)); } // noted by the engine, OR Meta's own latest reading says the account is near its limit
 export function noteRateLimit() {
   rateLimitedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
 }

@@ -288,6 +288,20 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
   ok('the scheduled sync of the connected account is skipped while Meta throttles it (a manual sync still runs)', ss.includes("trigger === 'SCHEDULED' && isAccountThrottled(adAccountId)") && ss.includes("skipped: 'THROTTLED'"));
   ok('the view-account sync loop skips a throttled account, and a rate-limit failure of either sync marks the account as throttled', ss.includes('if (isAccountThrottled(id)) continue;') && ss.split('if (isMetaRateLimitError(err)) noteAccountThrottled(adAccountId);').length === 3);
 }
+{ // Meta's own quota reading (x-business-use-case-usage) drives the waiting — measured on production: development_access, the limit hit is CPU time, not call count
+  const U = await imp('../services/metaUsage.js'); const MC = await imp('../services/metaAssetCache.js'); U._resetUsageForTests();
+  const hdr = JSON.stringify({ 1518142859790043: [{ type: 'ads_management', call_count: 2, total_cputime: 124, total_time: 133, estimated_time_to_regain_access: 10, ads_api_access_tier: 'development_access' }], 907503341896278: [{ type: 'ads_management', call_count: 10, total_cputime: 36, total_time: 61, estimated_time_to_regain_access: 0 }] });
+  const pu = U.parseUsage(hdr);
+  ok('the usage header is parsed per account: the WORST of call_count / cputime / time, and Meta\'s minutes-to-regain as ms', pu.length === 2 && pu[0].id === '1518142859790043' && pu[0].pct === 133 && pu[0].regainMs === 600_000 && pu[0].tier === 'development_access' && pu[1].pct === 61 && pu[1].regainMs === 0 && U.parseUsage('{bad').length === 0 && U.parseUsage(null).length === 0);
+  U.noteUsageHeader(hdr);
+  const rem = U.remainingRegainMs('act_1518142859790043');
+  ok('a blocked account has remaining wait ≈ Meta\'s figure (act_ prefix or not), a free account 0, an unknown account 0', rem > 590_000 && rem <= 600_000 && U.remainingRegainMs('1518142859790043') > 590_000 && U.remainingRegainMs('act_907503341896278') === 0 && U.remainingRegainMs('act_999') === 0);
+  ok('background readers treat a blocked / near-limit account as busy (and a calm one as free) — through the same switch the clone engine uses', U.isAccountBusy('act_1518142859790043') === true && MC.isAccountThrottled('act_1518142859790043') === true && U.isAccountBusy('act_907503341896278') === false && MC.isAccountThrottled('act_907503341896278') === false);
+  U._resetUsageForTests();
+  ok('the clone engine asks Meta for the quota before a copy starts (a tiny read per account), waits what Meta says, and logs it', src.includes('async function waitForQuota(') && src.includes('await waitForQuota(token,') && src.includes('remainingRegainMs'));
+  const gc = (await import('node:fs')).readFileSync(join(__dirname, '../services/metaGraphClient.js'), 'utf8');
+  ok('every Graph response in the client passes through the wrapper that records Meta\'s usage header', gc.includes('async function gfetch(') && !/\bawait fetch\(/.test(gc.replace(/const res = await fetch\(input, init\);/, '')));
+}
 mode = 'ok';
 mock.close();
 await prisma.$disconnect();

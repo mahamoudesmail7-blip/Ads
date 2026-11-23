@@ -28,8 +28,9 @@ import {
   getCreativeNode, getCreativeNodes, getAdImagesByHash, getVideoSourceUrl, getAdImageUrlStrict, getAccountAssetsForClone, getPagePostContent,
   uploadAdImageFromUrl as _uploadAdImageFromUrl, uploadAdVideoFromUrl as _uploadAdVideoFromUrl, createCampaign as _createCampaign,
   createAdSet as _createAdSet, createAdCreative as _createAdCreative, createAd as _createAd,
-  setEntityStatus as _setEntityStatus, campaignInsightsRaw, getCloneJobLiveState,
+  setEntityStatus as _setEntityStatus, campaignInsightsRaw, getCloneJobLiveState, graphFetch,
 } from '../metaGraphClient.js';
+import { remainingRegainMs } from '../metaUsage.js';
 import { cachedMetaFetch, fingerprintToken, noteRateLimit, noteAccountThrottled } from '../metaAssetCache.js';
 import { getAmbSettings } from './settings.js';
 import { raiseAlert } from './alerts.js';
@@ -116,6 +117,31 @@ export function isMetaThrottle(e) {
 // Which ad accounts the running job is working on — so a throttle it hits is remembered PER ACCOUNT (the owner's alerts and syncs then stay off those accounts instead of competing with the scale for the same quota).
 const throttleCtx = new AsyncLocalStorage();
 const noteThrottledAccounts = (ms) => { const c = throttleCtx.getStore(); if (c) for (const a of c.accounts) noteAccountThrottled(a, ms); };
+/**
+ * Before a copy starts, ASK META (one tiny read per ad account — it answers with its own quota reading) whether the source / destination account still has quota. The production logs showed the old way
+ * (start, get refused on the first heavy read, wait 30 s / 90 s / 3 min / 5 min, fail, retry) never found the moment the quota came back and burned the time the scale needed. Now the engine waits the
+ * time Meta gives («estimated_time_to_regain_access») and starts only when the account is free; if it is still blocked after ~25 minutes the normal retry logic takes over.
+ */
+const QUOTA_MAX_TOTAL_MS = 25 * 60_000;
+async function waitForQuota(token, accounts, batchId, jobId) {
+  if (process.env.CLONE_THROTTLE_WAIT_MS !== undefined) return; // tests drive their own waits
+  const started = Date.now();
+  for (let round = 0; round < 8; round++) {
+    let wait = 0;
+    for (const a of accounts) {
+      try { await Promise.race([graphFetch('/' + a, { fields: 'id' }, token), new Promise((_, rej) => setTimeout(() => rej(new Error('probe timeout')), 15_000))]); }
+      catch (e) { if (isMetaThrottle(e)) wait = Math.max(wait, e.graphRegainMs || 120_000); }
+      wait = Math.max(wait, remainingRegainMs(a));
+    }
+    if (!wait) return;
+    wait = Math.min(wait + 5_000, 10 * 60_000);
+    if (Date.now() - started + wait > QUOTA_MAX_TOTAL_MS) return;
+    noteAccountThrottledList(accounts, wait + 60_000);
+    await audit(batchId, jobId, 'THROTTLE_WAIT', { level: 'WARNING', detail: `ميتا قالت إن حساب الإعلانات محتاج ${Math.round(wait / 6000) / 10} دقيقة علشان الحصة ترجع — السيستم مستني ويبدأ بعدها (من غير ما يزوّد الضغط).` });
+    await new Promise((r) => setTimeout(r, wait));
+  }
+}
+const noteAccountThrottledList = (accounts, ms) => { for (const a of accounts) noteAccountThrottled(a, ms); };
 const THROTTLE_MAX_WAIT_MS = 20 * 60_000; // one wait never exceeds this, even when Meta says the quota needs longer
 /** How long to wait after this throttle: the planned back-off, or Meta's own «time to regain access» (+5 s) when it is longer — never blind-polling a quota Meta says is empty for 15 minutes. */
 export const throttleWaitMs = (planned, regainMs) => (process.env.CLONE_THROTTLE_WAIT_MS !== undefined ? planned : Math.min(THROTTLE_MAX_WAIT_MS, Math.max(planned, Number(regainMs) > 0 ? Number(regainMs) + 5_000 : 0)));
@@ -860,7 +886,7 @@ async function runBatch(batchId) {
   for (const job of jobs) {
     if (['CLONED_PAUSED', 'ACTIVATION_PENDING', 'SCHEDULED_NATIVE', 'ACTIVATED'].includes(job.status)) continue; // done cloning, waiting for schedule / already live
     try {
-      await throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id].filter(Boolean), batchId, jobId: job.id }, () => cloneJob(job.id, token));
+      await throttleCtx.run({ accounts: [job.destination_ad_account_id, job.source_ad_account_id].filter(Boolean), batchId, jobId: job.id }, async () => { await waitForQuota(token, [...new Set([job.destination_ad_account_id, job.source_ad_account_id].filter(Boolean))], batchId, job.id); return cloneJob(job.id, token); });
     } catch (err) {
       logger.error('AMB clone job failed hard', { jobId: job.id, message: err.message });
       await prisma.ambCloneJob.update({ where: { id: job.id }, data: { status: 'FAILED', error: (err.message || String(err)).slice(0, 800) } });

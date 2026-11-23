@@ -5,6 +5,14 @@
 // fabricates a response.
 import { logger } from '../logger.js';
 import { cachedMetaFetch, fingerprintToken, invalidateForToken } from './metaAssetCache.js';
+import { noteUsageHeader } from './metaUsage.js';
+
+/** fetch + remember Meta's own quota reading (x-business-use-case-usage) of every Graph response. */
+async function gfetch(input, init) {
+  const res = await fetch(input, init);
+  try { const h = res?.headers?.get?.('x-business-use-case-usage'); if (h) noteUsageHeader(h); } catch { /* never breaks a call */ }
+  return res;
+}
 
 const GRAPH_VERSION = 'v21.0';
 const ASSET_TTL_MS = 5 * 60 * 1000;
@@ -90,7 +98,7 @@ export async function graphFetch(path, params, token) {
   }
   url.searchParams.set('access_token', token);
 
-  const res = await fetch(url.toString());
+  const res = await gfetch(url.toString());
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.error) {
     throwGraphOAuthError(data, res, `${path} call`);
@@ -119,7 +127,7 @@ export async function exchangeCodeForToken({ code, appId, appSecret, redirectUri
   url.searchParams.set('client_secret', appSecret);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('code', code);
-  const res = await fetch(url.toString());
+  const res = await gfetch(url.toString());
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.error) throwGraphOAuthError(data, res, 'code->token exchange');
   return data; // {access_token, token_type, expires_in}
@@ -132,7 +140,7 @@ export async function exchangeForLongLivedToken({ shortLivedToken, appId, appSec
   url.searchParams.set('client_id', appId);
   url.searchParams.set('client_secret', appSecret);
   url.searchParams.set('fb_exchange_token', shortLivedToken);
-  const res = await fetch(url.toString());
+  const res = await gfetch(url.toString());
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.error) throwGraphOAuthError(data, res, 'long-lived token exchange');
   return data; // {access_token, token_type, expires_in}
@@ -344,7 +352,7 @@ export async function getInsights(token, adAccountId, dateFrom, dateTo) {
       for (const [k, v] of Object.entries(params)) u.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
       return u.toString();
     })();
-    const res = await fetch(target);
+    const res = await gfetch(target);
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.error) throw new Error(data?.error?.message || `Graph API error ${res.status}`);
     rows.push(...(data.data || []));
@@ -441,7 +449,7 @@ export async function getInsightsByLevel(token, adAccountId, level, dateFrom, da
       for (const [k, v] of Object.entries(params)) u.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
       return u.toString();
     })();
-    const res = await fetch(target);
+    const res = await gfetch(target);
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.error) throwGraphOAuthError(data, res, `insights(level=${level})`);
     rows.push(...(data.data || []));
@@ -487,7 +495,7 @@ export async function getInsightsBreakdown(token, adAccountId, { breakdowns, cam
   while (target && guard++ < 20) {
     let res, data;
     try {
-      res = await fetch(target);
+      res = await gfetch(target);
       data = await res.json().catch(() => null);
     } catch (err) {
       return { ok: false, code: null, subcode: null, message: err.message || 'تعذّر الوصول إلى Meta.' };
@@ -516,7 +524,7 @@ export async function graphGetQuiet(path, params, token) {
       if (v !== undefined && v !== null) url.searchParams.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
     }
     url.searchParams.set('access_token', token);
-    const res = await fetch(url.toString());
+    const res = await gfetch(url.toString());
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.error) return null;
     return data;
@@ -526,7 +534,7 @@ export async function graphGetQuiet(path, params, token) {
 const RATE_CODES = [4, 17, 32, 613, 80004];
 async function probeFetch(url) {
   try {
-    const res = await fetch(url);
+    const res = await gfetch(url);
     const data = await res.json().catch(() => null);
     if (res.ok && !data?.error) return { ok: true, data, rateLimited: false };
     const e = data?.error || {};
@@ -558,7 +566,7 @@ async function graphListQuiet(path, params, token) {
   let guard = 0;
   while (next && guard++ < 20) {
     try {
-      const res = await fetch(next);
+      const res = await gfetch(next);
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error) break;
       rows.push(...(data.data || []));
@@ -577,7 +585,7 @@ export async function graphList(path, params, token, { maxPages = 0 } = {}) {
   url.searchParams.set('limit', '500');
   let target = url.toString();
   do {
-    const res = await fetch(target);
+    const res = await gfetch(target);
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.error) throwGraphOAuthError(data, res, `list ${path}`);
     rows.push(...(data.data || []));
@@ -645,7 +653,7 @@ export async function graphPost(path, body, token) {
     form.set(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
   }
   form.set('access_token', token);
-  const res = await fetch(`${GRAPH_BASE}${path}`, {
+  const res = await gfetch(`${GRAPH_BASE}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: form.toString(),
@@ -1225,7 +1233,7 @@ async function insightsPages(url, label) {
   const rows = [];
   let next = url, pages = 0;
   while (next && pages++ < 40) {
-    const res = await fetch(next, { signal: AbortSignal.timeout(30_000) }); // a hung read must never hang the screen
+    const res = await gfetch(next, { signal: AbortSignal.timeout(30_000) }); // a hung read must never hang the screen
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.error) throwGraphOAuthError(data, res, label);
     rows.push(...(data.data || []));
@@ -1289,7 +1297,7 @@ export async function pollVideoReady(token, videoId, { tries = 12, intervalMs = 
 
 /** Re-upload one image into a destination ad account from a URL; returns the new image_hash. */
 export async function uploadAdImageFromUrl(token, adAccountId, imageUrl) {
-  const resp = await fetch(imageUrl);
+  const resp = await gfetch(imageUrl);
   if (!resp.ok) throw new Error(`تعذّر تحميل الصورة المصدر (${resp.status})`);
   const buf = Buffer.from(await resp.arrayBuffer());
   if (buf.length > 8 * 1024 * 1024) throw new Error('حجم الصورة أكبر من 8MB — لا يمكن رفعها تلقائيًا.');
