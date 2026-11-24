@@ -128,6 +128,41 @@ export async function getMetaVideoThumbnailUrl(token, videoId) {
 }
 
 /**
+ * ONE read for "is this video ready?" — status + thumbnail together — that tells a Meta THROTTLE apart from a video that is really still processing.
+ * The old pair of helpers swallowed every error as null, so «(#4) Application request limit reached» looked exactly like «still processing»: the campaign then waited as if the video was stuck
+ * (production: a whole scale sat for hours on a video that was fine) and burned its 20 retries. Now a throttle is thrown as a rate-limit error (the playbook waits it out as RATE_LIMITED); only a
+ * real non-ready answer from Meta is reported as «processing». Cached per video for a short time (every ad slot of a campaign shares its videos), a throttle answer is shared for 20 s so the slots do not each re-ask.
+ */
+const videoInfoCache = new Map(); // video id -> { at, ttl, p }
+const THROTTLE_CODES = [4, 17, 32, 613, 80004];
+export function _resetVideoInfoCache() { videoInfoCache.clear(); }
+export async function getMetaVideoInfo(token, videoId) {
+  const hit = videoInfoCache.get(String(videoId));
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.p;
+  const entry = { at: Date.now(), ttl: 45_000, p: null };
+  entry.p = (async () => {
+    let json = null;
+    try {
+      const res = await fetchWithTimeout(`${GRAPH_BASE}/${videoId}?fields=status,picture&access_token=${encodeURIComponent(token)}`, {}, METADATA_TIMEOUT_MS);
+      json = await res.json().catch(() => null);
+    } catch { return { status: null, picture: null, throttled: false }; } // a network blip: the caller treats it as "not ready yet", never as ready
+    const e = json?.error;
+    if (e) {
+      if (THROTTLE_CODES.includes(Number(e.code)) || /request limit reached|too many calls|rate limit/i.test(e.message || '')) {
+        const err = new Error(`Meta وصلت لحد الطلبات مؤقتًا (${e.message}) — فحص الفيديو اتأجّل، مش معناه إن الفيديو عالق.`);
+        err.isMetaRateLimit = true; err.graphCode = e.code; err.graphSubcode = e.error_subcode ?? null; err.graphType = e.type ?? null; err.fbtraceId = e.fbtrace_id ?? null;
+        throw err;
+      }
+      return { status: null, picture: null, throttled: false };
+    }
+    return { status: json?.status?.video_status || null, picture: json?.picture || null, throttled: false };
+  })();
+  videoInfoCache.set(String(videoId), entry);
+  entry.p.then((v) => { if (!(v.status === 'ready' && v.picture)) entry.ttl = 15_000; }, () => { entry.ttl = 20_000; }); // not-ready answers are re-asked soon; a throttle is shared for 20 s
+  return entry.p;
+}
+
+/**
  * Buffers just enough of an incoming Node Readable stream to serve
  * readExactly(n) calls — never the whole stream. Pauses the source once
  * more than ~16MB is buffered ahead of what's been consumed, so a fast

@@ -21,7 +21,7 @@
 import crypto from 'node:crypto';
 import { prisma } from '../../prisma.js';
 import { logger } from '../../logger.js';
-import { requireLaunchToken, getMetaVideoThumbnailUrl, getMetaVideoStatus } from './launchVideoUpload.js';
+import { requireLaunchToken, getMetaVideoInfo } from './launchVideoUpload.js';
 import { createCampaign, createAdSet, createAdCreative, createAd, getEntity, getEntityLive, getAdSetNodes, getAdNodes, getEntitiesMeta, setEntityStatus, getCloneJobLiveState } from '../metaGraphClient.js';
 import { getOrCreateObjectMapRow, markObjectResult, canTransitionCampaignStatus, canTransitionJobStatus, LAUNCH_CONCURRENCY_LIMIT } from './launchBuilder.js';
 import { classifyError, backoffMsFor, ERROR_CLASSES } from './launchErrorPlaybook.js';
@@ -522,13 +522,12 @@ async function ensureCreative({ job, campaign, adSetIndex, adIndex, creative, to
     // "still processing" is expected and transient (Meta can take anywhere
     // from seconds to a couple of hours per video); only a real 'error'
     // status on the video itself is a genuine, non-retryable problem.
-    const videoStatus = await getMetaVideoStatus(token, creative.meta_video_id);
+    const { status: videoStatus, picture: thumbnailUrl } = await getMetaVideoInfo(token, creative.meta_video_id); // throws a rate-limit error when Meta throttles — never mistaken for «still processing»
     if (videoStatus === 'error') {
       const e = new Error(`فيديو ${creative.slot_key} فشلت معالجته على Meta بشكل نهائي — محتاج إعادة رفع.`);
       e.status = 422;
       throw e; // terminal — no amount of waiting fixes a video Meta itself rejected
     }
-    const thumbnailUrl = await getMetaVideoThumbnailUrl(token, creative.meta_video_id);
     if (!thumbnailUrl) {
       const e = new Error(`فيديو ${creative.slot_key} لسه Meta بيعالجه (${videoStatus || 'processing'}) — هيتعاد المحاولة تلقائيًا لحد ما يجهز.`);
       e.transient = true; // never a terminal failure by itself — see publishCampaignFull's bounded-retry handling
@@ -981,7 +980,10 @@ export async function runDueLaunchQueueTick() {
   }
   for (const job of jobs) {
     try {
-      const active = job.campaigns.find((c) => !['COMPLETE', 'CANCELLED'].includes(c.status));
+      const isWaitingOnVideo = (c) => c.error_classification === ERROR_CLASSES.PROCESSING_WAIT && c.next_retry_at && c.next_retry_at.getTime() > Date.now() && !c.human_action_required;
+      const open = job.campaigns.filter((c) => !['COMPLETE', 'CANCELLED'].includes(c.status));
+      const active = open.find((c) => !isWaitingOnVideo(c)) || (open.length ? null : undefined); // a campaign that is only waiting for Meta to process a video does not hold the campaigns after it
+      if (active === null) continue; // everything left is waiting out a video — nothing to do this tick
       if (!active) {
         await setJobStatus(job.job_id, 'COMPLETE');
         await prisma.ambLaunchAudit.create({ data: { job_id: job.job_id, event: 'JOB_COMPLETE', detail: 'اكتمل نشر كل الحملات في الطلب.' } });
@@ -989,7 +991,7 @@ export async function runDueLaunchQueueTick() {
       }
       if (active.index > 0) {
         const prev = job.campaigns.find((c) => c.index === active.index - 1);
-        if (prev && prev.status === 'COMPLETE' && job.next_campaign_at && job.next_campaign_at.getTime() > Date.now()) {
+        if (prev && (prev.status === 'COMPLETE' || isWaitingOnVideo(prev)) && job.next_campaign_at && job.next_campaign_at.getTime() > Date.now()) {
           continue; // still inside the durable 5-minute gate — try again next tick
         }
       }

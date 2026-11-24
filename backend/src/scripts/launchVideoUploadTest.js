@@ -132,5 +132,29 @@ console.log('\n§3 Meta rejects the upload (real error shape) — surfaces the r
   }
 }
 
+console.log('§3 Video readiness check: a Meta throttle is NOT «still processing»:');
+{
+  const { getMetaVideoInfo, _resetVideoInfoCache } = await imp('../services/amb/launchVideoUpload.js');
+  const { classifyError, ERROR_CLASSES } = await imp('../services/amb/launchErrorPlaybook.js');
+  let calls = 0; let mode = 'throttle';
+  global.fetch = async (url) => { calls++; const body = mode === 'throttle' ? { error: { message: '(#4) Application request limit reached', code: 4, type: 'OAuthException' } } : mode === 'processing' ? { status: { video_status: 'processing' } } : { status: { video_status: 'ready' }, picture: 'https://x/p.jpg' }; return { ok: !body.error, status: body.error ? 400 : 200, json: async () => body }; };
+  try {
+    _resetVideoInfoCache();
+    let err = null; try { await getMetaVideoInfo('t', 'v1'); } catch (e) { err = e; }
+    ok('Meta code 4 is thrown as a rate-limit error', !!err && err.isMetaRateLimit === true && Number(err.graphCode) === 4);
+    ok('and classified RATE_LIMITED (retryable, no human) — not PROCESSING_WAIT', !!err && classifyError(err).classification === ERROR_CLASSES.RATE_LIMITED);
+    const before = calls; await getMetaVideoInfo('t', 'v1').catch(() => {}); await getMetaVideoInfo('t', 'v1').catch(() => {});
+    ok('the other ad slots of the same video share the throttle answer (no extra Meta calls)', calls === before);
+    _resetVideoInfoCache(); mode = 'processing';
+    const pr = await getMetaVideoInfo('t', 'v2');
+    ok('a real processing answer is reported as processing with no thumbnail', pr.status === 'processing' && pr.picture === null);
+    _resetVideoInfoCache(); mode = 'ready';
+    const rd = await getMetaVideoInfo('t', 'v3'); const c2 = calls; await getMetaVideoInfo('t', 'v3'); await getMetaVideoInfo('t', 'v3');
+    ok('a ready video returns status + thumbnail in ONE call and is cached for its other slots', rd.status === 'ready' && rd.picture === 'https://x/p.jpg' && calls === c2);
+  } finally { global.fetch = originalFetch; _resetVideoInfoCache(); }
+  const fsm = await import('node:fs'); const lp = fsm.readFileSync(join(__dirname, '../services/amb/launchPublish.js'), 'utf8');
+  ok('the publish engine uses the combined check and the queue lets later campaigns go on while one only waits for a video', lp.includes('getMetaVideoInfo(token, creative.meta_video_id)') && lp.includes('isWaitingOnVideo') && !lp.includes('getMetaVideoThumbnailUrl(token'));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
