@@ -285,8 +285,8 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
 }
 { // the background syncs (every 15 min × 15 accounts, all day) leave a throttled ad account alone
   const fsm = await import('node:fs'); const ss = fsm.readFileSync(join(__dirname, '../services/amb/snapshotSync.js'), 'utf8');
-  ok('the scheduled sync of the connected account is skipped while Meta throttles it (a manual sync still runs)', ss.includes("trigger === 'SCHEDULED' && isAccountThrottled(adAccountId)") && ss.includes("skipped: 'THROTTLED'"));
-  ok('the view-account sync loop skips a throttled account, and a rate-limit failure of either sync marks the account as throttled', ss.includes('if (isAccountThrottled(id)) continue;') && ss.split('if (isMetaRateLimitError(err)) noteAccountThrottled(adAccountId);').length === 3);
+  ok('the scheduled sync of the connected account is skipped while Meta throttles it (a manual sync still runs)', ss.includes("trigger === 'SCHEDULED' && await mayDeferSync(adAccountId)") && ss.includes("skipped: 'THROTTLED'"));
+  ok('the view-account sync loop skips a throttled account, and a rate-limit failure of either sync marks the account as throttled', ss.includes('if (await mayDeferSync(id)) continue;') && ss.includes('const MAX_SYNC_DEFER_MS = 30 * 60_000;') && ss.includes('Date.now() - new Date(last.started_at).getTime() < MAX_SYNC_DEFER_MS') && ss.split('if (isMetaRateLimitError(err)) noteAccountThrottled(adAccountId);').length === 3);
 }
 { // Meta's own quota reading (x-business-use-case-usage) drives the waiting — measured on production: development_access, the limit hit is CPU time, not call count
   const U = await imp('../services/metaUsage.js'); const MC = await imp('../services/metaAssetCache.js'); U._resetUsageForTests();

@@ -189,6 +189,16 @@ let running = false;
  * one is in flight returns { skipped: 'ALREADY_RUNNING' } immediately.
  * @param {{trigger?: 'SCHEDULED'|'MANUAL'}} opts
  */
+const MAX_SYNC_DEFER_MS = 30 * 60_000;
+/**
+ * A scheduled sync may step aside for an ad account that is throttled / near its Meta limit — but ONLY while that account's numbers are still fresh (last success < 30 minutes ago).
+ * Without this cap a busy account (the connected one is busy all day) was never synced again: its dashboards stayed frozen for hours.
+ */
+async function mayDeferSync(accountId) {
+  if (!isAccountThrottled(accountId)) return false;
+  const last = await prisma.ambSyncRun.findFirst({ where: { ad_account_id: accountId, status: 'SUCCESS' }, orderBy: { started_at: 'desc' }, select: { started_at: true } }).catch(() => null);
+  return !!last && Date.now() - new Date(last.started_at).getTime() < MAX_SYNC_DEFER_MS;
+}
 export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
   const scoped = await scopedViewAccount();
   if (scoped) return runViewAccountSync(scoped, { force: trigger === 'MANUAL' }); // inside another account's scope a "sync" is that account's read-only sync — never the connected account's full cycle
@@ -206,7 +216,7 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
   }
 
   const adAccountId = connection.selected_ad_account_id;
-  if (trigger === 'SCHEDULED' && isAccountThrottled(adAccountId)) { runningSlot.clear(); return { skipped: 'THROTTLED' }; } // Meta is throttling this account: a scheduled read now only prolongs the block (a manual sync still runs)
+  if (trigger === 'SCHEDULED' && await mayDeferSync(adAccountId)) { runningSlot.clear(); return { skipped: 'THROTTLED' }; } // Meta is throttling this account: a scheduled read now only prolongs the block (a manual sync still runs)
   const syncRun = await prisma.ambSyncRun.create({ data: { trigger, status: 'RUNNING', ad_account_id: adAccountId } });
 
   try {
@@ -502,7 +512,7 @@ export function startAmbViewSyncScheduler() {
       let synced = 0;
       for (const id of await getViewAccountIds()) {
         if (id === connection.selected_ad_account_id) continue;
-        if (isAccountThrottled(id)) continue; // throttled by Meta right now — left alone until the pause is over
+        if (await mayDeferSync(id)) continue; // throttled by Meta right now and its numbers are still fresh — left alone (never longer than 30 minutes stale)
         const info = await getAccountSyncInfo(id);
         if (info.nextSyncAt && new Date(info.nextSyncAt).getTime() > Date.now()) continue;
         if (synced >= VIEW_SYNCS_PER_TICK) break; // many accounts are spread over several ticks (Meta rate limits); a processed account is not due again for a full interval, so none is starved
