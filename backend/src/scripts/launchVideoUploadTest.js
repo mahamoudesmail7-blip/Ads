@@ -152,6 +152,7 @@ console.log('§3 Video readiness check: a Meta throttle is NOT «still processin
     const rd = await getMetaVideoInfo('t', 'v3'); const c2 = calls; await getMetaVideoInfo('t', 'v3'); await getMetaVideoInfo('t', 'v3');
     ok('a ready video returns status + thumbnail in ONE call and is cached for its other slots', rd.status === 'ready' && rd.picture === 'https://x/p.jpg' && calls === c2);
   } finally { global.fetch = originalFetch; _resetVideoInfoCache(); }
+  { const fsm2 = await import('node:fs'); const lp2 = fsm2.readFileSync(join(__dirname, '../services/amb/launchPublish.js'), 'utf8'); ok('waiting out a Meta throttle never uses up the retry counter (bounded by 6 hours instead)', lp2.includes('const isThrottleWait') && lp2.includes('throttleExpired') && lp2.includes('isThrottleWait ? throttleExpired : nextCount > maxRetries')); }
   const fsm = await import('node:fs'); const lp = fsm.readFileSync(join(__dirname, '../services/amb/launchPublish.js'), 'utf8');
   ok('the publish engine uses the combined check and the queue lets later campaigns go on while one only waits for a video', lp.includes('getMetaVideoInfo(token, creative.meta_video_id)') && lp.includes('isWaitingOnVideo') && !lp.includes('getMetaVideoThumbnailUrl(token'));
 }

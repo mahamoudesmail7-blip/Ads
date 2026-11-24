@@ -795,9 +795,12 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
     logger.error('Launch queue campaign step failed', { jobId, campaignIndex, classification: policy.classification, code: policy.code, subcode: policy.subcode, message: err.message });
 
     if (policy.retryable && !policy.humanActionRequired) {
-      const nextCount = (campaign.transient_retry_count || 0) + 1;
+      // Waiting out a Meta THROTTLE is not a failure of the campaign: it never uses up the retry counter (and the owner's «retry now» presses cannot exhaust it). It is bounded by TIME instead (6 h since the first failure).
+      const isThrottleWait = policy.classification === ERROR_CLASSES.RATE_LIMITED;
+      const nextCount = isThrottleWait ? Math.max(1, campaign.transient_retry_count || 0) : (campaign.transient_retry_count || 0) + 1;
       const maxRetries = policy.maxRetries || 20;
-      if (nextCount > maxRetries) {
+      const throttleExpired = isThrottleWait && campaign.first_failure_at && Date.now() - new Date(campaign.first_failure_at).getTime() > 6 * 3600_000;
+      if (isThrottleWait ? throttleExpired : nextCount > maxRetries) {
         // Bounded — stop waiting on Meta forever and surface a real, actionable failure.
         await setCampaignStatus(campaign.id, 'FAILED');
         await prisma.ambLaunchCampaign.update({
@@ -816,7 +819,7 @@ export async function publishCampaignFull({ jobId, campaignIndex }) {
       // already falls back to its own computed bounded backoff, and the
       // parameter stays here so a real Retry-After becomes a one-line change
       // the moment Meta (or a future retryable dependency) ever sends one.
-      const delayMs = backoffMsFor(nextCount, err.retryAfterSeconds ?? null);
+      const delayMs = isThrottleWait ? 5 * 60_000 : backoffMsFor(nextCount, err.retryAfterSeconds ?? null); // a throttle: one check every 5 min (a faster one only keeps Meta's quota empty)
       await prisma.ambLaunchCampaign.update({
         where: { id: campaign.id },
         data: { error: err.message, error_classification: policy.classification, attempts: { increment: 1 }, transient_retry_count: nextCount, last_attempt_at: new Date(), next_retry_at: new Date(Date.now() + delayMs), first_failure_at: firstFailureAt },
