@@ -64,6 +64,7 @@ import { startDailyTasksScheduler } from './services/dailyTasks/scheduler.js';
 import productMarketingRoutes from './routes/productMarketing.js';
 import aiUsageRoutes from './routes/aiUsage.js';
 import metaUsageRoutes from './routes/metaUsage.js';
+import autoScaleRoutes from './routes/autoScale.js';
 import backupStatusRoutes from './routes/backupStatus.js';
 import productResearchRoutes from './routes/productResearch.js';
 import productResearchExperimentalRoutes from './routes/productResearchExperimental.js';
@@ -80,6 +81,7 @@ import { startAmbOutcomeScheduler } from './services/amb/outcomeEval.js';
 import { startProductExperimentScheduler } from './services/amb/productExperiment.js';
 import { startProductAutoAnalysisScheduler } from './services/amb/productAutoAnalysis.js';
 import { startBudgetBumpScheduler } from './services/amb/budgetBumpOrchestrator.js';
+import { startAutoScaleScheduler } from './services/amb/autoScale.js';
 import { startAmbCloneScheduler } from './services/amb/cloneScheduler.js';
 import { startLaunchScheduler } from './services/amb/launchScheduler.js';
 import { startCreativeFactoryScheduler } from './services/creativeFactory/scheduler.js';
@@ -141,6 +143,7 @@ app.use('/api/amb-tiktok', ambTiktokRoutes); // TikTok campaigns (wizard → lau
 app.use('/api/amb-media', ambMediaRoutes); // AMB smart media tools for the launch wizard (provider keys now; finder/AI later)
 app.use('/api/creative-factory', creativeFactoryRoutes); // AI Creative Factory — AI product-image creation (see routes/creativeFactory.js)
 app.use('/api/product-marketing', productMarketingRoutes); // AI Product Marketing Center — "مركز التسويق الذكي للمنتج" (see routes/productMarketing.js)
+app.use('/api/auto-scale', autoScaleRoutes); // daily automatic scale across the ad accounts (OFF until the owner switches it on)
 app.use('/api/meta-usage', metaUsageRoutes); // who uses Meta's quota (ADMIN, read only)
 app.use('/api/ai-usage', aiUsageRoutes); // AI Gateway admin usage/cost dashboard + health check (see routes/aiUsage.js)
 app.use('/api/backup-status', backupStatusRoutes); // Backup & Recovery status page (informational only, see routes/backupStatus.js)
@@ -195,6 +198,7 @@ startAmbOutcomeScheduler();
 startProductExperimentScheduler();
 startProductAutoAnalysisScheduler();
 startBudgetBumpScheduler();
+startAutoScaleScheduler(); // OFF by default — does nothing until the owner switches it on in the scale page
 // Campaign Clone & Schedule — 60s tick that activates cloned (PAUSED)
 // campaigns at their per-destination scheduled time. No-ops when Meta isn't
 // connected or ambCloneAutoActivate is off.

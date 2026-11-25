@@ -132,6 +132,7 @@ const state = {
   tab: 'home',
   window: 'today',
   isAdmin: false,
+  canScale: false, // ADMIN or MANAGER (the team's media buyers) — scaling only; settings / launch / the clone wizard stay ADMIN
   me: null,
   home: null,       // cached home payload
   filter: 'all',
@@ -174,6 +175,7 @@ async function init() {
   try {
     state.me = await api.get('/api/auth/me');
     state.isAdmin = state.me.role === 'ADMIN' || state.me.is_owner;
+    state.canScale = state.isAdmin || state.me.role === 'MANAGER';
   } catch { /* api-client handles 401 */ }
 
   $('ambDrawerOverlay').addEventListener('click', (e) => { if (e.target.id === 'ambDrawerOverlay') closeDrawer(); });
@@ -381,6 +383,7 @@ async function renderHome(view) {
           <div class="t">${ic('bulb', 'ic')} القرارات المقترحة من الذكاء الاصطناعي</div>
           <span class="amb-sort">${resolved.length ? `${resolved.filter((r) => ['RESOLVED_EXTERNALLY', 'NO_LONGER_APPLICABLE'].includes(r.status)).length} توصية اتحلّت` : ''}</span>
         </div>
+        <div id="ambAutoScale"></div>
         <div id="ambScaleWinners"></div>
         <div id="ambRecBatchNote"></div>
         <div id="ambRecList"></div>
@@ -395,6 +398,7 @@ async function renderHome(view) {
   renderRecList(active);
   renderSide(ov, meta, hWin, active);
   renderScaleWinners().catch(() => {});
+  renderAutoScale().catch(() => {});
   if ($('ambHomeSchedules')) renderHomeSchedules($('ambHomeSchedules')).catch(() => {});
 }
 
@@ -427,7 +431,7 @@ function scaleAboValid(s) {
 }
 /** Why "موافق على الاسكيل" is (or isn't) clickable — drives the button + inline hint. */
 function scaleApproveState(card, s) {
-  if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
+  if (!state.canScale) return { ok: false, reason: 'الاسكيل متاح للأدمن والمانجر فقط.' };
   if (s.mode === 'SCHEDULE' && !cloneStartInFuture(s.date, s.time)) return { ok: false, reason: 'لازم يكون تاريخ ووقت البداية في المستقبل.' };
   if (s.budgetMode === 'ABO') {
     const noBudget = s.abo.some((sl) => !(Number(sl.budget) > 0));
@@ -465,6 +469,71 @@ function scaleAdRow(a, checked, attr) {
   </label>`;
 }
 
+// ---------------------------------------------------------------------------
+// Auto scale («اسكيل أوتوماتيك»): once a day the system scales the winners of every ad account by itself, one account after another (the connected one first).
+// The page only shows the state and lets the ADMIN switch it on / off, preview, run it now or stop it — the work is done on the server (services/amb/autoScale.js).
+// ---------------------------------------------------------------------------
+let _autoScale = null; let _autoScaleTimer = null; let _autoPreview = null; let _autoEdit = false; let _autoAccounts = null;
+const asClock = (iso) => { try { return iso ? new Date(iso).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'; } catch { return '—'; } };
+const AS_ST = { DONE: '✅ تمّ', NOTHING: '— مفيش جاهز', PARTIAL: '⚠️ جزئي', FAILED: '❌ فشل', BUSY: '⏳ مشغول', TOO_LATE: '🕐 بكرة', SKIPPED: '⏭️ اتخطّى', CANCELED: '⛔ اتوقف', RUNNING: '🔄 شغّال', UNKNOWN: '❓', STOPPED: '⛔ اتوقف', INTERRUPTED: '⚠️ اتقطع' };
+const asSt = (s) => AS_ST[s] || (String(s || '').startsWith('STOPPED_') ? '⛔ اتوقف تلقائيًا' : E(s));
+function autoScaleRows(accounts) {
+  return (accounts || []).map((a) => `<div class="amb-as-row"><span class="n">${E(a.name || a.accountId)}</span><span class="s">${asSt(a.status)}</span><span class="m faint">${a.scaled ? a.scaled + ' اتسكيّلوا' : ''}${a.failed ? ' · ' + a.failed + ' فشلوا' : ''}${a.leftOver ? ' · ' + a.leftOver + ' فاضلين لبكرة' : ''}${a.reason ? ' — ' + E(a.reason) : ''}</span></div>`).join('');
+}
+function autoScaleHtml(d) {
+  const c = d.config; const adm = state.isAdmin; const on = !!c.enabled;
+  const run = d.run && d.running ? d.run : null; const last = d.lastRun;
+  const edit = _autoEdit && adm ? `<div class="amb-as-edit">
+      <label>بداية التشغيل (القاهرة)<input id="asRunAt" value="${E(c.runAtCairo)}" /></label>
+      <label>آخر وقت يبدأ فيه (القاهرة)<input id="asRunUntil" value="${E(c.runUntilCairo)}" /></label>
+      <label>موعد بدء الكامبينات<input id="asStartAt" value="${E(c.startAtCairo)}" /></label>
+      <label>ميزانية الكامبين — الافتراضية (ج)<input id="asBudget" type="number" value="${E(c.budgetEgp)}" /></label>
+      <label>الفاصل بين الكامبينات (ث)<input id="asGap" type="number" value="${E(c.gapSeconds)}" /></label>
+      <label>أقصى عدد كامبينات للحساب<input id="asMax" type="number" value="${E(c.maxPerAccount)}" /></label>
+      <div class="amb-as-accts"><div class="faint" style="margin-bottom:4px">الحسابات (علّم اللي عايزه يتسكيّل — وميزانية خاصة لكل حساب، سيبها فاضية = الافتراضية):</div>${_autoAccounts ? _autoAccounts.accounts.map((a) => `<div class="amb-as-acct"><label><input type="checkbox" data-as-acct="${E(a.id)}" ${a.included ? 'checked' : ''} /> ${E(a.name)}${a.isPrimary ? ' (الأساسي)' : ''}</label><input type="number" data-as-budget="${E(a.id)}" placeholder="${E(c.budgetEgp)}" value="${a.budgetEgp ?? ''}" /> ج</div>`).join('') : '<span class="faint">بحمّل الحسابات…</span>'}</div>
+      <div class="amb-as-actions" style="grid-column:1/-1"><button class="amb-btn primary sm" data-as="save">حفظ</button> <button class="amb-btn ghost sm" data-as="edit-close">إلغاء</button></div></div>` : '';
+  const prev = _autoPreview ? `<div class="amb-as-prev"><b>المعاينة (مفيش حاجة اتكتبت على ميتا):</b> هيبدأوا ${E(_autoPreview.startAt.replace('T', ' '))} · ${E(_autoPreview.budgetEgp)} ج للكامبين${_autoPreview.accounts.map((a) => `<div>• <b>${E(a.name)}</b>: ${a.error ? '⚠️ ' + E(a.error) : a.willScale + ' كامبين جاهز × ' + E(a.budgetEgp) + ' ج = ' + E(a.dailyTotalEgp) + ' ج' + (a.leftOver ? ' (+' + a.leftOver + ' فاضلين)' : '') + (a.campaigns?.length ? ' — ' + a.campaigns.map(E).join('، ') : '')}</div>`).join('')}<div style="margin-top:6px"><b>إجمالي الميزانية اليومية: ${E(_autoPreview.totalDailyEgp)} ج</b></div></div>` : '';
+  return `<div class="amb-as ${on ? 'on' : 'off'}">
+    <div class="amb-as-h"><span class="t">🤖 اسكيل أوتوماتيك</span><span class="amb-as-badge ${on ? 'on' : 'off'}">${on ? 'شغّال' : 'مقفول'}</span>
+      ${adm ? `<button class="amb-btn ${on ? 'ghost' : 'primary'} sm" data-as="toggle">${on ? 'اقفله' : 'افتحه'}</button>` : ''}</div>
+    <div class="amb-as-line">بيشتغل كل يوم من <b>${E(c.runAtCairo)}</b> لحد <b>${E(c.runUntilCairo)}</b> (القاهرة)، وبعد 12 بليل بيستنى لحد <b>${E(c.runAtCairo)}</b> علشان يبقى فيه كامبينات وينر. بيسكيّل الكامبينات الجاهزة على <b>كل الحسابات واحد ورا التاني</b> (أحمد سامي الأول) — <b>${E(c.budgetEgp)} ج</b> لكل كامبين${Object.keys(c.accountBudgets || {}).length ? " (وفيه ميزانية خاصة لـ " + Object.keys(c.accountBudgets).length + " حساب)" : ""}، CBO، ومجدولة تبدأ <b>${E(c.startAtCairo)}</b>.</div>
+    <div class="amb-as-line faint">${on ? 'الشغل الجاي: ' + asClock(d.nextRunAt ? new Date(d.nextRunAt).toISOString() : null) : 'مقفول — مش هيعمل أي حاجة لحد ما تفتحه.'}${d.writeGate && d.writeGate.ok === false ? ' · 🛑 ' + E(d.writeGate.message || 'الكتابة على ميتا مقفولة') + ' (مش هيشتغل لحد ما تتفك)' : ''}</div>
+    ${run ? `<div class="amb-as-run"><b>🔄 شغّال دلوقتي</b> منذ ${asClock(run.startedAt)}${autoScaleRows(run.accounts)}</div>` : ''}
+    ${!run && last ? `<div class="amb-as-last"><b>آخر تشغيل</b> (${asClock(last.startedAt)}) — ${asSt(last.status)}${autoScaleRows(last.accounts)}</div>` : ''}
+    ${adm ? `<div class="amb-as-actions"><button class="amb-btn ghost sm" data-as="preview">معاينة</button> <button class="amb-btn ghost sm" data-as="edit">الإعدادات</button> <button class="amb-btn primary sm" data-as="run" ${d.running ? 'disabled' : ''}>شغّل دلوقتي</button> ${d.running ? '<button class="amb-btn danger sm" data-as="stop">إيقاف</button>' : ''}</div>` : ''}
+    ${edit}${prev}</div>`;
+}
+async function renderAutoScale(cached) {
+  const el = $('ambAutoScale'); if (!el) return;
+  let d = cached || _autoScale;
+  if (!cached) { try { d = await api.get('/api/auto-scale'); } catch { el.innerHTML = ''; return; } _autoScale = d; }
+  el.innerHTML = autoScaleHtml(d);
+  clearTimeout(_autoScaleTimer); if (d.running) _autoScaleTimer = setTimeout(() => renderAutoScale().catch(() => {}), 6000);
+  el.querySelectorAll('[data-as]').forEach((btn) => btn.addEventListener('click', async () => {
+    const act = btn.dataset.as; btn.disabled = true;
+    try {
+      if (act === 'toggle') {
+        const turnOn = !d.config.enabled;
+        if (turnOn && !window.confirm('تفتح الاسكيل الأوتوماتيك؟\nمن ' + d.config.runAtCairo + ' لحد ' + d.config.runUntilCairo + ' كل يوم السيستم هيسكيّل لوحده (ولو فتحته جوّه الوقت ده هيبدأ على طول) الكامبينات الجاهزة على كل الحسابات بميزانية ' + d.config.budgetEgp + ' ج لكل كامبين، ومجدولة تبدأ ' + d.config.startAtCairo + '.\nتقدر تقفله في أي وقت.')) { btn.disabled = false; return; }
+        _autoScale = await api.post('/api/auto-scale/enabled', { enabled: turnOn }); UI.toast(turnOn ? 'الاسكيل الأوتوماتيك اتفتح' : 'الاسكيل الأوتوماتيك اتقفل', 'success');
+      } else if (act === 'run') {
+        if (!window.confirm('يبدأ الاسكيل على كل الحسابات دلوقتي؟ (هيكتب على ميتا زي الاسكيل العادي بالظبط)')) { btn.disabled = false; return; }
+        await api.post('/api/auto-scale/run-now', { confirm: true }); UI.toast('الاسكيل بدأ', 'success'); setTimeout(() => renderAutoScale().catch(() => {}), 1500); return;
+      } else if (act === 'stop') { await api.post('/api/auto-scale/stop', {}); UI.toast('اتبعت طلب الإيقاف', 'success'); }
+      else if (act === 'preview') { _autoPreview = null; UI.toast('بقرا الكامبينات الجاهزة من كل حساب…', 'info'); _autoPreview = await api.get('/api/auto-scale/preview'); }
+      else if (act === 'edit') { _autoEdit = true; try { _autoAccounts = await api.get('/api/auto-scale/accounts'); } catch { _autoAccounts = null; } }
+      else if (act === 'edit-close') _autoEdit = false;
+      else if (act === 'save') {
+        const boxes = [...el.querySelectorAll('[data-as-acct]')]; const budgets = {}; el.querySelectorAll('[data-as-budget]').forEach((i) => { if (i.value !== '') budgets[i.dataset.asBudget] = Number(i.value); });
+        const chosen = boxes.filter((b) => b.checked).map((b) => b.dataset.asAcct);
+        _autoScale = await api.put('/api/auto-scale/config', { runAtCairo: $('asRunAt').value, runUntilCairo: $('asRunUntil').value, startAtCairo: $('asStartAt').value, budgetEgp: Number($('asBudget').value), gapSeconds: Number($('asGap').value), maxPerAccount: Number($('asMax').value), accountBudgets: budgets, accountIds: boxes.length && chosen.length && chosen.length < boxes.length ? chosen : null });
+        _autoEdit = false; UI.toast('اتحفظت', 'success');
+      }
+    } catch (e) { UI.toast(e.message, 'error'); }
+    renderAutoScale(_autoScale).catch(() => {});
+  }));
+}
+
 let _scaleData = null; // last /scale/winners payload (re-rendered locally on card interaction)
 async function renderScaleWinners(cached) {
   const el = $('ambScaleWinners');
@@ -498,12 +567,12 @@ function scaleCardHtml(card) {
   const s = scaleState(card);
   return `<div class="amb-scale-card ${s.open ? 'open' : ''}" data-scw="${E(card.sourceCampaignId)}">
     <div class="amb-scale-top">
-      ${state.isAdmin ? `<label class="amb-bulk-pick" title="حدّده للاسكيل المجمّع"><input type="checkbox" data-bulk-pick="${E(card.sourceCampaignId)}" ${bulkSel.has(card.sourceCampaignId) ? 'checked' : ''} /></label>` : ''}
+      ${state.canScale ? `<label class="amb-bulk-pick" title="حدّده للاسكيل المجمّع"><input type="checkbox" data-bulk-pick="${E(card.sourceCampaignId)}" ${bulkSel.has(card.sourceCampaignId) ? 'checked' : ''} /></label>` : ''}
       <div class="amb-scale-name">
         <div class="pn">${E(card.displayName)}</div>
         <div class="cn faint">${E(card.sourceCampaignName)}</div>
         ${card.adsUnavailable ? `<div class="amb-scale-failed">⚠️ ${E(card.adsUnavailable)}</div>` : ''}
-        ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ ${E(card.lastHint?.title || 'آخر محاولة اسكيل فشلت')}<br><span class="faint" style="font-weight:500;">${E(card.lastHint?.action || 'تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.')}</span>${card.lastBatchId && ['RESUME', 'FIX_INPUT'].includes(card.lastHint?.retry) && state.isAdmin ? `<br><button class="amb-btn sm ghost" data-scw-act="resume" data-scw="${E(card.sourceCampaignId)}">🔄 كمّل الناقص (من غير تكرار)</button>` : ''}</div>` : ''}
+        ${card.decisionStatus === 'FAILED' ? `<div class="amb-scale-failed">⚠️ ${E(card.lastHint?.title || 'آخر محاولة اسكيل فشلت')}<br><span class="faint" style="font-weight:500;">${E(card.lastHint?.action || 'تأكد في «استنساخ وجدولة» إن مفيش نسخة اتعملت قبل ما تعيد.')}</span>${card.lastBatchId && ['RESUME', 'FIX_INPUT'].includes(card.lastHint?.retry) && state.canScale ? `<br><button class="amb-btn sm ghost" data-scw-act="resume" data-scw="${E(card.sourceCampaignId)}">🔄 كمّل الناقص (من غير تكرار)</button>` : ''}</div>` : ''}
       </div>
       <div class="amb-scale-nums">
         <div class="nb"><b>${fmtNum(card.orders)}</b><span>طلب</span></div>
@@ -638,7 +707,7 @@ function scaleExpandedHtml(card, s) {
     </div>
 
     <div class="amb-scale-actions">
-      <button class="amb-btn primary" data-scw-act="approve" data-scw="${cid}" ${canApprove ? '' : 'disabled'}>${state.isAdmin ? 'موافق على الاسكيل' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
+      <button class="amb-btn primary" data-scw-act="approve" data-scw="${cid}" ${canApprove ? '' : 'disabled'}>${state.canScale ? 'موافق على الاسكيل' : 'الاسكيل متاح للأدمن والمانجر فقط'}</button>
       <button class="amb-btn ghost" data-scw-act="cancel" data-scw="${cid}">إلغاء</button>
       <div class="amb-scale-hint" ${canApprove ? 'hidden' : ''}>${E(approve.reason)}</div>
     </div>
@@ -775,7 +844,7 @@ const bulkSelOf = (r) => (bulkUi.mode === 'ABO' ? r.selAbo : r.selCbo);
 function bulkCards() { return (_scaleData?.cards || []).filter((c) => bulkSel.has(c.sourceCampaignId)); }
 /** Why «موافق على الاسكيل المجمّع» is (or isn't) clickable. */
 function bulkApproveState(cards) {
-  if (!state.isAdmin) return { ok: false, reason: 'الاسكيل متاح للـ ADMIN فقط.' };
+  if (!state.canScale) return { ok: false, reason: 'الاسكيل متاح للأدمن والمانجر فقط.' };
   if (!cards.length) return { ok: false, reason: 'علّم على كامبين واحد على الأقل.' };
   if (cards.length > 15) return { ok: false, reason: 'الحد الأقصى 15 كامبين في المرة.' };
   const u = bulkUi;
@@ -803,7 +872,7 @@ function bulkTotalText(cards) {
 const bulkBudgetLabel = () => (bulkUi.mode === 'ABO' ? 'ميزانية الـ Ad Set (ج.م/يوم)' : 'ميزانية الحملة (ج.م/يوم)');
 
 function bulkBarHtml(cards) {
-  if (!state.isAdmin) return '';
+  if (!state.canScale) return '';
   const n = bulkSel.size;
   const allIds = cards.map((c) => c.sourceCampaignId);
   const allOn = allIds.length > 0 && allIds.every((id) => bulkSel.has(id));
@@ -867,7 +936,7 @@ function bulkPanelHtml() {
       </div>
     </div>
     <div class="amb-scale-actions">
-      <button class="amb-btn primary" data-bulk-act="approve" ${ap.ok && !u.busy ? '' : 'disabled'}>${state.isAdmin ? 'موافق على الاسكيل المجمّع' : 'الاسكيل متاح للـ ADMIN فقط'}</button>
+      <button class="amb-btn primary" data-bulk-act="approve" ${ap.ok && !u.busy ? '' : 'disabled'}>${state.canScale ? 'موافق على الاسكيل المجمّع' : 'الاسكيل متاح للأدمن والمانجر فقط'}</button>
       <button class="amb-btn ghost" data-bulk-act="close">إلغاء</button>
       <div class="amb-scale-hint amb-bulk-hint" ${ap.ok ? 'hidden' : ''}>${E(ap.reason)}</div>
     </div>
@@ -916,7 +985,7 @@ async function runDuplicate(b, mode) {
 
 /** After a SINGLE scale succeeded: the same question as after a bulk one — «دبلكيت؟» with CBO / ABO. A small overlay (the approval modal of the real run follows). */
 function askSingleDuplicate(card, body, result) {
-  if (!state.isAdmin) return;
+  if (!state.canScale) return;
   const plan = body.budgetMode === 'ABO' ? { budgetMode: 'ABO', adSets: body.adSets || [] } : { budgetMode: 'CBO', selectedAdIds: body.selectedAdIds || [], campaignBudgetEgp: body.campaignBudgetEgp };
   const fake = { id: 'single', gapSeconds: 60, items: [{ sourceCampaignId: card.sourceCampaignId, label: card.displayName || card.proposedScaleCampaignName, status: 'DONE', plan }] };
   const overlay = document.createElement('div'); overlay.className = 'confirm-modal-overlay';
@@ -941,7 +1010,7 @@ function bulkProgressHtml() {
     <div class="amb-bulk-ph"><b>${head}</b>
       <span>${running ? '<button class="amb-btn ghost sm" data-bulk-act="cancel-run">إيقاف اللي لسه مابدأش</button>' : '<button class="amb-btn ghost sm" data-bulk-act="dismiss">إخفاء</button>'}</span></div>
     ${b.items.map((it) => { const [t, k] = BULK_ST[it.status] || [it.status, '']; return `<div class="amb-bulk-pi ${k}"><span class="l">${E(it.label)}</span><span class="s">${t}</span>${it.status === 'FAILED' && it.hint ? `<div class="e"><b>${E(it.hint.title)}</b> — ${E(it.hint.action)}${it.error ? `<div class="faint" style="font-size:11px;margin-top:4px;direction:auto;word-break:break-word">الرسالة الأصلية: ${E(it.error)}</div>` : ''}</div>` : it.error ? `<div class="e">${E(it.error)}</div>` : ''}${it.result?.scaleCampaignName ? `<div class="e faint">${E(it.result.scaleCampaignName)} · ${fmtNum(it.result.adSetsCreated)} مجموعة · ${fmtNum(it.result.adsCreated)} إعلان (متوقفة)</div>` : ''}</div>`; }).join('')}
-    ${!running && state.isAdmin && b.counts.done > 0 ? dupPromptHtml(b) : ''}
+    ${!running && state.canScale && b.counts.done > 0 ? dupPromptHtml(b) : ''}
     ${running ? '<div class="faint" style="font-size:11.5px; margin-top:6px;">تقدر تقفل الصفحة — الاسكيل بيكمل على السيرفر. (لو السيرفر اتعمله restart بيتوقف اللي لسه مابدأش.)</div>' : ''}
   </div>`;
 }
@@ -964,7 +1033,7 @@ function startBulkPolling(id, key = acctKey()) {
 }
 /** Page (re)load / account switch: if a bulk scale of THIS account is still running on the server, show it again (the other accounts' keep being polled on their own). */
 async function resumeBulk() {
-  if (!state.isAdmin) return;
+  if (!state.canScale) return;
   try {
     const { batch } = await api.get('/api/ai-media-buyer/scale/bulk/latest'); // scoped to the account on screen by the X-Amb-Account header
     if (batch && batch.status === 'RUNNING' && !bulkPolls.has(batch.id)) { bulkRuns.set(acctKey(), batch); rerenderScale(); startBulkPolling(batch.id, acctKey()); }

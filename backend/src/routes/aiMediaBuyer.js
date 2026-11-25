@@ -457,9 +457,9 @@ router.post('/scale/reject', asyncRoute(async (req, res) => {
   res.json(await rejectScaleWinner({ sourceCampaignId, sourceCampaignName, productName, windowLabel, userId: req.user.id, adAccountId: await viewAccountFrom(req) }));
 }));
 
-// Executes a real (PAUSED) clone via the existing engine — ADMIN only, and
+// Executes a real (PAUSED) clone via the existing engine — ADMIN or MANAGER (the media buyers scale from their own logins; the owner account is not needed), and
 // only after the owner approved the exact config in the UI.
-router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+router.post('/scale/execute', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
   const { executeScale } = await import('../services/amb/scaleWinners.js');
   const { sourceCampaignId, budgetMode, campaignBudgetEgp, selectedAdIds, adSets, budgetEgp, startMode, startAt, window } = req.body || {};
   res.status(201).json(await executeScale({
@@ -469,7 +469,7 @@ router.post('/scale/execute', requireRole('ADMIN'), asyncRoute(async (req, res) 
 }));
 
 // Bulk scale: a sequencer around the SAME executeScale (one campaign at a time, `gapSeconds` apart). ADMIN only; the UI sends it only after one explicit approval.
-router.post('/scale/bulk', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+router.post('/scale/bulk', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
   const { executeScale } = await import('../services/amb/scaleWinners.js');
   const { startBulk } = await import('../services/amb/scaleBulk.js');
   const { cairoLocalToUtc } = await import('../services/amb/cloneEngine.js');
@@ -481,7 +481,7 @@ router.post('/scale/bulk', requireRole('ADMIN'), asyncRoute(async (req, res) => 
   ));
 }));
 // «دبلكيت للاسكيل»: after a scale finished, the owner may ask for the SAME winners again as a second scale copy, as CBO or ABO. It is a normal bulk scale (same sequencer, same safety gates, created paused) started only after his explicit approval in the UI.
-router.post('/scale/duplicate', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+router.post('/scale/duplicate', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
   const { executeScale } = await import('../services/amb/scaleWinners.js');
   const { startBulk, convertPlanItem } = await import('../services/amb/scaleBulk.js');
   const { cairoLocalToUtc } = await import('../services/amb/cloneEngine.js');
@@ -501,7 +501,7 @@ router.get('/scale/bulk/:id', asyncRoute(async (req, res) => {
   if (!b) return res.status(404).json({ error: 'NOT_FOUND', message: 'الطلب مش موجود (ممكن السيرفر اتعمله restart).' });
   res.json(b);
 }));
-router.post('/scale/bulk/:id/cancel', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+router.post('/scale/bulk/:id/cancel', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
   const { cancelBatch } = await import('../services/amb/scaleBulk.js');
   res.json(cancelBatch(req.params.id));
 }));
@@ -685,7 +685,7 @@ router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'), asyncRoute(
   res.json(await clone.approveBatch({ batchId: req.params.batchId, userId: req.user.id }));
 }));
 
-router.post('/clone/batches/:batchId/resume', requireRole('ADMIN'), asyncRoute(async (req, res) => {
+router.post('/clone/batches/:batchId/resume', requireRole('ADMIN', 'MANAGER'), asyncRoute(async (req, res) => {
   const clone = await import('../services/amb/cloneEngine.js');
   res.json(await clone.resumeBatch({ batchId: req.params.batchId, userId: req.user.id }));
 }));

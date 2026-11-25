@@ -996,3 +996,24 @@ body { background: var(--amb-bg); }
 .amb-bulk-pi.ok .s { color: var(--amb-green); } .amb-bulk-pi.bad .s { color: var(--amb-red); } .amb-bulk-pi.run .s { color: var(--amb-amber, #b7791f); } .amb-bulk-pi.dim { opacity: .6; }
 .amb-bulk-pi .e { flex-basis: 100%; font-size: 11.5px; } .amb-bulk-pi.bad .e { color: var(--amb-red); }
 .amb-scale-failed { margin-top: 4px; font-size: 11.5px; font-weight: 600; color: var(--amb-red); max-width: 520px; }
+
+/* Auto scale card (الرئيسية) */
+.amb-as { background: var(--amb-surface); border: 1px solid var(--amb-border-strong); border-radius: var(--amb-radius-sm); padding: 12px 16px; margin-bottom: 12px; }
+.amb-as.on { border-color: var(--amb-green); }
+.amb-as-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.amb-as-h .t { font-weight: 800; font-size: 14px; }
+.amb-as-badge { font-size: 11.5px; font-weight: 800; padding: 2px 10px; border-radius: 999px; background: var(--amb-surface-2); }
+.amb-as-badge.on { background: rgba(16,185,129,.15); color: var(--amb-green); }
+.amb-as-line { font-size: 12.5px; line-height: 1.7; }
+.amb-as-run, .amb-as-last, .amb-as-prev { margin-top: 8px; font-size: 12.5px; background: var(--amb-surface-2); border-radius: 8px; padding: 8px 12px; }
+.amb-as-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 2px 0; }
+.amb-as-row .n { font-weight: 700; min-width: 120px; }
+.amb-as-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.amb-as-edit { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-top: 10px; }
+.amb-as-edit label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.amb-as-edit input { padding: 6px 8px; border: 1px solid var(--amb-border-strong); border-radius: 6px; background: var(--amb-surface); color: inherit; }
+
+.amb-as-accts { grid-column: 1 / -1; }
+.amb-as-acct { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.amb-as-acct label { flex: 1; display: flex; flex-direction: row; align-items: center; gap: 6px; }
+.amb-as-acct input[type=number] { width: 90px; }

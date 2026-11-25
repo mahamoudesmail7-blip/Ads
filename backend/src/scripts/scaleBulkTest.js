@@ -276,6 +276,13 @@ console.log('\n«دبلكيت للاسكيل» — after a scale finished, the s
   ok('the duplicate runs as a normal bulk scale in the chosen type: both items executed as ABO — the CBO one with ONE ad set of 300, the ABO one unchanged (150)', d2.status === 'DONE' && d2.counts.done === 2 && seen.every((a) => a.budgetMode === 'ABO') && seen[0].adSets.length === 1 && seen[0].adSets[0].dailyBudgetEgp === 300 && seen[1].adSets[0].dailyBudgetEgp === 150, JSON.stringify(seen));
   ok('a FAILED item is not offered for duplication (only the ones that were really scaled)', (() => { SB._resetForTests(); return true; })());
 }
+{ // scaling is open to MANAGERs (the media buyers) — not only the owner / ADMIN accounts
+  const fsx = await import('node:fs'); const rt = fsx.readFileSync(join(__dirname, '../routes/aiMediaBuyer.js'), 'utf8'); const ui = fsx.readFileSync(join(__dirname, '../../../js/ai-media-buyer.js'), 'utf8');
+  const gated = (p) => rt.includes(p + "', requireRole('ADMIN', 'MANAGER'),");
+  ok('the scale routes (execute / bulk / duplicate / bulk cancel / resume) accept ADMIN and MANAGER', gated("router.post('/scale/execute") && gated("router.post('/scale/bulk") && gated("router.post('/scale/duplicate") && gated("router.post('/scale/bulk/:id/cancel") && gated("router.post('/clone/batches/:batchId/resume"));
+  ok('settings, the clone wizard approve and the launch queue stay ADMIN only', rt.includes("router.post('/clone/batches/:batchId/approve', requireRole('ADMIN'),") && rt.includes("router.put('/settings', requireRole('ADMIN'),") && rt.includes("router.post('/launch/jobs/:jobId/start', requireRole('ADMIN'),"));
+  ok('the page unlocks the scale buttons for a MANAGER (state.canScale) and keeps the other admin-only controls on isAdmin', ui.includes("state.canScale = state.isAdmin || state.me.role === 'MANAGER'") && !ui.includes("if (!state.isAdmin) return { ok: false, reason: 'الاسكيل") && ui.includes('state.isAdmin ? `<button class="amb-btn danger" id="ambDelProduct">'));
+}
 
 console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
