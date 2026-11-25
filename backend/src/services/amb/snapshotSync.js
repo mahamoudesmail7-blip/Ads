@@ -199,7 +199,13 @@ async function mayDeferSync(accountId) {
   const last = await prisma.ambSyncRun.findFirst({ where: { ad_account_id: accountId, status: 'SUCCESS' }, orderBy: { started_at: 'desc' }, select: { started_at: true } }).catch(() => null);
   return !!last && Date.now() - new Date(last.started_at).getTime() < MAX_SYNC_DEFER_MS;
 }
-export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
+const releaseSyncSlot = () => { running = false; };
+/** The connected account's full cycle. Whatever goes wrong between taking the «running» flag and the try block below (a DB blip while reading the connection / creating the run row, a bug) must NEVER leave the flag set: it would freeze this account's sync (Home showing 0 orders / 0 spend) until the next restart. */
+export async function runSnapshotSync(opts = {}) {
+  try { return await runSnapshotSyncInner(opts); }
+  catch (err) { releaseSyncSlot(); throw err; }
+}
+async function runSnapshotSyncInner({ trigger = 'SCHEDULED' } = {}) {
   const scoped = await scopedViewAccount();
   if (scoped) return runViewAccountSync(scoped, { force: trigger === 'MANUAL' }); // inside another account's scope a "sync" is that account's read-only sync — never the connected account's full cycle
   if (running) return { skipped: 'ALREADY_RUNNING' };
@@ -216,7 +222,7 @@ export async function runSnapshotSync({ trigger = 'SCHEDULED' } = {}) {
   }
 
   const adAccountId = connection.selected_ad_account_id;
-  if (trigger === 'SCHEDULED' && await mayDeferSync(adAccountId)) { runningSlot.clear(); return { skipped: 'THROTTLED' }; } // Meta is throttling this account: a scheduled read now only prolongs the block (a manual sync still runs)
+  if (trigger === 'SCHEDULED' && await mayDeferSync(adAccountId)) { running = false; return { skipped: 'THROTTLED' }; } // Meta is throttling this account: a scheduled read now only prolongs the block (a manual sync still runs)
   const syncRun = await prisma.ambSyncRun.create({ data: { trigger, status: 'RUNNING', ad_account_id: adAccountId } });
 
   try {

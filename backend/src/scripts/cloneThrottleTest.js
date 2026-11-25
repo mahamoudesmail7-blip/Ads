@@ -315,6 +315,12 @@ ok('if Meta throttles again, the last COMPLETE list is served (stale) rather tha
   ok('the report is an ADMIN-only read route mounted in the server', rt.includes("requireRole('ADMIN')") && sv.includes("app.use('/api/meta-usage', metaUsageRoutes)") && !/fetch\(/.test(rt));
   U._resetUsageForTests();
 }
+{ // the connected account's sync must never be left «running» forever (production: Ahmed Samy frozen ~23 h, Home showed zeros)
+  const fsx = await import('node:fs'); const ss = fsx.readFileSync(join(__dirname, '../services/amb/snapshotSync.js'), 'utf8');
+  const usesSlot = ss.includes('runningSlot.get(') || ss.includes('runningSlot.set(') || ss.includes('runningSlot.clear('); const declaresSlot = ss.includes('const runningSlot = new TenantSlot()');
+  ok('the sync code only touches a running flag that exists in this tree (no reference to a missing variable)', !usesSlot || declaresSlot);
+  ok('any error between taking the running flag and the try block releases it (wrapper), and the throttled-skip path releases the real flag', ss.includes('async function runSnapshotSyncInner(') && ss.includes('catch (err) { releaseSyncSlot(); throw err; }') && ss.includes("skipped: 'THROTTLED' }; }"));
+}
 mode = 'ok';
 mock.close();
 await prisma.$disconnect();
