@@ -13,6 +13,7 @@ import { mountMediaKeys } from './media-keys.js';
 import { mountProductPage } from './amb-product-page.js';
 import { mountSmartCampaign } from './amb-smart-campaign.js';
 import { mountTikTok } from './amb-tiktok.js';
+import { mountPayments } from './amb-payments.js';
 import { lucide } from './launch-icons.js';
 import * as LG from './launch-globe.js';
 import { renderOperator, stopOperatorPolling } from './ai-operator.js';
@@ -98,13 +99,15 @@ const NAV = [
   { key: 'tiktok', label: 'تيك توك', icon: 'play' },
   { key: 'pages', label: 'صفحة المنتج', icon: 'doc' },
   { key: 'tasks', label: 'المهام', icon: 'doc' },
+  { key: 'payments', label: 'مركز المدفوعات', icon: 'wallet' },
   { key: 'history', label: 'التقارير', icon: 'doc' },
   { key: 'settings', label: 'الإعدادات', icon: 'gear' },
 ];
-const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, operator: (panel) => renderOperator(panel, { isAdmin: state.isAdmin, me: state.me }), winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, smart: (panel) => mountSmartCampaign(panel, { toast: (m, t) => UI.toast(m, t) }), tiktok: (panel) => mountTikTok(panel, { toast: (m, t) => UI.toast(m, t) }), pages: (panel) => mountProductPage(panel, { toast: (m, t) => UI.toast(m, t) }), tasks: renderTasks, history: renderHistory, settings: renderSettings };
-const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'AI Targeting & Creative', scale: 'مركز التوسّع', operator: 'AI Operator — التحكم الذكي في الحملات', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', smart: 'Smart Campaign — من المنتج للكامبين', tiktok: 'تيك توك — كامبين كامل', pages: 'صفحة المنتج — إنشاء من A لـ Z', tasks: 'المهام', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
-const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', operator: 'bot', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', smart: 'bulb', tiktok: 'play', pages: 'doc', tasks: 'doc', history: 'doc', settings: 'gear' };
-const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'smart', 'tiktok', 'pages', 'decisions', 'scale', 'tasks', 'operator']);
+const SECTIONS = { campaigns: renderCampaigns, products: renderProducts, plan: renderPlan, decisions: renderDecisionCenter, scale: renderScaleCenter, operator: (panel) => renderOperator(panel, { isAdmin: state.isAdmin, me: state.me }), winners: renderWinners, medialib: renderMediaLib, clone: renderClone, launch: renderLaunch, smart: (panel) => mountSmartCampaign(panel, { toast: (m, t) => UI.toast(m, t) }), tiktok: (panel) => mountTikTok(panel, { toast: (m, t) => UI.toast(m, t) }), pages: (panel) => mountProductPage(panel, { toast: (m, t) => UI.toast(m, t) }), tasks: renderTasks, payments: (panel) => mountPayments(panel, { toast: (m, t) => UI.toast(m, t) }), history: renderHistory, settings: renderSettings };
+const SECTION_TITLE = { campaigns: 'أداء الإعلانات', products: 'المنتجات', plan: 'القرارات الذكية', decisions: 'AI Targeting & Creative', scale: 'مركز التوسّع', operator: 'AI Operator — التحكم الذكي في الحملات', winners: 'الكرياتيفات والأبطال', medialib: 'مكتبة الكرياتيفات', clone: 'استنساخ وجدولة الحملات', launch: 'رفع الكامبين', smart: 'Smart Campaign — من المنتج للكامبين', tiktok: 'تيك توك — كامبين كامل', pages: 'صفحة المنتج — إنشاء من A لـ Z', tasks: 'المهام', payments: 'مركز المدفوعات الإعلانية', history: 'التقارير وسجل التنفيذ', settings: 'الإعدادات' };
+const SECTION_ICON = { campaigns: 'chart', products: 'box', plan: 'bulb', decisions: 'target', scale: 'rocket', operator: 'bot', winners: 'image', medialib: 'grid', clone: 'copy', launch: 'play', smart: 'bulb', tiktok: 'play', pages: 'doc', tasks: 'doc', payments: 'wallet', history: 'doc', settings: 'gear' };
+const NO_WINDOW_SECTIONS = new Set(['settings', 'clone', 'launch', 'smart', 'tiktok', 'pages', 'decisions', 'scale', 'tasks', 'operator', 'payments']);
+const BARE_SECTIONS = new Set(['payments']); // sections that draw their own header (the shared title bar is dropped)
 
 // Exactly the 3 periods the dashboard supports. All map to the backend's
 // existing resolveWindow() keys, so every window-aware endpoint honours them.
@@ -291,6 +294,7 @@ async function renderSection(view, key) {
     ${isViewOnly() && NOT_SCOPED_TABS.has(key) ? `<div class="amb-batchnote" style="margin:0 0 12px;"><span>ℹ️ القسم ده شغال على الحساب الأساسي (${E(state.viewAccounts.accounts.find((a) => a.isPrimary)?.name || '')}) فقط حاليًا — مش بيتبع الحساب المختار («${E(viewAcctName())}»).</span></div>` : ''}
     <div id="ambSecPanel"></div>`;
   if (!NO_WINDOW_SECTIONS.has(key)) wireWindowChips(() => route());
+  if (BARE_SECTIONS.has(key)) view.querySelector('.amb-head')?.remove();
   await SECTIONS[key]($('ambSecPanel'));
 }
 
