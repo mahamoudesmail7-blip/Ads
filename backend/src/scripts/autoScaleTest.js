@@ -51,6 +51,12 @@ ok('every item is CBO with the configured 300 EGP and the winning ads', b.items.
 { const withBudgets = { ...cfg, accountBudgets: { act_H: 200 } }; const h = AS.buildItems([card('1', 2, 60)], withBudgets, 'act_H'); const o = AS.buildItems([card('1', 2, 60)], withBudgets, 'act_X');
   ok('an account with its own budget uses it (200); every other account the default (300)', h.items[0].campaignBudgetEgp === 200 && h.budgetEgp === 200 && o.items[0].campaignBudgetEgp === 300 && AS.budgetFor(withBudgets, 'act_H') === 200); }
 
+{ const ro = new Set(['act_5', 'act_6']);
+  const d = AS.pickAccounts({ ids: ['act_2', 'act_1', 'act_5', 'act_3', 'act_6'], primary: 'act_1', reportOnly: ro, explicit: null });
+  ok('by default: the connected account first, the others in order, the «للمتابعة فقط» ones left out', d.selected.join() === 'act_1,act_2,act_3' && d.reportOnlyLeftOut.join() === 'act_5,act_6' && d.ordered.length === 5);
+  const e = AS.pickAccounts({ ids: ['act_2', 'act_1', 'act_5', 'act_3', 'act_6'], primary: 'act_1', reportOnly: ro, explicit: ['act_6', 'act_2', 'act_1'] });
+  ok('a report-only account the owner ticked IS scaled (in the normal order); an unticked one is not', e.selected.join() === 'act_1,act_2,act_6' && e.reportOnlyLeftOut.length === 0); }
+
 console.log('\n4. The run — accounts one after another, Ahmed Samy first, each scheduled for the coming midnight');
 const mkDeps = (over = {}) => {
   const calls = []; const batches = new Map(); let n = 0; const polls = new Map();

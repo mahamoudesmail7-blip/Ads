@@ -131,18 +131,21 @@ export function requestStop() {
 // Accounts + plan
 // ---------------------------------------------------------------------------------------------------------------------------------------------------
 /** The accounts to scale, in order: the connected account first, then the other switchable ones; report-only accounts are never scaled. */
-export async function defaultAccounts(cfg) {
+/** Pure: which accounts a run scales, in order. The connected account first. «للمتابعة فقط» accounts are left out UNLESS the owner ticked them in the settings (`explicit` = the saved list; null = never chosen → every account except the report-only ones). */
+export function pickAccounts({ ids, primary, reportOnly, explicit }) {
+  const ordered = primary ? [primary, ...ids.filter((id) => id !== primary)] : [...ids];
+  const chosen = Array.isArray(explicit) ? new Set(explicit) : null;
+  return { ordered, selected: ordered.filter((id) => (chosen ? chosen.has(id) : !reportOnly.has(id))), reportOnlyLeftOut: chosen ? [] : ordered.filter((id) => reportOnly.has(id)) };
+}
+export async function defaultAccounts(cfg, { all = false } = {}) {
   const conn = await getConnectionUnscoped(); const settings = await getAmbSettings();
   const reportOnly = new Set((settings.ambReportOnlyAccountIds || []).map(String));
   const primary = conn?.status === 'CONNECTED' ? conn.selected_ad_account_id || null : null;
-  let ids = (await getViewAccountIds()).filter((id) => id !== primary);
-  if (primary) ids = [primary, ...ids];
-  if (Array.isArray(cfg.accountIds)) ids = ids.filter((id) => cfg.accountIds.includes(id));
-  const skipped = ids.filter((id) => reportOnly.has(id));
-  ids = ids.filter((id) => !reportOnly.has(id));
+  const picked = pickAccounts({ ids: await getViewAccountIds(), primary, reportOnly, explicit: Array.isArray(cfg.accountIds) ? cfg.accountIds : null });
+  const ids = all ? picked.ordered : picked.selected; const skipped = picked.reportOnlyLeftOut;
   let names = new Map();
   try { const { listViewAccounts } = await import('./viewAccounts.js'); names = new Map((await listViewAccounts()).accounts.map((a) => [a.id, a.name])); } catch { /* names are cosmetic */ }
-  return { accounts: ids.map((id) => ({ id, name: names.get(id) || (id === primary ? conn?.selected_ad_account_name : null) || id, isPrimary: id === primary })), reportOnlySkipped: skipped };
+  return { accounts: ids.map((id) => ({ id, name: names.get(id) || (id === primary ? conn?.selected_ad_account_name : null) || id, isPrimary: id === primary, reportOnly: reportOnly.has(id) })), reportOnlySkipped: skipped };
 }
 
 /** Pure: the cards of one account → the bulk items (CBO, the configured budget, the winning ads), best first, capped. */
@@ -163,8 +166,8 @@ async function listWinnersFor(account, cfg, deps) {
 /** For the settings panel: every account the system could scale (connected first), whether it is included and its own budget (null = the default one). */
 export async function listAccountsForConfig() {
   const { config } = await loadAll();
-  const { accounts, reportOnlySkipped } = await defaultAccounts({ ...config, accountIds: null });
-  return { defaultBudgetEgp: config.budgetEgp, reportOnly: reportOnlySkipped, accounts: accounts.map((a) => ({ id: a.id, name: a.name, isPrimary: a.isPrimary, included: !Array.isArray(config.accountIds) || config.accountIds.includes(a.id), budgetEgp: Number(config.accountBudgets?.[a.id]) > 0 ? Number(config.accountBudgets[a.id]) : null, effectiveBudgetEgp: budgetFor(config, a.id) })) };
+  const { accounts, reportOnlySkipped } = await defaultAccounts({ ...config, accountIds: null }, { all: true });
+  return { defaultBudgetEgp: config.budgetEgp, reportOnly: reportOnlySkipped, accounts: accounts.map((a) => ({ id: a.id, name: a.name, isPrimary: a.isPrimary, reportOnly: !!a.reportOnly, included: Array.isArray(config.accountIds) ? config.accountIds.includes(a.id) : !a.reportOnly, budgetEgp: Number(config.accountBudgets?.[a.id]) > 0 ? Number(config.accountBudgets[a.id]) : null, effectiveBudgetEgp: budgetFor(config, a.id) })) };
 }
 
 /** Read-only: what a run would do right now (which campaigns on which account, the budget, the start time). Calls Meta only to READ. */
@@ -208,7 +211,7 @@ export async function runAutoScale({ now = Date.now(), force = false, trigger = 
   all.state.lastRunDate = today; all.state.running = run; await saveAll(all);
   try {
     const { accounts, reportOnlySkipped } = await (deps.accounts || defaultAccounts)(cfg);
-    for (const id of reportOnlySkipped || []) run.accounts.push({ accountId: id, name: id, status: 'SKIPPED', reason: 'حساب «للمتابعة فقط» — مش بيتسكيل.' });
+    if ((reportOnlySkipped || []).length) run.accounts.push({ accountId: reportOnlySkipped[0], name: reportOnlySkipped.length > 1 ? reportOnlySkipped.length + ' حساب «للمتابعة فقط»' : reportOnlySkipped[0], status: 'SKIPPED', reason: 'حسابات «للمتابعة فقط» — مش بتتسكيل إلا لو علّمتها من الإعدادات.' });
     const actor = userId ?? cfg.enabledBy ?? null;
     let throttledInARow = 0;
     for (const a of accounts) {
