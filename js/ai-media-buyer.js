@@ -475,7 +475,7 @@ function scaleAdRow(a, checked, attr) {
 // ---------------------------------------------------------------------------
 let _autoScale = null; let _autoScaleTimer = null; let _autoPreview = null; let _autoEdit = false; let _autoAccounts = null;
 const asClock = (iso) => { try { return iso ? new Date(iso).toLocaleString('ar-EG', { timeZone: 'Africa/Cairo', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'; } catch { return '—'; } };
-const AS_ST = { DONE: '✅ تمّ', NOTHING: '— مفيش جاهز', PARTIAL: '⚠️ جزئي', FAILED: '❌ فشل', BUSY: '⏳ مشغول', TOO_LATE: '🕐 بكرة', SKIPPED: '⏭️ اتخطّى', CANCELED: '⛔ اتوقف', RUNNING: '🔄 شغّال', UNKNOWN: '❓', STOPPED: '⛔ اتوقف', INTERRUPTED: '⚠️ اتقطع' };
+const AS_ST = { DONE: '✅ تمّ', NOTHING: '— مفيش جاهز', PARTIAL: '⚠️ جزئي', FAILED: '❌ فشل', BUSY: '⏳ مشغول', TOO_LATE: '🕐 بكرة', WAITING: '⏸ مستني — هنرجعله', SKIPPED: '⏭️ اتخطّى', CANCELED: '⛔ اتوقف', RUNNING: '🔄 شغّال', UNKNOWN: '❓', STOPPED: '⛔ اتوقف', INTERRUPTED: '⚠️ اتقطع' };
 const asSt = (s) => AS_ST[s] || (String(s || '').startsWith('STOPPED_') ? '⛔ اتوقف تلقائيًا' : E(s));
 function autoScaleRows(accounts) {
   return (accounts || []).map((a) => `<div class="amb-as-row"><span class="n">${E(a.name || a.accountId)}</span><span class="s">${asSt(a.status)}</span><span class="m faint">${a.scaled ? a.scaled + ' اتسكيّلوا' : ''}${a.failed ? ' · ' + a.failed + ' فشلوا' : ''}${a.leftOver ? ' · ' + a.leftOver + ' فاضلين لبكرة' : ''}${a.reason ? ' — ' + E(a.reason) : ''}</span></div>`).join('');

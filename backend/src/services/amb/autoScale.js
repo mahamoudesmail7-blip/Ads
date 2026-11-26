@@ -17,7 +17,7 @@ import { getAmbSettings } from './settings.js';
 import { getViewAccountIds } from './snapshotSync.js';
 import { checkGlobalMetaWrite } from './writeGate.js';
 import { cairoLocalToUtc } from './cloneEngine.js';
-import { startBulk, getBatch, cancelBatch, MAX_ITEMS, MIN_GAP_S, MAX_GAP_S } from './scaleBulk.js';
+import { startBulk, getBatch, cancelBatch, MAX_ITEMS, MIN_GAP_S, MAX_GAP_S, META_THROTTLE_RE } from './scaleBulk.js';
 
 const CFG_ID = 'amb:autoscale';
 const TZ = 'Africa/Cairo';
@@ -187,63 +187,117 @@ export async function previewAutoScale({ now = Date.now(), deps = {} } = {}) {
 // The run
 // ---------------------------------------------------------------------------------------------------------------------------------------------------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function waitForBatch(id, slot, deps) {
+export const RETRY_AFTER_MS = 10 * 60_000; // a held account is tried again this long after it was set aside
+export const STUCK_AFTER_MS = 6 * 60_000; // one campaign running longer than this = Meta is slow on that account
+const MAX_HARD_ERRORS = 3; // an error that is not «Meta is busy» is retried this many times, then the account is left as failed
+
+/** Has Meta put this ad account on hold since `sinceMs`? The clone engine writes THROTTLE_WAIT while it waits for an account's quota. */
+async function accountOnHold(accountId, sinceMs) {
+  const hit = await prisma.ambCloneAudit.findFirst({ where: { event: 'THROTTLE_WAIT', created_at: { gte: new Date(sinceMs) }, batch: { destination_account_ids_json: { contains: accountId } } }, select: { id: true } }).catch(() => null);
+  return !!hit;
+}
+
+/**
+ * Waits for one account's bulk. When Meta holds the account (quota wait, or one campaign stuck too long) the rest of ITS campaigns are cancelled and the call returns at once with `held`:
+ * the run goes on to the next account instead of standing behind this one. The campaign already being created finishes by itself when Meta releases the account.
+ */
+async function waitForBatch(id, slot, deps, { accountId, sinceMs }) {
   const poll = deps.pollMs ?? 4000;
+  const onHold = deps.isOnHold || accountOnHold;
   for (;;) {
-    const b = (deps.getBatch || getBatch)(id); if (!b) return null;
-    if (b.status !== 'RUNNING') return b;
-    if (slot.stop) { try { (deps.cancelBatch || cancelBatch)(id); } catch { /* done */ } }
+    const b = (deps.getBatch || getBatch)(id); if (!b) return { fin: null };
+    if (b.status !== 'RUNNING') return { fin: b };
+    if (slot.stop) { try { (deps.cancelBatch || cancelBatch)(id); } catch { /* done */ } return { fin: (deps.getBatch || getBatch)(id) || b }; } // «إيقاف» returns at once, even if the campaign in hand is held by Meta
+    else {
+      const cur = (b.items || []).find((x) => x.status === 'RUNNING');
+      const stuck = cur?.startedAt && (deps.now || Date.now)() - cur.startedAt > STUCK_AFTER_MS;
+      if (stuck || await onHold(accountId, sinceMs)) {
+        try { (deps.cancelBatch || cancelBatch)(id); } catch { /* done */ }
+        return { fin: (deps.getBatch || getBatch)(id) || b, held: stuck ? 'كامبين بياخد وقت طويل على ميتا' : 'ميتا حاجزة الحساب مؤقتًا (حد الطلبات)' };
+      }
+    }
     await (deps.sleep || sleep)(poll);
   }
 }
 
-/** The whole day's pass over every account. `force` runs even when switched off (the owner's «شغّل دلوقتي»). Never throws for an account's failure — it is recorded and the next account goes on. */
+/** Write the run state without touching the config: a setting the owner changes while a run is going must stay as they saved it. */
+async function saveState(patch) { const fresh = await loadAll(); Object.assign(fresh.state, patch); await saveAll(fresh); }
+
+/**
+ * The whole day's pass over every account. `force` runs even when switched off (the owner's «شغّل دلوقتي»).
+ * Accounts are worked one at a time. When one has a problem (Meta quota wait, a stuck campaign, a busy account, a temporary error) it is set aside («مستني») and the next one starts;
+ * the run comes back to it after RETRY_AFTER_MS (longer each time it is still held, up to 3×) until its winners are done or the time before the start runs out. A campaign already scaled is never offered again (its decision row), and the
+ * per-account cap counts every attempt together.
+ */
 export async function runAutoScale({ now = Date.now(), force = false, trigger = 'SCHEDULED', userId = null, deps = {} } = {}) {
   const all = await loadAll(); const cfg = all.config;
   if (!force && !cfg.enabled) return { skipped: 'DISABLED' };
   if (runSlot.get()) return { skipped: 'ALREADY_RUNNING' };
   const gate = await (deps.writeGate || ((a) => checkGlobalMetaWrite(a)))({ source: 'autoscale:run', userId });
-  if (!gate.ok) { all.state.lastCheck = { at: new Date(now).toISOString(), status: 'BLOCKED', reason: gate.message || gate.code || 'WRITE_BLOCKED' }; await saveAll(all); return { skipped: 'WRITE_BLOCKED', reason: gate.message || gate.code }; }
+  if (!gate.ok) { await saveState({ lastCheck: { at: new Date(now).toISOString(), status: 'BLOCKED', reason: gate.message || gate.code || 'WRITE_BLOCKED' } }); return { skipped: 'WRITE_BLOCKED', reason: gate.message || gate.code }; }
   const slot = { stop: false, batchId: null }; runSlot.set(slot);
-  const t0 = Date.now(); const clock = () => now + (Date.now() - t0); // the run's own clock (the test passes a fixed start instant)
+  const t0 = Date.now(); const clock = deps.clock || (() => now + (Date.now() - t0)); // the run's own clock (tests pass their own)
   const today = cairoNow(now).date;
   const run = { date: today, trigger, startedAt: new Date(now).toISOString(), finishedAt: null, status: 'RUNNING', startAt: null, budgetEgp: cfg.budgetEgp, accounts: [] };
-  all.state.lastRunDate = today; all.state.running = run; await saveAll(all);
+  await saveState({ lastRunDate: today, running: run });
   try {
     const { accounts, reportOnlySkipped } = await (deps.accounts || defaultAccounts)(cfg);
     if ((reportOnlySkipped || []).length) run.accounts.push({ accountId: reportOnlySkipped[0], name: reportOnlySkipped.length > 1 ? reportOnlySkipped.length + ' حساب «للمتابعة فقط»' : reportOnlySkipped[0], status: 'SKIPPED', reason: 'حسابات «للمتابعة فقط» — مش بتتسكيل إلا لو علّمتها من الإعدادات.' });
     const actor = userId ?? cfg.enabledBy ?? null;
-    let throttledInARow = 0;
-    for (const a of accounts) {
-      if (slot.stop) { run.accounts.push({ accountId: a.id, name: a.name, status: 'CANCELED', reason: 'اتوقف.' }); continue; }
-      if (trigger === 'SCHEDULED' && cairoNow(clock()).minutes >= hmToMin(cfg.runUntilCairo)) { run.accounts.push({ accountId: a.id, name: a.name, status: 'TOO_LATE', reason: 'عدّى وقت الانتهاء (' + cfg.runUntilCairo + ') — هيتسكيّل بكرة ' + cfg.runAtCairo + '.' }); continue; }
-      const rec = { accountId: a.id, name: a.name, status: 'RUNNING', ready: 0, scaled: 0, failed: 0, skipped: 0, leftOver: 0, reason: null, startedAt: new Date().toISOString() }; run.accounts.push(rec); await saveAll(all);
+    const startAt = nextStartAt(now, cfg.startAtCairo, 0); const startMs = cairoLocalToUtc(startAt.slice(0, 10), startAt.slice(11)).getTime(); // ONE start time for the whole run: never pushed to the next day's midnight
+    const windowOver = () => trigger === 'SCHEDULED' && (cairoNow(clock()).date !== today || cairoNow(clock()).minutes >= hmToMin(cfg.runUntilCairo));
+    const needMs = (n) => 5 * 60_000 + n * cfg.gapSeconds * 1000 + 120_000; // the campaigns must still be created before the start time
+    const queue = accounts.map((a) => ({ a, rec: null, nextAt: 0, used: 0, errors: 0 }));
+    const lateReason = (q) => (q.rec?.status === 'WAITING' ? 'فضل محجوز من ميتا لحد ما الوقت خلص — هيتسكيّل بكرة ' + cfg.runAtCairo + '.' : 'عدّى وقت الانتهاء (' + cfg.runUntilCairo + ') — هيتسكيّل بكرة ' + cfg.runAtCairo + '.');
+    const recOf = (q) => { if (!q.rec) { q.rec = { accountId: q.a.id, name: q.a.name, status: 'RUNNING', ready: 0, scaled: 0, failed: 0, skipped: 0, held: 0, leftOver: 0, attempts: 0, reason: null, startedAt: new Date(clock()).toISOString() }; run.accounts.push(q.rec); } return q.rec; };
+    const close = (q, status, reason) => { const rec = recOf(q); rec.status = status; if (reason !== undefined) rec.reason = reason; rec.retryAt = null; rec.finishedAt = new Date(clock()).toISOString(); };
+    const defer = (q, why) => { const rec = recOf(q); q.holds = (q.holds || 0) + 1; q.nextAt = clock() + (deps.retryAfterMs ?? RETRY_AFTER_MS) * Math.min(q.holds, 3); /* 10, 20, then every 30 min while it stays held */ rec.status = 'WAITING'; rec.reason = String(why).slice(0, 220) + ' — هنرجعله تلقائي.'; rec.retryAt = new Date(q.nextAt).toISOString(); queue.push(q); };
+
+    while (queue.length && !slot.stop) {
+      const i = queue.findIndex((q) => q.nextAt <= clock()); // new accounts first (they are ahead in the queue), then the held ones whose wait is over
+      if (i < 0) {
+        const soonest = Math.min(...queue.map((q) => q.nextAt));
+        if (windowOver() || soonest + needMs(1) > startMs) { for (const q of queue.splice(0)) close(q, q.used ? 'PARTIAL' : 'TOO_LATE', lateReason(q)); break; }
+        await (deps.sleep || sleep)(Math.max(1000, Math.min(15_000, soonest - clock()))); continue;
+      }
+      const q = queue.splice(i, 1)[0]; const a = q.a;
+      if (windowOver()) { close(q, q.used ? 'PARTIAL' : 'TOO_LATE', lateReason(q)); continue; }
+      const rec = recOf(q); rec.status = 'RUNNING'; rec.retryAt = null; rec.attempts += 1; await saveState({ running: run });
       try {
+        const left = cfg.maxPerAccount - q.used;
+        if (left <= 0) { close(q, rec.failed ? 'PARTIAL' : 'DONE', null); continue; }
         const cards = (await listWinnersFor(a, cfg, deps)).cards || [];
-        const b = buildItems(cards, cfg, a.id); rec.ready = b.ready; rec.leftOver = b.leftOver; rec.budgetEgp = b.budgetEgp;
-        if (!b.items.length) { rec.status = 'NOTHING'; rec.reason = 'مفيش كامبينات جاهزة للاسكيل.'; continue; }
-        const startAt = nextStartAt(clock(), cfg.startAtCairo, 0); const startMs = cairoLocalToUtc(startAt.slice(0, 10), startAt.slice(11)).getTime();
-        const needMs = 5 * 60_000 + b.items.length * cfg.gapSeconds * 1000 + 120_000; // the last campaign must still be created before the start time
-        if (startMs - clock() < needMs) { rec.status = 'TOO_LATE'; rec.reason = 'الوقت مش كفاية قبل موعد البدء (' + cfg.startAtCairo + ') — هيتسكيّل بكرة.'; continue; } // never pushed to the NEXT day's midnight: the owner wants the campaigns to start at the coming midnight
+        const b = buildItems(cards, { ...cfg, maxPerAccount: left }, a.id); rec.ready = Math.max(rec.ready, b.ready + q.used); rec.leftOver = b.leftOver; rec.budgetEgp = b.budgetEgp;
+        if (!b.items.length) { close(q, q.used ? (rec.failed ? 'PARTIAL' : 'DONE') : 'NOTHING', q.used ? null : 'مفيش كامبينات جاهزة للاسكيل.'); continue; }
+        if (startMs - clock() < needMs(Math.min(b.items.length, 1))) { close(q, q.used ? 'PARTIAL' : 'TOO_LATE', 'الوقت مش كفاية قبل موعد البدء (' + cfg.startAtCairo + ') — هيتسكيّل بكرة.'); continue; }
+        const fits = Math.max(1, Math.floor((startMs - clock() - needMs(0)) / (cfg.gapSeconds * 1000))); const items = b.items.slice(0, fits);
         run.startAt = startAt;
         const exec = deps.exec || (await import('./scaleWinners.js')).executeScale;
-        const start = () => (deps.startBulk || startBulk)({ items: b.items, startMode: 'SCHEDULE', startAt, gapSeconds: cfg.gapSeconds, windowName: cfg.window, userId: actor, adAccountId: a.isPrimary ? null : a.id }, { exec, toUtc: cairoLocalToUtc });
+        const start = () => (deps.startBulk || startBulk)({ items, startMode: 'SCHEDULE', startAt, gapSeconds: cfg.gapSeconds, windowName: cfg.window, userId: actor, adAccountId: a.isPrimary ? null : a.id }, { exec, toUtc: cairoLocalToUtc });
+        const sinceMs = Date.now();
         const batch0 = a.isPrimary ? start() : (deps.runInScope ? await deps.runInScope(a.id, async () => start()) : await accountScope.run({ adAccountId: a.id }, async () => start()));
         slot.batchId = batch0.id;
-        const fin = await waitForBatch(batch0.id, slot, deps); slot.batchId = null;
-        if (!fin) { rec.status = 'UNKNOWN'; rec.reason = 'ملقتش نتيجة الطلب (السيرفر اتعمله restart؟).'; continue; }
-        rec.scaled = fin.counts.done; rec.failed = fin.counts.failed; rec.skipped = fin.counts.skipped;
-        const errs = fin.items.filter((x) => x.error).map((x) => x.error); rec.reason = errs[0] ? String(errs[0]).slice(0, 220) : null;
-        rec.status = fin.status === 'CANCELED' ? (fin.stopReason ? 'STOPPED_' + fin.stopReason : 'CANCELED') : (fin.counts.failed ? 'PARTIAL' : 'DONE');
-        if (fin.stopReason === 'WRITE_BLOCKED') { run.stopReason = 'WRITE_BLOCKED'; slot.stop = true; }
-        throttledInARow = fin.stopReason === 'RATE_LIMIT' ? throttledInARow + 1 : 0;
-        if (throttledInARow >= 2) { run.stopReason = 'RATE_LIMIT'; slot.stop = true; } // Meta throttles two accounts in a row: stop for today instead of hammering — tomorrow's run (or «شغّل دلوقتي») tries again
+        const { fin, held } = await waitForBatch(batch0.id, slot, deps, { accountId: a.id, sinceMs }); slot.batchId = null;
+        if (!fin) { close(q, 'UNKNOWN', 'ملقتش نتيجة الطلب (السيرفر اتعمله restart؟).'); continue; }
+        const done = fin.counts.done || 0; const failed = fin.counts.failed || 0; const inFlight = held ? (fin.items || []).filter((x) => x.status === 'RUNNING').length : 0;
+        rec.scaled += done; rec.failed += failed; rec.skipped += fin.counts.skipped || 0; rec.held += inFlight; q.used += done + failed + inFlight; if (done) q.holds = 0;
+        const errs = (fin.items || []).filter((x) => x.error).map((x) => x.error);
+        if (fin.stopReason === 'WRITE_BLOCKED') { close(q, 'STOPPED_WRITE_BLOCKED', errs[0] ? String(errs[0]).slice(0, 220) : null); run.stopReason = 'WRITE_BLOCKED'; slot.stop = true; continue; }
+        if (slot.stop) { close(q, 'CANCELED', 'اتوقف.'); continue; }
+        if (held) { defer(q, held); continue; }
+        if (fin.stopReason === 'RATE_LIMIT' || fin.stopReason === 'WAIT_TIMEOUT') { defer(q, fin.stopReason === 'RATE_LIMIT' ? 'ميتا حاجزة الحساب مؤقتًا (حد الطلبات)' : 'ميتا بطيئة على الحساب'); continue; }
+        close(q, fin.status === 'CANCELED' ? 'CANCELED' : (rec.failed ? 'PARTIAL' : 'DONE'), errs[0] ? String(errs[0]).slice(0, 220) : null);
       } catch (e) {
-        rec.status = e.status === 409 ? 'BUSY' : 'FAILED'; rec.reason = String(e.message || e).slice(0, 220);
-        logger.warn('[autoScale] account failed', { accountId: a.id, message: rec.reason });
-      } finally { rec.finishedAt = new Date().toISOString(); await saveAll(all); }
+        const msg = String(e.message || e).slice(0, 220); logger.warn('[autoScale] account failed', { accountId: a.id, message: msg });
+        const busy = e.status === 409 || META_THROTTLE_RE.test(msg);
+        if (!busy) q.errors += 1;
+        if (slot.stop) close(q, 'CANCELED', 'اتوقف.');
+        else if (busy || q.errors < MAX_HARD_ERRORS) defer(q, busy ? (e.status === 409 ? 'الحساب عليه اسكيل لسه شغال' : 'ميتا حاجزة الحساب مؤقتًا (حد الطلبات)') : msg);
+        else close(q, 'FAILED', msg);
+      } finally { await saveState({ running: run }); }
     }
-    const anyBad = run.accounts.some((r) => ['FAILED', 'PARTIAL', 'BUSY'].includes(r.status) || String(r.status).startsWith('STOPPED'));
+    for (const q of queue.splice(0)) close(q, 'CANCELED', 'اتوقف.');
+    const anyBad = run.accounts.some((r) => ['FAILED', 'PARTIAL', 'UNKNOWN'].includes(r.status) || String(r.status).startsWith('STOPPED'));
     run.status = slot.stop ? 'STOPPED' : (anyBad ? 'PARTIAL' : 'DONE');
   } catch (e) { run.status = 'FAILED'; run.reason = String(e.message || e).slice(0, 220); logger.error('[autoScale] run failed', { message: run.reason }); }
   finally {

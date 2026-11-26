@@ -63,7 +63,7 @@ const mkDeps = (over = {}) => {
   const accounts = [{ id: 'act_11', name: 'Ahmed Samy', isPrimary: true }, { id: 'act_22', name: 'Hady', isPrimary: false }, { id: 'act_33', name: 'Yasser', isPrimary: false }];
   const winners = { act_11: [card('a1', 5, 50), card('a2', 4, 60)], act_22: [card('b1', 3, 55)], act_33: [] };
   const deps = {
-    calls, accounts: async () => ({ accounts, reportOnlySkipped: ['act_44'] }), writeGate: async () => ({ ok: true }), exec: async () => ({}), pollMs: 1, sleep: async () => {},
+    calls, accounts: async () => ({ accounts, reportOnlySkipped: ['act_44'] }), writeGate: async () => ({ ok: true }), exec: async () => ({}), pollMs: 1, sleep: async () => {}, isOnHold: async () => false,
     listWinners: async ({ adAccountId }) => { calls.push('list:' + (adAccountId || 'PRIMARY')); return { cards: winners[adAccountId || 'act_11'] || [] }; },
     runInScope: async (id, fn) => fn(),
     startBulk: (args) => { const id = 'bk' + (++n); calls.push('start:' + (args.adAccountId || 'PRIMARY')); batches.set(id, { args, state: over.stateFor?.(args.adAccountId || 'PRIMARY') || { status: 'DONE', counts: { done: args.items.length, failed: 0, skipped: 0 }, stopReason: null, items: [] } }); polls.set(id, 0); return { id }; },
@@ -129,20 +129,54 @@ console.log('\n5. Stop conditions and safety gates');
   const r2 = await AS.runAutoScale({ now: NOON, deps: wb });
   ok('a write-lock stop inside a bulk ends the whole day (the next accounts are not started)', r2.run.status === 'STOPPED' && wb.calls.filter((c) => c.startsWith('start:')).length === 1 && r2.run.accounts.some((a) => a.status === 'CANCELED'));
 
-  await reset(); await AS.setEnabled(true, { userId: 1 });
-  const rl = mkDeps({ accountsOver: true, stateFor: () => ({ status: 'CANCELED', counts: { done: 0, failed: 1, skipped: 0 }, stopReason: 'RATE_LIMIT', items: [{ error: '(#4) Application request limit reached' }] }) });
-  const r3 = await AS.runAutoScale({ now: NOON, deps: rl });
-  ok('Meta throttles two accounts in a row → it stops for today instead of hammering', r3.run.stopReason === 'RATE_LIMIT' && r3.run.status === 'STOPPED');
+  // ---- «a problem on one account → go to the next, come back when it is solved» (a virtual clock: waiting costs no real time)
+  const vclock = (startMs) => { const c = { t: startMs }; return { clock: () => c.t, sleep: async (ms) => { c.t += Math.max(ms, 1); } }; };
+  const done = (n) => ({ status: 'DONE', counts: { done: n, failed: 0, skipped: 0 }, stopReason: null, items: [] });
+  const throttled = { status: 'CANCELED', counts: { done: 0, failed: 1, skipped: 1 }, stopReason: 'RATE_LIMIT', items: [{ status: 'FAILED', error: '(#4) Application request limit reached' }] };
+  const startsOf = (d) => d.calls.filter((c) => c.startsWith('start:')).join();
 
   await reset(); await AS.setEnabled(true, { userId: 1 });
-  let first = true; const busy = mkDeps({ deps: { startBulk: (args) => { if (first) { first = false; const e = new Error('في اسكيل مجمّع شغال'); e.status = 409; throw e; } return { id: 'x' }; }, getBatch: () => ({ status: 'DONE', counts: { done: 1, failed: 0, skipped: 0 }, items: [] }) } });
-  const r4 = await AS.runAutoScale({ now: NOON, deps: busy });
-  ok('an account that already has a bulk running (the owner scaling by hand) is BUSY — the others still go on', r4.run.accounts.find((a) => a.accountId === 'act_11').status === 'BUSY' && r4.run.accounts.find((a) => a.accountId === 'act_22').status === 'DONE');
+  { let k = 0; const d = mkDeps({ stateFor: (id) => (id === 'PRIMARY' && k++ === 0 ? throttled : done(2)), deps: vclock(NOON) });
+    const r = await AS.runAutoScale({ now: NOON, deps: d }); const rec = r.run.accounts.find((x) => x.accountId === 'act_11');
+    ok('Meta throttles an account → the NEXT account is scaled right away, then it comes back to the throttled one and finishes it', startsOf(d) === 'start:PRIMARY,start:act_22,start:PRIMARY' && rec.status === 'PARTIAL' && rec.attempts === 2 && rec.scaled === 2 && rec.failed === 1 && r.run.status !== 'STOPPED', startsOf(d) + ' ' + JSON.stringify(rec)); }
 
   await reset(); await AS.setEnabled(true, { userId: 1 });
-  const boom = mkDeps({ deps: { listWinners: async ({ adAccountId }) => { if (!adAccountId) throw new Error('Meta read failed'); return { cards: [card('b1', 3, 55)] }; } } });
-  const r5 = await AS.runAutoScale({ now: NOON, deps: boom });
-  ok('one account failing to read its winners never stops the next account', r5.run.accounts.find((a) => a.accountId === 'act_11').status === 'FAILED' && r5.run.accounts.find((a) => a.accountId === 'act_22').status === 'DONE');
+  { const vc = vclock(NOON); let n = 0; let cancels = 0;
+    const d = mkDeps({ deps: { ...vc, isOnHold: async (id) => id === 'act_11' && n === 1, cancelBatch: () => { cancels += 1; },
+      startBulk: (args) => { n += 1; d.calls.push('start:' + (args.adAccountId || 'PRIMARY')); return { id: String(n), args }; },
+      getBatch: (id) => (id === '1' ? { id, status: 'RUNNING', counts: { done: 1, failed: 0, skipped: 0 }, items: [{ status: 'RUNNING', startedAt: Date.now() }] } : { id, ...done(1) }) } });
+    const r = await AS.runAutoScale({ now: NOON, deps: d }); const rec = r.run.accounts.find((x) => x.accountId === 'act_11');
+    ok('an account Meta puts on hold in the middle of a bulk is not waited for: its other campaigns are cancelled, the next account starts, and it is revisited', cancels === 1 && startsOf(d) === 'start:PRIMARY,start:act_22,start:PRIMARY' && rec.held === 1 && rec.scaled === 2 && rec.status === 'DONE', startsOf(d) + ' c=' + cancels + ' ' + JSON.stringify(rec)); }
+
+  await reset(); await AS.saveConfig({ maxPerAccount: 2 }); await AS.setEnabled(true, { userId: 1 });
+  { const vc = vclock(NOON); let n = 0; const sizes = [];
+    const d = mkDeps({ deps: { ...vc, listWinners: async ({ adAccountId }) => ({ cards: adAccountId ? [] : [card('a1', 5, 50), card('a2', 4, 60), card('a3', 3, 60)] }),
+      startBulk: (args) => { n += 1; sizes.push(args.items.length); return { id: String(n) }; },
+      getBatch: (id) => (id === '1' ? { id, status: 'CANCELED', stopReason: 'WAIT_TIMEOUT', counts: { done: 0, failed: 1, skipped: 1 }, items: [{ status: 'FAILED', error: 'wait' }] } : { id, ...done(1) }) } });
+    const r = await AS.runAutoScale({ now: NOON, deps: d });
+    ok('the per-account cap counts every attempt together (cap 2: first try used 1 → the second try takes only 1)', sizes.join() === '2,1', sizes.join()); }
+  await AS.saveConfig({ maxPerAccount: 15 });
+
+  await reset(); await AS.setEnabled(true, { userId: 1 });
+  { const vc = vclock(NOON); const d = mkDeps({ stateFor: (id) => (id === 'PRIMARY' ? throttled : done(1)), deps: vc });
+    const r = await AS.runAutoScale({ now: NOON, trigger: 'SCHEDULED', deps: d }); const rec = r.run.accounts.find((x) => x.accountId === 'act_11'); const tries = d.calls.filter((c) => c === 'start:PRIMARY').length;
+    ok('an account that stays throttled is retried with a growing pause (10, 20, then 30 min — not hammered), never beyond its cap or the window, then left for tomorrow; the others are scaled', tries >= 8 && tries <= 15 && ['PARTIAL', 'TOO_LATE'].includes(rec.status) && r.run.accounts.find((x) => x.accountId === 'act_22').status === 'DONE' && vc.clock() <= cairoMs('2026-11-25', '23:59'), 'tries=' + tries + ' ' + rec.status); }
+
+  await reset(); await AS.setEnabled(true, { userId: 1 });
+  { let first = true; const d = mkDeps({ deps: { ...vclock(NOON), startBulk: (args) => { if (first) { first = false; const e = new Error('في اسكيل مجمّع شغال'); e.status = 409; throw e; } d.calls.push('start:' + (args.adAccountId || 'PRIMARY')); return { id: 'x' }; }, getBatch: () => ({ id: 'x', ...done(1) }) } });
+    const r4 = await AS.runAutoScale({ now: NOON, deps: d });
+    ok('a busy account (the owner scaling by hand) is skipped for now and tried again later', startsOf(d) === 'start:act_22,start:PRIMARY' && r4.run.accounts.find((x) => x.accountId === 'act_11').status === 'DONE', startsOf(d)); }
+
+  await reset(); await AS.setEnabled(true, { userId: 1 });
+  { let fails = 0; const boom = mkDeps({ deps: { ...vclock(NOON), listWinners: async ({ adAccountId }) => { if (!adAccountId) { fails += 1; throw new Error('broken account'); } return { cards: [card('b1', 3, 55)] }; } } });
+    const r5 = await AS.runAutoScale({ now: NOON, deps: boom });
+    ok('another kind of error is retried 3 times, then the account is FAILED — and it never stops the next account', fails === 3 && r5.run.accounts.find((x) => x.accountId === 'act_11').status === 'FAILED' && r5.run.accounts.find((x) => x.accountId === 'act_22').status === 'DONE', 'fails=' + fails); }
+
+  await reset(); await AS.setEnabled(true, { userId: 1 });
+  { let saved = false; const d = mkDeps({ deps: { listWinners: async () => { if (!saved) { saved = true; await AS.saveConfig({ budgetEgp: 450 }); } return { cards: [card('a1', 5, 50)] }; } } });
+    await AS.runAutoScale({ now: NOON, deps: d });
+    ok('a setting saved while a run is going stays saved (the run writes only its state)', (await AS.getAutoScaleStatus({ now: NOON, deps: { writeGate: async () => ({ ok: true }) } })).config.budgetEgp === 450); }
+  await AS.saveConfig({ budgetEgp: 300 });
 
   await reset(); await AS.setEnabled(true, { userId: 1 });
   let canceled = false; let polled = false; const slow = mkDeps({ deps: { sleep: () => new Promise((r) => setTimeout(r, 15)), cancelBatch: () => { canceled = true; }, getBatch: (id) => (polled = true, canceled) ? { id, status: 'CANCELED', counts: { done: 1, failed: 0, skipped: 1 }, items: [] } : { id, status: 'RUNNING', counts: {}, items: [] } } });
