@@ -104,9 +104,74 @@ try {
   ok('a bad product id is refused (400)', e && e.status === 400);
   e = null; try { await PP.getProductProfit({ productId: 99999999, period: 'last7' }); } catch (x) { e = x; }
   ok('a product that does not exist is a 404', e && e.status === 404);
+
+  console.log('\n4. Which campaigns count: the same campaign name in every account');
+  const CS = await imp('../services/amb/productCampaignSet.js');
+  const fk = (n) => CS.familyOf(n).key;
+  ok('one family for every spelling of the same name (marks, markers, numbers, hyphens)', ['Zzradio _ scale 1', 'Zzradio - NewTest', 'Zzradio Scale (APO)', 'Zzradio-Scale-28/10', '\u200E\u200EZzradio _scale - 4', 'Zzradio-Test-talabq - Scale'].every((n) => fk(n) === 'zzradio') && fk('Fire-Zzradio _ test') === 'fire zzradio', JSON.stringify(['Zzradio _ scale 1', 'Zzradio - NewTest', 'Zzradio Scale (APO)', 'Zzradio-Scale-28/10', 'Zzradio _scale - 4', 'Zzradio-Test-talabq - Scale', 'Fire-Zzradio _ test'].map(fk)));
+  const dir = Array.from({ length: 14 }, (_, i) => ({ id: 'c' + i, accountId: 'a', name: 'Cam _ scale ' + i }));
+  const lk = (own, other) => new Map([...Array.from({ length: own }, (_, i) => ['c' + i, { productKey: 'mine', productName: 'Mine' }]), ...Array.from({ length: other }, (_, i) => ['c' + (own + i), { productKey: 'theirs', productName: 'Theirs' }])]);
+  const major = CS.selectCampaigns({ directory: dir, links: lk(12, 1), ownKey: 'mine' }), split = CS.selectCampaigns({ directory: dir, links: lk(1, 1), ownKey: 'mine' });
+  ok('a name mostly (>= 80%) this product\'s is counted; the other product\'s linked campaign is not', major.campaigns.length === 13 && !major.campaigns.some((c) => c.id === 'c12') && major.families[0].selected === true, JSON.stringify([major.campaigns.length, major.families]));
+  ok('a name shared half / half is NOT added by itself (only the linked campaign), and says whose it also is', split.campaigns.length === 1 && split.campaigns[0].via === 'LINK' && split.families[0].selected === false && split.families[0].otherProduct === 'Theirs', JSON.stringify(split));
+  ok('…until the owner ticks it', CS.selectCampaigns({ directory: dir, links: lk(1, 1), ownKey: 'mine', include: ['cam'] }).campaigns.length === 13);
+
+  const snapN = (acc, cid, name, spend, purchases, date = cairo(0)) => prisma.metaPerformanceSnapshot.create({ data: { sync_run_id: run.id, ad_account_id: acc, level: 'campaign', date_start: date, date_stop: date, campaign_id: cid, campaign_name: name, campaign_status: 'ACTIVE', spend, meta_purchases: purchases } });
+  const mkProduct = async (name, amb = {}) => { const p = await prisma.product.create({ data: { product_name: name } }); made.products.push(p.id); const a = await prisma.ambProduct.create({ data: { product_id: p.id, product_name: name, ...amb } }); made.amb.push(a.id); return { p, a }; };
+  const link = (a, acc, cid) => prisma.ambProductCampaignMap.create({ data: { amb_product_id: a.id, ad_account_id: acc, campaign_id: cid, status: 'MAPPED' } });
+  const R = await mkProduct('PP Zz Radio'), R2 = await mkProduct('PP Zz  Radio', { product_cost: 100, pricing_multiplier: 3, actual_selling_price: 450 }), F = await mkProduct('PP Zz Fire Radio');
+  await link(R.a, HADY, 'pp_r1'); await link(R.a, HADY, 'pp_r1b'); await link(R2.a, HADY, 'pp_r4'); await link(F.a, HADY, 'pp_f1');
+  await snapN(HADY, 'pp_r1', 'Zzradio _ scale 1', 100, 1);
+  await snapN(HADY, 'pp_r1b', 'Zzradio _ scale 3', 10, 0);
+  await snapN(HADY, 'pp_r4', 'Zzradio _ scale 2', 40, 1);
+  await snapN(YASSER, 'pp_r2', 'Zzradio - NewTest', 200, 4);
+  await snapN(PRIMARY, 'pp_r3', 'Zzradio Scale (APO)', 300, 5);
+  await snapN(HADY, 'pp_f1', 'Fire-Zzradio _ test', 1000, 10);
+  await snapN(YASSER, 'pp_f2', 'Fire-Zzradio - scale', 2000, 20);
+  await snapN(HADY, 'pp_o1', 'Zzother _ test', 70, 2);
+  const q = (extra) => PP.getProductProfit({ period: 'last7', ...extra, deps: { freshDirectory: true, fetchHistory: async () => [], ...(extra.deps || {}) } });
+  const r = await q({ productId: R.p.id });
+  ok('picking the product counts its linked campaigns AND the unlinked same-name ones in every account: 650 / 11', r.totals.spend === 650 && r.totals.orders === 11 && r.linkedCampaigns === 3 && r.namedCampaigns === 2, JSON.stringify([r.totals, r.linkedCampaigns, r.namedCampaigns]));
+  ok('three accounts, each with its own orders / spend; the account lines add up to the total', r.accounts.length === 3 && r.accounts.reduce((s, a) => s + a.orders, 0) === 11 && r.accounts.reduce((s, a) => s + a.spend, 0) === 650 && r.accounts.find((a) => a.id === PRIMARY).orders === 5, JSON.stringify(r.accounts));
+  ok('the campaign list shows each counted campaign, how it was matched, best first', r.campaigns.length === 5 && r.campaigns[0].id === 'pp_r3' && r.campaigns[0].via === 'NAME' && r.campaigns.find((c) => c.id === 'pp_r1').via === 'LINK' && !r.campaigns.some((c) => c.id.startsWith('pp_f') || c.id === 'pp_o1'), JSON.stringify(r.campaigns.map((c) => [c.id, c.via, c.orders])));
+  const fz = r.families.find((f) => f.key === 'fire zzradio');
+  ok('a similar name is offered unticked, with the product it belongs to', r.families.find((f) => f.key === 'zzradio').selected === true && fz && fz.selected === false && fz.core === false && fz.otherProduct === 'PP Zz Fire Radio', JSON.stringify(r.families));
+  const sib = await q({ productId: R2.p.id });
+  ok('the two catalog rows with one name are one product: same numbers from either', sib.totals.spend === 650 && sib.totals.orders === 11, JSON.stringify(sib.totals));
+  ok('economics come from the row that has them', r.economics.available === true && r.economics.sellingPrice === 450, JSON.stringify(r.economics));
+  const withFire = await q({ productId: R.p.id, include: ['fire zzradio'] });
+  ok('ticking the similar name adds its UNLINKED campaigns only (never the one linked to the other product)', withFire.totals.spend === 2650 && withFire.totals.orders === 31 && !withFire.campaigns.some((c) => c.id === 'pp_f1'), JSON.stringify([withFire.totals, withFire.campaigns.map((c) => c.id)]));
+  const noName = await q({ productId: R.p.id, exclude: ['zzradio'] });
+  ok('unticking the own name keeps the linked campaigns only: 150 / 2', noName.totals.spend === 150 && noName.totals.orders === 2 && noName.namedCampaigns === 0, JSON.stringify(noName.totals));
+  const plist = await PP.listProfitProducts();
+  const radios = plist.filter((p) => CS.sameProductKey(p.name) === 'pp zz radio');
+  ok('the selector shows one row for the duplicated name, carrying both ids', radios.length === 1 && radios[0].ids.length === 2, JSON.stringify(radios));
+  const famList = await PP.listProfitFamilies({ deps: { freshDirectory: true } });
+  ok('campaign names no product covers are offered on their own; covered names are not repeated', famList.some((f) => f.key === 'zzother' && f.campaigns === 1) && !famList.some((f) => f.key === 'zzradio' || f.key === 'fire zzradio'), JSON.stringify(famList.filter((f) => /zz/.test(f.key))));
+  const fam = await q({ family: 'zzother' });
+  ok('picking a campaign name works without a product: its numbers, no invented profit', fam.name === 'Zzother' && fam.productId === null && fam.totals.spend === 70 && fam.totals.orders === 2 && fam.profit.estimated === null && fam.economics.available === false, JSON.stringify([fam.name, fam.totals, fam.economics]));
+  e = null; try { await q({ family: 'zz nothing at all' }); } catch (x) { e = x; }
+  ok('a campaign name that does not exist is a 404', e && e.status === 404);
+
+  const seen = [];
+  const deps = {
+    discover: async ({ adAccountId, from, to }) => { seen.push({ adAccountId, from, to }); return adAccountId === PRIMARY ? [{ campaign_id: 'pp_old', campaign_name: 'Zzradio - Test (old)' }, { campaign_id: 'pp_oldx', campaign_name: 'Zzelse - Test (old)' }] : []; },
+    fetchHistory: async ({ adAccountId, campaignIds }) => (adAccountId === PRIMARY && campaignIds.includes('pp_old') ? [{ campaign_id: 'pp_old', date_start: cairo(100), spend: 25, purchases: 1 }] : []),
+  };
+  const old = await q({ productId: R.p.id, period: 'all', deps });
+  ok('all: a campaign that only ran before the first snapshot is found by name and counted: 675 / 12', old.totals.spend === 675 && old.totals.orders === 12 && old.window.from === cairo(100) && old.campaigns.some((c) => c.id === 'pp_old' && c.via === 'NAME') && !old.campaigns.some((c) => c.id === 'pp_oldx'), JSON.stringify([old.totals, old.window]));
+  ok('the old-campaign search reads each account only up to the day before its first snapshot', seen.length >= 3 && seen.every((x) => x.from === '2025-01-01') && seen.find((x) => x.adAccountId === PRIMARY).to < cairo(0), JSON.stringify(seen));
+  seen.length = 0;
+  await q({ productId: R.p.id, period: 'last30', deps });
+  ok('the shorter periods never run that search', seen.length === 0);
+  const long = await q({ productId: R.p.id, period: 'all', deps: { discover: deps.discover, fetchHistory: async ({ adAccountId, campaignIds }) => (adAccountId === PRIMARY && campaignIds.includes('pp_old') ? [{ campaign_id: 'pp_old', date_start: cairo(500), spend: 25, purchases: 1 }] : []) } });
+  ok('a history longer than 400 days: totals cover all of it, the chart keeps the latest 400 days and still ends today', long.totals.orders === 12 && long.window.days === 501 && long.daily.length === 400 && long.daily[399].date === cairo(0), JSON.stringify([long.totals, long.window, long.daily.length]));
+  const broke = await q({ productId: R.p.id, period: 'all', deps: { discover: async () => { throw new Error('throttled'); }, fetchHistory: async () => [] } });
+  ok('if Meta refuses that search the card still answers and says which accounts are incomplete', broke.totals.spend === 650 && broke.history.incomplete.length >= 1, JSON.stringify(broke.history));
   await prisma.metaConnection.update({ where: { id: conn.id }, data: { status: prevStatus } });
 } finally {
   if (conn) await prisma.metaConnection.update({ where: { id: conn.id }, data: { selected_ad_account_id: prevAcc ?? null } }).catch(() => {});
+  await prisma.ambProductCampaignMap.deleteMany({ where: { campaign_id: { startsWith: 'pp_' } } }).catch(() => {});
   await prisma.metaPerformanceSnapshot.deleteMany({ where: { campaign_id: { startsWith: 'pp_' } } }).catch(() => {});
   await prisma.ambSyncRun.deleteMany({ where: { id: { in: runIds } } }).catch(() => {});
   if (made.job) await prisma.ambLaunchJob.delete({ where: { job_id: made.job.job_id } }).catch(() => {});

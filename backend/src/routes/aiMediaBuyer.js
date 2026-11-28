@@ -82,12 +82,15 @@ router.get('/orders-by-day', asyncRoute(async (req, res) => {
 }));
 // "كسبان ولا خسران؟": one product over a chosen period across every account (spend / orders / cost per order / estimated profit).
 router.get('/product-profit/products', asyncRoute(async (req, res) => {
-  const { listProfitProducts } = await import('../services/amb/productProfit.js');
-  res.json({ products: await listProfitProducts() });
+  const { listProfitProducts, listProfitFamilies } = await import('../services/amb/productProfit.js');
+  const [products, families] = await Promise.all([listProfitProducts(), listProfitFamilies()]);
+  res.json({ products, families });
 }));
 router.get('/product-profit', asyncRoute(async (req, res) => {
   const { getProductProfit } = await import('../services/amb/productProfit.js');
-  res.json(await getProductProfit({ productId: req.query.productId, period: req.query.period || 'last7' }));
+  // include / exclude = the campaign name families the owner ticked / unticked, '|' separated ('|' never appears in a family key)
+  const keys = (v) => String(v || '').split('|').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+  res.json(await getProductProfit({ productId: req.query.productId, family: req.query.family ? String(req.query.family).slice(0, 120) : null, period: req.query.period || 'last7', include: keys(req.query.include), exclude: keys(req.query.exclude) }));
 }));
 // The best products of the day across EVERY account (most orders, cost per order within the "good" ceiling).
 router.get('/top-products-today', asyncRoute(async (req, res) => {

@@ -609,61 +609,108 @@ async function renderTopProducts() {
 // ---------------------------------------------------------------------------
 
 const PF_PERIODS = [['last3', 'آخر 3 أيام'], ['last7', 'آخر 7 أيام'], ['last30', 'آخر 30 يوم'], ['all', 'كل الفترة']];
-const pf = { products: null, productId: null, period: 'last7', data: null, gen: 0, manual: null };
+// choice = "p:<productId>" (a product) or "f:<family>" (a campaign name that no product covers)
+const pf = { products: null, families: [], choice: null, period: 'last7', data: null, gen: 0, manual: null, manualFor: null, listOpen: false };
 
 function pfStore(key, val) { try { if (val === undefined) return localStorage.getItem(key); localStorage.setItem(key, val); } catch { /* storage may be unavailable */ } return null; }
+/** The campaign names the owner ticked / unticked for one choice (this browser only). */
+function pfPicks(choice) {
+  try { const v = JSON.parse(pfStore(`pfFam:${choice}`) || 'null'); if (v && Array.isArray(v.inc) && Array.isArray(v.exc)) return v; } catch { /* a broken saved value is ignored */ }
+  return { inc: [], exc: [] };
+}
+const pfProductOf = (choice) => (pf.products || []).find((p) => `p:${p.productId}` === choice || (p.ids || []).some((i) => `p:${i}` === choice));
+const pfKnown = (choice) => (choice?.startsWith('f:') ? (pf.families || []).some((f) => `f:${f.key}` === choice) : !!pfProductOf(choice));
+const pfNorm = (s) => String(s || '').toLowerCase().replace(/[‎‏]/g, '').replace(/[إأآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي').replace(/[\s_\-–—]+/g, ' ').trim();
 
 async function initProfitCard() {
   const body = document.getElementById('profitBody');
   if (!body) return;
   pf.period = PF_PERIODS.some(([k]) => k === pfStore('pfPeriod')) ? pfStore('pfPeriod') : 'last7';
-  const saved = Number(pfStore('pfProduct'));
-  pf.productId = Number.isInteger(saved) && saved > 0 ? saved : null;
   body.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:90px"></div></div>';
-  try { pf.products = (await api.get('/api/ai-media-buyer/product-profit/products')).products || []; }
+  try { const r = await api.get('/api/ai-media-buyer/product-profit/products'); pf.products = r.products || []; pf.families = r.families || []; }
   catch (e) { body.innerHTML = `<span class="atd-err">⚠️ تعذّر تحميل قائمة المنتجات: ${UI.escapeHtml(e.message || '')}</span>`; return; }
-  if (pf.productId && !pf.products.some((p) => p.productId === pf.productId)) pf.productId = null;
+  const old = Number(pfStore('pfProduct'));
+  const saved = pfStore('pfChoice') || (Number.isInteger(old) && old > 0 ? `p:${old}` : null);
+  pf.choice = saved && pfKnown(saved) ? (saved.startsWith('p:') ? `p:${pfProductOf(saved).productId}` : saved) : null;
   pfRenderShell();
-  if (pf.productId) pfLoad();
+  if (pf.choice) pfLoad();
+}
+
+function pfOptions() {
+  const opt = (value, text) => `<option value="${UI.escapeHtml(value)}"${value === pf.choice ? ' selected' : ''}>${UI.escapeHtml(text)}</option>`;
+  const prods = (pf.products || []).map((p) => opt(`p:${p.productId}`, p.name)).join('');
+  const fams = (pf.families || []).map((f) => opt(`f:${f.key}`, `${f.name} — ${f.campaigns} حملة`)).join('');
+  return `<option value="">— اختار المنتج —</option>${prods ? `<optgroup label="منتجاتك">${prods}</optgroup>` : ''}${fams ? `<optgroup label="من أسماء الحملات (كل الحسابات)">${fams}</optgroup>` : ''}`;
+}
+
+/** Search results under the box: products first, then campaign names. */
+function pfMatches(q) {
+  const n = pfNorm(q);
+  if (!n) return [];
+  const prods = (pf.products || []).filter((p) => pfNorm(p.name).includes(n)).map((p) => ({ choice: `p:${p.productId}`, name: p.name, note: 'منتج' }));
+  const fams = (pf.families || []).filter((f) => pfNorm(f.name).includes(n) || pfNorm(f.key).includes(n)).map((f) => ({ choice: `f:${f.key}`, name: f.name, note: `اسم حملة · ${f.campaigns} حملة · ${f.accounts} حساب` }));
+  return [...prods, ...fams].slice(0, 12);
+}
+
+function pfPick(choice) {
+  pf.choice = choice || null; pf.listOpen = false;
+  pfStore('pfChoice', pf.choice || '');
+  const sel = document.querySelector('#profitBody .pf-select'); if (sel) sel.value = pf.choice || '';
+  if (pf.choice) pfLoad();
+  else { pf.gen += 1; const res = document.querySelector('#profitBody .pf-result'); if (res) res.innerHTML = '<div class="pf-hint">اختار منتج وفترة.</div>'; }
 }
 
 function pfRenderShell() {
   const body = document.getElementById('profitBody');
-  const opts = (pf.products || []).map((p) => `<option value="${p.productId}"${p.productId === pf.productId ? ' selected' : ''}>${UI.escapeHtml(p.name)}</option>`).join('');
   body.innerHTML = `
     <div class="pf">
       <div class="pf-controls">
         <div class="pf-pick">
-          <input class="pf-search" type="search" placeholder="🔎 دوّر على منتج…" aria-label="بحث عن منتج">
-          <select class="pf-select" aria-label="المنتج"><option value="">— اختار المنتج —</option>${opts}</select>
+          <div class="pf-searchbox"><input class="pf-search" type="search" placeholder="🔎 دوّر على منتج…" aria-label="بحث عن منتج" autocomplete="off"><div class="pf-hits" hidden></div></div>
+          <select class="pf-select" aria-label="المنتج">${pfOptions()}</select>
         </div>
         <div class="pf-periods" role="group" aria-label="الفترة">${PF_PERIODS.map(([k, l]) => `<button type="button" class="pf-chip${k === pf.period ? ' on' : ''}" data-p="${k}">${l}</button>`).join('')}</div>
       </div>
-      <div class="pf-result"><div class="pf-hint">اختار منتج وفترة، وهتشوف صرفه وأوردراته وكوستُه وكسبان ولا خسران.</div></div>
+      <div class="pf-result"><div class="pf-hint">دوّر على المنتج أو اختاره، وهتشوف صرفه وأوردراته وكوستُه من كل الحسابات.</div></div>
     </div>`;
   const root = body.querySelector('.pf');
-  const sel = root.querySelector('.pf-select'), search = root.querySelector('.pf-search');
-  sel.onchange = () => { pf.productId = Number(sel.value) || null; pf.manual = null; pfStore('pfProduct', String(pf.productId || '')); if (pf.productId) pfLoad(); else root.querySelector('.pf-result').innerHTML = '<div class="pf-hint">اختار منتج وفترة.</div>'; };
-  search.oninput = () => {
-    const q = search.value.trim().toLowerCase();
-    const keep = pf.productId;
-    sel.innerHTML = '<option value="">— اختار المنتج —</option>' + (pf.products || []).filter((p) => !q || p.name.toLowerCase().includes(q) || p.productId === keep).map((p) => `<option value="${p.productId}"${p.productId === keep ? ' selected' : ''}>${UI.escapeHtml(p.name)}</option>`).join('');
+  const sel = root.querySelector('.pf-select'), search = root.querySelector('.pf-search'), hits = root.querySelector('.pf-hits');
+  sel.onchange = () => pfPick(sel.value);
+  const choose = (choice) => { search.value = ''; hits.hidden = true; pfPick(choice); };
+  const show = () => {
+    const q = search.value.trim();
+    const list = pfMatches(q);
+    hits.hidden = !q;
+    hits.innerHTML = list.length
+      ? list.map((m) => `<button type="button" class="pf-hit" data-c="${UI.escapeHtml(m.choice)}"><b>${UI.escapeHtml(m.name)}</b><small>${UI.escapeHtml(m.note)}</small></button>`).join('')
+      : '<div class="pf-nohit">مفيش منتج أو حملة بالاسم ده. جرّب الاسم المكتوب في الحملة (إنجليزي مثلًا).</div>';
+    hits.querySelectorAll('.pf-hit').forEach((b) => { b.onmousedown = (e) => e.preventDefault(); b.onclick = () => choose(b.dataset.c); });
   };
-  root.querySelectorAll('.pf-chip').forEach((b) => { b.onclick = () => { pf.period = b.dataset.p; pfStore('pfPeriod', pf.period); root.querySelectorAll('.pf-chip').forEach((x) => x.classList.toggle('on', x === b)); if (pf.productId) pfLoad(); }; });
+  search.oninput = show; search.onfocus = show;
+  search.onkeydown = (e) => {
+    if (e.key === 'Enter') { const first = pfMatches(search.value)[0]; if (first) { e.preventDefault(); choose(first.choice); } }
+    if (e.key === 'Escape') hits.hidden = true;
+  };
+  search.onblur = () => setTimeout(() => { if (document.activeElement !== search && !hits.contains(document.activeElement)) hits.hidden = true; }, 150);
+  root.querySelectorAll('.pf-chip').forEach((b) => { b.onclick = () => { pf.period = b.dataset.p; pfStore('pfPeriod', pf.period); root.querySelectorAll('.pf-chip').forEach((x) => x.classList.toggle('on', x === b)); if (pf.choice) pfLoad(); }; });
 }
 
 async function pfLoad() {
   const gen = ++pf.gen;
   const res = document.querySelector('#profitBody .pf-result');
   if (!res) return;
-  res.innerHTML = '<div class="atd-loading"><div class="atd-skel" style="height:220px"></div></div>';
+  const choice = pf.choice, picks = pfPicks(choice);
+  res.innerHTML = `<div class="atd-loading"><div class="pf-hint">بنجمع الأرقام من كل الحسابات…${pf.period === 'all' ? ' «كل الفترة» ممكن تاخد دقيقة أول مرة.' : ''}</div><div class="atd-skel" style="height:220px"></div></div>`;
+  const params = { period: pf.period, include: picks.inc.join('|'), exclude: picks.exc.join('|') };
+  if (choice.startsWith('f:')) params.family = choice.slice(2); else params.productId = choice.slice(2);
   let d;
-  try { d = await api.get('/api/ai-media-buyer/product-profit', { productId: pf.productId, period: pf.period }); }
+  try { d = await api.get('/api/ai-media-buyer/product-profit', params); }
   catch (e) { if (gen === pf.gen) res.innerHTML = `<span class="atd-err">⚠️ ${UI.escapeHtml(e.message || 'تعذّر الحساب')}</span>`; return; }
   if (gen !== pf.gen || !d) return;
   pf.data = d;
   const ec = d.economics || {};
-  pf.manual = { price: ec.available ? ec.sellingPrice : '', cost: ec.available ? ec.unitCost : '', share: ec.available ? Math.round(ec.deliveredShare * 100) : 100, edited: false };
+  if (!(pf.manual?.edited && pf.manualFor === choice)) pf.manual = { price: ec.available ? ec.sellingPrice : '', cost: ec.available ? ec.unitCost : '', share: ec.available ? Math.round(ec.deliveredShare * 100) : 100, edited: false };
+  pf.manualFor = choice;
   pfRenderResult();
 }
 
@@ -682,6 +729,36 @@ function pfVerdict(profit, spend, orders) {
   if (profit === null) return 'UNKNOWN';
   const band = Math.max(50, 0.02 * spend);
   return profit > band ? 'WIN' : profit < -band ? 'LOSS' : 'BREAKEVEN';
+}
+
+/** Every account the product ran in during the period, with the total line. */
+function pfAccountsHtml(d) {
+  if (!d.accounts.length) return '';
+  const cpa = (v) => (v === null ? '—' : `${UI.fmtNum(Math.round(v))} ج`);
+  const row = (cls, name, orders, spend, c, camps) => `<div class="pf-acct${cls}"><span class="nm">${name}</span><span class="ord">${UI.fmtNum(orders)}</span><span>${UI.fmtNum(Math.round(spend))} ج</span><span class="cpa">${cpa(c)}</span><span class="n">${UI.fmtNum(camps)}</span></div>`;
+  const camps = d.accounts.reduce((s, a) => s + a.campaigns, 0);
+  return `<div class="pf-accts"><div class="pf-chart-t">حسب الحساب <small>(${d.accounts.length} حساب)</small></div>
+    <div class="pf-acct head"><span class="nm">الحساب</span><span class="ord">أوردرات</span><span>صرف</span><span class="cpa">كوست</span><span class="n">حملات</span></div>
+    ${d.accounts.map((a) => row('', UI.escapeHtml(a.name), a.orders, a.spend, a.cpa, a.campaigns)).join('')}
+    ${row(' total', 'الإجمالي', d.totals.orders, d.totals.spend, d.totals.cpa, camps)}</div>`;
+}
+
+/** Which campaigns were counted: the name ticks, and the list itself. */
+function pfCampaignsHtml(d) {
+  const fams = d.families || [], list = d.campaigns || [];
+  const shown = new Set(fams.map((f) => f.key));
+  const more = (pf.families || []).filter((f) => !shown.has(f.key));
+  if (!fams.length && !list.length && !more.length) return '';
+  const chips = fams.map((f) => `<label class="pf-fam${f.selected ? ' on' : ''}"><input type="checkbox" data-f="${UI.escapeHtml(f.key)}" data-core="${f.core ? 1 : 0}"${f.selected ? ' checked' : ''}${d.family === f.key ? ' disabled' : ''}><b dir="auto">${UI.escapeHtml(f.label)}</b><small>${UI.fmtNum(f.campaigns)} حملة · ${UI.fmtNum(f.accounts)} حساب${f.otherProduct ? ` · مربوط بـ «${UI.escapeHtml(f.otherProduct)}»` : ''}</small></label>`).join('');
+  const add = more.length ? `<select class="pf-add" aria-label="ضيف اسم حملة تاني"><option value="">＋ ضيف اسم حملة تاني…</option>${more.map((f) => `<option value="${UI.escapeHtml(f.key)}">${UI.escapeHtml(f.name)} — ${f.campaigns} حملة</option>`).join('')}</select>` : '';
+  const rows = list.map((c) => `<div class="pf-camp"><span class="nm" dir="auto" title="${UI.escapeHtml(c.name)}">${UI.escapeHtml(c.name)}</span><span class="ac">${UI.escapeHtml(c.account)}</span><span class="ord">${UI.fmtNum(c.orders)}</span><span>${UI.fmtNum(Math.round(c.spend))} ج</span><span class="cpa">${c.cpa === null ? '—' : `${UI.fmtNum(Math.round(c.cpa))} ج`}</span><span class="via ${c.via === 'LINK' ? 'link' : 'name'}">${c.via === 'LINK' ? 'مربوطة' : 'بالاسم'}</span></div>`).join('');
+  const byName = list.filter((c) => c.via === 'NAME').length;
+  return `<div class="pf-camps">
+    <div class="pf-chart-t">الحملات اللي اتحسبت <small>(${UI.fmtNum(list.length)} اشتغلت في الفترة${byName ? ` — منها ${UI.fmtNum(byName)} بالاسم` : ''})</small></div>
+    <div class="pf-fams">${chips}${add}</div>
+    ${byName ? '<div class="pf-help">«بالاسم» = حملة مش مربوطة بالمنتج في السيستم، بس اسمها زي حملاته. لو فيه اسم مش تبع المنتج شيل علامته.</div>' : ''}
+    ${list.length ? `<details class="pf-list"${pf.listOpen ? ' open' : ''}><summary>شوف الحملات (${UI.fmtNum(list.length)})</summary><div class="pf-camp head"><span class="nm">الحملة</span><span class="ac">الحساب</span><span class="ord">أوردرات</span><span>صرف</span><span class="cpa">كوست</span><span class="via">الربط</span></div>${rows}</details>` : ''}
+  </div>`;
 }
 
 function pfRenderResult() {
@@ -705,7 +782,7 @@ function pfRenderResult() {
   const perAfter = perBefore !== null && t.cpa !== null ? perBefore - t.cpa : null;
   const signed = (n) => (n === null ? '—' : `<span class="sg">${n < 0 ? '−' : ''}</span>${cnt(Math.abs(n), 'money')}`);
   const w = d.window;
-  const note = d.linkedCampaigns === 0 ? '<div class="pf-warn">⚠️ المنتج ده مالوش حملات مربوطة في السيستم، فمفيش أرقام. اربط حملاته الأول.</div>' : '';
+  const note = d.linkedCampaigns + d.namedCampaigns === 0 ? '<div class="pf-warn">⚠️ ملقيناش حملات للمنتج ده. دوّر عليه بالاسم المكتوب في الحملة، أو ضيف اسم الحملة من تحت.</div>' : '';
   const hist = d.history || { historyDays: 0, incomplete: [] };
   const dataNote = hist.incomplete.length
     ? `<div class="pf-warn">⚠️ تعذّر تحميل التاريخ القديم من Meta لحسابات: ${UI.escapeHtml(hist.incomplete.join('، '))}. الأرقام ناقصة للأيام القديمة بتاعتهم، جرّب تاني بعد دقايق.</div>`
@@ -724,8 +801,6 @@ function pfRenderResult() {
     return `<div class="pf-col${cls}" title="${UI.escapeHtml(tip)}" style="--i:${Math.min(i, 30)}"><div class="n">${x.orders || ''}</div><div class="bar"><i data-h="${((x.spend / maxSpend) * 100).toFixed(1)}"></i></div><div class="d">${i % step === 0 ? x.date.slice(8) : ''}</div></div>`;
   }).join('');
 
-  const accts = d.accounts.map((a) => `<div class="pf-acct"><span class="nm">${UI.escapeHtml(a.name)}</span><span>${UI.fmtNum(a.orders)} أوردر</span><span>${UI.fmtNum(Math.round(a.spend))} ج</span><span class="cpa">${a.cpa === null ? '—' : UI.fmtNum(Math.round(a.cpa)) + ' ج'}</span></div>`).join('');
-
   res.innerHTML = `
     ${note}
     <div class="pf-verdict ${V[0]}">
@@ -740,6 +815,8 @@ function pfRenderResult() {
       <div class="pf-kpi ${perAfter === null ? '' : perAfter >= 0 ? 'win' : 'loss'}" title="ربح الأوردر قبل الإعلان − الكوست (تكلفة الإعلان لكل أوردر)"><div class="l">ربح الأوردر بعد الإعلان</div><div class="v">${signed(perAfter)}</div></div>
       <div class="pf-kpi ${V[0]}"><div class="l">صافي الربح / الخسارة</div><div class="v">${calc.profit === null ? '—' : `<span class="sg">${calc.profit < 0 ? '−' : '+'}</span>${cnt(Math.abs(calc.profit), 'money')}`}</div></div>
     </div>
+    ${pfAccountsHtml(d)}
+    ${pfCampaignsHtml(d)}
     <div class="pf-calc">
       <div class="pf-calc-t">🧮 احسب بأرقامك ${d.economics?.available ? '<small>(معبّاة من بيانات المنتج)</small>' : `<small>(${UI.escapeHtml(d.economics?.reason || 'مفيش سعر وتكلفة')})</small>`}</div>
       <div class="pf-fields">
@@ -751,13 +828,22 @@ function pfRenderResult() {
       <div class="pf-be">${beShare === null ? 'اكتب السعر والتكلفة عشان نحسب النسبة اللي بيكسب عندها.' : beShare > 1 ? '⚠️ حتى لو كل الأوردرات اتسلّمت المنتج بيخسر بالصرف ده.' : `بيكسب طالما نسبة التسليم <b>${UI.fmtNum(Math.ceil(beShare * 100))}%</b> أو أكتر.`}</div>
     </div>
     ${d.daily.length ? `<div class="pf-chart-t">الصرف كل يوم <small>(الرقم فوق العمود = عدد الأوردرات${calc.contribution != null ? ' · أخضر = يوم كسبان، أحمر = يوم خسران' : ''})</small></div><div class="pf-chart" dir="ltr">${cols}</div>` : ''}
-    ${accts ? `<div class="pf-accts"><div class="pf-chart-t">حسب الحساب</div>${accts}</div>` : ''}
     <div class="atd-note">الأوردرات = مشتريات Meta (Website Purchases) وبتتحدّث كل 15 دقيقة تقريبًا. الربح تقدير، مش حسابات محاسبية.</div>`;
 
   const root = res;
   atdAnimate(root);
   root.querySelectorAll('.pf-col .bar > i').forEach((b) => { b.style.height = ATD_REDUCED() ? `${b.dataset.h}%` : '0%'; });
   if (!ATD_REDUCED()) requestAnimationFrame(() => requestAnimationFrame(() => root.querySelectorAll('.pf-col .bar > i').forEach((b) => { b.style.height = `${b.dataset.h}%`; })));
+  const setFamily = (key, on, core) => {
+    const p = pfPicks(pf.choice);
+    p.inc = p.inc.filter((k) => k !== key); p.exc = p.exc.filter((k) => k !== key);
+    if (on) p.inc.push(key); else if (core) p.exc.push(key); // a name that is not one of the product's own is simply no longer added
+    pfStore(`pfFam:${pf.choice}`, JSON.stringify(p));
+    pfLoad();
+  };
+  root.querySelectorAll('.pf-fam input').forEach((box) => { box.onchange = () => setFamily(box.dataset.f, box.checked, box.dataset.core === '1'); });
+  const add = root.querySelector('.pf-add'); if (add) add.onchange = () => { if (add.value) setFamily(add.value, true, false); };
+  const list = root.querySelector('.pf-list'); if (list) list.ontoggle = () => { pf.listOpen = list.open; };
   root.querySelectorAll('.pf-in').forEach((inp) => {
     inp.oninput = () => {
       pf.manual[inp.dataset.k] = inp.value === '' ? '' : Number(inp.value);

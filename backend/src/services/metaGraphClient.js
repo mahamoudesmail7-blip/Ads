@@ -1279,6 +1279,18 @@ export async function getCampaignDailyInsights(token, adAccountId, campaignIds, 
   return out;
 }
 
+/** Every campaign of one account that delivered in [since, until] (READ ONLY, one aggregated read, no daily breakdown): [{ campaign_id, campaign_name }]. */
+export async function getCampaignsWithDelivery(token, adAccountId, since, until) {
+  const u = new URL(`${GRAPH_BASE}/${adAccountId}/insights`);
+  u.searchParams.set('level', 'campaign');
+  u.searchParams.set('time_range', JSON.stringify({ since, until }));
+  u.searchParams.set('fields', 'campaign_id,campaign_name,spend');
+  u.searchParams.set('limit', '500');
+  u.searchParams.set('access_token', token);
+  const rows = await insightsPages(u.toString(), 'campaigns with delivery');
+  return rows.map((r) => ({ campaign_id: r.campaign_id, campaign_name: r.campaign_name }));
+}
+
 /** The first day those campaigns spent anything in [since, until], found with ONE cheap monthly read (null when they never spent). Lets a "since forever" ask start where the data really starts. */
 export async function getCampaignFirstSpendDate(token, adAccountId, campaignIds, since, until) {
   const ids = [...new Set((campaignIds || []).map(String))];
